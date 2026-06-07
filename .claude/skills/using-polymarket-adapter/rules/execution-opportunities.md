@@ -3,15 +3,17 @@
 ## MCP tools (Claude Code)
 
 - Read-only: `mcp__wayfinder__polymarket_read` (search, market metadata, prices/books/history) and `mcp__wayfinder__polymarket_get_state` (account state)
-- Writes — each action is its own tool: `mcp__wayfinder__polymarket_deposit`, `polymarket_withdraw`, `polymarket_place_market_order`, `polymarket_place_limit_order`, `polymarket_cancel_order`, `polymarket_redeem_positions`
+- Writes — each action is its own tool: `mcp__wayfinder__polymarket_deposit_pusd`, `polymarket_withdraw_pusd`, `polymarket_place_market_order`, `polymarket_place_limit_order`, `polymarket_cancel_order`, `polymarket_redeem_positions`
 
 ## Preconditions (for write paths)
 
-- Polygon RPC configured (`strategy.rpc_urls["137"]`)
+- Polygon RPC access via the SDK's Wayfinder RPC proxy. Keep `strategy.rpc_urls`
+  empty in normal Shell usage; only set `strategy.rpc_urls["137"]` for an
+  explicit local/fork override.
 - Wallet configured (local with `private_key_hex` or remote via Privy)
 - Have Polygon gas token (POL) on the **owner EOA** — funding the deposit wallet costs gas
 - Have **pUSD** ready on the owner EOA (see `rules/deposits-withdrawals.md` to prepare it from USDC/USDC.e)
-- **Deposit wallet funded** — orders execute from the per-user deposit wallet, not the owner EOA. Use `polymarket_deposit(amount=...)` before trading. See `rules/deposit-wallet.md`.
+- **Deposit wallet funded** — orders execute from the per-user deposit wallet, not the owner EOA. Use `polymarket_deposit_pusd(amount=...)` before trading. See `rules/deposit-wallet.md`.
 
 ## Deposit wallet setup + API creds (automatic, cached)
 
@@ -38,7 +40,7 @@ ok, res = await adapter.place_prediction(
 
 MCP shortcut:
 
-- `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="BUY", amount_collateral=2)`
+- `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="BUY", buy_amount_pusd=2)`
 
 Lower-level control (CLOB token id + side):
 
@@ -52,6 +54,12 @@ Important: `place_market_order()` semantics:
 - `side="BUY"` → `amount` is **collateral ($) to spend**
 - `side="SELL"` → `amount` is **shares to sell**
 
+Important MCP sizing rule:
+
+- `side="BUY"` → pass `buy_amount_pusd`; this is pUSD spend, not share count.
+- `side="SELL"` → pass `sell_amount_shares`; this is shares to sell.
+- Use returned `executionSummary.sharesFilled`, `executionSummary.collateralSpent`, `executionSummary.collateralReceived`, and `executionSummary.avgPrice` for user-facing math.
+
 ## Selling (cash out)
 
 ```python
@@ -64,7 +72,7 @@ ok, res = await adapter.cash_out_prediction(
 
 MCP shortcut:
 
-- `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="...", outcome="...", side="SELL", shares=1)` (pass the full position size from `polymarket_get_state` to fully close)
+- `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="...", outcome="...", side="SELL", sell_amount_shares=1)` (pass the full position size from `polymarket_get_state` to fully close)
 
 Practical note (important): after a BUY, there can be a **settlement lag** before shares are sellable. If you’re chaining BUY → SELL in automation, wait for the buy match transaction to confirm (the CLOB response typically includes `transactionsHashes`).
 

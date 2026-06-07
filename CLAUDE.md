@@ -13,13 +13,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
    - The script may skip the API key prompt in non-interactive terminals - that's OK
    - After setup completes, ask the user: "Do you have a Wayfinder API key?"
      - If yes: Use the Edit tool to add it to `config.json` under `system.api_key`
-     - If no: Direct them to **https://strategies.wayfinder.ai** to create an account and get one
+     - If no: Direct them to **https://wayfinder.ai** to create an account and get one
    - After config is complete, tell the user: **"Please restart Claude Code to load the MCP server, then we can continue."**
 
 3. If `config.json` exists but `system.api_key` is empty/missing:
    - Ask: "I see you haven't set up your API key yet. Do you have a Wayfinder API key?"
    - If yes: Help them add it to `config.json` under `system.api_key`
-   - If no: Direct them to **https://strategies.wayfinder.ai** to get one
+   - If no: Direct them to **https://wayfinder.ai** to get one
 
 4. If everything is configured, proceed normally
 
@@ -50,14 +50,14 @@ Simulation / scenario testing (vnet only):
 
 Safety defaults:
 
-- **Quote before swap (MANDATORY):** Before calling `mcp__wayfinder__core_execute(kind="swap")`, always call `mcp__wayfinder__onchain_quote_swap` first. Verify the resolved `from_token` and `to_token` (symbol, address, chain) match intent, then show the user the route, estimated output, and fee. Only proceed to `execute` after the user confirms — unless the user has explicitly said to skip quoting (e.g. "just do it", "skip the quote").
+- **Quote before swap (MANDATORY):** Before calling `mcp__wayfinder__onchain_swap`, always call `mcp__wayfinder__onchain_quote_swap` first. Verify the resolved `from_token` and `to_token` (symbol, address, chain) match intent, then show the user the route, estimated output, and fee. Only proceed to `onchain_swap` after the user confirms — unless the user has explicitly said to skip quoting (e.g. "just do it", "skip the quote").
 - **Route planning for non-trivial swaps:** Before quoting, assess whether a direct route is likely to exist between the two tokens. If the pair is illiquid, cross-chain, or involves a long-tail token, reason through candidate intermediate hops first (e.g. tokenA → USDC → tokenB, or tokenA → native gas token → tokenB). Quote the most promising paths and compare outputs before presenting to the user. Skip this planning step only for well-known liquid pairs on the same chain (e.g. ETH → USDC on Arbitrum).
-- On-chain writes: use MCP `execute(...)` (swap/send). The hook shows a human-readable preview and asks for confirmation.
+- On-chain writes: use MCP `onchain_swap(...)` (BRAP swap) or `onchain_send(...)` (ERC-20 / native transfer). The hook shows a human-readable preview and asks for confirmation.
 - Arbitrary EVM contract interactions: use MCP `contract_call(...)` (read-only) and `contract_execute(...)` (writes, gated by a review prompt).
   - ABI handling: pass a minimal `abi`/`abi_path` when you can. If omitted, the tools fall back to fetching the ABI from Etherscan V2 (requires `system.etherscan_api_key` or `ETHERSCAN_API_KEY`, and the contract must be verified). If the target is a proxy, tools attempt to resolve the implementation address and fetch the implementation ABI.
   - To fetch an ABI directly (without making a call), use MCP `contract_get_abi(...)`.
-- Hyperliquid writes: use the per-action MCP tools — `hyperliquid_place_market_order`, `hyperliquid_place_limit_order`, `hyperliquid_place_trigger_order`, `hyperliquid_cancel_order`, `hyperliquid_update_leverage`, `hyperliquid_deposit`, `hyperliquid_withdraw`. All gated by a review prompt.
-- Polymarket writes: use the per-action MCP tools — `polymarket_deposit`, `polymarket_withdraw`, `polymarket_place_market_order`, `polymarket_place_limit_order`, `polymarket_cancel_order`, `polymarket_redeem_positions`. All gated by a review prompt.
+- Hyperliquid writes: use the per-action MCP tools — `hyperliquid_place_market_order`, `hyperliquid_place_limit_order`, `hyperliquid_place_trigger_order`, `hyperliquid_cancel_order`, `hyperliquid_update_leverage`, `hyperliquid_deposit_usdc`, `hyperliquid_withdraw_usdc`. All gated by a review prompt.
+- Polymarket writes: use the per-action MCP tools — `polymarket_deposit_pusd`, `polymarket_withdraw_pusd`, `polymarket_place_market_order`, `polymarket_place_limit_order`, `polymarket_cancel_order`, `polymarket_redeem_positions`. All gated by a review prompt.
 - Contract deploys: use MCP `deploy_contract(...)` (compile + deploy + verify). Also gated by a review prompt. Use `compile_contract(...)` for compilation only (read-only, no confirmation).
   - Deployments (and other contract actions) are recorded in wallet profiles. Call `core_get_wallets(label="...")` and look at `profile.transactions` entries with `protocol: "contracts"` (also written to `.wayfinder_runs/wallet_profiles.json`).
   - **Artifact persistence:** Source code, ABI, and metadata are saved to `.wayfinder_runs/contracts/{chain_id}/{address}/` and survive scratch directory cleanup. Browse with `contracts_list()` (list all) or `contracts_get(chain_id, address)` (specific contract — includes ABI).
@@ -187,14 +187,14 @@ When a user asks to run, check, or interact with a strategy:
 When a user wants **immediate, one-off execution**:
 
 - **Gas check first:** Before any on-chain execution, verify the wallet has native gas on the target chain (see "Gas requirements" under Supported chains). If bridging to a new chain, bridge once and swap locally — don't do two separate bridges.
-- **On-chain:** use `mcp__wayfinder__core_execute` (swap/send). The `amount` parameter is **human-readable** (e.g. `"5"` for 5 USDC), not wei.
+- **On-chain:** use `mcp__wayfinder__onchain_swap` (cross-chain / cross-DEX swaps via BRAP) or `mcp__wayfinder__onchain_send` (ERC-20 / native transfers). The `amount` parameter is **human-readable** (e.g. `"5"` for 5 USDC), not wei.
 - **Outcome / prediction markets — search both venues, let the user pick.** When a user mentions "outcome market" or "prediction market" without naming the platform, **search both venues in parallel** and present the candidates side-by-side so the user can choose where to trade. Two venues:
-  - **Hyperliquid HIP-4** — daily binary price contracts, settled in USDH on the HL L1. Lineup rotates daily. Search via `mcp__wayfinder__hyperliquid_search_market(query=...)` and read the `outcomes` bucket.
+  - **Hyperliquid HIP-4** — daily binary price contracts, settled in USDC on the HL L1. Lineup rotates daily. Search via `mcp__wayfinder__hyperliquid_search_market(query=...)` and read the `outcomes` bucket.
   - **Polymarket** — long-form prediction markets (politics, sports, events, crypto milestones), settled in pUSD on Polygon (V2 collateral; the adapter wraps from USDC/USDC.e as needed). Search via `mcp__wayfinder__polymarket_read(action="search", query=..., limit=...)`.
 
   Present results as a table grouped by venue, then ask the user which market to act on. Don't assume — the same theme (e.g. "BTC above X by date Y") can list on both venues with different sizes, expiries, and collateral.
-- **Hyperliquid perps/spot/outcomes:** use the per-action MCP tools — `hyperliquid_place_market_order` (IOC), `hyperliquid_place_limit_order` (GTC), `hyperliquid_place_trigger_order` (TP/SL), `hyperliquid_cancel_order`, `hyperliquid_update_leverage`, `hyperliquid_deposit`, `hyperliquid_withdraw`. `asset_name` selects perp (`BTC-USDC`) vs spot (`BTC/USDC`) vs HIP-3 (`xyz:SP500`) vs HIP-4 outcomes (`#<encoding>`); the market/limit tools dispatch the outcome path inline (integer contracts, no builder fee). Order tools don't take leverage — call `hyperliquid_update_leverage` first. **Before your first Hyperliquid write in a session, invoke `/using-hyperliquid-adapter`**.
-- **Polymarket:** use `mcp__wayfinder__polymarket_read` (search/history) + `mcp__wayfinder__polymarket_get_state` (status) + the per-action write tools (`polymarket_deposit`, `polymarket_withdraw`, `polymarket_place_market_order`, `polymarket_place_limit_order`, `polymarket_cancel_order`, `polymarket_redeem_positions`). **Before your first Polymarket write in a session, invoke `/using-polymarket-adapter`** (pUSD collateral + tradability filters + outcome selection).
+- **Hyperliquid perps/spot/outcomes:** use the per-action MCP tools — `hyperliquid_place_market_order` (IOC), `hyperliquid_place_limit_order` (GTC), `hyperliquid_place_trigger_order` (TP/SL), `hyperliquid_cancel_order`, `hyperliquid_update_leverage`, `hyperliquid_deposit_usdc`, `hyperliquid_withdraw_usdc`. `asset_name` selects perp (`BTC-USDC`) vs spot (`BTC/USDC`) vs HIP-3 (`xyz:SP500`) vs HIP-4 outcomes (`#<encoding>`); the market/limit tools dispatch the outcome path inline (integer contracts, no builder fee). Order tools don't take leverage — call `hyperliquid_update_leverage` first. Before perp orders, call `hyperliquid_get_state(label=...)` for account state and `hyperliquid_get_trade_asset(label=..., asset_name=...)` for selected-market capacity. In UnifiedAccount mode, spot clearinghouse state is the source for balances/holds; `activeAssetData` via `hyperliquid_get_trade_asset` is the source for side-specific available margin, max order notional, max base size, leverage, max leverage, margin modes, and live position. Do not treat wallet USDC balance, `crossMarginSummary`, or `tokenToAvailableAfterMaintenance` as available to open more risk. Set `reduce_only=true` for close/reduce flows; use `allow_flip=true` only when the user explicitly wants to flip. **Before your first Hyperliquid write in a session, invoke `/using-hyperliquid-adapter`**.
+- **Polymarket:** use `mcp__wayfinder__polymarket_read` (search/history) + `mcp__wayfinder__polymarket_get_state` (status) + the per-action write tools (`polymarket_deposit_pusd`, `polymarket_withdraw_pusd`, `polymarket_place_market_order`, `polymarket_place_limit_order`, `polymarket_cancel_order`, `polymarket_redeem_positions`). **Before your first Polymarket write in a session, invoke `/using-polymarket-adapter`** (pUSD collateral + tradability filters + outcome selection).
 - **Multi-step flows:** write a short Python script under `.wayfinder_runs/.scratch/<session_id>/` (see `$WAYFINDER_SCRATCH_DIR`) and execute it with `mcp__wayfinder__core_run_script`. Promote keepers into `.wayfinder_runs/library/<protocol>/` (see `$WAYFINDER_LIBRARY_DIR`).
 
 ### Complex transaction flow (multi-step or fund-moving)
@@ -220,20 +220,21 @@ Hyperliquid minimums:
 - **Minimum deposit: $5 USD** (deposits below this are **lost**)
 - **Minimum order: $10 USD notional** (applies to both perp and spot)
 
-HIP-3 dex abstraction (xyz/flx/vntl/hyna/km perps), HIP-4 outcome markets (binary daily prediction contracts, **collateralized in USDH**, not USDC), and Hyperliquid deposits/withdrawals: all handled in the Hyperliquid adapter/tooling — load `/using-hyperliquid-adapter` when scripting.
+HIP-3 dex abstraction (xyz/flx/vntl/hyna/km perps), HIP-4 outcome markets (binary daily prediction contracts, **collateralized in USDC**), and Hyperliquid deposits/withdrawals: all handled in the Hyperliquid adapter/tooling — load `/using-hyperliquid-adapter` when scripting.
 
 Polymarket quick flows:
 
 - Search markets/events: `mcp__wayfinder__polymarket_read(action="search", query="bitcoin february 9", limit=10)`
+- Event/date ladders: after search returns an `eventSlug`, call `mcp__wayfinder__polymarket_read(action="get_event", event_slug="...", candidate_limit=20)` instead of searching each date separately. Compact summary mode is the default; use `summary=False` only to debug raw Gamma/backend behavior.
 - Full status (positions + PnL + balances + open orders): `mcp__wayfinder__polymarket_get_state(wallet_label="main")`
-- Convert **any token/chain → pUSD (0xC011a7..., V2 collateral)**: use the BRAP swap MCP tools. Quote first with `mcp__wayfinder__onchain_quote_swap(wallet_label="main", from_token="<source>", to_token="polygon_0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB", amount="<wei>", slippage_bps=50)`, then `mcp__wayfinder__core_execute(request=<suggested_execute_request>)`. BRAP picks the right solver automatically (USDC.e → pUSD goes through the 1:1 `polymarket_bridge` wrap; everything else routes via standard DEX / cross-chain bridges). Skip if you already have pUSD.
-- Buy shares (market order): `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="BUY", amount_collateral=2)`
-- Sell shares (market order): `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="SELL", shares=10)` (pass the full size from `polymarket_get_state` to close)
+- Convert **any token/chain → pUSD (0xC011a7..., V2 collateral)**: use the BRAP swap MCP tools. Quote first with `mcp__wayfinder__onchain_quote_swap(wallet_label="main", from_token="<source>", to_token="polygon_0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB", amount="<human amount>", slippage_bps=50)`, then `mcp__wayfinder__onchain_swap(**suggested_swap_request)`. Use exact `amount_decimal` strings from `get_wallets` for full-balance swaps; do not pass raw wei or floats. BRAP picks the right solver automatically (USDC.e → pUSD goes through the 1:1 `polymarket_bridge` wrap; everything else routes via standard DEX / cross-chain bridges). Skip if you already have pUSD.
+- Buy shares (market order): `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="BUY", buy_amount_pusd=2)`; BUY size is pUSD spend, and returned `executionSummary.sharesFilled` is the share count.
+- Sell shares (market order): `mcp__wayfinder__polymarket_place_market_order(wallet_label="main", market_slug="bitcoin-above-70k-on-february-9", outcome="YES", side="SELL", sell_amount_shares=10)`; SELL size is shares to sell, usually from `polymarket_get_state`.
 - Redeem after resolution: `mcp__wayfinder__polymarket_redeem_positions(wallet_label="main", condition_id="0x...")`
 
 Polymarket funding (pUSD collateral):
 
-- **Any token/chain → pUSD:** use the BRAP swap MCP tools (`onchain_quote_swap` + `core_execute(kind="swap", ...)`) with `to_token` = `polygon_0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB`. Works for Polygon USDC, Polygon USDC.e, or any supported asset on any supported chain — BRAP picks the route.
+- **Any token/chain → pUSD:** use the BRAP swap MCP tools (`onchain_quote_swap` + `onchain_swap`) with `to_token` = `polygon_0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB`. Works for Polygon USDC, Polygon USDC.e, or any supported asset on any supported chain — BRAP picks the route.
 - **Already have pUSD:** Trade immediately, skip routing.
 - **pUSD → any token/chain:** flip `from_token` / `to_token` in the same BRAP swap flow.
 
@@ -269,6 +270,7 @@ Runner MCP tool: `mcp__wayfinder__core_runner(action=...)`.
 Safety note:
 
 - Runner executions are local automation and do **not** go through the Claude safety review prompt. Treat `update/deposit/withdraw/exit` as live fund-moving actions.
+- Generated monitor scripts must store durable state with `wayfinder_paths.runner.monitor_state`; it writes under `$WAYFINDER_RUNNER_DIR/job_state/$WAYFINDER_KV_NAMESPACE/`. Do not store monitor state in `/tmp`; restart-pruned state can duplicate alerts.
 
 Supported chains:
 
@@ -293,7 +295,7 @@ Gas requirements (critical — assets get stuck without gas):
 
 Token identifiers (important for quoting/execution/lookups):
 
-- Use **token IDs** (`<coingecko_id>-<chain_code>`) or **address IDs** (`<chain_code>_<address>`). Full details: `.claude/skills/using-pool-token-balance-data/rules/tokens.md`.
+- Use **token IDs** (`<coingecko_id>-<chain_code>`) or **address IDs** (`<chain_code>_<address>`). Examples: `usd-coin-polygon`, `ethereum-arbitrum`, `polygon_0x2791...`. Do not invent symbol shorthands like `polygon_usdc` or `usdc-polygon` for quotes/execution; resolve user-provided shorthands first with `onchain_resolve_token` or `onchain_fuzzy_search_tokens`, then use the returned canonical id. Full details: `.claude/skills/using-pool-token-balance-data/rules/tokens.md`.
 
 ### Path updates
 
@@ -412,7 +414,7 @@ Wallet info is exposed through MCP tools (resources were removed — opencode do
 - `annotate` — record a protocol interaction (internal use).
 - `discover_portfolio` — query adapters for live positions.
 
-**Automatic tracking:** Profiles auto-update when you call `core_execute`, any `hyperliquid_*` write tool, or `core_run_script` with `wallet_label=...`.
+**Automatic tracking:** Profiles auto-update when you call `onchain_swap` / `onchain_send`, any `hyperliquid_*` write tool, or `core_run_script` with `wallet_label=...`.
 
 **Portfolio discovery:**
 

@@ -5,6 +5,7 @@ from typing import Any
 from wayfinder_paths.core.clients.direct.DefiLlamaFreeClient import (
     DEFILLAMA_FREE_CLIENT,
 )
+from wayfinder_paths.mcp.arg_validation import normalize_enum, normalize_int
 from wayfinder_paths.mcp.utils import catch_errors, ok
 
 DATASETS = {
@@ -32,8 +33,8 @@ async def research_defillama_free(
     coins: str = "_",
     query: str = "_",
     dataType: str = "dailyFees",
-    days: str = "30",
-    limit: str = "25",
+    days: str | int = "30",
+    limit: str | int = "25",
     cursor: str = "_",
 ) -> dict[str, Any]:
     """Call DeFiLlama free APIs directly from the OpenCode runtime.
@@ -51,11 +52,13 @@ async def research_defillama_free(
         limit: Result cap for page-able collection datasets.
         cursor: Page cursor returned by a prior response, or "_".
     """
-    normalized = dataset.strip().lower()
-    if normalized not in DATASETS:
-        raise ValueError(f"dataset must be one of: {', '.join(sorted(DATASETS))}")
+    normalized = normalize_enum(
+        dataset,
+        field_name="dataset",
+        allowed_values=DATASETS,
+    )
 
-    page_limit = int(limit)
+    page_limit = normalize_int(limit, field_name="limit", min_value=1)
 
     if normalized == "protocols":
         return ok(
@@ -83,7 +86,7 @@ async def research_defillama_free(
             await DEFILLAMA_FREE_CLIENT.protocol_fees(
                 protocolSlug,
                 data_type=dataType,
-                days=int(days),
+                days=normalize_int(days, field_name="days", min_value=1),
             )
         )
     if normalized == "protocol_tvl_history":
@@ -94,7 +97,7 @@ async def research_defillama_free(
         return ok(
             await DEFILLAMA_FREE_CLIENT.protocol_tvl_history(
                 protocolSlug,
-                days=int(days),
+                days=normalize_int(days, field_name="days", min_value=1),
             )
         )
     if normalized == "chains":

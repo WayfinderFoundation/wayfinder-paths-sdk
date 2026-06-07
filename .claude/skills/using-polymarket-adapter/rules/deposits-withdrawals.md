@@ -26,7 +26,7 @@ mcp__wayfinder__onchain_quote_swap(
     slippage_bps=50,
 )
 # inspect the preview, then:
-mcp__wayfinder__core_execute(request=<suggested_execute_request>)
+mcp__wayfinder__onchain_swap(**suggested_swap_request)
 ```
 
 **Out: pUSD → any token**
@@ -37,4 +37,4 @@ Flip `from_token` and `to_token`. For pUSD → native Polygon USDC, BRAP routes 
 
 ## Already have pUSD?
 
-Skip routing entirely and call `polymarket_deposit(...)` to move pUSD from the owner EOA into the deposit wallet (the actual trading address — see `rules/deposit-wallet.md`).
+Skip routing entirely and call `polymarket_deposit_pusd(...)` to move pUSD from the owner EOA into the deposit wallet (the actual trading address — see `rules/deposit-wallet.md`).

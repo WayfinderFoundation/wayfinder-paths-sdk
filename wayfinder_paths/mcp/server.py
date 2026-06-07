@@ -14,13 +14,13 @@ to scope a persona's surface.
 
 Namespaces:
   - shells       instance ↔ frontend bridge (chart workspace, annotations, notify, ui ctx)
-  - research     alpha-lab, delta-lab, backend-mediated web search/fetch
+  - research     alpha-lab, delta-lab, DeFiLlama, Goldsky, social/sentiment
   - hyperliquid  HL perp/spot/HIP-3/HIP-4 reads + writes
-  - onchain      token resolution, swaps, wallet activity
+  - onchain      token resolution, swaps, sends, wallet activity
   - polymarket   prediction markets reads + writes
   - contracts    contract compile/deploy/call/abi
   - core         cross-persona tools every subagent should allowlist
-                 (discovery, wallet reads, run_script, execute, runner)
+                 (discovery, wallet reads, web search/fetch, run_script, runner)
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ from wayfinder_paths.mcp.tools.evm_contract import (
     contracts_call,
     contracts_execute,
 )
-from wayfinder_paths.mcp.tools.execute import core_execute
+from wayfinder_paths.mcp.tools.execute import onchain_send, onchain_swap
 from wayfinder_paths.mcp.tools.goldsky_direct import (
     research_goldsky_graphql,
     research_goldsky_schema,
@@ -72,37 +72,39 @@ from wayfinder_paths.mcp.tools.goldsky_direct import (
 )
 from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_cancel_order,
-    hyperliquid_deposit,
+    hyperliquid_deposit_usdc,
     hyperliquid_get_state,
+    hyperliquid_get_trade_asset,
     hyperliquid_place_limit_order,
     hyperliquid_place_market_order,
     hyperliquid_place_trigger_order,
     hyperliquid_search_market,
     hyperliquid_search_mid_prices,
     hyperliquid_update_leverage,
-    hyperliquid_withdraw,
+    hyperliquid_withdraw_usdc,
 )
 from wayfinder_paths.mcp.tools.instance_state import (
-    shells_add_workspace_chart_annotation,
-    shells_add_workspace_chart_overlay,
-    shells_add_workspace_chart_series,
-    shells_clear_chart_workspace,
-    shells_create_chart,
-    shells_get_frontend_context,
-    shells_search_chart_series,
-    shells_set_active_chart,
-    shells_set_active_market,
+    visual_add_workspace_chart_annotation,
+    visual_add_workspace_chart_overlay,
+    visual_add_workspace_chart_series,
+    visual_clear_chart_workspace,
+    visual_create_chart,
+    visual_get_frontend_context,
+    visual_import_chart_spec,
+    visual_search_chart_series,
+    visual_set_active_chart,
+    visual_set_active_market,
 )
-from wayfinder_paths.mcp.tools.notify import shells_notify
+from wayfinder_paths.mcp.tools.notify import notification_send
 from wayfinder_paths.mcp.tools.polymarket import (
     polymarket_cancel_order,
-    polymarket_deposit,
+    polymarket_deposit_pusd,
     polymarket_get_state,
     polymarket_place_limit_order,
     polymarket_place_market_order,
     polymarket_read,
     polymarket_redeem_positions,
-    polymarket_withdraw,
+    polymarket_withdraw_pusd,
 )
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
 from wayfinder_paths.mcp.tools.research_gateway import (
@@ -112,7 +114,7 @@ from wayfinder_paths.mcp.tools.research_gateway import (
     research_social_x_search,
 )
 from wayfinder_paths.mcp.tools.run_script import core_run_script
-from wayfinder_paths.mcp.tools.runner import core_runner
+from wayfinder_paths.mcp.tools.runner import core_runner, core_runner_status
 from wayfinder_paths.mcp.tools.strategies import core_run_strategy
 from wayfinder_paths.mcp.tools.tokens import (
     onchain_fuzzy_search_tokens,
@@ -150,14 +152,15 @@ def build_mcp(
     mcp.tool()(core_wallets)
     mcp.tool()(core_web_search)
     mcp.tool()(core_web_fetch)
-    mcp.tool()(core_execute)
     mcp.tool()(core_run_script)
     mcp.tool()(core_run_strategy)
+    mcp.tool()(core_runner_status)
     mcp.tool()(core_runner)
 
     # ─── hyperliquid_* ─────────────────────────────────────────────────
     # Coin naming reference: /using-hyperliquid-adapter/rules/coin-naming.md.
     mcp.tool()(hyperliquid_get_state)
+    mcp.tool()(hyperliquid_get_trade_asset)
     mcp.tool()(hyperliquid_search_market)
     mcp.tool()(hyperliquid_search_mid_prices)
     mcp.tool()(hyperliquid_place_market_order)
@@ -165,8 +168,8 @@ def build_mcp(
     mcp.tool()(hyperliquid_place_trigger_order)
     mcp.tool()(hyperliquid_cancel_order)
     mcp.tool()(hyperliquid_update_leverage)
-    mcp.tool()(hyperliquid_deposit)
-    mcp.tool()(hyperliquid_withdraw)
+    mcp.tool()(hyperliquid_deposit_usdc)
+    mcp.tool()(hyperliquid_withdraw_usdc)
 
     # ─── onchain_* ─────────────────────────────────────────────────────
     mcp.tool()(onchain_get_wallet_activity)
@@ -174,6 +177,8 @@ def build_mcp(
     mcp.tool()(onchain_get_gas_token)
     mcp.tool()(onchain_fuzzy_search_tokens)
     mcp.tool()(onchain_quote_swap)
+    mcp.tool()(onchain_swap)
+    mcp.tool()(onchain_send)
 
     # ─── polymarket_* ──────────────────────────────────────────────────
     mcp.tool()(polymarket_read)
@@ -181,8 +186,8 @@ def build_mcp(
     mcp.tool()(polymarket_place_market_order)
     mcp.tool()(polymarket_place_limit_order)
     mcp.tool()(polymarket_cancel_order)
-    mcp.tool()(polymarket_deposit)
-    mcp.tool()(polymarket_withdraw)
+    mcp.tool()(polymarket_deposit_pusd)
+    mcp.tool()(polymarket_withdraw_pusd)
     mcp.tool()(polymarket_redeem_positions)
 
     # ─── research_* ────────────────────────────────────────────────────
@@ -209,18 +214,19 @@ def build_mcp(
     mcp.tool()(research_search_perp)
     mcp.tool()(research_search_borrow_routes)
 
-    # ─── shells_* (opencode-only) ──────────────────────────────────────
+    # ─── visual_* + notification_send (opencode-only) ─────────────────
     if is_opencode_instance():
-        mcp.tool()(shells_get_frontend_context)
-        mcp.tool()(shells_search_chart_series)
-        mcp.tool()(shells_set_active_market)
-        mcp.tool()(shells_create_chart)
-        mcp.tool()(shells_set_active_chart)
-        mcp.tool()(shells_add_workspace_chart_series)
-        mcp.tool()(shells_add_workspace_chart_annotation)
-        mcp.tool()(shells_add_workspace_chart_overlay)
-        mcp.tool()(shells_clear_chart_workspace)
-        mcp.tool()(shells_notify)
+        mcp.tool()(visual_get_frontend_context)
+        mcp.tool()(visual_search_chart_series)
+        mcp.tool()(visual_set_active_market)
+        mcp.tool()(visual_create_chart)
+        mcp.tool()(visual_import_chart_spec)
+        mcp.tool()(visual_set_active_chart)
+        mcp.tool()(visual_add_workspace_chart_series)
+        mcp.tool()(visual_add_workspace_chart_annotation)
+        mcp.tool()(visual_add_workspace_chart_overlay)
+        mcp.tool()(visual_clear_chart_workspace)
+        mcp.tool()(notification_send)
 
     return mcp
 

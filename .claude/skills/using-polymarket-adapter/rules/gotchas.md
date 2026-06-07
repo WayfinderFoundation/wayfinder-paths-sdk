@@ -3,15 +3,15 @@
 ## Read vs write surfaces (MCP)
 
 - Use `mcp__wayfinder__polymarket_read` for reads (search/markets/history) and `mcp__wayfinder__polymarket_get_state` for account state (positions/orders/activity/trades).
-- Use the per-action write tools (`polymarket_deposit`, `polymarket_withdraw`, `polymarket_place_market_order`, `polymarket_place_limit_order`, `polymarket_cancel_order`, `polymarket_redeem_positions`). All gated by a confirmation prompt in Claude Code.
-- For collateral routing in/out of pUSD, use the BRAP swap MCP tools (`onchain_quote_swap` + `core_execute(kind="swap", ...)`) — see `rules/deposits-withdrawals.md`.
+- Use the per-action write tools (`polymarket_deposit_pusd`, `polymarket_withdraw_pusd`, `polymarket_place_market_order`, `polymarket_place_limit_order`, `polymarket_cancel_order`, `polymarket_redeem_positions`). All gated by a confirmation prompt in Claude Code.
+- For collateral routing in/out of pUSD, use the BRAP swap MCP tools (`onchain_quote_swap` + `onchain_swap`) — see `rules/deposits-withdrawals.md`.
 - Use `mcp__wayfinder__polymarket_read(action="quote", ...)` before a sized buy/sell when you need average execution from the current book.
 
 ## `price` is not `quote`
 
 - `get_price(...)` / `mcp__wayfinder__polymarket_read(action="price", ...)` returns the current quoted price.
 - `quote_market_order(...)` / `mcp__wayfinder__polymarket_read(action="quote", ...)` walks the live book and returns weighted-average execution, worst fill, and partial-fill status.
-- For quote requests: `BUY` uses pUSD, `SELL` uses shares.
+- For MCP quote/order requests: `BUY` uses `buy_amount_pusd` (pUSD spend), `SELL` uses `sell_amount_shares` (shares to sell). Do not reuse BUY spend as a share count; read `executionSummary.sharesFilled`.
 
 ## pUSD vs USDC / USDC.e (collateral mismatch)
 
@@ -31,7 +31,7 @@
 - Orders execute from a per-user **deposit wallet** (smart contract derived from owner EOA), not the owner EOA itself.
 - Positions, pUSD collateral used for orders, and conditional shares all live on the deposit wallet — querying the owner EOA’s pUSD balance won’t reflect tradeable collateral.
 - Use `adapter.deposit_wallet_address()` to get the trading address. `get_full_user_state(wallet_label=...)` reads from it automatically.
-- Funding the deposit wallet is **explicit** — `polymarket_deposit(amount=...)`. Order placement does **not** auto-fund.
+- Funding the deposit wallet is **explicit** — `polymarket_deposit_pusd(amount=...)`. Order placement does **not** auto-fund.
 - See `rules/deposit-wallet.md` for the full pattern.
 
 ## Market is “found” but not tradable

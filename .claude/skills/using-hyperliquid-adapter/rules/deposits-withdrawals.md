@@ -23,7 +23,7 @@ From Hyperliquid's Bridge2 docs:
 - **Minimum deposit is 5 USDC**; deposits below that are **lost**.
 - Deposits are typically credited **in < 1 minute**.
 - Withdrawals typically arrive **in several minutes** (often longer than deposits).
-- **Withdrawal fee is $1 USDC** — `mcp__wayfinder__hyperliquid_withdraw(amount_usdc=N)` debits `$N` from unified; Bridge2 takes $1 out of that, so Arbitrum receives `$N − 1`. Minimum `amount_usdc` is `$2`.
+- **Withdrawal fee is $1 USDC** — `mcp__wayfinder__hyperliquid_withdraw_usdc(amount_usdc=N)` debits `$N` from unified; Bridge2 takes $1 out of that, so Arbitrum receives `$N − 1`. Minimum `amount_usdc` is `$2`.
 
 Treat these as _best-effort expectations_, not guarantees. In orchestration code, always:
 
@@ -47,7 +47,7 @@ Adapter: `wayfinder_paths/adapters/hyperliquid_adapter/adapter.py`
 
 Claude Code shortcut:
 
-- Use `mcp__wayfinder__hyperliquid_deposit(wallet_label="main", amount_usdc=8)`
+- Use `mcp__wayfinder__hyperliquid_deposit_usdc(wallet_label="main", amount_usdc=8)`
 
 This hard-codes:
 
@@ -61,19 +61,19 @@ This hard-codes:
 
 Claude Code shortcut:
 
-- Use `mcp__wayfinder__hyperliquid_withdraw(wallet_label=..., amount_usdc=...)`
+- Use `mcp__wayfinder__hyperliquid_withdraw_usdc(wallet_label=..., amount_usdc=...)`
 
 ### Deposit monitoring (recommended)
 
 - Call: `HyperliquidAdapter.wait_for_deposit(address, expected_increase, timeout_s=..., poll_interval_s=...)`
 - Mechanism: confirms via the user's non-funding ledger updates (`get_user_deposits`) first; falls back to polling `get_user_state(address)` perp `marginSummary.accountValue`.
-- The `mcp__wayfinder__hyperliquid_deposit` shortcut already waits for the credit before returning.
+- The `mcp__wayfinder__hyperliquid_deposit_usdc` shortcut already waits for the credit before returning.
 
 **Under UnifiedAccount mode (the repo default — see [gotchas.md](gotchas.md)):**
 
 - Funds land in the **unified balance**, surfaced via `spotClearinghouseState` as the `USDC` coin (token=0). Perp `marginSummary.accountValue` stays `0` and is not meaningful — per HL docs, individual perp dex user states are not meaningful for unified-account users.
 - Confirmation still works correctly because the ledger fast-path runs first.
-- The `final_balance_usd` returned by `mcp__wayfinder__hyperliquid_deposit` reads perp margin, so it will report `0` even on a successful deposit. To read the actual credited balance, use `hyperliquid_get_state` and look at `spot.balances[coin="USDC"].total`.
+- The `final_balance_usd` returned by `mcp__wayfinder__hyperliquid_deposit_usdc` reads perp margin, so it will report `0` even on a successful deposit. To read the actual credited balance, use `hyperliquid_get_state` and look at `spot.balances[coin="USDC"].total`.
 
 ### Withdrawal monitoring (best-effort)
 

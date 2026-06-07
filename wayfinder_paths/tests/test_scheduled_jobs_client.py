@@ -25,75 +25,28 @@ def _make_client(handler) -> ScheduledJobsClient:
     return c
 
 
-def test_list_jobs_returns_rows(cloud_env) -> None:
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["method"] = request.method
-        captured["url"] = str(request.url)
-        captured["api_key"] = request.headers.get("X-API-KEY")
-        return httpx.Response(
-            200, json=[{"job_name": "a", "status": "active", "interval_seconds": 60}]
-        )
-
-    c = _make_client(handler)
-    rows = c.list_jobs()
-
-    assert rows == [{"job_name": "a", "status": "active", "interval_seconds": 60}]
-    assert captured["method"] == "GET"
-    assert captured["url"] == "https://api.test/opencode/instances/inst-xyz/jobs/"
-    assert captured["api_key"] == "wk_test"
-
-
-def test_list_jobs_http_error_returns_empty(cloud_env) -> None:
-    c = _make_client(lambda _req: httpx.Response(500))
-    assert c.list_jobs() == []
-
-
-def test_sync_job_puts_with_payload(cloud_env) -> None:
+def test_bulk_sync_posts_jobs(cloud_env) -> None:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["method"] = request.method
         captured["url"] = str(request.url)
         captured["body"] = request.read()
-        return httpx.Response(200, json={})
+        return httpx.Response(200, json={"synced": 1, "deleted": 0})
 
     c = _make_client(handler)
-    c.sync_job("my-job", {"status": "active", "interval_seconds": 60, "payload": {}})
-
-    assert captured["method"] == "PUT"
-    assert (
-        captured["url"] == "https://api.test/opencode/instances/inst-xyz/jobs/my-job/"
-    )
-    assert b"active" in captured["body"]
-
-
-def test_sync_job_swallows_4xx(cloud_env) -> None:
-    c = _make_client(lambda _req: httpx.Response(404))
-    c.sync_job("my-job", {"status": "active", "interval_seconds": 60, "payload": {}})
-
-
-def test_delete_job_issues_delete(cloud_env) -> None:
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["method"] = request.method
-        captured["url"] = str(request.url)
-        return httpx.Response(204)
-
-    c = _make_client(handler)
-    c.delete_job("my-job")
-
-    assert captured["method"] == "DELETE"
-    assert (
-        captured["url"] == "https://api.test/opencode/instances/inst-xyz/jobs/my-job/"
+    c.bulk_sync(
+        [{"job_name": "a", "status": "active", "interval_seconds": 60, "payload": {}}]
     )
 
+    assert captured["method"] == "POST"
+    assert captured["url"] == "https://api.test/opencode/instances/inst-xyz/jobs/sync/"
+    assert b"job_name" in captured["body"]
 
-def test_delete_job_swallows_5xx(cloud_env) -> None:
+
+def test_bulk_sync_swallows_5xx(cloud_env) -> None:
     c = _make_client(lambda _req: httpx.Response(500))
-    c.delete_job("my-job")
+    c.bulk_sync([{"job_name": "a"}])
 
 
 def test_report_run_posts_run_data(cloud_env) -> None:

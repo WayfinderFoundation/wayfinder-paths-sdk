@@ -47,7 +47,8 @@ from wayfinder_paths.core.analytics.stats import (
 from wayfinder_paths.core.analytics.stats import (
     z_from_conf as analytics_z_from_conf,
 )
-from wayfinder_paths.core.constants.contracts import HYPE_FEE_WALLET, HYPERLIQUID_BRIDGE
+from wayfinder_paths.core.constants.contracts import HYPERLIQUID_BRIDGE
+from wayfinder_paths.core.constants.hyperliquid import DEFAULT_HYPERLIQUID_BUILDER_FEE
 from wayfinder_paths.core.strategies.descriptors import (
     Complexity,
     Directionality,
@@ -116,9 +117,6 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
     # APY upgrade: always require at least this much edge even for small rotations.
     MIN_APY_UPGRADE_THRESHOLD = 0.02
     APY_UPGRADE_PAYBACK_DAYS = 21.0
-
-    HYPE_PRO_FEE: int = 30
-    DEFAULT_BUILDER_FEE: dict[str, Any] = {"b": HYPE_FEE_WALLET, "f": HYPE_PRO_FEE}
 
     INFO = StratDescriptor(
         description="""Delta-neutral basis trading on Hyperliquid that captures funding rate payments.
@@ -210,7 +208,7 @@ class BasisTradingStrategy(BasisSnapshotMixin, Strategy):
         self.deposit_amount: float = 0.0
 
         self.builder_fee: dict[str, Any] | None = self.config.get(
-            "builder_fee", self.DEFAULT_BUILDER_FEE
+            "builder_fee", dict(DEFAULT_HYPERLIQUID_BUILDER_FEE)
         )
 
         self._margin_table_cache: dict[int, list[dict[str, float]]] = {}

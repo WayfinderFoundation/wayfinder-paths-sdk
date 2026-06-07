@@ -53,19 +53,21 @@ Important clarification:
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
 
 adapter = PolymarketAdapter()
-ok, markets = await adapter.search_markets_fuzzy(query="bitcoin february 9", limit=10)
+ok, markets = await adapter.search_markets(query="bitcoin february 9", limit=10)
 await adapter.close()
 ```
 
 Most methods return `(ok: bool, data_or_error: Any | str)`.
 
-### Trading / bridging / redemption (wallet + Polygon RPC needed)
+### Trading / bridging / redemption (wallet + Polygon RPC access needed)
 
 You need:
 
 - A configured wallet. Trading uses the Polymarket deposit wallet derived from the
   owner wallet and signs through wallet callbacks.
-- A Polygon RPC URL (`strategy.rpc_urls["137"]`)
+- Polygon RPC access. In Wayfinder Shells, leave `strategy.rpc_urls` empty so the
+  SDK uses the authenticated Wayfinder RPC proxy for chain `137`. Only set
+  `strategy.rpc_urls["137"]` for an explicit local/fork override.
 - Some native Polygon gas token for owner-wallet transactions such as pUSD funding
 
 Convenient pattern used by repo scripts:
@@ -82,7 +84,7 @@ adapter = await get_adapter(PolymarketAdapter, wallet_label="main")  # loads `co
 Typical lifecycle for an automated agent:
 
 1) **Acquire pUSD** on the owner EOA (Polymarket V2 collateral). If you hold Polygon USDC or USDC.e, the adapter can prepare pUSD for you during `bridge_deposit`.
-2) **Search and select a market** (Gamma `public-search` / `markets`, filter for `enableOrderBook` + `acceptingOrders`).
+2) **Search and select a market**. Prefer MCP `polymarket_read(action="search")` for agents, or adapter `search_markets()` / `list_markets()` in scripts. Filter for `enableOrderBook` + `acceptingOrders`.
 3) **Resolve the CLOB token id** for the desired outcome (`resolve_clob_token_id`).
 4) **Fund the deposit wallet** with pUSD via `fund_deposit_wallet(amount_raw=...)`. Trading happens from a per-user smart contract wallet (deposit wallet), not the owner EOA — order placement does not auto-fund.
 5) **Set up trading** (idempotent, cached). `place_market_order` / `place_limit_order` / `place_prediction` call `ensure_trading_setup` automatically: deploy the deposit wallet if missing, grant pUSD + ConditionalTokens approvals through the relayer, derive CLOB API creds, sync balance allowances.
@@ -95,9 +97,9 @@ Typical lifecycle for an automated agent:
 
 ## Market discovery & search
 
-### Recommended search flow (fuzzy → filter → fallback to trending)
+### Recommended search flow (search → filter → fallback to trending)
 
-1) Use Gamma full-text search via `search_markets_fuzzy()` (wraps `GET /public-search` and locally re-ranks results).
+1) Use MCP compact discovery (`polymarket_read(action="search", query=...)`) or adapter `search_markets(query=...)` in scripts.
 
 Practical note: Gamma often returns `outcomes`, `outcomePrices`, and `clobTokenIds` as JSON-encoded strings. The adapter normalizes these fields into Python lists for you.
 
@@ -118,6 +120,8 @@ ok, rows = await adapter.list_markets(
     limit=50,
 )
 ```
+
+Slug rule: Polymarket event pages and market pages use different Gamma endpoints. If a slug came from an event page, call `get_event_by_slug()` first, then select one contained market/outcome. Use `get_market_by_slug()` only for confirmed market slugs.
 
 ### Outcome selection (“YES/NO” vs multi-outcome)
 
@@ -241,7 +245,7 @@ Notes:
 - If the result has `method="brap_then_wrap"`, the adapter swapped Polygon USDC to USDC.e via BRAP, then wrapped USDC.e into pUSD.
 - If the result has `method="unwrap_then_brap"`, the adapter unwrapped pUSD into USDC.e, then swapped USDC.e to Polygon USDC via BRAP.
 - If the result has `method="polymarket_bridge"`, the flow is asynchronous and uses the Polymarket bridge deposit/withdraw path; use `bridge_status(address=...)` and/or poll balances.
-- The MCP no longer exposes bridge-style actions; route collateral in/out of pUSD via the BRAP swap MCP tools (`onchain_quote_swap` + `core_execute(kind="swap", to_token="polygon_0xC011a7…")`).
+- The MCP no longer exposes bridge-style actions; route collateral in/out of pUSD via the BRAP swap MCP tools (`onchain_quote_swap` + `onchain_swap(to_token="polygon_0xC011a7…")`).
 
 ### Option B: Polymarket Bridge conversion (fallback)
 
@@ -298,6 +302,11 @@ Or use the lower-level market order method (BUY uses collateral amount; SELL use
 ok, res = await adapter.place_market_order(token_id=token_id, side="BUY", amount=2.0)
 ```
 
+The lower-level adapter keeps native CLOB semantics where `amount` is overloaded:
+BUY `amount` is collateral spend, while SELL `amount` is shares. Agent-facing MCP
+tools avoid this ambiguity: use `buy_amount_pusd` for BUY and
+`sell_amount_shares` for SELL, then read the normalized `executionSummary`.
+
 ### 3) Cash out (sell shares)
 
 ```python
@@ -336,7 +345,7 @@ Collateral lands on the deposit wallet — use `withdraw_deposit_wallet()` to mo
 - **Always filter for tradable markets**: check `enableOrderBook`, `clobTokenIds`, `acceptingOrders`, `active`, `closed`.
 - **Use event slugs for “sets of markets”**: for MVP-style questions, `get_event_by_slug()` returns all the markets in that event; then iterate and pull time series per outcome.
 - **For daily markets**: search by date string (e.g. “February 9”), then locally filter slugs containing that date.
-- **Rerank locally for better fuzziness**: run multiple queries (normalized variants), then rerank by similarity over `question`, `slug`, and event title (the adapter does basic reranking via `search_markets_fuzzy(rerank=True)`).
+- **Rerank locally for better fuzziness**: run multiple supported `search_markets()` queries with normalized variants, then rerank by similarity over `question`, `slug`, and event title.
 - **Find movers**: pull `prices-history` for each candidate token over a window (24h/7d/max) and compute deltas; combine with Gamma’s `volume24hr`/`liquidityNum` to avoid illiquid noise.
 - **Binary markets**: prefer pulling both outcome token series; if you only pull one, `(1 - p)` is an approximation for the other side (spread/fees can make it imperfect).
 - **Use Data API for “what happened”**: `get_positions`, `get_trades`, and `get_activity` are more direct than reconstructing positions from on-chain events.
@@ -349,7 +358,7 @@ Status snapshot:
 
 Market discovery (Gamma):
 
-- `list_markets`, `list_events`, `get_market_by_slug`, `get_event_by_slug`, `public_search`, `search_markets_fuzzy`
+- `search_markets`, `list_markets`, `list_events`, `get_market_by_slug`, `get_event_by_slug`
 
 Market data (CLOB):
 

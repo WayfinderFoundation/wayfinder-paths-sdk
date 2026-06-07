@@ -10,11 +10,30 @@ from wayfinder_paths.core.clients.PolymarketClient import (
     PolymarketStatus,
 )
 from wayfinder_paths.core.config import CONFIG
-from wayfinder_paths.core.constants.polymarket import POLYGON_CHAIN_ID
+from wayfinder_paths.core.constants.polymarket import (
+    POLYGON_CHAIN_ID,
+    POLYGON_P_USDC_PROXY_ADDRESS,
+)
+from wayfinder_paths.core.utils.tokens import get_token_balance
 from wayfinder_paths.core.utils.wallets import (
     get_wallet_sign_hash_callback,
     get_wallet_sign_typed_data_callback,
     get_wallet_signing_callback,
+)
+from wayfinder_paths.mcp.polymarket_order import (
+    normalize_pm_execution_summary,
+    normalize_pm_side,
+    validate_pm_market_order_size,
+)
+from wayfinder_paths.mcp.polymarket_summary import (
+    DEFAULT_CANDIDATE_LIMIT,
+    compact_candidates,
+    compact_event,
+    compact_event_groups,
+    compact_market_detail,
+    compact_order_book,
+    compact_truncation,
+    next_suggested_calls,
 )
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -28,85 +47,12 @@ from wayfinder_paths.mcp.utils import (
     throw_if_not_number,
 )
 
-_TRIM_MARKET_FIELDS: set[str] = {
-    "id",
-    "questionID",
-    "image",
-    "icon",
-    "resolutionSource",
-    "startDate",
-    "startDateIso",
-    "createdAt",
-    "updatedAt",
-    "marketMakerAddress",
-    "new",
-    "featured",
-    "submitted_by",
-    "archived",
-    "resolvedBy",
-    "restricted",
-    "groupItemThreshold",
-    "enableOrderBook",
-    "hasReviewedDates",
-    "volumeNum",
-    "liquidityNum",
-    "volume1wk",
-    "volume1mo",
-    "volume1yr",
-    "volume24hrClob",
-    "volume1wkClob",
-    "volume1moClob",
-    "volume1yrClob",
-    "volumeClob",
-    "liquidityClob",
-    "umaBond",
-    "umaReward",
-    "umaResolutionStatus",
-    "umaResolutionStatuses",
-    "customLiveness",
-    "negRisk",
-    "negRiskMarketID",
-    "negRiskRequestID",
-    "ready",
-    "funded",
-    "acceptingOrdersTimestamp",
-    "cyom",
-    "competitive",
-    "pagerDutyNotificationEnabled",
-    "approved",
-    "clobRewards",
-    "rewardsMinSize",
-    "rewardsMaxSpread",
-    "automaticallyActive",
-    "clearBookOnStart",
-    "seriesColor",
-    "showGmpSeries",
-    "showGmpOutcome",
-    "manualActivation",
-    "negRiskOther",
-    "pendingDeployment",
-    "deploying",
-    "deployingTimestamp",
-    "rfqEnabled",
-    "holdingRewardsEnabled",
-    "feesEnabled",
-    "requiresTranslation",
-    "oneWeekPriceChange",
-    "oneMonthPriceChange",
-    "oneHourPriceChange",
-}
 
-
-def _trim_market(m: dict[str, Any]) -> dict[str, Any]:
-    out = {k: v for k, v in m.items() if k not in _TRIM_MARKET_FIELDS}
-    desc = out.get("description") or ""
-    if len(desc) > 300:
-        out["description"] = desc[:300] + "…"
-    if "events" in out:
-        evt = out.pop("events")
-        if evt:
-            out["_event"] = {"slug": evt[0].get("slug"), "title": evt[0].get("title")}
-    return out
+def _adapter_error(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        message = str(payload.get("message") or payload.get("error") or payload)
+        return err(str(payload.get("code") or "error"), message, payload)
+    return err("error", str(payload))
 
 
 def _annotate(
@@ -260,6 +206,8 @@ async def polymarket_read(
     sort: PolymarketSort = "trending",
     status: PolymarketStatus = "active",
     offset: int = 0,
+    summary: bool = True,
+    candidate_limit: int = DEFAULT_CANDIDATE_LIMIT,
     # market/event
     market_slug: str | None = None,
     event_slug: str | None = None,
@@ -267,8 +215,8 @@ async def polymarket_read(
     # clob data
     token_id: str | None = None,
     side: Literal["BUY", "SELL"] = "BUY",
-    amount_collateral: float | None = None,
-    shares: float | None = None,
+    buy_amount_pusd: float | None = None,
+    sell_amount_shares: float | None = None,
     interval: str | None = "1d",
     start_ts: int | None = None,
     end_ts: int | None = None,
@@ -285,10 +233,14 @@ async def polymarket_read(
         `status`: active|closed|all.
       - `trending`: list markets sorted by 24h volume (`limit`, `offset`).
       - `get_market` / `get_event`: fetch by `market_slug` / `event_slug`.
-      - `quote`: market-order quote. BUY needs `amount_collateral` (USDC), SELL needs `shares`.
+        These discovery actions return compact candidates by default; pass
+        `summary=False` only when debugging raw Gamma/backend payloads.
+      - `quote`: market-order quote. BUY needs `buy_amount_pusd`; SELL needs
+        `sell_amount_shares`. Results include a normalized execution summary.
         Provide `market_slug`+`outcome` OR `token_id`.
       - `price`: best `BUY`/`SELL` price for a `token_id`.
-      - `order_book`: full book for a `token_id`.
+      - `order_book`: compact book summary for a `token_id`; pass `summary=False`
+        for the raw full book.
       - `price_history`: time series. `interval` ("1h"/"6h"/"1d"/"1w"/"max"), `start_ts`/`end_ts`
         (unix sec), `fidelity` (denser sampling for tight buckets).
       - `bridge_status`: pUSD bridge state for an account.
@@ -351,7 +303,24 @@ async def polymarket_read(
                     status=status,
                 )
                 if not ok_rows:
-                    return err("error", str(rows))
+                    return _adapter_error(rows)
+                if summary:
+                    candidates, truncation = compact_candidates(rows, candidate_limit)
+                    event_groups = compact_event_groups(rows)
+                    return ok(
+                        {
+                            "action": action,
+                            "query": q,
+                            "summaryMode": True,
+                            "candidates": candidates,
+                            "eventGroups": event_groups,
+                            "nextSuggestedCalls": next_suggested_calls(
+                                event_groups=event_groups,
+                                truncation=truncation,
+                            ),
+                            "truncation": truncation,
+                        }
+                    )
                 return ok({"action": action, "query": q, "markets": rows})
 
             case "trending":
@@ -363,41 +332,76 @@ async def polymarket_read(
                     ascending=False,
                 )
                 if not ok_rows:
-                    return err("error", str(rows))
-                return ok(
-                    {"action": action, "markets": [_trim_market(m) for m in rows]}
-                )
+                    return _adapter_error(rows)
+                if summary:
+                    candidates, truncation = compact_candidates(rows, candidate_limit)
+                    event_groups = compact_event_groups(rows)
+                    return ok(
+                        {
+                            "action": action,
+                            "summaryMode": True,
+                            "candidates": candidates,
+                            "eventGroups": event_groups,
+                            "nextSuggestedCalls": next_suggested_calls(
+                                event_groups=event_groups,
+                                truncation=truncation,
+                            ),
+                            "truncation": truncation,
+                        }
+                    )
+                return ok({"action": action, "markets": rows})
 
             case "get_market":
                 slug = throw_if_empty_str("market_slug is required", market_slug)
                 ok_m, m = await adapter.get_market_by_slug(slug)
                 if not ok_m:
-                    return err("error", str(m))
+                    return _adapter_error(m)
+                if summary:
+                    return ok(
+                        {
+                            "action": action,
+                            "summaryMode": True,
+                            "market": compact_market_detail(m),
+                            "truncation": compact_truncation(1, 1),
+                        }
+                    )
                 return ok({"action": action, "market": m})
 
             case "get_event":
                 slug = throw_if_empty_str("event_slug is required", event_slug)
                 ok_e, e = await adapter.get_event_by_slug(slug)
                 if not ok_e:
-                    return err("error", str(e))
+                    return _adapter_error(e)
+                if summary:
+                    markets = [m for m in e.get("markets", []) if isinstance(m, dict)]
+                    candidates, truncation = compact_candidates(
+                        markets,
+                        candidate_limit,
+                        event_slug_override=slug,
+                        sort_open_first=True,
+                    )
+                    return ok(
+                        {
+                            "action": action,
+                            "summaryMode": True,
+                            "event": compact_event(e),
+                            "candidates": candidates,
+                            "nextSuggestedCalls": next_suggested_calls(
+                                event_slug_value=slug,
+                                truncation=truncation,
+                            ),
+                            "truncation": truncation,
+                        }
+                    )
                 return ok({"action": action, "event": e})
 
             case "quote":
-                if side == "BUY":
-                    throw_if_none(
-                        "amount_collateral is required for BUY quote", amount_collateral
-                    )
-                    quote_amount = throw_if_not_number(
-                        "amount_collateral must be a number", amount_collateral
-                    )
-                else:
-                    throw_if_none("shares is required for SELL quote", shares)
-                    quote_amount = throw_if_not_number(
-                        "shares must be a number", shares
-                    )
-
-                if quote_amount <= 0:
-                    raise ValueError("quote amount must be positive")
+                side = normalize_pm_side(side)
+                sizing = validate_pm_market_order_size(
+                    side=side,
+                    buy_amount_pusd=buy_amount_pusd,
+                    sell_amount_shares=sell_amount_shares,
+                )
 
                 slug = str(market_slug or "").strip()
                 if slug:
@@ -405,7 +409,7 @@ async def polymarket_read(
                         market_slug=slug,
                         outcome=outcome,
                         side=side,
-                        amount=quote_amount,
+                        amount=sizing["adapter_amount"],
                     )
                 else:
                     tid = str(token_id or "").strip()
@@ -414,16 +418,25 @@ async def polymarket_read(
                     ok_q, q = await adapter.quote_market_order(
                         token_id=tid,
                         side=side,
-                        amount=quote_amount,
+                        amount=sizing["adapter_amount"],
                     )
 
                 if not ok_q:
-                    return err("error", str(q))
+                    return _adapter_error(q)
+                execution_summary = normalize_pm_execution_summary(
+                    side=side,
+                    sizing=sizing,
+                    quote=q if isinstance(q, dict) else None,
+                )
                 return ok(
                     {
                         "action": action,
                         "token_id": q["token_id"],
                         "side": side,
+                        "sizing_kind": sizing["sizing_kind"],
+                        "buy_amount_pusd": sizing["buy_amount_pusd"],
+                        "sell_amount_shares": sizing["sell_amount_shares"],
+                        "executionSummary": execution_summary,
                         "quote": q,
                     }
                 )
@@ -432,14 +445,23 @@ async def polymarket_read(
                 tid = throw_if_empty_str("token_id is required", token_id)
                 ok_p, p = await adapter.get_price(token_id=tid, side=side)
                 if not ok_p:
-                    return err("error", str(p))
+                    return _adapter_error(p)
                 return ok({"action": action, "token_id": tid, "side": side, "price": p})
 
             case "order_book":
                 tid = throw_if_empty_str("token_id is required", token_id)
                 ok_b, b = await adapter.get_order_book(token_id=tid)
                 if not ok_b:
-                    return err("error", str(b))
+                    return _adapter_error(b)
+                if summary:
+                    return ok(
+                        {
+                            "action": action,
+                            "token_id": tid,
+                            "summaryMode": True,
+                            "book": compact_order_book(b),
+                        }
+                    )
                 return ok({"action": action, "token_id": tid, "book": b})
 
             case "price_history":
@@ -452,13 +474,13 @@ async def polymarket_read(
                     fidelity=fidelity,
                 )
                 if not ok_h:
-                    return err("error", str(h))
+                    return _adapter_error(h)
                 return ok({"action": action, "token_id": tid, "history": h})
 
             case "bridge_status":
                 ok_s, s = await adapter.bridge_status(address=str(acct))
                 if not ok_s:
-                    return err("error", str(s))
+                    return _adapter_error(s)
                 return ok({"action": action, "account": acct, "status": s})
 
             case "open_orders":
@@ -473,7 +495,7 @@ async def polymarket_read(
                 # Open orders require Level-2 auth and the signing wallet in config.
                 ok_o, orders = await adapter.list_open_orders(token_id=token_id)
                 if not ok_o:
-                    return err("error", str(orders))
+                    return _adapter_error(orders)
                 return ok(
                     {
                         "action": action,
@@ -490,15 +512,14 @@ async def polymarket_read(
 
 
 @catch_errors
-async def polymarket_deposit(
+async def polymarket_deposit_pusd(
     *,
     wallet_label: str,
     amount: float,
 ) -> dict[str, Any]:
     """Move pUSD from the owner EOA into the derived Polymarket V2 deposit wallet.
 
-    Required before any trade — Polymarket settles from the deposit wallet, not the EOA.
-    Direct Polygon ERC20 transfer; owner pays POL gas.
+    Required before any trade — Polymarket settles from the deposit wallet, not the EOA. Direct Polygon ERC20 transfer; owner pays POL gas.
 
     Args:
         wallet_label: Owner EOA wallet.
@@ -509,9 +530,26 @@ async def polymarket_deposit(
     amt = throw_if_not_number("amount must be a number", amount)
     adapter, sender = await _make_polymarket_adapter(wallet_label)
     try:
-        ok_fund, res = await adapter.fund_deposit_wallet(
-            amount_raw=int(Decimal(str(amt)) * Decimal(1_000_000))
+        amount_raw = int(Decimal(str(amt)) * Decimal(1_000_000))
+        pusd_balance = await get_token_balance(
+            POLYGON_P_USDC_PROXY_ADDRESS,
+            POLYGON_CHAIN_ID,
+            sender,
+            block_identifier="latest",
         )
+        if pusd_balance < amount_raw:
+            return err(
+                "insufficient_pusd",
+                f"Owner EOA has {pusd_balance / 1_000_000:.6f} pUSD, need "
+                f"{amt:.6f}. polymarket_deposit_pusd only transfers pUSD on Polygon "
+                "— wrap USDC.e / native USDC to pUSD first.",
+                {
+                    "owner": sender,
+                    "have_raw": pusd_balance,
+                    "need_raw": amount_raw,
+                },
+            )
+        ok_fund, res = await adapter.fund_deposit_wallet(amount_raw=amount_raw)
         effects = [
             {
                 "type": "polymarket",
@@ -543,7 +581,7 @@ async def polymarket_deposit(
 
 
 @catch_errors
-async def polymarket_withdraw(
+async def polymarket_withdraw_pusd(
     *,
     wallet_label: str,
     amount: float | None = None,
@@ -608,14 +646,14 @@ async def polymarket_place_market_order(
     market_slug: str | None = None,
     outcome: str | int = "YES",
     token_id: str | None = None,
-    amount_collateral: float | None = None,
-    shares: float | None = None,
+    buy_amount_pusd: float | None = None,
+    sell_amount_shares: float | None = None,
     max_slippage_pct: float | None = None,
 ) -> dict[str, Any]:
     """Place a Polymarket market order (FOK limit at a slippage-derived cap).
 
-    Provide `market_slug`+`outcome` OR `token_id`. BUY needs `amount_collateral` (pUSD);
-    SELL needs `shares`. The adapter quotes the book and signs an FOK limit at
+    Provide `market_slug`+`outcome` OR `token_id`. BUY needs `buy_amount_pusd`;
+    SELL needs `sell_amount_shares`. The adapter quotes the book and signs an FOK limit at
     `worst_price * (1 ± max_slippage_pct/100)` (default 2%) — order is killed if the
     book moves past the cap.
 
@@ -625,41 +663,58 @@ async def polymarket_place_market_order(
         market_slug: Polymarket market slug; used with `outcome` to resolve token_id.
         outcome: `"YES"`/`"NO"` or numeric index (default `"YES"`).
         token_id: Direct CLOB token id; alternative to market_slug + outcome.
-        amount_collateral: pUSD to spend (required for BUY).
-        shares: Shares to sell (required for SELL).
+        buy_amount_pusd: pUSD to spend (required for BUY).
+        sell_amount_shares: Shares to sell (required for SELL).
         max_slippage_pct: Slippage cap as a percent (e.g. 2.0). None = adapter default (2%).
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
-    if side == "BUY":
-        throw_if_none("amount_collateral is required for BUY", amount_collateral)
-    else:
-        throw_if_none("shares is required for SELL", shares)
+    side = normalize_pm_side(side)
+    sizing = validate_pm_market_order_size(
+        side=side,
+        buy_amount_pusd=buy_amount_pusd,
+        sell_amount_shares=sell_amount_shares,
+    )
 
     adapter, sender = await _make_polymarket_adapter(wallet_label)
+    resolved_outcome = str(outcome) if market_slug else None
     try:
         if market_slug:
             if side == "BUY":
                 ok_trade, res = await adapter.place_prediction(
                     market_slug=str(market_slug),
                     outcome=outcome,
-                    amount_collateral=float(amount_collateral),
+                    amount_collateral=sizing["adapter_amount"],
                     max_slippage_pct=max_slippage_pct,
                 )
             else:
                 ok_trade, res = await adapter.cash_out_prediction(
                     market_slug=str(market_slug),
                     outcome=outcome,
-                    shares=float(shares),
+                    shares=sizing["adapter_amount"],
                     max_slippage_pct=max_slippage_pct,
                 )
         else:
             tid = throw_if_empty_str("token_id or market_slug is required", token_id)
+            ok_tm, market = await adapter.get_market_by_token_id(token_id=tid)
+            if ok_tm:
+                resolved_outcome = adapter.resolve_outcome_from_token_id(
+                    market=market, token_id=tid
+                )
             ok_trade, res = await adapter.place_market_order(
                 token_id=tid,
                 side=side,
-                amount=float(amount_collateral if side == "BUY" else shares),
+                amount=sizing["adapter_amount"],
                 max_slippage_pct=max_slippage_pct,
             )
+        raw = res if isinstance(res, dict) else {"result": res}
+        raw_quote = raw.get("quote") if isinstance(raw.get("quote"), dict) else None
+        execution_summary = normalize_pm_execution_summary(
+            side=side,
+            sizing=sizing,
+            quote=raw_quote,
+            raw=raw,
+            failed=not ok_trade and raw_quote is None,
+        )
         effects = [
             {
                 "type": "polymarket",
@@ -678,12 +733,11 @@ async def polymarket_place_market_order(
             details={
                 "market_slug": str(market_slug) if market_slug else None,
                 "token_id": str(token_id) if token_id else None,
-                "outcome": str(outcome),
+                "outcome": resolved_outcome,
                 "side": side,
-                "amount_collateral": float(amount_collateral)
-                if amount_collateral is not None
-                else None,
-                "shares": float(shares) if shares is not None else None,
+                "sizing_kind": sizing["sizing_kind"],
+                "buy_amount_pusd": sizing["buy_amount_pusd"],
+                "sell_amount_shares": sizing["sell_amount_shares"],
                 "max_slippage_pct": float(max_slippage_pct)
                 if max_slippage_pct is not None
                 else None,
@@ -696,16 +750,17 @@ async def polymarket_place_market_order(
                 "address": sender,
                 "market_slug": str(market_slug) if market_slug else None,
                 "token_id": str(token_id) if token_id else None,
-                "outcome": str(outcome),
+                "outcome": resolved_outcome,
                 "side": side,
-                "amount_collateral": float(amount_collateral)
-                if amount_collateral is not None
-                else None,
-                "shares": float(shares) if shares is not None else None,
+                "sizing_kind": sizing["sizing_kind"],
+                "buy_amount_pusd": sizing["buy_amount_pusd"],
+                "sell_amount_shares": sizing["sell_amount_shares"],
                 "max_slippage_pct": float(max_slippage_pct)
                 if max_slippage_pct is not None
                 else None,
+                "executionSummary": execution_summary,
                 "effects": effects,
+                "raw": raw,
             }
         )
     finally:
@@ -716,31 +771,59 @@ async def polymarket_place_market_order(
 async def polymarket_place_limit_order(
     *,
     wallet_label: str,
-    token_id: str,
     side: Literal["BUY", "SELL"],
     price: float,
     size: float,
+    market_slug: str | None = None,
+    outcome: str | int = "YES",
+    token_id: str | None = None,
     post_only: bool = False,
 ) -> dict[str, Any]:
-    """Place a Polymarket limit order on a specific CLOB token id.
+    """Place a Polymarket limit order.
 
+    Provide `market_slug`+`outcome` OR `token_id` (mirrors `polymarket_place_market_order`).
     `post_only=True` enforces maker-only — the order is rejected if it would cross.
 
     Args:
         wallet_label: Owner EOA wallet (deposit wallet must already be funded).
-        token_id: CLOB token id (from market.yesTokenId / .noTokenId).
         side: `"BUY"` or `"SELL"`.
         price: Limit price in [0, 1] (probability).
         size: Shares.
+        market_slug: Polymarket market slug; used with `outcome` to resolve token_id.
+        outcome: `"YES"`/`"NO"` or numeric index (default `"YES"`).
+        token_id: Direct CLOB token id; alternative to market_slug + outcome.
         post_only: Reject if order would cross the book.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
-    tid = throw_if_empty_str("token_id is required", token_id)
+    side = normalize_pm_side(side)
     throw_if_none("price is required", price)
     throw_if_none("size is required", size)
 
     adapter, sender = await _make_polymarket_adapter(wallet_label)
+    resolved_outcome: str | None = None
     try:
+        if market_slug:
+            ok_m, market = await adapter.get_market_by_slug(str(market_slug))
+            if not ok_m:
+                return err(
+                    "not_found",
+                    market if isinstance(market, str) else "market lookup failed",
+                )
+            ok_tid, tid_or_err = adapter.resolve_clob_token_id(
+                market=market, outcome=outcome
+            )
+            if not ok_tid:
+                return err("invalid_request", tid_or_err)
+            tid = tid_or_err
+            resolved_outcome = str(outcome)
+        else:
+            tid = throw_if_empty_str("token_id or market_slug is required", token_id)
+            ok_tm, market = await adapter.get_market_by_token_id(token_id=tid)
+            if ok_tm:
+                resolved_outcome = adapter.resolve_outcome_from_token_id(
+                    market=market, token_id=tid
+                )
+
         ok_lo, res = await adapter.place_limit_order(
             token_id=tid,
             side=side,
@@ -764,7 +847,9 @@ async def polymarket_place_limit_order(
             status=status,
             chain_id=POLYGON_CHAIN_ID,
             details={
+                "market_slug": str(market_slug) if market_slug else None,
                 "token_id": tid,
+                "outcome": resolved_outcome,
                 "side": side,
                 "price": float(price),
                 "size": float(size),
@@ -776,7 +861,9 @@ async def polymarket_place_limit_order(
                 "status": status,
                 "wallet_label": wallet_label,
                 "address": sender,
+                "market_slug": str(market_slug) if market_slug else None,
                 "token_id": tid,
+                "outcome": resolved_outcome,
                 "side": side,
                 "price": float(price),
                 "size": float(size),

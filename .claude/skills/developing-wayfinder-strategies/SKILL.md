@@ -22,3 +22,11 @@ Follow the repo-specific workflow and patterns in these rule docs:
 - [rules/reference-strategies.md](rules/reference-strategies.md) - **Canonical reference strategies to copy/adapt from** (perps, etc.)
 
 When designing a new strategy, **start from the canonical reference for that style** — see [rules/reference-strategies.md](rules/reference-strategies.md). It shows file layout, signal/decide separation, snapshot conventions, and reconcile-friendly patterns the SDK expects.
+
+## On Shells Instance -- IMPORTANT
+
+Only `.wayfinder_runs/` persists across restarts, you can use `just create-strategy` — but this writes to `wayfinder_paths/strategies/` which won't survive. Move the strategy files under `$WAYFINDER_RUNS_DIR/strategies/<name>/`:
+
+
+`core_run_strategy`, `core_get_adapters_and_strategies`, and `python -m wayfinder_paths.run_strategy <name>` all auto-resolve runs-dir strategies via the shared loader — no invocation changes.
+

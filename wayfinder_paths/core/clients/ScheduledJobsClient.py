@@ -30,38 +30,16 @@ class ScheduledJobsClient:
             hdrs["X-API-KEY"] = api_key
         return hdrs
 
-    def list_jobs(self) -> list[dict[str, Any]]:
+    def bulk_sync(self, jobs: list[dict[str, Any]]) -> None:
         try:
-            resp = self._client.get(f"{self._base_url()}/", headers=self._headers())
-            resp.raise_for_status()
-            return resp.json()
-        except Exception:
-            logger.opt(exception=True).warning("Failed to list jobs from backend")
-            return []
-
-    def sync_job(self, job_name: str, data: dict[str, Any]) -> None:
-        try:
-            resp = self._client.put(
-                f"{self._base_url()}/{job_name}/",
-                json=data,
+            resp = self._client.post(
+                f"{self._base_url()}/sync/",
+                json={"jobs": jobs},
                 headers=self._headers(),
             )
             resp.raise_for_status()
         except Exception:
-            logger.opt(exception=True).warning(
-                f"Failed to sync job {job_name} to backend"
-            )
-
-    def delete_job(self, job_name: str) -> None:
-        try:
-            resp = self._client.delete(
-                f"{self._base_url()}/{job_name}/", headers=self._headers()
-            )
-            resp.raise_for_status()
-        except Exception:
-            logger.opt(exception=True).warning(
-                f"Failed to delete job {job_name} from backend"
-            )
+            logger.opt(exception=True).warning("Failed to bulk-sync jobs to backend")
 
     def report_run(self, job_name: str, run_data: dict[str, Any]) -> None:
         try:

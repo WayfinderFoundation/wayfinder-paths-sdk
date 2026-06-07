@@ -54,15 +54,15 @@ Treat this as a **fund-moving operation** and require explicit confirmation.
 ## Claude Code MCP tools (minimal surface)
 
 For interactive use in Claude Code, this repo exposes a small MCP surface:
-- Read-only: `mcp__wayfinder__hyperliquid_get_state` (user state), `mcp__wayfinder__hyperliquid_search_mid_prices`, `mcp__wayfinder__hyperliquid_search_market`
+- Read-only: `mcp__wayfinder__hyperliquid_get_state` (account state), `mcp__wayfinder__hyperliquid_get_trade_asset` (selected perp/HIP-3 capacity), `mcp__wayfinder__hyperliquid_search_mid_prices`, `mcp__wayfinder__hyperliquid_search_market`
 - Writes — each action is its own tool:
   - `mcp__wayfinder__hyperliquid_place_market_order` — IOC market order, perp / spot / HIP-4 (`#<encoding>`)
   - `mcp__wayfinder__hyperliquid_place_limit_order` — GTC limit order, perp / spot / HIP-4 (`#<encoding>`)
   - `mcp__wayfinder__hyperliquid_place_trigger_order` — stop-loss / take-profit, perp only (see below)
   - `mcp__wayfinder__hyperliquid_cancel_order`
   - `mcp__wayfinder__hyperliquid_update_leverage`
-  - `mcp__wayfinder__hyperliquid_deposit`
-  - `mcp__wayfinder__hyperliquid_withdraw`
+  - `mcp__wayfinder__hyperliquid_deposit_usdc`
+  - `mcp__wayfinder__hyperliquid_withdraw_usdc`
 
 ### `hyperliquid_place_trigger_order` via MCP
 
@@ -174,14 +174,13 @@ hyperliquid_place_limit_order(
 
 If the user wants **immediate execution** (not a reusable strategy), prefer the MCP tools:
 - `mcp__wayfinder__hyperliquid_place_market_order` / `_place_limit_order` / `_place_trigger_order` / `_cancel_order` / `_update_leverage` / `_deposit` / `_withdraw`
-- `mcp__wayfinder__core_execute` for on-chain sends and swaps
+- `mcp__wayfinder__onchain_swap` / `mcp__wayfinder__onchain_send` for on-chain swaps and transfers
 
-### `mcp__wayfinder__core_execute` examples
+### `mcp__wayfinder__onchain_*` examples
 
 **Send tokens to another address:**
 ```
-mcp__wayfinder__core_execute(
-    kind="send",
+mcp__wayfinder__onchain_send(
     wallet_label="main",
     amount="25",
     token="usd-coin-arbitrum",
@@ -191,8 +190,7 @@ mcp__wayfinder__core_execute(
 
 **Swap tokens:**
 ```
-mcp__wayfinder__core_execute(
-    kind="swap",
+mcp__wayfinder__onchain_swap(
     wallet_label="main",
     amount="100",
     from_token="usd-coin-arbitrum",
@@ -203,7 +201,7 @@ mcp__wayfinder__core_execute(
 
 **Hyperliquid deposit (Bridge2):**
 ```
-mcp__wayfinder__hyperliquid_deposit(
+mcp__wayfinder__hyperliquid_deposit_usdc(
     wallet_label="main",
     amount_usdc=8
 )

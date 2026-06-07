@@ -17,6 +17,8 @@ from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JOB_TYPE_STRATEGY
 from wayfinder_paths.runner.lifecycle import ensure_daemon_started, try_status
 from wayfinder_paths.runner.paths import RunnerPaths, get_runner_paths
 
+RunnerReadAction = Literal["daemon_status", "status", "job_runs", "run_report"]
+
 
 def _default_sock_path() -> Path:
     paths = get_runner_paths(repo_root=repo_root())
@@ -51,6 +53,7 @@ async def core_runner(
         "update_job",
         "pause_job",
         "resume_job",
+        "stop_job",
         "delete_job",
         "run_once",
         "job_runs",
@@ -72,6 +75,7 @@ async def core_runner(
     limit: int | None = None,
     run_id: int | None = None,
     tail_bytes: int | None = None,
+    sig: Literal["TERM", "INT", "KILL"] | None = None,
     # Strategy payload fields
     strategy: str | None = None,
     strategy_action: str | None = None,
@@ -82,17 +86,16 @@ async def core_runner(
     script_path: str | None = None,
     args: list[str] | None = None,
     env: dict[str, str] | None = None,
-    notify_session_on_success: bool = False,
+    always_notify_session_on_job_completion: bool = False,
     debug: bool = False,
 ) -> dict[str, Any]:
-    """Control the local runner daemon — the only sanctioned scheduler for recurring jobs.
-
-    All scheduled/recurring tasks MUST go through this tool. Don't use cron, systemd timers,
+    """Control the local runner daemon — the only sanctioned scheduler for recurring jobs. All scheduled/recurring tasks MUST go through this tool. Don't use cron, systemd timers,
     or background loops. The daemon owns persistence, failure tracking, timeouts, and (on
-    Wayfinder Shells) backend job/run sync. Routine successful scheduled runs sync to the
-    backend but do not post chat `job_result` messages unless `notify_session_on_success`
-    is explicitly true or the script emits a `WAYFINDER_JOB_RESULT {...}` marker; failures
-    still post to the session.
+    Wayfinder Shells) backend job/run sync.
+
+    To minimize conversation noise, use always_notify_session_on_job_completion=False. By default, failures always post to the chat session. Successes are silent unless
+    `always_notify_session_on_job_completion` is true or the script emits a
+    `WAYFINDER_JOB_RESULT {...}` line.
 
     Lifecycle actions:
       - `daemon_status`: lightweight probe — has the socket, is anyone listening.
@@ -107,7 +110,8 @@ async def core_runner(
           * `script` — pass `script_path` (inside `.wayfinder_runs/`), optional `args`, `env`,
             `timeout_seconds`.
       - `update_job`: mutate an existing job's payload / interval.
-      - `pause_job` / `resume_job` / `delete_job`: by `name`.
+      - `pause_job` / `resume_job` / `stop_job` / `delete_job`: by `name`.
+        `stop_job` sends `sig` (`TERM`, `INT`, or `KILL`) to a currently running worker.
       - `run_once`: trigger an immediate run of `name` (off the schedule).
 
     Inspection actions:
@@ -119,8 +123,9 @@ async def core_runner(
       - If `add_job`, `delete_job`, `update_job`, or `run_once` times out at the
         caller, treat the mutation result as unknown and inspect `status`,
         `job_runs`, or `run_report` before retrying.
-      - Generated monitor scripts should keep durable state under the runner
-        directory or `.wayfinder_runs/state`, not `/tmp`.
+      - Generated monitor scripts should store durable state under the runner
+        directory or `.wayfinder_runs/state`. Do not store monitor state in
+        `/tmp`; restart-pruned state can duplicate alerts.
       - First/seed runs should not send external alerts unless explicitly
         requested. Position-bound monitors should verify live side, size,
         leverage/mode, and notional before alerting.
@@ -129,10 +134,7 @@ async def core_runner(
 
     Args:
         sock_path: Override the daemon socket (default: standard runner location).
-        notify_session_on_success: Post successful runs into chat. Defaults false to keep
-            routine scheduled checks quiet; use script-level `shells_notify`/`NotifyClient`
-            for owner alerts or print `WAYFINDER_JOB_RESULT {"summary": "...",
-            "instructions": "..."}` for conditional chat callbacks.
+        always_notify_session_on_job_completion: Additionally, all successful runs are sent into chat. Defaults false to keep routine scheduled checks quiet.
         debug: Verbose response payload for troubleshooting.
     """
 
@@ -361,8 +363,8 @@ async def core_runner(
                     if not isinstance(env, dict):
                         return err("invalid_request", "env must be an object")
                     job_payload["env"] = {str(k): str(v) for k, v in env.items()}
-                if notify_session_on_success:
-                    job_payload["notify_session_on_success"] = True
+                if always_notify_session_on_job_completion:
+                    job_payload["always_notify_session_on_job_completion"] = True
 
                 if job_type == JOB_TYPE_STRATEGY:
                     strat = (strategy or "").strip()
@@ -452,6 +454,19 @@ async def core_runner(
                     "runner_error", str(resp.get("error") or "unknown"), details=resp
                 )
 
+            case "stop_job":
+                if not name:
+                    return err("invalid_request", "name is required for stop_job")
+                resp = client.call(
+                    "stop_job",
+                    {"name": str(name).strip(), "sig": str(sig or "TERM").upper()},
+                )
+                if resp.get("ok"):
+                    return ok(resp.get("result"))
+                return err(
+                    "runner_error", str(resp.get("error") or "unknown"), details=resp
+                )
+
             case "delete_job":
                 if not name:
                     return err("invalid_request", "name is required for delete_job")
@@ -480,3 +495,36 @@ async def core_runner(
             str(exc),
             details={"sock_path": str(client.sock_path)},
         )
+
+
+@catch_errors
+async def core_runner_status(
+    action: RunnerReadAction = "status",
+    *,
+    sock_path: str | None = None,
+    name: str | None = None,
+    limit: int | None = None,
+    run_id: int | None = None,
+    tail_bytes: int | None = None,
+) -> dict[str, Any]:
+    """Inspect runner daemon/job state without mutating scheduler state.
+
+    Use this for routine checks that should not require user approval:
+      - `daemon_status`: lightweight socket/listener probe.
+      - `status`: daemon state + all jobs.
+      - `job_runs`: recent runs for a job (`name`, optional `limit`).
+      - `run_report`: detailed log for a single run (`run_id`, optional `tail_bytes`).
+
+    Mutating scheduler actions such as `add_job`, `delete_job`, `run_once`,
+    `daemon_start`, and `daemon_stop` remain on `core_runner` and should stay
+    approval-gated.
+    """
+
+    return await core_runner(
+        action=action,
+        sock_path=sock_path,
+        name=name,
+        limit=limit,
+        run_id=run_id,
+        tail_bytes=tail_bytes,
+    )

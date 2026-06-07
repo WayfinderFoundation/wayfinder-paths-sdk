@@ -297,6 +297,24 @@ class TestGasPriceTransaction:
         assert "gasPrice" not in result
 
     @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    async def test_polygon_priority_fee_floor(self, mock_web3s_context):
+        # Polygon's bor node rejects tips < 25 gwei. Suggested = 1 gwei * 1.5 = 1.5 gwei,
+        # below the floor — must be clamped up to 25 gwei.
+        mock_block = {"baseFeePerGas": 30_000_000_000}
+        mock_fee_history = {"reward": [[1_000_000_000] for _ in range(10)]}
+        mock_web3 = MagicMock()
+        mock_web3.eth = MagicMock()
+        mock_web3.eth.get_block = AsyncMock(return_value=mock_block)
+        mock_web3.eth.fee_history = AsyncMock(return_value=mock_fee_history)
+        mock_web3.provider.disconnect = AsyncMock()
+        mock_web3s_context.return_value.__aenter__.return_value = [mock_web3]
+
+        result = await gas_price_transaction({"chainId": 137})
+
+        assert result["maxPriorityFeePerGas"] == 25_000_000_000
+        assert result["maxFeePerGas"] == 30_000_000_000 * 2 + 25_000_000_000
+
+    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
     async def test_non_eip1559_max_aggregation(self, mock_web3s_context):
         # Mock multiple web3 instances with different gas prices
         # gas_price is an awaitable property, so we need to make it a coroutine
@@ -351,6 +369,30 @@ class TestGasLimitTransaction:
             result = await gas_limit_transaction(transaction)
             assert "gas" in result
             assert result["gas"] > 0
+
+    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    async def test_all_rpcs_failed_error_includes_rpc_errors(self, mock_web3s_context):
+        rpc_a = MagicMock()
+        rpc_a.eth = MagicMock()
+        rpc_a.eth.estimate_gas = AsyncMock(side_effect=Exception("insufficient funds"))
+        rpc_a.provider.endpoint_uri = "https://rpc-a/137/0"
+        rpc_a.provider.disconnect = AsyncMock()
+
+        rpc_b = MagicMock()
+        rpc_b.eth = MagicMock()
+        rpc_b.eth.estimate_gas = AsyncMock(side_effect=Exception("execution reverted"))
+        rpc_b.provider.endpoint_uri = "https://rpc-b/137/1"
+        rpc_b.provider.disconnect = AsyncMock()
+
+        mock_web3s_context.return_value.__aenter__.return_value = [rpc_a, rpc_b]
+
+        with pytest.raises(Exception) as excinfo:
+            await gas_limit_transaction({"chainId": 137})
+
+        msg = str(excinfo.value)
+        assert "Gas estimation failed on all RPCs" in msg
+        assert "https://rpc-a/137/0: insufficient funds" in msg
+        assert "https://rpc-b/137/1: execution reverted" in msg
 
 
 @pytest.mark.asyncio

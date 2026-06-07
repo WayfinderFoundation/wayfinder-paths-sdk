@@ -62,6 +62,7 @@ abis/
 
 # Claude Code local overrides
 .claude/settings.local.json
+.claude/worktrees/
 
 opencode.json
 

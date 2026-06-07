@@ -133,16 +133,16 @@ def status_cmd() -> None:
     "timeout_seconds",
     type=int,
     default=None,
-    help="Per-run timeout seconds.",
+    help="Per-run timeout seconds (0 disables timeout).",
 )
 @click.option(
     "--env-json", default=None, help="JSON object of env vars for the worker."
 )
 @click.option(
-    "--notify-session-on-success",
+    "--always-notify-session-on-job-completion",
     is_flag=True,
     default=False,
-    help="Post successful runs into the bound OpenCode session.",
+    help="Post all completed runs into the bound OpenCode session.",
 )
 @click.option("--debug/--no-debug", default=False, show_default=True)
 def add_job_cmd(
@@ -157,7 +157,7 @@ def add_job_cmd(
     wallet_label: str | None,
     timeout_seconds: int | None,
     env_json: str | None,
-    notify_session_on_success: bool,
+    always_notify_session_on_job_completion: bool,
     debug: bool,
 ) -> None:
     paths = get_runner_paths()
@@ -186,8 +186,8 @@ def add_job_cmd(
             payload["timeout_seconds"] = int(timeout_seconds)
         if env_payload is not None:
             payload["env"] = env_payload
-        if notify_session_on_success:
-            payload["notify_session_on_success"] = True
+        if always_notify_session_on_job_completion:
+            payload["always_notify_session_on_job_completion"] = True
     elif jt == JOB_TYPE_SCRIPT:
         if not script_path:
             raise click.UsageError("--script-path is required for type=script")
@@ -203,8 +203,8 @@ def add_job_cmd(
             payload["timeout_seconds"] = int(timeout_seconds)
         if env_payload is not None:
             payload["env"] = env_payload
-        if notify_session_on_success:
-            payload["notify_session_on_success"] = True
+        if always_notify_session_on_job_completion:
+            payload["always_notify_session_on_job_completion"] = True
     else:
         raise click.UsageError(f"Unsupported type: {job_type}")
 
@@ -260,6 +260,23 @@ def pause_cmd(name: str) -> None:
 def resume_cmd(name: str) -> None:
     paths = get_runner_paths()
     resp = _client(paths.sock_path).call("resume_job", {"name": str(name)})
+    _echo_json(resp)
+
+
+@runner_cli.command(name="stop-job", help="Stop a running job by name.")
+@click.argument("name")
+@click.option(
+    "--signal",
+    "sig",
+    type=click.Choice(["TERM", "INT", "KILL"], case_sensitive=False),
+    default="TERM",
+    show_default=True,
+)
+def stop_job_cmd(name: str, sig: str) -> None:
+    paths = get_runner_paths()
+    resp = _client(paths.sock_path).call(
+        "stop_job", {"name": str(name), "sig": str(sig).upper()}
+    )
     _echo_json(resp)
 
 

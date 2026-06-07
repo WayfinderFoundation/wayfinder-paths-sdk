@@ -39,6 +39,7 @@ By default runner state lives in the repo:
 
 - `./.wayfinder/runner/state.db`
 - `./.wayfinder/runner/logs/`
+- `./.wayfinder/runner/job_state/` for generated monitor/checkpoint JSON state
 - `./.wayfinder/runner/runner.sock`
 
 For Docker/VM deployments you can move the runner state (DB + logs + socket) with:
@@ -60,4 +61,3 @@ When we add a cloud/remote deployment, we can do it with minimal changes by exte
    - remote runner (HTTP + token), running in a VM/container with a persistent volume for `WAYFINDER_RUNNER_DIR`
 
 We’re not enabling the remote transport yet; this document just describes the intended extension path.
-

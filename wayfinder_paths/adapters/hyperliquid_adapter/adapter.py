@@ -29,6 +29,10 @@ from loguru import logger
 from wayfinder_paths.adapters.hyperliquid_adapter.info import get_info, get_perp_dexes
 from wayfinder_paths.adapters.hyperliquid_adapter.utils import spot_index_from_asset_id
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
+from wayfinder_paths.core.clients.HyperliquidInfoClient import HYPERLIQUID_INFO_CLIENT
+from wayfinder_paths.core.clients.HyperliquidQuicknodeInfoClient import (
+    HYPERLIQUID_QUICKNODE_INFO_CLIENT,
+)
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.contracts import (
     HYPERCORE_SENTINEL_ADDRESS,
@@ -52,9 +56,7 @@ MAINNET = "Mainnet"
 # ships sideSpecs=[Yes, No] for the binary daily, so 0=YES and 1=NO —
 # but multi-outcome contracts may reorder, so always read sideSpecs[side].name
 # instead of hardcoding a YES/NO convention.
-# Collateral: outcomes settle in USDH (spot token 360), not USDC. The spot
-# wallet must hold USDH before placing orders; outcomeMeta has no per-market
-# quote field, so the whole surface is treated as USDH-only.
+# Collateral: outcomes settle in USDC.
 
 
 def outcome_encoding(outcome_id: int, side: int) -> int:
@@ -183,14 +185,17 @@ class HyperliquidAdapter(BaseAdapter):
         payload: dict[str, Any],
         aggregator: Callable[[list[Any]], Any],
         *,
+        post_fn: Callable[..., Awaitable[Any]] | None = None,
         max_retries: int = 3,
     ) -> Any:
+        _post = post_fn or HYPERLIQUID_INFO_CLIENT.post
+
         async def _post_one(dex: str) -> Any:
             body = {**payload, "dex": dex}
             last_exc: Exception | None = None
             for attempt in range(max_retries):
                 try:
-                    return await asyncio.to_thread(get_info().post, "/info", body)
+                    return await _post(body)
                 except Exception as exc:
                     last_exc = exc
                     if attempt < max_retries - 1:
@@ -324,6 +329,20 @@ class HyperliquidAdapter(BaseAdapter):
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch meta_and_asset_ctxs: {exc}")
+            return False, str(exc)
+
+    async def get_all_perp_metas(self) -> tuple[bool, Any]:
+        cache_key = "hl_all_perp_metas"
+        cached = await self._cache.get(cache_key)
+        if cached:
+            return True, cached
+
+        try:
+            data = await HYPERLIQUID_INFO_CLIENT.post({"type": "allPerpMetas"})
+            await self._cache.set(cache_key, data, ttl=60)
+            return True, data
+        except Exception as exc:
+            self.logger.error(f"Failed to fetch all_perp_metas: {exc}")
             return False, str(exc)
 
     async def get_spot_meta(self) -> tuple[bool, Any]:
@@ -465,7 +484,9 @@ class HyperliquidAdapter(BaseAdapter):
 
         try:
             data = await self._post_across_dexes(
-                {"type": "clearinghouseState", "user": address}, _aggregate
+                {"type": "clearinghouseState", "user": address},
+                _aggregate,
+                post_fn=HYPERLIQUID_QUICKNODE_INFO_CLIENT.post,
             )
             return True, data
         except Exception as exc:
@@ -485,18 +506,34 @@ class HyperliquidAdapter(BaseAdapter):
                     "activeAssetData is only available for perp and HIP-3 markets"
                 )
 
+    async def get_dex_collateral_mapping(self) -> dict[str, str]:
+        """`{dex_name: collateral_token_symbol}` indexed off `allPerpMetas.collateralToken`
+        and `spotMeta.tokens`. Core perp dex is the empty-string key."""
+        (metas_ok, metas), (spot_ok, spot_meta) = await asyncio.gather(
+            self.get_all_perp_metas(),
+            self.get_spot_meta(),
+        )
+        if not metas_ok:
+            raise ValueError(f"Failed to fetch all_perp_metas: {metas}")
+        if not spot_ok:
+            raise ValueError(f"Failed to fetch spot_meta: {spot_meta}")
+        token_names = {int(t["index"]): t["name"] for t in spot_meta["tokens"]}
+        dexes = get_perp_dexes()
+        return {
+            dexes[i]: token_names[int(meta["collateralToken"])]
+            for i, meta in enumerate(metas)
+        }
+
     async def get_active_asset_data(
         self, address: str, asset_name: str
     ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
         try:
-            data = await asyncio.to_thread(
-                get_info().post,
-                "/info",
+            data = await HYPERLIQUID_QUICKNODE_INFO_CLIENT.post(
                 {
                     "type": "activeAssetData",
                     "user": address,
                     "coin": self.active_asset_data_coin(asset_name),
-                },
+                }
             )
             return True, data
         except Exception as exc:
@@ -509,10 +546,24 @@ class HyperliquidAdapter(BaseAdapter):
         self, address: str
     ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
         try:
-            data = get_info().spot_user_state(address)
+            data = await HYPERLIQUID_QUICKNODE_INFO_CLIENT.post(
+                {"type": "spotClearinghouseState", "user": address}
+            )
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch spot_user_state for {address}: {exc}")
+            return False, str(exc)
+
+    async def get_user_abstraction(
+        self, address: str
+    ) -> tuple[Literal[True], Any] | tuple[Literal[False], str]:
+        try:
+            data = await HYPERLIQUID_INFO_CLIENT.post(
+                {"type": "userAbstraction", "user": address}
+            )
+            return True, data
+        except Exception as exc:
+            self.logger.error(f"Failed to fetch user_abstraction for {address}: {exc}")
             return False, str(exc)
 
     async def get_full_user_state(
@@ -571,10 +622,10 @@ class HyperliquidAdapter(BaseAdapter):
             # Hyperliquid expects `id` but older SDKs may use `marginTableId`
             body = {"type": "marginTable", "id": int(margin_table_id)}
             try:
-                data = get_info().post("/info", body)
+                data = await HYPERLIQUID_INFO_CLIENT.post(body)
             except Exception:  # noqa: BLE001
                 body = {"type": "marginTable", "marginTableId": int(margin_table_id)}
-                data = get_info().post("/info", body)
+                data = await HYPERLIQUID_INFO_CLIENT.post(body)
             await self._cache.set(cache_key, data, ttl=86400)
             return True, data
         except Exception as exc:
@@ -825,11 +876,11 @@ class HyperliquidAdapter(BaseAdapter):
         return success, result
 
     async def get_outcome_markets(self) -> tuple[bool, list[dict[str, Any]]]:
-        """HIP-4 outcome markets. priceBinary outcomes are flat entries;
-        priceBucket questions group their named outcomes (Yes-side only —
-        the No leg is redundant since exactly one named outcome settles
-        Yes). The fallback outcome is dropped from the response.
-        Unknown classes are skipped."""
+        """HIP-4 outcome markets. Three classes:
+        - priceBinary: flat binary above/below contracts.
+        - priceBucket: grouped price-range questions (BTC range buckets).
+        - named: free-form questions with named outcomes (e.g. CPI).
+        Fallback outcomes are dropped from the response."""
         meta = await asyncio.to_thread(get_info().outcome_meta)
         outcomes_by_id = {
             int(outcome["outcome"]): outcome for outcome in meta["outcomes"]
@@ -839,36 +890,61 @@ class HyperliquidAdapter(BaseAdapter):
 
         for question in meta["questions"]:
             spec = parse_outcome_description(question["description"])
-            if spec.get("class") != "priceBucket":
-                continue
-            named: list[dict[str, Any]] = []
-            for named_id in question["namedOutcomes"]:
-                outcome = outcomes_by_id[int(named_id)]
-                grouped.add(int(outcome["outcome"]))
-                bucket_index = parse_outcome_description(outcome["description"])[
-                    "index"
-                ]
-                named.append(
+            if spec.get("class") == "priceBucket":
+                named: list[dict[str, Any]] = []
+                for named_id in question["namedOutcomes"]:
+                    outcome = outcomes_by_id[int(named_id)]
+                    grouped.add(int(outcome["outcome"]))
+                    bucket_index = parse_outcome_description(outcome["description"])[
+                        "index"
+                    ]
+                    named.append(
+                        {
+                            "bucket_index": bucket_index,
+                            "sides": _outcome_sides(
+                                outcome,
+                                _bucket_named_side_descriptions(spec, bucket_index),
+                            ),
+                        }
+                    )
+                grouped.add(int(question["fallbackOutcome"]))
+                markets.append(
                     {
-                        "bucket_index": bucket_index,
-                        "sides": _outcome_sides(
-                            outcome,
-                            _bucket_named_side_descriptions(spec, bucket_index),
-                        ),
+                        "class": "priceBucket",
+                        "description": question["description"],
+                        "underlying": spec["underlying"],
+                        "price_thresholds": spec["priceThresholds"],
+                        "expiry": spec["expiry"],
+                        "period": spec["period"],
+                        "outcomes": named,
                     }
                 )
-            grouped.add(int(question["fallbackOutcome"]))
-            markets.append(
-                {
-                    "class": "priceBucket",
-                    "description": question["description"],
-                    "underlying": spec["underlying"],
-                    "price_thresholds": spec["priceThresholds"],
-                    "expiry": spec["expiry"],
-                    "period": spec["period"],
-                    "outcomes": named,
-                }
-            )
+            elif not spec:
+                named_outcomes: list[dict[str, Any]] = []
+                for named_id in question["namedOutcomes"]:
+                    outcome = outcomes_by_id[int(named_id)]
+                    grouped.add(int(outcome["outcome"]))
+                    named_outcomes.append(
+                        {
+                            "name": outcome["name"],
+                            "sides": _outcome_sides(
+                                outcome,
+                                [
+                                    f"{outcome['name']}: Yes",
+                                    f"{outcome['name']}: No",
+                                ],
+                            ),
+                        }
+                    )
+                grouped.add(int(question["fallbackOutcome"]))
+                markets.append(
+                    {
+                        "class": "named",
+                        "name": question["name"],
+                        "description": question["description"],
+                        "outcomes": named_outcomes,
+                    }
+                )
 
         for outcome in meta["outcomes"]:
             if int(outcome["outcome"]) in grouped:
@@ -1312,7 +1388,9 @@ class HyperliquidAdapter(BaseAdapter):
 
         try:
             data = await self._post_across_dexes(
-                {"type": "frontendOpenOrders", "user": address}, _aggregate
+                {"type": "frontendOpenOrders", "user": address},
+                _aggregate,
+                post_fn=HYPERLIQUID_QUICKNODE_INFO_CLIENT.post,
             )
             return True, data
         except Exception as exc:
@@ -1362,8 +1440,9 @@ class HyperliquidAdapter(BaseAdapter):
         builder: str,
     ) -> tuple[bool, int]:
         try:
-            body = {"type": "maxBuilderFee", "user": user, "builder": builder}
-            data = get_info().post("/info", body)
+            data = await HYPERLIQUID_QUICKNODE_INFO_CLIENT.post(
+                {"type": "maxBuilderFee", "user": user, "builder": builder}
+            )
             # Response is just an integer (tenths of basis points)
             return True, int(data) if data is not None else 0
         except Exception as exc:
@@ -1757,9 +1836,8 @@ class HyperliquidAdapter(BaseAdapter):
         vault_address: str,
     ) -> tuple[bool, dict[str, float] | str]:
         try:
-            details = get_info().post(
-                "/info",
-                {"type": "vaultDetails", "vaultAddress": str(vault_address)},
+            details = await HYPERLIQUID_INFO_CLIENT.post(
+                {"type": "vaultDetails", "vaultAddress": str(vault_address)}
             )
             account_value = float(
                 details.get("accountValue") or details.get("vaultEquity") or 0.0

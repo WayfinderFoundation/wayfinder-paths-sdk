@@ -112,6 +112,8 @@ class BacktestConfig:
     periods_per_year: int | None = None  # If None, will auto-detect from data frequency
     funding_rates: pd.DataFrame | None = None
     force_rebalance_if_overleveraged: bool = False
+    track_positions: bool = True  # skips per-bar position snapshots when False
+    validate_positions: bool = True  # skips target-position validation -- only use for perf improvement in pre-coded scripts
     # "replay": fill on the same bar the signal was computed. Use ONLY when
     # reconciling a live strategy against its own historical decisions (the
     # live decide() saw bar t's close and acted into bar t — reproduce that

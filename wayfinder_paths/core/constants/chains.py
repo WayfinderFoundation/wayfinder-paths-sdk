@@ -57,6 +57,12 @@ PRE_EIP_1559_CHAIN_IDS: set[int] = {
     CHAIN_ID_ARBITRUM,
 }
 
+# Polygon's bor node enforces a 25 gwei min priority fee at pool admission;
+# txs below this are rejected with "transaction gas price below minimum".
+MIN_PRIORITY_FEE_BY_CHAIN_ID: dict[int, int] = {
+    CHAIN_ID_POLYGON: 25 * 10**9,
+}
+
 CHAIN_EXPLORER_URLS: dict[int, str] = {
     CHAIN_ID_ETHEREUM: "https://etherscan.io/",
     CHAIN_ID_ARBITRUM: "https://arbiscan.io/",

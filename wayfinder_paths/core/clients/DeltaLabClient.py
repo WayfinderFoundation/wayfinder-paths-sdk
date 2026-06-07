@@ -159,7 +159,7 @@ class DeltaLabClient(WayfinderClient):
         *,
         basis_symbol: str,
         lookback_days: int = 7,
-        limit: int = 500,
+        limit: int = 25,
         as_of: datetime | None = None,
     ) -> dict[str, Any]:
         """
@@ -168,7 +168,9 @@ class DeltaLabClient(WayfinderClient):
         Args:
             basis_symbol: Basis symbol (e.g., "BTC", "ETH")
             lookback_days: Number of days to look back (default: 7, min: 1)
-            limit: Maximum number of opportunities (default: 500, max: 1000)
+            limit: Maximum number of opportunities (default: 25, max: 1000).
+                Keep this low — high limits (e.g. 500) frequently trigger
+                upstream 500s on this endpoint.
             as_of: Query timestamp (default: now)
 
         Returns:
@@ -470,29 +472,22 @@ class DeltaLabClient(WayfinderClient):
         limit: int = 50,
         lookback_days: int = 7,
         as_of: datetime | None = None,
+        instrument_type: str | None = None,
     ) -> dict[str, Any]:
         """
         Get top APY opportunities across all basis symbols.
 
-        Returns top N LONG opportunities by APY across all protocols and venues:
-        perps, Pendle PTs, Boros IRS, yield-bearing tokens, and lending.
+        Without a filter the global ranking is dominated by Aerodrome
+        Slipstream LPs (YIELD_TOKEN) with projected fee APRs in the hundreds
+        of percent; pass `instrument_type` to narrow to a single instrument
+        class for a useful per-category leaderboard.
 
         Args:
             limit: Maximum number of opportunities (default: 50, max: 500)
             lookback_days: Number of days to look back (default: 7, min: 1)
             as_of: Query timestamp (default: now)
-
-        Returns:
-            TopApyResponse with opportunities sorted by APY:
-            {
-                "opportunities": [...],  # Top N opportunities sorted by APY
-                "as_of": "2024-02-20T...",
-                "lookback_days": 7,
-                "total_count": 50
-            }
-
-        Raises:
-            httpx.HTTPStatusError: For 400 (invalid params) or 500 (server error)
+            instrument_type: One of {"perp", "pendle_pt", "boros_market",
+                "boros_vault", "yield_token", "lending_supply"}. Case-insensitive.
         """
         params: dict[str, str | int] = {
             "limit": limit,
@@ -500,6 +495,8 @@ class DeltaLabClient(WayfinderClient):
         }
         if as_of:
             params["as_of"] = as_of.isoformat()
+        if instrument_type:
+            params["instrument_type"] = instrument_type.lower()
         return await self._dl_request("GET", "/top-apy/", params=params)
 
     async def screen_price(

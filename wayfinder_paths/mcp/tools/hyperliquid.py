@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import math
 import re
 from decimal import Decimal
 from typing import Any, Literal
@@ -28,6 +29,7 @@ from wayfinder_paths.core.constants.hyperliquid import (
 )
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
+from wayfinder_paths.mcp.arg_validation import optional_int
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -211,9 +213,17 @@ def _validate_size_and_notional(
         if final_notional < MIN_ORDER_USD_NOTIONAL:
             sz_decimals = adapter.get_sz_decimals(asset_id)
             tick = float(Decimal(10) ** (-sz_decimals))
-            # Smallest lot whose notional clears the floor.
-            ticks_needed = -(-MIN_ORDER_USD_NOTIONAL // (tick * px_for_sizing))
-            suggested_usd = ticks_needed * tick * px_for_sizing
+            ticks_needed = int(-(-MIN_ORDER_USD_NOTIONAL // (tick * px_for_sizing)))
+            for _ in range(3):
+                suggested_usd = (
+                    math.ceil(ticks_needed * tick * px_for_sizing * 100) / 100
+                )
+                if (
+                    int(suggested_usd / px_for_sizing / tick) * tick * px_for_sizing
+                    >= MIN_ORDER_USD_NOTIONAL
+                ):
+                    break
+                ticks_needed += 1
             raise ValueError(
                 f"After lot-size rounding, notional is ${final_notional:.4f} — HL "
                 f"requires >= ${MIN_ORDER_USD_NOTIONAL:.2f}. Try usd_amount={suggested_usd:.2f}."
@@ -242,6 +252,15 @@ def _float_or_none(value: Any) -> float | None:
         if value is None:
             return None
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
     except (TypeError, ValueError):
         return None
 
@@ -304,6 +323,61 @@ def _active_asset_float_pair(
     return _float_or_none(values[0]), _float_or_none(values[1])
 
 
+def _capacity_notional_usd(
+    *,
+    available_margin_usd: float | None,
+    leverage: float | None,
+    max_base_size: float | None,
+    price: float | None,
+) -> float | None:
+    candidates: list[float] = []
+    if available_margin_usd is not None and leverage is not None and leverage > 0:
+        candidates.append(max(0.0, available_margin_usd * leverage))
+    if max_base_size is not None and price is not None and price > 0:
+        candidates.append(max(0.0, max_base_size * price))
+    return min(candidates) if candidates else None
+
+
+def _trade_capacity(
+    *,
+    available_to_trade_usd: float | None,
+    leverage: float | None,
+    max_trade_size: float | None,
+    price: float | None,
+) -> dict[str, Any]:
+    available_margin = available_to_trade_usd
+    if (
+        available_margin is None
+        and max_trade_size is not None
+        and price is not None
+        and price > 0
+        and leverage is not None
+        and leverage > 0
+    ):
+        available_margin = max_trade_size * price / leverage
+
+    max_notional = _capacity_notional_usd(
+        available_margin_usd=available_margin,
+        leverage=leverage,
+        max_base_size=max_trade_size,
+        price=price,
+    )
+    max_base_size = max_trade_size
+    if (
+        max_base_size is None
+        and max_notional is not None
+        and price is not None
+        and price > 0
+    ):
+        max_base_size = max_notional / price
+
+    return {
+        "available_margin_usd": available_margin,
+        "max_order_notional_usd": max_notional,
+        "max_base_size": max_base_size,
+    }
+
+
 def _summarize_active_asset_data(
     active_asset_data: dict[str, Any],
 ) -> dict[str, Any]:
@@ -322,20 +396,239 @@ def _summarize_active_asset_data(
         margin_mode = str(leverage.get("type") or "") or None
         isolated_raw_usd = _float_or_none(leverage.get("rawUsd"))
 
+    mark_px = _float_or_none(active_asset_data.get("markPx"))
+    long = _trade_capacity(
+        available_to_trade_usd=available_long,
+        leverage=leverage_value,
+        max_trade_size=max_size_long,
+        price=mark_px,
+    )
+    short = _trade_capacity(
+        available_to_trade_usd=available_short,
+        leverage=leverage_value,
+        max_trade_size=max_size_short,
+        price=mark_px,
+    )
     return {
-        "available_to_trade_long_usd": available_long,
-        "available_to_trade_short_usd": available_short,
-        "max_trade_size_long": max_size_long,
-        "max_trade_size_short": max_size_short,
-        "mark_px": _float_or_none(active_asset_data.get("markPx")),
+        "mark_px": mark_px,
         "leverage": leverage_value,
         "margin_mode": margin_mode,
         "isolated_raw_usd": isolated_raw_usd,
+        "long": long,
+        "short": short,
         "raw": active_asset_data,
     }
 
 
-async def _build_trade_context(
+def _market_info_from_meta_and_asset_ctxs(
+    meta_and_ctxs: Any, coin: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not isinstance(meta_and_ctxs, list) or not meta_and_ctxs:
+        return None, None
+
+    meta = meta_and_ctxs[0] if isinstance(meta_and_ctxs[0], dict) else {}
+    universe = meta.get("universe")
+    if not isinstance(universe, list):
+        return None, None
+
+    ctxs = meta_and_ctxs[1] if len(meta_and_ctxs) > 1 else []
+    for index, entry in enumerate(universe):
+        if not isinstance(entry, dict) or entry.get("name") != coin:
+            continue
+        ctx = ctxs[index] if isinstance(ctxs, list) and index < len(ctxs) else None
+        return entry, ctx if isinstance(ctx, dict) else None
+    return None, None
+
+
+def _market_info_from_all_perp_metas(
+    all_perp_metas: Any, coin: str
+) -> dict[str, Any] | None:
+    if not isinstance(all_perp_metas, list):
+        return None
+
+    for dex_index, meta in enumerate(all_perp_metas):
+        if not isinstance(meta, dict):
+            continue
+        universe = meta.get("universe")
+        if not isinstance(universe, list):
+            continue
+        for entry in universe:
+            if not isinstance(entry, dict) or entry.get("name") != coin:
+                continue
+            dex_name = coin.split(":", 1)[0] if ":" in coin else ""
+            return {
+                **entry,
+                "_perp_dex": {
+                    "index": dex_index,
+                    "name": dex_name,
+                    "kind": "hip3" if dex_name else "validator",
+                },
+                "_collateral_token_index": _int_or_none(meta.get("collateralToken")),
+            }
+    return None
+
+
+def _spot_token_by_index(
+    spot_meta: Any, token_index: int | None
+) -> dict[str, Any] | None:
+    if token_index is None or not isinstance(spot_meta, dict):
+        return None
+    tokens = spot_meta.get("tokens")
+    if not isinstance(tokens, list):
+        return None
+    for token in tokens:
+        if not isinstance(token, dict):
+            continue
+        if _int_or_none(token.get("index")) == token_index:
+            return token
+    return None
+
+
+def _collateral_payload(
+    *,
+    metadata: dict[str, Any] | None,
+    spot_meta: Any,
+) -> dict[str, Any] | None:
+    if not isinstance(metadata, dict):
+        return None
+
+    token_index = _int_or_none(metadata.get("_collateral_token_index"))
+    if token_index is None:
+        return None
+    token = _spot_token_by_index(spot_meta, token_index)
+    dex = (
+        metadata.get("_perp_dex")
+        if isinstance(metadata.get("_perp_dex"), dict)
+        else None
+    )
+    symbol = token.get("name") if isinstance(token, dict) else None
+
+    return {
+        "token_index": token_index,
+        "symbol": symbol,
+        "full_name": token.get("fullName") if isinstance(token, dict) else None,
+        "token_id": token.get("tokenId") if isinstance(token, dict) else None,
+        "evm_contract": token.get("evmContract") if isinstance(token, dict) else None,
+        "dex": dex,
+        "source": "allPerpMetas.collateralToken + spotMeta.tokens",
+        "balance_source": (
+            "For unified/portfolio accounts, use spotClearinghouseState for "
+            "balances and activeAssetData.availableToTrade for this market's "
+            "side-specific trade capacity."
+        ),
+        "requirement": (
+            f"Hold or route {symbol or 'the listed collateral token'} collateral "
+            "for this perp dex before opening new exposure."
+        ),
+    }
+
+
+def _compatible_margin_modes(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        return {
+            "compatible_margin_modes": ["cross", "isolated"],
+            "margin_mode_restriction": None,
+            "can_remove_isolated_margin": True,
+        }
+
+    restriction = metadata.get("marginMode")
+    only_isolated = bool(metadata.get("onlyIsolated"))
+    if restriction == "strictIsolated":
+        return {
+            "compatible_margin_modes": ["isolated"],
+            "margin_mode_restriction": "strictIsolated",
+            "can_remove_isolated_margin": False,
+        }
+    if restriction == "noCross":
+        return {
+            "compatible_margin_modes": ["isolated"],
+            "margin_mode_restriction": "noCross",
+            "can_remove_isolated_margin": True,
+        }
+    if only_isolated:
+        return {
+            "compatible_margin_modes": ["isolated"],
+            "margin_mode_restriction": "onlyIsolated",
+            "can_remove_isolated_margin": None,
+        }
+    return {
+        "compatible_margin_modes": ["cross", "isolated"],
+        "margin_mode_restriction": restriction,
+        "can_remove_isolated_margin": True,
+    }
+
+
+def _summarize_market_context(
+    metadata: dict[str, Any] | None,
+    asset_ctx: dict[str, Any] | None,
+) -> dict[str, Any]:
+    capabilities = _compatible_margin_modes(metadata)
+    funding_rate_hourly = (
+        _float_or_none(asset_ctx.get("funding"))
+        if isinstance(asset_ctx, dict)
+        else None
+    )
+    impact_px_bid: float | None = None
+    impact_px_ask: float | None = None
+    if isinstance(asset_ctx, dict):
+        impact_pxs = asset_ctx.get("impactPxs")
+        if isinstance(impact_pxs, list) and len(impact_pxs) >= 2:
+            impact_px_bid = _float_or_none(impact_pxs[0])
+            impact_px_ask = _float_or_none(impact_pxs[1])
+
+    return {
+        "max_leverage": optional_int(
+            metadata.get("maxLeverage"), field_name="maxLeverage"
+        )
+        if isinstance(metadata, dict) and metadata.get("maxLeverage") is not None
+        else None,
+        "size_decimals": optional_int(
+            metadata.get("szDecimals"), field_name="szDecimals"
+        )
+        if isinstance(metadata, dict) and metadata.get("szDecimals") is not None
+        else None,
+        "margin_table_id": optional_int(
+            metadata.get("marginTableId"), field_name="marginTableId"
+        )
+        if isinstance(metadata, dict) and metadata.get("marginTableId") is not None
+        else None,
+        "is_delisted": bool(metadata.get("isDelisted"))
+        if isinstance(metadata, dict) and metadata.get("isDelisted") is not None
+        else False,
+        "growth_mode": metadata.get("growthMode")
+        if isinstance(metadata, dict)
+        else None,
+        "last_growth_mode_change_time": metadata.get("lastGrowthModeChangeTime")
+        if isinstance(metadata, dict)
+        else None,
+        "funding_rate_hourly": funding_rate_hourly,
+        "funding_apr": funding_rate_hourly * 24 * 365
+        if funding_rate_hourly is not None
+        else None,
+        "open_interest": _float_or_none(asset_ctx.get("openInterest"))
+        if isinstance(asset_ctx, dict)
+        else None,
+        "day_notional_volume_usd": _float_or_none(asset_ctx.get("dayNtlVlm"))
+        if isinstance(asset_ctx, dict)
+        else None,
+        "mid_px": _float_or_none(asset_ctx.get("midPx"))
+        if isinstance(asset_ctx, dict)
+        else None,
+        "oracle_px": _float_or_none(asset_ctx.get("oraclePx"))
+        if isinstance(asset_ctx, dict)
+        else None,
+        "premium": _float_or_none(asset_ctx.get("premium"))
+        if isinstance(asset_ctx, dict)
+        else None,
+        "impact_px_bid": impact_px_bid,
+        "impact_px_ask": impact_px_ask,
+        "raw_metadata": metadata,
+        "raw_context": asset_ctx,
+        **capabilities,
+    }
+
+
+async def _build_trade_asset(
     *,
     adapter: HyperliquidAdapter,
     address: str,
@@ -351,6 +644,28 @@ async def _build_trade_context(
     if not active_ok or not isinstance(active, dict):
         return {"success": False, "coin": coin, "error": str(active)}
 
+    metadata: dict[str, Any] | None = None
+    asset_ctx: dict[str, Any] | None = None
+    spot_meta: Any = None
+    all_metas_ok, all_metas = await adapter.get_all_perp_metas()
+    if all_metas_ok:
+        metadata = _market_info_from_all_perp_metas(all_metas, coin)
+
+    meta_ok, meta_and_ctxs = await adapter.get_meta_and_asset_ctxs()
+    if meta_ok:
+        fallback_metadata, asset_ctx = _market_info_from_meta_and_asset_ctxs(
+            meta_and_ctxs, coin
+        )
+        if metadata is None:
+            metadata = fallback_metadata
+    spot_ok, fetched_spot_meta = await adapter.get_spot_meta()
+    if spot_ok:
+        spot_meta = fetched_spot_meta
+    market = _summarize_market_context(metadata, asset_ctx)
+    collateral = _collateral_payload(metadata=metadata, spot_meta=spot_meta)
+    if collateral is not None:
+        market["collateral"] = collateral
+
     position = None
     if isinstance(perp_state, dict):
         position = _position_for_coin(perp_state, coin)
@@ -362,12 +677,19 @@ async def _build_trade_context(
             "asset_name": asset_name,
             "coin": coin,
             "position": _normalize_position(position),
+            "market_type": adapter.get_market_type(asset_name),
+            "market": market,
+            "collateral": collateral,
+            "max_leverage": market["max_leverage"],
+            "compatible_margin_modes": market["compatible_margin_modes"],
+            "margin_mode_restriction": market["margin_mode_restriction"],
+            "can_remove_isolated_margin": market["can_remove_isolated_margin"],
         }
     )
     return summary
 
 
-async def _reject_unsafe_opposite_perp_order(
+async def _reject_unsafe_perp_order(
     *,
     adapter: HyperliquidAdapter,
     sender: str,
@@ -376,10 +698,10 @@ async def _reject_unsafe_opposite_perp_order(
     is_buy: bool,
     reduce_only: bool,
     allow_flip: bool,
+    size: float,
+    price: float | None,
 ) -> dict[str, Any] | None:
     if market_type in {MARKET_TYPE_SPOT, MARKET_TYPE_HIP4}:
-        return None
-    if reduce_only or allow_flip:
         return None
 
     try:
@@ -392,35 +714,154 @@ async def _reject_unsafe_opposite_perp_order(
         return err(
             "preflight_failed",
             "Could not verify the live Hyperliquid position before placing a perp order.",
+            details={"asset_name": asset_name, "coin": coin, "error": str(state)},
+        )
+
+    active_ok, active = await adapter.get_active_asset_data(sender, asset_name)
+    if not active_ok or not isinstance(active, dict):
+        return err(
+            "preflight_failed",
+            "Could not verify Hyperliquid available-to-trade capacity before placing a perp order.",
+            details={"asset_name": asset_name, "coin": coin, "error": str(active)},
+        )
+    summary = _summarize_active_asset_data(active)
+    price_used = price if price is not None and price > 0 else summary["mark_px"]
+    if price_used is None or price_used <= 0:
+        return err(
+            "preflight_failed",
+            "Could not verify Hyperliquid margin capacity without a valid price.",
             details={
                 "asset_name": asset_name,
                 "coin": coin,
-                "error": str(state),
-                "required_action": "Call hyperliquid_get_state with asset_name, then retry after state is available.",
+                "price": price,
+                "mark_px": summary["mark_px"],
             },
         )
 
-    position = _normalize_position(_position_for_coin(state, coin))
-    if position is None:
-        return None
-
-    position_size = float(position["size"])
+    order_size = float(size)
     order_sign = 1.0 if is_buy else -1.0
-    if position_size * order_sign >= 0:
+    position = _normalize_position(_position_for_coin(state, coin))
+    position_size = float(position["size"]) if position else 0.0
+    position_abs = abs(position_size)
+    is_reducing = position is not None and position_size * order_sign < 0
+
+    if reduce_only:
+        if position is None or not is_reducing:
+            return err(
+                "reduce_only_no_position",
+                "reduce_only=true was set, but there is no opposite live position to reduce.",
+                details={
+                    "asset_name": asset_name,
+                    "coin": coin,
+                    "position": position,
+                    "is_buy": bool(is_buy),
+                },
+            )
+        if order_size > position_abs + 1e-9:
+            return err(
+                "reduce_only_size_exceeds_position",
+                "reduce_only order size is larger than the live position. Use the closeable size or set allow_flip=true and reduce_only=false if the user explicitly wants to flip.",
+                details={
+                    "asset_name": asset_name,
+                    "coin": coin,
+                    "position": position,
+                    "requested_size": order_size,
+                    "closeable_size": position_abs,
+                    "requested_notional_usd": order_size * float(price_used),
+                    "closeable_notional_usd": position_abs * float(price_used),
+                    "allow_flip": bool(allow_flip),
+                },
+            )
         return None
 
-    return err(
-        "reduce_only_required",
-        "This order is opposite an existing perp position. Use reduce_only=true to reduce/close, or allow_flip=true if the user explicitly asked to flip/open the other side.",
-        details={
-            "asset_name": asset_name,
-            "coin": coin,
-            "position": position,
-            "is_buy": bool(is_buy),
-            "reduce_only": bool(reduce_only),
-            "allow_flip": bool(allow_flip),
-        },
+    opening_size = order_size
+    if is_reducing:
+        if not allow_flip:
+            return err(
+                "reduce_only_required",
+                "This order is opposite an existing perp position. Use reduce_only=true to reduce/close, or allow_flip=true if the user explicitly asked to flip/open the other side.",
+                details={
+                    "asset_name": asset_name,
+                    "coin": coin,
+                    "position": position,
+                    "is_buy": bool(is_buy),
+                    "reduce_only": bool(reduce_only),
+                    "allow_flip": bool(allow_flip),
+                },
+            )
+        opening_size = max(0.0, order_size - position_abs)
+        if opening_size <= 1e-9:
+            return None
+
+    side = "long" if is_buy else "short"
+    side_context = summary[side]
+    available_margin = side_context["available_margin_usd"]
+    max_trade_size = side_context["max_base_size"]
+    leverage = summary["leverage"]
+    capacity_notional = _capacity_notional_usd(
+        available_margin_usd=available_margin,
+        leverage=leverage,
+        max_base_size=max_trade_size,
+        price=float(price_used),
     )
+    requested_notional = opening_size * float(price_used)
+    required_margin = (
+        requested_notional / float(leverage)
+        if leverage is not None and leverage > 0
+        else None
+    )
+
+    if capacity_notional is None:
+        return err(
+            "preflight_failed",
+            "Could not compute Hyperliquid order capacity from activeAssetData.",
+            details={
+                "asset_name": asset_name,
+                "coin": coin,
+                "side": side,
+                "active_asset_data": summary,
+                "side_context": side_context,
+            },
+        )
+
+    if requested_notional > capacity_notional + 1e-9:
+        if capacity_notional <= 1e-9:
+            dex = asset_name.split(":", 1)[0] if market_type == MARKET_TYPE_HIP3 else ""
+            collateral_coin = (await adapter.get_dex_collateral_mapping())[dex]
+            return err(
+                "insufficient_collateral",
+                f"You have 0 collateral for this market, you need {collateral_coin} to collateralize this position.",
+                details={
+                    "asset_name": asset_name,
+                    "market_type": market_type,
+                    "collateral_coin": collateral_coin,
+                },
+            )
+        return err(
+            "insufficient_hyperliquid_margin",
+            "Requested Hyperliquid perp notional exceeds the side-specific available-to-trade capacity.",
+            details={
+                "asset_name": asset_name,
+                "coin": coin,
+                "side": side,
+                "position": position,
+                "requested_size": order_size,
+                "opening_size_checked": opening_size,
+                "price_used": float(price_used),
+                "requested_notional_usd": requested_notional,
+                "max_order_notional_usd": capacity_notional,
+                "available_to_trade_margin_usd": available_margin,
+                "available_margin_usd": available_margin,
+                "leverage": leverage,
+                "required_margin_usd": required_margin,
+                "max_trade_size": max_trade_size,
+                "side_context": side_context,
+                "reduce_only": bool(reduce_only),
+                "allow_flip": bool(allow_flip),
+            },
+        )
+
+    return None
 
 
 def _extract_filled_notional_usd(result: dict[str, Any]) -> float | None:
@@ -507,8 +948,8 @@ async def _place_outcome_order(
 ) -> dict[str, Any]:
     """HIP-4 outcome leg of hyperliquid_place_{market,limit}_order.
 
-    Outcomes settle in USDH (token 360), trade as integer contracts, and have
-    a $10 USDH minimum order value. The standard Wayfinder builder code is
+    Outcomes settle in USDC, trade as integer contracts, and have
+    a $10 USDC minimum order value. The standard Wayfinder builder code is
     attached on every outcome order (HL accrues the fee on the sell side per
     the HIP-4 spec). `usd_amount` sizing is market-only — limit outcome
     orders require explicit integer `size`.
@@ -546,7 +987,18 @@ async def _place_outcome_order(
         mid = mids.get(asset_name)
         if mid is None or float(mid) <= 0:
             return err("price_error", f"Could not resolve mid price for {asset_name}")
-        size_i = max(1, round(float(usd_amount) / float(mid)))
+        # HL validates outcome minimum as size * mid >= 10 USDC;
+        # mid can drift between fetch and validation so pad by +1
+        min_size = math.ceil(10 / float(mid)) + 1
+        size_i = math.ceil(float(usd_amount) / float(mid))
+        if size_i < min_size:
+            min_usd = round(min_size * float(mid), 2)
+            return err(
+                "min_size",
+                f"Minimum order for this market is ~${min_usd} USDC "
+                f"({min_size} contracts at mid {float(mid):.5f}). "
+                f"Requested ${float(usd_amount)}.",
+            )
         sizing = {
             "source": "usd_amount",
             "usd_amount": float(usd_amount),
@@ -567,18 +1019,6 @@ async def _place_outcome_order(
         cloid=cloid,
         address=sender,
     )
-    # Outcome orders settle in USDH. When the wallet lacks USDH, HL just says
-    # "Insufficient spot balance asset=N" — append a funding hint so agents
-    # know how to recover. Only the inner-status-error shape carries this
-    # message; outer-status errors (res["status"]=="err") use a different
-    # response schema and are skipped here.
-    if not ok_order and res["status"] == "ok":
-        for s in res["response"]["data"]["statuses"]:
-            if "error" in s and "Insufficient spot balance" in s["error"]:
-                s["error"] += (
-                    " — Outcome markets are purchased using USDH, please "
-                    "swap into sufficient USDH using the USDH/USDC spot pair."
-                )
     effects.append(
         {"type": "hl", "label": "place_outcome_order", "ok": ok_order, "result": res}
     )
@@ -622,7 +1062,7 @@ async def _place_outcome_order(
 
 
 @catch_errors
-async def hyperliquid_deposit(
+async def hyperliquid_deposit_usdc(
     *,
     wallet_label: str,
     amount_usdc: float,
@@ -698,7 +1138,7 @@ async def hyperliquid_deposit(
 
 
 @catch_errors
-async def hyperliquid_withdraw(
+async def hyperliquid_withdraw_usdc(
     *,
     wallet_label: str,
     amount_usdc: float,
@@ -1067,7 +1507,7 @@ async def hyperliquid_place_market_order(
     """Place an IOC market order on a Hyperliquid perp / spot / HIP-4 market.
 
     HIP-4 outcome markets (`#N` asset names) trade as integer contracts and
-    require a $10 USDH minimum order value — `usd_amount` is converted to
+    require a $10 USDC minimum order value — `usd_amount` is converted to
     contracts at mid.
 
     `usd_amount` is converted to asset units at the mid price, then **rounded
@@ -1118,21 +1558,6 @@ async def hyperliquid_place_market_order(
             cloid=cloid,
         )
 
-    unsafe = await _reject_unsafe_opposite_perp_order(
-        adapter=adapter,
-        sender=sender,
-        asset_name=asset_name,
-        market_type=market_type,
-        is_buy=bool(is_buy),
-        reduce_only=bool(reduce_only),
-        allow_flip=bool(allow_flip),
-    )
-    if unsafe is not None:
-        return unsafe
-
-    effects: list[dict[str, Any]] = []
-    await _ensure_builder_fee_approval(adapter, sender=sender, effects=effects)
-
     sz, sizing, px_for_sizing = await _resolve_perp_or_spot_size(
         adapter=adapter,
         asset_name=asset_name,
@@ -1151,6 +1576,22 @@ async def hyperliquid_place_market_order(
         sizing=sizing,
         px_for_sizing=px_for_sizing,
     )
+    unsafe = await _reject_unsafe_perp_order(
+        adapter=adapter,
+        sender=sender,
+        asset_name=asset_name,
+        market_type=market_type,
+        is_buy=bool(is_buy),
+        reduce_only=bool(reduce_only),
+        allow_flip=bool(allow_flip),
+        size=float(sz_valid),
+        price=px_for_sizing,
+    )
+    if unsafe is not None:
+        return unsafe
+
+    effects: list[dict[str, Any]] = []
+    await _ensure_builder_fee_approval(adapter, sender=sender, effects=effects)
 
     ok_order, res = await adapter.place_market_order(
         resolved_asset_id,
@@ -1225,7 +1666,7 @@ async def hyperliquid_place_limit_order(
     """Place a GTC limit order on a Hyperliquid perp / spot / HIP-4 market.
 
     HIP-4 outcome markets (`#N` asset names) trade as integer contracts and
-    require a $10 USDH minimum order value. `usd_amount` sizing is not
+    require a $10 USDC minimum order value. `usd_amount` sizing is not
     supported for limit outcomes — pass an integer `size`.
 
     For leverage / margin mode, call `hyperliquid_update_leverage` first.
@@ -1255,6 +1696,12 @@ async def hyperliquid_place_limit_order(
         return err("invalid_coin", str(exc))
 
     if market_type == MARKET_TYPE_HIP4:
+        if size is None and usd_amount is not None:
+            return err(
+                "invalid_sizing",
+                "HIP-4 limit orders require integer `size`, not `usd_amount`. "
+                f"Try size={math.ceil(float(usd_amount) / float(px))}.",
+            )
         return await _place_outcome_order(
             adapter=adapter,
             sender=sender,
@@ -1271,21 +1718,6 @@ async def hyperliquid_place_limit_order(
         )
 
     _validate_price(adapter=adapter, asset_id=resolved_asset_id, price=float(px))
-
-    unsafe = await _reject_unsafe_opposite_perp_order(
-        adapter=adapter,
-        sender=sender,
-        asset_name=asset_name,
-        market_type=market_type,
-        is_buy=bool(is_buy),
-        reduce_only=bool(reduce_only),
-        allow_flip=bool(allow_flip),
-    )
-    if unsafe is not None:
-        return unsafe
-
-    effects: list[dict[str, Any]] = []
-    await _ensure_builder_fee_approval(adapter, sender=sender, effects=effects)
 
     sz, sizing, _ = await _resolve_perp_or_spot_size(
         adapter=adapter,
@@ -1305,6 +1737,22 @@ async def hyperliquid_place_limit_order(
         sizing=sizing,
         px_for_sizing=float(px),
     )
+    unsafe = await _reject_unsafe_perp_order(
+        adapter=adapter,
+        sender=sender,
+        asset_name=asset_name,
+        market_type=market_type,
+        is_buy=bool(is_buy),
+        reduce_only=bool(reduce_only),
+        allow_flip=bool(allow_flip),
+        size=float(sz_valid),
+        price=float(px),
+    )
+    if unsafe is not None:
+        return unsafe
+
+    effects: list[dict[str, Any]] = []
+    await _ensure_builder_fee_approval(adapter, sender=sender, effects=effects)
 
     ok_order, res = await adapter.place_limit_order(
         resolved_asset_id,
@@ -1359,15 +1807,8 @@ async def hyperliquid_place_limit_order(
 
 
 @catch_errors
-async def hyperliquid_get_state(
-    label: str, asset_name: str | None = None
-) -> dict[str, Any]:
-    """Return perp + spot + outcome state for a Hyperliquid wallet in one shot.
-
-    Pass `asset_name` to include frontend-equivalent trade context from
-    Hyperliquid `activeAssetData`, including available-to-trade margin for long
-    and short in UnifiedAccount mode.
-    """
+async def hyperliquid_get_state(label: str) -> dict[str, Any]:
+    """Return perp + spot + outcome state for a Hyperliquid wallet in one shot."""
     addr, _ = await resolve_wallet_address(wallet_label=label)
     if not addr:
         return err("not_found", f"Wallet not found: {label}")
@@ -1375,6 +1816,7 @@ async def hyperliquid_get_state(
     adapter = HyperliquidAdapter()
     perp_ok, perp = await adapter.get_user_state(addr)
     spot_ok, spot = await adapter.get_spot_user_state(addr)
+    abstraction_ok, abstraction = await adapter.get_user_abstraction(addr)
 
     spot_balances: list[dict[str, Any]] = []
     outcome_positions: list[dict[str, Any]] = []
@@ -1399,24 +1841,56 @@ async def hyperliquid_get_state(
                 spot_balances.append(bal)
         spot["balances"] = spot_balances
 
-    trade_context = None
-    if asset_name:
-        trade_context = await _build_trade_context(
-            adapter=adapter,
-            address=addr,
-            asset_name=asset_name,
-            perp_state=perp if isinstance(perp, dict) else None,
-        )
-
     return ok(
         {
             "label": label,
             "address": addr,
             "perp": {"success": perp_ok, "state": perp},
             "spot": {"success": spot_ok, "state": spot},
+            "account_abstraction": {
+                "success": abstraction_ok,
+                "state": abstraction,
+            },
             "outcomes": {"success": spot_ok, "positions": outcome_positions},
-            "trade_context": trade_context,
         }
+    )
+
+
+@catch_errors
+async def hyperliquid_get_trade_asset(label: str, asset_name: str) -> dict[str, Any]:
+    """Return selected perp/HIP-3 trade capacity from activeAssetData.
+
+    The response includes current account-side capacity (`long`/`short`), market
+    metadata (`max_leverage`, `compatible_margin_modes`, size decimals,
+    margin-table id), and live market context such as funding/open interest when
+    available from `metaAndAssetCtxs`.
+
+    Args:
+        label: Configured Wayfinder wallet label in the current runtime, such as
+            "main" or "free-seeking-moon primary wallet".
+        asset_name: Hyperliquid perp/HIP-3 market, such as "ETH-USDC",
+            "HYPE-USDC", or "xyz:NVDA".
+    """
+    addr, _ = await resolve_wallet_address(wallet_label=label)
+    if not addr:
+        return err("not_found", f"Wallet not found: {label}")
+
+    adapter = HyperliquidAdapter()
+    perp_ok, perp = await adapter.get_user_state(addr)
+    if not perp_ok or not isinstance(perp, dict):
+        return err(
+            "state_error",
+            "Could not fetch Hyperliquid perp state for trade asset.",
+            details={"asset_name": asset_name, "error": str(perp)},
+        )
+
+    return ok(
+        await _build_trade_asset(
+            adapter=adapter,
+            address=addr,
+            asset_name=asset_name,
+            perp_state=perp,
+        )
     )
 
 
@@ -1544,7 +2018,11 @@ async def hyperliquid_search_market(
                 if market["class"] == "priceBinary"
                 else [s for o in market["outcomes"] for s in o["sides"]]
             )
-            text = " ".join(side["description"] for side in sides)
+            text = (
+                market.get("name", "")
+                + " "
+                + " ".join(side["description"] for side in sides)
+            )
             # Side descriptions use math operators (>=, <, <=); the candidate
             # tokenizer strips non-alphanumerics so those would be invisible
             # to MARKET_SEARCH_ALIASES. Rewrite to natural-language words so

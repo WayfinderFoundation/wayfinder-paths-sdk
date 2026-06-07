@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any
 
 from eth_utils import to_checksum_address
-from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
@@ -12,10 +11,11 @@ from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
     ensure_allowance,
+    get_token_balance,
 )
 from wayfinder_paths.core.utils.transaction import send_transaction
+from wayfinder_paths.core.utils.units import from_erc20_raw
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
-from wayfinder_paths.mcp.preview import build_execution_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     catch_errors,
@@ -27,68 +27,12 @@ from wayfinder_paths.mcp.utils import (
 )
 
 
-class ExecutionRequest(BaseModel):
-    kind: Literal["swap", "send"]
-    wallet_label: str = Field(..., description="config.json wallet label (e.g. main)")
-
-    # Shared
-    amount: str = Field(..., description="Human units as a string (e.g. '1000')")
-    recipient: str | None = Field(
-        default=None, description="Destination address (defaults to sender for swap)"
-    )
-
-    # swap-only
-    from_token: str | None = Field(default=None, description="Token id/address query")
-    to_token: str | None = Field(default=None, description="Token id/address query")
-    slippage_bps: int = Field(default=50, description="Slippage in bps (50 = 0.50%)")
-    deadline_seconds: int = Field(
-        default=300, description="Best-effort TTL for quoting"
-    )
-    wait_for_receipt: bool = Field(
-        default=False,
-        description="When true, wait for transaction receipt before returning",
-    )
-    receipt_confirmations: int = Field(
-        default=0,
-        ge=0,
-        description="Confirmations to wait for when wait_for_receipt=true",
-    )
-
-    # send-only
-    token: str | None = Field(
-        default=None, description="Token id/address query, or 'native'"
-    )
-    chain_id: int | None = Field(
-        default=None, description="Required when token='native'"
-    )
-
-    @model_validator(mode="after")
-    def _validate_kind(self) -> ExecutionRequest:
-        if not self.wallet_label.strip():
-            raise ValueError("wallet_label is required")
-        if self.kind == "swap":
-            if not (self.from_token and self.to_token):
-                raise ValueError("swap requires from_token and to_token")
-            if self.slippage_bps < 0:
-                raise ValueError("slippage_bps must be >= 0")
-            if self.deadline_seconds <= 0:
-                raise ValueError("deadline_seconds must be positive")
-        if self.kind == "send":
-            if not self.token:
-                raise ValueError("send requires token")
-            if not self.recipient:
-                raise ValueError("send requires recipient")
-            if str(self.token).strip().lower() == "native" and self.chain_id is None:
-                raise ValueError("send requires chain_id when token='native'")
-        return self
-
-
 def _compact_quote(
     quote_data: dict[str, Any], best_quote: dict[str, Any] | None
 ) -> dict[str, Any]:
     result: dict[str, Any] = {}
 
-    # Extract provider list from quotes. BRAP quotes may appear as either:
+    # BRAP quotes may appear as either:
     # 1) {"quotes": [...], "best_quote": {...}}
     # 2) {"quotes": {"all_quotes": [...], "best_quote": {...}, "quote_count": N}}
     all_quotes: list[dict[str, Any]] = []
@@ -216,6 +160,7 @@ def _annotate_profile(
     label: str,
     protocol: str,
     action: str,
+    tool: str,
     status: str,
     chain_id: int | None = None,
     details: dict[str, Any] | None = None,
@@ -226,7 +171,7 @@ def _annotate_profile(
         label=label,
         protocol=protocol,
         action=action,
-        tool="execute",
+        tool=tool,
         status=status,
         chain_id=chain_id,
         details=details,
@@ -234,309 +179,344 @@ def _annotate_profile(
 
 
 @catch_errors
-async def core_execute(
+async def onchain_swap(
     *,
-    kind: Literal["swap", "send"],
     wallet_label: str,
+    from_token: str,
+    to_token: str,
     amount: str,
-    # Shared optional
-    recipient: str | None = None,
-    # swap-only
-    from_token: str | None = None,
-    to_token: str | None = None,
     slippage_bps: int = 50,
-    deadline_seconds: int = 300,
-    wait_for_receipt: bool = False,
+    recipient: str | None = None,
+    wait_for_receipt: bool = True,
     receipt_confirmations: int = 0,
-    # send-only
-    token: str | None = None,
-    chain_id: int | None = None,
 ) -> dict[str, Any]:
-    """Broadcast on-chain transactions: cross-chain swap or token send.
+    """Broadcast a cross-chain / cross-DEX swap via BRAP.
 
-    **Always quote before swapping** — call `onchain_quote_swap` first, confirm route + output
-    with the user, then run this. The tool returns after broadcast by default with
-    `status="submitted"` to avoid client-side MCP timeouts on slow chains. Pass
-    `wait_for_receipt=True` only when synchronous confirmation is required. For
-    `hyperliquid_deposit(amount_usdc=...)`.
-
-    Kinds:
-      - `swap`: BRAP cross-chain/cross-DEX swap. Requires `from_token`, `to_token`, `amount`
-        (human units string). `slippage_bps` (50 = 0.5%, default), `recipient` defaults to sender.
-        Resolves token symbols/IDs via `TokenResolver`, ensures ERC-20 allowance, then broadcasts.
-      - `send`: ERC-20 or native transfer. Requires `token`, `recipient`, `amount`. Pass
-        `chain_id` when `token="native"`.
+    **Always quote first** — call `onchain_quote_swap` and confirm route + output with the
+    user before running this. Same-chain swaps wait for the source receipt; cross-chain
+    swaps additionally wait for the destination bridge leg to settle (via the
+    BRAP wait-bridge-execution endpoint). Pass `wait_for_receipt=False` for
+    fire-and-forget broadcast (skips both waits).
 
     Args:
-        kind: "swap" | "send".
-        wallet_label: Required — config.json wallet label.
-        amount: Human-units string (e.g. "1000" or "0.5").
-        recipient: Destination address (defaults to sender for swap; required for send).
-        from_token / to_token: Swap inputs (token id, address-id, or symbol query).
-        slippage_bps: Swap slippage cap in basis points.
-        deadline_seconds: Best-effort quote TTL.
-        wait_for_receipt: Optional synchronous receipt wait. Default false.
+        wallet_label: Wallet label.
+        from_token: Source token id, address-id, or symbol query.
+        to_token: Destination token id, address-id, or symbol query.
+        amount: Human-units string (e.g. "1000" or "0.5"), not wei.
+        slippage_bps: Slippage cap in basis points (50 = 0.5%, default).
+        recipient: Destination address (defaults to sender).
+        wait_for_receipt: Synchronous receipt wait. Default true.
         receipt_confirmations: Confirmations to wait for when `wait_for_receipt=true`.
-        token / chain_id: Send inputs (chain_id only required for `token="native"`).
 
     Returns:
-        `{status: "submitted"|"confirmed"|"failed", sender, recipient, effects: {approval?, swap|send_*|deposit}, ...}`
+        `{status: "submitted"|"confirmed"|"failed", sender, recipient, effects: {approval?, swap}, raw}`.
     """
-    request_data = {
-        "kind": kind,
-        "wallet_label": wallet_label,
-        "amount": amount,
-        "recipient": recipient,
-        "from_token": from_token,
-        "to_token": to_token,
-        "slippage_bps": slippage_bps,
-        "deadline_seconds": deadline_seconds,
-        "wait_for_receipt": wait_for_receipt,
-        "receipt_confirmations": receipt_confirmations,
-        "token": token,
-        "chain_id": chain_id,
+    if not wallet_label.strip():
+        return err("invalid_request", "wallet_label is required")
+    if slippage_bps < 0:
+        return err("invalid_request", "slippage_bps must be >= 0")
+
+    sign_callback, sender = await get_wallet_signing_callback(wallet_label)
+    rcpt = normalize_address(recipient) or sender
+    response: dict[str, Any] = {
+        "sender": sender,
+        "recipient": rcpt,
+        "effects": {},
     }
+
     try:
-        req = ExecutionRequest.model_validate(request_data)
-    except ValidationError as exc:
-        # Extract serializable error details (exc.errors() contains raw exception objects that can't be JSON-serialized)
-        error_details = [
-            {"loc": e.get("loc"), "msg": e.get("msg")} for e in exc.errors()
-        ]
+        from_meta = await TokenResolver.resolve_token_meta(from_token)
+        to_meta = await TokenResolver.resolve_token_meta(to_token)
+    except Exception as exc:  # noqa: BLE001
+        return err("token_error", str(exc))
+
+    from_chain_id = from_meta.get("chain_id")
+    to_chain_id = to_meta.get("chain_id")
+    from_token_addr = str(from_meta.get("address") or "").strip() or None
+    to_token_addr = str(to_meta.get("address") or "").strip() or None
+    if from_chain_id is None or to_chain_id is None:
         return err(
-            "invalid_request", "execute.request validation failed", error_details
+            "invalid_token",
+            "Could not resolve chain_id for one or more tokens",
+            {"from_chain_id": from_chain_id, "to_chain_id": to_chain_id},
         )
-
-    tool_input = {
-        "request": req.model_dump(mode="json"),
-    }
-    preview_obj = await build_execution_preview(tool_input)
-    preview_text = str(preview_obj.get("summary") or "").strip()
-
-    sign_callback, sender = await get_wallet_signing_callback(req.wallet_label)
-
-    if req.kind == "swap":
-        rcpt = normalize_address(req.recipient) or sender
-        response: dict[str, Any] = {
-            "kind": "swap",
-            "sender": sender,
-            "recipient": rcpt,
-            "preview": preview_text,
-            "effects": {},
-        }
-        try:
-            from_meta = await TokenResolver.resolve_token_meta(str(req.from_token))
-            to_meta = await TokenResolver.resolve_token_meta(str(req.to_token))
-        except Exception as exc:  # noqa: BLE001
-            return err("token_error", str(exc))
-
-        from_chain_id = from_meta.get("chain_id")
-        to_chain_id = to_meta.get("chain_id")
-        from_token_addr = str(from_meta.get("address") or "").strip() or None
-        to_token_addr = str(to_meta.get("address") or "").strip() or None
-        if from_chain_id is None or to_chain_id is None:
-            return err(
-                "invalid_token",
-                "Could not resolve chain_id for one or more tokens",
-                {"from_chain_id": from_chain_id, "to_chain_id": to_chain_id},
-            )
-        if not from_token_addr or not to_token_addr:
-            return err(
-                "invalid_token",
-                "Could not resolve token address for one or more tokens",
-                {
-                    "from_token_address": from_token_addr,
-                    "to_token_address": to_token_addr,
-                },
-            )
-
-        decimals = int(from_meta.get("decimals") or 18)
-        try:
-            amount_raw = parse_amount_to_raw(req.amount, decimals)
-        except ValueError as exc:
-            return err("invalid_amount", str(exc))
-
-        slippage = max(0.0, float(int(req.slippage_bps)) / 10_000.0)
-        try:
-            quote_data = await BRAP_CLIENT.get_quote(
-                from_token=from_token_addr,
-                to_token=to_token_addr,
-                from_chain=from_chain_id,
-                to_chain=to_chain_id,
-                from_wallet=sender,
-                from_amount=str(amount_raw),
-                slippage=slippage,
-            )
-        except Exception as exc:  # noqa: BLE001
-            return err("quote_error", str(exc))
-
-        # BRAP quote responses have historically appeared in two shapes:
-        # 1) {"quotes": [...], "best_quote": {...}}
-        # 2) {"quotes": {"all_quotes": [...], "best_quote": {...}, "quote_count": N}}
-        best_quote = None
-        if isinstance(quote_data, dict):
-            if isinstance(quote_data.get("best_quote"), dict):
-                best_quote = quote_data.get("best_quote")
-            else:
-                quotes_block = quote_data.get("quotes")
-                if isinstance(quotes_block, dict) and isinstance(
-                    quotes_block.get("best_quote"), dict
-                ):
-                    best_quote = quotes_block.get("best_quote")
-
-        if not isinstance(best_quote, dict):
-            return err("quote_error", "No best_quote returned", {"quote": quote_data})
-
-        calldata = best_quote.get("calldata") or {}
-        if not isinstance(calldata, dict) or not calldata:
-            return err(
-                "quote_error", "best_quote missing calldata", {"best_quote": best_quote}
-            )
-
-        swap_tx = dict(calldata)
-        swap_tx["chainId"] = int(from_chain_id)
-        swap_tx["from"] = to_checksum_address(sender)
-        if "value" in swap_tx:
-            swap_tx["value"] = int(swap_tx["value"])
-
-        token_addr = from_token_addr
-        spender = swap_tx.get("to")
-        approve_amount = (
-            best_quote.get("input_amount")
-            or best_quote.get("inputAmount")
-            or best_quote.get("amount1")
-            or best_quote.get("amount")
-        )
-
-        if (
-            token_addr
-            and isinstance(token_addr, str)
-            and token_addr.strip()
-            and token_addr.lower() != ZERO_ADDRESS.lower()
-            and spender
-            and approve_amount is not None
-        ):
-            try:
-                need = int(approve_amount)
-            except Exception:
-                need = int(amount_raw)
-            ok_allow, approval_tx = await _ensure_allowance(
-                sign_callback=sign_callback,
-                chain_id=int(from_chain_id),
-                token_address=token_addr,
-                owner=to_checksum_address(sender),
-                spender=to_checksum_address(str(spender)),
-                amount=need,
-            )
-            if approval_tx:
-                response["effects"]["approval"] = approval_tx
-            if not ok_allow:
-                response["status"] = "failed"
-                response["raw"] = _compact_quote(quote_data, None)
-                return ok(response)
-
-        sent_ok, sent = await _broadcast(
-            sign_callback,
-            swap_tx,
-            chain_id=int(from_chain_id),
-            wait_for_receipt=req.wait_for_receipt,
-            confirmations=req.receipt_confirmations,
-        )
-        response["effects"]["swap"] = sent
-
-        status = "confirmed" if sent_ok and req.wait_for_receipt else "submitted"
-        if not sent_ok:
-            status = "failed"
-        response["status"] = status
-        response["raw"] = _compact_quote(quote_data, best_quote)
-
-        _annotate_profile(
-            address=sender,
-            label=req.wallet_label,
-            protocol="brap",
-            action="swap",
-            status=status,
-            chain_id=int(from_chain_id),
-            details={
-                "from_token": str(req.from_token),
-                "to_token": str(req.to_token),
-                "amount": req.amount,
+    if not from_token_addr or not to_token_addr:
+        return err(
+            "invalid_token",
+            "Could not resolve token address for one or more tokens",
+            {
+                "from_token_address": from_token_addr,
+                "to_token_address": to_token_addr,
             },
         )
 
-        return ok(response)
+    decimals = int(from_meta.get("decimals") or 18)
+    try:
+        amount_raw = parse_amount_to_raw(amount, decimals)
+    except ValueError as exc:
+        return err("invalid_amount", str(exc))
 
-    if req.kind == "send":
-        recipient = normalize_address(req.recipient)
-        if not recipient:
-            raise ValueError("Recipient address is required for send")
-        token_q = str(req.token or "").strip()
-        response: dict[str, Any] = {
-            "kind": req.kind,
-            "sender": sender,
-            "recipient": recipient,
-            "preview": preview_text,
-            "effects": {},
-        }
+    balance = await get_token_balance(from_token_addr, int(from_chain_id), sender)
+    if balance < amount_raw:
+        symbol = from_meta["symbol"] or "tokens"
+        return err(
+            "insufficient_balance",
+            f"Wallet has {from_erc20_raw(balance, decimals):.6f} {symbol}, "
+            f"need {from_erc20_raw(amount_raw, decimals):.6f}.",
+            {
+                "sender": sender,
+                "chain_id": int(from_chain_id),
+                "token_address": from_token_addr,
+                "have_raw": balance,
+                "need_raw": amount_raw,
+            },
+        )
 
+    slippage = max(0.0, float(int(slippage_bps)) / 10_000.0)
+    try:
+        quote_data = await BRAP_CLIENT.get_quote(
+            from_token=from_token_addr,
+            to_token=to_token_addr,
+            from_chain=from_chain_id,
+            to_chain=to_chain_id,
+            from_wallet=sender,
+            from_amount=str(amount_raw),
+            slippage=slippage,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return err("quote_error", str(exc))
+
+    best_quote = None
+    if isinstance(quote_data, dict):
+        if isinstance(quote_data.get("best_quote"), dict):
+            best_quote = quote_data.get("best_quote")
+        else:
+            quotes_block = quote_data.get("quotes")
+            if isinstance(quotes_block, dict) and isinstance(
+                quotes_block.get("best_quote"), dict
+            ):
+                best_quote = quotes_block.get("best_quote")
+
+    if not isinstance(best_quote, dict):
+        return err("quote_error", "No best_quote returned", {"quote": quote_data})
+
+    calldata = best_quote.get("calldata") or {}
+    if not isinstance(calldata, dict) or not calldata:
+        return err(
+            "quote_error", "best_quote missing calldata", {"best_quote": best_quote}
+        )
+
+    swap_tx = dict(calldata)
+    swap_tx["chainId"] = int(from_chain_id)
+    swap_tx["from"] = to_checksum_address(sender)
+    if "value" in swap_tx:
+        swap_tx["value"] = int(swap_tx["value"])
+
+    spender = (
+        best_quote.get("approvalAddress")
+        or best_quote.get("approval_address")
+        or swap_tx.get("to")
+    )
+    approve_amount = (
+        best_quote.get("input_amount")
+        or best_quote.get("inputAmount")
+        or best_quote.get("amount1")
+        or best_quote.get("amount")
+    )
+
+    if (
+        from_token_addr.lower() != ZERO_ADDRESS.lower()
+        and spender
+        and approve_amount is not None
+    ):
         try:
-            token_meta = await TokenResolver.resolve_token_meta(
-                token_q, chain_id=req.chain_id
+            need = int(approve_amount)
+        except Exception:
+            need = int(amount_raw)
+        ok_allow, approval_tx = await _ensure_allowance(
+            sign_callback=sign_callback,
+            chain_id=int(from_chain_id),
+            token_address=from_token_addr,
+            owner=to_checksum_address(sender),
+            spender=to_checksum_address(str(spender)),
+            amount=need,
+        )
+        if approval_tx:
+            response["effects"]["approval"] = approval_tx
+        if not ok_allow:
+            response["status"] = "failed"
+            response["raw"] = _compact_quote(quote_data, None)
+            return ok(response)
+
+    sent_ok, sent = await _broadcast(
+        sign_callback,
+        swap_tx,
+        chain_id=int(from_chain_id),
+        wait_for_receipt=wait_for_receipt,
+        confirmations=receipt_confirmations,
+    )
+    response["effects"]["swap"] = sent
+
+    status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
+    if not sent_ok:
+        status = "failed"
+
+    bridge_tracking = best_quote.get("bridge_tracking")
+    if sent_ok and wait_for_receipt and bridge_tracking:
+        try:
+            bridge_result = await BRAP_CLIENT.wait_for_bridge_execution(
+                bridge_tracking=bridge_tracking,
+                tx_hash=sent["txn_hash"],
             )
+            response["effects"]["bridge"] = bridge_result
+            if not bridge_result.get("is_success"):
+                status = "failed"
         except Exception as exc:  # noqa: BLE001
-            return err("token_error", str(exc))
+            response["effects"]["bridge"] = {
+                "state": "pending",
+                "error": sanitize_for_json(str(exc)),
+            }
+            status = "submitted"
 
-        token_address = str(token_meta.get("address") or "").strip()
-        chain_id = token_meta.get("chain_id")
-        if not token_address or chain_id is None:
-            return err(
-                "invalid_token",
-                "Token missing address/chain_id",
-                {"token": token_meta},
-            )
-        decimals = int(token_meta.get("decimals") or 18)
-        is_native = token_address.lower() == ZERO_ADDRESS.lower()
+    response["status"] = status
+    response["raw"] = _compact_quote(quote_data, best_quote)
 
-        try:
-            amount_raw = parse_amount_to_raw(req.amount, decimals)
-        except ValueError as exc:
-            return err("invalid_amount", str(exc))
+    _annotate_profile(
+        address=sender,
+        label=wallet_label,
+        protocol="brap",
+        action="swap",
+        tool="onchain_swap",
+        status=status,
+        chain_id=int(from_chain_id),
+        details={
+            "from_token": from_token,
+            "to_token": to_token,
+            "amount": amount,
+        },
+    )
 
-        transaction = await build_send_transaction(
-            from_address=sender,
-            to_address=recipient,
-            token_address=token_address,
-            chain_id=int(chain_id),
-            amount=int(amount_raw),
+    return ok(response)
+
+
+@catch_errors
+async def onchain_send(
+    *,
+    wallet_label: str,
+    token: str,
+    recipient: str,
+    amount: str,
+    chain_id: int | None = None,
+    wait_for_receipt: bool = True,
+    receipt_confirmations: int = 0,
+) -> dict[str, Any]:
+    """Broadcast an ERC-20 or native token transfer.
+
+    Waits for the receipt by default and returns `status="confirmed"`; pass
+    `wait_for_receipt=False` for fire-and-forget broadcast on slow chains where the MCP
+    client may time out.
+
+    Args:
+        wallet_label: Wallet label.
+        token: Token id, address-id, symbol query, or `"native"`.
+        recipient: Destination address. Required.
+        amount: Human-units string (e.g. "5" for 5 USDC), not wei.
+        chain_id: Required when `token="native"`; ignored otherwise.
+        wait_for_receipt: Synchronous receipt wait. Default true.
+        receipt_confirmations: Confirmations to wait for when `wait_for_receipt=true`.
+
+    Returns:
+        `{status: "submitted"|"confirmed"|"failed", sender, recipient, effects: {send_native|send_erc20}, raw}`.
+    """
+    if not wallet_label.strip():
+        return err("invalid_request", "wallet_label is required")
+    token_q = token.strip()
+    if not token_q:
+        return err("invalid_request", "token is required")
+    if token_q.lower() == "native" and chain_id is None:
+        return err("invalid_request", "chain_id is required when token='native'")
+
+    sign_callback, sender = await get_wallet_signing_callback(wallet_label)
+    rcpt = normalize_address(recipient)
+    if not rcpt:
+        return err("invalid_request", "recipient address is required")
+
+    response: dict[str, Any] = {
+        "sender": sender,
+        "recipient": rcpt,
+        "effects": {},
+    }
+
+    try:
+        token_meta = await TokenResolver.resolve_token_meta(token_q, chain_id=chain_id)
+    except Exception as exc:  # noqa: BLE001
+        return err("token_error", str(exc))
+
+    token_address = str(token_meta.get("address") or "").strip()
+    resolved_chain_id = token_meta.get("chain_id")
+    if not token_address or resolved_chain_id is None:
+        return err(
+            "invalid_token",
+            "Token missing address/chain_id",
+            {"token": token_meta},
+        )
+    decimals = int(token_meta.get("decimals") or 18)
+    is_native = token_address.lower() == ZERO_ADDRESS.lower()
+
+    try:
+        amount_raw = parse_amount_to_raw(amount, decimals)
+    except ValueError as exc:
+        return err("invalid_amount", str(exc))
+
+    balance = await get_token_balance(token_address, int(resolved_chain_id), sender)
+    if balance < amount_raw:
+        symbol = token_meta["symbol"] or "tokens"
+        return err(
+            "insufficient_balance",
+            f"Wallet has {from_erc20_raw(balance, decimals):.6f} {symbol}, "
+            f"need {from_erc20_raw(amount_raw, decimals):.6f}.",
+            {
+                "sender": sender,
+                "chain_id": int(resolved_chain_id),
+                "token_address": token_address,
+                "have_raw": balance,
+                "need_raw": amount_raw,
+            },
         )
 
-        sent_ok, sent = await _broadcast(
-            sign_callback,
-            transaction,
-            chain_id=int(chain_id),
-            wait_for_receipt=req.wait_for_receipt,
-            confirmations=req.receipt_confirmations,
-        )
-        label = "send_native" if is_native else "send_erc20"
-        response["effects"][label] = sent
+    transaction = await build_send_transaction(
+        from_address=sender,
+        to_address=rcpt,
+        token_address=token_address,
+        chain_id=int(resolved_chain_id),
+        amount=int(amount_raw),
+    )
 
-        status = "confirmed" if sent_ok and req.wait_for_receipt else "submitted"
-        if not sent_ok:
-            status = "failed"
-        response["status"] = status
-        response["raw"] = {"transaction": transaction}
-        response["raw"]["token"] = token_meta
+    sent_ok, sent = await _broadcast(
+        sign_callback,
+        transaction,
+        chain_id=int(resolved_chain_id),
+        wait_for_receipt=wait_for_receipt,
+        confirmations=receipt_confirmations,
+    )
+    label = "send_native" if is_native else "send_erc20"
+    response["effects"][label] = sent
 
-        _annotate_profile(
-            address=sender,
-            label=req.wallet_label,
-            protocol="balance",
-            action=label,
-            status=status,
-            chain_id=int(chain_id),
-            details={"recipient": recipient, "amount": req.amount, "token": token_q},
-        )
+    status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
+    if not sent_ok:
+        status = "failed"
+    response["status"] = status
+    response["raw"] = {"transaction": transaction, "token": token_meta}
 
-        return ok(response)
+    _annotate_profile(
+        address=sender,
+        label=wallet_label,
+        protocol="balance",
+        action=label,
+        tool="onchain_send",
+        status=status,
+        chain_id=int(resolved_chain_id),
+        details={"recipient": rcpt, "amount": amount, "token": token_q},
+    )
 
-    return err("invalid_request", f"Unknown kind: {req.kind}")
+    return ok(response)

@@ -34,93 +34,85 @@ def _add_local(daemon: RunnerDaemon, name: str) -> None:
     )
 
 
-def test_reconcile_deletes_remote_only_and_syncs_local(
+def test_bulk_sync_sends_all_local_jobs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("OPENCODE_INSTANCE_ID", "inst-xyz")
 
     daemon = RunnerDaemon(paths=_paths(tmp_path))
-    _add_local(daemon, "local-a")
-    _add_local(daemon, "local-b")
+    _add_local(daemon, "job-a")
+    _add_local(daemon, "job-b")
 
-    deleted: list[str] = []
-    synced: list[str] = []
-
+    synced: list[list[dict]] = []
     monkeypatch.setattr(
-        SCHEDULED_JOBS_CLIENT,
-        "list_jobs",
-        lambda: [
-            {"job_name": "local-a"},
-            {"job_name": "orphan-1"},
-            {"job_name": "orphan-2"},
-        ],
-    )
-    monkeypatch.setattr(
-        SCHEDULED_JOBS_CLIENT, "delete_job", lambda name: deleted.append(name)
-    )
-    monkeypatch.setattr(
-        SCHEDULED_JOBS_CLIENT,
-        "sync_job",
-        lambda name, _data: synced.append(name),
+        SCHEDULED_JOBS_CLIENT, "bulk_sync", lambda jobs: synced.append(jobs)
     )
 
-    daemon._reconcile_with_backend()
+    jobs = []
+    for j in daemon._db.list_jobs():
+        job, state = daemon._db.get_job(name=j["name"])
+        jobs.append(
+            {
+                "job_name": job.name,
+                "job_type": job.type,
+                "status": state.status,
+                "interval_seconds": job.interval_seconds,
+                "payload": job.payload,
+            }
+        )
+    SCHEDULED_JOBS_CLIENT.bulk_sync(jobs)
 
-    assert set(deleted) == {"orphan-1", "orphan-2"}
-    assert set(synced) == {"local-a", "local-b"}
+    assert len(synced) == 1
+    names = {j["job_name"] for j in synced[0]}
+    assert names == {"job-a", "job-b"}
 
 
-def test_reconcile_noop_when_not_opencode(
+def test_bulk_sync_noop_when_not_opencode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("OPENCODE_INSTANCE_ID", raising=False)
 
     daemon = RunnerDaemon(paths=_paths(tmp_path))
-    _add_local(daemon, "local-a")
+    _add_local(daemon, "job-a")
 
-    called = {"list": 0, "delete": 0, "sync": 0}
-    monkeypatch.setattr(
-        SCHEDULED_JOBS_CLIENT,
-        "list_jobs",
-        lambda: (called.__setitem__("list", called["list"] + 1), [])[1],
-    )
-    monkeypatch.setattr(
-        SCHEDULED_JOBS_CLIENT,
-        "delete_job",
-        lambda _name: called.__setitem__("delete", called["delete"] + 1),
-    )
-    monkeypatch.setattr(
-        SCHEDULED_JOBS_CLIENT,
-        "sync_job",
-        lambda _n, _d: called.__setitem__("sync", called["sync"] + 1),
-    )
+    called = False
 
-    daemon._reconcile_with_backend()
+    def _fail(jobs):
+        nonlocal called
+        called = True
 
-    assert called == {"list": 0, "delete": 0, "sync": 0}
+    monkeypatch.setattr(SCHEDULED_JOBS_CLIENT, "bulk_sync", _fail)
+
+    daemon._sync_to_backend_async()
+
+    assert not called
 
 
-def test_reconcile_empty_remote_just_syncs_local(
+def test_bulk_sync_empty_when_no_jobs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("OPENCODE_INSTANCE_ID", "inst-xyz")
 
     daemon = RunnerDaemon(paths=_paths(tmp_path))
-    _add_local(daemon, "only-local")
 
-    deleted: list[str] = []
-    synced: list[str] = []
-    monkeypatch.setattr(SCHEDULED_JOBS_CLIENT, "list_jobs", lambda: [])
+    synced: list[list[dict]] = []
     monkeypatch.setattr(
-        SCHEDULED_JOBS_CLIENT, "delete_job", lambda name: deleted.append(name)
-    )
-    monkeypatch.setattr(
-        SCHEDULED_JOBS_CLIENT,
-        "sync_job",
-        lambda name, _data: synced.append(name),
+        SCHEDULED_JOBS_CLIENT, "bulk_sync", lambda jobs: synced.append(jobs)
     )
 
-    daemon._reconcile_with_backend()
+    jobs = []
+    for j in daemon._db.list_jobs():
+        job, state = daemon._db.get_job(name=j["name"])
+        jobs.append(
+            {
+                "job_name": job.name,
+                "job_type": job.type,
+                "status": state.status,
+                "interval_seconds": job.interval_seconds,
+                "payload": job.payload,
+            }
+        )
+    SCHEDULED_JOBS_CLIENT.bulk_sync(jobs)
 
-    assert deleted == []
-    assert synced == ["only-local"]
+    assert len(synced) == 1
+    assert synced[0] == []

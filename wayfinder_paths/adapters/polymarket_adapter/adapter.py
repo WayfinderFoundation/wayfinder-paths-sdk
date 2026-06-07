@@ -151,9 +151,93 @@ class PolymarketAdapter(BaseAdapter):
     def _normalize_market(market: dict[str, Any]) -> dict[str, Any]:
         out = dict(market)
         for key in ("outcomes", "outcomePrices", "clobTokenIds"):
-            if key in out:
+            if key in out and isinstance(out[key], str):
                 out[key] = json.loads(out[key])
         return out
+
+    @staticmethod
+    def _gamma_hint(
+        *,
+        endpoint: str,
+        status_code: int | None = None,
+    ) -> str | None:
+        if status_code == 429:
+            return "Gamma rate limited the request; narrow the query or retry later."
+        if endpoint.startswith("/markets/slug/") and status_code in {400, 404}:
+            return (
+                "No market found for this slug. If this came from a Polymarket "
+                "event page, call get_event_by_slug() or polymarket_read(action='get_event') "
+                "and select a contained market/outcome."
+            )
+        if endpoint.startswith("/events/slug/") and status_code in {400, 404}:
+            return (
+                "No event found for this slug. If this is a tradeable market slug, "
+                "call get_market_by_slug() or polymarket_read(action='get_market')."
+            )
+        return None
+
+    @classmethod
+    def _gamma_http_error(
+        cls,
+        exc: httpx.HTTPStatusError,
+        *,
+        endpoint: str,
+        slug: str | None = None,
+    ) -> dict[str, Any]:
+        status_code = exc.response.status_code
+        details: dict[str, Any] = {
+            "code": "gamma_http_error",
+            "message": f"Gamma returned HTTP {status_code} for {endpoint}",
+            "statusCode": status_code,
+            "endpoint": endpoint,
+        }
+        if slug:
+            details["slug"] = slug
+        hint = cls._gamma_hint(endpoint=endpoint, status_code=status_code)
+        if hint:
+            details["hint"] = hint
+        body = exc.response.text.strip()
+        if body:
+            details["responseText"] = body[:500]
+        return details
+
+    @classmethod
+    def _gamma_error(
+        cls,
+        exc: Exception,
+        *,
+        endpoint: str,
+        slug: str | None = None,
+    ) -> dict[str, Any]:
+        if isinstance(exc, httpx.HTTPStatusError):
+            return cls._gamma_http_error(exc, endpoint=endpoint, slug=slug)
+        details: dict[str, Any] = {
+            "code": "gamma_error",
+            "message": str(exc),
+            "endpoint": endpoint,
+        }
+        if slug:
+            details["slug"] = slug
+        return details
+
+    @staticmethod
+    def _gamma_unexpected_response(
+        *,
+        endpoint: str,
+        expected: str,
+        actual: str,
+        slug: str | None = None,
+    ) -> dict[str, Any]:
+        details: dict[str, Any] = {
+            "code": "gamma_unexpected_response",
+            "message": f"Unexpected {endpoint} response: expected {expected}, got {actual}",
+            "endpoint": endpoint,
+            "expected": expected,
+            "actual": actual,
+        }
+        if slug:
+            details["slug"] = slug
+        return details
 
     async def list_markets(
         self,
@@ -164,7 +248,8 @@ class PolymarketAdapter(BaseAdapter):
         order: str | None = None,
         ascending: bool | None = None,
         **filters: Any,
-    ) -> tuple[bool, list[dict[str, Any]] | str]:
+    ) -> tuple[bool, list[dict[str, Any]] | dict[str, Any] | str]:
+        endpoint = "/markets"
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         if closed is not None:
             params["closed"] = str(closed).lower()
@@ -179,11 +264,13 @@ class PolymarketAdapter(BaseAdapter):
             res.raise_for_status()
             data = res.json()
             if not isinstance(data, list):
-                return False, f"Unexpected /markets response: {type(data).__name__}"
+                return False, self._gamma_unexpected_response(
+                    endpoint=endpoint, expected="list", actual=type(data).__name__
+                )
             normalized = [self._normalize_market(m) for m in data]
             return True, normalized
         except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+            return False, self._gamma_error(exc, endpoint=endpoint)
 
     async def list_events(
         self,
@@ -194,7 +281,8 @@ class PolymarketAdapter(BaseAdapter):
         order: str | None = None,
         ascending: bool | None = None,
         **filters: Any,
-    ) -> tuple[bool, list[dict[str, Any]] | str]:
+    ) -> tuple[bool, list[dict[str, Any]] | dict[str, Any] | str]:
+        endpoint = "/events"
         params: dict[str, Any] = {"limit": limit, "offset": offset}
         if closed is not None:
             params["closed"] = str(closed).lower()
@@ -209,38 +297,52 @@ class PolymarketAdapter(BaseAdapter):
             res.raise_for_status()
             data = res.json()
             if not isinstance(data, list):
-                return False, f"Unexpected /events response: {type(data).__name__}"
+                return False, self._gamma_unexpected_response(
+                    endpoint=endpoint, expected="list", actual=type(data).__name__
+                )
             return True, data
         except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+            return False, self._gamma_error(exc, endpoint=endpoint)
 
     async def get_market_by_slug(self, slug: str) -> tuple[bool, dict[str, Any] | str]:
+        endpoint = f"/markets/slug/{slug}"
         try:
-            res = await self._gamma_http.get(f"/markets/slug/{slug}")
+            res = await self._gamma_http.get(endpoint)
             res.raise_for_status()
             data = res.json()
             if not isinstance(data, dict):
                 return (
                     False,
-                    f"Unexpected /markets/slug response: {type(data).__name__}",
+                    self._gamma_unexpected_response(
+                        endpoint=endpoint,
+                        expected="dict",
+                        actual=type(data).__name__,
+                        slug=slug,
+                    ),
                 )
             return True, self._normalize_market(data)
         except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+            return False, self._gamma_error(exc, endpoint=endpoint, slug=slug)
 
     async def get_event_by_slug(self, slug: str) -> tuple[bool, dict[str, Any] | str]:
+        endpoint = f"/events/slug/{slug}"
         try:
-            res = await self._gamma_http.get(f"/events/slug/{slug}")
+            res = await self._gamma_http.get(endpoint)
             res.raise_for_status()
             data = res.json()
             if not isinstance(data, dict):
-                return False, f"Unexpected /events/slug response: {type(data).__name__}"
+                return False, self._gamma_unexpected_response(
+                    endpoint=endpoint,
+                    expected="dict",
+                    actual=type(data).__name__,
+                    slug=slug,
+                )
             if "markets" in data:
                 data = dict(data)
                 data["markets"] = [self._normalize_market(m) for m in data["markets"]]
             return True, data
         except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+            return False, self._gamma_error(exc, endpoint=endpoint, slug=slug)
 
     async def search_markets(
         self,
@@ -261,9 +363,10 @@ class PolymarketAdapter(BaseAdapter):
     async def get_market_by_condition_id(
         self, *, condition_id: str
     ) -> tuple[bool, dict[str, Any] | str]:
+        endpoint = "/markets"
         try:
             res = await self._gamma_http.get(
-                "/markets", params={"condition_ids": condition_id}
+                endpoint, params={"condition_ids": condition_id}
             )
             res.raise_for_status()
             data = res.json()
@@ -271,7 +374,35 @@ class PolymarketAdapter(BaseAdapter):
                 return False, "Market not found"
             return True, self._normalize_market(data[0])
         except Exception as exc:  # noqa: BLE001
-            return False, str(exc)
+            return False, self._gamma_error(exc, endpoint=endpoint)
+
+    async def get_market_by_token_id(
+        self, *, token_id: str
+    ) -> tuple[bool, dict[str, Any] | str]:
+        endpoint = "/markets"
+        try:
+            res = await self._gamma_http.get(
+                endpoint, params={"clob_token_ids": token_id}
+            )
+            res.raise_for_status()
+            data = res.json()
+            if not data:
+                return False, "Market not found"
+            return True, self._normalize_market(data[0])
+        except Exception as exc:  # noqa: BLE001
+            return False, self._gamma_error(exc, endpoint=endpoint)
+
+    def resolve_outcome_from_token_id(
+        self, *, market: dict[str, Any], token_id: str
+    ) -> str | None:
+        outcomes: list[Any] = market.get("outcomes") or []
+        token_ids: list[Any] = market.get("clobTokenIds") or []
+        for i, tok in enumerate(token_ids):
+            if str(tok) == str(token_id):
+                if i < len(outcomes):
+                    return str(outcomes[i])
+                return None
+        return None
 
     def resolve_clob_token_id(
         self,

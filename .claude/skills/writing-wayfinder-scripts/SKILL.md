@@ -46,7 +46,10 @@ async with web3_from_chain_id(8453) as w3:
     balance = await w3.eth.get_balance(addr)
 ```
 
-It reads RPCs from `strategy.rpc_urls` in your config (defaults to repo-root `config.json`, or override via `WAYFINDER_CONFIG_PATH`). For sync access, use `get_web3s_from_chain_id(chain_id)` instead.
+It uses the Wayfinder RPC proxy by default. `strategy.rpc_urls` is only for
+explicit overrides such as local forks, Gorlami simulations, or debugging a
+specific provider. In normal Shell usage, keep `strategy.rpc_urls` empty. For
+sync access, use `get_web3s_from_chain_id(chain_id)` instead.
 
 Run scripts with poetry: `poetry run python .wayfinder_runs/my_script.py`
 
@@ -167,7 +170,7 @@ contract = w3.eth.contract(address=token, abi=ERC20_ABI)
 
 ### 6. Python `quote_swap` amounts are wei strings, not human-readable
 
-Note: This applies to the Python `quote_swap()` function in scripts. The MCP `core_execute(...)` tool takes **human-readable** amounts (e.g. `"5"` for 5 USDC).
+Note: This applies to the Python `quote_swap()` function in scripts. The MCP `onchain_swap(...)` / `onchain_send(...)` tools take **human-readable** amounts (e.g. `"5"` for 5 USDC).
 
 ```python
 # WRONG — "10.0" is not a valid wei amount

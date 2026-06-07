@@ -19,8 +19,6 @@ async def test_core_web_search_converts_gateway_arguments(
                 return_value={
                     "query": {"query": "goldsky subgraph docs", "sessionID": "ses_abc"},
                     "results": [],
-                    "provider": {"name": "exa", "cached": False},
-                    "usage": {"provider": {"name": "exa", "cached": False}},
                 }
             ),
             "fetch": AsyncMock(return_value={"results": [], "statuses": []}),
@@ -43,6 +41,8 @@ async def test_core_web_search_converts_gateway_arguments(
     )
 
     assert result["ok"] is True
+    assert "provider" not in result["result"]
+    assert "usage" not in result["result"]
     fake_client.search.assert_awaited_once_with(
         query="goldsky subgraph docs",
         num_results=3,
@@ -73,8 +73,6 @@ async def test_core_web_search_allows_backend_context_default(
                 return_value={
                     "query": {"query": "defillama api", "sessionID": "mcp"},
                     "results": [],
-                    "provider": {"name": "exa", "cached": False},
-                    "usage": {"provider": {"name": "exa", "cached": False}},
                 }
             ),
             "fetch": AsyncMock(return_value={"results": [], "statuses": []}),
@@ -87,6 +85,62 @@ async def test_core_web_search_allows_backend_context_default(
     assert result["ok"] is True
     assert fake_client.search.await_args.kwargs["context_max_characters"] is None
     assert fake_client.search.await_args.kwargs["session_id"] == "_"
+
+
+@pytest.mark.asyncio
+async def test_core_web_search_accepts_int_num_results_and_news_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = type(
+        "FakeResearchClient",
+        (),
+        {
+            "search": AsyncMock(return_value={"results": []}),
+        },
+    )()
+    monkeypatch.setattr(research_gateway, "RESEARCH_CLIENT", fake_client)
+
+    result = await research_gateway.core_web_search(
+        query="ethena catalyst",
+        numResults=5,
+        type="news",
+    )
+
+    assert result["ok"] is True
+    fake_client.search.assert_awaited_once()
+    kwargs = fake_client.search.await_args.kwargs
+    assert kwargs["num_results"] == 5
+    assert kwargs["search_type"] == "auto"
+    assert kwargs["category"] == "news"
+
+
+@pytest.mark.asyncio
+async def test_core_web_search_returns_allowed_values_for_bad_type() -> None:
+    result = await research_gateway.core_web_search(
+        query="ethena catalyst",
+        type="bad-mode",
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_argument"
+    assert result["error"]["details"]["field"] == "type"
+    assert "auto" in result["error"]["details"]["allowed_values"]
+
+
+@pytest.mark.asyncio
+async def test_core_web_search_suggests_category_for_type_category() -> None:
+    result = await research_gateway.core_web_search(
+        query="ethena catalyst",
+        type="news",
+        category="company",
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_argument"
+    assert result["error"]["details"]["suggested_arguments"] == {
+        "type": "auto",
+        "category": "news",
+    }
 
 
 @pytest.mark.asyncio
@@ -103,8 +157,6 @@ async def test_core_web_fetch_converts_gateway_arguments(
                     "query": {"urls": ["https://example.com"], "sessionID": "ses_abc"},
                     "results": [],
                     "statuses": [],
-                    "provider": {"name": "exa", "cached": False},
-                    "usage": {"provider": {"name": "exa", "cached": False}},
                 }
             ),
         },
@@ -124,6 +176,8 @@ async def test_core_web_fetch_converts_gateway_arguments(
     )
 
     assert result["ok"] is True
+    assert "provider" not in result["result"]
+    assert "usage" not in result["result"]
     fake_client.fetch.assert_awaited_once_with(
         urls=["https://example.com/a", "https://example.com/b"],
         query="main facts",
@@ -135,6 +189,34 @@ async def test_core_web_fetch_converts_gateway_arguments(
         context_max_characters=2000,
         session_id="ses_abc",
     )
+
+
+@pytest.mark.asyncio
+async def test_core_web_fetch_accepts_list_urls_and_int_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = type(
+        "FakeResearchClient",
+        (),
+        {
+            "fetch": AsyncMock(return_value={"results": [], "statuses": []}),
+        },
+    )()
+    monkeypatch.setattr(research_gateway, "RESEARCH_CLIENT", fake_client)
+
+    result = await research_gateway.core_web_fetch(
+        urls=["https://example.com/a", "https://example.com/b"],
+        maxAgeHours=24,
+        subpages=2,
+        contextMaxCharacters=2000,
+    )
+
+    assert result["ok"] is True
+    kwargs = fake_client.fetch.await_args.kwargs
+    assert kwargs["urls"] == ["https://example.com/a", "https://example.com/b"]
+    assert kwargs["max_age_hours"] == 24
+    assert kwargs["subpages"] == 2
+    assert kwargs["context_max_characters"] == 2000
 
 
 @pytest.mark.asyncio

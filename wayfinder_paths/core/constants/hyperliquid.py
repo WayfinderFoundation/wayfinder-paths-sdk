@@ -35,8 +35,8 @@ __all__ = [
 
 ARBITRUM_USDC_TOKEN_ID: str = "usd-coin-arbitrum"
 
-# Tenths of a basis point: 30 -> 0.030% (3 bps)
-DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP: int = 30
+# Tenths of a basis point: 50 -> 0.050% (5 bps)
+DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP: int = 50
 
 DEFAULT_HYPERLIQUID_BUILDER_FEE: dict[str, Any] = {
     "b": HYPE_FEE_WALLET,
@@ -47,7 +47,7 @@ MIN_DEPOSIT_USD: float = 5.0
 MIN_ORDER_USD_NOTIONAL: float = 10.0
 
 # Bridge2 takes a flat fee out of the HL-side withdraw `amount`. The
-# `hyperliquid_withdraw` tool treats `amount_usdc` as the gross debit; net
+# `hyperliquid_withdraw_usdc` tool treats `amount_usdc` as the gross debit; net
 # delivered to Arbitrum = `amount_usdc - WITHDRAW_FEE_USD`.
 WITHDRAW_FEE_USD: float = 1.0
 # At least $2 gross so something lands on Arbitrum after the $1 fee.

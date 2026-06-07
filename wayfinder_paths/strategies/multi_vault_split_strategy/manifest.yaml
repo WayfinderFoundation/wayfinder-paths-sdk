@@ -6,7 +6,7 @@ permissions:
       (action.type == 'erc20_transfer') OR
       (action.type == 'swap') OR
       (action.type == 'hyperliquid_transfer') OR
-      (action.type == 'hyperliquid_withdraw') OR
+      (action.type == 'hyperliquid_withdraw_usdc') OR
       (action.type == 'boros_deposit') OR
       (action.type == 'boros_withdraw') OR
       (action.type == 'boros_order')

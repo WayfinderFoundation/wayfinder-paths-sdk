@@ -1,3 +1,4 @@
+from contextlib import ExitStack, contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -27,7 +28,7 @@ class TestHyperliquidAdapter:
         mock.spot_user_state.return_value = {"balances": []}
 
         def _post_side_effect(_path, payload):
-            req_type = payload.get("type", "")
+            req_type = payload["type"]
             if req_type == "clearinghouseState":
                 return {"assetPositions": [], "crossMarginSummary": {}}
             if req_type == "metaAndAssetCtxs":
@@ -44,10 +45,14 @@ class TestHyperliquidAdapter:
                     "markPx": "50000.0",
                     "maxTradeSzs": ["0.0012", "0.0056"],
                 }
+            if req_type == "userAbstraction":
+                return "unifiedAccount"
             if req_type == "openOrders":
                 return [{"oid": 1}]
             if req_type == "frontendOpenOrders":
                 return [{"oid": 1}]
+            if req_type == "spotClearinghouseState":
+                return {"balances": []}
             return []
 
         mock.post.side_effect = _post_side_effect
@@ -73,59 +78,82 @@ class TestHyperliquidAdapter:
 
     @pytest.fixture
     def _patch_adapter(self, mock_info):
-        """Context manager that patches both get_info and get_perp_dexes."""
-        return lambda: (
-            patch(
-                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
-                return_value=mock_info,
-            ),
-            patch(
-                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_perp_dexes",
-                return_value=[""],
-            ),
-        )
+        async def _info_client_post(payload):
+            return mock_info.post("/info", payload)
+
+        @contextmanager
+        def _ctx():
+            with ExitStack() as stack:
+                for p in (
+                    patch(
+                        "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
+                        return_value=mock_info,
+                    ),
+                    patch(
+                        "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_perp_dexes",
+                        return_value=[""],
+                    ),
+                    patch(
+                        "wayfinder_paths.adapters.hyperliquid_adapter.adapter.HYPERLIQUID_INFO_CLIENT.post",
+                        new=AsyncMock(side_effect=_info_client_post),
+                    ),
+                    patch(
+                        "wayfinder_paths.adapters.hyperliquid_adapter.adapter.HYPERLIQUID_QUICKNODE_INFO_CLIENT.post",
+                        new=AsyncMock(side_effect=_info_client_post),
+                    ),
+                ):
+                    stack.enter_context(p)
+                yield
+
+        return _ctx
 
     @pytest.mark.asyncio
     async def test_get_meta_and_asset_ctxs(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        with _patch_adapter():
             success, data = await adapter.get_meta_and_asset_ctxs()
             assert success
             assert "universe" in data[0]
 
     @pytest.mark.asyncio
     async def test_get_spot_meta(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        with _patch_adapter():
             success, data = await adapter.get_spot_meta()
             assert success
 
     @pytest.mark.asyncio
     async def test_get_l2_book(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        with _patch_adapter():
             success, data = await adapter.get_l2_book("ETH")
             assert success
             assert "levels" in data
 
     @pytest.mark.asyncio
     async def test_get_user_state(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        with _patch_adapter():
             success, data = await adapter.get_user_state("0x1234")
             assert success
             assert "assetPositions" in data
 
     @pytest.mark.asyncio
     async def test_get_active_asset_data(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        with _patch_adapter():
             success, data = await adapter.get_active_asset_data("0x1234", "BTC-USDC")
             assert success
             assert data["availableToTrade"] == ["12.34", "56.78"]
             mock_info.post.assert_any_call(
                 "/info",
                 {"type": "activeAssetData", "user": "0x1234", "coin": "BTC"},
+            )
+
+    @pytest.mark.asyncio
+    async def test_get_user_abstraction(self, adapter, mock_info, _patch_adapter):
+        with _patch_adapter():
+            success, data = await adapter.get_user_abstraction("0x1234")
+            assert success
+            assert data == "unifiedAccount"
+            mock_info.post.assert_any_call(
+                "/info",
+                {"type": "userAbstraction", "user": "0x1234"},
             )
 
     def test_active_asset_data_coin(self):
@@ -135,21 +163,18 @@ class TestHyperliquidAdapter:
             HyperliquidAdapter.active_asset_data_coin("BTC/USDC")
 
     def test_get_sz_decimals(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        with _patch_adapter():
             decimals = adapter.get_sz_decimals(0)
             assert decimals == 4
 
     def test_get_sz_decimals_unknown_asset(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        with _patch_adapter():
             with pytest.raises(ValueError, match="Unknown asset_id"):
                 adapter.get_sz_decimals(99999)
 
     @pytest.mark.asyncio
     async def test_get_full_user_state(self, adapter, mock_info, _patch_adapter):
-        p1, p2 = _patch_adapter()
-        with p1, p2:
+        with _patch_adapter():
             ok, state = await adapter.get_full_user_state(account="0x1234")
             assert ok is True
             assert state["protocol"] == "hyperliquid"
@@ -164,22 +189,26 @@ class TestHyperliquidAdapter:
     ):
         address = "0x" + "22" * 20
 
-        # Spot USDC starts at 0, then jumps to 100 on the 3rd read.
         call_count = {"n": 0}
 
-        def _spot_state(_addr):
-            call_count["n"] += 1
-            total = "0.0" if call_count["n"] <= 2 else "100.0"
-            return {"balances": [{"coin": "USDC", "token": 0, "total": total}]}
+        async def _qn_post(body):
+            if body["type"] == "spotClearinghouseState":
+                call_count["n"] += 1
+                total = "0.0" if call_count["n"] <= 2 else "100.0"
+                return {"balances": [{"coin": "USDC", "token": 0, "total": total}]}
+            return mock_info.post("/info", body)
 
-        mock_info.spot_user_state.side_effect = _spot_state
-
-        p1, p2 = _patch_adapter()
-        with p1, p2:
-            with patch(
-                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.asyncio.sleep",
-                new=AsyncMock(),
-            ) as sleep_mock:
+        with _patch_adapter():
+            with (
+                patch(
+                    "wayfinder_paths.adapters.hyperliquid_adapter.adapter.HYPERLIQUID_QUICKNODE_INFO_CLIENT.post",
+                    new=_qn_post,
+                ),
+                patch(
+                    "wayfinder_paths.adapters.hyperliquid_adapter.adapter.asyncio.sleep",
+                    new=AsyncMock(),
+                ) as sleep_mock,
+            ):
                 ok, final_balance = await adapter.wait_for_deposit(
                     address,
                     expected_increase=100.0,
@@ -197,16 +226,21 @@ class TestHyperliquidAdapter:
     ):
         address = "0x" + "33" * 20
 
-        # Spot USDC stays at the initial value — deposit never credits.
-        mock_info.spot_user_state.return_value = {
-            "balances": [{"coin": "USDC", "token": 0, "total": "0.0"}]
-        }
+        async def _qn_post(body):
+            if body["type"] == "spotClearinghouseState":
+                return {"balances": [{"coin": "USDC", "token": 0, "total": "0.0"}]}
+            return mock_info.post("/info", body)
 
-        p1, p2 = _patch_adapter()
-        with p1, p2:
-            with patch(
-                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.asyncio.sleep",
-                new=AsyncMock(),
+        with _patch_adapter():
+            with (
+                patch(
+                    "wayfinder_paths.adapters.hyperliquid_adapter.adapter.HYPERLIQUID_QUICKNODE_INFO_CLIENT.post",
+                    new=_qn_post,
+                ),
+                patch(
+                    "wayfinder_paths.adapters.hyperliquid_adapter.adapter.asyncio.sleep",
+                    new=AsyncMock(),
+                ),
             ):
                 ok, final_balance = await adapter.wait_for_deposit(
                     address,

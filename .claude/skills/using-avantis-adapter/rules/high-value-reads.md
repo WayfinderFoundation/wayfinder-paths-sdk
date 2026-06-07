@@ -4,6 +4,7 @@
 
 - Do **not** invent TVL, share price, rewards, or balances.
 - Only report values fetched from Avantis contracts via the adapter.
+- Use `fetch_trailing_apy()` for trailing APY claims. `get_all_markets()` reports TVL/share price, not APY.
 - If an RPC call fails, respond with "unavailable" and provide the exact script/call to reproduce.
 
 ## Primary data source
@@ -33,14 +34,35 @@ async def main():
     print(
         "vault=", m.get("vault"),
         "symbol=", m.get("symbol"),
-        "tvl=", m.get("tvl"),
-        "share_price=", m.get("share_price"),
-        "total_supply=", m.get("total_supply"),
+        "tvl_usdc=", m.get("tvl_usdc"),
+        "share_price_usdc=", m.get("share_price_usdc"),
+        "total_supply_shares=", m.get("total_supply_shares"),
     )
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
+
+### Fetch trailing APY
+
+```python
+"""Fetch Avantis trailing APY from the Avantis returns API."""
+import asyncio
+from wayfinder_paths.mcp.scripting import get_adapter
+from wayfinder_paths.adapters.avantis_adapter import AvantisAdapter
+
+async def main():
+    adapter = await get_adapter(AvantisAdapter)
+    ok, apy = await adapter.fetch_trailing_apy()
+    if not ok:
+        raise RuntimeError(apy)
+    print("jr_apy=", apy.get("jr_apy"), "sr_apy=", apy.get("sr_apy"), "days=", apy.get("days"))
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+`fetch_trailing_apy()` is historical/trailing over the returned window, not a guaranteed forward APY.
 
 ### Fetch vault manager state
 
@@ -93,7 +115,7 @@ if __name__ == "__main__":
 | Method | Purpose | Wallet needed? |
 |--------|---------|----------------|
 | `get_all_markets()` | Vault stats (single market) | No |
+| `fetch_trailing_apy()` | Trailing junior/senior APY window from Avantis API | No |
 | `get_vault_manager_state(block_identifier?)` | VaultManager balances/rewards/buffer info | No |
 | `get_pos(vault_address?, account?, include_usd?, block_identifier?)` | Shares/assets + maxRedeem/maxWithdraw | No (if you pass `account`) |
 | `get_full_user_state(account, include_zero_positions?, include_usd?, block_identifier?)` | Normalized “positions” snapshot | No |
-

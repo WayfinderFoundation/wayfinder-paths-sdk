@@ -46,10 +46,13 @@ Each market entry includes:
 - Flags: `usage_as_collateral_enabled`, `borrowing_enabled`
 - `is_stablecoin`
 - Rates: `supply_apr`, `supply_apy`, `variable_borrow_apr`, `variable_borrow_apy`
-- Liquidity: `available_liquidity`, `total_variable_debt`, `tvl`
-- Caps: `supply_cap`, `supply_cap_headroom`
+- Liquidity raw ints: `available_liquidity`, `total_variable_debt`, `tvl`
+- Liquidity normalized fields: `available_liquidity_tokens/usd`, `total_variable_debt_tokens/usd`, `tvl_tokens/usd`
+- Caps: `supply_cap`, `supply_cap_headroom`, `supply_cap_headroom_tokens/usd`
 - Risk: `ltv_bps`, `liquidation_threshold_bps`, `liquidation_bonus_bps`, `reserve_factor_bps`
 - Limits: `borrow_cap`, `debt_ceiling`, `debt_ceiling_decimals`
+
+Use normalized `*_tokens` / `*_usd` fields for human-readable reporting. Raw integer fields are base-unit protocol values kept for execution/debugging.
 
 ### get_stable_markets (backend)
 

@@ -73,14 +73,14 @@ def test_normalize_notify_delivery_rejects_unknown_delivery() -> None:
 
 
 @pytest.mark.asyncio
-async def test_shells_notify_passes_sms_delivery(
+async def test_notification_send_passes_sms_delivery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_client = AsyncMock()
     fake_client.notify.return_value = {"sent": True, "delivery": "sms"}
     monkeypatch.setattr(notify_tool_module, "NOTIFY_CLIENT", fake_client)
 
-    out = await notify_tool_module.shells_notify("Alert", "Body", delivery="text")
+    out = await notify_tool_module.notification_send("Alert", "Body", delivery="text")
 
     assert out == {"ok": True, "result": {"sent": True, "delivery": "sms"}}
     fake_client.notify.assert_awaited_once_with(
@@ -91,8 +91,8 @@ async def test_shells_notify_passes_sms_delivery(
 
 
 @pytest.mark.asyncio
-async def test_shells_notify_rejects_invalid_delivery() -> None:
-    out = await notify_tool_module.shells_notify("Alert", "Body", delivery="fax")
+async def test_notification_send_rejects_invalid_delivery() -> None:
+    out = await notify_tool_module.notification_send("Alert", "Body", delivery="fax")
 
     assert out["ok"] is False
     assert out["error"]["code"] == "invalid_request"

@@ -158,7 +158,7 @@ def test_runner_daemon_run_once_executes_job_when_not_due(tmp_path: Path) -> Non
             status=JobStatus.ACTIVE,
             next_run_at=int(time.time()) + 3600,
         )
-        db.close()
+        db._conn.close()
 
         once = client.call("run_once", {"name": "hello"})
         assert once.get("ok") is True, once

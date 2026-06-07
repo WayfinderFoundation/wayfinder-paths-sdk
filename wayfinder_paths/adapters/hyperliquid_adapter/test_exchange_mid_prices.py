@@ -35,6 +35,10 @@ class TestAdapterMidPriceFetch:
     @pytest.mark.asyncio
     async def test_place_market_order_uses_all_mids(self):
         info_stub = _InfoStub()
+
+        async def _info_client_post(payload):
+            return info_stub.post("/info", payload)
+
         with (
             patch(
                 "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_info",
@@ -43,6 +47,10 @@ class TestAdapterMidPriceFetch:
             patch(
                 "wayfinder_paths.adapters.hyperliquid_adapter.adapter.get_perp_dexes",
                 return_value=[""],
+            ),
+            patch(
+                "wayfinder_paths.adapters.hyperliquid_adapter.adapter.HYPERLIQUID_INFO_CLIENT.post",
+                new=AsyncMock(side_effect=_info_client_post),
             ),
         ):
             adapter = HyperliquidAdapter(
