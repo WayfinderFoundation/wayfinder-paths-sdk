@@ -103,7 +103,7 @@ class MorphoAdapter(BaseAdapter):
             unique_key=str(unique_key), chain_id=int(chain_id)
         )
         if not isinstance(market, dict):
-            raise ValueError(f"Invalid market response for uniqueKey={unique_key}")
+            raise ValueError(f"Invalid market response for marketId={unique_key}")
         self._market_cache[cache_key] = market
         return market
 
@@ -201,6 +201,17 @@ class MorphoAdapter(BaseAdapter):
             return False, str(exc)
 
     @staticmethod
+    def _market_id(market: dict[str, Any]) -> Any:
+        return market.get("marketId") or market.get("uniqueKey")
+
+    @staticmethod
+    def _asset_price_usd(asset: dict[str, Any]) -> Any:
+        price = asset.get("price")
+        if isinstance(price, dict) and "usd" in price:
+            return price.get("usd")
+        return asset.get("priceUsd")
+
+    @staticmethod
     def _market_params_from_market(market: dict[str, Any]) -> MarketParamsTuple:
         loan = market.get("loanAsset") or {}
         collateral = market.get("collateralAsset") or {}
@@ -264,15 +275,17 @@ class MorphoAdapter(BaseAdapter):
                         "symbol": asset.get("symbol"),
                         "name": asset.get("name"),
                         "decimals": asset.get("decimals"),
-                        "price_usd": asset.get("priceUsd"),
+                        "price_usd": MorphoAdapter._asset_price_usd(asset),
                     },
                     "supplyApr": supply_apr,
                     "borrowApr": borrow_apr,
                 }
             )
 
+        market_id = MorphoAdapter._market_id(market)
         out: dict[str, Any] = {
-            "uniqueKey": market.get("uniqueKey"),
+            "marketId": market_id,
+            "uniqueKey": market_id,
             "chainId": int(chain_id),
             "morpho": morpho,
             "listed": bool(market.get("listed")),
@@ -286,14 +299,14 @@ class MorphoAdapter(BaseAdapter):
                 "symbol": loan.get("symbol"),
                 "name": loan.get("name"),
                 "decimals": loan.get("decimals"),
-                "price_usd": loan.get("priceUsd"),
+                "price_usd": MorphoAdapter._asset_price_usd(loan),
             },
             "collateral": {
                 "address": collateral.get("address"),
                 "symbol": collateral.get("symbol"),
                 "name": collateral.get("name"),
                 "decimals": collateral.get("decimals"),
-                "price_usd": collateral.get("priceUsd"),
+                "price_usd": MorphoAdapter._asset_price_usd(collateral),
             },
             "state": {
                 "supply_apy": state.get("supplyApy"),
@@ -459,6 +472,7 @@ class MorphoAdapter(BaseAdapter):
                 True,
                 {
                     "uniqueKey": str(market_unique_key),
+                    "marketId": str(market_unique_key),
                     "chainId": int(chain_id),
                     "interval": interval_norm,
                     "series": {
@@ -492,7 +506,7 @@ class MorphoAdapter(BaseAdapter):
                         "symbol": asset.get("symbol"),
                         "name": asset.get("name"),
                         "decimals": asset.get("decimals"),
-                        "price_usd": asset.get("priceUsd"),
+                        "price_usd": MorphoAdapter._asset_price_usd(asset),
                     },
                     "supplyApr": supply_apr,
                     "yearlySupplyTokens": r.get("yearlySupplyTokens"),
@@ -505,7 +519,8 @@ class MorphoAdapter(BaseAdapter):
     def _format_vault_v1(cls, chain_id: int, vault: dict[str, Any]) -> dict[str, Any]:
         asset = vault.get("asset") or {}
         state = vault.get("state") or {}
-        reward_supply_apr, incentives = cls._format_vault_rewards(state.get("rewards"))
+        rewards = state.get("allRewards") or state.get("rewards")
+        reward_supply_apr, incentives = cls._format_vault_rewards(rewards)
         apy = state.get("apy")
         try:
             apy_float = float(apy or 0.0)
@@ -526,17 +541,24 @@ class MorphoAdapter(BaseAdapter):
                 "symbol": asset.get("symbol"),
                 "name": asset.get("name"),
                 "decimals": asset.get("decimals"),
-                "price_usd": asset.get("priceUsd"),
+                "price_usd": cls._asset_price_usd(asset),
             },
             "state": {
                 "apy": apy,
                 "net_apy": state.get("netApy"),
-                "net_apy_without_rewards": state.get("netApyWithoutRewards"),
+                "net_apy_without_rewards": state.get("netApyExcludingRewards")
+                or state.get("netApyWithoutRewards"),
+                "net_apy_excluding_rewards": state.get("netApyExcludingRewards")
+                or state.get("netApyWithoutRewards"),
+                "avg_net_apy": state.get("avgNetApy"),
+                "avg_net_apy_excluding_rewards": state.get("avgNetApyExcludingRewards"),
                 "reward_supply_apr": reward_supply_apr,
                 "apy_with_rewards": apy_float + reward_supply_apr,
                 "total_assets": int(state.get("totalAssets") or 0),
                 "total_assets_usd": state.get("totalAssetsUsd"),
+                "total_supply": state.get("totalSupply"),
                 "incentives": incentives,
+                "all_rewards": rewards or [],
                 "allocation": state.get("allocation") or [],
             },
         }
@@ -555,6 +577,7 @@ class MorphoAdapter(BaseAdapter):
             "version": "v2",
             "chainId": int(chain_id),
             "address": vault.get("address"),
+            "vault_type": vault.get("type"),
             "symbol": vault.get("symbol"),
             "name": vault.get("name"),
             "listed": bool(vault.get("listed")),
@@ -564,19 +587,25 @@ class MorphoAdapter(BaseAdapter):
                 "symbol": asset.get("symbol"),
                 "name": asset.get("name"),
                 "decimals": asset.get("decimals"),
-                "price_usd": asset.get("priceUsd"),
+                "price_usd": cls._asset_price_usd(asset),
             },
             "state": {
                 "apy": apy,
                 "net_apy": vault.get("netApy"),
-                "avg_apy": vault.get("avgApy"),
+                "avg_apy": vault.get("avgNetApyExcludingRewards")
+                or vault.get("avgApy"),
                 "avg_net_apy": vault.get("avgNetApy"),
+                "avg_net_apy_excluding_rewards": vault.get("avgNetApyExcludingRewards"),
                 "reward_supply_apr": reward_supply_apr,
                 "apy_with_rewards": apy_float + reward_supply_apr,
                 "total_assets": int(vault.get("totalAssets") or 0),
                 "total_assets_usd": vault.get("totalAssetsUsd"),
+                "total_supply": vault.get("totalSupply"),
+                "share_price": vault.get("sharePrice"),
                 "liquidity": int(vault.get("liquidity") or 0),
                 "liquidity_usd": vault.get("liquidityUsd"),
+                "idle_assets": int(vault.get("idleAssets") or 0),
+                "idle_assets_usd": vault.get("idleAssetsUsd"),
                 "incentives": incentives,
                 "liquidity_adapter": vault.get("liquidityAdapter"),
                 "adapters": ((vault.get("adapters") or {}).get("items") or [])
@@ -903,7 +932,8 @@ class MorphoAdapter(BaseAdapter):
 
             entry: dict[str, Any] = {
                 "chainId": chain_id,
-                "marketUniqueKey": market.get("uniqueKey"),
+                "marketId": MorphoAdapter._market_id(market),
+                "marketUniqueKey": MorphoAdapter._market_id(market),
                 "healthFactor": p.get("healthFactor"),
                 "market": market,
                 "state": state,
@@ -923,7 +953,7 @@ class MorphoAdapter(BaseAdapter):
         chain_id: int,
         account: str | None = None,
         include_merkl: bool = True,
-        include_urd: bool = True,
+        include_urd: bool = False,
         trusted: bool = True,
         claimable_only: bool = True,
     ) -> tuple[bool, dict[str, Any] | str]:
@@ -1102,7 +1132,7 @@ class MorphoAdapter(BaseAdapter):
         chain_id: int,
         account: str | None = None,
         claim_merkl: bool = True,
-        claim_urd: bool = True,
+        claim_urd: bool = False,
         trusted: bool = True,
     ) -> tuple[bool, dict[str, Any] | str]:
         acct = to_checksum_address(account) if account else self.wallet_address
@@ -1587,7 +1617,12 @@ class MorphoAdapter(BaseAdapter):
             for w in withdrawals:
                 if not isinstance(w, dict):
                     continue
-                wk = w.get("market_unique_key") or w.get("uniqueKey")
+                wk = (
+                    w.get("market_id")
+                    or w.get("marketId")
+                    or w.get("market_unique_key")
+                    or w.get("uniqueKey")
+                )
                 amt = w.get("amount") or w.get("qty")
                 if not wk or amt is None:
                     continue
@@ -1789,7 +1824,9 @@ class MorphoAdapter(BaseAdapter):
             ):
                 if remaining <= 0:
                     break
-                withdraw_market = (it.get("withdrawMarket") or {}).get("uniqueKey")
+                withdraw_market = (it.get("withdrawMarket") or {}).get("marketId") or (
+                    it.get("withdrawMarket") or {}
+                ).get("uniqueKey")
                 if not withdraw_market:
                     continue
                 try:

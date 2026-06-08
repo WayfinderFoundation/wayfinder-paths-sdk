@@ -42,6 +42,13 @@ MORPHO_BY_CHAIN: dict[int, dict[str, str]] = {
             "0xfd70575B732F9482F4197FE1075492e114E97302"
         ),
     },
+    480: {
+        "network": "World Chain",
+        "morpho": to_checksum_address("0xE741BC7c34758b4caE05062794E8Ae24978AF432"),
+        "public_allocator": to_checksum_address(
+            "0xef9889B4e443DEd35FA0Bd060f2104Cca94e6A43"
+        ),
+    },
     988: {
         "network": "Stable",
         "morpho": to_checksum_address("0xa40103088A899514E3fe474cD3cc5bf811b1102e"),

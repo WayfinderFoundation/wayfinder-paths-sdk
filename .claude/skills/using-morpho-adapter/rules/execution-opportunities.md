@@ -4,7 +4,8 @@
 
 - Prefer running the existing fork simulations first:
   - `poetry run pytest wayfinder_paths/adapters/morpho_adapter/test_gorlami_simulation.py -v`
-- Market operations are **market-specific**: you must choose a `market_unique_key`.
+- Market operations are **market-specific**: choose a Morpho `marketId` and pass it as `market_unique_key`.
+- Vault operations are **vault-specific**: choose a `vault_address`; do not pass a market id to vault methods.
 
 ## Common flows (adapter methods)
 
@@ -26,8 +27,10 @@ ok, tx = await adapter.unlend(chain_id=8453, market_unique_key="0x...", qty=0, w
 ### Claim rewards
 
 ```python
-ok, txs = await adapter.claim_rewards(chain_id=8453, claim_merkl=True, claim_urd=True)
+ok, txs = await adapter.claim_rewards(chain_id=8453)
 ```
+
+Merkl is the current default rewards path. Historical URD claims are opt-in with `claim_urd=True` and depend on legacy distribution data.
 
 ### Vault ops (ERC-4626)
 
@@ -37,6 +40,8 @@ ok, tx = await adapter.vault_withdraw(chain_id=8453, vault_address="0x...", asse
 ok, tx = await adapter.vault_mint(chain_id=8453, vault_address="0x...", shares=123)
 ok, tx = await adapter.vault_redeem(chain_id=8453, vault_address="0x...", shares=123)
 ```
+
+Direct adapter vault writes call ERC-4626 methods. Morpho's current Vault V2 SDK can route deposits through Bundler3 with share-price slippage checks and native-token wrapping; use that path when those protections are required.
 
 ### Public Allocator JIT liquidity (optional)
 
@@ -49,3 +54,5 @@ ok, tx = await adapter.borrow_with_jit_liquidity(
     atomic=True,
 )
 ```
+
+The adapter can use Public Allocator shared liquidity from the API. Its bundled JIT path expects a compatible legacy bytes-array Morpho bundler address; current Bundler3 uses `multicall(Call[])` plus adapter contracts and is a separate integration.

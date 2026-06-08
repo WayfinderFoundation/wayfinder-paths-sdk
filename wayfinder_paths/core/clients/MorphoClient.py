@@ -200,14 +200,14 @@ class MorphoClient:
         query Markets($first: Int, $skip: Int, $where: MarketFilters) {
           markets(first: $first, skip: $skip, where: $where) {
             items {
-              uniqueKey
+              marketId
               lltv
               irmAddress
               listed
               reallocatableLiquidityAssets
               warnings { type level }
-              loanAsset { address symbol name decimals priceUsd }
-              collateralAsset { address symbol name decimals priceUsd }
+              loanAsset { address symbol name decimals price { usd } }
+              collateralAsset { address symbol name decimals price { usd } }
               oracle { address }
               state {
                 supplyApy
@@ -217,7 +217,7 @@ class MorphoClient:
                 utilization
                 apyAtTarget
                 price
-                rewards { supplyApr borrowApr asset { address symbol name decimals priceUsd } }
+                rewards { supplyApr borrowApr asset { address symbol name decimals price { usd } } }
                 liquidityAssets
                 liquidityAssetsUsd
                 supplyAssets
@@ -267,10 +267,13 @@ class MorphoClient:
     async def get_market_by_unique_key(
         self, *, unique_key: str, chain_id: int | None = None
     ) -> dict[str, Any]:
+        if chain_id is None:
+            raise ValueError("chain_id is required for Morpho marketId lookups")
+
         query = """
-        query Market($k: String!, $chainId: Int) {
-          marketByUniqueKey(uniqueKey: $k, chainId: $chainId) {
-            uniqueKey
+        query Market($marketId: String!, $chainId: Int!) {
+          marketById(marketId: $marketId, chainId: $chainId) {
+            marketId
             lltv
             irmAddress
             listed
@@ -280,13 +283,13 @@ class MorphoClient:
               assets
               publicAllocator { address }
               vault { address symbol }
-              withdrawMarket { uniqueKey }
-              supplyMarket { uniqueKey }
+              withdrawMarket { marketId }
+              supplyMarket { marketId }
             }
             supplyingVaults { address symbol }
             supplyingVaultV2s { address symbol }
-            loanAsset { address symbol name decimals priceUsd }
-            collateralAsset { address symbol name decimals priceUsd }
+            loanAsset { address symbol name decimals price { usd } }
+            collateralAsset { address symbol name decimals price { usd } }
             oracle { address }
             state {
               supplyApy
@@ -296,7 +299,7 @@ class MorphoClient:
               utilization
               apyAtTarget
               price
-              rewards { supplyApr borrowApr asset { address symbol name decimals priceUsd } }
+              rewards { supplyApr borrowApr asset { address symbol name decimals price { usd } } }
               liquidityAssets
               liquidityAssetsUsd
               supplyAssets
@@ -308,15 +311,14 @@ class MorphoClient:
         }
         """
         payload = await self._post(
-            query=query, variables={"k": str(unique_key), "chainId": chain_id}
+            query=query,
+            variables={"marketId": str(unique_key), "chainId": int(chain_id)},
         )
         market = (
-            (payload or {}).get("marketByUniqueKey")
-            if isinstance(payload, dict)
-            else None
+            (payload or {}).get("marketById") if isinstance(payload, dict) else None
         )
         if not isinstance(market, dict):
-            raise ValueError(f"Market not found for uniqueKey={unique_key}")
+            raise ValueError(f"Market not found for marketId={unique_key}")
         return market
 
     async def get_market_history(
@@ -325,10 +327,13 @@ class MorphoClient:
         unique_key: str,
         chain_id: int | None = None,
     ) -> dict[str, Any]:
+        if chain_id is None:
+            raise ValueError("chain_id is required for Morpho market history")
+
         query = """
-        query MarketHistory($k: String!, $chainId: Int) {
-          marketByUniqueKey(uniqueKey: $k, chainId: $chainId) {
-            uniqueKey
+        query MarketHistory($marketId: String!, $chainId: Int!) {
+          marketById(marketId: $marketId, chainId: $chainId) {
+            marketId
             historicalState {
               supplyApy { x y }
               netSupplyApy { x y }
@@ -370,15 +375,14 @@ class MorphoClient:
         }
         """
         payload = await self._post(
-            query=query, variables={"k": str(unique_key), "chainId": chain_id}
+            query=query,
+            variables={"marketId": str(unique_key), "chainId": int(chain_id)},
         )
         market = (
-            (payload or {}).get("marketByUniqueKey")
-            if isinstance(payload, dict)
-            else None
+            (payload or {}).get("marketById") if isinstance(payload, dict) else None
         )
         if not isinstance(market, dict):
-            raise ValueError(f"Market not found for uniqueKey={unique_key}")
+            raise ValueError(f"Market not found for marketId={unique_key}")
         return market.get("historicalState") or {}
 
     async def get_all_market_positions(
@@ -397,20 +401,20 @@ class MorphoClient:
               priceVariationToLiquidationPrice
               listed
               market {
-                uniqueKey
+                marketId
                 lltv
                 irmAddress
                 listed
                 morphoBlue { chain { id network } }
-                loanAsset { address symbol name decimals priceUsd }
-                collateralAsset { address symbol name decimals priceUsd }
+                loanAsset { address symbol name decimals price { usd } }
+                collateralAsset { address symbol name decimals price { usd } }
                 oracle { address }
                 state {
                   supplyApy
                   netSupplyApy
                   borrowApy
                   netBorrowApy
-                  rewards { supplyApr borrowApr asset { address symbol name decimals priceUsd } }
+                  rewards { supplyApr borrowApr asset { address symbol name decimals price { usd } } }
                 }
               }
               state {
@@ -476,20 +480,20 @@ class MorphoClient:
             priceVariationToLiquidationPrice
             listed
             market {
-              uniqueKey
+              marketId
               lltv
               irmAddress
               listed
               morphoBlue { chain { id network } }
-              loanAsset { address symbol name decimals priceUsd }
-              collateralAsset { address symbol name decimals priceUsd }
+              loanAsset { address symbol name decimals price { usd } }
+              collateralAsset { address symbol name decimals price { usd } }
               oracle { address }
               state {
                 supplyApy
                 netSupplyApy
                 borrowApy
                 netBorrowApy
-                rewards { supplyApr borrowApr asset { address symbol name decimals priceUsd } }
+                rewards { supplyApr borrowApr asset { address symbol name decimals price { usd } } }
               }
             }
             state {
@@ -539,21 +543,24 @@ class MorphoClient:
               listed
               featured
               warnings { type level }
-              asset { address symbol name decimals priceUsd }
+              asset { address symbol name decimals price { usd } }
               state {
                 apy
                 netApy
-                netApyWithoutRewards
+                netApyExcludingRewards
+                avgNetApy
+                avgNetApyExcludingRewards
                 totalAssets
                 totalAssetsUsd
-                rewards { supplyApr asset { address symbol name decimals priceUsd } }
+                totalSupply
+                allRewards { supplyApr asset { address symbol name decimals price { usd } } }
                 allocation {
                   supplyAssets
                   supplyAssetsUsd
                   supplyCap
                   supplyCapUsd
                   market {
-                    uniqueKey
+                    marketId
                     lltv
                     loanAsset { address symbol decimals }
                     collateralAsset { address symbol decimals }
@@ -609,21 +616,24 @@ class MorphoClient:
             listed
             featured
             warnings { type level }
-            asset { address symbol name decimals priceUsd }
+            asset { address symbol name decimals price { usd } }
             state {
               apy
               netApy
-              netApyWithoutRewards
+              netApyExcludingRewards
+              avgNetApy
+              avgNetApyExcludingRewards
               totalAssets
               totalAssetsUsd
-              rewards { supplyApr asset { address symbol name decimals priceUsd } }
+              totalSupply
+              allRewards { supplyApr asset { address symbol name decimals price { usd } } }
               allocation {
                 supplyAssets
                 supplyAssetsUsd
                 supplyCap
                 supplyCapUsd
                 market {
-                  uniqueKey
+                  marketId
                   lltv
                   loanAsset { address symbol decimals }
                   collateralAsset { address symbol decimals }
@@ -656,20 +666,25 @@ class MorphoClient:
           vaultV2s(first: $first, skip: $skip, where: $where) {
             items {
               address
+              type
               symbol
               name
               listed
               warnings { type level }
-              asset { address symbol name decimals priceUsd }
+              asset { address symbol name decimals price { usd } }
               apy
               netApy
-              avgApy
               avgNetApy
+              avgNetApyExcludingRewards
               totalAssets
               totalAssetsUsd
+              totalSupply
+              sharePrice
               liquidity
               liquidityUsd
-              rewards { supplyApr asset { address symbol name decimals priceUsd } }
+              idleAssets
+              idleAssetsUsd
+              rewards { supplyApr asset { address symbol name decimals price { usd } } }
               liquidityAdapter { address type assets assetsUsd }
               adapters { items { address type assets assetsUsd } }
             }
@@ -714,24 +729,32 @@ class MorphoClient:
     async def get_vault_v2_by_address(
         self, *, address: str, chain_id: int | None = None
     ) -> dict[str, Any]:
+        if chain_id is None:
+            raise ValueError("chain_id is required for Morpho Vault V2 lookups")
+
         query = """
-        query VaultV2($address: String!, $chainId: Int) {
+        query VaultV2($address: String!, $chainId: Int!) {
           vaultV2ByAddress(address: $address, chainId: $chainId) {
             address
+            type
             symbol
             name
             listed
             warnings { type level }
-            asset { address symbol name decimals priceUsd }
+            asset { address symbol name decimals price { usd } }
             apy
             netApy
-            avgApy
             avgNetApy
+            avgNetApyExcludingRewards
             totalAssets
             totalAssetsUsd
+            totalSupply
+            sharePrice
             liquidity
             liquidityUsd
-            rewards { supplyApr asset { address symbol name decimals priceUsd } }
+            idleAssets
+            idleAssetsUsd
+            rewards { supplyApr asset { address symbol name decimals price { usd } } }
             liquidityAdapter { address type assets assetsUsd }
             adapters { items { address type assets assetsUsd } }
           }

@@ -29,6 +29,10 @@ def _liquidity_assets(market: dict) -> int:
         return 0
 
 
+def _market_id(market: dict) -> str:
+    return str(market.get("marketId") or market.get("uniqueKey"))
+
+
 async def _get_all_markets_or_skip(*, chain_id: int) -> list[dict]:
     try:
         markets = await MORPHO_CLIENT.get_all_markets(
@@ -96,7 +100,7 @@ async def test_gorlami_morpho_markets_and_borrow(gorlami):
 
     # Pick the deepest USDC market so withdraw-full doesn't fail due to low liquidity.
     lend_market = max(usdc_markets, key=_liquidity_assets)
-    lend_key = str(lend_market["uniqueKey"])
+    lend_key = _market_id(lend_market)
 
     ok, tx = await adapter.lend(
         chain_id=int(chain_id), market_unique_key=lend_key, qty=10 * 10**6
@@ -141,7 +145,7 @@ async def test_gorlami_morpho_markets_and_borrow(gorlami):
         pytest.skip("No USDC/WETH market found on Base")
 
     borrow_market = max(usdc_weth, key=_liquidity_assets)
-    borrow_key = str(borrow_market["uniqueKey"])
+    borrow_key = _market_id(borrow_market)
 
     collateral_weth = int(0.05 * 10**18)
     borrow_usdc = 50 * 10**6
@@ -290,7 +294,7 @@ async def test_gorlami_morpho_bridge_base_to_arbitrum_then_borrow(gorlami):
         pytest.skip("No USDC loan markets found on Arbitrum")
 
     lend_market = max(usdc_markets, key=_liquidity_assets)
-    lend_key = str(lend_market["uniqueKey"])
+    lend_key = _market_id(lend_market)
 
     ok, tx = await adapter.lend(
         chain_id=int(arb_chain_id), market_unique_key=lend_key, qty=10 * 10**6
@@ -318,7 +322,7 @@ async def test_gorlami_morpho_bridge_base_to_arbitrum_then_borrow(gorlami):
         pytest.skip("No USDC/WETH market found on Arbitrum")
 
     borrow_market = max(usdc_weth, key=_liquidity_assets)
-    borrow_key = str(borrow_market["uniqueKey"])
+    borrow_key = _market_id(borrow_market)
 
     collateral_weth = int(0.05 * 10**18)
     borrow_usdc = 50 * 10**6
