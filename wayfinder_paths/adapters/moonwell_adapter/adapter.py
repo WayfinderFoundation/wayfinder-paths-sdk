@@ -1233,15 +1233,11 @@ class MoonwellAdapter(BaseAdapter):
                             ),
                             multicall.build_call(
                                 mtoken,
-                                contract.encode_abi(
-                                    "borrowRatePerTimestamp", args=[]
-                                ),
+                                contract.encode_abi("borrowRatePerTimestamp", args=[]),
                             ),
                             multicall.build_call(
                                 mtoken,
-                                contract.encode_abi(
-                                    "supplyRatePerTimestamp", args=[]
-                                ),
+                                contract.encode_abi("supplyRatePerTimestamp", args=[]),
                             ),
                             multicall.build_call(
                                 comptroller_address,
