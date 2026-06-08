@@ -202,7 +202,9 @@ async def onchain_swap(
         wallet_label: Wallet label.
         from_token: Source token id, address-id, or symbol query.
         to_token: Destination token id, address-id, or symbol query.
-        amount: Human-units string (e.g. "1000" or "0.5"), not wei.
+        amount: Decimal human-units string (e.g. "1000.0" or "0.5"), not wei.
+            Must include a decimal point; integer-looking strings like "1000"
+            are rejected.
         slippage_bps: Slippage cap in basis points (50 = 0.5%, default).
         recipient: Destination address (defaults to sender).
         wait_for_receipt: Synchronous receipt wait. Default true.
@@ -420,7 +422,9 @@ async def onchain_send(
         wallet_label: Wallet label.
         token: Token id, address-id, symbol query, or `"native"`.
         recipient: Destination address. Required.
-        amount: Human-units string (e.g. "5" for 5 USDC), not wei.
+        amount: Decimal human-units string (e.g. "5.0" for 5 USDC), not wei.
+            Must include a decimal point; integer-looking strings like "5" are
+            rejected.
         chain_id: Required when `token="native"`; ignored otherwise.
         wait_for_receipt: Synchronous receipt wait. Default true.
         receipt_confirmations: Confirmations to wait for when `wait_for_receipt=true`.

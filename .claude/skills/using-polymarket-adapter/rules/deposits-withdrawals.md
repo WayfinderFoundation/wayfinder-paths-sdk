@@ -22,7 +22,7 @@ mcp__wayfinder__onchain_quote_swap(
     wallet_label="main",
     from_token="<source token id>",          # e.g. "polygon_0x3c499c..." (Polygon USDC)
     to_token="polygon_0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB",  # pUSD
-    amount="<wei>",                          # use to_erc20_raw(human, decimals)
+    amount="<human decimal amount>",         # e.g. "5.0"; must include decimal point
     slippage_bps=50,
 )
 # inspect the preview, then:
@@ -33,7 +33,7 @@ mcp__wayfinder__onchain_swap(**suggested_swap_request)
 
 Flip `from_token` and `to_token`. For pUSD → native Polygon USDC, BRAP routes via the polymarket_bridge unwrap + USDC.e/USDC swap. For pUSD → another chain, BRAP picks a cross-chain route.
 
-**Important**: `from_token` / `to_token` accept `<chain_code>_<address>` ids, `<coingecko_id>-<chain_code>` ids, or symbol queries. `amount` is raw wei (use `to_erc20_raw(human, decimals)` to convert). See `onchain_quote_swap` for full arg docs.
+**Important**: `from_token` / `to_token` accept `<chain_code>_<address>` ids, `<coingecko_id>-<chain_code>` ids, or symbol queries. MCP `amount` is a decimal human-unit string, not raw wei; use `"5.0"` instead of `"5"`. See `onchain_quote_swap` for full arg docs.
 
 ## Already have pUSD?
 

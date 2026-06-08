@@ -249,8 +249,9 @@ def parse_amount_to_raw(amount: str, decimals: int) -> int:
     s = str(amount).strip()
     if "." not in s:
         raise ValueError(
-            "The input amount needs a decimal, as it is a human readable "
-            "amount, and NOT IN WEI. Please input the human readable amount"
+            "The input amount must include a decimal point because it is a "
+            'human-readable amount, not wei. Use strings like "20.0" or '
+            '"0.5"; integer-looking strings like "20" are rejected.'
         )
     try:
         d = Decimal(s)

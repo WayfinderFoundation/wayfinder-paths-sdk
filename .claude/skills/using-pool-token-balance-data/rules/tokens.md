@@ -33,7 +33,7 @@ The first part is the **coingecko_id** (NOT the symbol). Common examples:
 
 **Important:** Do NOT use symbol-chain like `usdc-base`/`usdc-polygon` or chain-symbol like `polygon_usdc` in scripts, quotes, or execution tickets. `onchain_resolve_token` may tolerate these as a user-input fallback via fuzzy search, but you should immediately convert to the returned canonical id/address. Use `usd-coin-base`, `usd-coin-polygon`, or an exact address id instead.
 
-Swap and quote amounts are human-unit strings. For full-balance actions, use the exact `amount_decimal` string from `get_wallets`; do not pass raw wei or rounded floats.
+Swap and quote amounts are decimal human-unit strings. They must include a decimal point, for example `"5.0"` instead of `"5"`. For full-balance actions, use the exact `amount_decimal` string from `get_wallets`; do not pass raw wei, integer-looking strings, or rounded floats.
 
 When you need a specific ERC20 and you know the contract:
 - Use a chain-scoped address id: `<chain_code>_<address>`

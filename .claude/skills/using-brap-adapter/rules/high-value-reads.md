@@ -36,7 +36,7 @@ BRAP route diagnostics are easiest by inspecting the raw quote response:
 ## Claude Code MCP helper
 
 If you’re exploring interactively, prefer:
-- `mcp__wayfinder__onchain_quote_swap` (does token lookup + human→raw conversion + returns a preview + compact best-quote summary)
+- `mcp__wayfinder__onchain_quote_swap` (does token lookup + decimal human→raw conversion + returns a preview + compact best-quote summary; `amount` must include a decimal point, e.g. `"1000.0"`)
   - Use `include_calldata=true` only if you explicitly need calldata in the response (it can be large).
 
 ### Token identifiers (avoid ambiguous lookups)

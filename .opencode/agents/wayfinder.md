@@ -110,7 +110,7 @@ Use the `onchain_*` tools for token resolution, gas tokens, fuzzy search, swap q
 
 Use token IDs like `<coingecko_id>-<chain_code>` (e.g. `ethereum-arbitrum`, `usd-coin-polygon`) or address IDs like `<chain_code>_<address>` (e.g. `arbitrum_0xaf88…`) for quoting, execution, and lookups. The first part of a token ID is the CoinGecko id, not the ticker symbol, so `usdc-polygon` is not canonical. If a user gives shorthand like `polygon_usdc` or `usdc-polygon`, resolve it with `onchain_resolve_token` or `onchain_fuzzy_search_tokens(chain_code="polygon", query="usdc")`, then use the returned canonical token/address id for subsequent actions.
 
-For `onchain_quote_swap` and `onchain_swap`, `amount` is a human-unit string, not raw wei. For full-balance swaps, pass the exact `amount_decimal` string from `get_wallets`; do not round through floats.
+For `onchain_quote_swap`, `onchain_swap`, and `onchain_send`, `amount` is a decimal human-unit string, not raw wei. It must include a decimal point, for example `"5.0"` instead of `"5"`. For full-balance swaps, pass the exact `amount_decimal` string from `get_wallets`; do not round through floats.
 
 Swap token identity safety:
 - Do not silently substitute similar tokens or wrappers after the user approves a quote or action. ETH ↔ WETH, native ↔ wrapped variants, USDC ↔ USDT, bridged ↔ canonical variants, pUSD ↔ USDC, and same-symbol different-contract tokens all require a fresh quote and explicit user confirmation.

@@ -9,7 +9,8 @@
 ## Units
 
 - BRAP quote input `amount1` is **raw base units**.
-  - If you have human units (like `"1000"` USDC), resolve decimals via TokenClient first and convert.
+  - If you have human units (like `"1000.0"` USDC), resolve decimals via TokenClient first and convert.
+- The MCP helper tools (`onchain_quote_swap` / `onchain_swap`) are different: they take decimal human-unit strings and convert to raw units internally. Include a decimal point, for example `"1000.0"` instead of `"1000"`.
 
 ## Slippage formats
 

@@ -81,7 +81,9 @@ async def onchain_quote_swap(
         wallet_label: Sender wallet (config.json label).
         from_token / to_token: Token id (`<coingecko_id>-<chain_code>`), address id
             (`<chain_code>_<address>`), or symbol query.
-        amount: Human-units string (e.g. "1000" USDC or "0.5" ETH), not wei.
+        amount: Decimal human-units string (e.g. "1000.0" USDC or "0.5" ETH),
+            not wei. Must include a decimal point; integer-looking strings like
+            "1000" are rejected.
         slippage_bps: Slippage cap in basis points (50 = 0.50%).
         recipient: Destination address (defaults to sender).
         include_calldata: Include the raw tx calldata in the response (off by default to keep

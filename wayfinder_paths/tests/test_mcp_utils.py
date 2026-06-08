@@ -31,11 +31,11 @@ def test_parse_amount_to_raw_rejects_too_small_after_scaling():
 def test_parse_amount_to_raw_rejects_integer_strings_as_likely_raw():
     # The agent has been pasting raw smallest-unit balances (no decimal)
     # straight into amount fields — reject at the boundary.
-    with pytest.raises(ValueError, match="needs a decimal"):
+    with pytest.raises(ValueError, match="decimal point"):
         parse_amount_to_raw("10627176835031753880", 18)
-    with pytest.raises(ValueError, match="needs a decimal"):
+    with pytest.raises(ValueError, match="decimal point"):
         parse_amount_to_raw("13263060", 6)
-    with pytest.raises(ValueError, match="needs a decimal"):
+    with pytest.raises(ValueError, match="decimal point"):
         parse_amount_to_raw("1", 18)
 
 
