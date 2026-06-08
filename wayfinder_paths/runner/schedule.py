@@ -66,6 +66,21 @@ def schedule_request_fields(spec: ScheduleSpec) -> dict[str, Any]:
     return {"cron_expr": spec.cron_expr, "timezone": spec.timezone}
 
 
+def schedule_request_params(
+    *,
+    interval_seconds: int | None,
+    cron_expr: str | None,
+    timezone: str | None,
+) -> dict[str, Any]:
+    return schedule_request_fields(
+        normalize_schedule(
+            interval_seconds=interval_seconds,
+            cron_expr=cron_expr,
+            timezone=timezone,
+        )
+    )
+
+
 def next_run_after(spec: ScheduleSpec, *, now: int) -> int:
     if spec.kind == SCHEDULE_KIND_INTERVAL:
         return int(now) + int(spec.interval_seconds or 0)

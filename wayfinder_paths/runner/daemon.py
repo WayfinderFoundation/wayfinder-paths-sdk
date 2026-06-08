@@ -767,18 +767,19 @@ class RunnerDaemon:
                 cron_expr=cron_expr,
                 timezone=timezone,
             )
-        except Exception as exc:  # noqa: BLE001
+        except ValueError as exc:
             return {"ok": False, "error": str(exc)}
 
-        if job_type not in {JOB_TYPE_STRATEGY, JOB_TYPE_SCRIPT}:
+        job_type_norm = str(job_type).strip().lower()
+        if job_type_norm not in {JOB_TYPE_STRATEGY, JOB_TYPE_SCRIPT}:
             return {"ok": False, "error": f"unsupported job type: {job_type}"}
 
         payload_norm: dict[str, Any] = dict(payload)
-        if job_type == JOB_TYPE_STRATEGY:
+        if job_type_norm == JOB_TYPE_STRATEGY:
             strategy = str(payload_norm.get("strategy") or "").strip()
             if not strategy:
                 return {"ok": False, "error": "payload.strategy is required"}
-        elif job_type == JOB_TYPE_SCRIPT:
+        elif job_type_norm == JOB_TYPE_SCRIPT:
             sp = (
                 payload_norm.get("script_path")
                 or payload_norm.get("script")
@@ -814,7 +815,7 @@ class RunnerDaemon:
             now = int(time.time())
             job_id = self._db.add_job(
                 name=name,
-                job_type=job_type,
+                job_type=job_type_norm,
                 payload=payload_norm,
                 **_schedule_db_kwargs(schedule),
                 status=JobStatus.ACTIVE,
@@ -844,14 +845,17 @@ class RunnerDaemon:
                     cron_expr=cron_expr,
                     timezone=timezone,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except ValueError as exc:
                 return {"ok": False, "error": str(exc)}
             schedule_kwargs = _schedule_db_kwargs(schedule, clear_interval_cron=True)
-        self._db.update_job(
-            name=name,
-            payload=payload,
-            **schedule_kwargs,
-        )
+        try:
+            self._db.update_job(
+                name=name,
+                payload=payload,
+                **schedule_kwargs,
+            )
+        except KeyError:
+            return {"ok": False, "error": f"Job not found: {name}"}
         if schedule_kwargs:
             result = self._db.get_job(name=name)
             if result:

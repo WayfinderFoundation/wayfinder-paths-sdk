@@ -16,7 +16,7 @@ from wayfinder_paths.runner.client import RunnerControlClient
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JOB_TYPE_STRATEGY
 from wayfinder_paths.runner.lifecycle import ensure_daemon_started, try_status
 from wayfinder_paths.runner.paths import RunnerPaths, get_runner_paths
-from wayfinder_paths.runner.schedule import normalize_schedule, schedule_request_fields
+from wayfinder_paths.runner.schedule import schedule_request_params
 
 RunnerReadAction = Literal["daemon_status", "status", "job_runs", "run_report"]
 
@@ -39,21 +39,6 @@ def _paths_for_client(*, root: Path, client: RunnerControlClient) -> RunnerPaths
         db_path=runner_dir / "state.db",
         logs_dir=runner_dir / "logs",
         sock_path=client.sock_path,
-    )
-
-
-def _schedule_request_params(
-    *,
-    interval_seconds: int | None,
-    cron_expr: str | None,
-    timezone: str | None,
-) -> dict[str, Any]:
-    return schedule_request_fields(
-        normalize_schedule(
-            interval_seconds=interval_seconds,
-            cron_expr=cron_expr,
-            timezone=timezone,
-        )
     )
 
 
@@ -360,7 +345,7 @@ async def core_runner(
                 if not name:
                     return err("invalid_request", "name is required for add_job")
                 try:
-                    schedule_params = _schedule_request_params(
+                    schedule_params = schedule_request_params(
                         interval_seconds=interval_seconds,
                         cron_expr=cron_expr,
                         timezone=timezone,
@@ -434,7 +419,7 @@ async def core_runner(
                 if interval_seconds is not None or cron_expr is not None:
                     try:
                         params.update(
-                            _schedule_request_params(
+                            schedule_request_params(
                                 interval_seconds=interval_seconds,
                                 cron_expr=cron_expr,
                                 timezone=timezone,

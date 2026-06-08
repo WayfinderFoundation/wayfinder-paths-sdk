@@ -17,7 +17,7 @@ from wayfinder_paths.runner.constants import (
 from wayfinder_paths.runner.daemon import RunnerDaemon
 from wayfinder_paths.runner.lifecycle import ensure_daemon_started
 from wayfinder_paths.runner.paths import get_runner_paths
-from wayfinder_paths.runner.schedule import normalize_schedule, schedule_request_fields
+from wayfinder_paths.runner.schedule import schedule_request_params
 
 
 def _echo_json(data: Any) -> None:
@@ -26,20 +26,6 @@ def _echo_json(data: Any) -> None:
 
 def _client(sock_path: Path) -> RunnerControlClient:
     return RunnerControlClient(sock_path=sock_path)
-
-
-def _schedule_request_params(
-    *, interval_seconds: int | None, cron_expr: str | None, timezone: str | None
-) -> dict[str, Any]:
-    try:
-        schedule = normalize_schedule(
-            interval_seconds=interval_seconds,
-            cron_expr=cron_expr,
-            timezone=timezone,
-        )
-    except ValueError as exc:
-        raise click.UsageError(str(exc)) from exc
-    return schedule_request_fields(schedule)
 
 
 @click.group(name="runner", help="Local runner daemon for strategies and scripts.")
@@ -181,11 +167,14 @@ def add_job_cmd(
 ) -> None:
     paths = get_runner_paths()
     jt = str(job_type).lower().strip()
-    schedule_params = _schedule_request_params(
-        interval_seconds=interval_seconds,
-        cron_expr=cron_expr,
-        timezone=timezone,
-    )
+    try:
+        schedule_params = schedule_request_params(
+            interval_seconds=interval_seconds,
+            cron_expr=cron_expr,
+            timezone=timezone,
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
 
     env_payload: dict[str, Any] | None = None
     if env_json is not None:
@@ -271,13 +260,16 @@ def update_job_cmd(
     paths = get_runner_paths()
     params: dict[str, Any] = {"name": str(name), "payload": payload}
     if interval_seconds is not None or cron_expr is not None:
-        params.update(
-            _schedule_request_params(
-                interval_seconds=interval_seconds,
-                cron_expr=cron_expr,
-                timezone=timezone,
+        try:
+            params.update(
+                schedule_request_params(
+                    interval_seconds=interval_seconds,
+                    cron_expr=cron_expr,
+                    timezone=timezone,
+                )
             )
-        )
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
     resp = _client(paths.sock_path).call("update_job", params)
     _echo_json(resp)
 

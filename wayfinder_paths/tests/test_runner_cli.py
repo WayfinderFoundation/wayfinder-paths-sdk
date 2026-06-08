@@ -96,3 +96,32 @@ def test_add_job_cli_rejects_missing_schedule() -> None:
 
     assert result.exit_code != 0
     assert "exactly one" in result.output
+
+
+def test_update_job_cli_accepts_cron(monkeypatch) -> None:
+    calls: list[tuple[str, dict[str, Any] | None]] = []
+    monkeypatch.setattr(
+        runner_cli_module,
+        "get_runner_paths",
+        lambda: type("Paths", (), {"sock_path": Path("runner.sock")})(),
+    )
+    monkeypatch.setattr(runner_cli_module, "_client", lambda _sock: _FakeClient(calls))
+
+    result = CliRunner().invoke(
+        runner_cli,
+        [
+            "update-job",
+            "--name",
+            "job",
+            "--cron",
+            "0 9 * * 1-5",
+            "--timezone",
+            "America/Toronto",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert calls[0][0] == "update_job"
+    assert calls[0][1]["cron_expr"] == "0 9 * * 1-5"
+    assert calls[0][1]["timezone"] == "America/Toronto"
+    assert "interval_seconds" not in calls[0][1]

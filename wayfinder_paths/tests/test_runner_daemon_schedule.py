@@ -127,3 +127,17 @@ def test_build_failure_is_recorded_after_reservation(tmp_path: Path) -> None:
     assert runs[0]["status"] == RunStatus.FAILED
     assert runs[0]["reason"] == "schedule"
     assert state.next_run_at == 160
+
+
+def test_update_missing_job_returns_not_found(tmp_path: Path) -> None:
+    daemon = RunnerDaemon(paths=_paths(tmp_path))
+
+    resp = daemon.ctl_update_job(
+        name="missing",
+        payload=None,
+        cron_expr="0 9 * * 1-5",
+        timezone="UTC",
+    )
+
+    assert resp["ok"] is False
+    assert resp["error"] == "Job not found: missing"
