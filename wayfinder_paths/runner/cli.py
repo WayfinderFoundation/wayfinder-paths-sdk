@@ -123,9 +123,11 @@ def status_cmd() -> None:
     "--interval",
     "interval_seconds",
     type=int,
-    required=True,
+    default=None,
     help="Seconds between runs.",
 )
+@click.option("--cron", "cron_expr", default=None, help="5-field cron expression.")
+@click.option("--timezone", default="UTC", show_default=True, help="IANA timezone.")
 @click.option("--config", "config_path", default="config.json", show_default=True)
 @click.option("--wallet-label", default=None)
 @click.option(
@@ -152,7 +154,9 @@ def add_job_cmd(
     action: str,
     script_path: str | None,
     script_args: tuple[str, ...],
-    interval_seconds: int,
+    interval_seconds: int | None,
+    cron_expr: str | None,
+    timezone: str,
     config_path: str,
     wallet_label: str | None,
     timeout_seconds: int | None,
@@ -162,6 +166,8 @@ def add_job_cmd(
 ) -> None:
     paths = get_runner_paths()
     jt = str(job_type).lower().strip()
+    if (interval_seconds is None) == (cron_expr is None):
+        raise click.UsageError("Provide exactly one of --interval or --cron")
 
     env_payload: dict[str, Any] | None = None
     if env_json is not None:
@@ -208,15 +214,18 @@ def add_job_cmd(
     else:
         raise click.UsageError(f"Unsupported type: {job_type}")
 
-    resp = _client(paths.sock_path).call(
-        "add_job",
-        {
-            "name": str(name),
-            "type": str(job_type),
-            "payload": payload,
-            "interval_seconds": int(interval_seconds),
-        },
-    )
+    params: dict[str, Any] = {
+        "name": str(name),
+        "type": str(job_type),
+        "payload": payload,
+    }
+    if interval_seconds is not None:
+        params["interval_seconds"] = int(interval_seconds)
+    if cron_expr is not None:
+        params["cron_expr"] = str(cron_expr)
+        params["timezone"] = str(timezone)
+
+    resp = _client(paths.sock_path).call("add_job", params)
     _echo_json(resp)
 
 
@@ -229,10 +238,19 @@ def add_job_cmd(
     default=None,
     help="New interval seconds.",
 )
+@click.option("--cron", "cron_expr", default=None, help="New 5-field cron expression.")
+@click.option("--timezone", default="UTC", show_default=True, help="IANA timezone.")
 @click.option("--payload-json", default=None, help="Full replacement payload JSON.")
 def update_job_cmd(
-    name: str, interval_seconds: int | None, payload_json: str | None
+    name: str,
+    interval_seconds: int | None,
+    cron_expr: str | None,
+    timezone: str,
+    payload_json: str | None,
 ) -> None:
+    if interval_seconds is not None and cron_expr is not None:
+        raise click.UsageError("Provide only one of --interval or --cron")
+
     payload = None
     if payload_json is not None:
         payload = json.loads(payload_json)
@@ -240,10 +258,13 @@ def update_job_cmd(
             raise click.UsageError("--payload-json must decode to an object")
 
     paths = get_runner_paths()
-    resp = _client(paths.sock_path).call(
-        "update_job",
-        {"name": str(name), "interval_seconds": interval_seconds, "payload": payload},
-    )
+    params: dict[str, Any] = {"name": str(name), "payload": payload}
+    if interval_seconds is not None:
+        params["interval_seconds"] = interval_seconds
+    if cron_expr is not None:
+        params["cron_expr"] = str(cron_expr)
+        params["timezone"] = str(timezone)
+    resp = _client(paths.sock_path).call("update_job", params)
     _echo_json(resp)
 
 

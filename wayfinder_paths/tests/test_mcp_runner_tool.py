@@ -12,6 +12,7 @@ from wayfinder_paths.runner.control import RunnerControlServer
 class _FakeDaemon:
     def __init__(self) -> None:
         self.control: RunnerControlServer | None = None
+        self.calls: list[tuple[str, dict]] = []
 
     def ctl_status(self) -> dict:
         return {"ok": True, "result": {"hello": "world"}}
@@ -28,9 +29,11 @@ class _FakeDaemon:
         return {"ok": True, "result": {"run": {"run_id": 1}, "log_tail": "ok"}}
 
     def ctl_add_job(self, **_kw) -> dict:  # type: ignore[no-untyped-def]
+        self.calls.append(("add_job", _kw))
         return {"ok": True, "result": {"job_id": 1}}
 
     def ctl_update_job(self, **_kw) -> dict:  # type: ignore[no-untyped-def]
+        self.calls.append(("update_job", _kw))
         return {"ok": True, "result": {"updated": True}}
 
     def ctl_pause_job(self, **_kw) -> dict:  # type: ignore[no-untyped-def]
@@ -84,6 +87,23 @@ def test_mcp_runner_tool_status_roundtrip() -> None:
         out = _run(core_runner(action="delete_job", sock_path=str(sock), name="job"))
         assert out["ok"] is True
         assert out["result"]["deleted"] is True
+
+        out = _run(
+            core_runner(
+                action="add_job",
+                sock_path=str(sock),
+                name="cron-job",
+                type="script",
+                script_path=".wayfinder_runs/job.py",
+                cron_expr="0 9 * * 1-5",
+                timezone="America/Toronto",
+            )
+        )
+        assert out["ok"] is True
+        assert daemon.calls[-1][0] == "add_job"
+        assert daemon.calls[-1][1]["cron_expr"] == "0 9 * * 1-5"
+        assert daemon.calls[-1][1]["timezone"] == "America/Toronto"
+        assert daemon.calls[-1][1]["interval_seconds"] is None
 
         out = _run(core_runner(action="daemon_stop", sock_path=str(sock)))
         assert out["ok"] is True

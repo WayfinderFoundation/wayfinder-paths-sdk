@@ -28,6 +28,13 @@ from wayfinder_paths.runner.constants import (
 from wayfinder_paths.runner.control import RunnerControlServer
 from wayfinder_paths.runner.db import RunnerDB
 from wayfinder_paths.runner.paths import RunnerPaths
+from wayfinder_paths.runner.schedule import (
+    SCHEDULE_KIND_CRON,
+    SCHEDULE_KIND_INTERVAL,
+    next_run_after,
+    normalize_schedule,
+    schedule_from_job,
+)
 from wayfinder_paths.runner.script_resolver import resolve_script_path
 
 JOB_RESULT_MARKER = "WAYFINDER_JOB_RESULT "
@@ -105,6 +112,8 @@ class RunningProcess:
     job_id: int
     job_name: str
     started_at: int
+    reason: str
+    scheduled_for: int | None
     timeout_seconds: int | None
     popen: subprocess.Popen[bytes]
     log_path: Path
@@ -339,6 +348,8 @@ class RunnerDaemon:
                 "started_at": datetime.fromtimestamp(rp.started_at, tz=UTC).isoformat(),
                 "finished_at": datetime.fromtimestamp(finished_at, tz=UTC).isoformat(),
                 "exit_code": exit_code,
+                "reason": rp.reason,
+                "scheduled_for": rp.scheduled_for,
                 "log_output": log_output,
             },
         )
@@ -381,6 +392,9 @@ class RunnerDaemon:
                         "job_type": job.type,
                         "status": state.status,
                         "interval_seconds": job.interval_seconds,
+                        "schedule_kind": job.schedule_kind,
+                        "cron_expr": job.cron_expr,
+                        "timezone": job.timezone,
                         "payload": job.payload,
                     }
                 )
@@ -428,29 +442,46 @@ class RunnerDaemon:
         OPENCODE_CLIENT.send_message(session_id, notification)
 
     def _maybe_start_job(
-        self, *, job: dict[str, Any], now: int, reason: str
+        self,
+        *,
+        job: dict[str, Any],
+        now: int,
+        reason: str,
+        advance_schedule: bool = True,
     ) -> int | None:
         if len(self._running) >= self._max_workers:
             return None
         job_id = job["id"]
         job_name = job["name"]
+        scheduled_for = (
+            int(job.get("next_run_at") or now) if reason == "schedule" else None
+        )
+        next_run_at = None
+        if advance_schedule:
+            next_run_at = next_run_after(schedule_from_job(job), now=now)
+
+        job_dir = self._paths.logs_dir / _safe_job_dirname(job_name)
+        job_dir.mkdir(parents=True, exist_ok=True)
+
         with self._lock_for_job(job_id):
             if self._running_by_job.get(job_id, 0) >= 1:
                 return None
             self._running_by_job[job_id] = self._running_by_job.get(job_id, 0) + 1
 
-        interval = int(job.get("interval_seconds") or 0)
-        next_run_at = now + max(1, interval)
-        self._db.set_job_last_run(job_id=job_id, last_run_at=now)
-        self._db.set_next_run_at(job_id=job_id, next_run_at=next_run_at)
-
-        job_dir = self._paths.logs_dir / _safe_job_dirname(job_name)
-        job_dir.mkdir(parents=True, exist_ok=True)
-
-        run_id = self._db.create_run(
-            job_id=job_id,
-            started_at=now,
-        )
+        try:
+            run_id = self._db.reserve_run(
+                job_id=job_id,
+                started_at=now,
+                next_run_at=next_run_at,
+                reason=reason,
+                scheduled_for=scheduled_for,
+            )
+        except Exception:
+            with self._lock_for_job(job_id):
+                self._running_by_job[job_id] = max(
+                    0, self._running_by_job.get(job_id, 1) - 1
+                )
+            raise
         log_path = job_dir / f"{run_id}.log"
         self._db.update_run_log_path(run_id=run_id, log_path=str(log_path))
 
@@ -474,6 +505,9 @@ class RunnerDaemon:
                 "WAYFINDER_RUNNER_DIR": str(self._paths.runner_dir),
                 "WAYFINDER_KV_NAMESPACE": str(job_name),
                 "WAYFINDER_RUNNER_REASON": str(reason),
+                "WAYFINDER_SCHEDULED_FOR": ""
+                if scheduled_for is None
+                else str(scheduled_for),
             }
         )
         if payload.get("env"):
@@ -515,7 +549,8 @@ class RunnerDaemon:
             with log_path.open("ab", buffering=0) as log_f:
                 log_f.write(
                     (
-                        f"[runner] job={job_name} run_id={run_id} started_at={now} reason={reason}\n"
+                        f"[runner] job={job_name} run_id={run_id} started_at={now} "
+                        f"reason={reason} scheduled_for={scheduled_for}\n"
                     ).encode()
                 )
                 popen = subprocess.Popen(  # noqa: S603
@@ -553,6 +588,8 @@ class RunnerDaemon:
             job_id=job_id,
             job_name=job_name,
             started_at=now,
+            reason=reason,
+            scheduled_for=scheduled_for,
             timeout_seconds=timeout_seconds,
             popen=popen,
             log_path=log_path,
@@ -693,13 +730,21 @@ class RunnerDaemon:
         name: str,
         job_type: str,
         payload: dict[str, Any],
-        interval_seconds: int,
+        interval_seconds: int | None = None,
+        cron_expr: str | None = None,
+        timezone: str | None = None,
     ) -> dict[str, Any]:
         if not name:
             return {"ok": False, "error": "name is required"}
 
-        if not interval_seconds or interval_seconds <= 0:
-            return {"ok": False, "error": "interval_seconds must be > 0"}
+        try:
+            schedule = normalize_schedule(
+                interval_seconds=interval_seconds,
+                cron_expr=cron_expr,
+                timezone=timezone,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
 
         if job_type not in {JOB_TYPE_STRATEGY, JOB_TYPE_SCRIPT}:
             return {"ok": False, "error": f"unsupported job type: {job_type}"}
@@ -742,13 +787,19 @@ class RunnerDaemon:
         payload_norm["notify_session_id"] = session_id
 
         try:
+            now = int(time.time())
             job_id = self._db.add_job(
                 name=name,
                 job_type=job_type,
                 payload=payload_norm,
-                interval_seconds=interval_seconds,
+                interval_seconds=int(schedule.interval_seconds or 0),
+                schedule_kind=schedule.kind,
+                cron_expr=schedule.cron_expr,
+                timezone=schedule.timezone,
                 status=JobStatus.ACTIVE,
-                next_run_at=int(time.time()),
+                next_run_at=now
+                if schedule.kind == SCHEDULE_KIND_INTERVAL
+                else next_run_after(schedule, now=now),
             )
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
@@ -758,11 +809,54 @@ class RunnerDaemon:
         return {"ok": True, "result": {"job_id": job_id, "name": name}}
 
     def ctl_update_job(
-        self, *, name: str, payload: dict[str, Any] | None, interval_seconds: int | None
+        self,
+        *,
+        name: str,
+        payload: dict[str, Any] | None,
+        interval_seconds: int | None = None,
+        cron_expr: str | None = None,
+        timezone: str | None = None,
     ) -> dict[str, Any]:
+        schedule_kwargs: dict[str, Any] = {}
+        if interval_seconds is not None or cron_expr is not None:
+            try:
+                schedule = normalize_schedule(
+                    interval_seconds=interval_seconds,
+                    cron_expr=cron_expr,
+                    timezone=timezone,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": str(exc)}
+            schedule_kwargs = {
+                "interval_seconds": int(schedule.interval_seconds or 0),
+                "schedule_kind": schedule.kind,
+                "timezone": schedule.timezone,
+            }
+            if schedule.kind == SCHEDULE_KIND_CRON:
+                schedule_kwargs["cron_expr"] = schedule.cron_expr
+            else:
+                schedule_kwargs["clear_cron_expr"] = True
         self._db.update_job(
-            name=name, payload=payload, interval_seconds=interval_seconds
+            name=name,
+            payload=payload,
+            **schedule_kwargs,
         )
+        if schedule_kwargs:
+            result = self._db.get_job(name=name)
+            if result:
+                job, _ = result
+                job_dict = {
+                    "interval_seconds": job.interval_seconds,
+                    "schedule_kind": job.schedule_kind,
+                    "cron_expr": job.cron_expr,
+                    "timezone": job.timezone,
+                }
+                next_run_at = int(time.time())
+                if job.schedule_kind == SCHEDULE_KIND_CRON:
+                    next_run_at = next_run_after(
+                        schedule_from_job(job_dict), now=next_run_at
+                    )
+                self._db.set_next_run_at(job_id=job.id, next_run_at=next_run_at)
         self._sync_to_backend_async()
         return {"ok": True, "result": {"name": name}}
 
@@ -777,7 +871,21 @@ class RunnerDaemon:
             return {"ok": False, "error": f"Job not found: {name}"}
         job, _ = result
         self._db.set_job_status(name=name, status=JobStatus.ACTIVE)
-        self._db.set_next_run_at(job_id=job.id, next_run_at=int(time.time()))
+        now = int(time.time())
+        next_run_at = now
+        if job.schedule_kind == SCHEDULE_KIND_CRON:
+            next_run_at = next_run_after(
+                schedule_from_job(
+                    {
+                        "schedule_kind": job.schedule_kind,
+                        "cron_expr": job.cron_expr,
+                        "timezone": job.timezone,
+                        "interval_seconds": job.interval_seconds,
+                    }
+                ),
+                now=now,
+            )
+        self._db.set_next_run_at(job_id=job.id, next_run_at=next_run_at)
         self._sync_to_backend_async()
         return {"ok": True, "result": {"name": name, "status": JobStatus.ACTIVE}}
 
@@ -835,8 +943,14 @@ class RunnerDaemon:
             "type": job.type,
             "payload": job.payload,
             "interval_seconds": job.interval_seconds,
+            "schedule_kind": job.schedule_kind,
+            "cron_expr": job.cron_expr,
+            "timezone": job.timezone,
+            "next_run_at": state.next_run_at,
         }
-        run_id = self._maybe_start_job(job=job_dict, now=now, reason="run_once")
+        run_id = self._maybe_start_job(
+            job=job_dict, now=now, reason="run_once", advance_schedule=False
+        )
         if run_id is None:
             return {
                 "ok": False,

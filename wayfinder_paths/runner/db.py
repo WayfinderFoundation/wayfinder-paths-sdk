@@ -17,6 +17,9 @@ class JobRow:
     type: str
     payload: dict[str, Any]
     interval_seconds: int
+    schedule_kind: str
+    cron_expr: str | None
+    timezone: str
     created_at: int
     updated_at: int
 
@@ -57,6 +60,9 @@ class RunnerDB:
               type TEXT NOT NULL,
               payload_json TEXT NOT NULL,
               interval_seconds INTEGER NOT NULL,
+              schedule_kind TEXT NOT NULL DEFAULT 'interval',
+              cron_expr TEXT,
+              timezone TEXT NOT NULL DEFAULT 'UTC',
               created_at INTEGER NOT NULL,
               updated_at INTEGER NOT NULL
             );
@@ -88,6 +94,8 @@ class RunnerDB:
               log_path TEXT,
               summary_json TEXT,
               pid INTEGER,
+              reason TEXT,
+              scheduled_for INTEGER,
               FOREIGN KEY(job_id) REFERENCES job_defs(id) ON DELETE CASCADE
             );
             """
@@ -98,6 +106,21 @@ class RunnerDB:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_runs_job_status ON runs(job_id, status);"
         )
+        self._ensure_column(
+            "job_defs", "schedule_kind", "TEXT NOT NULL DEFAULT 'interval'"
+        )
+        self._ensure_column("job_defs", "cron_expr", "TEXT")
+        self._ensure_column("job_defs", "timezone", "TEXT NOT NULL DEFAULT 'UTC'")
+        self._ensure_column("runs", "reason", "TEXT")
+        self._ensure_column("runs", "scheduled_for", "INTEGER")
+
+    def _ensure_column(self, table: str, column: str, definition: str) -> None:
+        cur = self._conn.cursor()
+        cur.execute(f"PRAGMA table_info({table})")
+        existing = {str(row["name"]) for row in cur.fetchall()}
+        if column in existing:
+            return
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def mark_stale_running_runs_aborted(self, *, note: str) -> int:
         now = int(time.time())
@@ -119,6 +142,9 @@ class RunnerDB:
         job_type: str,
         payload: dict[str, Any],
         interval_seconds: int,
+        schedule_kind: str = "interval",
+        cron_expr: str | None = None,
+        timezone: str = "UTC",
         status: str = JobStatus.ACTIVE,
         next_run_at: int | None = None,
     ) -> int:
@@ -126,10 +152,24 @@ class RunnerDB:
         cur = self._conn.cursor()
         cur.execute(
             """
-            INSERT INTO job_defs(name, type, payload_json, interval_seconds, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO job_defs(
+              name, type, payload_json, interval_seconds,
+              schedule_kind, cron_expr, timezone,
+              created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (name, job_type, json.dumps(payload), interval_seconds, now, now),
+            (
+                name,
+                job_type,
+                json.dumps(payload),
+                interval_seconds,
+                schedule_kind,
+                cron_expr,
+                timezone,
+                now,
+                now,
+            ),
         )
         job_id = cur.lastrowid
         cur.execute(
@@ -147,6 +187,10 @@ class RunnerDB:
         name: str,
         payload: dict[str, Any] | None = None,
         interval_seconds: int | None = None,
+        schedule_kind: str | None = None,
+        cron_expr: str | None = None,
+        clear_cron_expr: bool = False,
+        timezone: str | None = None,
     ) -> None:
         now = int(time.time())
         sets: list[str] = ["updated_at = ?"]
@@ -157,6 +201,17 @@ class RunnerDB:
         if interval_seconds is not None:
             sets.append("interval_seconds = ?")
             params.append(interval_seconds)
+        if schedule_kind is not None:
+            sets.append("schedule_kind = ?")
+            params.append(schedule_kind)
+        if cron_expr is not None:
+            sets.append("cron_expr = ?")
+            params.append(cron_expr)
+        elif clear_cron_expr:
+            sets.append("cron_expr = NULL")
+        if timezone is not None:
+            sets.append("timezone = ?")
+            params.append(timezone)
         if len(sets) == 1:
             return
         params.append(name)
@@ -195,6 +250,9 @@ class RunnerDB:
             type=row["type"],
             payload=json.loads(row["payload_json"]),
             interval_seconds=row["interval_seconds"],
+            schedule_kind=row["schedule_kind"],
+            cron_expr=row["cron_expr"],
+            timezone=row["timezone"],
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -227,6 +285,9 @@ class RunnerDB:
                 "type": r["type"],
                 "payload": json.loads(r["payload_json"]),
                 "interval_seconds": r["interval_seconds"],
+                "schedule_kind": r["schedule_kind"],
+                "cron_expr": r["cron_expr"],
+                "timezone": r["timezone"],
                 "created_at": r["created_at"],
                 "updated_at": r["updated_at"],
                 "status": r["state_status"],
@@ -310,6 +371,7 @@ class RunnerDB:
         cur.execute(
             """
             SELECT d.id, d.name, d.type, d.payload_json, d.interval_seconds,
+                   d.schedule_kind, d.cron_expr, d.timezone,
                    s.status, s.next_run_at, s.last_run_at, s.last_ok_at,
                    s.consecutive_failures, s.last_error
             FROM job_defs d
@@ -326,6 +388,9 @@ class RunnerDB:
                 "type": r["type"],
                 "payload": json.loads(r["payload_json"]),
                 "interval_seconds": r["interval_seconds"],
+                "schedule_kind": r["schedule_kind"],
+                "cron_expr": r["cron_expr"],
+                "timezone": r["timezone"],
                 "status": r["status"],
                 "next_run_at": r["next_run_at"],
                 "last_run_at": r["last_run_at"],
@@ -344,16 +409,62 @@ class RunnerDB:
         status: str = RunStatus.RUNNING,
         log_path: str | None = None,
         pid: int | None = None,
+        reason: str | None = None,
+        scheduled_for: int | None = None,
     ) -> int:
         cur = self._conn.cursor()
         cur.execute(
             """
-            INSERT INTO runs(job_id, started_at, finished_at, status, exit_code, log_path, summary_json, pid)
-            VALUES (?, ?, NULL, ?, NULL, ?, NULL, ?)
+            INSERT INTO runs(
+              job_id, started_at, finished_at, status, exit_code,
+              log_path, summary_json, pid, reason, scheduled_for
+            )
+            VALUES (?, ?, NULL, ?, NULL, ?, NULL, ?, ?, ?)
             """,
-            (job_id, started_at, status, log_path, pid),
+            (job_id, started_at, status, log_path, pid, reason, scheduled_for),
         )
         return cur.lastrowid
+
+    def reserve_run(
+        self,
+        *,
+        job_id: int,
+        started_at: int,
+        next_run_at: int | None,
+        reason: str,
+        scheduled_for: int | None,
+    ) -> int:
+        cur = self._conn.cursor()
+        transaction_started = False
+        try:
+            cur.execute("BEGIN IMMEDIATE")
+            transaction_started = True
+            cur.execute(
+                "UPDATE job_state SET last_run_at = ? WHERE job_id = ?",
+                (started_at, job_id),
+            )
+            if next_run_at is not None:
+                cur.execute(
+                    "UPDATE job_state SET next_run_at = ? WHERE job_id = ?",
+                    (next_run_at, job_id),
+                )
+            cur.execute(
+                """
+                INSERT INTO runs(
+                  job_id, started_at, finished_at, status, exit_code,
+                  log_path, summary_json, pid, reason, scheduled_for
+                )
+                VALUES (?, ?, NULL, ?, NULL, NULL, NULL, NULL, ?, ?)
+                """,
+                (job_id, started_at, RunStatus.RUNNING, reason, scheduled_for),
+            )
+            run_id = cur.lastrowid
+            cur.execute("COMMIT")
+            return int(run_id)
+        except Exception:
+            if transaction_started:
+                cur.execute("ROLLBACK")
+            raise
 
     def finish_run(
         self,
@@ -394,7 +505,7 @@ class RunnerDB:
         cur.execute(
             """
             SELECT r.run_id, r.job_id, d.name AS job_name, r.started_at, r.finished_at, r.status,
-                   r.exit_code, r.log_path, r.summary_json, r.pid
+                   r.exit_code, r.log_path, r.summary_json, r.pid, r.reason, r.scheduled_for
             FROM runs r
             JOIN job_defs d ON d.id = r.job_id
             ORDER BY r.run_id DESC
@@ -409,7 +520,7 @@ class RunnerDB:
         cur.execute(
             """
             SELECT r.run_id, r.job_id, d.name AS job_name, r.started_at, r.finished_at, r.status,
-                   r.exit_code, r.log_path, r.summary_json, r.pid
+                   r.exit_code, r.log_path, r.summary_json, r.pid, r.reason, r.scheduled_for
             FROM runs r
             JOIN job_defs d ON d.id = r.job_id
             WHERE r.job_id = ?
@@ -425,7 +536,7 @@ class RunnerDB:
         cur.execute(
             """
             SELECT r.run_id, r.job_id, d.name AS job_name, r.started_at, r.finished_at, r.status,
-                   r.exit_code, r.log_path, r.summary_json, r.pid
+                   r.exit_code, r.log_path, r.summary_json, r.pid, r.reason, r.scheduled_for
             FROM runs r
             JOIN job_defs d ON d.id = r.job_id
             WHERE r.run_id = ?
@@ -449,4 +560,6 @@ class RunnerDB:
             "log_path": r["log_path"],
             "summary": json.loads(r["summary_json"]) if r["summary_json"] else None,
             "pid": r["pid"],
+            "reason": r["reason"],
+            "scheduled_for": r["scheduled_for"],
         }

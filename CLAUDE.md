@@ -253,13 +253,14 @@ Rough cut: if you can express it as one MCP call, use the MCP call. If you find 
 When a user wants a **repeatable/automated system** (recurring jobs):
 
 - Create or modify a strategy under `wayfinder_paths/strategies/` and follow the normal manifests/tests workflow.
-- Use the project-local runner to call strategy `update` on an interval (no cron needed).
+- Use the project-local runner to call strategy `update` on an interval or runner-owned cron schedule. Do not use system cron, systemd timers, or background loops.
 
 Runner CLI (project-local state in `./.wayfinder/runner/`):
 
 ```bash
 poetry run wayfinder runner start             # Start daemon (idempotent)
 poetry run wayfinder runner add-job --name basis-update --type strategy --strategy basis_trading_strategy --action update --interval 600 --config ./config.json
+poetry run wayfinder runner add-job --name weekday-basis-update --type strategy --strategy basis_trading_strategy --action update --cron "0 9 * * 1-5" --timezone America/Toronto --config ./config.json
 poetry run wayfinder runner status | run-once | pause | resume | delete <job> | stop
 ```
 
