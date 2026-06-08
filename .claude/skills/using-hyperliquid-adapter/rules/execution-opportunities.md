@@ -18,11 +18,11 @@ Orders below this threshold will be rejected by Hyperliquid.
 Orders:
 - `place_market_order(asset_id, is_buy, slippage, size, address, reduce_only=False, cloid=None, builder=None)`
 - `place_limit_order(asset_id, is_buy, price, size, address, reduce_only=False, builder=None)`
-- `place_trigger_order(asset_id, is_buy, trigger_price, size, address, tpsl, is_market=True, limit_price=None)`
+- `place_trigger_order(asset_id, is_buy, trigger_price, size, address, tpsl, is_market=True, limit_price=None, reduce_only=True)`
   - `tpsl="sl"` → stop-loss; `tpsl="tp"` → take-profit
   - `is_market=True` (default): fires a market order when the trigger price is hit
   - `is_market=False`: fires a limit order at `limit_price` when triggered (requires `limit_price`)
-  - Always `reduce_only=True` — closes an existing position, never opens a new one
+  - `reduce_only=True` (default): closes an existing position, never opens one. Set `False` for opening/scaling triggers (e.g. a stop-entry that adds exposure on touch)
 - `place_stop_loss(asset_id, is_buy, trigger_price, size, address)` — convenience wrapper for `place_trigger_order(..., tpsl="sl", is_market=True)`
 - `cancel_order(asset_id, order_id, address)`
 - `cancel_order_by_cloid(asset_id, cloid, address)`
