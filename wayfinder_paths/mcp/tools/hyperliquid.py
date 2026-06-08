@@ -1359,12 +1359,12 @@ async def hyperliquid_place_trigger_order(
     size: float,
     is_market_trigger: bool = True,
     price: float | None = None,
+    reduce_only: bool = True,
 ) -> dict[str, Any]:
     """Place a perp take-profit / stop-loss trigger order.
 
     Perp-only: spot and HIP-4 outcome markets are rejected up-front because
-    triggers close an existing perp position (always `reduce_only`), which
-    those markets don't have.
+    triggers act on an existing perp position, which those markets don't have.
 
     Set `is_buy` to the side that **closes** your position (long → False, short → True).
     A market trigger fills at market on touch; a limit trigger needs `price`.
@@ -1380,6 +1380,11 @@ async def hyperliquid_place_trigger_order(
             rounds to zero.
         is_market_trigger: Default True (market on touch). False = limit-on-touch.
         price: Limit price; required only when `is_market_trigger=False`.
+        reduce_only: Default True — the trigger can only close, never open/flip a
+            position (HL cancels it at trigger time if there's nothing to reduce).
+            Set False for opening/scaling triggers (e.g. a stop-entry that adds
+            exposure on touch); the order then rests as a normal non-reduce-only
+            trigger.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
@@ -1408,9 +1413,9 @@ async def hyperliquid_place_trigger_order(
     except ValueError as exc:
         return err("invalid_coin", str(exc))
 
-    # Trigger orders close existing positions (always reduce_only). Spot has no
-    # positions to reduce, and HIP-4 outcomes are binary integer contracts with
-    # no TP/SL semantics — HL rejects both downstream, so guard up-front.
+    # Trigger orders act on a perp position. Spot has no positions, and HIP-4
+    # outcomes are binary integer contracts with no TP/SL semantics — HL rejects
+    # both downstream, so guard up-front.
     if market_type in (MARKET_TYPE_SPOT, MARKET_TYPE_HIP4):
         return err(
             "invalid_market",
@@ -1445,6 +1450,7 @@ async def hyperliquid_place_trigger_order(
         is_market=bool(is_market_trigger),
         limit_price=limit_px,
         builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
+        reduce_only=bool(reduce_only),
     )
     effects.append(
         {
@@ -1484,6 +1490,7 @@ async def hyperliquid_place_trigger_order(
                 "limit_price": limit_px,
                 "size_requested": float(sz),
                 "size_valid": float(sz_valid),
+                "reduce_only": bool(reduce_only),
                 "builder": DEFAULT_HYPERLIQUID_BUILDER_FEE,
             },
             "effects": effects,
