@@ -12,7 +12,8 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC
 from wayfinder_paths.core.utils.gorlami import gorlami_fork
 from wayfinder_paths.core.utils.units import to_erc20_raw, to_wei_eth
-from wayfinder_paths.run_strategy import create_signing_callback, get_strategy_config
+from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
+from wayfinder_paths.run_strategy import get_strategy_config
 from wayfinder_paths.strategies.moonwell_wsteth_loop_strategy.strategy import (
     MoonwellWstethLoopStrategy,
 )
@@ -42,8 +43,20 @@ async def _run(args: argparse.Namespace) -> None:
     }
     erc20_balances = [(BASE_USDC, str(main_addr), int(usdc_raw))]
 
-    def signing_cb(address: str):
-        return create_signing_callback(address, config)
+    main_cb, main_signer = await get_wallet_signing_callback(
+        args.main_wallet_label or "main"
+    )
+    strategy_cb, strategy_signer = await get_wallet_signing_callback(
+        args.wallet_label or strategy_name
+    )
+    if str(main_signer).lower() != str(main_addr).lower():
+        raise SystemExit(
+            f"main wallet signer mismatch: config={main_addr} signer={main_signer}"
+        )
+    if str(strategy_signer).lower() != str(strat_addr).lower():
+        raise SystemExit(
+            f"strategy wallet signer mismatch: config={strat_addr} signer={strategy_signer}"
+        )
 
     async with gorlami_fork(
         CHAIN_ID_BASE,
@@ -54,8 +67,8 @@ async def _run(args: argparse.Namespace) -> None:
 
         strategy = MoonwellWstethLoopStrategy(
             config,
-            main_wallet_signing_callback=signing_cb(str(main_addr)),
-            strategy_wallet_signing_callback=signing_cb(str(strat_addr)),
+            main_wallet_signing_callback=main_cb,
+            strategy_wallet_signing_callback=strategy_cb,
         )
         await strategy.setup()
 

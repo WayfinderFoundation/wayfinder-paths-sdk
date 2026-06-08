@@ -30,7 +30,11 @@ from wayfinder_paths.core.utils.multicall import (
     read_only_calls_multicall_or_gather,
 )
 from wayfinder_paths.core.utils.tokens import ensure_allowance
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.transaction import (
+    _is_gorlami_fork_chain,
+    encode_call,
+    send_transaction,
+)
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 CHAIN_NAME = "base"
@@ -450,6 +454,15 @@ class MoonwellAdapter(BaseAdapter):
             if total_usd < min_rewards_usd:
                 return True, {}
 
+        if _is_gorlami_fork_chain(cid):
+            can_claim = await self._can_claim_rewards_on_fork(strategy, chain_id=cid)
+            if not can_claim:
+                self.logger.warning(
+                    "Moonwell rewards are reported on the Gorlami fork, but "
+                    "claimReward preflight reverts; skipping unclaimable fork rewards"
+                )
+                return True, {}
+
         transaction = await encode_call(
             target=comptroller_address,
             abi=COMPTROLLER_ABI,
@@ -460,6 +473,27 @@ class MoonwellAdapter(BaseAdapter):
         )
         await send_transaction(transaction, self.sign_callback)
         return True, rewards
+
+    async def _can_claim_rewards_on_fork(
+        self, account: str, *, chain_id: int | None = None
+    ) -> bool:
+        cid = self._chain_id(chain_id)
+        comptroller_address = self._entry_address(cid, "comptroller")
+        try:
+            async with web3_from_chain_id(cid) as web3:
+                contract = web3.eth.contract(
+                    address=comptroller_address, abi=COMPTROLLER_ABI
+                )
+                claim = contract.functions.claimReward(account)
+                tx = {"from": account}
+                try:
+                    await claim.call(tx, block_identifier="pending")
+                    return True
+                except Exception:  # noqa: BLE001
+                    await claim.estimate_gas(tx, block_identifier="pending")
+                    return True
+        except Exception:  # noqa: BLE001
+            return False
 
     async def _get_outstanding_rewards(
         self, account: str, *, chain_id: int | None = None
@@ -867,14 +901,36 @@ class MoonwellAdapter(BaseAdapter):
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
             cid = self._chain_id(chain_id)
+            if _is_gorlami_fork_chain(cid):
+                return await self._get_all_markets_from_core_contracts(
+                    chain_id=cid,
+                    include_apy=include_apy,
+                    include_rewards=include_rewards,
+                    include_usd=include_usd,
+                    multicall_chunk_size=multicall_chunk_size,
+                )
+
             views_address = self._entry_address(cid, "views")
             async with web3_from_chain_id(cid) as web3:
                 multicall = MulticallAdapter(chain_id=cid, web3=web3)
                 views = web3.eth.contract(address=views_address, abi=MOONWELL_VIEWS_ABI)
 
-                markets_info = await views.functions.getAllMarketsInfo().call(
-                    block_identifier="pending"
-                )
+                try:
+                    markets_info = await views.functions.getAllMarketsInfo().call(
+                        block_identifier="pending"
+                    )
+                except Exception as exc:
+                    self.logger.warning(
+                        f"Moonwell Views getAllMarketsInfo failed for chain_id={cid}; "
+                        f"falling back to Comptroller/mToken reads: {exc}"
+                    )
+                    return await self._get_all_markets_from_core_contracts(
+                        chain_id=cid,
+                        include_apy=include_apy,
+                        include_rewards=include_rewards,
+                        include_usd=include_usd,
+                        multicall_chunk_size=multicall_chunk_size,
+                    )
                 if not markets_info:
                     return True, []
 
@@ -1121,6 +1177,216 @@ class MoonwellAdapter(BaseAdapter):
                                 else None
                             )
                         except Exception:  # noqa: BLE001
+                            row["totalBorrowsUsd"] = None
+
+                    markets.append(row)
+
+                return True, markets
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def _get_all_markets_from_core_contracts(
+        self,
+        *,
+        chain_id: int,
+        include_apy: bool,
+        include_rewards: bool,
+        include_usd: bool,
+        multicall_chunk_size: int,
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
+        try:
+            cid = self._chain_id(chain_id)
+            comptroller_address = self._entry_address(cid, "comptroller")
+
+            async with web3_from_chain_id(cid) as web3:
+                multicall = MulticallAdapter(chain_id=cid, web3=web3)
+                comptroller = web3.eth.contract(
+                    address=comptroller_address, abi=COMPTROLLER_ABI
+                )
+                raw_markets = await comptroller.functions.getAllMarkets().call(
+                    block_identifier="pending"
+                )
+                market_addrs = [
+                    to_checksum_address(str(raw_mtoken))
+                    for raw_mtoken in raw_markets or []
+                ]
+                if not market_addrs:
+                    return True, []
+
+                market_calls: list[Any] = []
+                for mtoken in market_addrs:
+                    contract = web3.eth.contract(address=mtoken, abi=MTOKEN_ABI)
+                    market_calls.extend(
+                        [
+                            multicall.build_call(
+                                mtoken, contract.encode_abi("totalSupply", args=[])
+                            ),
+                            multicall.build_call(
+                                mtoken, contract.encode_abi("totalBorrows", args=[])
+                            ),
+                            multicall.build_call(
+                                mtoken, contract.encode_abi("getCash", args=[])
+                            ),
+                            multicall.build_call(
+                                mtoken,
+                                contract.encode_abi("exchangeRateStored", args=[]),
+                            ),
+                            multicall.build_call(
+                                mtoken,
+                                contract.encode_abi(
+                                    "borrowRatePerTimestamp", args=[]
+                                ),
+                            ),
+                            multicall.build_call(
+                                mtoken,
+                                contract.encode_abi(
+                                    "supplyRatePerTimestamp", args=[]
+                                ),
+                            ),
+                            multicall.build_call(
+                                comptroller_address,
+                                comptroller.encode_abi("markets", args=[mtoken]),
+                            ),
+                        ]
+                    )
+
+                ret = await self._multicall_chunked(
+                    multicall=multicall,
+                    calls=market_calls,
+                    chunk_size=multicall_chunk_size,
+                )
+
+                sample_mtoken = web3.eth.contract(
+                    address=self._entry_address(cid, "sample_mtoken"), abi=MTOKEN_ABI
+                )
+                abi_total_supply = self._fn_abi(sample_mtoken, "totalSupply")
+                abi_total_borrows = self._fn_abi(sample_mtoken, "totalBorrows")
+                abi_cash = self._fn_abi(sample_mtoken, "getCash")
+                abi_exchange_rate = self._fn_abi(
+                    sample_mtoken, "exchangeRateStored", inputs_len=0
+                )
+                abi_borrow_rate = self._fn_abi(
+                    sample_mtoken, "borrowRatePerTimestamp", inputs_len=0
+                )
+                abi_supply_rate = self._fn_abi(
+                    sample_mtoken, "supplyRatePerTimestamp", inputs_len=0
+                )
+                abi_markets = self._fn_abi(comptroller, "markets", inputs_len=1)
+
+                def decode_int(base: int, offset: int, abi: dict[str, Any]) -> int:
+                    data = ret[base + offset] if base + offset < len(ret) else b""
+                    if not data:
+                        return 0
+                    try:
+                        return int(self._decode(web3, abi, data)[0])
+                    except Exception:  # noqa: BLE001
+                        return 0
+
+                def decode_market(base: int) -> tuple[bool, int]:
+                    data = ret[base + 6] if base + 6 < len(ret) else b""
+                    if not data:
+                        return False, 0
+                    try:
+                        decoded = self._decode(web3, abi_markets, data)
+                        return bool(decoded[0]), int(decoded[1])
+                    except Exception:  # noqa: BLE001
+                        return False, 0
+
+                markets: list[dict[str, Any]] = []
+                stride = 7
+                for i, mtoken in enumerate(market_addrs):
+                    base = i * stride
+                    market_md = self._market_metadata(mtoken, cid) or {}
+
+                    total_supply = decode_int(base, 0, abi_total_supply)
+                    total_borrows = decode_int(base, 1, abi_total_borrows)
+                    cash = decode_int(base, 2, abi_cash)
+                    exchange_rate = decode_int(base, 3, abi_exchange_rate)
+                    borrow_rate = decode_int(base, 4, abi_borrow_rate)
+                    supply_rate = decode_int(base, 5, abi_supply_rate)
+                    is_listed, collateral_factor_raw = decode_market(base)
+
+                    underlying_addr = market_md.get("underlying")
+                    if isinstance(underlying_addr, str) and underlying_addr:
+                        try:
+                            underlying_addr = to_checksum_address(underlying_addr)
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                    row: dict[str, Any] = {
+                        "mtoken": mtoken,
+                        "chainId": int(cid),
+                        "chainName": self._chain_name(cid),
+                        "symbol": str(market_md.get("symbol") or ""),
+                        "underlying": underlying_addr,
+                        "mTokenDecimals": 18,
+                        "isListed": bool(is_listed),
+                        "borrowCap": None,
+                        "supplyCap": None,
+                        "mintPaused": None,
+                        "borrowPaused": None,
+                        "collateralFactor": float(int(collateral_factor_raw or 0))
+                        / MANTISSA,
+                        "underlyingPrice": None,
+                        "exchangeRate": int(exchange_rate),
+                        "borrowIndex": 0,
+                        "reserveFactor": None,
+                        "totalSupply": int(total_supply),
+                        "totalBorrows": int(total_borrows),
+                        "totalReserves": None,
+                        "cash": int(cash),
+                    }
+
+                    if market_md:
+                        row["underlyingSymbol"] = market_md.get("underlying_symbol")
+                        row["deprecated"] = bool(market_md.get("deprecated"))
+                        row["badDebt"] = bool(market_md.get("bad_debt"))
+                        row["nativeUnderlying"] = bool(market_md.get("native"))
+
+                    if include_apy:
+                        base_supply_apy = _timestamp_rate_to_apy(
+                            int(supply_rate or 0) / MANTISSA
+                        )
+                        base_borrow_apy = _timestamp_rate_to_apy(
+                            int(borrow_rate or 0) / MANTISSA
+                        )
+                        row["baseSupplyApy"] = base_supply_apy
+                        row["baseBorrowApy"] = base_borrow_apy
+                        row["supplyApy"] = base_supply_apy
+                        row["borrowApy"] = base_borrow_apy
+                        row["rewardSupplyApy"] = 0.0
+                        row["rewardBorrowApy"] = 0.0
+                        row["incentives"] = []
+
+                    if include_usd and underlying_addr:
+                        token_data = await self._token_details(
+                            str(underlying_addr), market_data=True, chain_id=cid
+                        )
+                        price = None
+                        decimals_underlying = 18
+                        if token_data:
+                            price = (
+                                token_data.get("price_usd")
+                                or token_data.get("price")
+                                or token_data.get("current_price")
+                            )
+                            decimals_underlying = int(token_data.get("decimals", 18))
+
+                        if price is not None:
+                            supplied_raw = (
+                                (int(total_supply or 0) * int(exchange_rate or 0))
+                                // MANTISSA
+                                if exchange_rate
+                                else 0
+                            )
+                            row["totalSupplyUsd"] = (
+                                supplied_raw / (10**decimals_underlying)
+                            ) * float(price)
+                            row["totalBorrowsUsd"] = (
+                                int(total_borrows or 0) / (10**decimals_underlying)
+                            ) * float(price)
+                        else:
+                            row["totalSupplyUsd"] = None
                             row["totalBorrowsUsd"] = None
 
                     markets.append(row)
@@ -1590,25 +1856,32 @@ class MoonwellAdapter(BaseAdapter):
                 u_data = await self._token_details(str(u_addr), chain_id=cid)
                 u_dec = u_data.get("decimals", 18) if u_data else 18
 
-                # Binary search: largest cTokens you can redeem without shortfall
-                lo, hi = 0, int(bal_raw)
-                while lo < hi:
-                    mid = (lo + hi + 1) // 2
-                    (
-                        err,
-                        _liq,
-                        short,
-                    ) = await comptroller.functions.getHypotheticalAccountLiquidity(
-                        account, mtoken, mid, 0
-                    ).call(block_identifier="pending")
-                    if err != 0:
-                        return False, f"Comptroller error {err}"
-                    if short == 0:
-                        lo = mid
-                    else:
-                        hi = mid - 1
+                assets_in = await comptroller.functions.getAssetsIn(account).call(
+                    block_identifier="pending"
+                )
+                entered_assets = {str(asset).lower() for asset in assets_in or []}
+                if mtoken.lower() not in entered_assets:
+                    c_by_collateral = int(bal_raw)
+                else:
+                    # Binary search: largest cTokens you can redeem without shortfall
+                    lo, hi = 0, int(bal_raw)
+                    while lo < hi:
+                        mid = (lo + hi + 1) // 2
+                        (
+                            err,
+                            _liq,
+                            short,
+                        ) = await comptroller.functions.getHypotheticalAccountLiquidity(
+                            account, mtoken, mid, 0
+                        ).call(block_identifier="pending")
+                        if err != 0:
+                            return False, f"Comptroller error {err}"
+                        if short == 0:
+                            lo = mid
+                        else:
+                            hi = mid - 1
 
-                c_by_collateral = lo
+                    c_by_collateral = lo
 
                 # Pool cash bound (convert underlying cash -> cToken capacity)
                 c_by_cash = (int(cash_raw) * MANTISSA) // int(exch_raw)
