@@ -31,6 +31,7 @@ from wayfinder_paths.runner.paths import RunnerPaths
 from wayfinder_paths.runner.schedule import (
     SCHEDULE_KIND_CRON,
     SCHEDULE_KIND_INTERVAL,
+    ScheduleSpec,
     next_run_after,
     normalize_schedule,
     schedule_from_job,
@@ -51,6 +52,29 @@ SESSION_ENV_KEYS = (
 def _safe_job_dirname(name: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in name)
     return cleaned.strip("_") or "job"
+
+
+def _schedule_db_kwargs(
+    schedule: ScheduleSpec, *, clear_interval_cron: bool = False
+) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "interval_seconds": int(schedule.interval_seconds or 0),
+        "schedule_kind": schedule.kind,
+        "timezone": schedule.timezone,
+    }
+    if schedule.kind == SCHEDULE_KIND_CRON:
+        fields["cron_expr"] = schedule.cron_expr
+    elif clear_interval_cron:
+        fields["clear_cron_expr"] = True
+    return fields
+
+
+def _next_run_at(
+    schedule: ScheduleSpec, *, now: int, immediate_interval: bool = False
+) -> int:
+    if immediate_interval and schedule.kind == SCHEDULE_KIND_INTERVAL:
+        return now
+    return next_run_after(schedule, now=now)
 
 
 def _tail_text(path: Path, *, max_bytes: int = 4000) -> str | None:
@@ -792,14 +816,9 @@ class RunnerDaemon:
                 name=name,
                 job_type=job_type,
                 payload=payload_norm,
-                interval_seconds=int(schedule.interval_seconds or 0),
-                schedule_kind=schedule.kind,
-                cron_expr=schedule.cron_expr,
-                timezone=schedule.timezone,
+                **_schedule_db_kwargs(schedule),
                 status=JobStatus.ACTIVE,
-                next_run_at=now
-                if schedule.kind == SCHEDULE_KIND_INTERVAL
-                else next_run_after(schedule, now=now),
+                next_run_at=_next_run_at(schedule, now=now, immediate_interval=True),
             )
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
@@ -827,15 +846,7 @@ class RunnerDaemon:
                 )
             except Exception as exc:  # noqa: BLE001
                 return {"ok": False, "error": str(exc)}
-            schedule_kwargs = {
-                "interval_seconds": int(schedule.interval_seconds or 0),
-                "schedule_kind": schedule.kind,
-                "timezone": schedule.timezone,
-            }
-            if schedule.kind == SCHEDULE_KIND_CRON:
-                schedule_kwargs["cron_expr"] = schedule.cron_expr
-            else:
-                schedule_kwargs["clear_cron_expr"] = True
+            schedule_kwargs = _schedule_db_kwargs(schedule, clear_interval_cron=True)
         self._db.update_job(
             name=name,
             payload=payload,
@@ -845,17 +856,12 @@ class RunnerDaemon:
             result = self._db.get_job(name=name)
             if result:
                 job, _ = result
-                job_dict = {
-                    "interval_seconds": job.interval_seconds,
-                    "schedule_kind": job.schedule_kind,
-                    "cron_expr": job.cron_expr,
-                    "timezone": job.timezone,
-                }
                 next_run_at = int(time.time())
-                if job.schedule_kind == SCHEDULE_KIND_CRON:
-                    next_run_at = next_run_after(
-                        schedule_from_job(job_dict), now=next_run_at
-                    )
+                next_run_at = _next_run_at(
+                    schedule_from_job(vars(job)),
+                    now=next_run_at,
+                    immediate_interval=True,
+                )
                 self._db.set_next_run_at(job_id=job.id, next_run_at=next_run_at)
         self._sync_to_backend_async()
         return {"ok": True, "result": {"name": name}}
@@ -872,19 +878,11 @@ class RunnerDaemon:
         job, _ = result
         self._db.set_job_status(name=name, status=JobStatus.ACTIVE)
         now = int(time.time())
-        next_run_at = now
-        if job.schedule_kind == SCHEDULE_KIND_CRON:
-            next_run_at = next_run_after(
-                schedule_from_job(
-                    {
-                        "schedule_kind": job.schedule_kind,
-                        "cron_expr": job.cron_expr,
-                        "timezone": job.timezone,
-                        "interval_seconds": job.interval_seconds,
-                    }
-                ),
-                now=now,
-            )
+        next_run_at = _next_run_at(
+            schedule_from_job(vars(job)),
+            now=now,
+            immediate_interval=True,
+        )
         self._db.set_next_run_at(job_id=job.id, next_run_at=next_run_at)
         self._sync_to_backend_async()
         return {"ok": True, "result": {"name": name, "status": JobStatus.ACTIVE}}

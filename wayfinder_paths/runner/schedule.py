@@ -60,6 +60,12 @@ def schedule_from_job(job: dict[str, Any]) -> ScheduleSpec:
     return normalize_schedule(interval_seconds=int(job.get("interval_seconds") or 0))
 
 
+def schedule_request_fields(spec: ScheduleSpec) -> dict[str, Any]:
+    if spec.kind == SCHEDULE_KIND_INTERVAL:
+        return {"interval_seconds": int(spec.interval_seconds or 0)}
+    return {"cron_expr": spec.cron_expr, "timezone": spec.timezone}
+
+
 def next_run_after(spec: ScheduleSpec, *, now: int) -> int:
     if spec.kind == SCHEDULE_KIND_INTERVAL:
         return int(now) + int(spec.interval_seconds or 0)

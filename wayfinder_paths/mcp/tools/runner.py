@@ -16,6 +16,7 @@ from wayfinder_paths.runner.client import RunnerControlClient
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JOB_TYPE_STRATEGY
 from wayfinder_paths.runner.lifecycle import ensure_daemon_started, try_status
 from wayfinder_paths.runner.paths import RunnerPaths, get_runner_paths
+from wayfinder_paths.runner.schedule import normalize_schedule, schedule_request_fields
 
 RunnerReadAction = Literal["daemon_status", "status", "job_runs", "run_report"]
 
@@ -38,6 +39,21 @@ def _paths_for_client(*, root: Path, client: RunnerControlClient) -> RunnerPaths
         db_path=runner_dir / "state.db",
         logs_dir=runner_dir / "logs",
         sock_path=client.sock_path,
+    )
+
+
+def _schedule_request_params(
+    *,
+    interval_seconds: int | None,
+    cron_expr: str | None,
+    timezone: str | None,
+) -> dict[str, Any]:
+    return schedule_request_fields(
+        normalize_schedule(
+            interval_seconds=interval_seconds,
+            cron_expr=cron_expr,
+            timezone=timezone,
+        )
     )
 
 
@@ -343,19 +359,14 @@ async def core_runner(
             case "add_job":
                 if not name:
                     return err("invalid_request", "name is required for add_job")
-                has_interval = interval_seconds is not None
-                has_cron = bool((cron_expr or "").strip())
-                if has_interval == has_cron:
-                    return err(
-                        "invalid_request",
-                        "provide exactly one of interval_seconds or cron_expr",
+                try:
+                    schedule_params = _schedule_request_params(
+                        interval_seconds=interval_seconds,
+                        cron_expr=cron_expr,
+                        timezone=timezone,
                     )
-                if has_interval and (
-                    not isinstance(interval_seconds, int) or interval_seconds <= 0
-                ):
-                    return err(
-                        "invalid_request", "interval_seconds must be a positive integer"
-                    )
+                except ValueError as exc:
+                    return err("invalid_request", str(exc))
 
                 job_type = str(type or JOB_TYPE_STRATEGY).strip().lower()
                 if job_type not in {JOB_TYPE_STRATEGY, JOB_TYPE_SCRIPT}:
@@ -406,11 +417,7 @@ async def core_runner(
                     "type": job_type,
                     "payload": job_payload,
                 }
-                if interval_seconds is not None:
-                    params["interval_seconds"] = int(interval_seconds)
-                if has_cron:
-                    params["cron_expr"] = str(cron_expr).strip()
-                    params["timezone"] = str(timezone or "UTC").strip() or "UTC"
+                params.update(schedule_params)
                 resp = client.call("add_job", params)
                 if resp.get("ok"):
                     return ok(resp.get("result"))
@@ -423,23 +430,18 @@ async def core_runner(
                     return err("invalid_request", "name is required for update_job")
                 if payload is not None and not isinstance(payload, dict):
                     return err("invalid_request", "payload must be an object")
-                if interval_seconds is not None and bool((cron_expr or "").strip()):
-                    return err(
-                        "invalid_request",
-                        "provide only one of interval_seconds or cron_expr",
-                    )
-                if interval_seconds is not None and (
-                    not isinstance(interval_seconds, int) or interval_seconds <= 0
-                ):
-                    return err(
-                        "invalid_request", "interval_seconds must be a positive integer"
-                    )
                 params = {"name": str(name).strip(), "payload": payload}
-                if interval_seconds is not None:
-                    params["interval_seconds"] = interval_seconds
-                if bool((cron_expr or "").strip()):
-                    params["cron_expr"] = str(cron_expr).strip()
-                    params["timezone"] = str(timezone or "UTC").strip() or "UTC"
+                if interval_seconds is not None or cron_expr is not None:
+                    try:
+                        params.update(
+                            _schedule_request_params(
+                                interval_seconds=interval_seconds,
+                                cron_expr=cron_expr,
+                                timezone=timezone,
+                            )
+                        )
+                    except ValueError as exc:
+                        return err("invalid_request", str(exc))
                 resp = client.call("update_job", params)
                 if resp.get("ok"):
                     return ok(resp.get("result"))

@@ -17,6 +17,7 @@ from wayfinder_paths.runner.constants import (
 from wayfinder_paths.runner.daemon import RunnerDaemon
 from wayfinder_paths.runner.lifecycle import ensure_daemon_started
 from wayfinder_paths.runner.paths import get_runner_paths
+from wayfinder_paths.runner.schedule import normalize_schedule, schedule_request_fields
 
 
 def _echo_json(data: Any) -> None:
@@ -25,6 +26,20 @@ def _echo_json(data: Any) -> None:
 
 def _client(sock_path: Path) -> RunnerControlClient:
     return RunnerControlClient(sock_path=sock_path)
+
+
+def _schedule_request_params(
+    *, interval_seconds: int | None, cron_expr: str | None, timezone: str | None
+) -> dict[str, Any]:
+    try:
+        schedule = normalize_schedule(
+            interval_seconds=interval_seconds,
+            cron_expr=cron_expr,
+            timezone=timezone,
+        )
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc
+    return schedule_request_fields(schedule)
 
 
 @click.group(name="runner", help="Local runner daemon for strategies and scripts.")
@@ -166,8 +181,11 @@ def add_job_cmd(
 ) -> None:
     paths = get_runner_paths()
     jt = str(job_type).lower().strip()
-    if (interval_seconds is None) == (cron_expr is None):
-        raise click.UsageError("Provide exactly one of --interval or --cron")
+    schedule_params = _schedule_request_params(
+        interval_seconds=interval_seconds,
+        cron_expr=cron_expr,
+        timezone=timezone,
+    )
 
     env_payload: dict[str, Any] | None = None
     if env_json is not None:
@@ -219,11 +237,7 @@ def add_job_cmd(
         "type": str(job_type),
         "payload": payload,
     }
-    if interval_seconds is not None:
-        params["interval_seconds"] = int(interval_seconds)
-    if cron_expr is not None:
-        params["cron_expr"] = str(cron_expr)
-        params["timezone"] = str(timezone)
+    params.update(schedule_params)
 
     resp = _client(paths.sock_path).call("add_job", params)
     _echo_json(resp)
@@ -248,9 +262,6 @@ def update_job_cmd(
     timezone: str,
     payload_json: str | None,
 ) -> None:
-    if interval_seconds is not None and cron_expr is not None:
-        raise click.UsageError("Provide only one of --interval or --cron")
-
     payload = None
     if payload_json is not None:
         payload = json.loads(payload_json)
@@ -259,11 +270,14 @@ def update_job_cmd(
 
     paths = get_runner_paths()
     params: dict[str, Any] = {"name": str(name), "payload": payload}
-    if interval_seconds is not None:
-        params["interval_seconds"] = interval_seconds
-    if cron_expr is not None:
-        params["cron_expr"] = str(cron_expr)
-        params["timezone"] = str(timezone)
+    if interval_seconds is not None or cron_expr is not None:
+        params.update(
+            _schedule_request_params(
+                interval_seconds=interval_seconds,
+                cron_expr=cron_expr,
+                timezone=timezone,
+            )
+        )
     resp = _client(paths.sock_path).call("update_job", params)
     _echo_json(resp)
 
