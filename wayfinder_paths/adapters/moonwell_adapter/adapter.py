@@ -12,14 +12,6 @@ from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants.base import MANTISSA, MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
-from wayfinder_paths.core.constants.contracts import (
-    BASE_WETH,
-    MOONWELL_COMPTROLLER,
-    MOONWELL_M_USDC,
-    MOONWELL_REWARD_DISTRIBUTOR,
-    MOONWELL_VIEWS,
-    MOONWELL_WELL_TOKEN,
-)
 from wayfinder_paths.core.constants.moonwell_abi import (
     COMPTROLLER_ABI,
     MOONWELL_VIEWS_ABI,
@@ -27,12 +19,22 @@ from wayfinder_paths.core.constants.moonwell_abi import (
     REWARD_DISTRIBUTOR_ABI,
     WETH_ABI,
 )
+from wayfinder_paths.core.constants.moonwell_contracts import (
+    MOONWELL_BY_CHAIN,
+    MOONWELL_CHAIN_IDS,
+    MOONWELL_CORE_MARKETS_BY_MTOKEN,
+    ZERO_ADDRESS,
+)
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
 from wayfinder_paths.core.utils.tokens import ensure_allowance
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.transaction import (
+    _is_gorlami_fork_chain,
+    encode_call,
+    send_transaction,
+)
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 CHAIN_NAME = "base"
@@ -108,20 +110,78 @@ class MoonwellAdapter(BaseAdapter):
                         out.append(b"")
         return out
 
+    @staticmethod
+    def supported_chain_ids() -> tuple[int, ...]:
+        return MOONWELL_CHAIN_IDS
+
+    def _chain_id(self, chain_id: int | None = None) -> int:
+        return int(self.chain_id if chain_id is None else chain_id)
+
+    def _chain_entry(self, chain_id: int | None = None) -> dict[str, Any]:
+        cid = self._chain_id(chain_id)
+        entry = MOONWELL_BY_CHAIN.get(cid)
+        if not entry:
+            supported = ", ".join(str(c) for c in MOONWELL_CHAIN_IDS)
+            raise ValueError(
+                f"Unsupported Moonwell chain_id={cid}. Supported chain IDs: {supported}"
+            )
+        return entry
+
+    def _entry_address(self, chain_id: int | None, key: str) -> str:
+        value = self._chain_entry(chain_id).get(key)
+        if not value:
+            raise ValueError(
+                f"Moonwell {key} is not configured for chain_id={self._chain_id(chain_id)}"
+            )
+        return to_checksum_address(str(value))
+
+    def _chain_name(self, chain_id: int | None = None) -> str:
+        return str(self._chain_entry(chain_id)["chain_name"])
+
+    def _token_key(self, token: str, chain_id: int | None = None) -> str:
+        return f"{self._chain_name(chain_id)}_{str(token).lower()}"
+
+    def _market_metadata(
+        self, mtoken: str, chain_id: int | None = None
+    ) -> dict[str, Any] | None:
+        return (
+            MOONWELL_CORE_MARKETS_BY_MTOKEN.get(self._chain_id(chain_id)) or {}
+        ).get(to_checksum_address(str(mtoken)))
+
+    def _reward_distributor(self, chain_id: int | None = None) -> str | None:
+        value = self._chain_entry(chain_id).get("reward_distributor")
+        return to_checksum_address(str(value)) if value else None
+
+    async def _token_details(
+        self,
+        token: str,
+        *,
+        chain_id: int | None = None,
+        market_data: bool = False,
+    ) -> dict[str, Any] | None:
+        cid = self._chain_id(chain_id)
+        return await TOKEN_CLIENT.get_token_details(
+            token,
+            market_data=market_data,
+            chain_id=cid,
+        )
+
     def __init__(
         self,
         config: dict[str, Any] | None = None,
         sign_callback=None,
         wallet_address: str | None = None,
     ) -> None:
-        super().__init__("moonwell_adapter", config)
+        cfg = config or {}
+        super().__init__("moonwell_adapter", cfg)
         self.sign_callback = sign_callback
 
-        self.chain_id = CHAIN_ID_BASE
-        self.chain_name = CHAIN_NAME
-        self.comptroller_address = MOONWELL_COMPTROLLER
-        self.reward_distributor_address = MOONWELL_REWARD_DISTRIBUTOR
-        self.m_usdc = MOONWELL_M_USDC
+        self.chain_id = int(cfg.get("chain_id") or cfg.get("chainId") or CHAIN_ID_BASE)
+        entry = self._chain_entry(self.chain_id)
+        self.chain_name = str(entry["chain_name"])
+        self.comptroller_address = self._entry_address(self.chain_id, "comptroller")
+        self.reward_distributor_address = self._reward_distributor(self.chain_id)
+        self.m_usdc = self._entry_address(self.chain_id, "sample_mtoken")
 
         self.wallet_address: str | None = (
             to_checksum_address(wallet_address) if wallet_address else None
@@ -134,7 +194,10 @@ class MoonwellAdapter(BaseAdapter):
         mtoken: str,
         underlying_token: str,
         amount: int,
+        chain_id: int | None = None,
     ) -> tuple[bool, Any]:
+        cid = self._chain_id(chain_id)
+        self._chain_entry(cid)
         strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
@@ -150,7 +213,7 @@ class MoonwellAdapter(BaseAdapter):
             owner=strategy,
             spender=mtoken,
             amount=amount,
-            chain_id=CHAIN_ID_BASE,
+            chain_id=cid,
             signing_callback=self.sign_callback,
             approval_amount=MAX_UINT256,
         )
@@ -163,7 +226,7 @@ class MoonwellAdapter(BaseAdapter):
             fn_name="mint",
             args=[amount],
             from_address=strategy,
-            chain_id=CHAIN_ID_BASE,
+            chain_id=cid,
         )
         txn_hash = await send_transaction(transaction, self.sign_callback)
         return (True, txn_hash)
@@ -173,7 +236,10 @@ class MoonwellAdapter(BaseAdapter):
         *,
         mtoken: str,
         amount: int,
+        chain_id: int | None = None,
     ) -> tuple[bool, Any]:
+        cid = self._chain_id(chain_id)
+        self._chain_entry(cid)
         strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
@@ -189,7 +255,7 @@ class MoonwellAdapter(BaseAdapter):
             fn_name="redeem",
             args=[amount],
             from_address=strategy,
-            chain_id=CHAIN_ID_BASE,
+            chain_id=cid,
         )
         txn_hash = await send_transaction(transaction, self.sign_callback)
         return (True, txn_hash)
@@ -199,7 +265,10 @@ class MoonwellAdapter(BaseAdapter):
         *,
         mtoken: str,
         amount: int,
+        chain_id: int | None = None,
     ) -> tuple[bool, Any]:
+        cid = self._chain_id(chain_id)
+        self._chain_entry(cid)
         strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
@@ -215,7 +284,7 @@ class MoonwellAdapter(BaseAdapter):
             fn_name="borrow",
             args=[amount],
             from_address=strategy,
-            chain_id=CHAIN_ID_BASE,
+            chain_id=cid,
         )
         txn_hash = await send_transaction(transaction, self.sign_callback)
         return (True, txn_hash)
@@ -227,7 +296,10 @@ class MoonwellAdapter(BaseAdapter):
         underlying_token: str,
         amount: int,
         repay_full: bool = False,
+        chain_id: int | None = None,
     ) -> tuple[bool, Any]:
+        cid = self._chain_id(chain_id)
+        self._chain_entry(cid)
         strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
@@ -243,7 +315,7 @@ class MoonwellAdapter(BaseAdapter):
             owner=strategy,
             spender=mtoken,
             amount=amount,
-            chain_id=CHAIN_ID_BASE,
+            chain_id=cid,
             signing_callback=self.sign_callback,
             approval_amount=MAX_UINT256,
         )
@@ -259,7 +331,7 @@ class MoonwellAdapter(BaseAdapter):
             fn_name="repayBorrow",
             args=[repay_amount],
             from_address=strategy,
-            chain_id=CHAIN_ID_BASE,
+            chain_id=cid,
         )
         txn_hash = await send_transaction(transaction, self.sign_callback)
         return (True, txn_hash)
@@ -268,26 +340,29 @@ class MoonwellAdapter(BaseAdapter):
         self,
         *,
         mtoken: str,
+        chain_id: int | None = None,
     ) -> tuple[bool, Any]:
+        cid = self._chain_id(chain_id)
+        comptroller_address = self._entry_address(cid, "comptroller")
         strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         mtoken = to_checksum_address(mtoken)
 
         transaction = await encode_call(
-            target=MOONWELL_COMPTROLLER,
+            target=comptroller_address,
             abi=COMPTROLLER_ABI,
             fn_name="enterMarkets",
             args=[[mtoken]],
             from_address=strategy,
-            chain_id=CHAIN_ID_BASE,
+            chain_id=cid,
         )
         txn_hash = await send_transaction(transaction, self.sign_callback)
 
         try:
-            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+            async with web3_from_chain_id(cid) as web3:
                 comptroller = web3.eth.contract(
-                    address=MOONWELL_COMPTROLLER, abi=COMPTROLLER_ABI
+                    address=comptroller_address, abi=COMPTROLLER_ABI
                 )
                 is_member = await comptroller.functions.checkMembership(
                     strategy, mtoken
@@ -312,16 +387,19 @@ class MoonwellAdapter(BaseAdapter):
         *,
         mtoken: str,
         account: str | None = None,
+        chain_id: int | None = None,
     ) -> tuple[bool, bool | str]:
         try:
+            cid = self._chain_id(chain_id)
+            comptroller_address = self._entry_address(cid, "comptroller")
             acct = to_checksum_address(account) if account else self.wallet_address
             if not acct:
                 return False, "strategy wallet address not configured"
             mtoken = to_checksum_address(mtoken)
 
-            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+            async with web3_from_chain_id(cid) as web3:
                 comptroller = web3.eth.contract(
-                    address=MOONWELL_COMPTROLLER, abi=COMPTROLLER_ABI
+                    address=comptroller_address, abi=COMPTROLLER_ABI
                 )
                 is_member = await comptroller.functions.checkMembership(
                     acct, mtoken
@@ -334,19 +412,22 @@ class MoonwellAdapter(BaseAdapter):
         self,
         *,
         mtoken: str,
+        chain_id: int | None = None,
     ) -> tuple[bool, Any]:
+        cid = self._chain_id(chain_id)
+        comptroller_address = self._entry_address(cid, "comptroller")
         strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
         mtoken = to_checksum_address(mtoken)
 
         transaction = await encode_call(
-            target=MOONWELL_COMPTROLLER,
+            target=comptroller_address,
             abi=COMPTROLLER_ABI,
             fn_name="exitMarket",
             args=[mtoken],
             from_address=strategy,
-            chain_id=CHAIN_ID_BASE,
+            chain_id=cid,
         )
         txn_hash = await send_transaction(transaction, self.sign_callback)
         return (True, txn_hash)
@@ -355,37 +436,76 @@ class MoonwellAdapter(BaseAdapter):
         self,
         *,
         min_rewards_usd: float = 0.0,
+        chain_id: int | None = None,
     ) -> tuple[bool, dict[str, int] | str]:
+        cid = self._chain_id(chain_id)
+        comptroller_address = self._entry_address(cid, "comptroller")
         strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
 
-        rewards = await self._get_outstanding_rewards(strategy)
+        rewards = await self._get_outstanding_rewards(strategy, chain_id=cid)
 
         if not rewards:
             return True, {}
 
         if min_rewards_usd > 0:
-            total_usd = await self._calculate_rewards_usd(rewards)
+            total_usd = await self._calculate_rewards_usd(rewards, chain_id=cid)
             if total_usd < min_rewards_usd:
                 return True, {}
 
+        if _is_gorlami_fork_chain(cid):
+            can_claim = await self._can_claim_rewards_on_fork(strategy, chain_id=cid)
+            if not can_claim:
+                self.logger.warning(
+                    "Moonwell rewards are reported on the Gorlami fork, but "
+                    "claimReward preflight reverts; skipping unclaimable fork rewards"
+                )
+                return True, {}
+
         transaction = await encode_call(
-            target=MOONWELL_COMPTROLLER,
+            target=comptroller_address,
             abi=COMPTROLLER_ABI,
             fn_name="claimReward",
             args=[strategy],
             from_address=strategy,
-            chain_id=CHAIN_ID_BASE,
+            chain_id=cid,
         )
         await send_transaction(transaction, self.sign_callback)
         return True, rewards
 
-    async def _get_outstanding_rewards(self, account: str) -> dict[str, int]:
+    async def _can_claim_rewards_on_fork(
+        self, account: str, *, chain_id: int | None = None
+    ) -> bool:
+        cid = self._chain_id(chain_id)
+        comptroller_address = self._entry_address(cid, "comptroller")
         try:
-            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+            async with web3_from_chain_id(cid) as web3:
                 contract = web3.eth.contract(
-                    address=MOONWELL_REWARD_DISTRIBUTOR, abi=REWARD_DISTRIBUTOR_ABI
+                    address=comptroller_address, abi=COMPTROLLER_ABI
+                )
+                claim = contract.functions.claimReward(account)
+                tx = {"from": account}
+                try:
+                    await claim.call(tx, block_identifier="pending")
+                    return True
+                except Exception:  # noqa: BLE001
+                    await claim.estimate_gas(tx, block_identifier="pending")
+                    return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    async def _get_outstanding_rewards(
+        self, account: str, *, chain_id: int | None = None
+    ) -> dict[str, int]:
+        cid = self._chain_id(chain_id)
+        reward_distributor = self._reward_distributor(cid)
+        if not reward_distributor:
+            return {}
+        try:
+            async with web3_from_chain_id(cid) as web3:
+                contract = web3.eth.contract(
+                    address=reward_distributor, abi=REWARD_DISTRIBUTOR_ABI
                 )
 
                 all_rewards = await contract.functions.getOutstandingRewardsForUser(
@@ -399,17 +519,19 @@ class MoonwellAdapter(BaseAdapter):
                             if len(reward_info) >= 2:
                                 token_addr, total_reward, *_ = reward_info
                                 if total_reward > 0:
-                                    key = f"{CHAIN_NAME}_{token_addr}"
+                                    key = self._token_key(token_addr, cid)
                                     rewards[key] = rewards.get(key, 0) + total_reward
                 return rewards
         except Exception:
             return {}
 
-    async def _calculate_rewards_usd(self, rewards: dict[str, int]) -> float:
+    async def _calculate_rewards_usd(
+        self, rewards: dict[str, int], *, chain_id: int | None = None
+    ) -> float:
         total_usd = 0.0
         for token_key, amount in rewards.items():
-            token_data = await TOKEN_CLIENT.get_token_details(
-                token_key, market_data=True
+            token_data = await self._token_details(
+                token_key, market_data=True, chain_id=chain_id
             )
             if token_data:
                 price = (
@@ -429,7 +551,8 @@ class MoonwellAdapter(BaseAdapter):
     async def get_full_user_state(
         self,
         *,
-        account: str,
+        account: str | None = None,
+        chain_id: int | None = None,
         include_rewards: bool = True,
         include_usd: bool = False,
         include_apy: bool = False,
@@ -438,39 +561,48 @@ class MoonwellAdapter(BaseAdapter):
         block_identifier: int | str | None = None,  # multicall ignores block id
     ) -> tuple[bool, dict[str, Any] | str]:
         _ = block_identifier  # reserved for future per-call block pinning
-        acct = to_checksum_address(account)
+        cid = self._chain_id(chain_id)
+        acct = to_checksum_address(account) if account else self.wallet_address
+        if not acct:
+            return False, "strategy wallet address not configured"
+        comptroller_address = self._entry_address(cid, "comptroller")
+        reward_distributor_address = self._reward_distributor(cid)
 
         try:
-            async with web3_from_chain_id(self.chain_id) as web3:
-                multicall = MulticallAdapter(chain_id=self.chain_id, web3=web3)
+            async with web3_from_chain_id(cid) as web3:
+                multicall = MulticallAdapter(chain_id=cid, web3=web3)
 
                 comptroller = web3.eth.contract(
-                    address=self.comptroller_address, abi=COMPTROLLER_ABI
+                    address=comptroller_address, abi=COMPTROLLER_ABI
                 )
-                rewards_contract = web3.eth.contract(
-                    address=self.reward_distributor_address,
-                    abi=REWARD_DISTRIBUTOR_ABI,
+                rewards_contract = (
+                    web3.eth.contract(
+                        address=reward_distributor_address,
+                        abi=REWARD_DISTRIBUTOR_ABI,
+                    )
+                    if reward_distributor_address
+                    else None
                 )
 
                 # --- Stage 1: global reads (batched)
                 calls_stage1: list[Any] = [
                     multicall.build_call(
-                        self.comptroller_address,
+                        comptroller_address,
                         comptroller.encode_abi("getAllMarkets", args=[]),
                     ),
                     multicall.build_call(
-                        self.comptroller_address,
+                        comptroller_address,
                         comptroller.encode_abi("getAssetsIn", args=[acct]),
                     ),
                     multicall.build_call(
-                        self.comptroller_address,
+                        comptroller_address,
                         comptroller.encode_abi("getAccountLiquidity", args=[acct]),
                     ),
                 ]
-                if include_rewards:
+                if include_rewards and rewards_contract and reward_distributor_address:
                     calls_stage1.append(
                         multicall.build_call(
-                            self.reward_distributor_address,
+                            reward_distributor_address,
                             rewards_contract.encode_abi(
                                 "getOutstandingRewardsForUser", args=[acct]
                             ),
@@ -511,7 +643,7 @@ class MoonwellAdapter(BaseAdapter):
                 entered = {str(a).lower() for a in (assets_in or [])}
 
                 rewards: dict[str, int] = {}
-                if include_rewards:
+                if include_rewards and rewards_contract:
                     raw_rewards = ret1[3] if len(ret1) > 3 else b""
                     if raw_rewards:
                         abi_rewards = self._fn_abi(
@@ -533,12 +665,16 @@ class MoonwellAdapter(BaseAdapter):
                                     total_reward = int(reward_info[1])
                                     if total_reward <= 0:
                                         continue
-                                    key = f"{self.chain_name}_{token_addr}"
+                                    key = self._token_key(token_addr, cid)
                                     rewards[key] = rewards.get(key, 0) + total_reward
                         except Exception:  # noqa: BLE001
-                            rewards = await self._get_outstanding_rewards(acct)
+                            rewards = await self._get_outstanding_rewards(
+                                acct, chain_id=cid
+                            )
                     else:
-                        rewards = await self._get_outstanding_rewards(acct)
+                        rewards = await self._get_outstanding_rewards(
+                            acct, chain_id=cid
+                        )
 
                 # --- Stage 2: per-market reads (batched)
                 market_calls: list[Any] = []
@@ -576,7 +712,7 @@ class MoonwellAdapter(BaseAdapter):
                                 mtoken_contract.encode_abi("decimals", args=[]),
                             ),
                             multicall.build_call(
-                                self.comptroller_address,
+                                comptroller_address,
                                 comptroller.encode_abi("markets", args=[mtoken]),
                             ),
                         ]
@@ -588,7 +724,9 @@ class MoonwellAdapter(BaseAdapter):
                     chunk_size=multicall_chunk_size,
                 )
 
-                sample_mtoken = web3.eth.contract(address=self.m_usdc, abi=MTOKEN_ABI)
+                sample_mtoken = web3.eth.contract(
+                    address=self._entry_address(cid, "sample_mtoken"), abi=MTOKEN_ABI
+                )
                 abi_bal = self._fn_abi(sample_mtoken, "balanceOf", inputs_len=1)
                 abi_exch = self._fn_abi(
                     sample_mtoken, "exchangeRateStored", inputs_len=0
@@ -631,6 +769,10 @@ class MoonwellAdapter(BaseAdapter):
                             if ret2[base + 3]
                             else None
                         )
+                        if not underlying:
+                            market_md = self._market_metadata(mtoken, cid)
+                            if market_md:
+                                underlying = str(market_md.get("underlying"))
                         mdec = (
                             int(self._decode(web3, abi_dec, ret2[base + 4])[0])
                             if ret2[base + 4]
@@ -672,6 +814,7 @@ class MoonwellAdapter(BaseAdapter):
                                 mtoken=mtoken,
                                 apy_type="supply",
                                 include_rewards=True,
+                                chain_id=cid,
                             )
                             row["apySupply"] = apy_s if ok_s else None
                         except Exception:  # noqa: BLE001
@@ -682,6 +825,7 @@ class MoonwellAdapter(BaseAdapter):
                                 mtoken=mtoken,
                                 apy_type="borrow",
                                 include_rewards=True,
+                                chain_id=cid,
                             )
                             row["apyBorrow"] = apy_b if ok_b else None
                         except Exception:  # noqa: BLE001
@@ -691,7 +835,8 @@ class MoonwellAdapter(BaseAdapter):
 
                 out: dict[str, Any] = {
                     "protocol": "moonwell",
-                    "chainId": int(self.chain_id),
+                    "chainId": int(cid),
+                    "chainName": self._chain_name(cid),
                     "account": acct,
                     "accountLiquidity": {
                         "error": error,
@@ -710,8 +855,9 @@ class MoonwellAdapter(BaseAdapter):
                         u = r.get("underlying")
                         if not u:
                             continue
-                        key = f"{self.chain_name}_{u}"
-                        td = await TOKEN_CLIENT.get_token_details(key, market_data=True)
+                        td = await self._token_details(
+                            str(u), market_data=True, chain_id=cid
+                        )
                         if not td:
                             continue
                         price = (
@@ -735,7 +881,9 @@ class MoonwellAdapter(BaseAdapter):
                         "net": total_supplied_usd - total_borrowed_usd,
                     }
                     if include_rewards and rewards:
-                        out["rewardsUsd"] = await self._calculate_rewards_usd(rewards)
+                        out["rewardsUsd"] = await self._calculate_rewards_usd(
+                            rewards, chain_id=cid
+                        )
 
                 return True, out
 
@@ -745,21 +893,44 @@ class MoonwellAdapter(BaseAdapter):
     async def get_all_markets(
         self,
         *,
+        chain_id: int | None = None,
         include_apy: bool = True,
         include_rewards: bool = True,
         include_usd: bool = False,
         multicall_chunk_size: int = 240,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
-            async with web3_from_chain_id(self.chain_id) as web3:
-                multicall = MulticallAdapter(chain_id=self.chain_id, web3=web3)
-                views = web3.eth.contract(
-                    address=MOONWELL_VIEWS, abi=MOONWELL_VIEWS_ABI
+            cid = self._chain_id(chain_id)
+            if _is_gorlami_fork_chain(cid):
+                return await self._get_all_markets_from_core_contracts(
+                    chain_id=cid,
+                    include_apy=include_apy,
+                    include_rewards=include_rewards,
+                    include_usd=include_usd,
+                    multicall_chunk_size=multicall_chunk_size,
                 )
 
-                markets_info = await views.functions.getAllMarketsInfo().call(
-                    block_identifier="pending"
-                )
+            views_address = self._entry_address(cid, "views")
+            async with web3_from_chain_id(cid) as web3:
+                multicall = MulticallAdapter(chain_id=cid, web3=web3)
+                views = web3.eth.contract(address=views_address, abi=MOONWELL_VIEWS_ABI)
+
+                try:
+                    markets_info = await views.functions.getAllMarketsInfo().call(
+                        block_identifier="pending"
+                    )
+                except Exception as exc:
+                    self.logger.warning(
+                        f"Moonwell Views getAllMarketsInfo failed for chain_id={cid}; "
+                        f"falling back to Comptroller/mToken reads: {exc}"
+                    )
+                    return await self._get_all_markets_from_core_contracts(
+                        chain_id=cid,
+                        include_apy=include_apy,
+                        include_rewards=include_rewards,
+                        include_usd=include_usd,
+                        multicall_chunk_size=multicall_chunk_size,
+                    )
                 if not markets_info:
                     return True, []
 
@@ -801,7 +972,9 @@ class MoonwellAdapter(BaseAdapter):
                     chunk_size=multicall_chunk_size,
                 )
 
-                sample_mtoken = web3.eth.contract(address=self.m_usdc, abi=MTOKEN_ABI)
+                sample_mtoken = web3.eth.contract(
+                    address=self._entry_address(cid, "sample_mtoken"), abi=MTOKEN_ABI
+                )
                 abi_symbol = self._fn_abi(sample_mtoken, "symbol", inputs_len=0)
                 abi_under = self._fn_abi(sample_mtoken, "underlying", inputs_len=0)
                 abi_dec = self._fn_abi(sample_mtoken, "decimals", inputs_len=0)
@@ -829,6 +1002,10 @@ class MoonwellAdapter(BaseAdapter):
                         if ret_meta[base + 2]
                         else 18
                     )
+                    market_md = self._market_metadata(mtoken, cid)
+                    if market_md:
+                        symbol = symbol or str(market_md.get("symbol") or "")
+                        underlying = underlying or str(market_md.get("underlying"))
                     metadata[mtoken.lower()] = {
                         "symbol": symbol,
                         "underlying": underlying,
@@ -874,6 +1051,8 @@ class MoonwellAdapter(BaseAdapter):
 
                     row: dict[str, Any] = {
                         "mtoken": mtoken,
+                        "chainId": int(cid),
+                        "chainName": self._chain_name(cid),
                         "symbol": md.get("symbol", ""),
                         "underlying": underlying,
                         "mTokenDecimals": md.get("mTokenDecimals", 18),
@@ -892,6 +1071,12 @@ class MoonwellAdapter(BaseAdapter):
                         "totalReserves": total_reserves,
                         "cash": cash,
                     }
+                    market_md = self._market_metadata(mtoken, cid)
+                    if market_md:
+                        row["underlyingSymbol"] = market_md.get("underlying_symbol")
+                        row["deprecated"] = bool(market_md.get("deprecated"))
+                        row["badDebt"] = bool(market_md.get("bad_debt"))
+                        row["nativeUnderlying"] = bool(market_md.get("native"))
 
                     supply_underlying_raw = (
                         (int(total_supply) * int(exchange_rate)) // MANTISSA
@@ -1000,26 +1185,239 @@ class MoonwellAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    async def _get_all_markets_from_core_contracts(
+        self,
+        *,
+        chain_id: int,
+        include_apy: bool,
+        include_rewards: bool,
+        include_usd: bool,
+        multicall_chunk_size: int,
+    ) -> tuple[bool, list[dict[str, Any]] | str]:
+        try:
+            cid = self._chain_id(chain_id)
+            comptroller_address = self._entry_address(cid, "comptroller")
+
+            async with web3_from_chain_id(cid) as web3:
+                multicall = MulticallAdapter(chain_id=cid, web3=web3)
+                comptroller = web3.eth.contract(
+                    address=comptroller_address, abi=COMPTROLLER_ABI
+                )
+                raw_markets = await comptroller.functions.getAllMarkets().call(
+                    block_identifier="pending"
+                )
+                market_addrs = [
+                    to_checksum_address(str(raw_mtoken))
+                    for raw_mtoken in raw_markets or []
+                ]
+                if not market_addrs:
+                    return True, []
+
+                market_calls: list[Any] = []
+                for mtoken in market_addrs:
+                    contract = web3.eth.contract(address=mtoken, abi=MTOKEN_ABI)
+                    market_calls.extend(
+                        [
+                            multicall.build_call(
+                                mtoken, contract.encode_abi("totalSupply", args=[])
+                            ),
+                            multicall.build_call(
+                                mtoken, contract.encode_abi("totalBorrows", args=[])
+                            ),
+                            multicall.build_call(
+                                mtoken, contract.encode_abi("getCash", args=[])
+                            ),
+                            multicall.build_call(
+                                mtoken,
+                                contract.encode_abi("exchangeRateStored", args=[]),
+                            ),
+                            multicall.build_call(
+                                mtoken,
+                                contract.encode_abi("borrowRatePerTimestamp", args=[]),
+                            ),
+                            multicall.build_call(
+                                mtoken,
+                                contract.encode_abi("supplyRatePerTimestamp", args=[]),
+                            ),
+                            multicall.build_call(
+                                comptroller_address,
+                                comptroller.encode_abi("markets", args=[mtoken]),
+                            ),
+                        ]
+                    )
+
+                ret = await self._multicall_chunked(
+                    multicall=multicall,
+                    calls=market_calls,
+                    chunk_size=multicall_chunk_size,
+                )
+
+                sample_mtoken = web3.eth.contract(
+                    address=self._entry_address(cid, "sample_mtoken"), abi=MTOKEN_ABI
+                )
+                abi_total_supply = self._fn_abi(sample_mtoken, "totalSupply")
+                abi_total_borrows = self._fn_abi(sample_mtoken, "totalBorrows")
+                abi_cash = self._fn_abi(sample_mtoken, "getCash")
+                abi_exchange_rate = self._fn_abi(
+                    sample_mtoken, "exchangeRateStored", inputs_len=0
+                )
+                abi_borrow_rate = self._fn_abi(
+                    sample_mtoken, "borrowRatePerTimestamp", inputs_len=0
+                )
+                abi_supply_rate = self._fn_abi(
+                    sample_mtoken, "supplyRatePerTimestamp", inputs_len=0
+                )
+                abi_markets = self._fn_abi(comptroller, "markets", inputs_len=1)
+
+                def decode_int(base: int, offset: int, abi: dict[str, Any]) -> int:
+                    data = ret[base + offset] if base + offset < len(ret) else b""
+                    if not data:
+                        return 0
+                    try:
+                        return int(self._decode(web3, abi, data)[0])
+                    except Exception:  # noqa: BLE001
+                        return 0
+
+                def decode_market(base: int) -> tuple[bool, int]:
+                    data = ret[base + 6] if base + 6 < len(ret) else b""
+                    if not data:
+                        return False, 0
+                    try:
+                        decoded = self._decode(web3, abi_markets, data)
+                        return bool(decoded[0]), int(decoded[1])
+                    except Exception:  # noqa: BLE001
+                        return False, 0
+
+                markets: list[dict[str, Any]] = []
+                stride = 7
+                for i, mtoken in enumerate(market_addrs):
+                    base = i * stride
+                    market_md = self._market_metadata(mtoken, cid) or {}
+
+                    total_supply = decode_int(base, 0, abi_total_supply)
+                    total_borrows = decode_int(base, 1, abi_total_borrows)
+                    cash = decode_int(base, 2, abi_cash)
+                    exchange_rate = decode_int(base, 3, abi_exchange_rate)
+                    borrow_rate = decode_int(base, 4, abi_borrow_rate)
+                    supply_rate = decode_int(base, 5, abi_supply_rate)
+                    is_listed, collateral_factor_raw = decode_market(base)
+
+                    underlying_addr = market_md.get("underlying")
+                    if isinstance(underlying_addr, str) and underlying_addr:
+                        try:
+                            underlying_addr = to_checksum_address(underlying_addr)
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                    row: dict[str, Any] = {
+                        "mtoken": mtoken,
+                        "chainId": int(cid),
+                        "chainName": self._chain_name(cid),
+                        "symbol": str(market_md.get("symbol") or ""),
+                        "underlying": underlying_addr,
+                        "mTokenDecimals": 18,
+                        "isListed": bool(is_listed),
+                        "borrowCap": None,
+                        "supplyCap": None,
+                        "mintPaused": None,
+                        "borrowPaused": None,
+                        "collateralFactor": float(int(collateral_factor_raw or 0))
+                        / MANTISSA,
+                        "underlyingPrice": None,
+                        "exchangeRate": int(exchange_rate),
+                        "borrowIndex": 0,
+                        "reserveFactor": None,
+                        "totalSupply": int(total_supply),
+                        "totalBorrows": int(total_borrows),
+                        "totalReserves": None,
+                        "cash": int(cash),
+                    }
+
+                    if market_md:
+                        row["underlyingSymbol"] = market_md.get("underlying_symbol")
+                        row["deprecated"] = bool(market_md.get("deprecated"))
+                        row["badDebt"] = bool(market_md.get("bad_debt"))
+                        row["nativeUnderlying"] = bool(market_md.get("native"))
+
+                    if include_apy:
+                        base_supply_apy = _timestamp_rate_to_apy(
+                            int(supply_rate or 0) / MANTISSA
+                        )
+                        base_borrow_apy = _timestamp_rate_to_apy(
+                            int(borrow_rate or 0) / MANTISSA
+                        )
+                        row["baseSupplyApy"] = base_supply_apy
+                        row["baseBorrowApy"] = base_borrow_apy
+                        row["supplyApy"] = base_supply_apy
+                        row["borrowApy"] = base_borrow_apy
+                        row["rewardSupplyApy"] = 0.0
+                        row["rewardBorrowApy"] = 0.0
+                        row["incentives"] = []
+
+                    if include_usd and underlying_addr:
+                        token_data = await self._token_details(
+                            str(underlying_addr), market_data=True, chain_id=cid
+                        )
+                        price = None
+                        decimals_underlying = 18
+                        if token_data:
+                            price = (
+                                token_data.get("price_usd")
+                                or token_data.get("price")
+                                or token_data.get("current_price")
+                            )
+                            decimals_underlying = int(token_data.get("decimals", 18))
+
+                        if price is not None:
+                            supplied_raw = (
+                                (int(total_supply or 0) * int(exchange_rate or 0))
+                                // MANTISSA
+                                if exchange_rate
+                                else 0
+                            )
+                            row["totalSupplyUsd"] = (
+                                supplied_raw / (10**decimals_underlying)
+                            ) * float(price)
+                            row["totalBorrowsUsd"] = (
+                                int(total_borrows or 0) / (10**decimals_underlying)
+                            ) * float(price)
+                        else:
+                            row["totalSupplyUsd"] = None
+                            row["totalBorrowsUsd"] = None
+
+                    markets.append(row)
+
+                return True, markets
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
     async def get_pos(
         self,
         *,
         mtoken: str,
         account: str | None = None,
+        chain_id: int | None = None,
         include_usd: bool = False,
         block_identifier: int | str | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
+        cid = self._chain_id(chain_id)
         mtoken = to_checksum_address(mtoken)
         account = to_checksum_address(account) if account else self.wallet_address
         if not account:
             return False, "strategy wallet address not configured"
         block_id = block_identifier if block_identifier is not None else "pending"
+        reward_distributor = self._reward_distributor(cid)
 
         try:
-            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+            async with web3_from_chain_id(cid) as web3:
                 mtoken_contract = web3.eth.contract(address=mtoken, abi=MTOKEN_ABI)
-                rewards_contract = web3.eth.contract(
-                    address=MOONWELL_REWARD_DISTRIBUTOR,
-                    abi=REWARD_DISTRIBUTOR_ABI,
+                rewards_contract = (
+                    web3.eth.contract(
+                        address=reward_distributor,
+                        abi=REWARD_DISTRIBUTOR_ABI,
+                    )
+                    if reward_distributor
+                    else None
                 )
 
                 bal = await mtoken_contract.functions.balanceOf(account).call(
@@ -1031,20 +1429,28 @@ class MoonwellAdapter(BaseAdapter):
                 borrow = await mtoken_contract.functions.borrowBalanceStored(
                     account
                 ).call(block_identifier=block_id)
-                underlying = await mtoken_contract.functions.underlying().call(
-                    block_identifier=block_id
+                try:
+                    underlying = await mtoken_contract.functions.underlying().call(
+                        block_identifier=block_id
+                    )
+                except Exception:
+                    market_md = self._market_metadata(mtoken, cid)
+                    underlying = market_md.get("underlying") if market_md else None
+                rewards = (
+                    await rewards_contract.functions.getOutstandingRewardsForUser(
+                        mtoken, account
+                    ).call(block_identifier=block_id)
+                    if rewards_contract
+                    else []
                 )
-                rewards = await rewards_contract.functions.getOutstandingRewardsForUser(
-                    mtoken, account
-                ).call(block_identifier=block_id)
         except Exception as exc:
             return False, str(exc)
 
         try:
-            reward_balances = self._process_rewards(rewards)
+            reward_balances = self._process_rewards(rewards, chain_id=cid)
 
-            mtoken_key = f"{CHAIN_NAME}_{mtoken}"
-            underlying_key = f"{CHAIN_NAME}_{underlying}"
+            mtoken_key = self._token_key(mtoken, cid)
+            underlying_key = self._token_key(str(underlying or ZERO_ADDRESS), cid)
 
             balances: dict[str, int] = {mtoken_key: bal}
             balances.update(reward_balances)
@@ -1063,7 +1469,7 @@ class MoonwellAdapter(BaseAdapter):
 
             if include_usd:
                 usd_balances = await self._calculate_usd_balances(
-                    balances, underlying_key
+                    balances, underlying_key, chain_id=cid
                 )
                 result["usd_balances"] = usd_balances
 
@@ -1071,22 +1477,31 @@ class MoonwellAdapter(BaseAdapter):
         except Exception as exc:
             return False, str(exc)
 
-    def _process_rewards(self, rewards: list) -> dict[str, int]:
+    def _process_rewards(
+        self, rewards: list, *, chain_id: int | None = None
+    ) -> dict[str, int]:
         result: dict[str, int] = {}
         for reward_info in rewards:
             if len(reward_info) >= 2:
                 token_addr, total_reward, *_ = reward_info
                 if total_reward > 0:
-                    key = f"{CHAIN_NAME}_{token_addr}"
+                    key = self._token_key(token_addr, chain_id)
                     result[key] = total_reward
         return result
 
     async def _calculate_usd_balances(
-        self, balances: dict[str, int], underlying_key: str
+        self,
+        balances: dict[str, int],
+        underlying_key: str,
+        *,
+        chain_id: int | None = None,
     ) -> dict[str, float | None]:
         tokens = list(set(balances.keys()) | {underlying_key})
         token_details = await asyncio.gather(
-            *[TOKEN_CLIENT.get_token_details(key, market_data=True) for key in tokens]
+            *[
+                self._token_details(key, market_data=True, chain_id=chain_id)
+                for key in tokens
+            ]
         )
         token_data = dict(zip(tokens, token_details, strict=True))
 
@@ -1110,17 +1525,20 @@ class MoonwellAdapter(BaseAdapter):
         self,
         *,
         mtoken: str,
+        chain_id: int | None = None,
     ) -> tuple[True, float] | tuple[False, str]:
+        cid = self._chain_id(chain_id)
+        comptroller_address = self._entry_address(cid, "comptroller")
         mtoken = to_checksum_address(mtoken)
 
-        cache_key = f"cf_{mtoken}"
+        cache_key = f"cf_{cid}_{mtoken}"
         if cached := await self._cache.get(cache_key):
             return True, cached
 
         try:
-            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+            async with web3_from_chain_id(cid) as web3:
                 contract = web3.eth.contract(
-                    address=MOONWELL_COMPTROLLER, abi=COMPTROLLER_ABI
+                    address=comptroller_address, abi=COMPTROLLER_ABI
                 )
 
                 # markets() returns (isListed, collateralFactorMantissa)
@@ -1145,15 +1563,22 @@ class MoonwellAdapter(BaseAdapter):
         mtoken: str,
         apy_type: Literal["supply", "borrow"] = "supply",
         include_rewards: bool = True,
+        chain_id: int | None = None,
     ) -> tuple[bool, float | str]:
+        cid = self._chain_id(chain_id)
+        reward_distributor_address = self._reward_distributor(cid)
         mtoken = to_checksum_address(mtoken)
 
         try:
-            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+            async with web3_from_chain_id(cid) as web3:
                 mtoken_contract = web3.eth.contract(address=mtoken, abi=MTOKEN_ABI)
-                reward_distributor = web3.eth.contract(
-                    address=MOONWELL_REWARD_DISTRIBUTOR,
-                    abi=REWARD_DISTRIBUTOR_ABI,
+                reward_distributor = (
+                    web3.eth.contract(
+                        address=reward_distributor_address,
+                        abi=REWARD_DISTRIBUTOR_ABI,
+                    )
+                    if reward_distributor_address
+                    else None
                 )
 
                 if apy_type == "supply":
@@ -1164,7 +1589,7 @@ class MoonwellAdapter(BaseAdapter):
                     )
                     mkt_config = []
                     total_value = 0
-                    if include_rewards:
+                    if include_rewards and reward_distributor:
                         mkt_config = (
                             await reward_distributor.functions.getAllMarketConfigs(
                                 mtoken
@@ -1192,7 +1617,7 @@ class MoonwellAdapter(BaseAdapter):
                     )
                     mkt_config = []
                     total_value = 0
-                    if include_rewards:
+                    if include_rewards and reward_distributor:
                         mkt_config = (
                             await reward_distributor.functions.getAllMarketConfigs(
                                 mtoken
@@ -1208,7 +1633,7 @@ class MoonwellAdapter(BaseAdapter):
 
                 if include_rewards and total_value > 0:
                     rewards_apr = await self._calculate_rewards_apr(
-                        mtoken, mkt_config, total_value, apy_type
+                        mtoken, mkt_config, total_value, apy_type, chain_id=cid
                     )
                     if apy_type == "supply":
                         apy += rewards_apr
@@ -1226,13 +1651,17 @@ class MoonwellAdapter(BaseAdapter):
         mkt_config: list,
         total_value: int,
         apy_type: str,
+        *,
+        chain_id: int | None = None,
     ) -> float:
+        cid = self._chain_id(chain_id)
+        governance_token = self._entry_address(cid, "governance_token")
         try:
             well_config = None
             for config in mkt_config:
                 if (
                     len(config) >= 2
-                    and config[1].lower() == MOONWELL_WELL_TOKEN.lower()
+                    and str(config[1]).lower() == governance_token.lower()
                 ):
                     well_config = config
                     break
@@ -1252,18 +1681,28 @@ class MoonwellAdapter(BaseAdapter):
             if well_rate == 0:
                 return 0.0
 
-            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+            async with web3_from_chain_id(cid) as web3:
                 mtoken_contract = web3.eth.contract(address=mtoken, abi=MTOKEN_ABI)
-                underlying_addr = await mtoken_contract.functions.underlying().call(
-                    block_identifier="pending"
-                )
+                try:
+                    underlying_addr = await mtoken_contract.functions.underlying().call(
+                        block_identifier="pending"
+                    )
+                except Exception:
+                    market_md = self._market_metadata(mtoken, cid)
+                    underlying_addr = (
+                        market_md.get("underlying") if market_md else ZERO_ADDRESS
+                    )
 
             well_data, underlying_data = await asyncio.gather(
-                TOKEN_CLIENT.get_token_details(
-                    f"{CHAIN_NAME}_{MOONWELL_WELL_TOKEN}", market_data=True
+                self._token_details(
+                    governance_token,
+                    market_data=True,
+                    chain_id=cid,
                 ),
-                TOKEN_CLIENT.get_token_details(
-                    f"{CHAIN_NAME}_{underlying_addr}", market_data=True
+                self._token_details(
+                    str(underlying_addr),
+                    market_data=True,
+                    chain_id=cid,
                 ),
             )
 
@@ -1310,15 +1749,18 @@ class MoonwellAdapter(BaseAdapter):
         self,
         *,
         account: str | None = None,
+        chain_id: int | None = None,
     ) -> tuple[bool, int | str]:
+        cid = self._chain_id(chain_id)
+        comptroller_address = self._entry_address(cid, "comptroller")
         account = to_checksum_address(account) if account else self.wallet_address
         if not account:
             return False, "strategy wallet address not configured"
 
         try:
-            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+            async with web3_from_chain_id(cid) as web3:
                 contract = web3.eth.contract(
-                    address=MOONWELL_COMPTROLLER, abi=COMPTROLLER_ABI
+                    address=comptroller_address, abi=COMPTROLLER_ABI
                 )
 
                 (
@@ -1344,45 +1786,55 @@ class MoonwellAdapter(BaseAdapter):
         *,
         mtoken: str,
         account: str | None = None,
+        chain_id: int | None = None,
     ) -> tuple[bool, dict[str, Any] | str]:
+        cid = self._chain_id(chain_id)
+        comptroller_address = self._entry_address(cid, "comptroller")
         mtoken = to_checksum_address(mtoken)
         account = to_checksum_address(account) if account else self.wallet_address
         if not account:
             return False, "strategy wallet address not configured"
 
         try:
-            async with web3_from_chain_id(CHAIN_ID_BASE) as web3:
+            async with web3_from_chain_id(cid) as web3:
                 comptroller = web3.eth.contract(
-                    address=MOONWELL_COMPTROLLER, abi=COMPTROLLER_ABI
+                    address=comptroller_address, abi=COMPTROLLER_ABI
                 )
                 mtoken_contract = web3.eth.contract(address=mtoken, abi=MTOKEN_ABI)
+                market_md = self._market_metadata(mtoken, cid)
+                native_underlying = bool((market_md or {}).get("native"))
 
-                (
-                    bal_raw,
-                    exch_raw,
-                    cash_raw,
-                    m_dec,
-                    u_addr,
-                ) = await read_only_calls_multicall_or_gather(
-                    web3=web3,
-                    chain_id=CHAIN_ID_BASE,
-                    calls=[
-                        Call(
-                            mtoken_contract,
-                            "balanceOf",
-                            args=(account,),
-                            postprocess=int,
-                        ),
-                        Call(mtoken_contract, "exchangeRateStored", postprocess=int),
-                        Call(mtoken_contract, "getCash", postprocess=int),
-                        Call(mtoken_contract, "decimals", postprocess=int),
+                calls = [
+                    Call(
+                        mtoken_contract,
+                        "balanceOf",
+                        args=(account,),
+                        postprocess=int,
+                    ),
+                    Call(mtoken_contract, "exchangeRateStored", postprocess=int),
+                    Call(mtoken_contract, "getCash", postprocess=int),
+                    Call(mtoken_contract, "decimals", postprocess=int),
+                ]
+                if not native_underlying:
+                    calls.append(
                         Call(
                             mtoken_contract,
                             "underlying",
                             postprocess=lambda a: to_checksum_address(str(a)),
-                        ),
-                    ],
+                        )
+                    )
+
+                ret = await read_only_calls_multicall_or_gather(
+                    web3=web3,
+                    chain_id=cid,
+                    calls=calls,
                     block_identifier="pending",
+                )
+                bal_raw, exch_raw, cash_raw, m_dec = ret[:4]
+                u_addr = (
+                    str((market_md or {}).get("underlying") or ZERO_ADDRESS)
+                    if native_underlying
+                    else str(ret[4])
                 )
 
                 if bal_raw == 0 or exch_raw == 0:
@@ -1397,28 +1849,35 @@ class MoonwellAdapter(BaseAdapter):
                         "underlying_decimals": None,
                     }
 
-                u_data = await TOKEN_CLIENT.get_token_details(f"{CHAIN_NAME}_{u_addr}")
+                u_data = await self._token_details(str(u_addr), chain_id=cid)
                 u_dec = u_data.get("decimals", 18) if u_data else 18
 
-                # Binary search: largest cTokens you can redeem without shortfall
-                lo, hi = 0, int(bal_raw)
-                while lo < hi:
-                    mid = (lo + hi + 1) // 2
-                    (
-                        err,
-                        _liq,
-                        short,
-                    ) = await comptroller.functions.getHypotheticalAccountLiquidity(
-                        account, mtoken, mid, 0
-                    ).call(block_identifier="pending")
-                    if err != 0:
-                        return False, f"Comptroller error {err}"
-                    if short == 0:
-                        lo = mid
-                    else:
-                        hi = mid - 1
+                assets_in = await comptroller.functions.getAssetsIn(account).call(
+                    block_identifier="pending"
+                )
+                entered_assets = {str(asset).lower() for asset in assets_in or []}
+                if mtoken.lower() not in entered_assets:
+                    c_by_collateral = int(bal_raw)
+                else:
+                    # Binary search: largest cTokens you can redeem without shortfall
+                    lo, hi = 0, int(bal_raw)
+                    while lo < hi:
+                        mid = (lo + hi + 1) // 2
+                        (
+                            err,
+                            _liq,
+                            short,
+                        ) = await comptroller.functions.getHypotheticalAccountLiquidity(
+                            account, mtoken, mid, 0
+                        ).call(block_identifier="pending")
+                        if err != 0:
+                            return False, f"Comptroller error {err}"
+                        if short == 0:
+                            lo = mid
+                        else:
+                            hi = mid - 1
 
-                c_by_collateral = lo
+                    c_by_collateral = lo
 
                 # Pool cash bound (convert underlying cash -> cToken capacity)
                 c_by_cash = (int(cash_raw) * MANTISSA) // int(exch_raw)
@@ -1451,7 +1910,10 @@ class MoonwellAdapter(BaseAdapter):
         self,
         *,
         amount: int,
+        chain_id: int | None = None,
     ) -> tuple[bool, Any]:
+        cid = self._chain_id(chain_id)
+        wrapped_native_token = self._entry_address(cid, "wrapped_native_token")
         strategy = self.wallet_address
         if not strategy:
             return False, "strategy wallet address not configured"
@@ -1460,12 +1922,12 @@ class MoonwellAdapter(BaseAdapter):
             return False, "amount must be positive"
 
         transaction = await encode_call(
-            target=BASE_WETH,
+            target=wrapped_native_token,
             abi=WETH_ABI,
             fn_name="deposit",
             args=[],
             from_address=strategy,
-            chain_id=CHAIN_ID_BASE,
+            chain_id=cid,
             value=amount,
         )
         txn_hash = await send_transaction(transaction, self.sign_callback)
