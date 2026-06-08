@@ -10,18 +10,25 @@ import pytest
 
 from wayfinder_paths.core.backtesting.backtester import run_backtest
 from wayfinder_paths.core.backtesting.data import (
+    _lookback_days_for_window,
     drop_incomplete_bars,
-    lookback_days_for_window,
 )
 from wayfinder_paths.core.backtesting.perps import backtest_perps_trigger
-from wayfinder_paths.core.backtesting.ref import load_ref
+from wayfinder_paths.core.backtesting.ref import (
+    BacktestRef,
+    CodeEntry,
+    CodeRefs,
+    DataRefs,
+    DataWindow,
+    ExecutionAssumptions,
+    ProducedBy,
+    VenueRefs,
+)
 from wayfinder_paths.core.backtesting.types import BacktestConfig
 from wayfinder_paths.core.perps.context import SignalFrame
 from wayfinder_paths.core.perps.handlers.protocol import OrderResult
 from wayfinder_paths.core.perps.state import StateStore
-from wayfinder_paths.strategies.apex_gmx_velocity.strategy import (
-    ApexGmxVelocityStrategy,
-)
+from wayfinder_paths.core.strategies.active_perps import ActivePerpsStrategy
 
 
 def _hourly_index_with_current_open() -> pd.DatetimeIndex:
@@ -67,7 +74,7 @@ def test_lookback_days_for_subday_window_is_positive():
     start = datetime(2026, 6, 8, 13, 0, tzinfo=UTC)
     end = datetime(2026, 6, 8, 19, 0, tzinfo=UTC)
 
-    assert lookback_days_for_window(start, end) == 1
+    assert _lookback_days_for_window(start, end) == 1
 
 
 def test_run_backtest_drops_incomplete_final_bar():
@@ -82,7 +89,6 @@ def test_run_backtest_drops_incomplete_final_bar():
             fee_rate=0.0,
             slippage_rate=0.0,
             periods_per_year=8760,
-            bar_interval="1h",
         ),
     )
 
@@ -90,7 +96,7 @@ def test_run_backtest_drops_incomplete_final_bar():
 
 
 def test_next_bar_open_does_not_capture_entry_bar_move():
-    idx = pd.date_range("2026-06-08 17:00:00+00:00", periods=3, freq="1h")
+    idx = pd.date_range("2026-06-01 17:00:00+00:00", periods=3, freq="1h")
     prices = pd.DataFrame({"BTC": [100.0, 200.0, 200.0]}, index=idx)
     target = pd.DataFrame({"BTC": [1.0, 0.0, 0.0]}, index=idx)
 
@@ -101,7 +107,6 @@ def test_next_bar_open_does_not_capture_entry_bar_move():
             fee_rate=0.0,
             slippage_rate=0.0,
             periods_per_year=8760,
-            enforce_completed_bars=False,
             fill_model="next_bar_open",
         ),
     )
@@ -141,6 +146,26 @@ async def test_backtest_perps_trigger_filters_before_signal_fn():
     assert result.equity_curve.index.tolist() == idx[:2].tolist()
 
 
+def _test_ref(symbols: list[str]) -> BacktestRef:
+    return BacktestRef(
+        schema_version="0.1",
+        produced=ProducedBy(at="", skill="", git_sha="test"),
+        code=CodeRefs(
+            signal=CodeEntry(module="", entrypoint="", source_sha256="test")
+        ),
+        venues=VenueRefs(perp=True),
+        data=DataRefs(
+            symbols=symbols,
+            interval="1h",
+            window=DataWindow(start="", end=""),
+            fingerprint="test",
+        ),
+        params={"min_order_usd": 10.0},
+        execution_assumptions=ExecutionAssumptions(),
+        performance={},
+    )
+
+
 class _FakeHandler:
     venue = "perp"
 
@@ -170,56 +195,14 @@ class _FakeHandler:
             timestamp=self._now,
         )
 
-    async def cancel(self, order_id):
-        return True
-
     async def get_positions(self):
         return {}
-
-    async def get_open_orders(self):
-        return []
 
     def mid(self, symbol):
         return float(self.prices.loc[self.prices.index[-2], symbol])
 
-    def funding(self, symbol):
-        return 0.0
-
-    async def orderbook(self, symbol, depth=10):
-        raise NotImplementedError
-
-    async def quantity_at_price(self, symbol, side, target_price):
-        return 0.0
-
-    async def price_for_quantity(self, symbol, side, qty):
-        return 0.0
-
-    async def reservable_size(
-        self,
-        symbol,
-        side,
-        requested_size,
-        *,
-        free_margin,
-        leverage=1.0,
-        cost_bps=0.0,
-    ):
-        return requested_size
-
-    async def recent_prices(self, symbols, lookback_bars):
-        return self.prices[symbols]
-
-    async def recent_funding(self, symbols, lookback_bars):
-        return pd.DataFrame()
-
     async def get_margin_balance(self):
         return 1_000.0
-
-    async def transfer_in(self, amount):
-        raise NotImplementedError
-
-    async def transfer_out(self, amount):
-        raise NotImplementedError
 
     def now(self):
         return self._now
@@ -237,9 +220,9 @@ def test_active_perps_live_trigger_uses_completed_signal_bar():
         datetime(2026, 6, 8, 19, 28, tzinfo=UTC),
     )
 
-    strategy = object.__new__(ApexGmxVelocityStrategy)
+    strategy = object.__new__(ActivePerpsStrategy)
     strategy.name = strategy_name
-    strategy._ref = load_ref(ApexGmxVelocityStrategy.REF.parent)
+    strategy._ref = _test_ref(["APEX", "GMX"])
     strategy._state = StateStore(strategy_name, "live")
     strategy._risk_limits = None
 

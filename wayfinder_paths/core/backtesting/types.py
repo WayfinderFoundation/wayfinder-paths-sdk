@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, TypedDict
+from typing import Any, TypedDict
 
 import pandas as pd
 
@@ -119,11 +119,6 @@ class BacktestConfig:
     # live decide() saw bar t's close and acted into bar t — reproduce that
     # exactly). Never use for research; results carry look-ahead bias.
     fill_model: str = "next_bar_open"
-    # Drop any final bar whose close is after the framework cutoff before
-    # computing signals/execution. Most live OHLCV sources label bars by open.
-    enforce_completed_bars: bool = True
-    bar_interval: str | None = None
-    bar_timestamp_label: Literal["open", "close"] = "open"
 
 
 @dataclass

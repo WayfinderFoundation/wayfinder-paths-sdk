@@ -21,27 +21,7 @@ from wayfinder_paths.core.clients.HyperliquidDataClient import HyperliquidDataCl
 
 _DELTA_LAB_RETRIES = 3
 _DELTA_LAB_BACKOFF_S = 2.0
-TimestampLabel = Literal["open", "close"]
-
-_INTERVAL_DELTAS = {
-    "1m": pd.Timedelta(minutes=1),
-    "5m": pd.Timedelta(minutes=5),
-    "15m": pd.Timedelta(minutes=15),
-    "1h": pd.Timedelta(hours=1),
-    "4h": pd.Timedelta(hours=4),
-    "1d": pd.Timedelta(days=1),
-}
-
-
-def interval_to_timedelta(interval: str) -> pd.Timedelta:
-    """Return the duration represented by a supported backtest interval."""
-    try:
-        return _INTERVAL_DELTAS[interval]
-    except KeyError as e:
-        raise ValueError(
-            f"Unsupported interval {interval!r}; expected one of "
-            f"{sorted(_INTERVAL_DELTAS)}"
-        ) from e
+_TimestampLabel = Literal["open", "close"]
 
 
 def _as_utc_timestamp(value: datetime | pd.Timestamp | str | None) -> pd.Timestamp:
@@ -65,7 +45,7 @@ def _as_utc_index(index: pd.Index) -> pd.DatetimeIndex:
     return idx.tz_convert("UTC")
 
 
-def lookback_days_for_window(start: datetime, end: datetime) -> int:
+def _lookback_days_for_window(start: datetime, end: datetime) -> int:
     """Delta Lab lookback_days must be positive, even for sub-day windows."""
     seconds = (end - start).total_seconds()
     return max(1, math.ceil(seconds / 86_400))
@@ -73,10 +53,10 @@ def lookback_days_for_window(start: datetime, end: datetime) -> int:
 
 def drop_incomplete_bars(
     df: pd.DataFrame,
-    interval: str,
+    interval: str | pd.Timedelta,
     *,
     as_of: datetime | pd.Timestamp | str | None = None,
-    timestamp_label: TimestampLabel = "open",
+    timestamp_label: _TimestampLabel = "open",
 ) -> pd.DataFrame:
     """Drop bars whose close time is after ``as_of``.
 
@@ -93,9 +73,7 @@ def drop_incomplete_bars(
         raise ValueError("timestamp_label must be 'open' or 'close'")
 
     idx = _as_utc_index(df.index)
-    close_times = (
-        idx if timestamp_label == "close" else idx + interval_to_timedelta(interval)
-    )
+    close_times = idx if timestamp_label == "close" else idx + pd.Timedelta(interval)
     completed = close_times <= _as_utc_timestamp(as_of)
     return df.loc[completed]
 
@@ -229,7 +207,7 @@ async def fetch_prices(
 
     start = datetime.fromisoformat(start_date)
     end = datetime.fromisoformat(end_date)
-    lookback_days = lookback_days_for_window(start, end)
+    lookback_days = _lookback_days_for_window(start, end)
 
     _SUB_HOURLY = {"1m", "5m", "15m"}
     _INTERVAL_TO_FREQ = {"1h": "1h", "4h": "4h", "1d": "1D"}
@@ -417,7 +395,7 @@ async def fetch_funding_rates(
 
     start = datetime.fromisoformat(start_date)
     end = datetime.fromisoformat(end_date)
-    lookback_days = lookback_days_for_window(start, end)
+    lookback_days = _lookback_days_for_window(start, end)
 
     all_funding = []
 
@@ -488,7 +466,7 @@ async def fetch_borrow_rates(
 
     start = datetime.fromisoformat(start_date)
     end = datetime.fromisoformat(end_date)
-    lookback_days = lookback_days_for_window(start, end)
+    lookback_days = _lookback_days_for_window(start, end)
 
     all_rates = []
 
@@ -643,7 +621,7 @@ async def fetch_supply_rates(
 
     start = datetime.fromisoformat(start_date)
     end = datetime.fromisoformat(end_date)
-    lookback_days = lookback_days_for_window(start, end)
+    lookback_days = _lookback_days_for_window(start, end)
 
     all_rates = []
 
@@ -718,7 +696,7 @@ async def fetch_lending_rates(
 
     start = datetime.fromisoformat(start_date)
     end = datetime.fromisoformat(end_date)
-    lookback_days = lookback_days_for_window(start, end)
+    lookback_days = _lookback_days_for_window(start, end)
 
     data = await DELTA_LAB_CLIENT.get_asset_timeseries(
         symbol=symbol,

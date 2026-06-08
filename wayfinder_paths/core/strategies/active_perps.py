@@ -211,10 +211,10 @@ class ActivePerpsStrategy(Strategy):
 
         prices, funding = await self._fetch_recent_data(raw_perp)
         interval = self._ref.data.interval or "1h"
-        latest_raw_bar_ts = None
-        if isinstance(prices, pd.DataFrame) and not prices.empty:
-            latest_raw_bar_ts = pd.Timestamp(prices.index[-1]).isoformat()
-        raw_bar_count = len(prices) if isinstance(prices, pd.DataFrame) else 0
+        latest_raw_bar_ts = (
+            pd.Timestamp(prices.index[-1]).isoformat() if not prices.empty else None
+        )
+        raw_bar_count = len(prices)
         prices = drop_incomplete_bars(
             prices,
             interval,
@@ -229,7 +229,7 @@ class ActivePerpsStrategy(Strategy):
                 "trading on an in-progress candle",
             )
         signal_bar_ts = pd.Timestamp(prices.index[-1]).isoformat()
-        if isinstance(funding, pd.DataFrame) and not funding.empty:
+        if funding is not None and not funding.empty:
             funding = drop_incomplete_bars(
                 funding,
                 interval,

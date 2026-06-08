@@ -31,22 +31,10 @@ from wayfinder_paths.core.backtesting.utils import (
 )
 
 
-def _infer_bar_interval(index: pd.Index) -> str:
+def _bar_interval(index: pd.Index) -> pd.Timedelta:
     if len(index) < 2:
-        return "1h"
-    diffs = pd.Series(index).diff().dropna()
-    seconds = float(diffs.median().total_seconds())
-    if seconds <= 60:
-        return "1m"
-    if seconds <= 5 * 60:
-        return "5m"
-    if seconds <= 15 * 60:
-        return "15m"
-    if seconds <= 60 * 60:
-        return "1h"
-    if seconds <= 4 * 60 * 60:
-        return "4h"
-    return "1d"
+        return pd.Timedelta(hours=1)
+    return pd.Series(index).diff().dropna().median()
 
 
 def get_atomic_trade_scale(
@@ -138,24 +126,13 @@ def run_backtest(
     if not prices.index.equals(target_positions.index):
         raise ValueError("Prices and target_positions must have the same index")
 
-    if config.enforce_completed_bars:
-        interval = config.bar_interval or _infer_bar_interval(prices.index)
-        prices = drop_incomplete_bars(
-            prices,
-            interval,
-            timestamp_label=config.bar_timestamp_label,
-        )
-        if prices.empty:
-            raise ValueError(
-                "No completed price bars remain after dropping incomplete bars"
-            )
-        target_positions = target_positions.loc[prices.index]
-        if config.funding_rates is not None:
-            config.funding_rates = drop_incomplete_bars(
-                config.funding_rates,
-                interval,
-                timestamp_label=config.bar_timestamp_label,
-            )
+    interval = _bar_interval(prices.index)
+    prices = drop_incomplete_bars(prices, interval)
+    if prices.empty:
+        raise ValueError("No completed price bars remain after dropping incomplete bars")
+    target_positions = target_positions.loc[prices.index]
+    if config.funding_rates is not None:
+        config.funding_rates = drop_incomplete_bars(config.funding_rates, interval)
 
     symbols = list(prices.columns)
     if not all(sym in target_positions.columns for sym in symbols):
@@ -176,10 +153,7 @@ def run_backtest(
                 "Cannot auto-detect periods_per_year with less than 2 data points. "
                 "Please specify periods_per_year in config."
             )
-        # Calculate average time difference between bars
-        time_diffs = pd.Series(timestamps).diff().dropna()
-        avg_bar_interval = time_diffs.median()  # Use median to handle irregular data
-        seconds_per_bar = avg_bar_interval.total_seconds()
+        seconds_per_bar = _bar_interval(timestamps).total_seconds()
 
         if seconds_per_bar <= 0:
             raise ValueError(
