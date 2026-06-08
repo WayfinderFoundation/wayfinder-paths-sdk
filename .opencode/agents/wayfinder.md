@@ -4,7 +4,6 @@ mode: primary
 temperature: 0.1
 permission:
   task:
-    "*": deny
     explore: allow
     wayfinder-research: allow
     wayfinder-visual: allow
