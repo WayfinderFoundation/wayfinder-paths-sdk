@@ -6,6 +6,20 @@ from wayfinder_paths.core.clients.MorphoClient import MorphoClient
 
 
 @pytest.mark.asyncio
+async def test_market_id_lookup_requires_chain_id():
+    client = MorphoClient(graphql_url="https://example.com/graphql")
+
+    with pytest.raises(ValueError, match="chain_id is required"):
+        await client.get_market_by_unique_key(unique_key="0xabc")
+
+    with pytest.raises(ValueError, match="chain_id is required"):
+        await client.get_market_history(unique_key="0xabc")
+
+    with pytest.raises(ValueError, match="chain_id is required"):
+        await client.get_vault_v2_by_address(address="0xabc")
+
+
+@pytest.mark.asyncio
 async def test_post_retries_retryable_graphql_errors():
     client = MorphoClient(graphql_url="https://example.com/graphql")
     client._ensure_client = AsyncMock()
@@ -28,7 +42,7 @@ async def test_post_retries_retryable_graphql_errors():
         new=AsyncMock(),
     ):
         payload = await client._post(
-            query="query Markets { markets { items { uniqueKey } } }"
+            query="query Markets { markets { items { marketId } } }"
         )
 
     assert payload == {"markets": {"items": []}}

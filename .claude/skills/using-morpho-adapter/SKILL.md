@@ -1,6 +1,6 @@
 ---
 name: using-morpho-adapter
-description: How to use the Morpho adapter for Morpho Blue markets + MetaMorpho vaults (market discovery, positions, collateral ops, rewards, and common gotchas).
+description: How to use the Morpho adapter for Morpho Markets + Vaults (market discovery, positions, market collateral/borrow ops, vault deposit/withdraw ops, rewards, and common gotchas).
 metadata:
   tags: wayfinder, morpho, morpho-blue, metamorpho, lending, borrowing, rewards, vaults
 ---
@@ -10,8 +10,8 @@ metadata:
 Use this skill when you are:
 - Fetching Morpho market/vault data (APYs, rewards, warnings, historical APY)
 - Reading user positions on Morpho Blue markets
-- Executing supply/withdraw/borrow/repay + collateral ops on a specific market
-- Claiming Morpho rewards (Merkl + URD) or interacting with MetaMorpho vaults (ERC-4626)
+- Executing market supply/withdraw/borrow/repay + collateral ops on a specific market
+- Claiming current Merkl rewards, checking legacy URD distributions, or interacting with Morpho vaults (ERC-4626)
 
 ## How to use
 

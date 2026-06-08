@@ -21,7 +21,7 @@ def adapter():
 
 def _mock_market(unique_key: str, *, loan_addr: str, collateral_addr: str) -> dict:
     return {
-        "uniqueKey": unique_key,
+        "marketId": unique_key,
         "listed": True,
         "lltv": str(860000000000000000),
         "irmAddress": "0x46415998764C29aB2a25CbeA6254146D50D22687",
@@ -31,14 +31,14 @@ def _mock_market(unique_key: str, *, loan_addr: str, collateral_addr: str) -> di
             "symbol": "WETH",
             "name": "Wrapped Ether",
             "decimals": 18,
-            "priceUsd": 2000.0,
+            "price": {"usd": 2000.0},
         },
         "collateralAsset": {
             "address": collateral_addr,
             "symbol": "USDC",
             "name": "USD Coin",
             "decimals": 6,
-            "priceUsd": 1.0,
+            "price": {"usd": 1.0},
         },
         "state": {
             "supplyApy": 0.01,
@@ -84,8 +84,10 @@ async def test_get_all_markets_success(adapter):
     assert ok is True
     assert isinstance(markets, list)
     assert len(markets) == 1
+    assert markets[0]["marketId"] == key
     assert markets[0]["uniqueKey"] == key
     assert markets[0]["chainId"] == CHAIN_ID_BASE
+    assert markets[0]["loan"]["price_usd"] == 2000.0
     assert markets[0]["state"]["supply_apy"] == 0.01
 
 
@@ -281,11 +283,11 @@ async def test_get_health_computes_maxes(adapter):
 async def test_get_full_user_state_per_chain_filters_zero_positions(adapter):
     positions = [
         {
-            "market": {"uniqueKey": "0x" + "11" * 32},
+            "market": {"marketId": "0x" + "11" * 32},
             "state": {"supplyShares": 0, "borrowShares": 0, "collateral": 0},
         },
         {
-            "market": {"uniqueKey": "0x" + "22" * 32},
+            "market": {"marketId": "0x" + "22" * 32},
             "state": {"supplyShares": 1, "borrowShares": 0, "collateral": 0},
         },
     ]
@@ -302,6 +304,7 @@ async def test_get_full_user_state_per_chain_filters_zero_positions(adapter):
 
     assert ok is True
     assert len(state["positions"]) == 1
+    assert state["positions"][0]["marketId"] == "0x" + "22" * 32
     assert state["positions"][0]["marketUniqueKey"] == "0x" + "22" * 32
 
 
@@ -447,8 +450,8 @@ async def test_borrow_with_jit_liquidity_atomic_uses_bundler(adapter):
                 "address": "0x9999999999999999999999999999999999999999"
             },
             "vault": {"address": "0x8888888888888888888888888888888888888888"},
-            "withdrawMarket": {"uniqueKey": withdraw_key},
-            "supplyMarket": {"uniqueKey": market_key},
+            "withdrawMarket": {"marketId": withdraw_key},
+            "supplyMarket": {"marketId": market_key},
         }
     ]
     withdraw_market = _mock_market(
@@ -489,6 +492,109 @@ async def test_borrow_with_jit_liquidity_atomic_uses_bundler(adapter):
     _args, kwargs = mock_multi.await_args
     assert kwargs["calls"] == ["0xcall1", "0xcall2"]
     assert kwargs["value"] == 123
+
+
+@pytest.mark.asyncio
+async def test_get_all_vaults_formats_current_v1_and_v2_fields(adapter):
+    asset = {
+        "address": "0x2222222222222222222222222222222222222222",
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "decimals": 6,
+        "price": {"usd": 1.0},
+    }
+    reward = {
+        "supplyApr": 0.02,
+        "asset": {
+            "address": "0x3333333333333333333333333333333333333333",
+            "symbol": "MORPHO",
+            "name": "Morpho",
+            "decimals": 18,
+            "price": {"usd": 4.0},
+        },
+    }
+    v1 = {
+        "address": "0x1111111111111111111111111111111111111111",
+        "symbol": "v1",
+        "name": "Vault V1",
+        "listed": True,
+        "asset": asset,
+        "state": {
+            "apy": 0.03,
+            "netApy": 0.04,
+            "netApyExcludingRewards": 0.02,
+            "avgNetApy": 0.035,
+            "avgNetApyExcludingRewards": 0.025,
+            "totalAssets": "100",
+            "totalAssetsUsd": 100.0,
+            "totalSupply": "99",
+            "allRewards": [reward],
+            "allocation": [{"market": {"marketId": "0x" + "11" * 32}}],
+        },
+    }
+    v2 = {
+        "address": "0x4444444444444444444444444444444444444444",
+        "type": "MetaMorphoV2",
+        "symbol": "v2",
+        "name": "Vault V2",
+        "listed": True,
+        "asset": asset,
+        "apy": 0.05,
+        "netApy": 0.06,
+        "avgNetApy": 0.055,
+        "avgNetApyExcludingRewards": 0.045,
+        "totalAssets": "200",
+        "totalAssetsUsd": 200.0,
+        "totalSupply": "198",
+        "sharePrice": 1.01,
+        "liquidity": "50",
+        "liquidityUsd": 50.0,
+        "idleAssets": "10",
+        "idleAssetsUsd": 10.0,
+        "rewards": [reward],
+        "adapters": {"items": [{"address": "0x5555", "type": "MorphoMarketV1"}]},
+    }
+
+    with (
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.MORPHO_CLIENT.get_all_vaults",
+            new=AsyncMock(return_value=[v1]),
+        ),
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.MORPHO_CLIENT.get_all_vault_v2s",
+            new=AsyncMock(return_value=[v2]),
+        ),
+    ):
+        ok, vaults = await adapter.get_all_vaults(chain_id=CHAIN_ID_BASE)
+
+    assert ok is True
+    assert isinstance(vaults, list)
+    assert vaults[0]["state"]["all_rewards"] == [reward]
+    assert vaults[0]["state"]["incentives"][0]["token"]["price_usd"] == 4.0
+    assert vaults[1]["vault_type"] == "MetaMorphoV2"
+    assert vaults[1]["state"]["avg_apy"] == 0.045
+    assert vaults[1]["state"]["avg_net_apy_excluding_rewards"] == 0.045
+    assert vaults[1]["state"]["share_price"] == 1.01
+    assert vaults[1]["state"]["idle_assets"] == 10
+
+
+@pytest.mark.asyncio
+async def test_claim_rewards_defaults_to_merkl_only(adapter):
+    with (
+        patch.object(
+            adapter, "claim_merkl_rewards", new=AsyncMock(return_value=(True, "0xabc"))
+        ) as mock_merkl,
+        patch.object(
+            adapter, "claim_urd_rewards", new=AsyncMock(return_value=(True, ["0xdef"]))
+        ) as mock_urd,
+    ):
+        ok, out = await adapter.claim_rewards(chain_id=CHAIN_ID_BASE)
+
+    assert ok is True
+    assert out["merkl_tx"] == "0xabc"
+    assert "urd_txs" not in out
+    mock_merkl.assert_awaited_once()
+    mock_urd.assert_not_awaited()
 
 
 @pytest.mark.asyncio
