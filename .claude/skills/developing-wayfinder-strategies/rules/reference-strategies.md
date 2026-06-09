@@ -58,6 +58,10 @@ Before the runner can actually trade, two wallet conditions must hold. Missing e
    - Must return `SignalFrame(targets=df)`, NOT a raw DataFrame
    - `df` columns must include all symbols in `prices.columns`
    - `df` values are target weights (already-leveraged convention) per symbol per bar
+   - Each `df.loc[t]` row is a decision target after observing completed bar `t`.
+     It is not already-executed exposure during bar `t`; do not pre-lag with
+     `close[t-1]` or pre-shift targets unless converting an external executed
+     exposure vector.
    - Sum of `|weights|` per row must be ≤ `target_leverage`
 
 2. **`decide.py::decide(ctx: TriggerContext) -> None`**
@@ -65,6 +69,9 @@ Before the runner can actually trade, two wallet conditions must hold. Missing e
      `ctx.signal.targets.iloc[-1]`; live signal frames may contain more history than
      the current completed signal bar, and exact-match `.loc[t]` can fail when
      `ctx.t` is wall-clock.
+   - Treat the signal row as the latest completed-bar decision. The trigger
+     framework drops in-progress candles before `compute_signal`; `decide.py`
+     should not add another timing shift.
    - Read NAV via `ctx.nav` — framework-owned, identical in backtest and live.
      **Never** call `await ctx.perp.get_margin_balance()` or `ctx.state.set("nav", ...)`
      from inside decide. Backtest's `BacktestHandler.get_margin_balance()` returns 0,
