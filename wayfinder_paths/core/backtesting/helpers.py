@@ -43,7 +43,9 @@ async def quick_backtest(
     - Runs the backtest with proper periods_per_year for the interval
 
     Args:
-        strategy_fn: Function that takes (prices, context) and returns target_positions.
+        strategy_fn: Function that takes (prices, context) and returns decision targets.
+                    A target row at timestamp t should be formed from completed data
+                    through t; run_backtest handles next-bar execution.
                     The context dict is built automatically and contains:
                     {"symbols": [...], "interval": "1h", "start_date": "...", "end_date": "..."}
                     Your function cannot pass additional context keys - use closures if needed.
@@ -140,7 +142,8 @@ async def backtest_with_rates(
     Run a backtest where strategy function receives both prices and funding rates.
 
     Args:
-        strategy_fn: Function that takes (prices, funding_rates, context) and returns target_positions
+        strategy_fn: Function that takes (prices, funding_rates, context) and returns decision targets
+                    formed from completed data through each target timestamp.
         symbols: List of symbols to trade
         start_date: Start date (ISO format)
         end_date: End date (ISO format)

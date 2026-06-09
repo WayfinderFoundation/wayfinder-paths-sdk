@@ -57,7 +57,7 @@ Use `run_backtest` directly (not the simplified helpers) when the strategy has c
 
 | Strategy pattern | Wrong approach | Right approach |
 |---|---|---|
-| Yield rotation with cooldown | `backtest_yield_rotation(lookback=7)` | Build target positions with cooldown enforcement |
+| Yield rotation with cooldown | `backtest_yield_rotation(lookback=7)` | Build decision targets with cooldown enforcement |
 | Delta-neutral with dynamic coin selection | `backtest_delta_neutral(["BTC", "ETH"])` | Implement the coin scoring/selection algorithm |
 | Leveraged loop with health factor | Fixed leverage estimate | Bake dynamic leverage from real borrow rates into synthetic price |
 
@@ -97,6 +97,7 @@ Before running the backtest, verify:
 - [ ] Read `strategy.py`, `constants.py`, `manifest.yaml` for the strategy
 - [ ] All rates/yields fetched from Delta Lab (not hardcoded estimates)
 - [ ] Signal logic matches the strategy's actual decision function
+- [ ] Target rows are framework decision targets, not already-executed exposure. If porting an exposure series, convert with `target = exposure.shift(-1)` before `run_backtest`.
 - [ ] Cooldowns/hysteresis/thresholds enforced in target position generation
 - [ ] Leverage baked into synthetic price (not `config.leverage`) for yield strategies
 - [ ] `fee_rate=0.0` and `slippage_rate=0.0` for yield/lending strategies

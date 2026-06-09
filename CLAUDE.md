@@ -334,7 +334,7 @@ just create-strategy "My Strategy Name"
 
 Creates `wayfinder_paths/strategies/<name>/` with strategy.py, manifest.yaml, test, examples.json, README, and a **dedicated wallet** in `config.json`.
 
-**For perp strategies (Hyperliquid `ActivePerpsStrategy`)**: after scaffolding, copy the layout from the canonical reference [`wayfinder_paths/strategies/apex_gmx_velocity/`](wayfinder_paths/strategies/apex_gmx_velocity/) — it has the right `signal.py`/`decide.py` separation, schema-compliant `backtest_ref.json`, and parity-validated test pattern. Load `/developing-wayfinder-strategies` for the full perp contracts (SignalFrame return type, `ctx.signal_at_now()` in `decide`, size rounding via `round_size_for_asset`, completed-bar handling, etc.).
+**For perp strategies (Hyperliquid `ActivePerpsStrategy`)**: after scaffolding, copy the layout from the canonical reference [`wayfinder_paths/strategies/apex_gmx_velocity/`](wayfinder_paths/strategies/apex_gmx_velocity/) — it has the right `signal.py`/`decide.py` separation, schema-compliant `backtest_ref.json`, and parity-validated test pattern. Load `/developing-wayfinder-strategies` for the full perp contracts (SignalFrame return type, `ctx.signal_at_now()` in `decide`, size rounding via `round_size_for_asset`, completed-bar handling, etc.). `signal.py` rows are completed-bar decision targets, not already-executed exposure; `decide.py` should consume `ctx.signal_at_now()` and let the trigger/backtester own execution timing.
 
 **New adapter:**
 
