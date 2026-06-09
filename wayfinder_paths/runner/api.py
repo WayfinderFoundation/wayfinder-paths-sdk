@@ -29,12 +29,16 @@ def dispatch(daemon, *, method: str, params: dict[str, Any]) -> dict[str, Any]:
             job_type=params.get("type"),
             payload=params.get("payload") or {},
             interval_seconds=params.get("interval_seconds"),
+            cron_expr=params.get("cron_expr"),
+            timezone=params.get("timezone"),
         )
     if method == "update_job":
         return daemon.ctl_update_job(
             name=params.get("name"),
             payload=params.get("payload"),
             interval_seconds=params.get("interval_seconds"),
+            cron_expr=params.get("cron_expr"),
+            timezone=params.get("timezone"),
         )
     if method == "pause_job":
         return daemon.ctl_pause_job(name=params.get("name"))

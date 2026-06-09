@@ -244,7 +244,7 @@ Sizing note (avoid ambiguity): if a user says "$X at Y× leverage", confirm whet
 
 Prefer **MCP tools** for simple, one-shot actions: a single quote, a single swap, reading a balance, placing one order, querying a strategy. They're already wired up, validated, and return structured results.
 
-Reach for **scripts under `.wayfinder_runs/`** when the work is complex or repetitive: stitching multiple adapter calls together, fan-out across many wallets/chains, multi-step flows with conditional branches, or anything you'll want to re-run. Scripts can be scheduled via `runner(action="add_job", type="script", ...)` once they're stable.
+Reach for **scripts under `.wayfinder_runs/`** when the work is complex or repetitive: stitching multiple adapter calls together, fan-out across many wallets/chains, multi-step flows with conditional branches, or anything you'll want to re-run. Scripts can be scheduled via `core_runner(action="add_job", type="script", ...)` once they're stable.
 
 Rough cut: if you can express it as one MCP call, use the MCP call. If you find yourself chaining three or more, write a script.
 
@@ -253,13 +253,14 @@ Rough cut: if you can express it as one MCP call, use the MCP call. If you find 
 When a user wants a **repeatable/automated system** (recurring jobs):
 
 - Create or modify a strategy under `wayfinder_paths/strategies/` and follow the normal manifests/tests workflow.
-- Use the project-local runner to call strategy `update` on an interval (no cron needed).
+- Use the project-local runner to call strategy `update` on an interval or runner-owned cron schedule. Do not use system cron, systemd timers, or background loops.
 
 Runner CLI (project-local state in `./.wayfinder/runner/`):
 
 ```bash
 poetry run wayfinder runner start             # Start daemon (idempotent)
 poetry run wayfinder runner add-job --name basis-update --type strategy --strategy basis_trading_strategy --action update --interval 600 --config ./config.json
+poetry run wayfinder runner add-job --name weekday-basis-update --type strategy --strategy basis_trading_strategy --action update --cron "0 9 * * 1-5" --timezone America/Toronto --config ./config.json
 poetry run wayfinder runner status | run-once | pause | resume | delete <job> | stop
 ```
 

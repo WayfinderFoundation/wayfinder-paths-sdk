@@ -16,6 +16,7 @@ from wayfinder_paths.runner.client import RunnerControlClient
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JOB_TYPE_STRATEGY
 from wayfinder_paths.runner.lifecycle import ensure_daemon_started, try_status
 from wayfinder_paths.runner.paths import RunnerPaths, get_runner_paths
+from wayfinder_paths.runner.schedule import schedule_request_params
 
 RunnerReadAction = Literal["daemon_status", "status", "job_runs", "run_report"]
 
@@ -72,6 +73,8 @@ async def core_runner(
     type: str | None = None,  # noqa: A002 (matches CLI/API)
     payload: dict[str, Any] | None = None,
     interval_seconds: int | None = None,
+    cron_expr: str | None = None,
+    timezone: str | None = None,
     limit: int | None = None,
     run_id: int | None = None,
     tail_bytes: int | None = None,
@@ -89,9 +92,9 @@ async def core_runner(
     always_notify_session_on_job_completion: bool = False,
     debug: bool = False,
 ) -> dict[str, Any]:
-    """Control the local runner daemon — the only sanctioned scheduler for recurring jobs. All scheduled/recurring tasks MUST go through this tool. Don't use cron, systemd timers,
-    or background loops. The daemon owns persistence, failure tracking, timeouts, and (on
-    Wayfinder Shells) backend job/run sync.
+    """Control the local runner daemon — the only sanctioned scheduler for recurring jobs. All scheduled/recurring tasks MUST go through this tool. Don't use system cron, systemd timers,
+    or background loops. The daemon owns persistence, interval/cron scheduling,
+    failure tracking, timeouts, and (on Wayfinder Shells) backend job/run sync.
 
     To minimize conversation noise, use always_notify_session_on_job_completion=False. By default, failures always post to the chat session. Successes are silent unless
     `always_notify_session_on_job_completion` is true or the script emits a
@@ -104,12 +107,13 @@ async def core_runner(
         `tick_seconds`, `max_workers`, `max_failures`, `default_timeout_seconds`, `log_level`.
 
     Job actions:
-      - `add_job`: schedule a recurring `name` at `interval_seconds`. Two `type`s:
+      - `add_job`: schedule a recurring `name` with exactly one of
+        `interval_seconds` or `cron_expr` (`timezone` defaults to UTC). Two `type`s:
           * `strategy` — pass `strategy`, `strategy_action`, optional `config`, `wallet_label`,
             `timeout_seconds`. See `core_run_strategy` for action semantics.
           * `script` — pass `script_path` (inside `.wayfinder_runs/`), optional `args`, `env`,
             `timeout_seconds`.
-      - `update_job`: mutate an existing job's payload / interval.
+      - `update_job`: mutate an existing job's payload / schedule.
       - `pause_job` / `resume_job` / `stop_job` / `delete_job`: by `name`.
         `stop_job` sends `sig` (`TERM`, `INT`, or `KILL`) to a currently running worker.
       - `run_once`: trigger an immediate run of `name` (off the schedule).
@@ -340,15 +344,14 @@ async def core_runner(
             case "add_job":
                 if not name:
                     return err("invalid_request", "name is required for add_job")
-                interval = interval_seconds
-                if interval is None:
-                    return err(
-                        "invalid_request", "interval_seconds is required for add_job"
+                try:
+                    schedule_params = schedule_request_params(
+                        interval_seconds=interval_seconds,
+                        cron_expr=cron_expr,
+                        timezone=timezone,
                     )
-                if not isinstance(interval, int) or interval <= 0:
-                    return err(
-                        "invalid_request", "interval_seconds must be a positive integer"
-                    )
+                except ValueError as exc:
+                    return err("invalid_request", str(exc))
 
                 job_type = str(type or JOB_TYPE_STRATEGY).strip().lower()
                 if job_type not in {JOB_TYPE_STRATEGY, JOB_TYPE_SCRIPT}:
@@ -394,15 +397,13 @@ async def core_runner(
                         }
                     )
 
-                resp = client.call(
-                    "add_job",
-                    {
-                        "name": str(name).strip(),
-                        "type": job_type,
-                        "payload": job_payload,
-                        "interval_seconds": int(interval),
-                    },
-                )
+                params: dict[str, Any] = {
+                    "name": str(name).strip(),
+                    "type": job_type,
+                    "payload": job_payload,
+                }
+                params.update(schedule_params)
+                resp = client.call("add_job", params)
                 if resp.get("ok"):
                     return ok(resp.get("result"))
                 return err(
@@ -414,20 +415,19 @@ async def core_runner(
                     return err("invalid_request", "name is required for update_job")
                 if payload is not None and not isinstance(payload, dict):
                     return err("invalid_request", "payload must be an object")
-                if interval_seconds is not None and (
-                    not isinstance(interval_seconds, int) or interval_seconds <= 0
-                ):
-                    return err(
-                        "invalid_request", "interval_seconds must be a positive integer"
-                    )
-                resp = client.call(
-                    "update_job",
-                    {
-                        "name": str(name).strip(),
-                        "payload": payload,
-                        "interval_seconds": interval_seconds,
-                    },
-                )
+                params = {"name": str(name).strip(), "payload": payload}
+                if interval_seconds is not None or cron_expr is not None:
+                    try:
+                        params.update(
+                            schedule_request_params(
+                                interval_seconds=interval_seconds,
+                                cron_expr=cron_expr,
+                                timezone=timezone,
+                            )
+                        )
+                    except ValueError as exc:
+                        return err("invalid_request", str(exc))
+                resp = client.call("update_job", params)
                 if resp.get("ok"):
                     return ok(resp.get("result"))
                 return err(

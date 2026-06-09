@@ -211,7 +211,7 @@ poetry run python -m wayfinder_paths.run_strategy boros_hype_strategy --action r
 
 ## Runner (local scheduler)
 
-Run strategies on an interval without cron:
+Run strategies on an interval or cron-style schedule without external cron:
 
 ```bash
 # Start the daemon (idempotent)
@@ -224,6 +224,16 @@ poetry run wayfinder runner add-job \
   --strategy basis_trading_strategy \
   --action update \
   --interval 600 \
+  --config ./config.json
+
+# Add a cron job (weekdays at 9am Toronto time)
+poetry run wayfinder runner add-job \
+  --name weekday-basis-update \
+  --type strategy \
+  --strategy basis_trading_strategy \
+  --action update \
+  --cron "0 9 * * 1-5" \
+  --timezone America/Toronto \
   --config ./config.json
 
 # Schedule a local one-off script (must live in .wayfinder_runs/ by default)

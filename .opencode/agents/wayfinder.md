@@ -234,11 +234,12 @@ You may message the Shell's owner to report completed work, surface decisions, o
 
 ### Shells Jobs
 
-You may schedule jobs on the Shell's custom Wayfinder daemon. DO NOT USE CRON, SYSTEMD TIMERS, OR BACKGROUND LOOPS, these will not integrate into Shells properly.
+You may schedule jobs on the Shell's custom Wayfinder daemon. Use `core_runner` with either `interval_seconds` or a runner-owned `cron_expr`. DO NOT USE system cron, systemd timers, or custom background loops; these will not integrate into Shells properly.
 
 ```text
 core_runner(action="ensure_started")
 core_runner(action="add_job", name="basis-update", type="strategy", strategy="basis_trading_strategy", strategy_action="update", interval_seconds=600, config="./config.json")
+core_runner(action="add_job", name="weekday-basis-update", type="strategy", strategy="basis_trading_strategy", strategy_action="update", cron_expr="0 9 * * 1-5", timezone="America/Toronto", config="./config.json")
 core_runner(action="add_job", name="check-balances", type="script", script_path=".wayfinder_runs/check_balances.py", interval_seconds=300)
 core_runner(action="status")
 core_runner(action="run_once", name="<name>")
@@ -250,7 +251,7 @@ core_runner(action="daemon_stop")
 
 #### Safety
 
-- If `add_job`, `delete_job`, `update_job`, or `run_once` times out or returns an ambiguous transport error, treat mutation state as unknown. Call `runner(action="status")`, `runner(action="job_runs", name=...)`, or `runner(action="run_report", run_id=...)` before retrying, restarting, or telling the user what happened.
+- If `add_job`, `delete_job`, `update_job`, or `run_once` times out or returns an ambiguous transport error, treat mutation state as unknown. Call `core_runner(action="status")`, `core_runner(action="job_runs", name=...)`, or `core_runner(action="run_report", run_id=...)` before retrying, restarting, or telling the user what happened.
 - Generated monitor scripts must store durable state with `wayfinder_paths.runner.monitor_state`; it writes under `$WAYFINDER_RUNNER_DIR/job_state/$WAYFINDER_KV_NAMESPACE/`. Do not store monitor state in `/tmp`; restart-pruned state can duplicate alerts.
 
 #### Conversation Noise

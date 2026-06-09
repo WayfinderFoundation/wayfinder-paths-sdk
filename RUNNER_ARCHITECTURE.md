@@ -1,6 +1,6 @@
 # Runner Architecture (extensible)
 
-This repo includes a **project-local runner daemon** that schedules jobs (strategies + scripts) on an interval.
+This repo includes a **project-local runner daemon** that schedules jobs (strategies + scripts) on intervals or cron-style schedules.
 
 The current implementation is **local-only** (Unix domain socket control plane + subprocess workers), but the
 code is intentionally split so we can add a **remote/cloud runner** later without rewriting the scheduler.
@@ -12,7 +12,7 @@ code is intentionally split so we can add a **remote/cloud runner** later withou
 - Code: `wayfinder_paths/runner/daemon.py`
 - Owns:
   - SQLite state (`state.db`) and job/run history
-  - Interval scheduling loop (tick-based)
+  - Interval and cron-style scheduling loop (tick-based, using persisted `next_run_at`)
   - Spawning worker subprocesses and collecting exit status
   - Per-run log files
 

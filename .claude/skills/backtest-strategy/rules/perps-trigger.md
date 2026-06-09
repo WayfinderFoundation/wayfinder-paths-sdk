@@ -139,7 +139,8 @@ poetry run wayfinder runner add-job \
   --name <strategy>-recon --type script \
   --script scripts/active_perps_strategy_recon.py \
   --args "<strategy> --start ... --end ..." \
-  --interval 86400
+  --cron "0 9 * * *" \
+  --timezone UTC
 ```
 
 ## Risk limits
