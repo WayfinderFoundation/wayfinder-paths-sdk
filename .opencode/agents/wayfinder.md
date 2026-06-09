@@ -4,11 +4,13 @@ mode: primary
 temperature: 0.1
 permission:
   task:
-    "*": deny
     explore: allow
     wayfinder-research: allow
     wayfinder-visual: allow
     wayfinder-quant: allow
+    scout: deny
+    general: deny
+
   wayfinder_*: deny
   # contracts_*
   wayfinder_contracts_*: allow
