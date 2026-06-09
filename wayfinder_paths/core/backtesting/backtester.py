@@ -96,7 +96,10 @@ def run_backtest(
 
     Args:
         prices: DataFrame with index=timestamps, columns=symbols, values=prices
-        target_positions: DataFrame with index=timestamps, columns=symbols, values=weights
+        target_positions: Decision targets indexed like prices. A row at timestamp t
+                         is the desired target after observing completed bar t, not
+                         the already-executed exposure during bar t. With the default
+                         fill_model="next_bar_open", execution is shifted to t+1.
                          Weights should be in [-1, 1] range (can be leveraged via config)
         config: BacktestConfig object (uses defaults if None)
 

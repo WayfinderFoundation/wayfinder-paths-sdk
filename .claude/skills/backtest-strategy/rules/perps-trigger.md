@@ -37,6 +37,8 @@ Three handler implementations satisfy the same `MarketHandler` protocol:
 
 Completed-bar rule: signal inputs must exclude the currently-forming candle. If a provider returns the current hour's OHLCV row, the framework drops it before `signal_fn`; live snapshots record both `latest_raw_bar_ts` and `signal_bar_ts`. Do not place or defend trades that used an in-progress bar.
 
+Timing rule: a signal row at `ctx.t` is a decision after observing completed bar `ctx.t`; next-bar execution handles the entry/exit lag. Do not pre-lag signal logic with `close[t-1]` just to avoid lookahead.
+
 ## Workflow
 
 1. Write `signal.py` with `compute_signal(prices, funding, params) -> SignalFrame`.

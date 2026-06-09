@@ -86,7 +86,7 @@ Simple one-shot transaction or position / Fast execution ? => MCP
 Repeatability / Extended iteration / Project level / Multi protocol position / Scheduling ? => Scripts (load `/writing-wayfinder-scripts`)
 Before any script imports or calls a protocol adapter, load the matching protocol skill first (for example `/using-moonwell-adapter`, `/using-aave-v3-adapter`, `/using-morpho-adapter`) so method signatures, return fields, and gotchas come from the skill instead of guesses.
 
-For backtests or bar-driven strategy work, never use the current open/in-progress candle as signal data. Use the framework helpers and require next-bar entry for research/performance claims (`fill_model="next_bar_open"` or the active-perps trigger default); `fill_model="replay"` is only for live/history reconciliation because it can use same-bar information.
+For backtests or bar-driven strategy work, use the current completed row as signal data and never use the current open/in-progress provider candle. Framework `target_positions.loc[t]` are decision targets formed after completed bar `t`; do not pre-shift targets or code exits as `close[t-1]` just to avoid lookahead. `fill_model="next_bar_open"` handles entry/exit at `t+1`; `fill_model="replay"` is only for live/history reconciliation because it can use same-bar information. If adapting an already-executed exposure vector from an external script, convert it to framework decision targets first, e.g. `target = exposure.shift(-1)`.
 
 ## Blockchain & Wayfinder Domain Knowledge
 

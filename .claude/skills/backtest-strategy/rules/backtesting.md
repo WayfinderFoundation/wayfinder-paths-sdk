@@ -120,7 +120,9 @@ All end-to-end helpers set this automatically.
 ## Gotchas
 
 - **Completed bars only**: never use the final in-progress candle as signal data. Treat fetched OHLCV/time-series rows as open-labeled unless the source explicitly says otherwise; the framework should drop rows whose close is after its cutoff. Report the last raw bar, last completed bar, and dropped incomplete-bar count when summarizing a backtest.
-- **Look-ahead bias**: never use future data in signals. Research backtests must use `fill_model="next_bar_open"` so signals formed on bar `t` enter on bar `t+1`; `fill_model="replay"` is only for live/history reconciliation.
+- **Decision targets vs executed exposure**: `target_positions.loc[t]` is the desired target after observing completed bar `t`, not the already-executed exposure during bar `t`. Use the current completed row (`prices.loc[t]`, `close[t]`, indicators through `t`) to form the target; do not pre-shift targets or write exits as `close[t-1]` before calling the framework.
+- **Look-ahead bias**: never use future data in signals. Research backtests must use `fill_model="next_bar_open"` so decision targets formed on bar `t` enter on bar `t+1`; `fill_model="replay"` is only for live/history reconciliation. If adapting an already-executed exposure vector from another script, convert it to framework decision targets first with `target = exposure.shift(-1)`.
+- **Timing self-check**: before reporting results, state `target_semantics="decision_after_completed_bar"`, `fill_model`, whether targets were pre-shifted (`false` unless converting executed exposure), last raw bar, last completed signal bar, and dropped incomplete-bar count. If code uses `close[t-1]` or `indicator[t-1]`, explain why it is actual strategy logic rather than an extra execution lag.
 - **Wrong `periods_per_year`**: Sharpe/volatility will be meaningless; `quick_backtest` sets it automatically
 - **Leveraged yield**: bake leverage into synthetic price, don't use `config.leverage`
 - **`fetch_lending_rates`** returns per-venue data; `fetch_supply_rates`/`fetch_borrow_rates` return symbol-level averages

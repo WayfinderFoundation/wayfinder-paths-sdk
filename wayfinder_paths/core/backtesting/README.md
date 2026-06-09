@@ -48,7 +48,7 @@ from wayfinder_paths.core.backtesting.types import BacktestConfig
 prices = await fetch_prices(["BTC", "ETH"], "2025-01-01", "2025-02-01")
 funding = await fetch_funding_rates(["BTC", "ETH"], "2025-01-01", "2025-02-01")
 
-# Generate signals (your strategy logic)
+# Generate decision targets after each completed bar
 target_positions = my_strategy(prices, {})
 
 # Configure
@@ -92,14 +92,16 @@ rates = await fetch_borrow_rates(
 
 ## Signal Format
 
-Your strategy function must return a **target positions DataFrame**:
+Your strategy function must return a **decision target positions DataFrame**:
 
 - **Index**: timestamps (matching input prices)
 - **Columns**: symbols (matching input prices)
-- **Values**: weights in `[-1, 1]` range
+- **Values**: desired weights in `[-1, 1]` after observing the completed bar at that timestamp
   - `1.0` = 100% long
   - `-1.0` = 100% short
   - `0.0` = flat/no position
+
+`target_positions.loc[t]` is a decision target, not the already-executed exposure during bar `t`. With the default `fill_model="next_bar_open"`, the framework shifts execution so a target formed from completed bar `t` enters/exits at `t+1`. Do not pre-shift targets or write `close[t-1]` exits before calling `run_backtest`; if you are porting an already-executed exposure vector from another script, convert it first with `target = exposure.shift(-1)`.
 
 Weights are scaled by the `leverage` parameter.
 
