@@ -1,5 +1,41 @@
 # Changelog
 
+## [0.11.0] - 2026-06-10
+
+Added
+
+1. **Polymarket v2** (#213): pUSD (V2 collateral) on Polygon with deposit wallets (#311), BRAP-routed bridge legs (#319), market-order slippage cap + AutoWrap (#326), vault-backend search (#334), and limit orders by `market_slug` + `outcome` (#424).
+2. **HIP-4 outcome markets** (#239): Hyperliquid binary daily prediction contracts wired into the adapter and MCP tools — price-bucket markets (#295), named outcome markets like CPI (#388), Wayfinder builder code attached to outcome orders (#296), and collateral migrated from USDH to USDC (#386).
+3. **Per-action MCP write tools** (#336, #360): `hyperliquid_execute` / `polymarket_execute` split into per-action tools (`hyperliquid_place_market_order`, `polymarket_redeem_positions`, etc.), and `core_execute` split into `onchain_swap` + `onchain_send`.
+4. **Safety guards**: swap approval gate (#414), pre-flight balance guards for `onchain_swap`/`onchain_send` (#375), pUSD balance guard + collateral-suffixed deposit tools (#373), on-chain allowance polling after approval txs (#418), and Hyperliquid margin / runner monitor guardrails (#346).
+5. **Pendle limit order execution** (#352): Taker fills and maker order support.
+6. **Research gateway** (#301): New research SDK client and MCP tool, with sanitized Exa payloads (#425) and updated social X search response types (#376).
+7. **Delta Lab v2** (#224): Updated time-series endpoints (#196), specific time-series defaults (#290), and APY filtering by type (#413).
+8. **Packs MVP and path install flows** (#131, #220, #227, #230): Wayfinder packs with applet scaffolds (#302), split remote installs, dynamic strategy loading (#387), and paths DB sync from the SDK (#390).
+9. **Wallet sessions** (#186, #190, #342): TTL-based session wallets (renamed to sessions), 15-minute default TTL, instance-filtered wallet lists (#192), and local wallets blocked on hosted instances (#189).
+10. **Runner upgrades**: crontab notation for jobs (#433), per-job locks replacing the global lock (#404), event-driven bulk job sync to the backend (#399), idempotent `runner start` (#183), and job-completion session notifications (#182, #238).
+11. **OpenCode agent platform**: subagent delegation (#331), email + SMS notifications (#200, #300), per-agent temperatures (#377), and visual pane / chart tooling (#288, #385).
+12. **MCP tool execution metrics** (#372, #374): Fire-and-forget metrics and per-tool latency tracking.
+
+Changed
+
+1. **Hyperliquid UnifiedAccount migration** (#294): Moved off dexAbstraction mode; spot↔perp USD class transfers dropped (#321), builder fee set to 5 bps (#426), QuickNode info client split out (#408) with a whitelisted info dispatcher (#371).
+2. **MCP surface overhaul**: every tool namespaced as `{namespace}_{name}` (#248), resources removed and folded into tools (#247, #254), registry organized reads-before-writes (#348), `web_search`/`web_fetch` moved to `core_` (#349), and `@catch_errors` + `throw_if_*` guards across all tools (#280, #283).
+3. **Transaction layer hardening**: Polygon priority fee floor at 25 gwei (#379), per-RPC errors surfaced when gas estimation fails everywhere (#382), and nonce reads fanned out across the WF-proxy pool (#240).
+4. **Backtesting**: faster runs (#427), completed-bars-only enforcement (#431), CCXT data sources allowed (#328), and clarified timing prompts (#434).
+5. **Docs and agent prompts consolidated**: AGENTS.md merged into wayfinder.md (#347), default domain moved to wayfinder.ai (#393, #394), Terms cover all live domains (#395), and token id format docs clarified (#383).
+6. **Constants hygiene**: inline ABIs moved into `core/constants` (#316), address checksum source-of-truth invariant (#315), Polymarket builder code hardcoded as a constant (#314).
+
+Fixed
+
+1. **HIP-4 order sizing** (#391, #415, #416): `usd_amount` minimum sizing corrected, `usd_amount` rejected on limit orders with an actionable error, and minimum-notional suggestions now survive lot-size rounding.
+2. **Polymarket reliability**: outcome label resolved from `token_id` on market orders (#419), batch submit retried on relayer registry races (#338), unknown `wallet_label` surfaced instead of a generic error (#341), and structured Gamma errors (#398).
+3. **Hyperliquid trigger orders** (#429): Non-reduce-only triggers allowed via an optional flag.
+4. **Runner daemon lock contention** (#401, #403): Dropped redundant SQLite lock (WAL serializes) and cleaned up daemon locking.
+5. **MCP server broken outside OpenCode instances** (#402).
+6. **Duplicate `/v1` in OpenCode client URLs** (#204).
+7. **Adapter audits**: Moonwell chain coverage (#361) and Morpho API field corrections (#355).
+
 ## [0.10.0] - 2026-03-31
 
 Added
