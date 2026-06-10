@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from eth_utils import to_checksum_address
+from loguru import logger
 
 from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.MerklClient import MERKL_CLIENT
@@ -342,6 +343,7 @@ class MorphoAdapter(BaseAdapter):
         chain_id: int,
         listed: bool | None = True,
         include_idle: bool = False,
+        require_state: bool = True,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
             morpho = await self._morpho_address(chain_id=int(chain_id))
@@ -350,7 +352,18 @@ class MorphoAdapter(BaseAdapter):
                 listed=listed,
                 include_idle=include_idle,
             )
-            out = [self._format_market(int(chain_id), morpho, m) for m in markets]
+            raw = [m for m in markets if isinstance(m, dict)]
+            # Morpho occasionally returns items with a null `state` (transient API
+            # degradation). Those have no usable APY, so drop them by default rather
+            # than emit a misleading 0% downstream.
+            kept = [m for m in raw if m.get("state")] if require_state else raw
+            if require_state and len(kept) != len(raw):
+                logger.warning(
+                    "Morpho get_all_markets: dropped {} market(s) with no state (chain {})",
+                    len(raw) - len(kept),
+                    chain_id,
+                )
+            out = [self._format_market(int(chain_id), morpho, m) for m in kept]
             return True, out
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -553,7 +566,11 @@ class MorphoAdapter(BaseAdapter):
                 "avg_net_apy": state.get("avgNetApy"),
                 "avg_net_apy_excluding_rewards": state.get("avgNetApyExcludingRewards"),
                 "reward_supply_apr": reward_supply_apr,
-                "apy_with_rewards": apy_float + reward_supply_apr,
+                # Never fabricate a 0% from a missing base apy -- keep it None so
+                # callers can distinguish "no data" from a genuine 0% yield.
+                "apy_with_rewards": (
+                    apy_float + reward_supply_apr if apy is not None else None
+                ),
                 "total_assets": int(state.get("totalAssets") or 0),
                 "total_assets_usd": state.get("totalAssetsUsd"),
                 "total_supply": state.get("totalSupply"),
@@ -597,7 +614,9 @@ class MorphoAdapter(BaseAdapter):
                 "avg_net_apy": vault.get("avgNetApy"),
                 "avg_net_apy_excluding_rewards": vault.get("avgNetApyExcludingRewards"),
                 "reward_supply_apr": reward_supply_apr,
-                "apy_with_rewards": apy_float + reward_supply_apr,
+                "apy_with_rewards": (
+                    apy_float + reward_supply_apr if apy is not None else None
+                ),
                 "total_assets": int(vault.get("totalAssets") or 0),
                 "total_assets_usd": vault.get("totalAssetsUsd"),
                 "total_supply": vault.get("totalSupply"),
@@ -620,20 +639,45 @@ class MorphoAdapter(BaseAdapter):
         chain_id: int,
         listed: bool | None = True,
         include_v2: bool = True,
+        require_state: bool = True,
     ) -> tuple[bool, list[dict[str, Any]] | str]:
         try:
             v1 = await MORPHO_CLIENT.get_all_vaults(
                 chain_id=int(chain_id), listed=listed
             )
+            # Drop items Morpho returned without usable APY data (transient null
+            # state / apy) so they don't get ranked at a fabricated 0% downstream.
+            v1_raw = [v for v in v1 if isinstance(v, dict)]
+            v1_kept = [v for v in v1_raw if v.get("state")] if require_state else v1_raw
             out: list[dict[str, Any]] = [
-                self._format_vault_v1(int(chain_id), v) for v in v1
+                self._format_vault_v1(int(chain_id), v) for v in v1_kept
             ]
+            dropped = len(v1_raw) - len(v1_kept)
 
             if include_v2:
                 v2 = await MORPHO_CLIENT.get_all_vault_v2s(
                     chain_id=int(chain_id), listed=listed
                 )
-                out.extend([self._format_vault_v2(int(chain_id), v) for v in v2])
+                # v2 vaults carry apy/netApy at the top level (no `state` wrapper).
+                v2_raw = [v for v in v2 if isinstance(v, dict)]
+                v2_kept = (
+                    [
+                        v
+                        for v in v2_raw
+                        if v.get("apy") is not None or v.get("netApy") is not None
+                    ]
+                    if require_state
+                    else v2_raw
+                )
+                out.extend([self._format_vault_v2(int(chain_id), v) for v in v2_kept])
+                dropped += len(v2_raw) - len(v2_kept)
+
+            if require_state and dropped:
+                logger.warning(
+                    "Morpho get_all_vaults: dropped {} vault(s) with no APY data (chain {})",
+                    dropped,
+                    chain_id,
+                )
 
             return True, out
         except Exception as exc:  # noqa: BLE001

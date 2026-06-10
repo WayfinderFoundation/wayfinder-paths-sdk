@@ -633,3 +633,108 @@ async def test_vault_deposit_approves_asset_and_calls_deposit(adapter):
     _args, encode_kwargs = mock_encode.await_args
     assert encode_kwargs["fn_name"] == "deposit"
     assert encode_kwargs["args"][0] == 123
+
+
+@pytest.mark.asyncio
+async def test_get_all_markets_drops_null_state(adapter):
+    """Markets Morpho returned with no state (transient degradation) are dropped."""
+    key = "0x" + "11" * 32
+    good = _mock_market(
+        key,
+        loan_addr="0x4200000000000000000000000000000000000006",
+        collateral_addr="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    )
+    bad = _mock_market(
+        "0x" + "22" * 32,
+        loan_addr="0x4200000000000000000000000000000000000006",
+        collateral_addr="0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    )
+    bad["state"] = None  # Morpho returned an item with no state snapshot
+
+    with patch(
+        "wayfinder_paths.adapters.morpho_adapter.adapter.MORPHO_CLIENT.get_all_markets",
+        new=AsyncMock(return_value=[good, bad]),
+    ):
+        ok, kept = await adapter.get_all_markets(chain_id=CHAIN_ID_BASE)
+        ok2, all_ = await adapter.get_all_markets(
+            chain_id=CHAIN_ID_BASE, require_state=False
+        )
+
+    assert ok and ok2
+    assert [m["marketId"] for m in kept] == [key]  # null-state market dropped
+    assert len(all_) == 2  # opt-out keeps everything
+
+
+def _vault_asset() -> dict:
+    return {
+        "address": "0x2222222222222222222222222222222222222222",
+        "symbol": "USDC",
+        "name": "USD Coin",
+        "decimals": 6,
+        "price": {"usd": 1.0},
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_all_vaults_drops_incomplete(adapter):
+    """v1 vaults with null state and v2 vaults with no apy are dropped; no fake 0%."""
+    asset = _vault_asset()
+    v1_good = {
+        "address": "0x1111111111111111111111111111111111111111",
+        "symbol": "v1good",
+        "listed": True,
+        "asset": asset,
+        "state": {
+            "apy": 0.03,
+            "netApy": 0.04,
+            "totalAssets": "1",
+            "totalAssetsUsd": 1.0,
+        },
+    }
+    v1_bad = {
+        "address": "0x1111111111111111111111111111111111111112",
+        "symbol": "v1bad",
+        "listed": True,
+        "asset": asset,
+        "state": None,  # transient -> would otherwise rank at fabricated 0%
+    }
+    v2_good = {
+        "address": "0x4444444444444444444444444444444444444444",
+        "type": "MetaMorphoV2",
+        "symbol": "v2good",
+        "listed": True,
+        "asset": asset,
+        "apy": 0.05,
+        "netApy": 0.06,
+    }
+    v2_bad = {
+        "address": "0x4444444444444444444444444444444444444445",
+        "type": "MetaMorphoV2",
+        "symbol": "v2bad",
+        "listed": True,
+        "asset": asset,
+        "apy": None,
+        "netApy": None,
+    }
+
+    with (
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.MORPHO_CLIENT.get_all_vaults",
+            new=AsyncMock(return_value=[v1_good, v1_bad]),
+        ),
+        patch(
+            "wayfinder_paths.adapters.morpho_adapter.adapter.MORPHO_CLIENT.get_all_vault_v2s",
+            new=AsyncMock(return_value=[v2_good, v2_bad]),
+        ),
+    ):
+        ok, kept = await adapter.get_all_vaults(chain_id=CHAIN_ID_BASE)
+        ok2, all_ = await adapter.get_all_vaults(
+            chain_id=CHAIN_ID_BASE, require_state=False
+        )
+
+    assert ok and ok2
+    kept_symbols = {v["symbol"] for v in kept}
+    assert kept_symbols == {"v1good", "v2good"}  # incomplete vaults dropped
+    # every kept vault has a real (non-None) APY -- never a fabricated 0%
+    assert all(v["state"]["apy_with_rewards"] is not None for v in kept)
+    assert len(all_) == 4  # opt-out keeps everything

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 from typing import Any, Required, TypedDict
 
 import httpx
@@ -54,8 +55,8 @@ class MorphoClient:
     async def _post(
         self, *, query: str, variables: dict[str, Any] | None = None
     ) -> Any:
-        max_retries = 3
-        delay_s = 0.25
+        max_retries = 4
+        delay_s = 0.5
 
         for attempt in range(max_retries):
             try:
@@ -87,8 +88,15 @@ class MorphoClient:
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
                 retryable = status in (429, 500, 502, 503, 504)
+                # Morpho's API also returns 400 under rate/load (not just for bad
+                # queries), so retry a 400 unless its body shows a genuine query error
+                # (validation/parse) -- retrying those would never succeed.
+                if status == 400 and not self._is_nonretryable_400(exc.response):
+                    retryable = True
                 if retryable and attempt < (max_retries - 1):
-                    await asyncio.sleep(delay_s * (2**attempt))
+                    await asyncio.sleep(
+                        delay_s * (2**attempt) + random.uniform(0, delay_s)
+                    )
                     continue
                 raise
             except (
@@ -109,6 +117,35 @@ class MorphoClient:
                 raise
 
         raise RuntimeError("Morpho API request failed")
+
+    @staticmethod
+    def _is_nonretryable_400(response: httpx.Response) -> bool:
+        """Whether a 400 is a genuine query error (validation/parse) -- retrying won't help.
+
+        Morpho returns HTTP 400 both for malformed queries AND for transient rate/load
+        conditions. Only the former is non-retryable; an unparseable body is treated as
+        transient (retry allowed).
+        """
+        try:
+            body = response.json()
+        except Exception:  # noqa: BLE001
+            return False
+        errors = body.get("errors") if isinstance(body, dict) else None
+        if not isinstance(errors, list):
+            return False
+        nonretryable = {
+            "GRAPHQL_VALIDATION_FAILED",
+            "GRAPHQL_PARSE_FAILED",
+            "BAD_USER_INPUT",
+        }
+        for error in errors:
+            if not isinstance(error, dict):
+                continue
+            status = str(error.get("status") or "").upper()
+            code = str((error.get("extensions") or {}).get("code") or "").upper()
+            if status in nonretryable or code in nonretryable:
+                return True
+        return False
 
     @staticmethod
     def _is_retryable_graphql_error(errors: Any) -> bool:
