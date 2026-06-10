@@ -94,7 +94,9 @@ class MorphoClient:
                 if status == 400 and not self._is_nonretryable_400(exc.response):
                     retryable = True
                 if retryable and attempt < (max_retries - 1):
-                    await asyncio.sleep(delay_s * (2**attempt) + random.uniform(0, delay_s))
+                    await asyncio.sleep(
+                        delay_s * (2**attempt) + random.uniform(0, delay_s)
+                    )
                     continue
                 raise
             except (

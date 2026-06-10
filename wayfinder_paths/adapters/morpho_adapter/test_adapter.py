@@ -684,7 +684,12 @@ async def test_get_all_vaults_drops_incomplete(adapter):
         "symbol": "v1good",
         "listed": True,
         "asset": asset,
-        "state": {"apy": 0.03, "netApy": 0.04, "totalAssets": "1", "totalAssetsUsd": 1.0},
+        "state": {
+            "apy": 0.03,
+            "netApy": 0.04,
+            "totalAssets": "1",
+            "totalAssetsUsd": 1.0,
+        },
     }
     v1_bad = {
         "address": "0x1111111111111111111111111111111111111112",

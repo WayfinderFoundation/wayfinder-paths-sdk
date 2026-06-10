@@ -669,9 +669,7 @@ class MorphoAdapter(BaseAdapter):
                     if require_state
                     else v2_raw
                 )
-                out.extend(
-                    [self._format_vault_v2(int(chain_id), v) for v in v2_kept]
-                )
+                out.extend([self._format_vault_v2(int(chain_id), v) for v in v2_kept])
                 dropped += len(v2_raw) - len(v2_kept)
 
             if require_state and dropped:
