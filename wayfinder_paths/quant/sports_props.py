@@ -305,6 +305,39 @@ def prop_value(
     )
 
 
+@dataclass
+class MarketEdge:
+    side: str  # "YES" | "NO"
+    model_p: float  # model probability of the chosen side
+    market_price: float  # executable prediction-market price of the chosen side (0..1)
+    edge: float  # model_p - market_price
+    ev: float  # expected profit per $1 staked
+    kelly: float  # fractional Kelly stake (>=0)
+
+
+def market_edge(
+    model_p_yes: float, market_price_yes: float, *, kelly_fraction: float = 0.25
+) -> MarketEdge:
+    """Edge of a model probability against an *executable* prediction-market (Polymarket) price.
+
+    Unlike a sportsbook line, a Polymarket YES price IS the implied probability AND the cost to
+    buy a $1-payout share, so the edge is simply ``model_p - price`` and the payout is
+    ``(1 - price) / price``. Picks YES or NO by whichever side the model favors over the market.
+    """
+    p_yes = max(0.0, min(1.0, model_p_yes))
+    q_yes = max(1e-6, min(1.0 - 1e-6, market_price_yes))
+    yes_edge = p_yes - q_yes
+    no_edge = (1.0 - p_yes) - (1.0 - q_yes)
+    if yes_edge >= no_edge:
+        side, p, price = "YES", p_yes, q_yes
+    else:
+        side, p, price = "NO", 1.0 - p_yes, 1.0 - q_yes
+    payout = (1.0 - price) / price  # net profit per $1 staked
+    ev = p * payout - (1.0 - p)
+    kelly = max(0.0, (p * (payout + 1.0) - 1.0) / payout) * kelly_fraction
+    return MarketEdge(side, p, price, p - price, ev, kelly)
+
+
 # ── orchestration ────────────────────────────────────────────────────────────
 
 

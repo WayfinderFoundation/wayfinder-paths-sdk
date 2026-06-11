@@ -144,3 +144,27 @@ def test_score_prop_unknown_type_returns_none():
         )
         is None
     )
+
+
+# ── executable edge vs a Polymarket price ────────────────────────────────────
+
+
+def test_market_edge_buys_yes_when_model_above_price():
+    e = sp.market_edge(0.65, 0.50)
+    assert e.side == "YES"
+    assert e.edge == pytest.approx(0.15)
+    assert e.ev > 0 and e.kelly > 0
+
+
+def test_market_edge_flips_to_no_when_model_below_price():
+    e = sp.market_edge(0.30, 0.50)
+    assert e.side == "NO"
+    assert e.model_p == pytest.approx(0.70)
+    assert e.market_price == pytest.approx(0.50)
+    assert e.edge == pytest.approx(0.20)
+
+
+def test_market_edge_zero_ev_at_fair_price():
+    e = sp.market_edge(0.60, 0.60)
+    assert e.edge == pytest.approx(0.0)
+    assert e.ev == pytest.approx(0.0, abs=1e-9)

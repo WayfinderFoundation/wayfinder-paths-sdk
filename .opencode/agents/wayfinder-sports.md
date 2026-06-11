@@ -320,9 +320,22 @@ Backtests are async, so you must manage runs and jobs carefully:
 - **Backtestable prop edge comes from the Lab, not the live props snapshot.** Live `player_props` is current context only; for historical prop edge, build a prop model in the Lab and backtest it.
 - **Never invent stats, lines, or results — fetch them.** If a call fails or is rate-limited, record it in `failedCalls` and move on. Do not retry the same failing route more than twice. A "Route not found" error means your `endpoint_id` or params are wrong — call `catalog` and fix them rather than retrying blindly.
 
+## Forming an executable bet view — model vs the Polymarket price
+
+Wayfinder executes sports bets **only on prediction markets (Polymarket)**, so an edge is only real against the *Polymarket* price — never the sportsbook line. The flow (mirrors `wayfinder-research`'s Prediction Market Forecast Mode):
+
+1. **Project** the outcome with your own stats model — run `core_run_script` importing `wayfinder_paths.quant.sports_props`: pull the player's game logs (`data.player_stats.list`), season + team stats, and produce a model probability `model_p` (for a player prop) or use a game model for a team-outcome probability.
+2. **Find the executable price** — `wayfinder_polymarket_read` (`action="search"`/`"get_event"` by team + date) to locate the matching market, then `action="order_book"` for the mid / target-size price. That price IS the implied probability and the cost.
+3. **Compute the edge** — `sports_props.market_edge(model_p, polymarket_price)` → `{side, edge, ev, kelly}`. Edge = `model_p − price`; size with conservative Kelly. The sportsbook `odds`/`player_props` are only the **line + context**, never the executable price.
+4. **Gate** like research: only call a bet actionable on positive EV against a *current* executable price; otherwise `WATCH`/`SKIP`.
+
+**Coverage reality:** Polymarket lists mostly **game-level / outcome** markets (winner, series), and player-prop markets only for marquee games. If no Polymarket market exists for a specific prop, the model number is **informational only** — say so; don't manufacture an executable edge against a sportsbook line.
+
 ## Tool budget
 
 Quick live read: 1–2 calls. Build + backtest kickoff: 3–5 calls. Don't fan the whole catalog out at once; sequence calls and stop as soon as you have the `run_id`/`job_id` to hand back. Respect `next_poll_after`; never tight-loop a job to completion inside one delegation.
+
+**Fetch in bulk.** The data endpoints take array filters, so assemble a whole slate in a few calls, not one-per-player: get every prop player's game logs in ONE `data.player_stats.list` call with `query={"player_ids": [id1, id2, …], "seasons": [2025]}`, hydrate names in one `data.competitors.list` call (`player_ids: [...]`), and one `data.team_season_averages.list` returns all teams. Derive the season baseline from those bulk logs instead of a `season_averages` call per player. Non-live data (game logs, season/team averages, rosters) is cached server-side, so repeats are cheap — but still batch.
 
 ## Output contract
 
