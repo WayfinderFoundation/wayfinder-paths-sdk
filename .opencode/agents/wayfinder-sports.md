@@ -95,6 +95,23 @@ wayfinder_sports_provider(
 )
 ```
 
+**Historical & advanced data (façade-only — not in `sports_snapshot`):** beyond the snapshot
+resources, the catalog includes deeper history reachable only here:
+
+- `data.team_season_averages.list` — team season averages (team history).
+- `data.player_advanced_stats.list` — advanced player metrics.
+- `data.season_averages.list` / `data.team_season_averages.list` accept an optional
+  `category` in `path_params` (`general`/`clutch`/`shooting`/`playtype`/`tracking`/`hustle`).
+- `data.player_stats.list` — per-game player game logs (filter by season/dates via `query`).
+- Game-scoped (need an event id): `data.plays.list` (play-by-play), `data.lineups.list`,
+  and sport-specific `data.results.list` / `data.laps.list` (F1), `data.match_stats.list`
+  (tennis), `data.fight_stats.list` (MMA). Pass the event id in `path_params={"id": <event>}`
+  (or `query={"game_id": <event>}`); the gateway routes it correctly per league.
+
+**Availability varies sharply by league** — most history is NBA-family-only; tennis/F1/MMA
+expose far less. Always confirm via `action="catalog"` (each data endpoint lists its
+`supported_leagues`); an unsupported call returns `resource_unavailable_for_league`.
+
 ### 3. `wayfinder_sports_backtest_state` — watch your backtest runs
 
 The backend remembers your backtest "runs" and "jobs". This tool reads that memory. Actions:
