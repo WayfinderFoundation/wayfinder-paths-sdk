@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,14 @@ def restore_global_config() -> None:
     original = copy.deepcopy(config.CONFIG)
     yield
     config.set_config(original)
+
+
+def _write_api_key_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # get_api_key() reads fresh from config.json on every call, so the key
+    # must exist on disk — set_config() alone is not enough.
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"system": {"api_key": "wk_test"}}))
+    monkeypatch.setenv("WAYFINDER_CONFIG_PATH", str(cfg_path))
 
 
 def test_resolve_config_path_defaults_to_repo_root(
@@ -70,7 +79,9 @@ def test_api_base_url_defaults_to_wayfinder_api(restore_global_config: None) -> 
 async def test_web3s_fallback_to_rpc_proxy(
     restore_global_config: None,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    _write_api_key_config(tmp_path, monkeypatch)
     config.set_config(
         {
             "system": {
@@ -103,7 +114,9 @@ async def test_web3s_fallback_to_rpc_proxy(
 async def test_user_rpcs_override_proxy(
     restore_global_config: None,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    _write_api_key_config(tmp_path, monkeypatch)
     config.set_config(
         {
             "system": {
@@ -134,7 +147,9 @@ async def test_user_rpcs_override_proxy(
 async def test_web3s_uses_indexed_rpc_proxy_pool(
     restore_global_config: None,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    _write_api_key_config(tmp_path, monkeypatch)
     config.set_config(
         {
             "system": {
