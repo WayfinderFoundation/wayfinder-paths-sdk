@@ -41,13 +41,25 @@ Returns small, cleaned-up "cards" plus an `asOf` timestamp (the server's current
 
 | action | what it returns | required args |
 | --- | --- | --- |
-| `scoreboard` | games / schedule for a sport (optionally a date) | `sport` (optional `date`) |
-| `game` | one game by id | `sport`, `game_id` |
+| `scoreboard` | events / schedule (games · matches · MMA events · F1 sessions) | `sport` (optional `date`) |
+| `game` | one event by id | `sport`, `game_id` |
+| `standings` | standings / rankings | `sport` |
+| `team_lookup` | find teams / clubs / constructors by name | `sport`, `search` |
+| `player_lookup` | find competitors by name (players · fighters · drivers) | `sport`, `search` |
+| `injuries` | injury / availability report | `sport` |
+| `season_averages` | season averages per competitor | `sport` |
+| `stats` | per-event competitor stats | `sport` |
+| `leaders` | statistical leaders | `sport` |
 | `odds` | game betting odds (spread / moneyline / total) | `sport`, and `game_id` OR `date` |
 | `player_props` | player prop lines (points/rebounds/etc.) for a game | `sport`, `game_id` |
-| `injuries` | injury / status report | `sport` |
-| `team_lookup` | find teams by name | `sport`, `search` |
-| `player_lookup` | find players by name | `sport`, `search` |
+
+**Resources are canonical across leagues** — `player_lookup` returns players for the NBA,
+fighters for MMA, drivers for F1; `scoreboard` returns games, matches, events, or sessions
+depending on the sport. **Availability varies by league:** not every sport has every resource
+(tennis has no `season_averages`/`teams`; some leagues have no betting). An unsupported action
+returns `resource_unavailable_for_league` with the leagues that *do* support it — when unsure,
+call `wayfinder_sports_provider(action="catalog")` (each data endpoint lists `supported_leagues`)
+or `wayfinder_sports_backtest_state(action="provider_status")`.
 
 Examples (call them like this):
 

@@ -62,9 +62,16 @@ async def sports_snapshot(
 ) -> dict[str, Any]:
     """Live sports snapshot (bounded reads, normalized cards).
 
+    Resources are canonical across leagues: player_lookup returns players, fighters, or
+    drivers depending on the sport; scoreboard returns games, matches, events, or sessions.
+    Availability varies by league (e.g. season_averages/standings exist for NBA but not
+    tennis) -- an unsupported action returns code `resource_unavailable_for_league` with the
+    leagues that do support it.
+
     Args:
-        action: scoreboard | game | odds | player_props | injuries | team_lookup | player_lookup.
-        sport: League code, e.g. nba, nfl, mlb, nhl, epl, laliga, f1, ... (all data leagues).
+        action: scoreboard | game | standings | team_lookup | player_lookup | injuries |
+            season_averages | stats | leaders | odds | player_props.
+        sport: League code, e.g. nba, nfl, mlb, nhl, epl, mma, f1, atp, pga, ...
         game_id: Required for action=game and player_props; for odds, pass game_id or date.
         search: Name query for team_lookup / player_lookup.
         date: Optional ISO date (YYYY-MM-DD) for scoreboard/odds.
