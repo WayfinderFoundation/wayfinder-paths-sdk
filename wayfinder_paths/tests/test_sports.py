@@ -222,7 +222,7 @@ def test_research_agent_may_delegate_to_sports() -> None:
 def test_quant_agent_has_no_direct_sports_access() -> None:
     fm = _frontmatter(REPO / ".opencode" / "agents" / "wayfinder-quant.md")
     perm = fm["permission"]
-    # No direct BDL: no sports tools, and it cannot delegate to wayfinder-sports.
+    # No direct provider access: no sports tools, and no delegation to wayfinder-sports.
     assert not any("sports" in str(k) for k in perm)
     assert perm["task"] == {"*": "deny"}
     # ...but it knows how to consume a handed-over sports/backtest context pack.
