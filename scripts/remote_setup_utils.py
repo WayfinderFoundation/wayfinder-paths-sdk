@@ -80,7 +80,7 @@ def ensure_config(
     system = config.get("system")
     if not isinstance(system, dict):
         system = {}
-    if api_key:
+    if api_key and not system.get("api_key"):
         system["api_key"] = api_key
     system.setdefault("api_base_url", "https://wayfinder.ai/api/v1")
     config["system"] = system
