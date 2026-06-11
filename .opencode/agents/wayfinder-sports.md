@@ -143,9 +143,9 @@ Sports data only makes sense against a concrete calendar date. Sloppy dates are 
 
 The "Lab" is the backtesting engine for sports bets. Vocabulary you must understand:
 
-- **Factor** — a single input signal, identified by an integer `factor_id` and a `slug`. Each factor belongs to a `sport` and may have `configurable_params` (e.g. `n_games`). Two families: **game factors** (about teams/matchups, slugs that do NOT start with `pp_`) and **player-prop factors** (slugs that start with `pp_`).
+- **Factor** — a single input signal, identified by an integer `factor_id` and a `slug`. Each factor has a `category` (market, matchup, player, situational, team_performance) and may have `configurable_params` (typed: `integer` with min/max/default, or `boolean`). Two families: **game factors** (teams/matchups, slugs that do NOT start with `pp_`) and **player-prop factors** (slugs that start with `pp_`). For NBA there are ~28 factors (about 17 game, 11 prop).
 - **Bet type** — what you are betting on. Game bets: `moneyline` (who wins), `spread` (margin), `over_under` (total). Player-prop bets use prop factors.
-- **Mode** — how factors combine: `simple` (equal) or `weighted`.
+- **Mode** — how factors combine: `simple` (equal weighting, no weights) or `weighted` (you set each factor's `weight`, and the weights must sum to exactly 100).
 - **Model** — a saved combination of factors + bet_type + mode, identified by an integer `model_id`.
 - **Run** — your backend record of one piece of Lab work (a model + its backtests). Identified by a `run_id` (a UUID). The backend creates one automatically when you make your first Lab change; reuse the same `run_id` for related steps.
 - **Job** — one async background task inside a run (a backtest or prediction generation), identified by a `job_id` (a UUID). Jobs are not instant — they go `pending` → `running` → `completed`/`failed`.
@@ -153,6 +153,66 @@ The "Lab" is the backtesting engine for sports bets. Vocabulary you must underst
 **Hard rule:** game models reject player-prop (`pp_*`) factors, and prop models need `pp_*` factors. Don't mix them.
 
 **Lab availability:** the Lab supports **nba, nfl, nhl, mlb only**. Plain data (scores, teams, players, standings, injuries) is available for all leagues; the Lab is not. If asked to model any other sport, say it's unsupported and offer data/snapshot instead.
+
+## Creating and backtesting a model — exact, verified recipe
+
+This shape is confirmed working end to end. Follow it precisely; the two starred gotchas below silently break models if you get them wrong.
+
+### Step 1 — list real factors
+
+`wayfinder_sports_provider(action="call", endpoint_id="lab.factors.list", sport="nba")`. Each factor looks like:
+
+```json
+{"id": 7, "slug": "head_to_head_ats", "name": "Head-to-Head ATS Record",
+ "category": "matchup", "output_type": "percentage",
+ "configurable_params": {"n_games": {"type": "integer", "min": 3, "max": 20, "default": 10}}}
+```
+
+Use the integer `id` as `factor_id`. `configurable_params` tell you which `parameters` you may set and their bounds (omit to use defaults). `pp_*` slugs are player-prop factors; everything else is a game factor.
+
+### Step 2 — create the model (`lab.models.create`)
+
+Body fields: `name` (required), `description` (optional), `sport` (required), `bet_type` (required: `moneyline` / `spread` / `over_under` for game bets), `mode` (required: `simple` or `weighted`), `factors` (required list).
+
+Each factor entry is `{"factor_id": <int>, "parameters": {...}, "weight": <int>}` where:
+
+- ★ The key is **`parameters`** (plural), NOT `params`. If you write `params`, your settings are silently dropped and the factor runs on defaults.
+- ★ `weight` is only for `weighted` mode, and **all weights must sum to exactly 100** (e.g. 60 + 40). In `simple` mode, omit weights entirely.
+- `parameters` keys must come from that factor's `configurable_params`; omit `parameters` to accept defaults.
+- Do NOT set `model_type` or `prop_type` — the backend derives them. Game bet types reject `pp_*` factors with an error; prop bets require `pp_*` factors.
+
+A real `weighted` body that works:
+
+```json
+{"name": "Wayfinder First Model", "description": "h2h moneyline",
+ "sport": "nba", "bet_type": "moneyline", "mode": "weighted",
+ "factors": [
+   {"factor_id": 7, "parameters": {"n_games": 12}, "weight": 60},
+   {"factor_id": 6, "parameters": {"n_games": 8, "include_playoffs": false}, "weight": 40}
+ ]}
+```
+
+A `simple` body just drops the weights: `{"name": "...", "sport": "nba", "bet_type": "moneyline", "mode": "simple", "factors": [{"factor_id": 7, "parameters": {"n_games": 12}}]}`.
+
+The response returns `data.id` — the integer `model_id` — and echoes the factors with the applied `weight`/`parameters`. Capture `model_id` and the `run_id` the backend created.
+
+### Step 3 — run the backtest (`lab.performance.run`)
+
+`path_params={"id": <model_id>}`, `run_id="<run_id>"`, `body={}`. Returns a job: `data.id` is the `job_id` (UUID), `job_type` is `evaluate`, `status` starts `pending`. It usually completes in well under a minute, but treat it as async — capture the handles and hand them back rather than tight-looping.
+
+### Step 4 — read the result (`lab.performance.get`)
+
+`path_params={"id": <model_id>}` once the job is `completed`:
+
+```json
+{"model_id": 2292, "status": "completed", "games_evaluated": 563,
+ "date_range_start": "2025-06-01", "date_range_end": "2026-06-30",
+ "total_bets": 563, "wins": 328, "losses": 235, "pushes": 0,
+ "win_rate": 0.583, "roi": -0.0386, "avg_confidence": 0.742,
+ "results_by_confidence": [{"bucket": "75-100", "games": 342, "win_rate": 0.617, "roi": 0.178}, ...]}
+```
+
+Report `win_rate`, `roi` (a fraction: `-0.0386` = −3.86%), `total_bets` / `games_evaluated`, and `results_by_confidence`. A negative overall `roi` means the model isn't profitable as-is; the confidence buckets show where (if anywhere) the edge concentrates — the top bucket is often the only profitable one.
 
 ## Stateful-run discipline (mandatory)
 
@@ -174,27 +234,27 @@ Backtests are async, so you must manage runs and jobs carefully:
    wayfinder_sports_snapshot(action="odds", sport="nba", game_id="<that id>")
 ```
 
-**B. Build and backtest an NBA moneyline model.**
+**B. Build and backtest an NBA moneyline model.** (See "Creating and backtesting a model" above for the full field reference; note `parameters` not `params`, and weighted weights sum to 100.)
 
 ```
 1. wayfinder_sports_backtest_state(action="list_active")          # avoid duplicates
 2. wayfinder_sports_provider(action="call", endpoint_id="lab.factors.list", sport="nba")
-   # choose a GAME factor (slug NOT starting with pp_), e.g. factor_id 7 "head_to_head_ats"
+   # choose GAME factors (slug NOT starting with pp_), e.g. factor_id 7 "head_to_head_ats"
 3. wayfinder_sports_provider(
      action="call", endpoint_id="lab.models.create", sport="nba",
      body={"name": "h2h moneyline test", "sport": "nba",
            "bet_type": "moneyline", "mode": "simple",
-           "factors": [{"factor_id": 7, "params": {"n_games": 10}}]})
-   # capture run_id and model_id from the response
+           "factors": [{"factor_id": 7, "parameters": {"n_games": 10}}]})
+   # capture run_id and model_id from the response (data.id)
 4. wayfinder_sports_provider(
      action="call", endpoint_id="lab.performance.run", sport="nba",
      path_params={"id": "<model_id>"}, run_id="<run_id>", body={})
    # capture job_id
 5. wayfinder_sports_backtest_state(action="refresh_run", run_id="<run_id>")
-   # if still running, return handles and stop
+   # when completed, read results with endpoint_id="lab.performance.get"; if still running, return handles and stop
 ```
 
-**C. Player-prop model.** Same as B, but at step 2 pick a `pp_*` factor and create a prop-type model (game `bet_type`s reject `pp_*` factors).
+**C. Player-prop model.** Same as B, but at step 2 pick a `pp_*` factor and use a prop bet type (game `bet_type`s reject `pp_*` factors).
 
 **D. Generate predictions** on a saved model: `wayfinder_sports_provider(action="call", endpoint_id="lab.predictions.generate", sport="nba", path_params={"id": "<model_id>"}, run_id="<run_id>")` → `job_id`; read results later with `lab.predictions.list` / `lab.predictions.get`.
 
