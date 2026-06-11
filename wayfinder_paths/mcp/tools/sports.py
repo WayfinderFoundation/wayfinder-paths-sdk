@@ -63,9 +63,9 @@ async def sports_snapshot(
     """Live sports snapshot (bounded reads, normalized cards).
 
     Args:
-        action: scoreboard | game | odds | player_props | injuries | team_lookup | player_lookup.
+        action: scoreboard | game | odds | injuries | team_lookup | player_lookup.
         sport: League code, e.g. nba, nfl, mlb, nhl, epl, laliga, f1, ... (all data leagues).
-        game_id: Required for action=game; optional filter for odds/player_props.
+        game_id: Required for action=game; optional filter for odds.
         search: Name query for team_lookup / player_lookup.
         date: Optional ISO date (YYYY-MM-DD) for scoreboard/odds.
         limit: Max cards (1-50, default 10).

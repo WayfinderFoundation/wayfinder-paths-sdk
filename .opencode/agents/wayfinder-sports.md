@@ -29,7 +29,7 @@ The sports surface is **provider-agnostic**. Never name, assume, or hardcode a s
 
 ## Tools
 
-- `wayfinder_sports_snapshot` — bounded live reads: `scoreboard | game | odds | player_props | injuries | team_lookup | player_lookup`. Returns normalized cards with `asOf`, `provider`, and `warnings`. Use this for quick live context.
+- `wayfinder_sports_snapshot` — bounded live reads: `scoreboard | game | odds | injuries | team_lookup | player_lookup`. Returns normalized cards with `asOf`, `provider`, and `warnings`. Use this for quick live context.
 - `wayfinder_sports_provider` — the full facade. `action="catalog"` lists allowlisted `endpoint_id`s; `action="call"` invokes one. Data endpoints cover all leagues; Lab endpoints (models, performance, predictions, jobs) are gated to **nba, nfl, nhl, mlb**. You pass an allowlisted `endpoint_id` plus `sport`, `path_params`, `query`, `body` — never a raw URL.
 - `wayfinder_sports_backtest_state` — read/monitor canonical run state: `list_active | list_recent | get_run | refresh_run | refresh_all_active | events | provider_status`.
 - `wayfinder_polymarket_read` — read-only prediction-market data for executable priors.
@@ -47,9 +47,9 @@ Backtests run as **async provider jobs**. The backend is the source of truth for
 
 ## Interpretation rules
 
-- **Odds are context, not an executable price.** Sportsbook odds and the `odds`/`player_props` snapshots describe the market; they are not a tradeable quote.
+- **Odds are context, not an executable price.** Sportsbook odds and the `odds` snapshot describe the market; they are not a tradeable quote.
 - **The executable prior is the prediction-market order book** (Polymarket/Kalshi via `polymarket_read`), not sportsbook odds. When forming a betting view, anchor on the order book / mid, and treat sports odds as supporting context.
-- **Raw player props are live-only.** They are point-in-time context, not a historical series — never treat a props snapshot as backtestable history. Historical/backtest signal comes from the Lab (models/performance/predictions).
+- **Player props live in the Lab, not the live feed.** There is no live player-props snapshot. Prop signal comes from the Lab: build a prop-type model (the `pp_*` / player-prop factors require a prop bet model, not a game model) and backtest it via performance/predictions. Game models (moneyline/spread/over_under) reject `pp_*` factors.
 - **Never invent stats, lines, or results.** Fetch them. If a call fails or is rate-limited, record it and continue; do not retry a failing route more than twice.
 
 ## Output contract
