@@ -206,6 +206,19 @@ def test_primary_agent_gets_reads_not_facade() -> None:
     assert "wayfinder_sports_provider" not in perm
 
 
+def test_research_agent_may_delegate_to_sports() -> None:
+    fm = _frontmatter(REPO / ".opencode" / "agents" / "wayfinder-research.md")
+    task = fm["permission"]["task"]
+    # Allow must come after the catch-all deny (last matching rule wins in OpenCode).
+    assert list(task.keys()).index("wayfinder-sports") > list(task.keys()).index("*")
+    assert task["*"] == "deny"
+    assert task["wayfinder-sports"] == "allow"
+    # ...but research must NOT hold the sports tools directly (it delegates).
+    assert "wayfinder_sports_provider" not in fm["permission"]
+    body = (REPO / ".opencode" / "agents" / "wayfinder-research.md").read_text("utf-8")
+    assert "wayfinder-sports" in body
+
+
 def test_sports_subagent_is_hidden_with_full_facade() -> None:
     fm = _frontmatter(REPO / ".opencode" / "agents" / "wayfinder-sports.md")
     assert fm["mode"] == "subagent"
