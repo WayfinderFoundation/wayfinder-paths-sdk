@@ -8,6 +8,7 @@ permission:
     wayfinder-research: allow
     wayfinder-visual: allow
     wayfinder-quant: allow
+    wayfinder-sports: allow
     scout: deny
     general: deny
 
@@ -51,6 +52,11 @@ permission:
   wayfinder_notification_send: allow
   # research_* — delegated to wayfinder-research subagent
   wayfinder_research_*: deny
+  # sports_* — primary gets bounded live reads + run monitoring; the full provider
+  # facade (wayfinder_sports_provider) is delegated to the hidden wayfinder-sports subagent
+  wayfinder_sports_*: deny
+  wayfinder_sports_snapshot: allow
+  wayfinder_sports_backtest_state: allow
 ---
 
 # Wayfinder

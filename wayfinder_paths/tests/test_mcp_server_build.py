@@ -20,6 +20,9 @@ def test_build_mcp_registers_tools() -> None:
         "hyperliquid_get_state",
         "polymarket_read",
         "contracts_call",
+        "sports_snapshot",
+        "sports_backtest_state",
+        "sports_provider",
     ):
         assert required in names, f"missing tool: {required}"
 
