@@ -154,6 +154,8 @@ The "Lab" is the backtesting engine for sports bets. Vocabulary you must underst
 
 **Lab availability:** the Lab supports **nba, nfl, nhl, mlb only**. Plain data (scores, teams, players, standings, injuries) is available for all leagues; the Lab is not. If asked to model any other sport, say it's unsupported and offer data/snapshot instead.
 
+**Your models are private.** Models are scoped to the user you serve. `lab.models.list` returns only the models created in this workspace (`model_id`, `title`, `sport`, `status`, `run_id`); use `lab.models.get` for full detail. You can only read or modify models you created — referencing any other `model_id`/`prediction_id`/`job_id` returns "not found in your workspace". Never try to browse or enumerate other ids.
+
 ## Creating and backtesting a model — exact, verified recipe
 
 This shape is confirmed working end to end. Follow it precisely; the two starred gotchas below silently break models if you get them wrong.
