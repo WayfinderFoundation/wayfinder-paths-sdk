@@ -96,21 +96,39 @@ wayfinder_sports_provider(
 ```
 
 **Historical & advanced data (façade-only — not in `sports_snapshot`):** beyond the snapshot
-resources, the catalog includes deeper history reachable only here:
+resources, the catalog includes much deeper data reachable only here. The big families:
 
-- `data.team_season_averages.list` — team season averages (team history).
-- `data.player_advanced_stats.list` — advanced player metrics.
-- `data.season_averages.list` / `data.team_season_averages.list` accept an optional
-  `category` in `path_params` (`general`/`clutch`/`shooting`/`playtype`/`tracking`/`hustle`).
-- `data.player_stats.list` — per-game player game logs (filter by season/dates via `query`).
-- Game-scoped (need an event id): `data.plays.list` (play-by-play), `data.lineups.list`,
-  and sport-specific `data.results.list` / `data.laps.list` (F1), `data.match_stats.list`
-  (tennis), `data.fight_stats.list` (MMA). Pass the event id in `path_params={"id": <event>}`
-  (or `query={"game_id": <event>}`); the gateway routes it correctly per league.
+- **Game logs & season stats**: `data.player_stats.list` (per-game logs; filter by
+  season/dates/player_ids via `query`), `data.player_season_stats.list`,
+  `data.team_stats.list` (team per-game), `data.team_season_stats.list` (team history),
+  `data.season_averages.list` / `data.team_season_averages.list` (NBA-family averages).
+- **Advanced**: `data.player_advanced_stats.list`. Category-capable endpoints take an optional
+  `category` in `path_params`: season/team averages accept
+  `general/clutch/shooting/playtype/tracking/hustle/defense/shotdashboard`; NFL advanced accepts
+  `rushing/passing/receiving`.
+- **Matchups & careers**: `data.matchups.list` — tennis head-to-head AND MLB batter-vs-pitcher
+  (great prop context); `data.career_stats.list` (tennis careers).
+- **Soccer analytics**: `data.shots.list` (**xG shot maps**), `data.match_events.list`
+  (goals/cards/subs), `data.momentum.list`, `data.pregame_forms.list` (recent form),
+  `data.rosters.list` (also NFL depth-chart rosters — per-team: pass `path_params={"team_id": ...}`).
+- **Game-scoped** (need an event id): `data.plays.list` (play-by-play), `data.lineups.list`,
+  `data.match_stats.list` (tennis), `data.fight_stats.list` (MMA), `data.laps.list` (F1).
+  Pass the event id in `path_params={"id": <event>}` (or `query={"game_id": <event>}`).
+- **Motorsport**: `data.qualifying.list`, `data.pit_stops.list`, `data.results.list`
+  (F1 session results / PGA tournament results / MMA fight results), `data.team_standings.list`
+  (constructors), `data.venues.list` (circuits/stadiums/courses).
+- **Golf**: `data.round_stats.list` (strokes-gained round stats), plus results/futures.
+- **Baseball props depth**: `data.splits.list`, `data.plate_appearances.list`,
+  `data.pitcher_pitch_stats.list` / `data.hitter_pitch_stats.list` (pitch-type breakdowns).
+- **College**: `data.conferences.list`, `data.bracket.list` (March Madness).
+- **Rosters/contracts extras**: `data.competitors_active.list` (current rosters only),
+  `data.player_contracts.list` / `data.team_contracts.list` (salaries — may be plan-gated),
+  `data.shot_locations.list` (WNBA shooting zones). Some per-player/per-team resources are
+  id-scoped — pass `path_params={"player_id": ...}` or `{"team_id": ...}` when the error says so.
 
-**Availability varies sharply by league** — most history is NBA-family-only; tennis/F1/MMA
-expose far less. Always confirm via `action="catalog"` (each data endpoint lists its
-`supported_leagues`); an unsupported call returns `resource_unavailable_for_league`.
+**Availability varies sharply by league** — each league supports a different subset. Always
+confirm via `action="catalog"` (each data endpoint lists its `supported_leagues`); an
+unsupported call returns `resource_unavailable_for_league` with the leagues that DO support it.
 
 ### 3. `wayfinder_sports_backtest_state` — watch your backtest runs
 
@@ -166,7 +184,7 @@ Sports data only makes sense against a concrete calendar date. Sloppy dates are 
 
 **Live vs. historical:** Snapshots (`scoreboard`, `odds`, `player_props`, `injuries`) are about the **current** day's live state. Backtests in the Lab work over **historical** date ranges — when a Lab call accepts a date range, pass real past dates within the sport's seasons. Do not backtest over a window with no played games.
 
-**Betting data freshness:** Live odds and player props exist mainly for upcoming/in-progress games and are most complete for **NBA**. For a finished game or an off-season date, expect empty odds/props.
+**Betting data freshness:** Live odds and player props exist mainly for upcoming/in-progress games. Odds cover most leagues; player props cover the majors (NBA/NFL/MLB/NHL/WNBA + big soccer); college/MMA/tennis have odds only; esports have none. **Outright/futures odds** (championship winner etc.) exist for F1, UCL, World Cup, and PGA via `data.futures.list` on the façade. For a finished game or an off-season date, expect empty odds/props. The catalog's `supported_leagues` is the source of truth.
 
 ## What the Lab is (plain-language background)
 
@@ -227,6 +245,8 @@ A `simple` body just drops the weights: `{"name": "...", "sport": "nba", "bet_ty
 
 The response returns `data.id` — the integer `model_id` — and echoes the factors with the applied `weight`/`parameters`. Capture `model_id` and the `run_id` the backend created.
 
+To modify a saved model, `lab.models.update` **replaces** it (PUT semantics) — send the complete body (name/sport/bet_type/mode/full factors list), not a partial patch.
+
 ### Step 3 — run the backtest (`lab.performance.run`)
 
 `path_params={"id": <model_id>}`, `run_id="<run_id>"`, `body={}`. Returns a job: `data.id` is the `job_id` (UUID), `job_type` is `evaluate`, `status` starts `pending`. It usually completes in well under a minute, but treat it as async — capture the handles and hand them back rather than tight-looping.
@@ -272,7 +292,7 @@ Each prediction looks like:
 Backtests are async, so you must manage runs and jobs carefully:
 
 1. **Every Lab change belongs to a run.** Creating a model, running a backtest, or generating predictions either creates a `run_id` (if you didn't pass one) or attaches to the `run_id` you pass. Always capture the returned `run_id` and reuse it for the next related step.
-2. **Check before you start.** Call `wayfinder_sports_backtest_state(action="list_active")` before kicking off a new backtest so you don't start a duplicate.
+2. **Check before you start.** Call `wayfinder_sports_backtest_state(action="list_active")` before kicking off a new backtest so you don't start a duplicate. (For one specific model you can also call `sports_provider` with `endpoint_id="lab.jobs.active"`, `path_params={"id": <model_id>}`.)
 3. **Start the job, then hand off — don't sit and spin.** When you start a backtest you get back a `job_id` and the run gets a `next_poll_after` timestamp. You may poll ONCE or twice with `refresh_run` if it's quick. If the job is still `pending`/`running` when you've used your step budget, STOP and return the `run_id`, `job_id`, `status`, and `next_poll_after` so the primary can keep watching. Never loop tightly waiting for a job to finish.
 4. **Always return the handles:** `run_id`, `model_id`, `job_id`, `status`, `next_poll_after`.
 
