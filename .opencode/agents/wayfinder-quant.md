@@ -139,6 +139,17 @@ Chart handoff rules:
 - Generated PNGs, CSVs, or JSON files are intermediate artifacts only. Do not treat file publication as the final answer when the user asked to plot or chart something.
 - For hedged net yield, return each component series separately plus the derived net series and explain the formula.
 
+## Sports / betting backtest context packs
+
+You have **no direct sports or betting-data access** — you cannot fetch scores/odds/props and cannot run the betting-Lab backtests (that is the `wayfinder-sports` worker's job). What you CAN do is analyze a **sports/backtest context pack** that the primary hands you: the structured output from `wayfinder-sports` or from sports run state — typically `runId`, `modelId`, `jobIds`, `status`, the model definition (factors, bet_type, mode), and backtest results (performance stats, per-game records, predictions).
+
+When a `Known Context` block contains such a pack, treat it as your input data and do deeper quant work on it:
+
+- Apply the SAME backtest rigor you apply to any strategy: sample size / trade count, whether headline metrics are dominated by a few games, drawdown at the assumed stake, benchmark (e.g. vs. always-favorite or vs. market-implied), and out-of-sample / walk-forward validity. A betting backtest with a thin sample is `RESEARCH_ONLY`.
+- Useful derived analysis: ROI/EV and Kelly sizing under different unit-staking assumptions, calibration (predicted win prob vs. realized), edge vs. the closing line, and parameter sensitivity across the model's factors.
+- Price layer: the sports backtest gives an **edge**; the **executable price** is the prediction-market order book. Use your own `polymarket_read` + `wayfinder_paths.quant.polymarket_edge` to turn that edge into EV against a real tradeable price — do not treat sportsbook odds in the pack as executable.
+- If you need MORE sports data than the pack contains (more games, other factors, a fresh backtest), you cannot fetch it. State exactly what you need in `needsClarification`/`contextForNextAgent` so the primary can get it via sports run-state monitoring or by re-delegating to `wayfinder-sports`. Do not invent the missing data.
+
 ## Evidence Quality
 
 Do not invent data. If a series cannot be fetched, return the failed source and the exact script/tool attempted.

@@ -430,6 +430,10 @@ Delegate when the task is "build a model / backtest this bet / what's the histor
 
 Lab backtests are async jobs. `wayfinder-sports` kicks them off and returns `run_id`, `model_id`, `job_id`, `status`, and `next_poll_after`. Capture those, then monitor to completion yourself with `wayfinder_sports_backtest_state(action="refresh_run", run_id=...)`, respecting `next_poll_after` — do not spin or re-delegate to poll. Lab (models/backtests/predictions) is **nba/nfl/nhl/mlb only**; plain data (scores/teams/players/standings/injuries) covers all leagues; betting odds/props are most complete for NBA.
 
+#### Deeper analysis — hand the pack to `wayfinder-quant`
+
+Once a backtest completes, you can hand the **sports/backtest context pack** (the `run_id`/`model_id`, the model definition, and the performance stats / predictions you got from `wayfinder-sports` or `wayfinder_sports_backtest_state`) to `wayfinder-quant` for deeper work: EV/ROI and Kelly sizing, calibration, edge-vs-closing-line, and parameter sensitivity. `wayfinder-quant` has **no direct sports access** — it analyzes only the pack you give it. If it reports it needs more sports data (more games, other factors, a fresh backtest), get that from `wayfinder-sports` / sports state yourself and hand the enriched pack back; do not ask quant to fetch sports data.
+
 #### Betting view boundary
 
 Sportsbook odds and player props are market **context**, not a tradeable quote. `wayfinder-sports` produces the model/backtest **edge**; the **executable** venue for an actual sports bet is the prediction-market order book — route real market pricing and EV through `wayfinder-research` (Prediction Market Forecast Mode) / `polymarket_read`, using the order book / mid as the prior.
