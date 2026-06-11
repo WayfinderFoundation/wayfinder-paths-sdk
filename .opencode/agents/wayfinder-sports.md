@@ -214,6 +214,28 @@ The response returns `data.id` — the integer `model_id` — and echoes the fac
 
 Report `win_rate`, `roi` (a fraction: `-0.0386` = −3.86%), `total_bets` / `games_evaluated`, and `results_by_confidence`. A negative overall `roi` means the model isn't profitable as-is; the confidence buckets show where (if anywhere) the edge concentrates — the top bucket is often the only profitable one.
 
+### Step 5 — get predictions for upcoming games
+
+A backtest scores the model on history; **predictions** apply the model to upcoming games. The predictions routes are TOP-LEVEL and filtered by `model_id` as a QUERY param — they are NOT under `/models/{id}/...` (that 404s). Watch the path-vs-query asymmetry:
+
+1. **Generate** — `endpoint_id="lab.predictions.generate"`, `path_params={"id": <model_id>}`, `body={}`. Returns an async job (`job_type` `generate_predictions`); when `completed`, its `output` is `{"predictions_count": N}`. (Generate puts the MODEL id in the path.)
+2. **List** — `endpoint_id="lab.predictions.list"`, `query={"model_id": <model_id>}`. Returns the picks. (model_id is a QUERY param here, not a path param.)
+3. **Get one** — `endpoint_id="lab.predictions.get"`, `path_params={"id": <prediction_id>}`. (This path id is the PREDICTION id, not the model id.)
+4. **Stats** — `endpoint_id="lab.predictions.stats"`, `query={"model_id": <model_id>}` → `{total, wins, losses, pushes, win_rate}`.
+
+Each prediction looks like:
+
+```json
+{"id": 1734431, "model_id": 2292, "game_id": 21716138,
+ "predicted_value": -20, "confidence": 0.2, "market_value": -198, "edge": 178,
+ "home_ml": -198, "away_ml": 164, "actual_value": null, "result": null,
+ "game": {"id": 21716138, "date": "2026-06-13", "home_team": {"name": "Spurs"}}}
+```
+
+- `predicted_value` is the model's number, `market_value` is the line, and `edge` is the gap the model sees; `confidence` is 0–1. For player-prop models, `player_id`/`prop_type`/`player_stat_actual` are populated instead.
+- `actual_value`/`result` are `null` until the game finishes. Only resolved predictions count toward `predictions.stats`, so for a future game expect `result: null` and stats `total: 0` — that is normal, not a failure.
+- The `edge` is a **signal, not a tradeable price**. Before calling any pick actionable, confirm the executable price on the prediction-market order book.
+
 ## Stateful-run discipline (mandatory)
 
 Backtests are async, so you must manage runs and jobs carefully:
@@ -256,7 +278,7 @@ Backtests are async, so you must manage runs and jobs carefully:
 
 **C. Player-prop model.** Same as B, but at step 2 pick a `pp_*` factor and use a prop bet type (game `bet_type`s reject `pp_*` factors).
 
-**D. Generate predictions** on a saved model: `wayfinder_sports_provider(action="call", endpoint_id="lab.predictions.generate", sport="nba", path_params={"id": "<model_id>"}, run_id="<run_id>")` → `job_id`; read results later with `lab.predictions.list` / `lab.predictions.get`.
+**D. Generate predictions** on a saved model: `wayfinder_sports_provider(action="call", endpoint_id="lab.predictions.generate", sport="nba", path_params={"id": "<model_id>"}, run_id="<run_id>")` → `job_id`. When the job completes, read the picks with `lab.predictions.list` using `query={"model_id": "<model_id>"}` (NOT a path param) — see "Step 5" above for the full predictions flow and the prediction shape.
 
 **E. Just monitor an existing run:** `wayfinder_sports_backtest_state(action="refresh_run", run_id="<run_id>")`, then report status.
 
