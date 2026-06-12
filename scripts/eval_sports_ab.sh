@@ -86,9 +86,15 @@ run_arm() { # $1 = agent, $2 = question idx (1-based), $3 = arm label
   local q="${QUESTIONS[$(($2 - 1))]}"
   local log="$OUT/q$2_$3.log" ans="$OUT/q$2_$3.md"
   echo "=== q$2 / $3 ($1) ==="
-  (cd "$REPO" && timeout "$TIMEOUT" "$OPENCODE" run --agent "$1" -m "$MODEL" "$q") \
-    > "$log" 2>&1 || echo "  (session exit nonzero — continuing)"
-  harvest "$q" "$ans"
+  local attempt
+  for attempt in 1 2; do
+    (cd "$REPO" && timeout "$TIMEOUT" "$OPENCODE" run --agent "$1" -m "$MODEL" "$q") \
+      > "$log" 2>&1 && break
+    echo "  (session exit nonzero on attempt $attempt — $( [ "$attempt" = 1 ] && echo retrying || echo continuing))"
+    [ "$attempt" = 1 ] && sleep 30
+  done
+  # a failed harvest marks the arm and moves on — one bad session must not kill the battery
+  harvest "$q" "$ans" || { echo "  HARVEST FAILED for q$2/$3 — marked missing" >&2; echo "(no answer harvested)" > "$ans"; }
   # contamination check for the baseline arm
   if [ "$3" = "baseline" ]; then
     if grep -qE "wayfinder_sports_|prop_slate|game_slate|futures_slate|sports_posterior" "$log"; then
