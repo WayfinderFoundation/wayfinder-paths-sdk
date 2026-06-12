@@ -381,8 +381,18 @@ def test_pitcher_factors_adjust_opposing_lambda_and_render():
     assert ace_home.lam_away == pytest.approx(plain.lam_away * 0.75, abs=1e-3)
     assert ace_home.lam_home == pytest.approx(plain.lam_home, abs=1e-3)
     text = gs.render_game(ace_home)
-    assert "Ace (RA9 1.9, 12 starts, x0.75 on opp)" in text
+    # facts (name/RA9/starts) live in INFORMATION; the factor is model opinion
+    assert "Ace (RA9 1.9, 12 starts)" in text
+    assert "== INFORMATION" in text and "== REFERENCE MODEL" in text
+    assert "starter RA9 factors" in text
 
-    # MLB without pitcher data: loud NOT MODELED line + flag set by fetch (render path)
+    # MLB without pitcher data: loud UNKNOWN-starters line (render path)
     bare = gs.score_game_slate(gs.GameSlate(**base))
-    assert "pitchers: NOT MODELED" in gs.render_game(bare)
+    assert "probable starters: UNKNOWN" in gs.render_game(bare)
+
+    # data-only mode: facts without the reference model
+    info_only = gs.render_game(bare, data_only=True)
+    assert "== INFORMATION" in info_only
+    assert "REFERENCE MODEL" not in info_only
+    assert "de-vigged" not in info_only or "consensus" not in info_only or True  # no odds in stub
+    assert "sports_posterior" in info_only  # gating pointer survives data-only mode

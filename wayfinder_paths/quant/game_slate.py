@@ -808,34 +808,87 @@ def score_game_slate(slate: GameSlate) -> GameResult:
 # ── render / artifacts / CLI ─────────────────────────────────────────────────
 
 
-def render_game(result: GameResult) -> str:
-    s = result.slate
-    home, away = team_label(s.home), team_label(s.away)
+def render_information(slate: GameSlate) -> str:
+    """The FACTS section: data + market math only, no modeling opinions. This is the
+    primary product — the agent decides how to model from these ingredients."""
+    home, away = team_label(slate.home), team_label(slate.away)
     lines = [
-        f"GAME SLATE — {s.sport} game {s.game_id}: {away} @ {home} ({s.date or 'date ?'})",
-        f"model: {away} {result.lam_away} @ {home} {result.lam_home} expected "
-        f"(form: {home} {s.home_form['for']:.2f}/{s.home_form['against']:.2f} n={s.home_form['n']}, "
-        f"{away} {s.away_form['for']:.2f}/{s.away_form['against']:.2f} n={s.away_form['n']})",
-        *(
-            [
-                "pitchers: "
-                + " vs ".join(
-                    f"{p['name']} (RA9 {p['ra9']}, {p['starts']} starts, x{p['factor']} on opp)"
-                    for p in (s.home_pitcher, s.away_pitcher)
-                    if p
-                )
-            ]
-            if (s.home_pitcher or s.away_pitcher)
-            else (
-                ["pitchers: NOT MODELED — starting pitchers dominate MLB totals; treat the model as form-only"]
-                if str(s.sport).lower() == "mlb"
-                else []
-            )
-        ),
-        f"books: {', '.join(s.markets.get('vendors', [])) or 'none'}",
+        f"GAME SLATE — {slate.sport} game {slate.game_id}: {away} @ {home} "
+        f"({slate.date or 'date ?'})",
         "",
-        f"{'market':<16}{'line':>7}  {'model':>6}  {'book':>6}  {'edge':>7}  flags",
+        "== INFORMATION (facts + market math — model it however the question demands) ==",
+        f"form (last completed games): {home} scored {slate.home_form['for']:.2f} / "
+        f"allowed {slate.home_form['against']:.2f} per game (n={slate.home_form['n']}) | "
+        f"{away} {slate.away_form['for']:.2f} / {slate.away_form['against']:.2f} "
+        f"(n={slate.away_form['n']})",
     ]
+    if slate.home_pitcher or slate.away_pitcher:
+        parts = []
+        for side, p in (("home", slate.home_pitcher), ("away", slate.away_pitcher)):
+            if p:
+                parts.append(f"{side}: {p['name']} (RA9 {p['ra9']}, {p['starts']} starts)")
+        lines.append("probable starters (inferred from pitcher props): " + " | ".join(parts))
+    elif str(slate.sport).lower() == "mlb":
+        lines.append(
+            "probable starters: UNKNOWN (no pitcher props posted yet) — starters dominate "
+            "MLB totals; any model without them is form-only"
+        )
+    vendors = slate.markets.get("vendors", [])
+    lines.append(f"books ({len(vendors)}): {', '.join(vendors) or 'none'}")
+    ml = slate.markets.get("moneyline") or {}
+    if ml:
+        draw = f" / draw {ml['draw_p']:.3f}" if ml.get("draw_p") is not None else ""
+        lines.append(
+            f"de-vigged consensus ML: home {ml['home_p']:.3f}{draw} / away {ml['away_p']:.3f} "
+            f"({ml.get('n_vendors', '?')} vendors)"
+        )
+    total = slate.markets.get("total") or {}
+    if total:
+        lines.append(
+            f"de-vigged consensus total {total['line']}: over {total['over_p']:.3f} / "
+            f"under {total['under_p']:.3f}"
+        )
+    spread = slate.markets.get("spread") or {}
+    if spread:
+        lines.append(
+            f"de-vigged consensus spread home {spread['home_line']:+}: "
+            f"cover {spread['home_p']:.3f}"
+        )
+    pm = slate.markets.get("polymarket_vendor")
+    if pm:
+        draw = f" / draw {pm['draw_p']:.3f}" if pm.get("draw_p") is not None else ""
+        lines.append(
+            f"polymarket vendor line (quasi-executable reference): "
+            f"home {pm['home_ml_p']:.3f}{draw} / away {pm['away_ml_p']:.3f}"
+        )
+    if slate.flags:
+        lines.append(f"flags: {', '.join(slate.flags)}")
+    return "\n".join(lines)
+
+
+def render_game(result: GameResult, *, data_only: bool = False) -> str:
+    s = result.slate
+    lines = [render_information(s)]
+    if data_only:
+        lines.append(
+            "\nNOTE: information only — de-vigged book numbers are market FACTS "
+            "(informational; the executable venue is Polymarket). Build your own view "
+            "from these ingredients and gate it through sports_posterior."
+        )
+        return "\n".join(lines)
+    lines.append("")
+    lines.append(
+        "== REFERENCE MODEL (one opinion: completed-game form Poisson"
+        + (
+            " + starter RA9 factors"
+            if (s.home_pitcher or s.away_pitcher)
+            else ""
+        )
+        + " — adjust or replace it with your own view) =="
+    )
+    home, away = team_label(s.home), team_label(s.away)
+    lines.append(f"expected: {away} {result.lam_away} @ {home} {result.lam_home}")
+    lines.append(f"{'market':<16}{'line':>7}  {'model':>6}  {'book':>6}  {'edge':>7}  flags")
     for v in result.views:
         line = f"{v.line:+.1f}" if isinstance(v.line, float) else "-"
         model = f"{v.model_p:.3f}" if v.model_p is not None else "  n/a"
@@ -843,13 +896,6 @@ def render_game(result: GameResult) -> str:
         edge = f"{v.book_edge:+.3f}" if v.book_edge is not None else "    n/a"
         lines.append(
             f"{v.market:<16}{line:>7}  {model:>6}  {book:>6}  {edge:>7}  {','.join(v.flags)}"
-        )
-    pm = s.markets.get("polymarket_vendor")
-    if pm:
-        draw = f" / draw {pm['draw_p']:.3f}" if pm.get("draw_p") is not None else ""
-        lines.append(
-            f"\npolymarket vendor line (quasi-executable reference): "
-            f"home {pm['home_ml_p']:.3f}{draw} / away {pm['away_ml_p']:.3f}"
         )
     lines.append("\nNOTE: " + result.note)
     return "\n".join(lines)
@@ -894,10 +940,22 @@ async def run_game_slate(
                     "date": slate.date,
                     "home": team_label(slate.home),
                     "away": team_label(slate.away),
-                    "lam_home": result.lam_home,
-                    "lam_away": result.lam_away,
-                    "markets": slate.markets,
-                    "views": game_rows(result),
+                    # facts an agent models from (the primary product)
+                    "information": {
+                        "home_form": slate.home_form,
+                        "away_form": slate.away_form,
+                        "home_pitcher": slate.home_pitcher,
+                        "away_pitcher": slate.away_pitcher,
+                        "markets": slate.markets,
+                        "flags": slate.flags,
+                    },
+                    # one labeled opinion, not truth
+                    "reference_model": {
+                        "kind": "completed-game form Poisson + starter RA9 factors",
+                        "lam_home": result.lam_home,
+                        "lam_away": result.lam_away,
+                        "views": game_rows(result),
+                    },
                     "note": result.note,
                 },
                 indent=2,
@@ -912,7 +970,8 @@ def _main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Model a game's moneyline/total/spread vs the books."
+        description="Gather a game's information (form, starters, de-vigged markets) "
+        "plus an optional labeled reference model."
     )
     parser.add_argument("--sport", required=True)
     parser.add_argument(
@@ -923,6 +982,11 @@ def _main() -> None:
         "--date",
         default=None,
         help="Game date YYYY-MM-DD (required for leagues without by-id game lookup)",
+    )
+    parser.add_argument(
+        "--data-only",
+        action="store_true",
+        help="print the INFORMATION section only (no reference model)",
     )
     parser.add_argument("--out", default=".wayfinder_runs/sports")
     args = parser.parse_args()
@@ -935,7 +999,7 @@ def _main() -> None:
             )
         )
         all_artifacts.extend(artifacts)
-        print(render_game(result))
+        print(render_game(result, data_only=args.data_only))
         print()
     print("artifacts:", " ".join(all_artifacts) if all_artifacts else "(none)")
 

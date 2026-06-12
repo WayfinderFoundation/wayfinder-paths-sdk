@@ -356,3 +356,13 @@ def test_round2_eval_losses_are_ruled_out_in_prompts() -> None:
     assert "Finish the method in-session (autonomy rule)" in primary
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
     assert "Include the rendered table itself" in sports
+
+
+def test_information_vs_model_division_of_labor() -> None:
+    """Pipelines own market math (correctness); modeling is the agent's judgment with
+    the pipeline model demoted to a labeled reference opinion."""
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    assert "MODELING is YOUR judgment" in sports
+    assert "REFERENCE MODEL" in sports and "--data-only" in sports
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text("utf-8")
+    assert "REFERENCE MODEL" in skill and "--data-only" in skill

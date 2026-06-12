@@ -133,8 +133,12 @@ sports bets only on Polymarket. Compute edges with
 
 ## Scripted analysis (inside `core_run_script`)
 
-**For betting analysis, run the canned pipelines — don't write your own model, and never
-pull odds from the web (provider odds only):**
+**For betting analysis, run the canned pipelines for DATA + MARKET MATH (complete
+fetches, de-vig, consensus, dislocation gating — correctness you must not hand-roll;
+never pull odds from the web). MODELING is the agent's judgment: `game_slate` separates
+an INFORMATION section (facts) from a labeled REFERENCE MODEL (one opinion — adjust or
+replace it; `--data-only` for facts alone), and your own view is expressed as evidence
+cards gated through `sports_posterior` over the executable prior:**
 
 ```
 # player props -> ACTIONABLE/WATCH/EXCLUDED EV table
