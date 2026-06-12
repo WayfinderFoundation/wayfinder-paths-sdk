@@ -347,3 +347,12 @@ def test_observed_failure_modes_are_ruled_out_in_prompts() -> None:
     # sport slug wrong-guess guidance (a live run tried fifa/fiba)
     for text in (skill, sports):
         assert "`fifa`/`fiba`" in text and "worldcup" in text
+
+
+def test_round2_eval_losses_are_ruled_out_in_prompts() -> None:
+    """Round-2 eval losses: numbers summarized away (NBA) and ask-instead-of-act (q2/q3)."""
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    assert "Show the numbers (composition rule)" in primary
+    assert "Finish the method in-session (autonomy rule)" in primary
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    assert "Include the rendered table itself" in sports

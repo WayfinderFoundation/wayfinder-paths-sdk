@@ -356,6 +356,9 @@ table plus writes CSV/JSON artifacts (put the paths in `dataFiles`). Read the ta
 
 1. **Compose your final summary FIRST** — the ranked picks with reasoning from the table. Only
    then do optional extras. Never end your run with raw JSON instead of a summary.
+   **Include the rendered table itself** (the pipeline's printed table, top ~10 rows) in your
+   `findings` — the delegator pastes it into the user-facing answer, and numbers that exist
+   only in a summary sentence get lost (a live eval was lost exactly this way).
 2. The table's `book_edge`/`book_ev` are vs de-vigged **sportsbook** odds — informational. For
    an executable view, take a pick's `model_p`, find a matching Polymarket market
    (`polymarket_read`), and compute `sports_props.market_edge(model_p, polymarket_price)`.

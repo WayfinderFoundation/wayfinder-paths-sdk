@@ -424,6 +424,96 @@ class GameSlate:
     markets: dict[str, Any]
     date: str = ""
     flags: list[str] = field(default_factory=list)
+    # MLB: probable starters inferred from the game's pitcher props (books only post
+    # pitcher props for scheduled starters). {"name", "ra9", "starts", "factor"} per side.
+    home_pitcher: dict[str, Any] | None = None
+    away_pitcher: dict[str, Any] | None = None
+
+
+# MLB starting pitchers dominate totals; team form alone misses them (a live eval lost
+# to a baseline that simply named the 1.87-ERA starter). The adjustment multiplies the
+# OPPOSING team's lambda by a shrunk, clipped starter-quality factor.
+_LEAGUE_RA9 = 4.3  # MLB-wide earned runs per 9 innings, stable enough as a constant
+_PITCHER_FACTOR_CLIP = (0.70, 1.30)
+_PITCHER_SHRINK_STARTS = 6.0  # starts count where we trust the starter's own RA9 ~50%
+
+
+def _pitcher_quality(logs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Starter RA9 from pitching appearances (er + pitching_outs), shrunk toward league."""
+    starts = [
+        lg
+        for lg in logs
+        if float(lg.get("pitching_outs") or 0) > 0
+    ]
+    outs = sum(float(lg.get("pitching_outs") or 0) for lg in starts)
+    er = sum(float(lg.get("er") or 0) for lg in starts)
+    if outs <= 0:
+        return None
+    ra9 = er * 27.0 / outs
+    n = len(starts)
+    weight = n / (n + _PITCHER_SHRINK_STARTS)
+    blended = weight * ra9 + (1 - weight) * _LEAGUE_RA9
+    factor = min(
+        max(blended / _LEAGUE_RA9, _PITCHER_FACTOR_CLIP[0]), _PITCHER_FACTOR_CLIP[1]
+    )
+    return {"ra9": round(ra9, 2), "starts": n, "factor": round(factor, 3)}
+
+
+async def _mlb_probable_pitchers(
+    client, pacer, game_id: Any, season: int, home_name: str, away_name: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Infer the probable starters from the game's pitcher props, then rate them from
+    their season pitching logs. Returns (home_pitcher, away_pitcher) or Nones."""
+    payload = await _call(
+        client,
+        pacer,
+        endpoint_id="data.player_props.list",
+        sport="mlb",
+        query={"game_id": game_id, "per_page": 100},
+    )
+    pitcher_ids = {
+        row.get("player_id")
+        for row in _rows(payload)
+        if str(row.get("prop_type", "")).startswith("pitcher_")
+        and row.get("player_id") is not None
+    }
+    await pacer.wait()
+    if not pitcher_ids:
+        return None, None
+
+    stats_payload = await _call(
+        client,
+        pacer,
+        endpoint_id="data.player_stats.list",
+        sport="mlb",
+        query={"player_ids": sorted(pitcher_ids), "seasons": [season], "per_page": 100},
+    )
+    await pacer.wait()
+    logs_by_pid: dict[Any, list[dict[str, Any]]] = {}
+    names: dict[Any, str] = {}
+    teams: dict[Any, str] = {}
+    for lg in _rows(stats_payload):
+        pid = (lg.get("player") or {}).get("id")
+        if pid is None:
+            continue
+        logs_by_pid.setdefault(pid, []).append(lg)
+        player = lg.get("player") or {}
+        names.setdefault(pid, str(player.get("full_name") or player.get("last_name") or pid))
+        if lg.get("team_name"):
+            teams[pid] = str(lg["team_name"])
+
+    home_p = away_p = None
+    for pid, logs in logs_by_pid.items():
+        quality = _pitcher_quality(logs)
+        if quality is None:
+            continue
+        entry = {"name": names.get(pid, str(pid)), **quality}
+        team = teams.get(pid, "")
+        if team == home_name and home_p is None:
+            home_p = entry
+        elif team == away_name and away_p is None:
+            away_p = entry
+    return home_p, away_p
 
 
 async def _team_form(
@@ -555,11 +645,29 @@ async def fetch_game_slate(
         pass
     markets = parse_game_odds(odds_rows)
 
+    # 4) MLB only: starting pitchers dominate totals — infer probables from the game's
+    # pitcher props and rate them from season logs. Soft: missing data just flags.
+    home_pitcher = away_pitcher = None
+    if str(sport).lower() == "mlb":
+        try:
+            home_pitcher, away_pitcher = await _mlb_probable_pitchers(
+                client,
+                pacer,
+                game_id,
+                season,
+                str(home.get("display_name") or home.get("full_name") or ""),
+                str(away.get("display_name") or away.get("full_name") or ""),
+            )
+        except Exception:  # noqa: BLE001 - pitcher layer is an enhancement, never fatal
+            pass
+
     flags: list[str] = []
     if home_form["n"] < MIN_GAMES or away_form["n"] < MIN_GAMES:
         flags.append(f"low_sample(h={home_form['n']},a={away_form['n']})")
     if not markets.get("moneyline"):
         flags.append("no_provider_odds")
+    if str(sport).lower() == "mlb" and (home_pitcher is None or away_pitcher is None):
+        flags.append("pitchers_not_modeled")
 
     return GameSlate(
         sport=sport,
@@ -572,6 +680,8 @@ async def fetch_game_slate(
         markets=markets,
         date=event_date(game_row),
         flags=flags,
+        home_pitcher=home_pitcher,
+        away_pitcher=away_pitcher,
     )
 
 
@@ -613,6 +723,12 @@ def score_game_slate(slate: GameSlate) -> GameResult:
     league_avg = (hf["for"] + hf["against"] + af["for"] + af["against"]) / 4 or 1.0
     lam_home = max(((hf["for"] + af["against"]) / 2) * cfg["home_adv"], 0.05)
     lam_away = max(((af["for"] + hf["against"]) / 2) / cfg["home_adv"], 0.05)
+    # The OPPOSING starter's quality scales each side's expected runs (MLB only;
+    # factor is shrunk toward 1.0 by starts count and clipped — see _pitcher_quality).
+    if slate.home_pitcher:
+        lam_away = max(lam_away * float(slate.home_pitcher["factor"]), 0.05)
+    if slate.away_pitcher:
+        lam_home = max(lam_home * float(slate.away_pitcher["factor"]), 0.05)
 
     total = slate.markets.get("total") or {}
     spread = slate.markets.get("spread") or {}
@@ -700,6 +816,22 @@ def render_game(result: GameResult) -> str:
         f"model: {away} {result.lam_away} @ {home} {result.lam_home} expected "
         f"(form: {home} {s.home_form['for']:.2f}/{s.home_form['against']:.2f} n={s.home_form['n']}, "
         f"{away} {s.away_form['for']:.2f}/{s.away_form['against']:.2f} n={s.away_form['n']})",
+        *(
+            [
+                "pitchers: "
+                + " vs ".join(
+                    f"{p['name']} (RA9 {p['ra9']}, {p['starts']} starts, x{p['factor']} on opp)"
+                    for p in (s.home_pitcher, s.away_pitcher)
+                    if p
+                )
+            ]
+            if (s.home_pitcher or s.away_pitcher)
+            else (
+                ["pitchers: NOT MODELED — starting pitchers dominate MLB totals; treat the model as form-only"]
+                if str(s.sport).lower() == "mlb"
+                else []
+            )
+        ),
         f"books: {', '.join(s.markets.get('vendors', [])) or 'none'}",
         "",
         f"{'market':<16}{'line':>7}  {'model':>6}  {'book':>6}  {'edge':>7}  flags",

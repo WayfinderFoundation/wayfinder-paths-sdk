@@ -337,3 +337,52 @@ def test_worldcup_event_shape():
     assert gs.event_scores(row) == (2, 0)
     assert gs.event_date(row).startswith("2026-06-11")
     assert not gs.event_completed({**row, "status": "scheduled"})
+
+
+# ── MLB starting pitchers (the totals driver team form can't see) ────────────
+
+
+def test_pitcher_quality_shrinks_and_clips():
+    # Ace: 1.87 RA9 over 12 starts -> strong but clipped/shrunk factor below 1
+    ace_logs = [{"pitching_outs": 18, "er": 1.25} for _ in range(12)]
+    ace = gs._pitcher_quality(ace_logs)
+    assert ace["ra9"] == pytest.approx(1.87, abs=0.05)
+    assert gs._PITCHER_FACTOR_CLIP[0] <= ace["factor"] < 0.8
+
+    # Two-start rookie, modestly bad: heavy shrink toward league -> factor near 1
+    rookie = gs._pitcher_quality([{"pitching_outs": 15, "er": 4}, {"pitching_outs": 16, "er": 3}])
+    assert 1.0 < rookie["factor"] < 1.2
+    # An extreme blowup sample clips at the bound instead of doubling the opponent
+    blowup = gs._pitcher_quality([{"pitching_outs": 12, "er": 6}, {"pitching_outs": 15, "er": 5}])
+    assert blowup["factor"] == gs._PITCHER_FACTOR_CLIP[1]
+
+    assert gs._pitcher_quality([{"pitching_outs": 0, "er": 0}]) is None
+
+
+def test_pitcher_factors_adjust_opposing_lambda_and_render():
+    base = {
+        "sport": "mlb",
+        "game_id": 1,
+        "season": 2026,
+        "home": {"id": 1, "abbreviation": "TOR", "display_name": "Toronto Blue Jays"},
+        "away": {"id": 2, "abbreviation": "NYY", "display_name": "New York Yankees"},
+        "home_form": {"for": 4.0, "against": 4.1, "n": 25},
+        "away_form": {"for": 5.0, "against": 3.8, "n": 25},
+        "markets": gs.parse_game_odds([]),
+    }
+    plain = gs.score_game_slate(gs.GameSlate(**base))
+    ace_home = gs.score_game_slate(
+        gs.GameSlate(
+            **base,
+            home_pitcher={"name": "Ace", "ra9": 1.9, "starts": 12, "factor": 0.75},
+            away_pitcher={"name": "Avg", "ra9": 4.3, "starts": 10, "factor": 1.0},
+        )
+    )
+    assert ace_home.lam_away == pytest.approx(plain.lam_away * 0.75, abs=1e-3)
+    assert ace_home.lam_home == pytest.approx(plain.lam_home, abs=1e-3)
+    text = gs.render_game(ace_home)
+    assert "Ace (RA9 1.9, 12 starts, x0.75 on opp)" in text
+
+    # MLB without pitcher data: loud NOT MODELED line + flag set by fetch (render path)
+    bare = gs.score_game_slate(gs.GameSlate(**base))
+    assert "pitchers: NOT MODELED" in gs.render_game(bare)
