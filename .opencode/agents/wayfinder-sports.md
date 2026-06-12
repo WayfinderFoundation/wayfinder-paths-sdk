@@ -448,6 +448,18 @@ Wayfinder executes sports bets **only on prediction markets (Polymarket)**, so a
 3. **Compute the edge** — `sports_props.market_edge(model_p, polymarket_price)` → `{side, edge, ev, kelly}`. Edge = `model_p − price`; size with conservative Kelly. The sportsbook `odds`/`player_props` are only the **line + context**, never the executable price.
 4. **Gate** like research: only call a bet actionable on positive EV against a *current* executable price; otherwise `WATCH`/`SKIP`.
 
+**Dislocated markets — never pick a side on trust.** When you hold BOTH a de-vigged
+book number (slate `fair_p`/`book_p`) and a Polymarket price for the same outcome, check
+`wayfinder_paths.quant.sports_posterior.dislocation(book_fair_p, market_p)` (or run the CLI:
+`poetry run python -m wayfinder_paths.quant.sports_posterior --market <pm> --book <fair_p>
+--vendors <n> --overround <o>`). If it reports `needs_adjudication`, the gap is large enough
+that one venue knows something — and you cannot know which from data alone. Do NOT recommend
+the cheap side; report the dislocation as a finding (both prices, gap, cheap side) and put the
+report's `required_questions` into `openQuestions` for a research pass ("what explains the
+cheap side?"). The posterior CLI's ledger — prior = the executable price, the book number as
+ONE capped evidence card — is the only way to fold the book view in; an unexplained
+dislocation alone never clears the conservative gate, by design.
+
 **Coverage reality:** Polymarket lists mostly **game-level / outcome** markets (winner, series), and player-prop markets only for marquee games. If no Polymarket market exists for a specific prop, the model number is **informational only** — say so; don't manufacture an executable edge against a sportsbook line.
 
 ## Tool budget

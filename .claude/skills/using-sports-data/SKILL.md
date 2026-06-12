@@ -148,7 +148,20 @@ poetry run python -m wayfinder_paths.quant.game_slate \
 # futures fields (tournament winner / group winner / reach-final) -> de-vigged fair_p per candidate
 poetry run python -m wayfinder_paths.quant.futures_slate \
   --sport worldcup --market-type outright --out .wayfinder_runs/sports
+
+# book-fair vs Polymarket disagree? -> dislocation check + gated posterior ledger
+poetry run python -m wayfinder_paths.quant.sports_posterior \
+  --market <PM_PRICE> --book <FAIR_P> --vendors <N> --overround <O> \
+  [--card "davies_out:against:medium:news"]
 ```
+
+**Dislocation rule:** when a slate's de-vigged book number and the Polymarket price for
+the same outcome disagree enough that `sports_posterior.dislocation` flags it, never
+recommend the cheap side on trust — the prior is the EXECUTABLE price, the book number
+enters as one capped evidence card, and the gap must be adjudicated (research: "what
+explains the cheap side?" — post-line news, resolution-rules mismatch, lockup/flow,
+de-vig method risk) before any recommendation. An unexplained dislocation gates to
+WATCH with the EV shown — by design.
 
 The pipelines are multi-sport (NBA/NHL/MLB/World Cup verified live). MLB notes: props
 include one-sided "milestone" quotes (single odds, no under side) — the pipeline skips

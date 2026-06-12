@@ -281,9 +281,26 @@ def test_sports_subagent_prompt_states_key_rules() -> None:
     # the canned pipelines are the primary modelling paths (hand-rolling burned a live run)
     assert "wayfinder_paths.quant.prop_slate" in body
     assert "wayfinder_paths.quant.game_slate" in body
+    # dislocated book-vs-Polymarket markets are adjudicated, never traded on trust
+    assert "sports_posterior" in body
+    assert "needs_adjudication" in body
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text("utf-8")
     assert "wayfinder_paths.quant.prop_slate" in skill
     assert "wayfinder_paths.quant.game_slate" in skill
+    assert "sports_posterior" in skill
+
+
+def test_dislocation_adjudication_wired_across_agents() -> None:
+    """The posterior flow: primary hard rule, research book-fair card, doctrine prior."""
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    assert "Dislocation adjudication (HARD RULE)" in primary
+    assert "what explains the cheap side?" in primary
+    research = (REPO / ".opencode" / "agents" / "wayfinder-research.md").read_text("utf-8")
+    assert "book_fair_evidence_card" in research
+    assert "alreadyPriced" in research  # double-counting guard
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    # prior doctrine: executable price is the prior; book enters as an evidence card
+    assert "capped evidence card" in sports
 
 
 def test_delegators_describe_sports_capabilities() -> None:
