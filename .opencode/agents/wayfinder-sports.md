@@ -295,42 +295,30 @@ with data, any question — recent-form projections, prop EV scans, matchup anal
 soccer views, correlations. Use scripts when the question needs custom logic, cross-resource
 joins, or a league the Lab doesn't cover; use the Lab when a factor-model backtest is the ask.
 
-The worked pattern (one bounded script per question/slate):
+**PRIMARY PATH — the canned prop-slate pipeline.** For "best props / which bets look good /
+model this game", do NOT write your own modelling script. Run the tested pipeline (one command):
 
-```python
-import asyncio, pandas as pd
-from wayfinder_paths.core.clients.SportsClient import SPORTS_CLIENT
-from wayfinder_paths.quant import sports_props as sp
-
-async def main():
-    # 1) FETCH in bulk through the gateway (cached server-side; arrays just work)
-    props = await SPORTS_CLIENT.provider_call(
-        endpoint_id="data.player_props.list", query={"game_id": 21716138, "per_page": 100})
-    pids = sorted({p["player_id"] for p in props["data"]})
-    logs = await SPORTS_CLIENT.provider_call(
-        endpoint_id="data.player_stats.list", sport="nba",
-        query={"player_ids": pids, "seasons": [2025], "per_page": 100})
-    teams = await SPORTS_CLIENT.provider_call(
-        endpoint_id="data.team_season_averages.list", sport="nba",
-        path_params={"category": "general"},
-        query={"season": 2025, "season_type": "regular", "type": "advanced", "per_page": 40})
-
-    # 2) MANIPULATE: DataFrames, rolling form, per-player splits
-    df = pd.DataFrame(logs["data"])  # one row per game log
-    # ... rolling means, hit rates vs a line, minutes trends, joins to team pace/def_rating ...
-
-    # 3) MODEL: score every prop -> EV table (or use project_stat/prob_over directly)
-    # score = sp.score_prop(prop, player_logs, season_avg, opponent_factor=..., pace_factor=...)
-    # 4) PRICE (only if an executable Polymarket market exists):
-    # edge = sp.market_edge(model_p, polymarket_price)
-
-    # 5) ARTIFACT: save the table, return the path in dataFiles
-    out = ".wayfinder_runs/sports/props_21716138.csv"
-    # table.to_csv(out, index=False)
-    print(out)
-
-asyncio.run(main())
 ```
+poetry run python -m wayfinder_paths.quant.prop_slate \
+  --sport nba --game-id <GAME_ID> --season <SEASON> --out .wayfinder_runs/sports
+```
+
+It fetches everything (props, complete paginated game logs, team pace/defense, injuries),
+models with proper distributions + de-vig, and prints an `ACTIONABLE` / `WATCH` / `EXCLUDED`
+table plus writes CSV/JSON artifacts (put the paths in `dataFiles`). Read the table, then:
+
+1. **Compose your final summary FIRST** — the ranked picks with reasoning from the table. Only
+   then do optional extras. Never end your run with raw JSON instead of a summary.
+2. The table's `book_edge`/`book_ev` are vs de-vigged **sportsbook** odds — informational. For
+   an executable view, take a pick's `model_p`, find a matching Polymarket market
+   (`polymarket_read`), and compute `sports_props.market_edge(model_p, polymarket_price)`.
+   No matching market → say the pick is informational.
+3. Trust the partitions: `WATCH` rows are flagged (low sample / injured / suspect edge) — present
+   them as caveats, not top picks. `EXCLUDED` players had no joinable data.
+
+**FALLBACK — custom scripts** (only for questions the pipeline doesn't answer, e.g. matchup
+deep-dives, soccer xG analysis, cross-game studies): fetch via `SPORTS_CLIENT`, model by
+importing `wayfinder_paths.quant.sports_props`, and follow the modelling rules below.
 
 Rules: fetch only through `SPORTS_CLIENT` (gateway-mediated); batch with arrays instead of
 per-player loops; keep lookbacks bounded (a season, not all history); put big tables in

@@ -1,0 +1,581 @@
+"""Canned player-prop slate pipeline: fetch -> model -> rank, in one call.
+
+This is the sports agent's primary path for prop analysis — run it instead of writing a
+bespoke modelling script. It bakes in the lessons from live runs so they cannot be skipped:
+
+- complete data: game-log fetches are chunked per player batch and follow ``meta.next_cursor``
+  until exhausted; any props-player still missing logs is **excluded with a reason**, never
+  scored as a 0.0 average.
+- real math: probabilities come from :mod:`wayfinder_paths.quant.sports_props`
+  (minutes-based projections, shrinkage, normal/Poisson distributions) and the book
+  probability is **de-vigged** (raw implied odds include vig).
+- honest output: thin samples / injuries / implausible edges are flagged and partitioned into
+  ``watch`` instead of polluting ``actionable``; the season baseline is derived from the full
+  season of logs, not recycled recent form.
+
+Two-stage EV design: the ``book_edge`` / ``book_ev`` columns are measured against the
+**de-vigged sportsbook odds** and are INFORMATIONAL — Wayfinder cannot execute at a
+sportsbook. Each pick carries ``model_p`` so the executable second stage is a one-liner
+against a prediction-market price: ``sports_props.market_edge(model_p, polymarket_price)``.
+
+CLI:
+    poetry run python -m wayfinder_paths.quant.prop_slate \
+        --sport nba --game-id 21716138 --season 2025 --out .wayfinder_runs/sports
+"""
+
+from __future__ import annotations
+
+import asyncio
+import csv
+import json
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from wayfinder_paths.quant import sports_props as sp
+
+SUSPECT_EDGE = (
+    0.25  # |book edge| above this is flagged: real books rarely misprice this far
+)
+MIN_GAMES = 8  # below this the sample is flagged low_sample (live runs showed 6-7g overconfidence)
+_CHUNK = 8
+_MAX_PAGES = 12
+_RATE_RETRIES = 4
+_RATE_SLEEPS_S = (20.0, 30.0, 45.0, 60.0)
+_SLOW_PACE_S = 13.0  # once the upstream rate limit bites, stay under ~5 calls/min
+
+
+@dataclass
+class SlateData:
+    sport: str
+    game_id: int | str
+    season: int
+    vendor: str
+    props: list[dict[str, Any]]  # {player_id, prop_type, line, over_odds, under_odds}
+    logs_by_player: dict[Any, list[dict[str, Any]]]  # most-recent-first
+    season_baseline: dict[Any, dict[str, float]]  # per player: stat means + "min"
+    player_names: dict[Any, str]
+    player_team: dict[Any, Any]
+    opponent_of: dict[Any, Any]  # team_id -> opposing team_id (for this game)
+    team_stats: dict[Any, dict[str, Any]]  # team_id -> {pace, def_rating, abbreviation}
+    league_pace: float
+    league_def_rating: float
+    injured: set[Any]
+    excluded: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class SlatePick:
+    player_id: Any
+    player_name: str
+    team: str
+    prop_type: str
+    line: float
+    side: str
+    model_p: float
+    book_p: float
+    book_edge: float
+    book_ev: float
+    kelly: float
+    proj_mean: float
+    proj_std: float
+    n_games: int
+    flags: list[str]
+
+
+@dataclass
+class SlateResult:
+    sport: str
+    game_id: int | str
+    season: int
+    vendor: str
+    actionable: list[SlatePick]
+    watch: list[SlatePick]
+    excluded: list[dict[str, Any]]
+    pace_factor: float
+    note: str = (
+        "book_edge/book_ev are vs de-vigged SPORTSBOOK odds — informational only. "
+        "Executable EV must be priced on Polymarket: market_edge(model_p, polymarket_price)."
+    )
+
+
+# ── fetch ────────────────────────────────────────────────────────────────────
+
+
+class _Pacer:
+    """Adaptive inter-call pacing: start fast; the first 429 slows the whole run down."""
+
+    def __init__(self, base_s: float) -> None:
+        self.delay = base_s
+
+    def throttled(self) -> None:
+        self.delay = max(self.delay, _SLOW_PACE_S)
+
+    async def wait(self) -> None:
+        if self.delay > 0:
+            await asyncio.sleep(self.delay)
+
+
+async def _call(
+    client, pacer: _Pacer | None = None, *, retries: int = _RATE_RETRIES, **kwargs
+) -> Any:
+    for attempt in range(retries + 1):
+        try:
+            return await client.provider_call(**kwargs)
+        except Exception as exc:  # noqa: BLE001 - retry only rate limits, re-raise the rest
+            if "rate" in str(exc).lower() and attempt < retries:
+                if pacer is not None:
+                    pacer.throttled()
+                await asyncio.sleep(
+                    _RATE_SLEEPS_S[min(attempt, len(_RATE_SLEEPS_S) - 1)]
+                )
+                continue
+            raise
+
+
+def _rows(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, dict):
+        data = payload.get("data", payload)
+        if isinstance(data, dict):
+            data = data.get("data", [])
+        return data if isinstance(data, list) else []
+    return []
+
+
+def _next_cursor(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        data = payload.get("data", payload)
+        if isinstance(data, dict):
+            meta = data.get("meta") or {}
+            return meta.get("next_cursor")
+    return None
+
+
+def select_vendor(prop_rows: list[dict[str, Any]]) -> str | None:
+    """Vendor with the widest distinct (player, prop_type) over/under coverage."""
+    coverage: Counter[str] = Counter()
+    seen: set[tuple] = set()
+    for row in prop_rows:
+        market = row.get("market") or {}
+        if market.get("over_odds") is None or market.get("under_odds") is None:
+            continue
+        key = (row.get("vendor"), row.get("player_id"), row.get("prop_type"))
+        if key in seen:
+            continue
+        seen.add(key)
+        coverage[str(row.get("vendor"))] += 1
+    return coverage.most_common(1)[0][0] if coverage else None
+
+
+async def fetch_prop_slate(
+    sport: str,
+    game_id: int | str,
+    season: int,
+    *,
+    client: Any = None,
+    pace_s: float = 1.0,
+) -> SlateData:
+    """Fetch everything the slate model needs through the backend gateway (cached/bulk)."""
+    if client is None:
+        from wayfinder_paths.core.clients.SportsClient import SPORTS_CLIENT
+
+        client = SPORTS_CLIENT
+    pacer = _Pacer(pace_s)
+
+    # 1) the game -> teams + opponent mapping
+    event = await _call(
+        client,
+        pacer,
+        endpoint_id="data.event.get",
+        sport=sport,
+        path_params={"id": game_id},
+    )
+    edata = event.get("data", {}).get("data", event.get("data", {})) or {}
+    home, away = edata.get("home_team") or {}, edata.get("visitor_team") or {}
+    opponent_of = {home.get("id"): away.get("id"), away.get("id"): home.get("id")}
+    await pacer.wait()
+
+    # 2) props -> best vendor -> distinct (player, prop_type) pairs
+    props_payload = await _call(
+        client,
+        pacer,
+        endpoint_id="data.player_props.list",
+        sport=sport,
+        query={"game_id": game_id, "per_page": 100},
+    )
+    prop_rows = _rows(props_payload)
+    vendor = select_vendor(prop_rows)
+    pairs: dict[tuple, dict[str, Any]] = {}
+    for row in prop_rows:
+        market = row.get("market") or {}
+        if (
+            str(row.get("vendor")) != vendor
+            or row.get("prop_type") not in sp.PROP_STATS
+            or market.get("over_odds") is None
+            or market.get("under_odds") is None
+        ):
+            continue
+        key = (row.get("player_id"), row.get("prop_type"))
+        pairs.setdefault(
+            key,
+            {
+                "player_id": row.get("player_id"),
+                "prop_type": row.get("prop_type"),
+                "line": float(row.get("line_value")),
+                "over_odds": float(market["over_odds"]),
+                "under_odds": float(market["under_odds"]),
+            },
+        )
+    props = list(pairs.values())
+    player_ids = sorted({p["player_id"] for p in props})
+    await pacer.wait()
+
+    # 3) full-season game logs: chunked + cursor-followed until exhausted
+    logs_by_player: dict[Any, list[dict[str, Any]]] = defaultdict(list)
+    player_names: dict[Any, str] = {}
+    player_team: dict[Any, Any] = {}
+
+    async def _fetch_logs(ids: list, *, per_page: int = 100) -> None:
+        cursor = None
+        for _ in range(_MAX_PAGES):
+            query: dict[str, Any] = {
+                "player_ids": ids,
+                "seasons": [season],
+                "per_page": per_page,
+            }
+            if cursor is not None:
+                query["cursor"] = cursor
+            payload = await _call(
+                client,
+                pacer,
+                endpoint_id="data.player_stats.list",
+                sport=sport,
+                query=query,
+            )
+            for log in _rows(payload):
+                player = log.get("player") or {}
+                pid = player.get("id")
+                if pid is None:
+                    continue
+                logs_by_player[pid].append(log)
+                if pid not in player_names and player.get("last_name"):
+                    first = (player.get("first_name") or "")[:1]
+                    player_names[pid] = f"{first}. {player['last_name']}".strip()
+                team = log.get("team") or {}
+                if pid not in player_team and team.get("id") is not None:
+                    player_team[pid] = team.get("id")
+            cursor = _next_cursor(payload)
+            await pacer.wait()
+            if cursor is None:
+                break
+
+    for i in range(0, len(player_ids), _CHUNK):
+        await _fetch_logs(player_ids[i : i + _CHUNK])
+
+    # completeness: refetch stragglers individually once; otherwise exclude with a reason
+    excluded: list[dict[str, Any]] = []
+    for pid in player_ids:
+        if not logs_by_player.get(pid):
+            await _fetch_logs([pid])
+        if not logs_by_player.get(pid):
+            excluded.append({"player_id": pid, "reason": "no_game_logs"})
+
+    # sort logs most-recent-first (score_prop expects that ordering)
+    for logs in logs_by_player.values():
+        logs.sort(key=lambda lg: (lg.get("game") or {}).get("date", ""), reverse=True)
+
+    # 4) season baseline from the full season of logs (played games only)
+    season_baseline: dict[Any, dict[str, float]] = {}
+    stat_keys = sorted({k for keys in sp.PROP_STATS.values() for k in keys})
+    for pid, logs in logs_by_player.items():
+        played = [lg for lg in logs if sp.parse_minutes(lg.get("min")) > 0]
+        if not played:
+            continue
+        baseline: dict[str, float] = {
+            "min": sum(sp.parse_minutes(lg.get("min")) for lg in played) / len(played)
+        }
+        for key in stat_keys:
+            baseline[key] = sum(float(lg.get(key) or 0.0) for lg in played) / len(
+                played
+            )
+        season_baseline[pid] = baseline
+
+    # 5) team factors (one call: all teams, advanced -> pace/def_rating)
+    teams_payload = await _call(
+        client,
+        pacer,
+        endpoint_id="data.team_season_averages.list",
+        sport=sport,
+        path_params={"category": "general"},
+        query={
+            "season": season,
+            "season_type": "regular",
+            "type": "advanced",
+            "per_page": 40,
+        },
+    )
+    team_stats: dict[Any, dict[str, Any]] = {}
+    for row in _rows(teams_payload):
+        team, stats = row.get("team") or {}, row.get("stats") or {}
+        if team.get("id") is not None:
+            team_stats[team["id"]] = {
+                "pace": stats.get("pace"),
+                "def_rating": stats.get("def_rating"),
+                "abbreviation": team.get("abbreviation") or team.get("name") or "?",
+            }
+    paces = [t["pace"] for t in team_stats.values() if t.get("pace")]
+    defs = [t["def_rating"] for t in team_stats.values() if t.get("def_rating")]
+    league_pace = sum(paces) / len(paces) if paces else 100.0
+    league_def = sum(defs) / len(defs) if defs else 113.0
+    await pacer.wait()
+
+    # 6) injuries (flag only)
+    injured: set[Any] = set()
+    try:
+        inj_payload = await _call(
+            client,
+            endpoint_id="data.injuries.list",
+            sport=sport,
+            query={"per_page": 100},
+        )
+        injured = {
+            (row.get("player") or {}).get("id")
+            for row in _rows(inj_payload)
+            if (row.get("player") or {}).get("id") is not None
+        }
+    except Exception:  # noqa: BLE001 - injuries are a soft signal, never fatal
+        pass
+
+    return SlateData(
+        sport=sport,
+        game_id=game_id,
+        season=season,
+        vendor=vendor or "?",
+        props=props,
+        logs_by_player=dict(logs_by_player),
+        season_baseline=season_baseline,
+        player_names=player_names,
+        player_team=player_team,
+        opponent_of=opponent_of,
+        team_stats=team_stats,
+        league_pace=league_pace,
+        league_def_rating=league_def,
+        injured=injured,
+        excluded=excluded,
+    )
+
+
+# ── score ────────────────────────────────────────────────────────────────────
+
+
+def score_prop_slate(slate: SlateData, *, kelly_fraction: float = 0.25) -> SlateResult:
+    """Score every prop with the sports_props model; partition by data quality."""
+    home_away = [tid for tid in slate.opponent_of if tid is not None]
+    pace_factor = 1.0
+    if len(home_away) == 2:
+        pace_factor = sp.pace_factor(
+            (slate.team_stats.get(home_away[0]) or {}).get("pace") or slate.league_pace,
+            (slate.team_stats.get(home_away[1]) or {}).get("pace") or slate.league_pace,
+            slate.league_pace,
+        )
+
+    excluded_ids = {entry["player_id"] for entry in slate.excluded}
+    actionable: list[SlatePick] = []
+    watch: list[SlatePick] = []
+
+    for prop in slate.props:
+        pid = prop["player_id"]
+        if pid in excluded_ids:
+            continue
+        logs = slate.logs_by_player.get(pid) or []
+        team_id = slate.player_team.get(pid)
+        opp_id = slate.opponent_of.get(team_id)
+        opp_def = (slate.team_stats.get(opp_id) or {}).get(
+            "def_rating"
+        ) or slate.league_def_rating
+        opp_factor = sp.opponent_factor(opp_def, slate.league_def_rating, weight=0.6)
+
+        score = sp.score_prop(
+            prop,
+            logs,
+            slate.season_baseline.get(pid),
+            opponent_factor=opp_factor,
+            pace_factor=pace_factor,
+            injured=pid in slate.injured,
+            min_games=MIN_GAMES,
+            kelly_fraction=kelly_fraction,
+        )
+        if score is None:
+            continue
+
+        flags = list(score.flags)
+        if abs(score.edge) > SUSPECT_EDGE:
+            flags.append("suspect_edge")
+
+        pick = SlatePick(
+            player_id=pid,
+            player_name=slate.player_names.get(pid, str(pid)),
+            team=(slate.team_stats.get(team_id) or {}).get("abbreviation", "?"),
+            prop_type=score.prop_type,
+            line=score.line,
+            side=score.side,
+            model_p=round(score.model_p, 4),
+            book_p=round(score.book_p, 4),
+            book_edge=round(score.edge, 4),
+            book_ev=round(score.ev, 4),
+            kelly=round(score.kelly, 4),
+            proj_mean=round(score.projection.mean, 2),
+            proj_std=round(score.projection.std, 2),
+            n_games=score.projection.n,
+            flags=flags,
+        )
+        (watch if flags else actionable).append(pick)
+
+    actionable.sort(key=lambda p: p.book_ev, reverse=True)
+    watch.sort(key=lambda p: p.book_ev, reverse=True)
+    return SlateResult(
+        sport=slate.sport,
+        game_id=slate.game_id,
+        season=slate.season,
+        vendor=slate.vendor,
+        actionable=actionable,
+        watch=watch,
+        excluded=slate.excluded,
+        pace_factor=round(pace_factor, 4),
+    )
+
+
+# ── render / artifacts ───────────────────────────────────────────────────────
+
+
+def _pick_row(pick: SlatePick) -> dict[str, Any]:
+    return {
+        "player": pick.player_name,
+        "team": pick.team,
+        "prop": pick.prop_type,
+        "line": pick.line,
+        "side": pick.side,
+        "model_p": pick.model_p,
+        "book_p": pick.book_p,
+        "book_edge": pick.book_edge,
+        "book_ev": pick.book_ev,
+        "kelly": pick.kelly,
+        "proj": pick.proj_mean,
+        "std": pick.proj_std,
+        "n": pick.n_games,
+        "flags": ",".join(pick.flags),
+        "player_id": pick.player_id,
+    }
+
+
+def slate_rows(result: SlateResult) -> list[dict[str, Any]]:
+    rows = []
+    for bucket, picks in (("actionable", result.actionable), ("watch", result.watch)):
+        for pick in picks:
+            rows.append({"bucket": bucket, **_pick_row(pick)})
+    return rows
+
+
+def render_slate(result: SlateResult, *, top: int = 12) -> str:
+    lines = [
+        f"PROP SLATE — {result.sport} game {result.game_id} (season {result.season}, "
+        f"vendor {result.vendor}, pace×{result.pace_factor})",
+        "",
+        f"ACTIONABLE (clean data, sane edges) — top {top} by book EV:",
+    ]
+    fmt = (
+        "  {player:<18} {team:<4} {prop:<24} {side:<5} {line:<5} proj {proj:>5} "
+        "mP {model_p:.2f} bP {book_p:.2f} edge {book_edge:+.2f} EV {book_ev:+.2f} n={n}"
+    )
+    for pick in result.actionable[:top]:
+        lines.append(fmt.format(**_pick_row(pick)))
+    if not result.actionable:
+        lines.append("  (none)")
+    lines.append("")
+    lines.append(f"WATCH (flagged: low sample / injured / suspect edge) — top {top}:")
+    for pick in result.watch[:top]:
+        lines.append(fmt.format(**_pick_row(pick)) + f"  [{','.join(pick.flags)}]")
+    if not result.watch:
+        lines.append("  (none)")
+    if result.excluded:
+        lines.append("")
+        lines.append(
+            "EXCLUDED (not scored): "
+            + ", ".join(f"{e['player_id']} ({e['reason']})" for e in result.excluded)
+        )
+    lines.append("")
+    lines.append("NOTE: " + result.note)
+    return "\n".join(lines)
+
+
+async def run_prop_slate(
+    sport: str,
+    game_id: int | str,
+    season: int,
+    *,
+    client: Any = None,
+    out_dir: str | Path | None = None,
+    top: int = 12,
+) -> tuple[SlateResult, list[str]]:
+    """Fetch + score + (optionally) write artifacts. Returns (result, artifact_paths)."""
+    slate = await fetch_prop_slate(sport, game_id, season, client=client)
+    result = score_prop_slate(slate)
+    artifacts: list[str] = []
+    if out_dir:
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        rows = slate_rows(result)
+        csv_path = out / f"prop_slate_{game_id}.csv"
+        if rows:
+            with csv_path.open("w", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=list(rows[0].keys()))
+                writer.writeheader()
+                writer.writerows(rows)
+            artifacts.append(str(csv_path))
+        json_path = out / f"prop_slate_{game_id}.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "sport": result.sport,
+                    "game_id": result.game_id,
+                    "season": result.season,
+                    "vendor": result.vendor,
+                    "pace_factor": result.pace_factor,
+                    "note": result.note,
+                    "rows": rows,
+                    "excluded": result.excluded,
+                },
+                indent=2,
+                default=str,
+            )
+        )
+        artifacts.append(str(json_path))
+    return result, artifacts
+
+
+def _main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Score a game's player-prop slate.")
+    parser.add_argument("--sport", required=True)
+    parser.add_argument("--game-id", required=True)
+    parser.add_argument("--season", type=int, required=True)
+    parser.add_argument("--out", default=".wayfinder_runs/sports")
+    parser.add_argument("--top", type=int, default=12)
+    args = parser.parse_args()
+
+    result, artifacts = asyncio.run(
+        run_prop_slate(
+            args.sport, args.game_id, args.season, out_dir=args.out, top=args.top
+        )
+    )
+    print(render_slate(result, top=args.top))
+    print()
+    print("artifacts:", " ".join(artifacts) if artifacts else "(none)")
+    if not (result.actionable or result.watch):
+        raise SystemExit(2)
+
+
+if __name__ == "__main__":
+    _main()

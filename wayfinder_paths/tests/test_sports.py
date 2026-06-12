@@ -274,6 +274,10 @@ def test_sports_subagent_prompt_states_key_rules() -> None:
     assert "SPORTS_CLIENT" in body
     assert "Data analysis & modelling" in body
     assert '"dataFiles": []' in body
+    # the canned pipeline is the primary modelling path (hand-rolling burned a live run)
+    assert "wayfinder_paths.quant.prop_slate" in body
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text("utf-8")
+    assert "wayfinder_paths.quant.prop_slate" in skill
 
 
 def test_delegators_describe_sports_capabilities() -> None:

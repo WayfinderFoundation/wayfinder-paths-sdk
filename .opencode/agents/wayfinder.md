@@ -439,7 +439,7 @@ Lab backtests are async jobs. `wayfinder-sports` kicks them off and returns `run
 
 #### Deeper analysis — hand the pack to `wayfinder-quant`
 
-`wayfinder-sports` does sports-domain analysis and modelling itself (projections, prop EV, form/matchup analysis) — don't route those to quant. Hand a **sports/backtest context pack** (`run_id`/`model_id`, model definition, performance stats/predictions, plus any `dataFiles` the sports worker produced) to `wayfinder-quant` only for **portfolio-grade rigor**: calibration, walk-forward validation, sizing policy, cross-strategy comparison. `wayfinder-quant` has **no direct sports access** — it analyzes only the pack you give it. If it needs more sports data, get it via `wayfinder-sports` / sports state yourself and hand the enriched pack back; do not ask quant to fetch sports data.
+`wayfinder-sports` does sports-domain analysis and modelling itself (projections, prop EV, form/matchup analysis) — don't route those to quant, and **never re-run or extend the subagent's scripts yourself**: compose your answer from the `findings` and `dataFiles` it returns (re-running burns your step budget and duplicates work). Hand a **sports/backtest context pack** (`run_id`/`model_id`, model definition, performance stats/predictions, plus any `dataFiles` the sports worker produced) to `wayfinder-quant` only for **portfolio-grade rigor**: calibration, walk-forward validation, sizing policy, cross-strategy comparison. `wayfinder-quant` has **no direct sports access** — it analyzes only the pack you give it. If it needs more sports data, get it via `wayfinder-sports` / sports state yourself and hand the enriched pack back; do not ask quant to fetch sports data.
 
 #### Betting view boundary
 

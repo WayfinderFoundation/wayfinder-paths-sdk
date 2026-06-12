@@ -130,9 +130,25 @@ sports bets only on Polymarket. Compute edges with
 
 ## Scripted analysis (inside `core_run_script`)
 
-For data manipulation, analysis, and custom modelling, run a bounded Python script. Fetch through
-`SPORTS_CLIENT` (same backend gateway as the MCP tools: key-safe, allowlisted, cached — never raw
-provider URLs), shape with pandas, model with the quant modules:
+**For prop-slate EV analysis, run the canned pipeline — don't write your own model:**
+
+```
+poetry run python -m wayfinder_paths.quant.prop_slate \
+  --sport nba --game-id <GAME_ID> --season <SEASON> --out .wayfinder_runs/sports
+```
+
+One command: fetches props + complete paginated game logs + team pace/defense + injuries,
+models with proper distributions and de-vigged book probabilities, and prints an
+`ACTIONABLE` / `WATCH` (flagged) / `EXCLUDED` (no joinable data) table; writes
+`prop_slate_<game>.csv/.json` artifacts. Output fields per pick: `model_p`, `book_p`,
+`book_edge`, `book_ev`, `kelly`, `proj`, `n`, `flags`. `book_*` numbers are vs the de-vigged
+SPORTSBOOK odds — informational; the executable stage is
+`sports_props.market_edge(pick.model_p, polymarket_price)` against a matching Polymarket market.
+
+For custom analysis the pipeline doesn't cover (matchup deep-dives, soccer xG, cross-game
+studies), write a bounded script. Fetch through `SPORTS_CLIENT` (same backend gateway as the MCP
+tools: key-safe, allowlisted, cached — never raw provider URLs), shape with pandas, model with
+the quant modules:
 
 ```python
 import asyncio, pandas as pd
