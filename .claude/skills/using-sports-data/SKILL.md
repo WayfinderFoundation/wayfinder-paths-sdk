@@ -130,11 +130,18 @@ sports bets only on Polymarket. Compute edges with
 
 ## Scripted analysis (inside `core_run_script`)
 
-**For prop-slate EV analysis, run the canned pipeline — don't write your own model:**
+**For betting analysis, run the canned pipelines — don't write your own model, and never
+pull odds from the web (provider odds only):**
 
 ```
+# player props -> ACTIONABLE/WATCH/EXCLUDED EV table
 poetry run python -m wayfinder_paths.quant.prop_slate \
   --sport nba --game-id <GAME_ID> --season <SEASON> --out .wayfinder_runs/sports
+
+# game markets (moneyline/total/spread) -> model vs consensus de-vigged books
+# (+ the provider's polymarket vendor line as the quasi-executable reference)
+poetry run python -m wayfinder_paths.quant.game_slate \
+  --sport nhl --game-id <GAME_ID> --season <SEASON> --date <GAME_DATE> --out .wayfinder_runs/sports
 ```
 
 One command: fetches props + complete paginated game logs + team pace/defense + injuries,

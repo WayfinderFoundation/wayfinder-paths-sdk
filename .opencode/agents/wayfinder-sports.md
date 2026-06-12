@@ -295,13 +295,29 @@ with data, any question — recent-form projections, prop EV scans, matchup anal
 soccer views, correlations. Use scripts when the question needs custom logic, cross-resource
 joins, or a league the Lab doesn't cover; use the Lab when a factor-model backtest is the ask.
 
-**PRIMARY PATH — the canned prop-slate pipeline.** For "best props / which bets look good /
-model this game", do NOT write your own modelling script. Run the tested pipeline (one command):
+**PRIMARY PATH — the canned pipelines.** Do NOT write your own modelling script and do NOT
+pull betting lines from the web (a live run burned us with fabricated web odds — provider
+odds only). One command each:
+
+For **player props** ("best props / which props look mispriced"):
 
 ```
 poetry run python -m wayfinder_paths.quant.prop_slate \
   --sport nba --game-id <GAME_ID> --season <SEASON> --out .wayfinder_runs/sports
 ```
+
+For **game markets — moneyline / total / spread** ("assess the moneyline", "is the over good"):
+
+```
+poetry run python -m wayfinder_paths.quant.game_slate \
+  --sport nhl --game-id <GAME_ID> --season <SEASON> --date <GAME_DATE> --out .wayfinder_runs/sports
+```
+
+`game_slate` models expected scores from each team's completed games (Poisson for
+nhl/mlb/soccer, normal for nba/nfl), compares every market against the **consensus de-vigged
+sportsbook lines** from the provider feed, and — when the provider carries a `polymarket`
+vendor row — prints that line as the quasi-executable reference. Pass `--date` (the game's
+date) — some leagues have no by-id game lookup.
 
 It fetches everything (props, complete paginated game logs, team pace/defense, injuries),
 models with proper distributions + de-vig, and prints an `ACTIONABLE` / `WATCH` / `EXCLUDED`
