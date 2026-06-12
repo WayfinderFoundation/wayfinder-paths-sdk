@@ -199,11 +199,15 @@ def test_primary_agent_gets_reads_not_facade() -> None:
     fm = _frontmatter(REPO / ".opencode" / "agents" / "wayfinder.md")
     perm = fm["permission"]
     assert perm["task"]["wayfinder-sports"] == "allow"
-    assert perm["wayfinder_sports_*"] == "deny"
     assert perm["wayfinder_sports_snapshot"] == "allow"
     assert perm["wayfinder_sports_backtest_state"] == "allow"
-    # The full facade is NOT granted to the primary.
+    # The full facade is NOT granted to the primary (covered by the wayfinder_* deny).
     assert "wayfinder_sports_provider" not in perm
+    assert perm["wayfinder_*"] == "deny"
+    # REGRESSION (burned a live run): a wayfinder_sports_* deny glob in the .md gets
+    # APPENDED after the json block's allows by the config merge and silently removes
+    # the tools (last-match-wins). The glob must not exist here.
+    assert "wayfinder_sports_*" not in perm
 
 
 def test_research_agent_may_delegate_to_sports() -> None:

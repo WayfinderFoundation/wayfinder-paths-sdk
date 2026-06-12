@@ -53,8 +53,10 @@ permission:
   # research_* — delegated to wayfinder-research subagent
   wayfinder_research_*: deny
   # sports_* — primary gets bounded live reads + run monitoring; the full provider
-  # facade (wayfinder_sports_provider) is delegated to the hidden wayfinder-sports subagent
-  wayfinder_sports_*: deny
+  # facade (wayfinder_sports_provider) stays denied via the top-level wayfinder_* deny.
+  # NOTE: do NOT add a wayfinder_sports_* deny glob here — config merge appends md-only
+  # keys AFTER the json block's keys, so a glob added here lands after these allows and
+  # (last-match-wins) silently removes the tools. Burned a live run.
   wayfinder_sports_snapshot: allow
   wayfinder_sports_backtest_state: allow
 ---
