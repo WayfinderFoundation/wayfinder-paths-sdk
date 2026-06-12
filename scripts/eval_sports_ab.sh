@@ -23,10 +23,19 @@ SKILL_DIR="$REPO/.claude/skills/using-sports-data"
 SKILL_HIDDEN="/tmp/_eval_hidden_using-sports-data"
 RESEARCH_MD="$REPO/.opencode/agents/wayfinder-research.md"
 
-QUESTIONS=(
-  "Scan the World Cup winner (trophy) market — are any countries mispriced, especially vs what's tradeable on Polymarket? Show the numbers behind every call."
-  "Are the odds on the next Canada vs Bosnia & Herzegovina World Cup game priced correctly? Blend the data with current news — injuries, lineups, late team news."
-)
+# Question set: one question per line in $EVAL_QUESTIONS_FILE, else the built-in pair.
+if [ -n "${EVAL_QUESTIONS_FILE:-}" ]; then
+  QUESTIONS=()
+  while IFS= read -r line; do
+    [ -n "$line" ] && QUESTIONS+=("$line")
+  done < "$EVAL_QUESTIONS_FILE"
+  [ ${#QUESTIONS[@]} -gt 0 ] || { echo "no questions in $EVAL_QUESTIONS_FILE" >&2; exit 1; }
+else
+  QUESTIONS=(
+    "Scan the World Cup winner (trophy) market — are any countries mispriced, especially vs what's tradeable on Polymarket? Show the numbers behind every call."
+    "Are the odds on the next Canada vs Bosnia & Herzegovina World Cup game priced correctly? Blend the data with current news — injuries, lineups, late team news."
+  )
+fi
 
 mkdir -p "$OUT"
 hide_sports() {

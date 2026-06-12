@@ -21,6 +21,9 @@ leagues that DO support it** — never guess availability, read the error or the
 
 Leagues: `nba nfl mlb nhl wnba ncaaf ncaab ncaaw cbb epl laliga seriea bundesliga ligue1 ucl
 mls worldcup mma f1 atp wta pga cs2 lol dota2`. Lab (backtesting) = **nba/nfl/nhl/mlb only**.
+Common wrong guesses → right slug: `fifa`/`fiba` → `worldcup`; `soccer` → a league slug
+(`epl`/`laliga`/`ucl`/...); `football` → `nfl`; `tennis` → `atp`/`wta`; `golf` → `pga`.
+An invalid slug returns a 400 listing the valid choices — read it, don't keep guessing.
 
 ## Canonical resources (what each returns, key params)
 
@@ -161,7 +164,10 @@ recommend the cheap side on trust — the prior is the EXECUTABLE price, the boo
 enters as one capped evidence card, and the gap must be adjudicated (research: "what
 explains the cheap side?" — post-line news, resolution-rules mismatch, lockup/flow,
 de-vig method risk) before any recommendation. An unexplained dislocation gates to
-WATCH with the EV shown — by design.
+WATCH with the EV shown — by design. Sub-threshold gaps are VENUE NOISE, not edge:
+never describe one as "X points too rich/cheap" — say the market is priced within
+normal venue tolerance (a directional view from evidence is "a lean within noise,
+not a value call").
 
 The pipelines are multi-sport (NBA/NHL/MLB/World Cup verified live). MLB notes: props
 include one-sided "milestone" quotes (single odds, no under side) — the pipeline skips

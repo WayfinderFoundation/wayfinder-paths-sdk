@@ -137,3 +137,16 @@ def test_render_ledger_shows_cards_gate_and_doctrine():
     assert "ROI" in text and "decision: WATCH" in text
     assert "EXECUTABLE market price" in text  # prior doctrine named
     assert "keeper injury rumor" in text
+
+
+def test_sub_threshold_renders_venue_noise_line():
+    """A live run called a sub-threshold gap '3-5 points too rich' — the ledger now
+    names it venue noise so the agent can't present it as edge."""
+    report = spo.dislocation(MATCH_BOOK, MATCH_PM)  # llr ~0.044: below the gate
+    assert not report.needs_adjudication
+    cards = [spo.book_fair_evidence_card(MATCH_BOOK, MATCH_PM, n_vendors=6)]
+    text = spo.render_ledger(
+        spo.sports_posterior(cards, market_p=MATCH_PM), dislocation_report=report
+    )
+    assert "VENUE NOISE, not edge" in text
+    assert "adjudication REQUIRED" not in text

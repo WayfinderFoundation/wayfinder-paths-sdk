@@ -331,3 +331,19 @@ def test_opencode_json_registers_sports_perms() -> None:
     sports = agents["wayfinder-sports"]["permission"]
     assert sports["wayfinder_*"] == "deny"
     assert sports["wayfinder_sports_*"] == "allow"
+
+
+def test_observed_failure_modes_are_ruled_out_in_prompts() -> None:
+    """Each needle pins a rule added after a specific live failure."""
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text("utf-8")
+    research = (REPO / ".opencode" / "agents" / "wayfinder-research.md").read_text("utf-8")
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    # sub-threshold gaps are noise, never edge (a live run called one '3-5pp too rich')
+    assert "VENUE NOISE" in primary and "lean within noise" in primary
+    assert "VENUE NOISE" in skill
+    # exact helper kwargs (a live research pass TypeError'd on bid=/ask=)
+    assert "yes_bid=" in research and "implied_prior_from_quote(yes_bid=" in research
+    # sport slug wrong-guess guidance (a live run tried fifa/fiba)
+    for text in (skill, sports):
+        assert "`fifa`/`fiba`" in text and "worldcup" in text

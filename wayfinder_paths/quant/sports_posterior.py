@@ -298,10 +298,15 @@ def render_ledger(
     ]
     if dislocation_report is not None:
         d = dislocation_report
+        verdict = (
+            "adjudication REQUIRED"
+            if d.needs_adjudication
+            else "below adjudication threshold: treat as VENUE NOISE, not edge"
+        )
         lines.append(
             f"dislocation: book {d.book_fair_p:.4f} vs market {d.market_p:.4f} "
             f"(gap {d.gap_pp * 100:.2f}pp, llr {d.gap_llr:.3f}, cheap side {d.cheap_side}) "
-            f"-> adjudication {'REQUIRED' if d.needs_adjudication else 'not required'}"
+            f"-> {verdict}"
         )
     lines.append("")
     lines.append(f"{'evidence':<44} {'dir':<8} {'llr':>7}  {'Δpp':>6}")

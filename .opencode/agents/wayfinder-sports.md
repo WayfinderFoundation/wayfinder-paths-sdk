@@ -99,6 +99,10 @@ wayfinder_sports_provider(
 endpoint specifics** (every `endpoint_id`, its params, per-sport availability, betting coverage,
 and Lab schema details). Don't guess params or availability from memory.
 
+Sport slugs are exact — common wrong guesses → right slug: `fifa`/`fiba` → `worldcup`;
+`soccer` → a league slug (`epl`/`laliga`/`ucl`/...); `football` → `nfl`; `tennis` →
+`atp`/`wta`; `golf` → `pga`. An invalid slug returns a 400 listing the valid choices.
+
 **Which sports support what (quick map):**
 
 | Sport(s) | Beyond the basics (teams/competitors/events/standings) |
