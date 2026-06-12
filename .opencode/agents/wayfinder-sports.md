@@ -323,6 +323,23 @@ poetry run python -m wayfinder_paths.quant.game_slate \
   --sport nhl --game-id <GAME_ID> --season <SEASON> --date <GAME_DATE> --out .wayfinder_runs/sports
 ```
 
+For **futures fields — tournament winner / group winner / reach-final** ("is any country
+mispriced for the trophy"):
+
+```
+poetry run python -m wayfinder_paths.quant.futures_slate \
+  --sport worldcup --market-type outright --out .wayfinder_runs/sports
+```
+
+`futures_slate` de-vigs the whole field per vendor (a single futures quote carries the
+entire field's vig — never read one quote as a probability) and prints fair_p per
+candidate plus the field overround. Market types that span sub-markets (group_winner)
+need `--market-name "Group A"`. Soccer notes: moneylines are three-way (1X2) — the
+pipelines de-vig home/draw/away together and the model prices the draw; a brand-new
+tournament has no completed-game form, so game_slate emits odds-only views flagged
+`no_form_model` — bring tournament-external form/news via your delegator instead of
+inventing a model.
+
 `game_slate` models expected scores from each team's completed games (Poisson for
 nhl/mlb/soccer, normal for nba/nfl), compares every market against the **consensus de-vigged
 sportsbook lines** from the provider feed, and — when the provider carries a `polymarket`

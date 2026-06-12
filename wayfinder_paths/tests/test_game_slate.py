@@ -227,3 +227,113 @@ def test_whole_number_lines_condition_on_push():
         110, 110, total_line=220.0, spread_line=None, margin_sigma=12, total_sigma=19
     )
     assert exact_mean["over"] == pytest.approx(0.5, abs=1e-6)  # symmetric around the line
+
+
+# ── soccer: three-way moneyline, nested totals, zero-form guard ──────────────
+
+
+def _wc_odds_row(vendor, ml_h, ml_d, ml_a, total_markets=()):
+    nested = []
+    for line, over, under in total_markets:
+        nested.append(
+            {
+                "key": f"total_match_match_over/under_{line}_goals_{line}",
+                "type": "total",
+                "period": "match",
+                "scope": "match",
+                "line_value": str(line),
+                "outcomes": [
+                    {"type": "over", "american_odds": over},
+                    {"type": "under", "american_odds": under},
+                ],
+            }
+        )
+    return {
+        "vendor": vendor,
+        "match_id": 3,
+        "moneyline_home_odds": ml_h,
+        "moneyline_draw_odds": ml_d,
+        "moneyline_away_odds": ml_a,
+        "total_value": None,
+        "total_over_odds": None,
+        "total_under_odds": None,
+        "markets": nested,
+    }
+
+
+def test_three_way_moneyline_devig_and_nested_totals():
+    rows = [
+        _wc_odds_row("fanduel", -125, 250, 380, [(1.5, -200, 160), (2.5, 105, -125), (4.5, 600, -1000)]),
+        _wc_odds_row("draftkings", -120, 250, 380, [(2.5, 100, -120), (4.5, 550, -900)]),
+    ]
+    markets = gs.parse_game_odds(rows)
+    ml = markets["moneyline"]
+    assert ml["three_way"] is True
+    assert ml["home_p"] + ml["draw_p"] + ml["away_p"] == pytest.approx(1.0)
+    assert ml["home_p"] > 0.5 > ml["away_p"]  # Canada favorite, Bosnia dog
+    # nested totals parsed; tie on vendor count broken toward the balanced (main) line
+    assert markets["total"]["line"] == 2.5
+    assert 0.4 < markets["total"]["over_p"] < 0.6
+
+
+def test_draws_sport_emits_three_way_model():
+    p = gs.poisson_game_probs(1.6, 1.1, total_line=2.5, spread_line=None, split_ties=False)
+    assert p["home_ml"] + p["draw"] + p["away_ml"] == pytest.approx(1.0, abs=1e-6)
+    assert p["draw"] > 0.15  # soccer-range draw mass
+
+    slate = gs.GameSlate(
+        sport="worldcup",
+        game_id=3,
+        season=2026,
+        home={"id": 1, "abbreviation": "CAN"},
+        away={"id": 2, "abbreviation": "BIH"},
+        home_form={"for": 1.8, "against": 0.9, "n": 10},
+        away_form={"for": 1.1, "against": 1.4, "n": 10},
+        markets=gs.parse_game_odds([_wc_odds_row("fanduel", -125, 250, 380, [(2.5, 105, -125)])]),
+    )
+    result = gs.score_game_slate(slate)
+    names = [v.market for v in result.views]
+    assert "moneyline_draw" in names
+    draw = next(v for v in result.views if v.market == "moneyline_draw")
+    assert draw.model_p is not None and draw.book_p is not None
+    ml_sum = sum(
+        v.model_p for v in result.views if v.market.startswith("moneyline")
+    )
+    assert ml_sum == pytest.approx(1.0, abs=1e-4)
+
+
+def test_zero_form_guard_yields_odds_only_views():
+    slate = gs.GameSlate(
+        sport="worldcup",
+        game_id=3,
+        season=2026,
+        home={"id": 1, "abbreviation": "CAN"},
+        away={"id": 2, "abbreviation": "BIH"},
+        home_form={"for": 0.0, "against": 0.0, "n": 0},  # tournament just started
+        away_form={"for": 0.0, "against": 0.0, "n": 0},
+        markets=gs.parse_game_odds([_wc_odds_row("fanduel", -125, 250, 380, [(2.5, 105, -125)])]),
+    )
+    result = gs.score_game_slate(slate)
+    assert result.lam_home == 0.0 and result.lam_away == 0.0
+    assert all(v.model_p is None and v.book_edge is None for v in result.views)
+    ml_home = next(v for v in result.views if v.market == "moneyline_home")
+    assert ml_home.book_p is not None and ml_home.book_p > 0.5  # odds still shown
+    assert any("no_form_model" in v.flags for v in result.views)
+    text = gs.render_game(result)
+    assert "no_form_model" in text and "n/a" in text
+
+
+def test_worldcup_event_shape():
+    row = {
+        "id": 1,
+        "datetime": "2026-06-11T19:00:00.000Z",
+        "status": "completed",
+        "home_team": {"id": 10, "abbreviation": "MEX"},
+        "away_team": {"id": 20, "abbreviation": "RSA"},
+        "home_score": 2,
+        "away_score": 0,
+    }
+    assert gs.event_completed(row)
+    assert gs.event_scores(row) == (2, 0)
+    assert gs.event_date(row).startswith("2026-06-11")
+    assert not gs.event_completed({**row, "status": "scheduled"})

@@ -144,10 +144,21 @@ poetry run python -m wayfinder_paths.quant.game_slate \
   --sport nhl --game-id <GAME_ID> --season <SEASON> --date <GAME_DATE> --out .wayfinder_runs/sports
 ```
 
-Both pipelines are multi-sport (NBA/NHL/MLB verified live). MLB notes: props include
-one-sided "milestone" quotes (single odds, no under side) — the pipeline skips these with
-a visible count; do NOT model them by hand (a single quote cannot be de-vigged). MLB
-pitcher props project off outs recorded, batter props off plate appearances.
+```
+# futures fields (tournament winner / group winner / reach-final) -> de-vigged fair_p per candidate
+poetry run python -m wayfinder_paths.quant.futures_slate \
+  --sport worldcup --market-type outright --out .wayfinder_runs/sports
+```
+
+The pipelines are multi-sport (NBA/NHL/MLB/World Cup verified live). MLB notes: props
+include one-sided "milestone" quotes (single odds, no under side) — the pipeline skips
+these with a visible count; do NOT model them by hand (a single quote cannot be
+de-vigged). MLB pitcher props project off outs recorded, batter props off plate
+appearances. Soccer notes: moneylines are three-way (1X2 — home/draw/away de-vigged
+together; never two-way over home/away); futures quotes carry the whole field's vig
+(de-vig across the entire field, never read one quote as a probability); a brand-new
+tournament has no completed-game form — game_slate flags `no_form_model` and shows
+odds-only views.
 
 One command: fetches props + complete paginated game logs + team pace/defense + injuries,
 models with proper distributions and de-vigged book probabilities, and prints an

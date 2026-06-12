@@ -45,17 +45,18 @@ _RECENT_N = 25
 _MAX_PAGES = 6
 
 # Sport model config: distribution + home advantage + normal-sigma fallbacks.
+# "draws": the moneyline is three-way (1X2) — regulation draws stand, never split.
 _SPORT_CONFIG: dict[str, dict[str, Any]] = {
     "nhl": {"dist": "poisson", "home_adv": 1.05},
     "mlb": {"dist": "poisson", "home_adv": 1.04},
-    "epl": {"dist": "poisson", "home_adv": 1.15},
-    "laliga": {"dist": "poisson", "home_adv": 1.15},
-    "seriea": {"dist": "poisson", "home_adv": 1.15},
-    "bundesliga": {"dist": "poisson", "home_adv": 1.15},
-    "ligue1": {"dist": "poisson", "home_adv": 1.15},
-    "ucl": {"dist": "poisson", "home_adv": 1.12},
-    "mls": {"dist": "poisson", "home_adv": 1.15},
-    "worldcup": {"dist": "poisson", "home_adv": 1.05},
+    "epl": {"dist": "poisson", "home_adv": 1.15, "draws": True},
+    "laliga": {"dist": "poisson", "home_adv": 1.15, "draws": True},
+    "seriea": {"dist": "poisson", "home_adv": 1.15, "draws": True},
+    "bundesliga": {"dist": "poisson", "home_adv": 1.15, "draws": True},
+    "ligue1": {"dist": "poisson", "home_adv": 1.15, "draws": True},
+    "ucl": {"dist": "poisson", "home_adv": 1.12, "draws": True},
+    "mls": {"dist": "poisson", "home_adv": 1.15, "draws": True},
+    "worldcup": {"dist": "poisson", "home_adv": 1.05, "draws": True},
     "nba": {
         "dist": "normal",
         "home_adv": 1.015,
@@ -104,12 +105,12 @@ def event_scores(row: dict[str, Any]) -> tuple[Any, Any]:
 
 
 def event_date(row: dict[str, Any]) -> str:
-    return str(row.get("game_date") or row.get("date") or "")
+    return str(row.get("game_date") or row.get("date") or row.get("datetime") or "")
 
 
 def event_completed(row: dict[str, Any]) -> bool:
     state = str(row.get("game_state") or row.get("status") or "").lower()
-    if any(tag in state for tag in ("off", "final", "ft", "ended")):
+    if any(tag in state for tag in ("off", "final", "ft", "ended", "complete")):
         home, away = event_scores(row)
         return home is not None and away is not None
     return False
@@ -139,10 +140,12 @@ def poisson_game_probs(
     total_line: float,
     spread_line: float | None,
     grid: int = 20,
+    split_ties: bool = True,
 ) -> dict[str, float]:
     """Joint-grid probabilities for moneyline / total / home-spread from two Poissons.
 
-    Regulation ties are split by relative strength (covers OT/SO moneylines).
+    With ``split_ties`` regulation ties are split by relative strength (covers OT/SO
+    moneylines); soccer's three-way 1X2 passes ``split_ties=False`` and reads ``draw``.
     ``spread_line`` is the HOME spread (e.g. +1.5 means home covers if margin > -1.5).
     Whole-number lines push (bet refunded), so over/spread probabilities are
     conditioned on no-push — that is what a book's two-sided quote prices.
@@ -172,8 +175,9 @@ def poisson_game_probs(
                     p_spread_push += p
     strength = lam_home / (lam_home + lam_away) if (lam_home + lam_away) > 0 else 0.5
     out = {
-        "home_ml": p_home + p_tie * strength,
-        "away_ml": p_away + p_tie * (1 - strength),
+        "home_ml": (p_home + p_tie * strength) if split_ties else p_home,
+        "away_ml": (p_away + p_tie * (1 - strength)) if split_ties else p_away,
+        "draw": p_tie,
         "over": p_over / (1.0 - p_total_push) if p_total_push < 1.0 else 0.5,
         "total_push": p_total_push,
     }
@@ -234,9 +238,47 @@ def _median_devig(pairs: list[tuple[float, float]]) -> tuple[float, float] | Non
     return p1, 1.0 - p1
 
 
+def _devig_three_way(h: float, d: float, a: float) -> tuple[float, float, float]:
+    """Normalize a 1X2 triple's implied probabilities (soccer moneyline with draw)."""
+    ih, idr, ia = (
+        sp.american_to_implied(h),
+        sp.american_to_implied(d),
+        sp.american_to_implied(a),
+    )
+    total = ih + idr + ia
+    if total <= 0:
+        raise ValueError("invalid 1X2 odds")
+    return ih / total, idr / total, ia / total
+
+
+def _nested_totals(row: dict[str, Any]):
+    """Yield (line, over_odds, under_odds) from a row's nested market objects (soccer
+    rows carry totals only there — the flat total_* fields are null)."""
+    for mk in row.get("markets") or []:
+        if (
+            mk.get("type") != "total"
+            or mk.get("period") != "match"
+            or mk.get("scope") != "match"
+            or "over/under" not in str(mk.get("key", ""))
+        ):
+            continue
+        over = under = None
+        for outcome in mk.get("outcomes") or []:
+            if outcome.get("type") == "over":
+                over = outcome.get("american_odds")
+            elif outcome.get("type") == "under":
+                under = outcome.get("american_odds")
+        try:
+            if over and under and mk.get("line_value") is not None:
+                yield float(mk["line_value"]), float(over), float(under)
+        except (TypeError, ValueError):
+            continue
+
+
 def parse_game_odds(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Consensus markets from per-vendor odds rows (+ the polymarket vendor row if any)."""
     ml_pairs: list[tuple[float, float]] = []
+    ml_triples: list[tuple[float, float, float]] = []  # 1X2 (home, draw, away)
     total_by_line: dict[float, list[tuple[float, float]]] = {}
     spread_by_line: dict[float, list[tuple[float, float]]] = {}
     polymarket_row = None
@@ -248,12 +290,21 @@ def parse_game_odds(rows: list[dict[str, Any]]) -> dict[str, Any]:
             polymarket_row = row
         try:
             if row.get("moneyline_home_odds") and row.get("moneyline_away_odds"):
-                ml_pairs.append(
-                    (
-                        float(row["moneyline_home_odds"]),
-                        float(row["moneyline_away_odds"]),
+                if row.get("moneyline_draw_odds"):
+                    ml_triples.append(
+                        (
+                            float(row["moneyline_home_odds"]),
+                            float(row["moneyline_draw_odds"]),
+                            float(row["moneyline_away_odds"]),
+                        )
                     )
-                )
+                else:
+                    ml_pairs.append(
+                        (
+                            float(row["moneyline_home_odds"]),
+                            float(row["moneyline_away_odds"]),
+                        )
+                    )
             if (
                 row.get("total_value")
                 and row.get("total_over_odds")
@@ -263,6 +314,8 @@ def parse_game_odds(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 total_by_line.setdefault(line, []).append(
                     (float(row["total_over_odds"]), float(row["total_under_odds"]))
                 )
+            for line, over, under in _nested_totals(row):
+                total_by_line.setdefault(line, []).append((over, under))
             if (
                 row.get("spread_home_value")
                 and row.get("spread_home_odds")
@@ -276,7 +329,26 @@ def parse_game_odds(rows: list[dict[str, Any]]) -> dict[str, Any]:
             continue
 
     markets: dict[str, Any] = {"vendors": sorted(str(v) for v in vendors if v)}
-    if ml_pairs:
+    if ml_triples:  # three-way (1X2) takes precedence: a draw is a real outcome
+        probs = []
+        for h, d, a in ml_triples:
+            try:
+                probs.append(_devig_three_way(h, d, a))
+            except (ValueError, ZeroDivisionError):
+                continue
+        if probs:
+            mh = statistics.median(p[0] for p in probs)
+            md = statistics.median(p[1] for p in probs)
+            ma = statistics.median(p[2] for p in probs)
+            norm = mh + md + ma
+            markets["moneyline"] = {
+                "home_p": mh / norm,
+                "draw_p": md / norm,
+                "away_p": ma / norm,
+                "three_way": True,
+                "n_vendors": len(probs),
+            }
+    elif ml_pairs:
         devig = _median_devig(ml_pairs)
         if devig:
             markets["moneyline"] = {
@@ -285,7 +357,16 @@ def parse_game_odds(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "n_vendors": len(ml_pairs),
             }
     if total_by_line:
-        line = max(total_by_line, key=lambda k: len(total_by_line[k]))  # modal line
+        # Modal line; ties (soccer carries every alternate line at full vendor count)
+        # break toward the most balanced market — that IS the main line.
+        max_n = max(len(v) for v in total_by_line.values())
+        candidates = [ln for ln, v in total_by_line.items() if len(v) == max_n]
+
+        def _imbalance(ln: float) -> float:
+            devig = _median_devig(total_by_line[ln])
+            return abs((devig[0] if devig else 1.0) - 0.5)
+
+        line = min(candidates, key=_imbalance)
         devig = _median_devig(total_by_line[line])
         if devig:
             markets["total"] = {
@@ -306,11 +387,23 @@ def parse_game_odds(rows: list[dict[str, Any]]) -> dict[str, Any]:
             }
     if polymarket_row is not None:
         try:
-            pm = sp.devig_two_way(
-                float(polymarket_row["moneyline_home_odds"]),
-                float(polymarket_row["moneyline_away_odds"]),
-            )
-            markets["polymarket_vendor"] = {"home_ml_p": pm[0], "away_ml_p": pm[1]}
+            if polymarket_row.get("moneyline_draw_odds"):
+                ph, pd, pa = _devig_three_way(
+                    float(polymarket_row["moneyline_home_odds"]),
+                    float(polymarket_row["moneyline_draw_odds"]),
+                    float(polymarket_row["moneyline_away_odds"]),
+                )
+                markets["polymarket_vendor"] = {
+                    "home_ml_p": ph,
+                    "draw_p": pd,
+                    "away_ml_p": pa,
+                }
+            else:
+                pm = sp.devig_two_way(
+                    float(polymarket_row["moneyline_home_odds"]),
+                    float(polymarket_row["moneyline_away_odds"]),
+                )
+                markets["polymarket_vendor"] = {"home_ml_p": pm[0], "away_ml_p": pm[1]}
         except (KeyError, TypeError, ValueError):
             pass
     return markets
@@ -336,24 +429,27 @@ class GameSlate:
 async def _team_form(
     client, pacer, sport: str, team_id: Any, season: int, exclude_game: Any
 ) -> dict[str, float]:
-    """Scored/conceded per completed game from the team's season events."""
+    """Scored/conceded per completed game from the team's season events. The rows are
+    client-filtered by team id below, so a provider that ignores ``team_ids`` is fine;
+    one that returns NOTHING for unknown params gets an unfiltered retry."""
     rows: list[dict[str, Any]] = []
-    cursor = None
-    for _ in range(_MAX_PAGES):
-        query: dict[str, Any] = {
-            "team_ids": [team_id],
-            "seasons": [season],
-            "per_page": 100,
-        }
-        if cursor is not None:
-            query["cursor"] = cursor
-        payload = await _call(
-            client, pacer, endpoint_id="data.events.list", sport=sport, query=query
-        )
-        rows.extend(_rows(payload))
-        cursor = _next_cursor(payload)
-        await pacer.wait()
-        if cursor is None:
+    for use_team_filter in (True, False):
+        cursor = None
+        for _ in range(_MAX_PAGES):
+            query: dict[str, Any] = {"seasons": [season], "per_page": 100}
+            if use_team_filter:
+                query["team_ids"] = [team_id]
+            if cursor is not None:
+                query["cursor"] = cursor
+            payload = await _call(
+                client, pacer, endpoint_id="data.events.list", sport=sport, query=query
+            )
+            rows.extend(_rows(payload))
+            cursor = _next_cursor(payload)
+            await pacer.wait()
+            if cursor is None:
+                break
+        if rows:
             break
 
     completed = []
@@ -432,7 +528,10 @@ async def fetch_game_slate(
     home_form = await _team_form(client, pacer, sport, home.get("id"), season, game_id)
     away_form = await _team_form(client, pacer, sport, away.get("id"), season, game_id)
 
-    # 3) provider odds for the game (param shape differs by league: send both forms)
+    # 3) provider odds for the game. Filter params differ by league (NHL: game_ids
+    # array, soccer: scalar game_id, worldcup: match_ids array) — send every form, the
+    # provider ignores the unused ones. Some surfaces ignore ALL filters, so also
+    # client-filter the rows back to this game.
     odds_rows: list[dict[str, Any]] = []
     try:
         payload = await _call(
@@ -440,9 +539,18 @@ async def fetch_game_slate(
             pacer,
             endpoint_id="data.odds.list",
             sport=sport,
-            query={"game_id": game_id, "game_ids": [game_id], "per_page": 100},
+            query={
+                "game_id": game_id,
+                "game_ids": [game_id],
+                "match_ids": [game_id],
+                "per_page": 100,
+            },
         )
-        odds_rows = _rows(payload)
+        odds_rows = [
+            row
+            for row in _rows(payload)
+            if str(row.get("game_id") or row.get("match_id") or game_id) == str(game_id)
+        ]
     except Exception:  # noqa: BLE001 - model-only output is still useful without odds
         pass
     markets = parse_game_odds(odds_rows)
@@ -472,9 +580,9 @@ async def fetch_game_slate(
 
 @dataclass
 class MarketView:
-    market: str  # moneyline_home | moneyline_away | over | under | spread_home | spread_away
+    market: str  # moneyline_home|moneyline_draw|moneyline_away|over|under|spread_home|spread_away
     line: float | None
-    model_p: float
+    model_p: float | None  # None = odds-only view (no form basis for a model)
     book_p: float | None
     book_edge: float | None
     flags: list[str]
@@ -494,12 +602,17 @@ class GameResult:
 
 def score_game_slate(slate: GameSlate) -> GameResult:
     cfg = _config(slate.sport)
+    draws = bool(cfg.get("draws"))
     hf, af = slate.home_form, slate.away_form
+    # No completed games for a side (tournament just started, expansion team, ...)
+    # means the form model has NO basis — emit odds-only views, never degenerate λ=0.
+    form_ok = hf["n"] > 0 and af["n"] > 0
+    if not form_ok and "no_form_model" not in slate.flags:
+        slate.flags.append("no_form_model")
+
     league_avg = (hf["for"] + hf["against"] + af["for"] + af["against"]) / 4 or 1.0
-    lam_home = ((hf["for"] + af["against"]) / 2) * cfg["home_adv"]
-    lam_away = ((af["for"] + hf["against"]) / 2) / cfg["home_adv"]
-    lam_home = max(lam_home, 0.05)
-    lam_away = max(lam_away, 0.05)
+    lam_home = max(((hf["for"] + af["against"]) / 2) * cfg["home_adv"], 0.05)
+    lam_away = max(((af["for"] + hf["against"]) / 2) / cfg["home_adv"], 0.05)
 
     total = slate.markets.get("total") or {}
     spread = slate.markets.get("spread") or {}
@@ -508,25 +621,33 @@ def score_game_slate(slate: GameSlate) -> GameResult:
         float(spread["home_line"]) if spread.get("home_line") is not None else None
     )
 
-    if cfg["dist"] == "poisson":
-        probs = poisson_game_probs(
-            lam_home, lam_away, total_line=total_line, spread_line=spread_line
-        )
-    else:
-        probs = normal_game_probs(
-            lam_home,
-            lam_away,
-            total_line=total_line,
-            spread_line=spread_line,
-            margin_sigma=cfg.get("margin_sigma", 12.0),
-            total_sigma=cfg.get("total_sigma", 18.0),
-        )
+    probs: dict[str, float] = {}
+    if form_ok:
+        if cfg["dist"] == "poisson":
+            probs = poisson_game_probs(
+                lam_home,
+                lam_away,
+                total_line=total_line,
+                spread_line=spread_line,
+                split_ties=not draws,
+            )
+        else:
+            probs = normal_game_probs(
+                lam_home,
+                lam_away,
+                total_line=total_line,
+                spread_line=spread_line,
+                margin_sigma=cfg.get("margin_sigma", 12.0),
+                total_sigma=cfg.get("total_sigma", 18.0),
+            )
 
     ml = slate.markets.get("moneyline") or {}
     views: list[MarketView] = []
 
-    def _view(market: str, line, model_p: float, book_p) -> None:
-        edge = (model_p - book_p) if book_p is not None else None
+    def _view(market: str, line, model_p, book_p) -> None:
+        edge = (
+            (model_p - book_p) if (model_p is not None and book_p is not None) else None
+        )
         flags = list(slate.flags)
         if edge is not None and abs(edge) > SUSPECT_EDGE:
             flags.append("suspect_edge")
@@ -534,30 +655,36 @@ def score_game_slate(slate: GameSlate) -> GameResult:
             MarketView(
                 market=market,
                 line=line,
-                model_p=round(model_p, 4),
+                model_p=round(model_p, 4) if model_p is not None else None,
                 book_p=round(book_p, 4) if book_p is not None else None,
                 book_edge=round(edge, 4) if edge is not None else None,
                 flags=flags,
             )
         )
 
-    _view("moneyline_home", None, probs["home_ml"], ml.get("home_p"))
-    _view("moneyline_away", None, probs["away_ml"], ml.get("away_p"))
-    _view("over", total_line, probs["over"], total.get("over_p"))
-    _view("under", total_line, 1.0 - probs["over"], total.get("under_p"))
-    if spread_line is not None and "home_spread" in probs:
-        _view("spread_home", spread_line, probs["home_spread"], spread.get("home_p"))
+    _view("moneyline_home", None, probs.get("home_ml"), ml.get("home_p"))
+    if draws or ml.get("draw_p") is not None:
+        _view("moneyline_draw", None, probs.get("draw"), ml.get("draw_p"))
+    _view("moneyline_away", None, probs.get("away_ml"), ml.get("away_p"))
+    _view("over", total_line, probs.get("over"), total.get("over_p"))
+    over = probs.get("over")
+    _view(
+        "under", total_line, (1.0 - over) if over is not None else None, total.get("under_p")
+    )
+    if spread_line is not None and (not form_ok or "home_spread" in probs):
+        _view("spread_home", spread_line, probs.get("home_spread"), spread.get("home_p"))
+        cover = probs.get("home_spread")
         _view(
             "spread_away",
             -spread_line,
-            1.0 - probs["home_spread"],
+            (1.0 - cover) if cover is not None else None,
             spread.get("away_p"),
         )
 
     return GameResult(
         slate=slate,
-        lam_home=round(lam_home, 3),
-        lam_away=round(lam_away, 3),
+        lam_home=round(lam_home, 3) if form_ok else 0.0,
+        lam_away=round(lam_away, 3) if form_ok else 0.0,
         views=views,
     )
 
@@ -579,16 +706,18 @@ def render_game(result: GameResult) -> str:
     ]
     for v in result.views:
         line = f"{v.line:+.1f}" if isinstance(v.line, float) else "-"
+        model = f"{v.model_p:.3f}" if v.model_p is not None else "  n/a"
         book = f"{v.book_p:.3f}" if v.book_p is not None else "  n/a"
         edge = f"{v.book_edge:+.3f}" if v.book_edge is not None else "    n/a"
         lines.append(
-            f"{v.market:<16}{line:>7}  {v.model_p:>6.3f}  {book:>6}  {edge:>7}  {','.join(v.flags)}"
+            f"{v.market:<16}{line:>7}  {model:>6}  {book:>6}  {edge:>7}  {','.join(v.flags)}"
         )
     pm = s.markets.get("polymarket_vendor")
     if pm:
+        draw = f" / draw {pm['draw_p']:.3f}" if pm.get("draw_p") is not None else ""
         lines.append(
             f"\npolymarket vendor line (quasi-executable reference): "
-            f"home {pm['home_ml_p']:.3f} / away {pm['away_ml_p']:.3f}"
+            f"home {pm['home_ml_p']:.3f}{draw} / away {pm['away_ml_p']:.3f}"
         )
     lines.append("\nNOTE: " + result.note)
     return "\n".join(lines)
