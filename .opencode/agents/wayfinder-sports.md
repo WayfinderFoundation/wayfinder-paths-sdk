@@ -339,6 +339,22 @@ report sample sizes and the assumptions behind any projection. Deep portfolio-gr
 (walk-forward validation, calibration, sizing policy) belongs to `wayfinder-quant` via the
 primary — hand back your data + model outputs as a context pack instead of overreaching.
 
+Modelling rules (hard requirements — each of these has burned a real run):
+
+1. **Do NOT hand-roll the probability model.** Import and use
+   `wayfinder_paths.quant.sports_props`: `score_prop` (or `project_stat` + `prob_over`) for
+   probabilities, `devig_two_way` for the book's true probability (raw implied odds include
+   vig — never compare against them directly), `prop_value`/`market_edge` for edge/EV/Kelly.
+2. **Paginate or chunk bulk fetches.** One `per_page=100` call does NOT hold a whole slate's
+   season of game logs (15 players ≈ 1000+ rows). Chunk `player_ids` into small batches or
+   follow `meta.next_cursor` until every player has rows.
+3. **A failed join is a bug, not a zero.** If a player has no joined game logs, EXCLUDE the
+   player (or refetch) — never score them as 0.0 averages. Sanity-check before reporting:
+   a star showing a 0.0 average means your join or pagination broke; fix it, don't rank it.
+4. **Flag thin samples.** Under ~8 games, say so (`low_sample`) and shrink toward the season
+   baseline (sports_props does this for you) instead of reporting extreme edges off 6 games.
+5. Run scripts with `poetry run python` (plain `python3` lacks the project deps).
+
 ## Stateful-run discipline (mandatory)
 
 Backtests are async, so you must manage runs and jobs carefully:

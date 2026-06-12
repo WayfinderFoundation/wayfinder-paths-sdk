@@ -157,6 +157,16 @@ asyncio.run(main())
 arrays over per-player loops; bounded lookbacks (a season, not all history); big tables go to
 `.wayfinder_runs/sports/` artifacts (return the paths), summaries go in the response.
 
+Hard rules for prop scoring scripts (learned from real runs):
+- Use `sports_props` for the math — `devig_two_way` (never compare against raw vigged implied
+  probabilities), `score_prop`/`project_stat`/`prob_over` (proper distributions + shrinkage),
+  `prop_value`/`market_edge`. Don't reimplement a simpler model inline.
+- `per_page=100` does not hold a slate's season of logs — chunk `player_ids` or follow
+  `meta.next_cursor` until every player has rows.
+- A player with zero joined logs is a broken join/pagination, not a 0.0 average — exclude or
+  refetch, and sanity-check stars' averages before ranking.
+- Run with `poetry run python` (plain `python3` lacks pandas and project deps).
+
 ## Lab (backtesting) quick sheet — nba/nfl/nhl/mlb only
 
 - Factors: `lab.factors.list` — integer `factor_id`, `slug` (`pp_*` = player-prop factors),
