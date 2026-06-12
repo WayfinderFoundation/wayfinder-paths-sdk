@@ -45,6 +45,18 @@ _RATE_RETRIES = 4
 _RATE_SLEEPS_S = (20.0, 30.0, 45.0, 60.0)
 _SLOW_PACE_S = 13.0  # once the upstream rate limit bites, stay under ~5 calls/min
 
+# MLB pitcher props project off outs recorded; everything else off plate appearances.
+_MLB_PITCHER_PROPS = frozenset(
+    {"pitcher_strikeouts", "pitcher_earned_runs", "pitcher_hits_allowed", "pitcher_outs"}
+)
+
+
+def exposure_key_for(sport: str, prop_type: str = "") -> str:
+    """The game-log column measuring playing time for this sport/prop family."""
+    if str(sport).lower() == "mlb":
+        return "pitching_outs" if prop_type in _MLB_PITCHER_PROPS else "plate_appearances"
+    return "min"
+
 
 @dataclass
 class SlateData:
@@ -63,6 +75,7 @@ class SlateData:
     league_def_rating: float
     injured: set[Any]
     excluded: list[dict[str, Any]] = field(default_factory=list)
+    skipped_one_sided: int = 0  # milestone-style single-quote markets (can't de-vig)
 
 
 @dataclass
@@ -94,6 +107,7 @@ class SlateResult:
     watch: list[SlatePick]
     excluded: list[dict[str, Any]]
     pace_factor: float
+    skipped_one_sided: int = 0
     note: str = (
         "book_edge/book_ev are vs de-vigged SPORTSBOOK odds — informational only. "
         "Executable EV must be priced on Polymarket: market_edge(model_p, polymarket_price)."
@@ -192,31 +206,50 @@ async def fetch_prop_slate(
         path_params={"id": game_id},
     )
     edata = event.get("data", {}).get("data", event.get("data", {})) or {}
-    home, away = edata.get("home_team") or {}, edata.get("visitor_team") or {}
+    home = edata.get("home_team") or {}
+    away = edata.get("visitor_team") or edata.get("away_team") or {}
     opponent_of = {home.get("id"): away.get("id"), away.get("id"): home.get("id")}
+    team_abbr_by_name = {
+        str(t.get("display_name") or t.get("full_name") or ""): str(
+            t.get("abbreviation") or t.get("name") or "?"
+        )
+        for t in (home, away)
+    }
     await pacer.wait()
 
-    # 2) props -> best vendor -> distinct (player, prop_type) pairs
-    props_payload = await _call(
-        client,
-        pacer,
-        endpoint_id="data.player_props.list",
-        sport=sport,
-        query={"game_id": game_id, "per_page": 100},
-    )
-    prop_rows = _rows(props_payload)
+    # 2) props (cursor-followed: MLB slates exceed one page) -> best vendor -> pairs
+    prop_rows: list[dict[str, Any]] = []
+    cursor = None
+    for _ in range(_MAX_PAGES):
+        query: dict[str, Any] = {"game_id": game_id, "per_page": 100}
+        if cursor is not None:
+            query["cursor"] = cursor
+        props_payload = await _call(
+            client,
+            pacer,
+            endpoint_id="data.player_props.list",
+            sport=sport,
+            query=query,
+        )
+        prop_rows.extend(_rows(props_payload))
+        cursor = _next_cursor(props_payload)
+        await pacer.wait()
+        if cursor is None:
+            break
     vendor = select_vendor(prop_rows)
     pairs: dict[tuple, dict[str, Any]] = {}
+    one_sided: set[tuple] = set()  # milestone markets: single quote, can't de-vig
     for row in prop_rows:
         market = row.get("market") or {}
+        key = (row.get("player_id"), row.get("prop_type"))
+        if market.get("over_odds") is None or market.get("under_odds") is None:
+            one_sided.add(key)
+            continue
         if (
             str(row.get("vendor")) != vendor
             or row.get("prop_type") not in sp.PROP_STATS
-            or market.get("over_odds") is None
-            or market.get("under_odds") is None
         ):
             continue
-        key = (row.get("player_id"), row.get("prop_type"))
         pairs.setdefault(
             key,
             {
@@ -228,6 +261,7 @@ async def fetch_prop_slate(
             },
         )
     props = list(pairs.values())
+    skipped_one_sided = len(one_sided - set(pairs))
     player_ids = sorted({p["player_id"] for p in props})
     await pacer.wait()
 
@@ -281,49 +315,89 @@ async def fetch_prop_slate(
         if not logs_by_player.get(pid):
             excluded.append({"player_id": pid, "reason": "no_game_logs"})
 
-    # sort logs most-recent-first (score_prop expects that ordering)
+    # sort logs most-recent-first (score_prop expects that ordering). NBA rows embed a
+    # game date; MLB rows carry only game_id, which the provider assigns in schedule
+    # order — so it stands in for the date (rescheduled games misorder slightly).
+    def _log_order(lg: dict[str, Any]) -> tuple[str, int]:
+        date = str((lg.get("game") or {}).get("date") or "")
+        try:
+            gid = int(lg.get("game_id") or (lg.get("game") or {}).get("id") or 0)
+        except (TypeError, ValueError):
+            gid = 0
+        return (date, gid)
+
     for logs in logs_by_player.values():
-        logs.sort(key=lambda lg: (lg.get("game") or {}).get("date", ""), reverse=True)
+        logs.sort(key=_log_order, reverse=True)
 
-    # 4) season baseline from the full season of logs (played games only)
+    # MLB: derive singles onto each log row (provider gives the components only), and
+    # team identity comes as a name string rather than a team object.
+    if str(sport).lower() == "mlb":
+        for pid, logs in logs_by_player.items():
+            for lg in logs:
+                lg["singles"] = (
+                    float(lg.get("hits") or 0.0)
+                    - float(lg.get("doubles") or 0.0)
+                    - float(lg.get("triples") or 0.0)
+                    - float(lg.get("hr") or 0.0)
+                )
+            name = next((lg.get("team_name") for lg in logs if lg.get("team_name")), None)
+            if pid not in player_team and name:
+                player_team[pid] = team_abbr_by_name.get(str(name), str(name))
+
+    # 4) season baseline from the full season of logs, per exposure family (played games
+    # only). NBA has one family (minutes); MLB splits batting (plate appearances) from
+    # pitching (outs recorded) so a two-way player's batting games never dilute his
+    # pitching rates and vice versa.
+    needed_types = {p["prop_type"] for p in props}
+    exposure_families = {exposure_key_for(sport, t) for t in needed_types} or {
+        exposure_key_for(sport)
+    }
     season_baseline: dict[Any, dict[str, float]] = {}
-    stat_keys = sorted({k for keys in sp.PROP_STATS.values() for k in keys})
     for pid, logs in logs_by_player.items():
-        played = [lg for lg in logs if sp.parse_minutes(lg.get("min")) > 0]
-        if not played:
-            continue
-        baseline: dict[str, float] = {
-            "min": sum(sp.parse_minutes(lg.get("min")) for lg in played) / len(played)
-        }
-        for key in stat_keys:
-            baseline[key] = sum(float(lg.get(key) or 0.0) for lg in played) / len(
-                played
-            )
-        season_baseline[pid] = baseline
+        baseline: dict[str, float] = {}
+        for exp_key in exposure_families:
+            fam_types = [t for t in needed_types if exposure_key_for(sport, t) == exp_key]
+            fam_stats = sorted({k for t in fam_types for k in sp.PROP_STATS.get(t, ())})
+            played = [lg for lg in logs if sp.parse_minutes(lg.get(exp_key)) > 0]
+            if not played:
+                continue
+            baseline[exp_key] = sum(
+                sp.parse_minutes(lg.get(exp_key)) for lg in played
+            ) / len(played)
+            for key in fam_stats:
+                baseline[key] = sum(float(lg.get(key) or 0.0) for lg in played) / len(
+                    played
+                )
+        if baseline:
+            season_baseline[pid] = baseline
 
-    # 5) team factors (one call: all teams, advanced -> pace/def_rating)
-    teams_payload = await _call(
-        client,
-        pacer,
-        endpoint_id="data.team_season_averages.list",
-        sport=sport,
-        path_params={"category": "general"},
-        query={
-            "season": season,
-            "season_type": "regular",
-            "type": "advanced",
-            "per_page": 40,
-        },
-    )
+    # 5) team factors (one call: all teams, advanced -> pace/def_rating). Soft: leagues
+    # without an advanced team surface (MLB) score with neutral factors instead of dying.
     team_stats: dict[Any, dict[str, Any]] = {}
-    for row in _rows(teams_payload):
-        team, stats = row.get("team") or {}, row.get("stats") or {}
-        if team.get("id") is not None:
-            team_stats[team["id"]] = {
-                "pace": stats.get("pace"),
-                "def_rating": stats.get("def_rating"),
-                "abbreviation": team.get("abbreviation") or team.get("name") or "?",
-            }
+    try:
+        teams_payload = await _call(
+            client,
+            pacer,
+            endpoint_id="data.team_season_averages.list",
+            sport=sport,
+            path_params={"category": "general"},
+            query={
+                "season": season,
+                "season_type": "regular",
+                "type": "advanced",
+                "per_page": 40,
+            },
+        )
+        for row in _rows(teams_payload):
+            team, stats = row.get("team") or {}, row.get("stats") or {}
+            if team.get("id") is not None:
+                team_stats[team["id"]] = {
+                    "pace": stats.get("pace"),
+                    "def_rating": stats.get("def_rating"),
+                    "abbreviation": team.get("abbreviation") or team.get("name") or "?",
+                }
+    except Exception:  # noqa: BLE001 - factors are an enhancement, never fatal
+        pass
     paces = [t["pace"] for t in team_stats.values() if t.get("pace")]
     defs = [t["def_rating"] for t in team_stats.values() if t.get("def_rating")]
     league_pace = sum(paces) / len(paces) if paces else 100.0
@@ -363,6 +437,7 @@ async def fetch_prop_slate(
         league_def_rating=league_def,
         injured=injured,
         excluded=excluded,
+        skipped_one_sided=skipped_one_sided,
     )
 
 
@@ -405,6 +480,7 @@ def score_prop_slate(slate: SlateData, *, kelly_fraction: float = 0.25) -> Slate
             injured=pid in slate.injured,
             min_games=MIN_GAMES,
             kelly_fraction=kelly_fraction,
+            exposure_key=exposure_key_for(slate.sport, prop["prop_type"]),
         )
         if score is None:
             continue
@@ -413,10 +489,13 @@ def score_prop_slate(slate: SlateData, *, kelly_fraction: float = 0.25) -> Slate
         if abs(score.edge) > SUSPECT_EDGE:
             flags.append("suspect_edge")
 
+        team_abbr = (slate.team_stats.get(team_id) or {}).get("abbreviation") or (
+            str(team_id) if team_id is not None else "?"
+        )
         pick = SlatePick(
             player_id=pid,
             player_name=slate.player_names.get(pid, str(pid)),
-            team=(slate.team_stats.get(team_id) or {}).get("abbreviation", "?"),
+            team=team_abbr,
             prop_type=score.prop_type,
             line=score.line,
             side=score.side,
@@ -443,6 +522,7 @@ def score_prop_slate(slate: SlateData, *, kelly_fraction: float = 0.25) -> Slate
         watch=watch,
         excluded=slate.excluded,
         pace_factor=round(pace_factor, 4),
+        skipped_one_sided=slate.skipped_one_sided,
     )
 
 
@@ -503,6 +583,12 @@ def render_slate(result: SlateResult, *, top: int = 12) -> str:
         lines.append(
             "EXCLUDED (not scored): "
             + ", ".join(f"{e['player_id']} ({e['reason']})" for e in result.excluded)
+        )
+    if result.skipped_one_sided:
+        lines.append("")
+        lines.append(
+            f"SKIPPED: {result.skipped_one_sided} one-sided (milestone) markets — "
+            "single quote, no under side to de-vig against."
         )
     lines.append("")
     lines.append("NOTE: " + result.note)

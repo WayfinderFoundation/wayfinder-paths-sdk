@@ -144,6 +144,11 @@ poetry run python -m wayfinder_paths.quant.game_slate \
   --sport nhl --game-id <GAME_ID> --season <SEASON> --date <GAME_DATE> --out .wayfinder_runs/sports
 ```
 
+Both pipelines are multi-sport (NBA/NHL/MLB verified live). MLB notes: props include
+one-sided "milestone" quotes (single odds, no under side) — the pipeline skips these with
+a visible count; do NOT model them by hand (a single quote cannot be de-vigged). MLB
+pitcher props project off outs recorded, batter props off plate appearances.
+
 One command: fetches props + complete paginated game logs + team pace/defense + injuries,
 models with proper distributions and de-vigged book probabilities, and prints an
 `ACTIONABLE` / `WATCH` (flagged) / `EXCLUDED` (no joinable data) table; writes

@@ -21,7 +21,10 @@ from typing import Any
 _SQRT2 = math.sqrt(2.0)
 
 # prop_type -> the season/game-log stat keys that compose it (combos sum their parts).
+# NBA types map to NBA log fields; MLB types to MLB log fields (names don't collide).
+# "singles" is derived by the pipeline (hits - doubles - triples - hr) onto each log row.
 PROP_STATS: dict[str, tuple[str, ...]] = {
+    # NBA
     "points": ("pts",),
     "rebounds": ("reb",),
     "assists": ("ast",),
@@ -34,9 +37,49 @@ PROP_STATS: dict[str, tuple[str, ...]] = {
     "points_assists": ("pts", "ast"),
     "rebounds_assists": ("reb", "ast"),
     "steals_blocks": ("stl", "blk"),
+    # MLB batters
+    "hits": ("hits",),
+    "home_runs": ("hr",),
+    "rbis": ("rbi",),
+    "runs_scored": ("runs",),
+    "singles": ("singles",),
+    "doubles": ("doubles",),
+    "triples": ("triples",),
+    "walks": ("bb",),
+    "stolen_bases": ("stolen_bases",),
+    "total_bases": ("total_bases",),
+    "hits_runs_rbis": ("hits", "runs", "rbi"),
+    # MLB pitchers
+    "pitcher_strikeouts": ("p_k",),
+    "pitcher_earned_runs": ("er",),
+    "pitcher_hits_allowed": ("p_hits",),
+    "pitcher_outs": ("pitching_outs",),
 }
 # Low-count stats modelled as Poisson; everything else as a normal approximation.
-_POISSON_PROPS = frozenset({"steals", "blocks", "threes", "turnovers", "steals_blocks"})
+# All MLB counting props are Poisson territory (means ~0.2-5) except pitcher_outs (~15-18).
+_POISSON_PROPS = frozenset(
+    {
+        "steals",
+        "blocks",
+        "threes",
+        "turnovers",
+        "steals_blocks",
+        "hits",
+        "home_runs",
+        "rbis",
+        "runs_scored",
+        "singles",
+        "doubles",
+        "triples",
+        "walks",
+        "stolen_bases",
+        "total_bases",
+        "hits_runs_rbis",
+        "pitcher_strikeouts",
+        "pitcher_earned_runs",
+        "pitcher_hits_allowed",
+    }
+)
 # Prop families whose projection responds to opponent scoring defense (def_rating).
 _SCORING_PROPS = frozenset(
     {"points", "points_rebounds_assists", "points_rebounds", "points_assists", "threes"}
@@ -192,18 +235,22 @@ def project_stat(
     opponent_factor: float = 1.0,
     pace_factor: float = 1.0,
     std_floor_frac: float = 0.25,
+    exposure_key: str = "min",
 ) -> Projection:
     """Project the (possibly combined) stat for the next game.
 
-    Mean = projected minutes x recency-weighted per-minute rate (shrunk toward the season
-    rate by sample size) x opponent x pace. Std comes from the dispersion of the recent
+    Mean = projected exposure x recency-weighted per-exposure rate (shrunk toward the
+    season rate by sample size) x opponent x pace. Exposure is minutes for NBA, plate
+    appearances for MLB batters, outs recorded for MLB pitchers (``exposure_key``) — a
+    game counts only if the player had exposure, which also splits two-way players'
+    batting vs pitching appearances. Std comes from the dispersion of the recent
     per-game totals (so combo correlation is captured empirically), floored to avoid
     overconfidence.
     """
-    # Most-recent-first per-game totals + minutes for games actually played.
+    # Most-recent-first per-game totals + exposure for games actually played.
     played = []
     for log in game_logs:
-        mins = parse_minutes(log.get("min"))
+        mins = parse_minutes(log.get(exposure_key))
         if mins <= 0:
             continue
         total = sum(float(log.get(k) or 0.0) for k in keys)
@@ -229,10 +276,10 @@ def project_stat(
     proj_minutes = _wmean(minutes, weights)
     recent_rate = _wmean([t / m for t, m in played], weights)
 
-    # Season per-minute rate for shrinkage (regress small samples toward season form).
+    # Season per-exposure rate for shrinkage (regress small samples toward season form).
     season_rate = recent_rate
     if season_avg:
-        s_min = parse_minutes(season_avg.get("min"))
+        s_min = parse_minutes(season_avg.get(exposure_key))
         s_total = sum(float(season_avg.get(k) or 0.0) for k in keys)
         if s_min > 0:
             season_rate = s_total / s_min
@@ -366,6 +413,7 @@ def score_prop(
     injured: bool = False,
     min_games: int = 5,
     kelly_fraction: float = 0.25,
+    exposure_key: str = "min",
 ) -> PropScore | None:
     """Score one prop. ``prop`` needs prop_type, line, over_odds, under_odds, player_id.
 
@@ -385,7 +433,12 @@ def score_prop(
 
     opp = opponent_factor if prop_type in _SCORING_PROPS else 1.0
     proj = project_stat(
-        game_logs, season_avg, keys, opponent_factor=opp, pace_factor=pace_factor
+        game_logs,
+        season_avg,
+        keys,
+        opponent_factor=opp,
+        pace_factor=pace_factor,
+        exposure_key=exposure_key,
     )
     model_p_over = prob_over(
         proj.mean, proj.std, line, distribution=pick_distribution(prop_type)

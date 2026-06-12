@@ -95,6 +95,11 @@ def event_scores(row: dict[str, Any]) -> tuple[Any, Any]:
     away = row.get(
         "away_score", row.get("visitor_team_score", row.get("away_team_score"))
     )
+    if home is None or away is None:  # MLB nests scores: {home,away}_team_data.runs
+        home_data = row.get("home_team_data") or {}
+        away_data = row.get("away_team_data") or {}
+        home = home_data.get("runs") if home is None else home
+        away = away_data.get("runs") if away is None else away
     return home, away
 
 
@@ -139,10 +144,12 @@ def poisson_game_probs(
 
     Regulation ties are split by relative strength (covers OT/SO moneylines).
     ``spread_line`` is the HOME spread (e.g. +1.5 means home covers if margin > -1.5).
+    Whole-number lines push (bet refunded), so over/spread probabilities are
+    conditioned on no-push — that is what a book's two-sided quote prices.
     """
     p_home = p_away = p_tie = 0.0
-    p_over = 0.0
-    p_home_cover = 0.0
+    p_over = p_total_push = 0.0
+    p_home_cover = p_spread_push = 0.0
     pmf_h = [_poisson_pmf(lam_home, k) for k in range(grid + 1)]
     pmf_a = [_poisson_pmf(lam_away, k) for k in range(grid + 1)]
     for h in range(grid + 1):
@@ -156,17 +163,36 @@ def poisson_game_probs(
                 p_tie += p
             if h + a > total_line:
                 p_over += p
-            if spread_line is not None and (h - a) > -spread_line:
-                p_home_cover += p
+            elif h + a == total_line:
+                p_total_push += p
+            if spread_line is not None:
+                if (h - a) > -spread_line:
+                    p_home_cover += p
+                elif (h - a) == -spread_line:
+                    p_spread_push += p
     strength = lam_home / (lam_home + lam_away) if (lam_home + lam_away) > 0 else 0.5
     out = {
         "home_ml": p_home + p_tie * strength,
         "away_ml": p_away + p_tie * (1 - strength),
-        "over": p_over,
+        "over": p_over / (1.0 - p_total_push) if p_total_push < 1.0 else 0.5,
+        "total_push": p_total_push,
     }
     if spread_line is not None:
-        out["home_spread"] = p_home_cover
+        out["home_spread"] = (
+            p_home_cover / (1.0 - p_spread_push) if p_spread_push < 1.0 else 0.5
+        )
+        out["spread_push"] = p_spread_push
     return out
+
+
+def _normal_two_sided(mu: float, sigma: float, line: float) -> float:
+    """P(X > line | no push). Whole-number lines push on the exact score; approximate
+    the push mass with a unit-width continuity bin around the line."""
+    if line != int(line) or sigma <= 0:
+        return sp.prob_over(mu, sigma, line)
+    p_over = sp.prob_over(mu, sigma, line + 0.5)
+    p_under = 1.0 - sp.prob_over(mu, sigma, line - 0.5)
+    return p_over / (p_over + p_under) if (p_over + p_under) > 0 else 0.5
 
 
 def normal_game_probs(
@@ -184,10 +210,10 @@ def normal_game_probs(
     out = {
         "home_ml": home_ml,
         "away_ml": 1.0 - home_ml,
-        "over": sp.prob_over(total_mu, total_sigma, total_line),
+        "over": _normal_two_sided(total_mu, total_sigma, total_line),
     }
     if spread_line is not None:
-        out["home_spread"] = sp.prob_over(margin_mu, margin_sigma, -spread_line)
+        out["home_spread"] = _normal_two_sided(margin_mu, margin_sigma, -spread_line)
     return out
 
 

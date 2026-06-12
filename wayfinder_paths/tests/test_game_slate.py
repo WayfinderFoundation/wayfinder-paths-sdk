@@ -207,3 +207,23 @@ def test_render_includes_two_stage_note():
     text = gs.render_game(gs.score_game_slate(slate))
     assert "market_edge" in text and "Polymarket" in text
     assert "polymarket vendor line" in text
+
+
+def test_whole_number_lines_condition_on_push():
+    # Poisson: total mean 9.6 vs a 9.0 line -> ~12-13% push mass must be excluded,
+    # flipping the naive sub-50% over into the correct over-lean.
+    p = gs.poisson_game_probs(5.2, 4.4, total_line=9.0, spread_line=-1.0)
+    assert p["total_push"] > 0.10
+    assert p["over"] > 0.5  # mean 9.6 over a 9 line leans over once pushes are excluded
+    naive = gs.poisson_game_probs(5.2, 4.4, total_line=9.5, spread_line=None)
+    assert p["over"] != pytest.approx(naive["over"])  # conditioning actually applied
+    assert p["spread_push"] > 0
+    # half-lines cannot push
+    half = gs.poisson_game_probs(5.2, 4.4, total_line=9.5, spread_line=1.5)
+    assert half["total_push"] == 0 and half["spread_push"] == 0
+
+    # Normal: integer line gets the continuity-bin treatment, half line unchanged
+    exact_mean = gs.normal_game_probs(
+        110, 110, total_line=220.0, spread_line=None, margin_sigma=12, total_sigma=19
+    )
+    assert exact_mean["over"] == pytest.approx(0.5, abs=1e-6)  # symmetric around the line
