@@ -95,40 +95,33 @@ wayfinder_sports_provider(
 )
 ```
 
-**Historical & advanced data (façade-only — not in `sports_snapshot`):** beyond the snapshot
-resources, the catalog includes much deeper data reachable only here. The big families:
+**The full data catalog lives in the `/using-sports-data` skill — load it whenever you need
+endpoint specifics** (every `endpoint_id`, its params, per-sport availability, betting coverage,
+and Lab schema details). Don't guess params or availability from memory.
 
-- **Game logs & season stats**: `data.player_stats.list` (per-game logs; filter by
-  season/dates/player_ids via `query`), `data.player_season_stats.list`,
-  `data.team_stats.list` (team per-game), `data.team_season_stats.list` (team history),
-  `data.season_averages.list` / `data.team_season_averages.list` (NBA-family averages).
-- **Advanced**: `data.player_advanced_stats.list`. Category-capable endpoints take an optional
-  `category` in `path_params`: season/team averages accept
-  `general/clutch/shooting/playtype/tracking/hustle/defense/shotdashboard`; NFL advanced accepts
-  `rushing/passing/receiving`.
-- **Matchups & careers**: `data.matchups.list` — tennis head-to-head AND MLB batter-vs-pitcher
-  (great prop context); `data.career_stats.list` (tennis careers).
-- **Soccer analytics**: `data.shots.list` (**xG shot maps**), `data.match_events.list`
-  (goals/cards/subs), `data.momentum.list`, `data.pregame_forms.list` (recent form),
-  `data.rosters.list` (also NFL depth-chart rosters — per-team: pass `path_params={"team_id": ...}`).
-- **Game-scoped** (need an event id): `data.plays.list` (play-by-play), `data.lineups.list`,
-  `data.match_stats.list` (tennis), `data.fight_stats.list` (MMA), `data.laps.list` (F1).
-  Pass the event id in `path_params={"id": <event>}` (or `query={"game_id": <event>}`).
-- **Motorsport**: `data.qualifying.list`, `data.pit_stops.list`, `data.results.list`
-  (F1 session results / PGA tournament results / MMA fight results), `data.team_standings.list`
-  (constructors), `data.venues.list` (circuits/stadiums/courses).
-- **Golf**: `data.round_stats.list` (strokes-gained round stats), plus results/futures.
-- **Baseball props depth**: `data.splits.list`, `data.plate_appearances.list`,
-  `data.pitcher_pitch_stats.list` / `data.hitter_pitch_stats.list` (pitch-type breakdowns).
-- **College**: `data.conferences.list`, `data.bracket.list` (March Madness).
-- **Rosters/contracts extras**: `data.competitors_active.list` (current rosters only),
-  `data.player_contracts.list` / `data.team_contracts.list` (salaries — may be plan-gated),
-  `data.shot_locations.list` (WNBA shooting zones). Some per-player/per-team resources are
-  id-scoped — pass `path_params={"player_id": ...}` or `{"team_id": ...}` when the error says so.
+**Which sports support what (quick map):**
 
-**Availability varies sharply by league** — each league supports a different subset. Always
-confirm via `action="catalog"` (each data endpoint lists its `supported_leagues`); an
-unsupported call returns `resource_unavailable_for_league` with the leagues that DO support it.
+| Sport(s) | Beyond the basics (teams/competitors/events/standings) |
+| --- | --- |
+| nba | Full stats family: game logs, season + team averages (categories incl. clutch/tracking/defense; team `type=advanced` has pace/def_rating), advanced stats, box + live box, lineups, plays, leaders, injuries, contracts; odds + player props |
+| nfl | Game logs, player/team season stats, advanced rushing/passing/receiving (category), depth-chart rosters (per-team), plays, injuries; odds + props |
+| mlb | Game logs, season stats, batter-vs-pitcher `matchups`, splits, plate appearances, pitch-type stats, lineups, plays, injuries; odds + props |
+| nhl | Box scores, plays, injuries; season stats are per-player/per-team id-scoped (no flat game logs); odds + props |
+| wnba | NBA-style stats + advanced + shot_locations; odds + props |
+| soccer (epl/laliga/seriea/bundesliga/ligue1/ucl/mls/worldcup) | Rosters, injuries, player/team match stats, **xG `shots`**, match_events, momentum, pregame_forms; odds + props; futures (ucl/worldcup) |
+| tennis (atp/wta) | Head-to-head `matchups`, match stats, career stats, rankings; odds only |
+| mma | Fight `results`, fight_stats, rankings; odds only |
+| f1 | Qualifying, results, laps, pit stops, driver + constructor standings, venues; **futures only** (deep telemetry may be plan-gated) |
+| pga | Tournament results, strokes-gained round_stats, venues; futures + props |
+| college (ncaaf/ncaab/ncaaw/cbb) | Plays, conferences, bracket (March Madness, ncaab/ncaaw); odds only |
+| esports (cs2/lol/dota2) | Match/map stats (cs2 deepest); **no betting** |
+
+**Availability is per-league and the catalog is the runtime truth** — `action="catalog"` lists
+`supported_leagues` for every data endpoint, and an unsupported call returns
+`resource_unavailable_for_league` naming the leagues that DO support it. Conventions: list-valued
+query params bulk-fetch (`query={"player_ids": [..]}`); id-scoped resources take
+`path_params={"team_id"/"player_id": ...}`; game-scoped ones take `query={"game_id": ...}`;
+category-capable ones take `path_params={"category": ...}`.
 
 ### 3. `wayfinder_sports_backtest_state` — watch your backtest runs
 

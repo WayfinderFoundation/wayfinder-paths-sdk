@@ -242,6 +242,25 @@ def test_sports_subagent_is_hidden_with_full_facade() -> None:
     assert perm["wayfinder_sports_provider"] == "allow"
 
 
+def test_sports_data_skill_exists_and_agent_references_it() -> None:
+    skill = REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md"
+    text = skill.read_text("utf-8")
+    assert text.startswith("---") and "name: using-sports-data" in text
+    # the catalog specifics the agent relies on
+    for needle in (
+        "data.player_props.list",
+        "supported_leagues",
+        "resource_unavailable_for_league",
+        "market_edge",
+        "sum to exactly 100",
+        "player_ids",
+    ):
+        assert needle in text, f"skill missing: {needle}"
+    agent = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    assert "/using-sports-data" in agent
+    assert "Which sports support what" in agent
+
+
 def test_sports_subagent_prompt_states_key_rules() -> None:
     body = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
     lower = body.lower()

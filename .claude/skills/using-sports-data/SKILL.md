@@ -1,0 +1,145 @@
+---
+name: using-sports-data
+description: The Wayfinder sports data catalog — every canonical resource, its params, and which sports support it; betting (odds/props/futures) coverage per league; Lab (backtesting) specifics; id/season/category conventions.
+metadata:
+  tags: wayfinder, sports, betting, props, odds, backtesting, lab
+---
+
+## What you need to know (TL;DR)
+
+All sports data flows through three MCP tools backed by the backend gateway (the provider
+key never leaves the backend; the surface is provider-agnostic):
+
+- `wayfinder_sports_snapshot` — bounded live reads (scoreboard/odds/props/injuries/lookups/stats).
+- `wayfinder_sports_provider` — the full façade: `action="catalog"` lists every callable
+  `endpoint_id` **with `supported_leagues` per data endpoint — that catalog is the runtime
+  source of truth for "which sports support what"**; `action="call"` invokes one.
+- `wayfinder_sports_backtest_state` — canonical run/job monitoring for Lab backtests.
+
+An unsupported (resource, sport) combo returns `resource_unavailable_for_league` **with the
+leagues that DO support it** — never guess availability, read the error or the catalog.
+
+Leagues: `nba nfl mlb nhl wnba ncaaf ncaab ncaaw cbb epl laliga seriea bundesliga ligue1 ucl
+mls worldcup mma f1 atp wta pga cs2 lol dota2`. Lab (backtesting) = **nba/nfl/nhl/mlb only**.
+
+## Canonical resources (what each returns, key params)
+
+Resource ids are generic and resolve per-league (e.g. `competitors` = players/fighters/drivers;
+`events` = games/matches/MMA events/F1 sessions/golf tournaments). Call shape:
+`sports_provider(action="call", endpoint_id="data.<resource>.<list|get>", sport=..., query={...}, path_params={...})`.
+
+| endpoint_id | Returns | Key params |
+|---|---|---|
+| `data.events.list` / `data.event.get` | schedule/fixtures + results | `query`: `dates[]`, `seasons[]`, `per_page`; get: `path_params.id` |
+| `data.teams.list` / `data.team.get` | teams / clubs / constructors | `query.per_page` |
+| `data.competitors.list` / `.get` | players / fighters / drivers | `query`: `search`, `player_ids` (array), `per_page` |
+| `data.competitors_active.list` | current rosters only | as above |
+| `data.standings.list` | standings / rankings / driver standings | `query.season` (most team sports require it) |
+| `data.team_standings.list` | constructor/team standings (F1) | `query.season` |
+| `data.player_stats.list` | per-game logs | `query`: `player_ids` (array), `seasons[]`, `dates[]`, `per_page`, `postseason` |
+| `data.player_season_stats.list` | player season totals | `query`: `season`, `player_ids` where supported; NHL is per-player: `path_params.player_id` |
+| `data.season_averages.list` | per-player season averages (NBA-family) | `query`: `season`, `player_id`; `path_params.category` + `query.type` for categorized |
+| `data.team_season_averages.list` | team season averages | `query`: `season`, `season_type` (`regular`/`playoffs`), `type` (`base`/`advanced`); `path_params.category` |
+| `data.team_stats.list` | team per-game stats | `query`: `game_id`/`season` |
+| `data.team_season_stats.list` | team season stats | `query.season`; NHL per-team: `path_params.team_id` |
+| `data.player_advanced_stats.list` | advanced metrics | `query`: `seasons[]`, `player_ids`; NFL: `path_params.category` = `rushing`/`passing`/`receiving` |
+| `data.leaders.list` | stat leaders | `query`: `season`, `stat_type` |
+| `data.injuries.list` | injury/availability report | `query.per_page` |
+| `data.box.list` / `data.box.live` | box scores (historical / live) | `query.date` / none |
+| `data.lineups.list`, `data.plays.list` | lineups, play-by-play | `query.game_id` (game-scoped) |
+| `data.matchups.list` | tennis head-to-head; MLB batter-vs-pitcher | tennis: `query` player ids; MLB versus: batter/pitcher ids |
+| `data.career_stats.list` | career stats (tennis) | `query.player_id` |
+| `data.shots.list` | soccer shot maps with **xG** | `query.game_id` |
+| `data.match_events.list` | soccer goals/cards/subs | `query.game_id` |
+| `data.momentum.list`, `data.pregame_forms.list` | soccer momentum / recent form | `query.game_id` |
+| `data.rosters.list` | rosters; NFL depth charts | soccer: `query`; NFL: `path_params.team_id` |
+| `data.results.list` | F1 session results / PGA tournament results / MMA fight results | `query`: season/event filters |
+| `data.qualifying.list`, `data.pit_stops.list`, `data.laps.list` | F1 detail (plan-gated upstream) | `query` session/event ids |
+| `data.venues.list` | circuits / stadiums / courses | — |
+| `data.round_stats.list` | PGA strokes-gained round stats | `query` tournament/player |
+| `data.splits.list`, `data.plate_appearances.list` | MLB splits / plate appearances | `query` player/season |
+| `data.pitcher_pitch_stats.list`, `data.hitter_pitch_stats.list` | MLB pitch-type breakdowns | `query` player/season |
+| `data.conferences.list`, `data.bracket.list` | college conferences / March Madness bracket | `query.season` |
+| `data.player_contracts.list`, `data.team_contracts.list` | NBA salaries/payroll (plan-gated upstream) | `query` |
+| `data.shot_locations.list` | WNBA shooting zones | `query` player/season |
+| `data.odds.list` | game odds (spread/moneyline/total) | `query`: `game_id` OR `date` (NBA accepts arrays) |
+| `data.player_props.list` | player prop lines + over/under odds | `query.game_id` (required) |
+| `data.futures.list` | outright/futures odds | `query.season` |
+
+## Which sports have what (highlights — catalog is authoritative)
+
+- **nba** — richest: full stats family (game logs, season averages + categories
+  `general/clutch/shooting/playtype/tracking/hustle/defense/shotdashboard` with `type` sub-param,
+  team averages incl. `pace`/`def_rating` under `type=advanced`), advanced stats, box/live box,
+  lineups, plays, leaders, injuries, contracts (plan-gated), odds + player props (the only league
+  on the absolute v2 betting surface — handled transparently).
+- **nfl** — game logs, season stats, team stats + team season stats, advanced
+  rushing/passing/receiving (via `category`), per-team depth-chart rosters
+  (`path_params.team_id`), plays, injuries, standings, odds + props.
+- **mlb** — game logs, season stats, **batter-vs-pitcher matchups**, splits, plate appearances,
+  pitch-type stats (pitcher + hitter), lineups, plays, injuries, odds + props.
+- **nhl** — box scores, plays, injuries, standings; season stats are **per-player/per-team
+  id-scoped** (no flat game-log endpoint); player/team leaders; odds + props.
+- **wnba** — NBA-style stats + advanced + **shot_locations**; odds + props.
+- **soccer** (epl/laliga/seriea/bundesliga/ligue1/ucl/mls/worldcup) — matches, rosters, injuries,
+  standings, player/team match stats, **xG shots**, match events, momentum, pregame forms;
+  odds + props; **futures** for ucl/worldcup. EPL serves from its v2 API transparently.
+- **tennis** (atp/wta) — players, matches, rankings (as `standings`), **head-to-head matchups**,
+  match stats, career stats; odds only.
+- **mma** — fighters, events (cards), **fight results** (`data.results.list`), fight stats,
+  rankings; odds only.
+- **f1** — drivers, constructors (`teams`), sessions (`events`), qualifying, results, laps,
+  pit stops, driver + team standings, venues; **futures only** (no per-race odds). Much of the
+  deep telemetry is plan-gated upstream — expect `resource_unavailable_for_league` if unentitled.
+- **pga** — players, tournaments, results, strokes-gained round stats, venues (courses);
+  **futures + props**, no match odds.
+- **college** (ncaaf/ncaab/ncaaw/cbb) — teams, players, games, standings, plays, conferences,
+  **bracket** (ncaab/ncaaw March Madness); odds only, no props.
+- **esports** (cs2/lol/dota2) — teams/players/matches (cs2 deepest: match/map stats); **no betting**.
+
+## Betting coverage map
+
+| Markets | Leagues |
+|---|---|
+| odds + player props | nba, nfl, mlb, nhl, wnba, epl, laliga, seriea, bundesliga, ligue1, mls, ucl, worldcup |
+| odds only | ncaaf, ncaab, ncaaw, cbb, mma, atp, wta |
+| futures | ucl, worldcup, f1, pga |
+| none | cs2, lol, dota2 |
+
+Sportsbook odds/props/futures are **context, never the executable price** — Wayfinder executes
+sports bets only on Polymarket. Compute edges with
+`wayfinder_paths.quant.sports_props.market_edge(model_p, polymarket_price)` against
+`polymarket_read` order-book prices.
+
+## Conventions that bite
+
+- **Arrays**: list-valued query params just work — `query={"player_ids": [161, 1057262518]}`
+  bulk-fetches in one call (the gateway maps to the provider's `key[]` form). Batch a whole
+  slate's game logs in ONE `data.player_stats.list` call.
+- **Ids are one namespace per sport**: the `player_id` in props, game logs, and players are the
+  same id space (newer players just have huge ids). Hydrate names via `data.competitors.list`
+  with `player_ids`.
+- **Seasons**: integer start-year (`2025` = the 2025-26 NBA season). `season_type`:
+  `regular`/`playoffs` where supported; game logs accept `postseason` true/false.
+- **Id-scoped resources**: where the error or this doc says per-team/per-player, pass
+  `path_params={"team_id": ...}` or `{"player_id": ...}` (NFL rosters, NHL season stats).
+- **Game-scoped resources** need an event id: `query={"game_id": ...}` (or `path_params.id`).
+- **Caching**: non-live data (stats/averages/rosters) is cached server-side for hours — repeats
+  are cheap; odds/props/futures stay near-live (~15s). Still batch.
+- **Pagination**: `per_page` (max 100) + cursor in `meta.next_cursor` where present.
+
+## Lab (backtesting) quick sheet — nba/nfl/nhl/mlb only
+
+- Factors: `lab.factors.list` — integer `factor_id`, `slug` (`pp_*` = player-prop factors),
+  typed `configurable_params`.
+- Create: `lab.models.create` body `{name, sport, bet_type: moneyline|spread|over_under,
+  mode: simple|weighted, factors: [{factor_id, parameters, weight}]}` — the key is
+  **`parameters`** (not `params`); weighted weights **sum to exactly 100**; prop models need
+  `model_type: "player_prop"` + `prop_type` + `pp_*` factors (game models reject `pp_*`).
+- Update replaces (PUT semantics — send the full body). Backtest: `lab.performance.run`
+  (async job) → `lab.performance.get` (win_rate, roi as a fraction, results_by_confidence).
+- Predictions: `lab.predictions.generate` (model id in path) → list via
+  `query={"model_id": ...}` (top-level route). Active jobs for a model: `lab.jobs.active`
+  (`path_params.id` = model id). Models/jobs are **scoped to your workspace** — foreign ids 404.
+- Jobs are async (`pending → running → completed/failed`): kick off, capture
+  `run_id`/`job_id`, monitor via `wayfinder_sports_backtest_state` — never tight-loop.
