@@ -295,9 +295,15 @@ with data, any question — recent-form projections, prop EV scans, matchup anal
 soccer views, correlations. Use scripts when the question needs custom logic, cross-resource
 joins, or a league the Lab doesn't cover; use the Lab when a factor-model backtest is the ask.
 
-**PRIMARY PATH — the canned pipelines.** Do NOT write your own modelling script and do NOT
-pull betting lines from the web (a live run burned us with fabricated web odds — provider
-odds only). One command each:
+**PRIMARY PATH — the canned pipelines. HARD RULE: any question about prop value,
+mispricing, EV, or a moneyline/total/spread assessment MUST be answered by running the
+matching pipeline below FIRST and composing from its table. A betting answer without
+`model_p`/`book_p`/`edge` numbers from a pipeline run is INVALID — raw snapshot/provider
+calls are for context (schedule, injuries, narratives), never for odds judgement.** Do
+NOT write your own modelling script and do NOT pull betting lines from the web (a live
+run burned us with fabricated web odds — provider odds only). Multi-game asks: pass
+comma-separated ids (`--game-id 123,456`) — one command covers the whole slate, and the
+gateway caches make repeat fetches fast. One command each:
 
 For **player props** ("best props / which props look mispriced"):
 

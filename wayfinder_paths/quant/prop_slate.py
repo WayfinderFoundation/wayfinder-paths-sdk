@@ -645,21 +645,28 @@ def _main() -> None:
 
     parser = argparse.ArgumentParser(description="Score a game's player-prop slate.")
     parser.add_argument("--sport", required=True)
-    parser.add_argument("--game-id", required=True)
+    parser.add_argument(
+        "--game-id", required=True, help="game id, or comma-separated ids for a slate"
+    )
     parser.add_argument("--season", type=int, required=True)
     parser.add_argument("--out", default=".wayfinder_runs/sports")
     parser.add_argument("--top", type=int, default=12)
     args = parser.parse_args()
 
-    result, artifacts = asyncio.run(
-        run_prop_slate(
-            args.sport, args.game_id, args.season, out_dir=args.out, top=args.top
+    all_artifacts: list[str] = []
+    any_picks = False
+    for game_id in str(args.game_id).split(","):
+        result, artifacts = asyncio.run(
+            run_prop_slate(
+                args.sport, game_id.strip(), args.season, out_dir=args.out, top=args.top
+            )
         )
-    )
-    print(render_slate(result, top=args.top))
-    print()
-    print("artifacts:", " ".join(artifacts) if artifacts else "(none)")
-    if not (result.actionable or result.watch):
+        all_artifacts.extend(artifacts)
+        any_picks = any_picks or bool(result.actionable or result.watch)
+        print(render_slate(result, top=args.top))
+        print()
+    print("artifacts:", " ".join(all_artifacts) if all_artifacts else "(none)")
+    if not any_picks:
         raise SystemExit(2)
 
 

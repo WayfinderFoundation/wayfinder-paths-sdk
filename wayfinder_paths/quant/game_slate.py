@@ -654,7 +654,9 @@ def _main() -> None:
         description="Model a game's moneyline/total/spread vs the books."
     )
     parser.add_argument("--sport", required=True)
-    parser.add_argument("--game-id", required=True)
+    parser.add_argument(
+        "--game-id", required=True, help="game id, or comma-separated ids for a slate"
+    )
     parser.add_argument("--season", type=int, required=True)
     parser.add_argument(
         "--date",
@@ -664,14 +666,17 @@ def _main() -> None:
     parser.add_argument("--out", default=".wayfinder_runs/sports")
     args = parser.parse_args()
 
-    result, artifacts = asyncio.run(
-        run_game_slate(
-            args.sport, args.game_id, args.season, date=args.date, out_dir=args.out
+    all_artifacts: list[str] = []
+    for game_id in str(args.game_id).split(","):
+        result, artifacts = asyncio.run(
+            run_game_slate(
+                args.sport, game_id.strip(), args.season, date=args.date, out_dir=args.out
+            )
         )
-    )
-    print(render_game(result))
-    print()
-    print("artifacts:", " ".join(artifacts) if artifacts else "(none)")
+        all_artifacts.extend(artifacts)
+        print(render_game(result))
+        print()
+    print("artifacts:", " ".join(all_artifacts) if all_artifacts else "(none)")
 
 
 if __name__ == "__main__":
