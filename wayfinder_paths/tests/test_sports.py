@@ -234,6 +234,7 @@ def test_sports_subagent_is_hidden_with_full_facade() -> None:
     fm = _frontmatter(REPO / ".opencode" / "agents" / "wayfinder-sports.md")
     assert fm["mode"] == "subagent"
     assert fm["hidden"] is True
+    assert fm["steps"] == 16  # analysis/modelling workflows need fetch+script headroom
     perm = fm["permission"]
     assert perm["task"]["*"] == "deny"
     assert perm["wayfinder_*"] == "deny"
@@ -254,6 +255,8 @@ def test_sports_data_skill_exists_and_agent_references_it() -> None:
         "market_edge",
         "sum to exactly 100",
         "player_ids",
+        "Scripted analysis",
+        "SPORTS_CLIENT",
     ):
         assert needle in text, f"skill missing: {needle}"
     agent = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
@@ -267,6 +270,22 @@ def test_sports_subagent_prompt_states_key_rules() -> None:
     assert "provider-agnostic" in lower
     assert "remote mcp" in lower  # never add a provider's remote MCP
     assert "run_id" in body  # stateful-run discipline
+    # analyst capability: scripted fetch+manipulate+model, artifacts in the contract
+    assert "SPORTS_CLIENT" in body
+    assert "Data analysis & modelling" in body
+    assert '"dataFiles": []' in body
+
+
+def test_delegators_describe_sports_capabilities() -> None:
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    sports_section = primary.split("### wayfinder-sports", 1)[1]
+    for needle in ("Data analysis & modelling", "futures", "xG", "modelling"):
+        assert needle in sports_section, f"primary sports overview missing: {needle}"
+    assert "most complete for NBA" not in primary  # stale capability claim
+
+    research = (REPO / ".opencode" / "agents" / "wayfinder-research.md").read_text("utf-8")
+    for needle in ("Analyze & model", "futures", "xG", "dataFiles"):
+        assert needle in research, f"research sports overview missing: {needle}"
 
 
 def test_opencode_json_registers_sports_perms() -> None:

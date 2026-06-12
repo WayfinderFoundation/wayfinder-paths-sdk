@@ -128,6 +128,35 @@ sports bets only on Polymarket. Compute edges with
   are cheap; odds/props/futures stay near-live (~15s). Still batch.
 - **Pagination**: `per_page` (max 100) + cursor in `meta.next_cursor` where present.
 
+## Scripted analysis (inside `core_run_script`)
+
+For data manipulation, analysis, and custom modelling, run a bounded Python script. Fetch through
+`SPORTS_CLIENT` (same backend gateway as the MCP tools: key-safe, allowlisted, cached — never raw
+provider URLs), shape with pandas, model with the quant modules:
+
+```python
+import asyncio, pandas as pd
+from wayfinder_paths.core.clients.SportsClient import SPORTS_CLIENT
+from wayfinder_paths.quant import sports_props as sp          # projections, EV, market_edge
+# from wayfinder_paths.quant import polymarket_edge           # prediction-market math
+
+async def main():
+    logs = await SPORTS_CLIENT.provider_call(
+        endpoint_id="data.player_stats.list", sport="nba",
+        query={"player_ids": [161, 1057262518], "seasons": [2025], "per_page": 100})
+    df = pd.DataFrame(logs["data"])
+    # rolling form, hit rates vs a line, joins to team pace/def_rating, score_prop EV tables...
+    df.to_csv(".wayfinder_runs/sports/analysis.csv", index=False)  # artifact -> dataFiles
+
+asyncio.run(main())
+```
+
+`SPORTS_CLIENT` methods: `snapshot(action=..., sport=..., ...)`,
+`provider_call(endpoint_id=..., sport=..., path_params=..., query=..., body=..., run_id=...)`,
+`provider_catalog()`, `backtest_state(action=..., run_id=...)` — all async. Conventions: bulk
+arrays over per-player loops; bounded lookbacks (a season, not all history); big tables go to
+`.wayfinder_runs/sports/` artifacts (return the paths), summaries go in the response.
+
 ## Lab (backtesting) quick sheet — nba/nfl/nhl/mlb only
 
 - Factors: `lab.factors.list` — integer `factor_id`, `slug` (`pp_*` = player-prop factors),

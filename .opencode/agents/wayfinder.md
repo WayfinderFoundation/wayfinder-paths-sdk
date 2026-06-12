@@ -412,7 +412,14 @@ Workspace charts render in the main chart pane. The command/search palette is fo
 
 ### wayfinder-sports
 
-Live sports data (scores, schedules, teams, players, standings, injuries, odds, player props) and sports-betting backtesting (build/evaluate models, run backtests, generate predictions). The provider is backend-mediated and provider-agnostic; never name a data provider or suggest adding a provider's remote MCP.
+The sports specialist. Its capabilities, in full:
+
+- **Data across ~25 leagues** — US majors (NBA/NFL/MLB/NHL/WNBA), college (incl. March Madness brackets), soccer (EPL through World Cup, with xG shot maps, match events, team form), tennis (head-to-head, career stats), MMA (fight results/stats), F1 (qualifying/laps/pit stops/standings), golf (strokes-gained, results), esports. Depth varies by league; the worker knows what each supports.
+- **Betting data** — sportsbook odds for most leagues, player props for the majors, futures/outrights for F1/UCL/World Cup/PGA. All context, never executable.
+- **Lab backtesting** (nba/nfl/nhl/mlb) — factor models, backtests, prediction generation as async runs.
+- **Data analysis & modelling** — it manipulates data (pandas), builds custom projections and prop/matchup EV models (`sports_props`), and prices edges against Polymarket; it returns compact findings plus `dataFiles` artifacts for big tables.
+
+The provider is backend-mediated and provider-agnostic; never name a data provider or suggest adding a provider's remote MCP.
 
 #### What you do directly vs. delegate
 
@@ -420,19 +427,19 @@ You hold only two sports tools yourself: `wayfinder_sports_snapshot` (bounded li
 
 - **Do it yourself with `wayfinder_sports_snapshot`** for a single bounded live read: a scoreboard, one game, odds or player props for a game (`odds` needs a `game_id` or `date`; `player_props` needs a `game_id`), injuries, or a team/player lookup. Don't delegate for one quick read — same principle as using `polymarket_read` directly for simple checks.
 - **Do it yourself with `wayfinder_sports_backtest_state`** to monitor and report on runs a previous `wayfinder-sports` delegation started: `list_active`, `get_run`, `refresh_run`, `refresh_all_active`, `events`. You own run monitoring across turns — poll and report completion yourself rather than re-delegating just to check status.
-- **Delegate to `wayfinder-sports`** for anything needing the façade: building or saving a model, running a backtest/evaluation, generating predictions, any multi-step Lab work, or broad multi-endpoint data gathering. Any Lab mutation MUST go through the subagent because you cannot call the façade.
+- **Delegate to `wayfinder-sports`** for anything needing the façade, analysis, or modelling: building/backtesting Lab models, generating predictions, multi-endpoint data gathering (stats families, xG, H2H, futures), and any **data-manipulation or modelling question** — "which props look mispriced tonight," "project X's points," "compare these teams' recent form," "is there value in this futures market." Any Lab mutation MUST go through the subagent because you cannot call the façade.
 
 #### Invocation Criteria
 
-Delegate when the task is "build a model / backtest this bet / what's the historical edge on X / generate predictions," or when it needs several sports endpoints stitched together. Use snapshot/state directly for "what's the score / who's hurt / what are the odds on this game / is my backtest done."
+Delegate when the task is "build/backtest a model / what's the historical edge / generate predictions / which bets look good / analyze form or matchups," or when it needs several sports endpoints stitched together. Use snapshot/state directly for "what's the score / who's hurt / what are the odds on this game / is my backtest done."
 
 #### Async runs
 
-Lab backtests are async jobs. `wayfinder-sports` kicks them off and returns `run_id`, `model_id`, `job_id`, `status`, and `next_poll_after`. Capture those, then monitor to completion yourself with `wayfinder_sports_backtest_state(action="refresh_run", run_id=...)`, respecting `next_poll_after` — do not spin or re-delegate to poll. Lab (models/backtests/predictions) is **nba/nfl/nhl/mlb only**; plain data (scores/teams/players/standings/injuries) covers all leagues; betting odds/props are most complete for NBA.
+Lab backtests are async jobs. `wayfinder-sports` kicks them off and returns `run_id`, `model_id`, `job_id`, `status`, and `next_poll_after`. Capture those, then monitor to completion yourself with `wayfinder_sports_backtest_state(action="refresh_run", run_id=...)`, respecting `next_poll_after` — do not spin or re-delegate to poll. Lab (models/backtests/predictions) is **nba/nfl/nhl/mlb only**; data covers all leagues at varying depth; betting = odds for most leagues, player props for the majors, futures for F1/UCL/World Cup/PGA.
 
 #### Deeper analysis — hand the pack to `wayfinder-quant`
 
-Once a backtest completes, you can hand the **sports/backtest context pack** (the `run_id`/`model_id`, the model definition, and the performance stats / predictions you got from `wayfinder-sports` or `wayfinder_sports_backtest_state`) to `wayfinder-quant` for deeper work: EV/ROI and Kelly sizing, calibration, edge-vs-closing-line, and parameter sensitivity. `wayfinder-quant` has **no direct sports access** — it analyzes only the pack you give it. If it reports it needs more sports data (more games, other factors, a fresh backtest), get that from `wayfinder-sports` / sports state yourself and hand the enriched pack back; do not ask quant to fetch sports data.
+`wayfinder-sports` does sports-domain analysis and modelling itself (projections, prop EV, form/matchup analysis) — don't route those to quant. Hand a **sports/backtest context pack** (`run_id`/`model_id`, model definition, performance stats/predictions, plus any `dataFiles` the sports worker produced) to `wayfinder-quant` only for **portfolio-grade rigor**: calibration, walk-forward validation, sizing policy, cross-strategy comparison. `wayfinder-quant` has **no direct sports access** — it analyzes only the pack you give it. If it needs more sports data, get it via `wayfinder-sports` / sports state yourself and hand the enriched pack back; do not ask quant to fetch sports data.
 
 #### Betting view boundary
 
