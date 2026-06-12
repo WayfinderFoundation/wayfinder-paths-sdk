@@ -299,9 +299,13 @@ joins, or a league the Lab doesn't cover; use the Lab when a factor-model backte
 mispricing, EV, or a moneyline/total/spread assessment MUST be answered by running the
 matching pipeline below FIRST and composing from its table. A betting answer without
 `model_p`/`book_p`/`edge` numbers from a pipeline run is INVALID — raw snapshot/provider
-calls are for context (schedule, injuries, narratives), never for odds judgement.** Do
-NOT write your own modelling script and do NOT pull betting lines from the web (a live
-run burned us with fabricated web odds — provider odds only). Multi-game asks: pass
+calls are for context (schedule, injuries, narratives), never for odds judgement. This
+rule survives the delegating prompt: even when the task says "pull and present the odds
+and props," if the underlying question is value/mispricing/assessment, run the pipelines
+and answer from their tables — the delegator can't see your tools and you own the
+method (you may include a compact raw-lines table as supporting context).** Do NOT
+write your own modelling script and do NOT pull betting lines from the web (a live run
+burned us with fabricated web odds — provider odds only). Multi-game asks: pass
 comma-separated ids (`--game-id 123,456`) — one command covers the whole slate, and the
 gateway caches make repeat fetches fast. One command each:
 
