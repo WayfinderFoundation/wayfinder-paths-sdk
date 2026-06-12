@@ -362,6 +362,7 @@ def _main() -> None:
         description="Blend the executable market prior with evidence cards into a "
         "gated posterior (sports dislocation adjudication)."
     )
+    parser.add_argument("--label", default=None, help="market label echoed in the header")
     parser.add_argument("--market", type=float, default=None, help="single market price")
     parser.add_argument("--bid", type=float, default=None, help="executable YES bid")
     parser.add_argument("--ask", type=float, default=None, help="executable YES ask")
@@ -414,6 +415,8 @@ def _main() -> None:
         yes_ask=args.ask,
         min_ev=args.min_ev,
     )
+    if args.label:
+        print(f"=== {args.label} ===")
     print(render_ledger(result, dislocation_report=report))
 
 
