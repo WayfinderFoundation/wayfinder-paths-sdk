@@ -162,6 +162,23 @@ def get_etherscan_api_key() -> str | None:
     return os.environ.get("ETHERSCAN_API_KEY")
 
 
+def get_openai_credentials() -> dict[str, str | None]:
+    """OpenAI API key + organization from ``system.openai`` (env fallback).
+
+    Mirrors the ``system.<provider>`` config pattern (see ``get_api_key`` /
+    ``get_etherscan_api_key``). The eval judge resolves these into the environment so
+    opencode's OpenAI provider can authenticate; credentials stay in the config, never a
+    tracked file.
+    """
+    openai = CONFIG.get("system", {}).get("openai", {})
+    key = openai.get("api_key") or os.environ.get("OPENAI_API_KEY")
+    org = openai.get("organization") or os.environ.get("OPENAI_ORGANIZATION")
+    return {
+        "api_key": str(key).strip() if key else None,
+        "organization": str(org).strip() if org else None,
+    }
+
+
 def is_opencode_instance() -> bool:
     return bool(os.environ.get("OPENCODE_INSTANCE_ID"))
 

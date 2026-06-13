@@ -14,8 +14,29 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$REPO/.wayfinder_runs/evals"
 DB="$HOME/.local/share/opencode/opencode.db"
 OPENCODE="${OPENCODE_BIN:-$HOME/.opencode/bin/opencode}"
-MODEL="${EVAL_MODEL:-wayfinder/deepseek-v4-pro}"
+# The judge defaults to GPT-5.5 (high reasoning) — a DIFFERENT model from the arms to
+# avoid self-preference bias, and stronger for grounded scoring. Model names are not
+# secrets, so defaulting here is safe. Override with JUDGE_MODEL=...
+JUDGE_MODEL="${JUDGE_MODEL:-openai/gpt-5.5}"
 TIMEOUT="${JUDGE_TIMEOUT:-900}"
+
+# Resolve OpenAI creds from the wayfinder system config (`system.openai.*`, env fallback)
+# into the environment so opencode's OpenAI provider can authenticate. Single source of
+# truth in the config; the key never touches a tracked file or stdout.
+if [[ "$JUDGE_MODEL" == openai/* ]]; then
+  eval "$(cd "$REPO" && poetry run python - <<'PY'
+from wayfinder_paths.core.config import load_config, get_openai_credentials
+import shlex
+load_config()
+c = get_openai_credentials()
+if c["api_key"]:
+    print(f"export OPENAI_API_KEY={shlex.quote(c['api_key'])}")
+if c["organization"]:
+    print(f"export OPENAI_ORGANIZATION={shlex.quote(c['organization'])}")
+PY
+)"
+  [ -n "${OPENAI_API_KEY:-}" ] || { echo "no OpenAI creds in system.openai.* or env" >&2; exit 1; }
+fi
 
 mkdir -p "$OUT"
 PROMPT="$OUT/judge_prompt_$TAG.md"
@@ -33,7 +54,7 @@ PROMPT="$OUT/judge_prompt_$TAG.md"
 LOG="$OUT/judge_$TAG.log"
 for attempt in 1 2; do
   (cd "$REPO" && timeout "$TIMEOUT" "$OPENCODE" run --agent wayfinder-eval-judge \
-    -m "$MODEL" "$(cat "$PROMPT")") > "$LOG" 2>&1 && break
+    -m "$JUDGE_MODEL" "$(cat "$PROMPT")") > "$LOG" 2>&1 && break
   echo "judge $TAG attempt $attempt failed — $( [ "$attempt" = 1 ] && echo retrying || echo giving up )" >&2
   [ "$attempt" = 1 ] && sleep 30
 done
