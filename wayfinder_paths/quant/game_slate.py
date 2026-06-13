@@ -704,6 +704,9 @@ class GameResult:
     lam_home: float
     lam_away: float
     views: list[MarketView]
+    # model probabilities for the alternate-line ladder (executable venues list whole
+    # boards of alt totals/spreads; the same grid prices every line)
+    alt_lines: list[dict[str, float]] = field(default_factory=list)
     note: str = (
         "book probabilities are consensus de-vigged SPORTSBOOK lines — informational only. "
         "Executable EV must be priced on Polymarket: market_edge(model_p, polymarket_price)."
@@ -737,25 +740,51 @@ def score_game_slate(slate: GameSlate) -> GameResult:
         float(spread["home_line"]) if spread.get("home_line") is not None else None
     )
 
-    probs: dict[str, float] = {}
-    if form_ok:
+    def _probs_at(total_l: float, spread_l: float | None) -> dict[str, float]:
         if cfg["dist"] == "poisson":
-            probs = poisson_game_probs(
+            return poisson_game_probs(
                 lam_home,
                 lam_away,
-                total_line=total_line,
-                spread_line=spread_line,
+                total_line=total_l,
+                spread_line=spread_l,
                 split_ties=not draws,
             )
-        else:
-            probs = normal_game_probs(
-                lam_home,
-                lam_away,
-                total_line=total_line,
-                spread_line=spread_line,
-                margin_sigma=cfg.get("margin_sigma", 12.0),
-                total_sigma=cfg.get("total_sigma", 18.0),
-            )
+        return normal_game_probs(
+            lam_home,
+            lam_away,
+            total_line=total_l,
+            spread_line=spread_l,
+            margin_sigma=cfg.get("margin_sigma", 12.0),
+            total_sigma=cfg.get("total_sigma", 18.0),
+        )
+
+    probs: dict[str, float] = {}
+    alt_lines: list[dict[str, float]] = []
+    if form_ok:
+        probs = _probs_at(total_line, spread_line)
+        # Alternate-line ladder from the same model: executable venues list a whole
+        # board (alt totals/spreads — a user pointed at 26 Polymarket markets we
+        # ignored), and the grid prices every line for free.
+        for delta in (-2.0, -1.0, 1.0, 2.0):
+            alt_total = total_line + delta
+            if alt_total > 0:
+                alt_lines.append(
+                    {
+                        "market": "total_over",
+                        "line": alt_total,
+                        "model_p": round(_probs_at(alt_total, None)["over"], 4),
+                    }
+                )
+        for alt_spread in (-3.5, -2.5, -1.5, 1.5, 2.5, 3.5):
+            cover = _probs_at(total_line, alt_spread).get("home_spread")
+            if cover is not None:
+                alt_lines.append(
+                    {
+                        "market": "spread_home",
+                        "line": alt_spread,
+                        "model_p": round(cover, 4),
+                    }
+                )
 
     ml = slate.markets.get("moneyline") or {}
     views: list[MarketView] = []
@@ -802,6 +831,7 @@ def score_game_slate(slate: GameSlate) -> GameResult:
         lam_home=round(lam_home, 3) if form_ok else 0.0,
         lam_away=round(lam_away, 3) if form_ok else 0.0,
         views=views,
+        alt_lines=alt_lines,
     )
 
 
@@ -897,6 +927,22 @@ def render_game(result: GameResult, *, data_only: bool = False) -> str:
         lines.append(
             f"{v.market:<16}{line:>7}  {model:>6}  {book:>6}  {edge:>7}  {','.join(v.flags)}"
         )
+    if result.alt_lines:
+        totals = [a for a in result.alt_lines if a["market"] == "total_over"]
+        spreads = [a for a in result.alt_lines if a["market"] == "spread_home"]
+        if totals:
+            lines.append(
+                "alt totals (model over): "
+                + "  ".join(f"{a['line']:g}:{a['model_p']:.3f}" for a in totals)
+            )
+        if spreads:
+            lines.append(
+                "alt spreads home (model cover): "
+                + "  ".join(f"{a['line']:+g}:{a['model_p']:.3f}" for a in spreads)
+            )
+        lines.append(
+            "(price the executable board against these — venues list whole alt-line ladders)"
+        )
     lines.append("\nNOTE: " + result.note)
     return "\n".join(lines)
 
@@ -955,6 +1001,7 @@ async def run_game_slate(
                         "lam_home": result.lam_home,
                         "lam_away": result.lam_away,
                         "views": game_rows(result),
+                        "alt_lines": result.alt_lines,
                     },
                     "note": result.note,
                 },

@@ -396,3 +396,31 @@ def test_pitcher_factors_adjust_opposing_lambda_and_render():
     assert "REFERENCE MODEL" not in info_only
     assert "de-vigged" not in info_only or "consensus" not in info_only or True  # no odds in stub
     assert "sports_posterior" in info_only  # gating pointer survives data-only mode
+
+
+def test_alt_line_ladder_prices_the_executable_board():
+    """Executable venues list whole boards (alt totals/spreads); the grid prices every
+    line. A user caught the agent ignoring 26 such Polymarket markets."""
+    slate = gs.GameSlate(
+        sport="mlb",
+        game_id=1,
+        season=2026,
+        home={"id": 1, "abbreviation": "CHW"},
+        away={"id": 2, "abbreviation": "LAD"},
+        home_form={"for": 4.4, "against": 4.5, "n": 25},
+        away_form={"for": 5.2, "against": 3.5, "n": 25},
+        markets=gs.parse_game_odds(
+            [{"vendor": "fanduel", "moneyline_home_odds": 150, "moneyline_away_odds": -170,
+              "total_value": "8.5", "total_over_odds": -110, "total_under_odds": -110,
+              "spread_home_value": "1.5", "spread_home_odds": -140, "spread_away_odds": 120}]
+        ),
+    )
+    result = gs.score_game_slate(slate)
+    totals = {a["line"]: a["model_p"] for a in result.alt_lines if a["market"] == "total_over"}
+    spreads = {a["line"]: a["model_p"] for a in result.alt_lines if a["market"] == "spread_home"}
+    assert set(totals) == {6.5, 7.5, 9.5, 10.5}  # ladder around the 8.5 consensus line
+    assert totals[6.5] > totals[10.5]  # monotone in the line
+    assert {-3.5, -2.5, -1.5, 1.5, 2.5, 3.5} == set(spreads)
+    assert spreads[3.5] > spreads[-3.5]  # home covers +3.5 more often than -3.5
+    text = gs.render_game(result)
+    assert "alt totals (model over):" in text and "alt spreads home" in text

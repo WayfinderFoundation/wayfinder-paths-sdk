@@ -366,3 +366,13 @@ def test_information_vs_model_division_of_labor() -> None:
     assert "REFERENCE MODEL" in sports and "--data-only" in sports
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text("utf-8")
     assert "REFERENCE MODEL" in skill and "--data-only" in skill
+
+
+def test_executable_board_enumeration_is_wired() -> None:
+    """A user caught both eval arms ignoring Polymarket's 26-market per-game board
+    while concluding 'nothing executable'."""
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    assert "Enumerate the executable BOARD" in primary
+    assert "mlb-lad-cws-2026-06-12" in primary  # the slug pattern, by example
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text("utf-8")
+    assert "Executable board rule" in skill and "alt_lines" in skill

@@ -162,6 +162,13 @@ poetry run python -m wayfinder_paths.quant.sports_posterior \
   [--card "davies_out:against:medium:news"]
 ```
 
+**Executable board rule:** Polymarket lists a per-game EVENT (slug
+`{league}-{away}-{home}-{YYYY-MM-DD}`, e.g. `mlb-lad-cws-2026-06-12`) carrying a whole
+board — alternate spreads/totals, first-half/F5 lines, game props. Hydrate it
+(`polymarket_read get_event`) and enumerate its markets as the executable candidate
+set; `game_slate` emits `alt_lines` (model probabilities for the alt ladder) to price
+them. "No provider props" never means "nothing executable."
+
 **Dislocation rule:** when a slate's de-vigged book number and the Polymarket price for
 the same outcome disagree enough that `sports_posterior.dislocation` flags it, never
 recommend the cheap side on trust — the prior is the EXECUTABLE price, the book number
