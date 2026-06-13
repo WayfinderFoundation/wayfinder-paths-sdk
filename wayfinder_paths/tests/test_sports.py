@@ -245,6 +245,9 @@ def test_sports_subagent_is_hidden_with_full_facade() -> None:
     assert perm["wayfinder_sports_snapshot"] == "allow"
     assert perm["wayfinder_sports_backtest_state"] == "allow"
     assert perm["wayfinder_sports_provider"] == "allow"
+    # executable-board enumeration: read-only HIP-4 access (the second venue)
+    assert perm["wayfinder_hyperliquid_search_market"] == "allow"
+    assert perm["wayfinder_hyperliquid_search_mid_prices"] == "allow"
 
 
 def test_sports_data_skill_exists_and_agent_references_it() -> None:
@@ -376,3 +379,16 @@ def test_executable_board_enumeration_is_wired() -> None:
     assert "mlb-lad-cws-2026-06-12" in primary  # the slug pattern, by example
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text("utf-8")
     assert "Executable board rule" in skill and "alt_lines" in skill
+
+
+def test_executable_first_funnel_is_wired() -> None:
+    """User directive: start from the PM+HL boards and layer analysis on; deep-dive
+    survivors with whatever data sharpens the number."""
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    assert "ENUMERATE THE BOARDS (always step one)" in sports
+    assert "DEEP-DIVE each survivor" in sports
+    assert "answer IS the annotated board" in sports
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    assert "Betting questions START from the executable boards" in primary
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text("utf-8")
+    assert "FUNNEL that starts from the executable boards" in skill

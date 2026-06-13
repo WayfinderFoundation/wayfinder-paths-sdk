@@ -17,6 +17,9 @@ permission:
   wayfinder_sports_provider: allow
   # read-only prediction-market context for executable priors
   wayfinder_polymarket_read: allow
+  # hyperliquid read-only — HIP-4 board enumeration (the second executable venue)
+  wayfinder_hyperliquid_search_market: allow
+  wayfinder_hyperliquid_search_mid_prices: allow
   # bounded analysis scripts only
   wayfinder_core_run_script: allow
 ---
@@ -457,14 +460,42 @@ Backtests are async, so you must manage runs and jobs carefully:
 - **Backtestable prop edge comes from the Lab, not the live props snapshot.** Live `player_props` is current context only; for historical prop edge, build a prop model in the Lab and backtest it.
 - **Never invent stats, lines, or results — fetch them.** If a call fails or is rate-limited, record it in `failedCalls` and move on. Do not retry the same failing route more than twice. A "Route not found" error means your `endpoint_id` or params are wrong — call `catalog` and fix them rather than retrying blindly.
 
-## Forming an executable bet view — model vs the Polymarket price
+## Forming an executable bet view — start from the boards, layer analysis on
 
-Wayfinder executes sports bets **only on prediction markets (Polymarket)**, so an edge is only real against the *Polymarket* price — never the sportsbook line. The flow (mirrors `wayfinder-research`'s Prediction Market Forecast Mode):
+Wayfinder executes sports bets **only on prediction markets**, so an edge is only real
+against an executable price — never the sportsbook line. The flow is a FUNNEL that starts
+from what is tradeable and deepens analysis only where it pays:
 
-1. **Project** the outcome with your own stats model — run `core_run_script` importing `wayfinder_paths.quant.sports_props`: pull the player's game logs (`data.player_stats.list`), season + team stats, and produce a model probability `model_p` (for a player prop) or use a game model for a team-outcome probability.
-2. **Find the executable price** — `wayfinder_polymarket_read` (`action="search"`/`"get_event"` by team + date) to locate the matching market, then `action="order_book"` for the mid / target-size price. That price IS the implied probability and the cost.
-3. **Compute the edge** — `sports_props.market_edge(model_p, polymarket_price)` → `{side, edge, ev, kelly}`. Edge = `model_p − price`; size with conservative Kelly. The sportsbook `odds`/`player_props` are only the **line + context**, never the executable price.
-4. **Gate** like research: only call a bet actionable on positive EV against a *current* executable price; otherwise `WATCH`/`SKIP`.
+1. **ENUMERATE THE BOARDS (always step one).** Polymarket: `wayfinder_polymarket_read`
+   `get_event` on the per-game event slug (`{league}-{away}-{home}-{YYYY-MM-DD}`) or
+   search→hydrate — a game event carries a whole board (ML, alternate spreads/totals,
+   first-half/F5 lines, game props). Hyperliquid: `wayfinder_hyperliquid_search_market`
+   (`market_type="hip4"`, query by team/competition) + `wayfinder_hyperliquid_search_mid_prices`
+   for the mids. Output: the candidate table — market, line, venue, bid/ask or mid,
+   liquidity. The boards define WHAT you are analyzing; never analyze a market that isn't
+   on them without saying it's informational-only.
+2. **INFORMATION layer** — the slates for facts + market math: `game_slate`
+   (INFORMATION section / `--data-only`; de-vigged consensus, form, probable starters,
+   `alt_lines` to match board lines), `prop_slate`, `futures_slate`. Never hand-roll the
+   de-vig; web is for news only.
+3. **TRIAGE** — rank candidates by liquidity and |model/book vs venue price| gap; drop
+   dead markets with a stated reason. Only survivors earn a deep dive.
+4. **DEEP-DIVE each survivor — use whatever data sharpens the number.** The reference
+   model is a starting opinion; for a market you might actually call, build the best
+   probability you can from the full catalog, e.g. for a player prop: the player's COMPLETE
+   history vs this opponent across seasons (`data.player_stats.list` with `player_ids` +
+   multiple `seasons`), upweighted for matchup and recency; comparable players (similar
+   role/stat profile) vs this team recently (`data.matchups.list` where the league has it,
+   advanced stats); projected minutes/usage given injuries, lineups, rest, and blowout
+   risk; venue/park and pace. Express EVERY input as a weighted evidence card over the
+   executable prior and run the `sports_posterior` CLI — the ledger must show what data
+   moved the number and by how much. Depth costs calls: spend them on the 1-3 markets that
+   matter, not the whole board.
+5. **GATE and answer** — per surviving candidate: `sports_posterior` gate (or
+   `sports_props.market_edge` for quick sizing), venue-noise labels on sub-threshold gaps,
+   dislocation adjudication where triggered. **The answer IS the annotated board**: every
+   liquid market gets a verdict (BUY/WATCH/SKIP + one-line why) or a stated skip reason,
+   assembled IN FULL in your final message.
 
 **Dislocated markets — never pick a side on trust.** When you hold BOTH a de-vigged
 book number (slate `fair_p`/`book_p`) and a Polymarket price for the same outcome, check

@@ -133,12 +133,20 @@ sports bets only on Polymarket. Compute edges with
 
 ## Scripted analysis (inside `core_run_script`)
 
-**For betting analysis, run the canned pipelines for DATA + MARKET MATH (complete
+**Betting analysis is a FUNNEL that starts from the executable boards: (1) ENUMERATE
+what's tradeable — the Polymarket per-game event (`get_event` on the
+`{league}-{away}-{home}-{date}` slug) and Hyperliquid HIP-4 outcomes — into a candidate
+table; (2) INFORMATION via the canned pipelines below for DATA + MARKET MATH (complete
 fetches, de-vig, consensus, dislocation gating — correctness you must not hand-roll;
-never pull odds from the web). MODELING is the agent's judgment: `game_slate` separates
-an INFORMATION section (facts) from a labeled REFERENCE MODEL (one opinion — adjust or
-replace it; `--data-only` for facts alone), and your own view is expressed as evidence
-cards gated through `sports_posterior` over the executable prior:**
+never pull odds from the web); (3) TRIAGE candidates by liquidity and gap; (4) DEEP-DIVE
+survivors with whatever data sharpens the number (full matchup history across seasons,
+comparable players vs that opponent, minutes/usage given injuries/lineups — multi-season
+`player_stats`, `matchups`, advanced stats), each input a weighted evidence card; (5)
+GATE per candidate and answer with the annotated board. MODELING is the agent's
+judgment: `game_slate` separates an INFORMATION section (facts) from a labeled
+REFERENCE MODEL (one opinion — adjust or replace it; `--data-only` for facts alone),
+and your own view is expressed as evidence cards gated through `sports_posterior` over
+the executable prior:**
 
 ```
 # player props -> ACTIONABLE/WATCH/EXCLUDED EV table
