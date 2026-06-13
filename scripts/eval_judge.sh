@@ -14,17 +14,21 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$REPO/.wayfinder_runs/evals"
 DB="$HOME/.local/share/opencode/opencode.db"
 OPENCODE="${OPENCODE_BIN:-$HOME/.opencode/bin/opencode}"
-# The judge defaults to GPT-5.5 (high reasoning) — a DIFFERENT model from the arms to
-# avoid self-preference bias, and stronger for grounded scoring. Model names are not
-# secrets, so defaulting here is safe. Override with JUDGE_MODEL=...
+# The judge prefers a stronger, DIFFERENT model than the arms (avoids self-preference
+# bias). The default needs an OpenAI provider most people won't have configured — so if
+# its credentials can't be resolved we fall back to a model everyone running this harness
+# already has (the same provider the arms use), with a warning, rather than failing.
+# Override either with JUDGE_MODEL / JUDGE_FALLBACK_MODEL.
 JUDGE_MODEL="${JUDGE_MODEL:-openai/gpt-5.5}"
+JUDGE_FALLBACK_MODEL="${JUDGE_FALLBACK_MODEL:-wayfinder/deepseek-v4-pro}"
 TIMEOUT="${JUDGE_TIMEOUT:-900}"
 
-# Resolve OpenAI creds from the wayfinder system config (`system.openai.*`, env fallback)
-# into the environment so opencode's OpenAI provider can authenticate. Single source of
-# truth in the config; the key never touches a tracked file or stdout.
+# For an openai/* judge, resolve credentials from the wayfinder system config
+# (system.openai.*, env fallback) into the environment so opencode's OpenAI provider can
+# authenticate — single source of truth in the config, the key never touches a tracked
+# file or stdout. If no credentials are available, degrade to the fallback model.
 if [[ "$JUDGE_MODEL" == openai/* ]]; then
-  eval "$(cd "$REPO" && poetry run python - <<'PY'
+  eval "$(cd "$REPO" && poetry run python - <<'PY' 2>/dev/null || true
 from wayfinder_paths.core.config import load_config, get_openai_credentials
 import shlex
 load_config()
@@ -35,7 +39,12 @@ if c["organization"]:
     print(f"export OPENAI_ORGANIZATION={shlex.quote(c['organization'])}")
 PY
 )"
-  [ -n "${OPENAI_API_KEY:-}" ] || { echo "no OpenAI creds in system.openai.* or env" >&2; exit 1; }
+  if [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo "WARN: $JUDGE_MODEL needs OpenAI credentials (system.openai.* or OPENAI_API_KEY)" \
+         "— none found; falling back to $JUDGE_FALLBACK_MODEL (grounded judge, validated to" \
+         "agree with GPT-5.5). Set JUDGE_MODEL to override." >&2
+    JUDGE_MODEL="$JUDGE_FALLBACK_MODEL"
+  fi
 fi
 
 mkdir -p "$OUT"

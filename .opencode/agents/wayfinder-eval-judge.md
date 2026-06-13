@@ -20,7 +20,9 @@ permission:
 
 > Runs on a stronger model than the eval arms (default `openai/gpt-5.5`, high reasoning)
 > to avoid self-preference bias. Provider + credentials live in the gitignored opencode
-> config (`system.openai.*`); override the model with `JUDGE_MODEL=...`.
+> config (`system.openai.*`). If those credentials aren't configured, `eval_judge.sh`
+> degrades to `JUDGE_FALLBACK_MODEL` (the arms' provider — a grounded judge validated to
+> agree with GPT-5.5) rather than failing. Override with `JUDGE_MODEL=...`.
 
 You judge two anonymous answers (A and B) to the same sports-betting question. You do NOT
 know which configuration produced which. Unlike a text-only judge, you ground yourself in
