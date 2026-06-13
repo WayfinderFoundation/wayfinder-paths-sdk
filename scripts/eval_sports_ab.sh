@@ -111,4 +111,4 @@ for i in $(seq 1 ${#QUESTIONS[@]}); do
   run_arm wayfinder "$i" new
 done
 
-echo "done — answers in $OUT (q*_baseline.md / q*_new.md); judge with scripts/eval_sports_ab_judge.md"
+echo "done — answers in $OUT (q*_baseline.md / q*_new.md); judge with scripts/eval_judge.sh <tag> <question> <ansA> <ansB> (grounded judge)"

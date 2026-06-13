@@ -30,21 +30,39 @@ Score each answer 0–10 on every criterion:
 7. **News/data blend** — is current news (injuries, lineups) integrated with the
    quantitative view in a disciplined way (what's priced in vs what isn't), rather than
    bolted on or ignored?
+8. **Ground-truth coverage** (grounded judge only; text-only judges score it 5 for both) —
+   against the markets YOU observed live: did the answer engage the board that actually
+   exists (or honestly scope what it skipped), and do its quoted markets/venues/prices
+   correspond to reality? Structural misses (existing markets ignored while claiming
+   completeness or "nothing executable", invented-looking quotes, wrong venue) score low;
+   small price drift since the answer was written must NOT be penalized.
 
 Output STRICT JSON only:
 
 ```json
 {
   "question": "<1-line restatement>",
+  "ground_truth": {
+    "observedAt": "<ISO timestamp or null for text-only judging>",
+    "markets_observed": {"polymarket": 0, "hyperliquid": 0, "sportsbook_vendors": 0},
+    "missed_by_A": ["<existing market/board area answer A ignored>"],
+    "missed_by_B": [],
+    "price_flags": ["<structural price/venue problems, attributed to A or B>"],
+    "notes": ""
+  },
   "scores": {
     "A": {"data_grounding": 0, "odds_sourcing": 0, "devig": 0, "posterior": 0,
-           "adjudication": 0, "decision_quality": 0, "news_blend": 0, "total": 0},
+           "adjudication": 0, "decision_quality": 0, "news_blend": 0,
+           "ground_truth_coverage": 0, "total": 0},
     "B": {"data_grounding": 0, "odds_sourcing": 0, "devig": 0, "posterior": 0,
-           "adjudication": 0, "decision_quality": 0, "news_blend": 0, "total": 0}
+           "adjudication": 0, "decision_quality": 0, "news_blend": 0,
+           "ground_truth_coverage": 0, "total": 0}
   },
   "verdict": "A|B|TIE",
   "margin": "decisive|clear|narrow",
-  "rationale": "<=5 sentences citing concrete evidence from the texts",
+  "rationale": "<=5 sentences citing concrete evidence from the texts and your observations",
   "best_of_loser": "<=2 sentences: what the losing answer did better, if anything"
 }
 ```
+
+Totals are out of 80 (8 criteria x 10).
