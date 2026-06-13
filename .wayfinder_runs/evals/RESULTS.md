@@ -173,3 +173,32 @@ all same-matchup games across adjacent dates with datetimes/statuses before anal
 never mix one game's live odds with another's pre-game board.
 
 Cumulative honest tally: NEW 8-3 with grounded judging where available.
+
+---
+
+# Uniform grounded GPT-5.5 re-judge (2026-06-13) — one judge, all 6 recent pairs
+
+Identical DeepSeek arms throughout; a single independent judge (openai/gpt-5.5, high
+reasoning, research-first grounding) re-scored every archived pair. Replaces the earlier
+mix of blind-DeepSeek (rounds 1-2) and grounded-DeepSeek (3b, 4) verdicts.
+
+| Question (class) | Grounded GPT-5.5 | new | base | vs blind judge |
+|------------------|------------------|-----|------|----------------|
+| Dodgers props (composition) | NEW clear | 27 | 14 | held |
+| Braves over (pitcher) | NEW decisive | 60 | 19 | held |
+| US Open futures (control) | NEW decisive | 56 | 4 | held |
+| ALL props broad | **NEW decisive** | 40 | 20 | **FLIP** (blind said baseline) |
+| WC cross-market broad | **NEW clear** | 46 | 33 | **FLIP** (blind said baseline) |
+| Astros board (UTC two-game trap) | baseline clear | 20 | 27 | held |
+
+**Grounded GPT-5.5: NEW 5-1.** Both broad-scan "losses" the blind judge had awarded to
+the baseline FLIP to NEW once the judge checks live reality — the blind judge had been
+rewarding the baseline's fabrications (wrong-game analysis + invented prices on ALL-props;
+fake HL match probabilities + a false "daily-expiring contracts" claim on WC cross-market).
+The one honest NEW loss survives grounding: round-4 Astros, our own UTC two-game conflation
+(fix shipped: the disambiguation rule). Cross-model robustness also confirmed — GPT-5.5 and
+DeepSeek-grounded agree on direction for every pair they both scored.
+
+Meta-conclusion: blind LLM judging systematically over-rewards confident, specific-sounding
+fabrication; grounding the judge in executable-market reads is what corrects it. The eval
+signal is now both model-robust (two judge models agree) and ground-truth-anchored.
