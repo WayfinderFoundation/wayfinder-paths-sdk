@@ -392,3 +392,11 @@ def test_executable_first_funnel_is_wired() -> None:
     assert "Betting questions START from the executable boards" in primary
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text("utf-8")
     assert "FUNNEL that starts from the executable boards" in skill
+
+
+def test_utc_boundary_game_disambiguation_rule() -> None:
+    """Round-4 eval loss: two same-matchup games under one UTC date filter were
+    conflated — live odds of one vs the pre-game board of the other."""
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    assert "UTC-boundary trap" in primary
+    assert "NEVER mix one game's live book odds" in primary
