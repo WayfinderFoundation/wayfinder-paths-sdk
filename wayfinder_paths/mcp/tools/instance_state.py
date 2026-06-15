@@ -220,7 +220,6 @@ async def visual_set_active_market(
     market_id: str | None = None,
     market_type: str | None = None,
     chain_id: int | None = None,
-    clear_workspace: bool = True,
 ) -> dict[str, Any]:
     """Switch the default Shells chart and trading context to one market.
 
@@ -238,8 +237,6 @@ async def visual_set_active_market(
       market_type: Optional narrowing: hl-perp, hl-spot, onchain-spot,
         polymarket.
       chain_id: Optional EVM chain id for onchain spot resolution.
-      clear_workspace: Set false only if an existing custom pane should stay
-        active while the trading context changes.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
@@ -250,7 +247,6 @@ async def visual_set_active_market(
                 market_id=market_id,
                 market_type=market_type,
                 chain_id=chain_id,
-                clear_workspace=clear_workspace,
             )
         )
     except httpx.HTTPStatusError as exc:
