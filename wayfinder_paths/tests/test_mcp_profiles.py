@@ -104,6 +104,7 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     assert primary["wayfinder_visual_search_chart_series"] == "allow"
     assert primary["wayfinder_visual_add_workspace_chart_annotation"] == "allow"
     assert primary["wayfinder_visual_add_workspace_chart_overlay"] == "allow"
+    assert primary["wayfinder_visual_clear_chart_workspace"] == "allow"
     assert "wayfinder_visual_create_chart" not in primary
     assert "wayfinder_visual_import_chart_spec" not in primary
     assert primary["wayfinder_notification_send"] == "allow"
@@ -173,6 +174,7 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_visual_search_chart_series": "allow",
         "wayfinder_visual_add_workspace_chart_annotation": "allow",
         "wayfinder_visual_add_workspace_chart_overlay": "allow",
+        "wayfinder_visual_clear_chart_workspace": "allow",
         "wayfinder_notification_send": "allow",
         "wayfinder_research_*": "deny",
         "wayfinder_core_run_script": "ask",
