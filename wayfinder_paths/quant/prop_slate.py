@@ -34,6 +34,12 @@ from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.quant import sports_props as sp
+from wayfinder_paths.quant.sports_gateway import (
+    GatewayPacer,
+    call_provider,
+    next_cursor,
+    rows_from_payload,
+)
 
 SUSPECT_EDGE = (
     0.25  # |book edge| above this is flagged: real books rarely misprice this far
@@ -41,20 +47,23 @@ SUSPECT_EDGE = (
 MIN_GAMES = 8  # below this the sample is flagged low_sample (live runs showed 6-7g overconfidence)
 _CHUNK = 8
 _MAX_PAGES = 12
-_RATE_RETRIES = 4
-_RATE_SLEEPS_S = (20.0, 30.0, 45.0, 60.0)
-_SLOW_PACE_S = 13.0  # once the upstream rate limit bites, stay under ~5 calls/min
-
 # MLB pitcher props project off outs recorded; everything else off plate appearances.
 _MLB_PITCHER_PROPS = frozenset(
-    {"pitcher_strikeouts", "pitcher_earned_runs", "pitcher_hits_allowed", "pitcher_outs"}
+    {
+        "pitcher_strikeouts",
+        "pitcher_earned_runs",
+        "pitcher_hits_allowed",
+        "pitcher_outs",
+    }
 )
 
 
 def exposure_key_for(sport: str, prop_type: str = "") -> str:
     """The game-log column measuring playing time for this sport/prop family."""
     if str(sport).lower() == "mlb":
-        return "pitching_outs" if prop_type in _MLB_PITCHER_PROPS else "plate_appearances"
+        return (
+            "pitching_outs" if prop_type in _MLB_PITCHER_PROPS else "plate_appearances"
+        )
     return "min"
 
 
@@ -117,55 +126,6 @@ class SlateResult:
 # ── fetch ────────────────────────────────────────────────────────────────────
 
 
-class _Pacer:
-    """Adaptive inter-call pacing: start fast; the first 429 slows the whole run down."""
-
-    def __init__(self, base_s: float) -> None:
-        self.delay = base_s
-
-    def throttled(self) -> None:
-        self.delay = max(self.delay, _SLOW_PACE_S)
-
-    async def wait(self) -> None:
-        if self.delay > 0:
-            await asyncio.sleep(self.delay)
-
-
-async def _call(
-    client, pacer: _Pacer | None = None, *, retries: int = _RATE_RETRIES, **kwargs
-) -> Any:
-    for attempt in range(retries + 1):
-        try:
-            return await client.provider_call(**kwargs)
-        except Exception as exc:  # noqa: BLE001 - retry only rate limits, re-raise the rest
-            if "rate" in str(exc).lower() and attempt < retries:
-                if pacer is not None:
-                    pacer.throttled()
-                await asyncio.sleep(
-                    _RATE_SLEEPS_S[min(attempt, len(_RATE_SLEEPS_S) - 1)]
-                )
-                continue
-            raise
-
-
-def _rows(payload: Any) -> list[dict[str, Any]]:
-    if isinstance(payload, dict):
-        data = payload.get("data", payload)
-        if isinstance(data, dict):
-            data = data.get("data", [])
-        return data if isinstance(data, list) else []
-    return []
-
-
-def _next_cursor(payload: Any) -> Any:
-    if isinstance(payload, dict):
-        data = payload.get("data", payload)
-        if isinstance(data, dict):
-            meta = data.get("meta") or {}
-            return meta.get("next_cursor")
-    return None
-
-
 def select_vendor(prop_rows: list[dict[str, Any]]) -> str | None:
     """Vendor with the widest distinct (player, prop_type) over/under coverage."""
     coverage: Counter[str] = Counter()
@@ -195,10 +155,10 @@ async def fetch_prop_slate(
         from wayfinder_paths.core.clients.SportsClient import SPORTS_CLIENT
 
         client = SPORTS_CLIENT
-    pacer = _Pacer(pace_s)
+    pacer = GatewayPacer(pace_s)
 
     # 1) the game -> teams + opponent mapping
-    event = await _call(
+    event = await call_provider(
         client,
         pacer,
         endpoint_id="data.event.get",
@@ -224,15 +184,15 @@ async def fetch_prop_slate(
         query: dict[str, Any] = {"game_id": game_id, "per_page": 100}
         if cursor is not None:
             query["cursor"] = cursor
-        props_payload = await _call(
+        props_payload = await call_provider(
             client,
             pacer,
             endpoint_id="data.player_props.list",
             sport=sport,
             query=query,
         )
-        prop_rows.extend(_rows(props_payload))
-        cursor = _next_cursor(props_payload)
+        prop_rows.extend(rows_from_payload(props_payload))
+        cursor = next_cursor(props_payload)
         await pacer.wait()
         if cursor is None:
             break
@@ -280,14 +240,14 @@ async def fetch_prop_slate(
             }
             if cursor is not None:
                 query["cursor"] = cursor
-            payload = await _call(
+            payload = await call_provider(
                 client,
                 pacer,
                 endpoint_id="data.player_stats.list",
                 sport=sport,
                 query=query,
             )
-            for log in _rows(payload):
+            for log in rows_from_payload(payload):
                 player = log.get("player") or {}
                 pid = player.get("id")
                 if pid is None:
@@ -299,7 +259,7 @@ async def fetch_prop_slate(
                 team = log.get("team") or {}
                 if pid not in player_team and team.get("id") is not None:
                     player_team[pid] = team.get("id")
-            cursor = _next_cursor(payload)
+            cursor = next_cursor(payload)
             await pacer.wait()
             if cursor is None:
                 break
@@ -340,7 +300,9 @@ async def fetch_prop_slate(
                     - float(lg.get("triples") or 0.0)
                     - float(lg.get("hr") or 0.0)
                 )
-            name = next((lg.get("team_name") for lg in logs if lg.get("team_name")), None)
+            name = next(
+                (lg.get("team_name") for lg in logs if lg.get("team_name")), None
+            )
             if pid not in player_team and name:
                 player_team[pid] = team_abbr_by_name.get(str(name), str(name))
 
@@ -356,7 +318,9 @@ async def fetch_prop_slate(
     for pid, logs in logs_by_player.items():
         baseline: dict[str, float] = {}
         for exp_key in exposure_families:
-            fam_types = [t for t in needed_types if exposure_key_for(sport, t) == exp_key]
+            fam_types = [
+                t for t in needed_types if exposure_key_for(sport, t) == exp_key
+            ]
             fam_stats = sorted({k for t in fam_types for k in sp.PROP_STATS.get(t, ())})
             played = [lg for lg in logs if sp.parse_minutes(lg.get(exp_key)) > 0]
             if not played:
@@ -375,7 +339,7 @@ async def fetch_prop_slate(
     # without an advanced team surface (MLB) score with neutral factors instead of dying.
     team_stats: dict[Any, dict[str, Any]] = {}
     try:
-        teams_payload = await _call(
+        teams_payload = await call_provider(
             client,
             pacer,
             endpoint_id="data.team_season_averages.list",
@@ -388,7 +352,7 @@ async def fetch_prop_slate(
                 "per_page": 40,
             },
         )
-        for row in _rows(teams_payload):
+        for row in rows_from_payload(teams_payload):
             team, stats = row.get("team") or {}, row.get("stats") or {}
             if team.get("id") is not None:
                 team_stats[team["id"]] = {
@@ -407,7 +371,7 @@ async def fetch_prop_slate(
     # 6) injuries (flag only)
     injured: set[Any] = set()
     try:
-        inj_payload = await _call(
+        inj_payload = await call_provider(
             client,
             endpoint_id="data.injuries.list",
             sport=sport,
@@ -415,7 +379,7 @@ async def fetch_prop_slate(
         )
         injured = {
             (row.get("player") or {}).get("id")
-            for row in _rows(inj_payload)
+            for row in rows_from_payload(inj_payload)
             if (row.get("player") or {}).get("id") is not None
         }
     except Exception:  # noqa: BLE001 - injuries are a soft signal, never fatal

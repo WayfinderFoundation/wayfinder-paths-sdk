@@ -28,7 +28,12 @@ from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.quant import sports_props as sp
-from wayfinder_paths.quant.prop_slate import _call, _next_cursor, _Pacer, _rows
+from wayfinder_paths.quant.sports_gateway import (
+    GatewayPacer,
+    call_provider,
+    next_cursor,
+    rows_from_payload,
+)
 
 _MAX_PAGES = 12
 
@@ -123,7 +128,11 @@ def score_futures(
     fair_total = 0.0
     for k, fairs in fair_by_subject.items():
         subject_row = next(
-            (r.get("subject") or {} for r in picked if str((r.get("subject") or {}).get("name")) == k),
+            (
+                r.get("subject") or {}
+                for r in picked
+                if str((r.get("subject") or {}).get("name")) == k
+            ),
             {},
         )
         fair = statistics.median(fairs)
@@ -163,18 +172,18 @@ async def fetch_futures_rows(
         from wayfinder_paths.core.clients.SportsClient import SPORTS_CLIENT
 
         client = SPORTS_CLIENT
-    pacer = _Pacer(pace_s)
+    pacer = GatewayPacer(pace_s)
     rows: list[dict[str, Any]] = []
     cursor = None
     for _ in range(_MAX_PAGES):
         query: dict[str, Any] = {"per_page": 100}
         if cursor is not None:
             query["cursor"] = cursor
-        payload = await _call(
+        payload = await call_provider(
             client, pacer, endpoint_id="data.futures.list", sport=sport, query=query
         )
-        rows.extend(_rows(payload))
-        cursor = _next_cursor(payload)
+        rows.extend(rows_from_payload(payload))
+        cursor = next_cursor(payload)
         await pacer.wait()
         if cursor is None:
             break

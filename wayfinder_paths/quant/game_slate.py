@@ -37,7 +37,12 @@ from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.quant import sports_props as sp
-from wayfinder_paths.quant.prop_slate import _call, _next_cursor, _Pacer, _rows
+from wayfinder_paths.quant.sports_gateway import (
+    GatewayPacer,
+    call_provider,
+    next_cursor,
+    rows_from_payload,
+)
 
 SUSPECT_EDGE = 0.25
 MIN_GAMES = 8
@@ -440,11 +445,7 @@ _PITCHER_SHRINK_STARTS = 6.0  # starts count where we trust the starter's own RA
 
 def _pitcher_quality(logs: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Starter RA9 from pitching appearances (er + pitching_outs), shrunk toward league."""
-    starts = [
-        lg
-        for lg in logs
-        if float(lg.get("pitching_outs") or 0) > 0
-    ]
+    starts = [lg for lg in logs if float(lg.get("pitching_outs") or 0) > 0]
     outs = sum(float(lg.get("pitching_outs") or 0) for lg in starts)
     er = sum(float(lg.get("er") or 0) for lg in starts)
     if outs <= 0:
@@ -464,7 +465,7 @@ async def _mlb_probable_pitchers(
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Infer the probable starters from the game's pitcher props, then rate them from
     their season pitching logs. Returns (home_pitcher, away_pitcher) or Nones."""
-    payload = await _call(
+    payload = await call_provider(
         client,
         pacer,
         endpoint_id="data.player_props.list",
@@ -473,7 +474,7 @@ async def _mlb_probable_pitchers(
     )
     pitcher_ids = {
         row.get("player_id")
-        for row in _rows(payload)
+        for row in rows_from_payload(payload)
         if str(row.get("prop_type", "")).startswith("pitcher_")
         and row.get("player_id") is not None
     }
@@ -481,7 +482,7 @@ async def _mlb_probable_pitchers(
     if not pitcher_ids:
         return None, None
 
-    stats_payload = await _call(
+    stats_payload = await call_provider(
         client,
         pacer,
         endpoint_id="data.player_stats.list",
@@ -492,13 +493,15 @@ async def _mlb_probable_pitchers(
     logs_by_pid: dict[Any, list[dict[str, Any]]] = {}
     names: dict[Any, str] = {}
     teams: dict[Any, str] = {}
-    for lg in _rows(stats_payload):
+    for lg in rows_from_payload(stats_payload):
         pid = (lg.get("player") or {}).get("id")
         if pid is None:
             continue
         logs_by_pid.setdefault(pid, []).append(lg)
         player = lg.get("player") or {}
-        names.setdefault(pid, str(player.get("full_name") or player.get("last_name") or pid))
+        names.setdefault(
+            pid, str(player.get("full_name") or player.get("last_name") or pid)
+        )
         if lg.get("team_name"):
             teams[pid] = str(lg["team_name"])
 
@@ -531,11 +534,11 @@ async def _team_form(
                 query["team_ids"] = [team_id]
             if cursor is not None:
                 query["cursor"] = cursor
-            payload = await _call(
+            payload = await call_provider(
                 client, pacer, endpoint_id="data.events.list", sport=sport, query=query
             )
-            rows.extend(_rows(payload))
-            cursor = _next_cursor(payload)
+            rows.extend(rows_from_payload(payload))
+            cursor = next_cursor(payload)
             await pacer.wait()
             if cursor is None:
                 break
@@ -576,12 +579,12 @@ async def fetch_game_slate(
         from wayfinder_paths.core.clients.SportsClient import SPORTS_CLIENT
 
         client = SPORTS_CLIENT
-    pacer = _Pacer(pace_s)
+    pacer = GatewayPacer(pace_s)
 
     # 1) the game row: by-id GET where supported; date-filtered list otherwise (NHL etc.)
     game_row: dict[str, Any] | None = None
     try:
-        payload = await _call(
+        payload = await call_provider(
             client,
             pacer,
             endpoint_id="data.event.get",
@@ -598,14 +601,14 @@ async def fetch_game_slate(
                 "Could not fetch the game by id (this league may not support it) — pass the game date."
             )
         await pacer.wait()
-        payload = await _call(
+        payload = await call_provider(
             client,
             pacer,
             endpoint_id="data.events.list",
             sport=sport,
             query={"dates": [date], "per_page": 50},
         )
-        for row in _rows(payload):
+        for row in rows_from_payload(payload):
             if str(row.get("id")) == str(game_id):
                 game_row = row
                 break
@@ -624,7 +627,7 @@ async def fetch_game_slate(
     # client-filter the rows back to this game.
     odds_rows: list[dict[str, Any]] = []
     try:
-        payload = await _call(
+        payload = await call_provider(
             client,
             pacer,
             endpoint_id="data.odds.list",
@@ -638,7 +641,7 @@ async def fetch_game_slate(
         )
         odds_rows = [
             row
-            for row in _rows(payload)
+            for row in rows_from_payload(payload)
             if str(row.get("game_id") or row.get("match_id") or game_id) == str(game_id)
         ]
     except Exception:  # noqa: BLE001 - model-only output is still useful without odds
@@ -814,10 +817,15 @@ def score_game_slate(slate: GameSlate) -> GameResult:
     _view("over", total_line, probs.get("over"), total.get("over_p"))
     over = probs.get("over")
     _view(
-        "under", total_line, (1.0 - over) if over is not None else None, total.get("under_p")
+        "under",
+        total_line,
+        (1.0 - over) if over is not None else None,
+        total.get("under_p"),
     )
     if spread_line is not None and (not form_ok or "home_spread" in probs):
-        _view("spread_home", spread_line, probs.get("home_spread"), spread.get("home_p"))
+        _view(
+            "spread_home", spread_line, probs.get("home_spread"), spread.get("home_p")
+        )
         cover = probs.get("home_spread")
         _view(
             "spread_away",
@@ -856,8 +864,12 @@ def render_information(slate: GameSlate) -> str:
         parts = []
         for side, p in (("home", slate.home_pitcher), ("away", slate.away_pitcher)):
             if p:
-                parts.append(f"{side}: {p['name']} (RA9 {p['ra9']}, {p['starts']} starts)")
-        lines.append("probable starters (inferred from pitcher props): " + " | ".join(parts))
+                parts.append(
+                    f"{side}: {p['name']} (RA9 {p['ra9']}, {p['starts']} starts)"
+                )
+        lines.append(
+            "probable starters (inferred from pitcher props): " + " | ".join(parts)
+        )
     elif str(slate.sport).lower() == "mlb":
         lines.append(
             "probable starters: UNKNOWN (no pitcher props posted yet) — starters dominate "
@@ -909,16 +921,14 @@ def render_game(result: GameResult, *, data_only: bool = False) -> str:
     lines.append("")
     lines.append(
         "== REFERENCE MODEL (one opinion: completed-game form Poisson"
-        + (
-            " + starter RA9 factors"
-            if (s.home_pitcher or s.away_pitcher)
-            else ""
-        )
+        + (" + starter RA9 factors" if (s.home_pitcher or s.away_pitcher) else "")
         + " — adjust or replace it with your own view) =="
     )
     home, away = team_label(s.home), team_label(s.away)
     lines.append(f"expected: {away} {result.lam_away} @ {home} {result.lam_home}")
-    lines.append(f"{'market':<16}{'line':>7}  {'model':>6}  {'book':>6}  {'edge':>7}  flags")
+    lines.append(
+        f"{'market':<16}{'line':>7}  {'model':>6}  {'book':>6}  {'edge':>7}  flags"
+    )
     for v in result.views:
         line = f"{v.line:+.1f}" if isinstance(v.line, float) else "-"
         model = f"{v.model_p:.3f}" if v.model_p is not None else "  n/a"
@@ -1042,7 +1052,11 @@ def _main() -> None:
     for game_id in str(args.game_id).split(","):
         result, artifacts = asyncio.run(
             run_game_slate(
-                args.sport, game_id.strip(), args.season, date=args.date, out_dir=args.out
+                args.sport,
+                game_id.strip(),
+                args.season,
+                date=args.date,
+                out_dir=args.out,
             )
         )
         all_artifacts.extend(artifacts)
