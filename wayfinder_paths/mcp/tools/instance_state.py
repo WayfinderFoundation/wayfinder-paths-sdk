@@ -458,12 +458,21 @@ async def visual_add_workspace_chart_annotation(
     workspace chart, the annotation attaches there. Otherwise it attaches to
     the default live chart for that id.
 
+    For events, catalysts, news, or anything tied to a point in time, use
+    `vertical_line` — it draws a full-height event line at that timestamp,
+    which is the intended look for "show events on the chart". Do NOT use
+    `marker` for events: it renders a small price-anchored arrow, reserved for
+    flagging one specific price at one time (e.g. an entry/exit fill).
+
     Supported annotation types:
-      - horizontal_line: config = {price, color?, label?}
       - vertical_line: config = {time, color?, label?}
-        Use this for date-only events. `time` may be Unix seconds or an ISO
-        date string like "2026-04-19".
+        The event type. Use for catalysts/news/dated events. `time` may be
+        Unix seconds or an ISO date string like "2026-04-19".
+      - horizontal_line: config = {price, color?, label?}
+        A price-level line across all time (support/resistance/targets).
       - marker: config = {time, price?, shape?, color?}
+        A small arrow at one (time, price). Only for flagging a specific price
+        point — not for events.
       - range: config = {from_time?, to_time?, from_price, to_price, color?}
       - text_label: config = {time, price, text, color?}
       - trend: config = {from: {time, price}, to: {time, price}, color?, label?}
