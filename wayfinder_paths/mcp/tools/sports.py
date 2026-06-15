@@ -13,37 +13,19 @@ Nothing here names a provider; the surface stays provider-agnostic.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from wayfinder_paths.core.clients.SportsClient import (
     SPORTS_CLIENT,
     SportsGatewayAPIError,
 )
+from wayfinder_paths.mcp.arg_validation import (
+    optional_int,
+    optional_json_object,
+    optional_str,
+)
 from wayfinder_paths.mcp.state import sports_state
 from wayfinder_paths.mcp.utils import catch_errors, err, ok
-
-
-def _parse_json_obj(value: Any, field: str) -> dict[str, Any] | None:
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        return value
-    text = str(value).strip()
-    if not text or text == "_":
-        return None
-    try:
-        parsed = json.loads(text)
-    except (ValueError, TypeError) as exc:
-        raise ValueError(f"{field} must be a JSON object") from exc
-    if not isinstance(parsed, dict):
-        raise ValueError(f"{field} must be a JSON object")
-    return parsed
-
-
-def _optional(value: Any) -> str | None:
-    text = str(value or "").strip()
-    return text if text and text != "_" else None
 
 
 def _gateway_err(exc: SportsGatewayAPIError) -> dict[str, Any]:
@@ -78,16 +60,14 @@ async def sports_snapshot(
         limit: Max cards (1-50, default 10).
         sessionID: OpenCode session id, or "_" to resolve from the environment.
     """
-    parsed_limit = None
-    if _optional(limit) is not None:
-        parsed_limit = int(limit)
+    parsed_limit = optional_int(limit, field_name="limit", min_value=1, max_value=50)
     try:
         result = await SPORTS_CLIENT.snapshot(
             action=action,
             sport=sport,
-            game_id=_optional(game_id),
-            search=_optional(search),
-            date=_optional(date),
+            game_id=optional_str(game_id, field_name="game_id"),
+            search=optional_str(search, field_name="search"),
+            date=optional_str(date, field_name="date"),
             limit=parsed_limit,
             session_id=sessionID,
         )
@@ -112,18 +92,17 @@ async def sports_backtest_state(
         limit: Max runs for list_recent (1-50).
         sessionID: OpenCode session id, or "_" to resolve from the environment.
     """
-    parsed_limit = None
-    if _optional(limit) is not None:
-        parsed_limit = int(limit)
+    parsed_limit = optional_int(limit, field_name="limit", min_value=1, max_value=50)
+    parsed_run_id = optional_str(run_id, field_name="run_id")
     try:
         result = await SPORTS_CLIENT.backtest_state(
             action=action,
-            run_id=_optional(run_id),
+            run_id=parsed_run_id,
             limit=parsed_limit,
             session_id=sessionID,
         )
     except SportsGatewayAPIError as exc:
-        return _mirror_fallback(action, _optional(run_id), parsed_limit, exc)
+        return _mirror_fallback(action, parsed_run_id, parsed_limit, exc)
 
     # Opportunistically mirror any run summaries the gateway returned.
     runs = result.get("runs") if isinstance(result, dict) else None
@@ -195,12 +174,12 @@ async def sports_provider(
 
         result = await SPORTS_CLIENT.provider_call(
             endpoint_id=endpoint_id,
-            sport=_optional(sport),
-            path_params=_parse_json_obj(path_params, "path_params"),
-            query=_parse_json_obj(query, "query"),
-            body=_parse_json_obj(body, "body"),
-            run_id=_optional(run_id),
-            title=_optional(title),
+            sport=optional_str(sport, field_name="sport"),
+            path_params=optional_json_object(path_params, field_name="path_params"),
+            query=optional_json_object(query, field_name="query"),
+            body=optional_json_object(body, field_name="body"),
+            run_id=optional_str(run_id, field_name="run_id"),
+            title=optional_str(title, field_name="title"),
             session_id=sessionID,
         )
     except SportsGatewayAPIError as exc:

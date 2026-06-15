@@ -30,9 +30,7 @@ from typing import Any
 from wayfinder_paths.quant import sports_props as sp
 from wayfinder_paths.quant.sports_gateway import (
     GatewayPacer,
-    call_provider,
-    next_cursor,
-    rows_from_payload,
+    fetch_paginated_rows,
 )
 
 _MAX_PAGES = 12
@@ -108,8 +106,11 @@ def score_futures(
     best: dict[str, tuple[float, str]] = {}
     overrounds: list[float] = []
     for vendor, subjects in by_vendor.items():
-        implied = {k: _implied(r) for k, r in subjects.items()}
-        implied = {k: v for k, v in implied.items() if v}
+        implied: dict[str, float] = {}
+        for k, row in subjects.items():
+            value = _implied(row)
+            if value is not None and value > 0:
+                implied[k] = value
         total = sum(implied.values())
         if total <= 0:
             continue
@@ -173,21 +174,14 @@ async def fetch_futures_rows(
 
         client = SPORTS_CLIENT
     pacer = GatewayPacer(pace_s)
-    rows: list[dict[str, Any]] = []
-    cursor = None
-    for _ in range(_MAX_PAGES):
-        query: dict[str, Any] = {"per_page": 100}
-        if cursor is not None:
-            query["cursor"] = cursor
-        payload = await call_provider(
-            client, pacer, endpoint_id="data.futures.list", sport=sport, query=query
-        )
-        rows.extend(rows_from_payload(payload))
-        cursor = next_cursor(payload)
-        await pacer.wait()
-        if cursor is None:
-            break
-    return rows
+    return await fetch_paginated_rows(
+        client,
+        pacer,
+        endpoint_id="data.futures.list",
+        sport=sport,
+        query={"per_page": 100},
+        max_pages=_MAX_PAGES,
+    )
 
 
 def render_futures(result: FuturesResult, *, top: int = 20) -> str:

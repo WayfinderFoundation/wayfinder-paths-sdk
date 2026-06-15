@@ -9,6 +9,8 @@ import pytest
 from wayfinder_paths.core.clients.ResearchClient import (
     ResearchClient,
     ResearchGatewayAPIError,
+    _extract_gateway_error,
+    _gateway_error_from_response,
 )
 
 research_client_module = importlib.import_module(
@@ -106,6 +108,11 @@ async def test_search_resolves_session_from_environment(
     assert client._authed_request.await_args.kwargs["json"]["sessionID"] == (
         "wf-opencode-123"
     )
+
+
+def test_research_rejects_overlong_explicit_session_id() -> None:
+    with pytest.raises(ValueError, match="200 characters or fewer"):
+        ResearchClient.resolve_session_id("x" * 201)
 
 
 @pytest.mark.asyncio
@@ -299,6 +306,35 @@ async def test_search_raises_structured_gateway_error(
     assert exc_info.value.error_type == "rate_limit"
     assert exc_info.value.code == "credits_exhausted"
     assert exc_info.value.details == {"remaining": 0}
+
+
+def test_research_gateway_error_helpers_remain_available() -> None:
+    request = httpx.Request("POST", "https://example.com/api/v1/research/websearch/")
+    text_response = httpx.Response(502, text="bad gateway body", request=request)
+    assert _extract_gateway_error(text_response) == {
+        "type": "http_error",
+        "code": "http_error",
+        "message": "bad gateway body",
+    }
+
+    json_response = httpx.Response(
+        400,
+        json={
+            "error": {
+                "type": "invalid_request",
+                "code": "bad_query",
+                "message": "Bad query",
+                "details": {"field": "query"},
+            }
+        },
+        request=request,
+    )
+    exc = _gateway_error_from_response(json_response)
+    assert isinstance(exc, ResearchGatewayAPIError)
+    assert exc.status_code == 400
+    assert exc.error_type == "invalid_request"
+    assert exc.code == "bad_query"
+    assert exc.details == {"field": "query"}
 
 
 @pytest.mark.parametrize(

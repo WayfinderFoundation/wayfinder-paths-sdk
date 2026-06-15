@@ -152,6 +152,31 @@ async def test_provider_tool_surfaces_gateway_rejection(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_sports_tools_validate_json_objects_and_limits() -> None:
+    from wayfinder_paths.mcp.tools.sports import sports_provider, sports_snapshot
+
+    result = await sports_provider(
+        action="call",
+        endpoint_id="data.games.list",
+        path_params="{bad json",
+        sessionID="s",
+    )
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_argument"
+    assert result["error"]["details"]["field"] == "path_params"
+
+    result = await sports_snapshot(
+        action="scoreboard",
+        sport="nba",
+        limit="0",
+        sessionID="s",
+    )
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_argument"
+    assert result["error"]["details"]["field"] == "limit"
+
+
+@pytest.mark.asyncio
 async def test_backtest_state_falls_back_to_mirror(monkeypatch, tmp_path) -> None:
     from wayfinder_paths.mcp.state import sports_state
     from wayfinder_paths.mcp.tools import sports as sports_tools
@@ -184,6 +209,37 @@ async def test_backtest_state_falls_back_to_mirror(monkeypatch, tmp_path) -> Non
     assert result["ok"] is True
     assert result["result"]["source"] == "mirror"
     assert result["result"]["runs"][0]["run_id"] == "r1"
+
+
+@pytest.mark.asyncio
+async def test_sports_paginated_rows_follows_next_cursor() -> None:
+    from wayfinder_paths.quant.sports_gateway import GatewayPacer, fetch_paginated_rows
+
+    calls: list[dict] = []
+
+    class Client:
+        async def provider_call(self, **kwargs):
+            calls.append(dict(kwargs["query"]))
+            if len(calls) == 1:
+                return {
+                    "data": {
+                        "data": [{"id": 1}],
+                        "meta": {"next_cursor": "cursor-2"},
+                    }
+                }
+            return {"data": {"data": [{"id": 2}], "meta": {}}}
+
+    rows = await fetch_paginated_rows(
+        Client(),
+        GatewayPacer(0),
+        endpoint_id="data.events.list",
+        sport="nba",
+        query={"per_page": 100},
+        max_pages=5,
+    )
+
+    assert rows == [{"id": 1}, {"id": 2}]
+    assert calls == [{"per_page": 100}, {"per_page": 100, "cursor": "cursor-2"}]
 
 
 # ─── Permission wiring (provider-agnostic, least-privilege) ──────────────────
@@ -287,7 +343,9 @@ def test_sports_subagent_prompt_states_key_rules() -> None:
     # dislocated book-vs-Polymarket markets are adjudicated, never traded on trust
     assert "sports_posterior" in body
     assert "needs_adjudication" in body
-    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text("utf-8")
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
     assert "wayfinder_paths.quant.prop_slate" in skill
     assert "wayfinder_paths.quant.game_slate" in skill
     assert "sports_posterior" in skill
@@ -298,7 +356,9 @@ def test_dislocation_adjudication_wired_across_agents() -> None:
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
     assert "Dislocation adjudication (HARD RULE)" in primary
     assert "what explains the cheap side?" in primary
-    research = (REPO / ".opencode" / "agents" / "wayfinder-research.md").read_text("utf-8")
+    research = (REPO / ".opencode" / "agents" / "wayfinder-research.md").read_text(
+        "utf-8"
+    )
     assert "book_fair_evidence_card" in research
     assert "alreadyPriced" in research  # double-counting guard
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
@@ -313,7 +373,9 @@ def test_delegators_describe_sports_capabilities() -> None:
         assert needle in sports_section, f"primary sports overview missing: {needle}"
     assert "most complete for NBA" not in primary  # stale capability claim
 
-    research = (REPO / ".opencode" / "agents" / "wayfinder-research.md").read_text("utf-8")
+    research = (REPO / ".opencode" / "agents" / "wayfinder-research.md").read_text(
+        "utf-8"
+    )
     for needle in ("Analyze & model", "futures", "xG", "dataFiles"):
         assert needle in research, f"research sports overview missing: {needle}"
 
@@ -339,8 +401,12 @@ def test_opencode_json_registers_sports_perms() -> None:
 def test_observed_failure_modes_are_ruled_out_in_prompts() -> None:
     """Each needle pins a rule added after a specific live failure."""
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
-    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text("utf-8")
-    research = (REPO / ".opencode" / "agents" / "wayfinder-research.md").read_text("utf-8")
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+    research = (REPO / ".opencode" / "agents" / "wayfinder-research.md").read_text(
+        "utf-8"
+    )
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
     # sub-threshold gaps are noise, never edge (a live run called one '3-5pp too rich')
     assert "VENUE NOISE" in primary and "lean within noise" in primary
@@ -367,7 +433,9 @@ def test_information_vs_model_division_of_labor() -> None:
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
     assert "MODELING is YOUR judgment" in sports
     assert "REFERENCE MODEL" in sports and "--data-only" in sports
-    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text("utf-8")
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
     assert "REFERENCE MODEL" in skill and "--data-only" in skill
 
 
@@ -377,7 +445,9 @@ def test_executable_board_enumeration_is_wired() -> None:
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
     assert "Enumerate the executable BOARD" in primary
     assert "mlb-lad-cws-2026-06-12" in primary  # the slug pattern, by example
-    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text("utf-8")
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
     assert "Executable board rule" in skill and "alt_lines" in skill
 
 
@@ -390,7 +460,9 @@ def test_executable_first_funnel_is_wired() -> None:
     assert "answer IS the annotated board" in sports
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
     assert "Betting questions START from the executable boards" in primary
-    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text("utf-8")
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
     assert "FUNNEL that starts from the executable boards" in skill
 
 

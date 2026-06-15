@@ -40,7 +40,7 @@ from wayfinder_paths.quant import sports_props as sp
 from wayfinder_paths.quant.sports_gateway import (
     GatewayPacer,
     call_provider,
-    next_cursor,
+    fetch_paginated_rows,
     rows_from_payload,
 )
 
@@ -525,25 +525,22 @@ async def _team_form(
     """Scored/conceded per completed game from the team's season events. The rows are
     client-filtered by team id below, so a provider that ignores ``team_ids`` is fine;
     one that returns NOTHING for unknown params gets an unfiltered retry."""
-    rows: list[dict[str, Any]] = []
     for use_team_filter in (True, False):
-        cursor = None
-        for _ in range(_MAX_PAGES):
-            query: dict[str, Any] = {"seasons": [season], "per_page": 100}
-            if use_team_filter:
-                query["team_ids"] = [team_id]
-            if cursor is not None:
-                query["cursor"] = cursor
-            payload = await call_provider(
-                client, pacer, endpoint_id="data.events.list", sport=sport, query=query
-            )
-            rows.extend(rows_from_payload(payload))
-            cursor = next_cursor(payload)
-            await pacer.wait()
-            if cursor is None:
-                break
+        query: dict[str, Any] = {"seasons": [season], "per_page": 100}
+        if use_team_filter:
+            query["team_ids"] = [team_id]
+        rows = await fetch_paginated_rows(
+            client,
+            pacer,
+            endpoint_id="data.events.list",
+            sport=sport,
+            query=query,
+            max_pages=_MAX_PAGES,
+        )
         if rows:
             break
+    else:
+        rows = []
 
     completed = []
     for row in rows:
@@ -762,7 +759,7 @@ def score_game_slate(slate: GameSlate) -> GameResult:
         )
 
     probs: dict[str, float] = {}
-    alt_lines: list[dict[str, float]] = []
+    alt_lines: list[dict[str, Any]] = []
     if form_ok:
         probs = _probs_at(total_line, spread_line)
         # Alternate-line ladder from the same model: executable venues list a whole

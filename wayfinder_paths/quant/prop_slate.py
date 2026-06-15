@@ -37,7 +37,7 @@ from wayfinder_paths.quant import sports_props as sp
 from wayfinder_paths.quant.sports_gateway import (
     GatewayPacer,
     call_provider,
-    next_cursor,
+    fetch_paginated_rows,
     rows_from_payload,
 )
 
@@ -178,24 +178,14 @@ async def fetch_prop_slate(
     await pacer.wait()
 
     # 2) props (cursor-followed: MLB slates exceed one page) -> best vendor -> pairs
-    prop_rows: list[dict[str, Any]] = []
-    cursor = None
-    for _ in range(_MAX_PAGES):
-        query: dict[str, Any] = {"game_id": game_id, "per_page": 100}
-        if cursor is not None:
-            query["cursor"] = cursor
-        props_payload = await call_provider(
-            client,
-            pacer,
-            endpoint_id="data.player_props.list",
-            sport=sport,
-            query=query,
-        )
-        prop_rows.extend(rows_from_payload(props_payload))
-        cursor = next_cursor(props_payload)
-        await pacer.wait()
-        if cursor is None:
-            break
+    prop_rows = await fetch_paginated_rows(
+        client,
+        pacer,
+        endpoint_id="data.player_props.list",
+        sport=sport,
+        query={"game_id": game_id, "per_page": 100},
+        max_pages=_MAX_PAGES,
+    )
     vendor = select_vendor(prop_rows)
     pairs: dict[tuple, dict[str, Any]] = {}
     one_sided: set[tuple] = set()  # milestone markets: single quote, can't de-vig
@@ -210,12 +200,15 @@ async def fetch_prop_slate(
             or row.get("prop_type") not in sp.PROP_STATS
         ):
             continue
+        line_value = row.get("line_value")
+        if line_value is None:
+            continue
         pairs.setdefault(
             key,
             {
                 "player_id": row.get("player_id"),
                 "prop_type": row.get("prop_type"),
-                "line": float(row.get("line_value")),
+                "line": float(line_value),
                 "over_odds": float(market["over_odds"]),
                 "under_odds": float(market["under_odds"]),
             },
@@ -231,38 +224,30 @@ async def fetch_prop_slate(
     player_team: dict[Any, Any] = {}
 
     async def _fetch_logs(ids: list, *, per_page: int = 100) -> None:
-        cursor = None
-        for _ in range(_MAX_PAGES):
-            query: dict[str, Any] = {
+        rows = await fetch_paginated_rows(
+            client,
+            pacer,
+            endpoint_id="data.player_stats.list",
+            sport=sport,
+            query={
                 "player_ids": ids,
                 "seasons": [season],
                 "per_page": per_page,
-            }
-            if cursor is not None:
-                query["cursor"] = cursor
-            payload = await call_provider(
-                client,
-                pacer,
-                endpoint_id="data.player_stats.list",
-                sport=sport,
-                query=query,
-            )
-            for log in rows_from_payload(payload):
-                player = log.get("player") or {}
-                pid = player.get("id")
-                if pid is None:
-                    continue
-                logs_by_player[pid].append(log)
-                if pid not in player_names and player.get("last_name"):
-                    first = (player.get("first_name") or "")[:1]
-                    player_names[pid] = f"{first}. {player['last_name']}".strip()
-                team = log.get("team") or {}
-                if pid not in player_team and team.get("id") is not None:
-                    player_team[pid] = team.get("id")
-            cursor = next_cursor(payload)
-            await pacer.wait()
-            if cursor is None:
-                break
+            },
+            max_pages=_MAX_PAGES,
+        )
+        for log in rows:
+            player = log.get("player") or {}
+            pid = player.get("id")
+            if pid is None:
+                continue
+            logs_by_player[pid].append(log)
+            if pid not in player_names and player.get("last_name"):
+                first = (player.get("first_name") or "")[:1]
+                player_names[pid] = f"{first}. {player['last_name']}".strip()
+            team = log.get("team") or {}
+            if pid not in player_team and team.get("id") is not None:
+                player_team[pid] = team.get("id")
 
     for i in range(0, len(player_ids), _CHUNK):
         await _fetch_logs(player_ids[i : i + _CHUNK])
@@ -328,10 +313,10 @@ async def fetch_prop_slate(
             baseline[exp_key] = sum(
                 sp.parse_minutes(lg.get(exp_key)) for lg in played
             ) / len(played)
-            for key in fam_stats:
-                baseline[key] = sum(float(lg.get(key) or 0.0) for lg in played) / len(
-                    played
-                )
+            for stat_key in fam_stats:
+                baseline[stat_key] = sum(
+                    float(lg.get(stat_key) or 0.0) for lg in played
+                ) / len(played)
         if baseline:
             season_baseline[pid] = baseline
 

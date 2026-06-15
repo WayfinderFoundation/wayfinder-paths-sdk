@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-import os
-from typing import Any, cast
+from typing import cast
 
 import httpx
 
+from wayfinder_paths.core.clients.GatewayClient import (
+    GatewayAPIError,
+    GatewayClient,
+    extract_gateway_error,
+    gateway_error_from_response,
+)
 from wayfinder_paths.core.clients.research_types import (
     ResearchCryptoSentimentRequest,
     ResearchCryptoSentimentResponse,
@@ -20,7 +25,6 @@ from wayfinder_paths.core.clients.research_types import (
     ResearchWebSearchResponse,
     ResearchWebSearchType,
 )
-from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
 from wayfinder_paths.core.config import get_api_base_url
 
 VALID_SEARCH_TYPES: set[str] = {
@@ -51,31 +55,27 @@ SESSION_ENV_KEYS = (
 )
 
 
-class ResearchGatewayAPIError(RuntimeError):
-    def __init__(
-        self,
-        *,
-        status_code: int,
-        error_type: str,
-        code: str,
-        message: str,
-        details: Any | None = None,
-    ) -> None:
-        super().__init__(f"{code}: {message}")
-        self.status_code = status_code
-        self.error_type = error_type
-        self.code = code
-        self.message = message
-        self.details = details
+class ResearchGatewayAPIError(GatewayAPIError):
+    pass
 
 
-class ResearchClient(WayfinderClient):
+class ResearchClient(GatewayClient):
     """Client for the Wayfinder Research Gateway."""
+
+    gateway_path = "research"
+    gateway_name = "Research"
+    gateway_error_class = ResearchGatewayAPIError
+    session_env_keys = SESSION_ENV_KEYS
+    default_session_id = DEFAULT_SESSION_ID
+    include_response_text_in_error = True
 
     def _research_url(self, path: str) -> str:
         base = get_api_base_url().rstrip("/")
         suffix = path.strip("/")
         return f"{base}/research/{suffix}/"
+
+    def _gateway_url(self, path: str) -> str:
+        return self._research_url(path)
 
     async def search(
         self,
@@ -173,29 +173,6 @@ class ResearchClient(WayfinderClient):
             session_id=session_id,
         )
         return await self._post_gateway("social/x-search", payload)
-
-    async def _post_gateway(
-        self,
-        path: str,
-        payload: dict[str, Any],
-    ) -> Any:
-        try:
-            response = await self._authed_request(
-                "POST",
-                self._research_url(path),
-                json=payload,
-            )
-        except httpx.HTTPStatusError as exc:
-            raise _gateway_error_from_response(exc.response) from exc
-        except httpx.RequestError as exc:
-            raise ResearchGatewayAPIError(
-                status_code=0,
-                error_type="provider_failure",
-                code="gateway_unavailable",
-                message="Research gateway request failed",
-            ) from exc
-
-        return response.json()
 
     def _search_payload(
         self,
@@ -414,62 +391,28 @@ class ResearchClient(WayfinderClient):
             raise ValueError(f"{field_name} must include {max_items} values or fewer")
         return normalized
 
-    @staticmethod
-    def resolve_session_id(session_id: str | None = None) -> str:
-        explicit = str(session_id or "").strip()
-        if explicit and explicit != "_":
-            if len(explicit) > 200:
-                raise ValueError("session_id must be 200 characters or fewer")
-            return explicit
-
-        for key in SESSION_ENV_KEYS:
-            value = os.environ.get(key, "").strip()
-            if value:
-                return value[:200]
-        return DEFAULT_SESSION_ID
-
 
 def _gateway_error_from_response(response: httpx.Response) -> ResearchGatewayAPIError:
-    error = _extract_gateway_error(response)
-    return ResearchGatewayAPIError(
-        status_code=response.status_code,
-        error_type=error.get("type") or "http_error",
-        code=error.get("code") or "http_error",
-        message=error.get("message")
-        or response.reason_phrase
-        or "Research gateway error",
-        details=error.get("details"),
+    return cast(
+        ResearchGatewayAPIError,
+        gateway_error_from_response(
+            response,
+            error_class=ResearchGatewayAPIError,
+            gateway_name="Research",
+            include_response_text=True,
+        ),
     )
 
 
 def _extract_gateway_error(response: httpx.Response) -> ResearchGatewayErrorBody:
-    try:
-        body = response.json()
-    except ValueError:
-        return {
-            "type": "http_error",
-            "code": "http_error",
-            "message": response.text[:200] or response.reason_phrase,
-        }
-
-    if isinstance(body, dict):
-        error = body.get("error")
-        if isinstance(error, dict):
-            return {
-                "type": str(error.get("type") or "http_error"),
-                "code": str(error.get("code") or "http_error"),
-                "message": str(
-                    error.get("message")
-                    or response.reason_phrase
-                    or "Research gateway error"
-                ),
-                "details": error.get("details"),
-            }
-    return {
-        "type": "http_error",
-        "code": "http_error",
-        "message": response.reason_phrase or "Research gateway error",
-    }
+    return cast(
+        ResearchGatewayErrorBody,
+        extract_gateway_error(
+            response,
+            gateway_name="Research",
+            include_response_text=True,
+        ),
+    )
 
 
 RESEARCH_CLIENT = ResearchClient()

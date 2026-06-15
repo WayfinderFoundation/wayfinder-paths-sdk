@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable
 from typing import Any
 
@@ -107,6 +108,36 @@ def optional_int(
         min_value=min_value,
         max_value=max_value,
     )
+
+
+def optional_json_object(
+    value: Any,
+    *,
+    field_name: str,
+    skip_values: set[str] | None = None,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    raw = optional_str(value, skip_values=skip_values, max_length=None)
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        raise MCPArgumentError(
+            f"{field_name} must be a JSON object",
+            field=field_name,
+            received=value,
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise MCPArgumentError(
+            f"{field_name} must be a JSON object",
+            field=field_name,
+            received=value,
+        )
+    return parsed
 
 
 def normalize_enum(

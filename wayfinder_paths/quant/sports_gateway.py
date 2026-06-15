@@ -59,3 +59,26 @@ def next_cursor(payload: Any) -> Any:
             meta = data.get("meta") or {}
             return meta.get("next_cursor")
     return None
+
+
+async def fetch_paginated_rows(
+    client: Any,
+    pacer: GatewayPacer,
+    *,
+    max_pages: int,
+    query: dict[str, Any] | None = None,
+    **kwargs: Any,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    cursor = None
+    for _ in range(max_pages):
+        page_query = dict(query or {})
+        if cursor is not None:
+            page_query["cursor"] = cursor
+        payload = await call_provider(client, pacer, query=page_query, **kwargs)
+        rows.extend(rows_from_payload(payload))
+        cursor = next_cursor(payload)
+        await pacer.wait()
+        if cursor is None:
+            break
+    return rows
