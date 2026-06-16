@@ -117,9 +117,9 @@ Even when using “cross margin” deposit calldata, Boros can end up crediting 
 If you try to trade immediately, you may fail min-cash checks because your **cross** cash is still low.
 
 Mitigation:
-- Sweep isolated → cross via `cash_transfer(market_id=..., amount_wei=..., is_deposit=False)`.
-- In this repo: `BorosAdapter.deposit_to_cross_margin(...)` now sweeps isolated → cross for that `market_id`.
-- For cleanup / ad-hoc scripts: use `BorosAdapter.sweep_isolated_to_cross(token_id=..., market_id=...)`.
+- Prefer wallet-signed deposit/withdraw flows first.
+- Isolated → cross transfer uses `cash_transfer(market_id=..., amount_wei=..., is_deposit=False)`, but current Boros API exposes it as agent-key-only.
+- In this repo: `BorosAdapter.deposit_to_cross_margin(...)` does not auto-sweep by default. If isolated cleanup is needed, treat `BorosAdapter.sweep_isolated_to_cross(token_id=..., market_id=...)` as an advanced/non-default approved-agent flow.
 
 ## Getting HYPE for Boros (don’t overcomplicate it)
 
@@ -191,8 +191,9 @@ Practical implications:
 
 Two common sources of confusion (and wasted time):
 
-1) **`marketId` queries return lists, not a single market**
-   - `GET /core/v1/markets?marketId=51` returns `{ "results": [ ... ] }` (a list).
+1) **Single-market reads use the by-ids endpoint**
+   - Current API shape: `GET /apis/v1/markets/by-ids?marketIds=51`.
+   - The response is still list-shaped (`results`), so don’t assume raw API calls return a single object.
    - Don’t assume `get_market(51)` returns a single object unless you’re using the repo’s client helper.
    - In this repo:
      - Use `BorosAdapter.get_market(market_id)` (returns a single market dict)
@@ -204,7 +205,7 @@ Two common sources of confusion (and wasted time):
      - `BorosAdapter.list_tenor_quotes(underlying_symbol="HYPE", ...)`
      - `BorosAdapter.quote_markets_for_underlying("HYPE", ...)`
 
-Also: Boros enforces `limit <= 100` on `/markets`. Prefer `list_markets_all(page_size=100)` for discovery.
+Also: current `/apis/v1/markets` uses `resumeToken` cursor pagination and enforces `limit <= 200`. Prefer `list_markets_all(page_size=200)` for discovery.
 
 ## Tick math
 
@@ -215,7 +216,8 @@ Also: Boros enforces `limit <= 100` on `/markets`. Prefer `list_markets_all(page
 
 ## Calldata sequencing
 
-Boros API may return multi-tx payloads:
-- `{"calldatas": ["0x...", "0x..."]}` → must be executed sequentially to the Boros Router.
+Boros API may return one of two execution payload shapes:
+- User calldata such as `{"calldata": "0x..."}` or `{"calldatas": ["0x...", "0x..."]}` must be executed sequentially to the Boros Router by the root wallet.
+- Agent payloads such as `{"calls": [...], "executeParams": ...}` are not root-wallet transactions. They require an approved agent key and Send Txs submission, so they are advanced/non-default in Wayfinder product flows.
 
-The adapter’s `_broadcast_calldata(...)` implements this sequencing; don’t “simplify” it away.
+The adapter’s `_broadcast_calldata(...)` implements root-calldata sequencing, and `_broadcast_user_or_return_agent_calldata(...)` prevents agent calls from being silently sent with the root signer or returned as the default happy path. Don’t simplify either path away.
