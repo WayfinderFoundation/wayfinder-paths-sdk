@@ -2,7 +2,7 @@
 description: Hidden sports worker for live sports data, data analysis and modelling, and provider-agnostic betting backtests (models, evaluations, predictions, run monitoring).
 mode: subagent
 hidden: true
-steps: 16
+steps: 22
 temperature: 0.1
 permission:
   task:
@@ -384,6 +384,12 @@ fail auth or are unavailable, mark `script_auth_unavailable` / `missingModelArti
 still return the pack from current state plus PM/HL boards. Follow `/using-sports-data`
 for the exact pack shape. Do not invent event-specific prompt rules; label approximations
 with `pathAssumption`, and classify stale/dead signals instead of calling them value.
+Include `modelProvenance` in the pack: rating source, current-state source, market source,
+and bracket/path source. If ratings are derived from outright winner probabilities or other
+market-implied prices, label them diagnostic only. If the bracket/path is approximate, set
+`pathAssumption: "approximate"` / `approx_bracket`. Do not present one latest sim result as
+final fair value; the primary/quant must distill PM/HL prior, sports/context model, path
+sim, and qualitative evidence before calling value.
 
 For broad multi-category scans, return an annotated board before deep-diving one candidate:
 coverage counts by executable venue/category, a ranked shortlist with model probability or

@@ -294,7 +294,7 @@ def test_sports_subagent_is_hidden_with_full_facade() -> None:
     fm = _frontmatter(REPO / ".opencode" / "agents" / "wayfinder-sports.md")
     assert fm["mode"] == "subagent"
     assert fm["hidden"] is True
-    assert fm["steps"] == 16  # analysis/modelling workflows need fetch+script headroom
+    assert fm["steps"] == 22  # analysis/modelling workflows need fetch+script headroom
     perm = fm["permission"]
     assert perm["task"]["*"] == "deny"
     assert perm["wayfinder_*"] == "deny"
@@ -670,8 +670,16 @@ def test_sports_skill_requires_exact_market_hydration_and_bounded_scans() -> Non
 
 def test_primary_agent_has_enough_steps_for_broad_sports_scans() -> None:
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    quant = (REPO / ".opencode" / "agents" / "wayfinder-quant.md").read_text("utf-8")
+    research = (REPO / ".opencode" / "agents" / "wayfinder-research.md").read_text(
+        "utf-8"
+    )
 
-    assert "steps: 32" in primary
+    assert "steps: 38" in primary
+    assert "steps: 22" in sports
+    assert "steps: 16" in quant
+    assert "steps: 14" in research
 
 
 def test_primary_routes_broad_sports_scans_to_worker() -> None:
@@ -793,6 +801,43 @@ def test_sports_prompts_do_not_require_sportsbook_futures_for_event_state_pack()
 
     assert "do not treat sportsbook odds in the pack as executable or required" in quant
     assert "MUST run the matching pipeline FIRST" not in sports
+
+
+def test_path_market_answers_require_multi_model_distillation() -> None:
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    quant = (REPO / ".opencode" / "agents" / "wayfinder-quant.md").read_text("utf-8")
+    judge = (REPO / "scripts" / "eval_sports_ab_judge.md").read_text("utf-8")
+
+    for text in (skill, primary, sports, quant, judge):
+        assert (
+            "latest sim" in text
+            or "latest simulator" in text
+            or "simulator output" in text
+        )
+        assert "final fair value" in text
+
+    for text in (skill, primary, sports):
+        assert "PM/HL prior" in text or "PM/HL priors" in text
+        assert "qualitative evidence" in text
+
+    assert "diagnostic_only" in skill
+    assert "approx_bracket" in skill
+    assert "market-implied" in sports
+    assert "RESEARCH_ONLY" in quant
+
+
+def test_grounded_eval_judge_uses_current_hyperliquid_search_contract() -> None:
+    judge = (REPO / ".opencode" / "agents" / "wayfinder-eval-judge.md").read_text(
+        "utf-8"
+    )
+
+    assert "plain text `query` + `limit` only" in judge
+    assert "Do not pass extra\n   filters such as `market_type`" in judge
+    assert '`market_type="hip4"`' not in judge
 
 
 def test_sports_skill_has_llm_prediction_market_research_stubs() -> None:

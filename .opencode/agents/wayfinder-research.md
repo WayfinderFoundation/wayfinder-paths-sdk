@@ -2,7 +2,7 @@
 description: Hidden research worker for crypto, web, social, DeFiLlama, Goldsky, Alpha Lab, and Delta Lab evidence gathering.
 mode: subagent
 hidden: true
-steps: 8
+steps: 14
 temperature: 0.1
 permission:
   task:

@@ -44,7 +44,10 @@ Score each answer 0–10 on every criterion:
 10. **Path/simulation depth** — for outrights, brackets, group winners, season awards, or
    any field market where path matters, does the answer go beyond cross-venue price gaps
    into a transparent path model, bracket/state simulation, or explicit path assumptions?
-   Stopping at PM-vs-HL or optional book-vs-market spread comparison scores low.
+   Stopping at PM-vs-HL or optional book-vs-market spread comparison scores low. So does
+   presenting a single latest simulator output as final fair value without distilling it
+   against executable market priors, model provenance, current-state evidence, and
+   diagnostic flags such as approximate bracket or market-implied ratings.
 
 Question-specific grading notes:
 

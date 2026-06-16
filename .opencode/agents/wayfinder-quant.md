@@ -2,7 +2,7 @@
 description: Hidden quant worker for backtests, Delta Lab time series, CCXT analysis, and long-running analytics scripts.
 mode: subagent
 hidden: true
-steps: 10
+steps: 16
 temperature: 0.1
 permission:
   task:
@@ -155,8 +155,11 @@ Respect its target outcome (`champion`, `slot`, `reach_match`, or `match_winner`
 `wayfinder_paths.quant.event_sim` by default; if the pack cannot represent the event,
 build a bounded custom simulator, save artifacts, and document assumptions. Return a
 `simulationPack`, candidate classifications, executable-price edge math, and
-`NEEDS_MORE_STATE` when the current state/path is insufficient. Do not invent missing
-sports data.
+`NEEDS_MORE_STATE` when the current state/path is insufficient. Treat simulator output as
+one model view, not final fair value: distill it against executable PM/HL priors, any
+sports/context model, and qualitative evidence. If ratings are market-implied or the
+bracket/path is approximate, surface the diagnostic flags and return `WATCH`/`RESEARCH_ONLY`
+unless an independent model corroborates the edge. Do not invent missing sports data.
 
 ## Evidence Quality
 

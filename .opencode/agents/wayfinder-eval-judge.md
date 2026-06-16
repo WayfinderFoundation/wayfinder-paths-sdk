@@ -38,8 +38,9 @@ From the question, identify the game(s)/competition, then observe reality:
    (`{league}-{away}-{home}-{YYYY-MM-DD}`) or search→hydrate; enumerate the FULL market
    board (count it) and note key prices/liquidity. For competition questions (futures),
    hydrate the relevant event ladder.
-3. `wayfinder_hyperliquid_search_market` (`market_type="hip4"`) + `search_mid_prices` for
-   the HL side of the board where relevant.
+3. `wayfinder_hyperliquid_search_market` with plain text `query` + `limit` only, then
+   `search_mid_prices` for the HL side of the board where relevant. Do not pass extra
+   filters such as `market_type`.
 4. Record an `observedAt` timestamp, the market count per venue, and the handful of prices
    you'll check answers against. Then STOP researching — do not model, do not form your own
    betting opinion beyond what grounding requires.
@@ -60,6 +61,10 @@ observations:
   attribution, liquidity claims off by an order of magnitude), never small price movement.
 - Judge ONLY from the answer texts + your observations. Never reward or punish based on
   guesses about which configuration wrote which answer.
+- For path-dependent markets, penalize answers that present one latest simulator output as
+  final fair value without distilling it against market priors, model provenance,
+  current-state evidence, and any diagnostic flags such as approximate bracket or
+  market-implied ratings.
 
 Output STRICT JSON exactly in the schema the rubric specifies (including the
 `ground_truth` block), then stop. No prose after the JSON.

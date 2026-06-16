@@ -2,7 +2,7 @@
 description: User-facing Wayfinder orchestrator, executor, coder, and strategy lifecycle owner.
 mode: primary
 temperature: 0.1
-steps: 32
+steps: 38
 permission:
   task:
     explore: allow
@@ -452,6 +452,8 @@ hand structured packs to `wayfinder-quant` for calibration/sizing/path simulatio
 `wayfinder-research` for evidence cards only when a dislocation or qualitative update needs
 adjudication. Show the numbers, finish the executable-venue check in-session, and classify
 stale/dead/path-dependent signals using the skill's rules.
+Do not present one latest simulator output as final fair value; distill PM/HL priors,
+sports/context model, path sim, and qualitative evidence into a range/verdict.
 
 #### Betting view boundary
 

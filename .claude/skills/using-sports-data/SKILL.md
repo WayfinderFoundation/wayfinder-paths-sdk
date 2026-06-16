@@ -255,6 +255,14 @@ Default workflow:
 5. Price simulated probabilities against executable order-book entries/depth and gate with
    `sports_posterior` when dislocations remain large.
 
+The simulator is one model view, not the answer. Final synthesis must distill multiple
+views: executable PM/HL prior, sports/context model or rating model, path simulation, and
+qualitative evidence/posterior. Do not present the latest sim as final fair value by
+itself. If ratings come from outright winner probabilities or other market-implied prices,
+label the sim `diagnostic_only`; if the bracket/path is approximate, label `approx_bracket`
+and downgrade buy calls to `WATCH` unless another independent model corroborates them.
+Use executable entry/depth for trade math: ask/depth for buys, bid/depth for sells.
+
 Run the path layer now, even early in an event. Do not defer with "run once the group
 stage is 50% complete" or similar. If the official bracket/path is unavailable, run the
 best bounded approximation from known rules and label `pathAssumption: "approximate"`;
@@ -307,7 +315,8 @@ The generic pack shape is:
               "champion_match": "m_final"},
   "target": {"type": "champion|slot|reach_match|match_winner",
              "slots": ["PROMO1", "PROMO2"], "match": "m_final"},
-  "markets": [{"participant_id": "id1", "venue": "polymarket|hyperliquid", "bid": 0.01, "ask": 0.011}]
+  "markets": [{"participant_id": "id1", "venue": "polymarket|hyperliquid", "bid": 0.01, "ask": 0.011}],
+  "modelProvenance": {"ratingSource": "team-strength source", "bracketSource": "official|approximate"}
 }
 ```
 

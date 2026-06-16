@@ -236,6 +236,133 @@ def test_bid_only_market_is_not_buy_candidate() -> None:
     assert row.decision == "WATCH"
 
 
+def test_multiple_venue_markets_do_not_overwrite_each_other() -> None:
+    config = load_config(
+        {
+            "iterations": 1000,
+            "seed": 29,
+            "min_edge_abs": 0.001,
+            "min_edge_rel": 0.01,
+            "participants": [
+                {"id": "a", "name": "A", "rating": 2100},
+                {"id": "b", "name": "B", "rating": 1500},
+            ],
+            "bracket": {
+                "matches": [
+                    {"id": "final", "a": {"participant": "a"}, "b": {"participant": "b"}}
+                ]
+            },
+            "markets": [
+                {"participant_id": "a", "venue": "polymarket", "bid": 0.2, "ask": 0.21},
+                {"participant_id": "a", "venue": "hyperliquid", "bid": 0.3, "ask": 0.31},
+            ],
+        }
+    )
+
+    rows = [row for row in run_simulation(config) if row.participant_id == "a"]
+    by_venue = {row.venue: row for row in rows}
+
+    assert set(by_venue) == {"polymarket", "hyperliquid"}
+    assert round(by_venue["polymarket"].market_price or 0, 6) == 0.205
+    assert by_venue["polymarket"].entry_price == 0.21
+    assert round(by_venue["hyperliquid"].market_price or 0, 6) == 0.305
+    assert by_venue["hyperliquid"].entry_price == 0.31
+
+
+def test_invalid_evidence_direction_is_surfaced_and_gates_action() -> None:
+    config = load_config(
+        {
+            "iterations": 1000,
+            "seed": 31,
+            "min_edge_abs": 0.001,
+            "min_edge_rel": 0.01,
+            "participants": [
+                {
+                    "id": "a",
+                    "name": "A",
+                    "rating": 2100,
+                    "evidence": [
+                        {
+                            "claim": "wrong legacy direction should not silently count",
+                            "direction": "sign_against",
+                            "strength": "strong",
+                        }
+                    ],
+                },
+                {"id": "b", "name": "B", "rating": 1500},
+            ],
+            "bracket": {
+                "matches": [
+                    {"id": "final", "a": {"participant": "a"}, "b": {"participant": "b"}}
+                ]
+            },
+            "markets": [{"participant_id": "a", "bid": 0.1, "ask": 0.11}],
+        }
+    )
+
+    row = next(row for row in run_simulation(config) if row.participant_id == "a")
+
+    assert row.decision == "WATCH"
+    assert "invalid_evidence_direction" in row.diagnostic_flags
+    assert row.ignored_evidence[0]["direction"] == "sign_against"
+
+
+def test_market_implied_ratings_are_diagnostic_only() -> None:
+    config = load_config(
+        {
+            "iterations": 1000,
+            "seed": 37,
+            "min_edge_abs": 0.001,
+            "min_edge_rel": 0.01,
+            "modelProvenance": {
+                "ratingSource": "sportsbook futures outright fair probabilities"
+            },
+            "participants": [
+                {"id": "a", "name": "A", "rating": 2100},
+                {"id": "b", "name": "B", "rating": 1500},
+            ],
+            "bracket": {
+                "matches": [
+                    {"id": "final", "a": {"participant": "a"}, "b": {"participant": "b"}}
+                ]
+            },
+            "markets": [{"participant_id": "a", "bid": 0.1, "ask": 0.11}],
+        }
+    )
+
+    row = next(row for row in run_simulation(config) if row.participant_id == "a")
+
+    assert row.decision == "WATCH"
+    assert "market_implied_ratings_diagnostic_only" in row.diagnostic_flags
+
+
+def test_approximate_bracket_downgrades_buy_candidate() -> None:
+    config = load_config(
+        {
+            "iterations": 1000,
+            "seed": 41,
+            "min_edge_abs": 0.001,
+            "min_edge_rel": 0.01,
+            "modelProvenance": {"bracketSource": "simplified approximate bracket"},
+            "participants": [
+                {"id": "a", "name": "A", "rating": 2100},
+                {"id": "b", "name": "B", "rating": 1500},
+            ],
+            "bracket": {
+                "matches": [
+                    {"id": "final", "a": {"participant": "a"}, "b": {"participant": "b"}}
+                ]
+            },
+            "markets": [{"participant_id": "a", "bid": 0.1, "ask": 0.11}],
+        }
+    )
+
+    row = next(row for row in run_simulation(config) if row.participant_id == "a")
+
+    assert row.decision == "WATCH"
+    assert "approx_bracket" in row.diagnostic_flags
+
+
 def test_event_sim_cli_writes_artifacts(tmp_path: Path) -> None:
     event_pack = tmp_path / "event.json"
     event_pack.write_text(

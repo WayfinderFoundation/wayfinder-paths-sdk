@@ -57,6 +57,7 @@ from typing import Any
 from wayfinder_paths.quant.polymarket_edge import evidence_llr
 
 _ELO_LOGIT_SCALE = 400.0 / math.log(10.0)
+_VALID_EVIDENCE_DIRECTIONS = frozenset({"for_yes", "against_yes"})
 
 
 @dataclass(frozen=True)
@@ -70,8 +71,20 @@ class Participant:
 
     @property
     def effective_rating(self) -> float:
-        evidence_delta = sum(evidence_llr(card) for card in self.evidence)
+        evidence_delta = sum(
+            evidence_llr(card)
+            for card in self.evidence
+            if str(card.get("direction") or "") in _VALID_EVIDENCE_DIRECTIONS
+        )
         return self.rating + self.rating_adjustment + evidence_delta * _ELO_LOGIT_SCALE
+
+    @property
+    def ignored_evidence(self) -> tuple[Mapping[str, Any], ...]:
+        return tuple(
+            card
+            for card in self.evidence
+            if str(card.get("direction") or "") not in _VALID_EVIDENCE_DIRECTIONS
+        )
 
 
 @dataclass(frozen=True)
@@ -96,11 +109,34 @@ class Market:
         return None
 
     @property
+    def entry_price(self) -> float | None:
+        """Executable-ish BUY entry price.
+
+        A midpoint is useful context, but an actionable long edge should clear the ask.
+        Bid-only rows are not actionable buy candidates.
+        """
+        if self.ask is not None:
+            return float(self.ask)
+        if self.price is not None:
+            return float(self.price)
+        return None
+
+    @property
     def price_source(self) -> str:
         if self.bid is not None and self.ask is not None:
             return "bid_ask_mid"
         if self.ask is not None:
             return "ask_only"
+        if self.price is not None:
+            return "price"
+        if self.bid is not None:
+            return "bid_only"
+        return "missing"
+
+    @property
+    def entry_source(self) -> str:
+        if self.ask is not None:
+            return "ask"
         if self.price is not None:
             return "price"
         if self.bid is not None:
@@ -127,7 +163,8 @@ class SimulationConfig:
     wildcards: list[dict[str, Any]] = field(default_factory=list)
     bracket: dict[str, Any] = field(default_factory=dict)
     target: Mapping[str, Any] = field(default_factory=lambda: {"type": "champion"})
-    markets: dict[str, Market] = field(default_factory=dict)
+    markets: dict[str, tuple[Market, ...]] = field(default_factory=dict)
+    model_provenance: Mapping[str, Any] = field(default_factory=dict)
     iterations: int = 20000
     seed: int = 42
     min_edge_abs: float = 0.005
@@ -141,12 +178,16 @@ class CandidateResult:
     probability: float
     wins: int
     market_price: float | None
+    entry_price: float | None
     price_source: str
+    entry_source: str
     venue: str
     edge_abs: float | None
     edge_rel: float | None
     classification: str
     decision: str
+    diagnostic_flags: tuple[str, ...] = ()
+    ignored_evidence: tuple[Mapping[str, Any], ...] = ()
 
 
 def load_config(data: Mapping[str, Any]) -> SimulationConfig:
@@ -161,17 +202,37 @@ def load_config(data: Mapping[str, Any]) -> SimulationConfig:
         )
         for row in data.get("participants", [])
     }
-    markets = {
-        str(row["participant_id"]): Market(
-            participant_id=str(row["participant_id"]),
-            venue=str(row.get("venue") or ""),
-            bid=_optional_float(row.get("bid")),
-            ask=_optional_float(row.get("ask")),
-            price=_optional_float(row.get("price")),
-            liquidity=_optional_float(row.get("liquidity")),
+    markets_by_participant: dict[str, list[Market]] = defaultdict(list)
+    for row in _market_rows(data):
+        participant_id = str(
+            row.get("participant_id")
+            or row.get("participantId")
+            or row.get("subject_id")
+            or row.get("id")
         )
-        for row in data.get("markets", [])
+        markets_by_participant[participant_id].append(
+            Market(
+                participant_id=participant_id,
+                venue=str(row.get("venue") or ""),
+                bid=_optional_float(row.get("bid")),
+                ask=_optional_float(row.get("ask")),
+                price=_optional_float(
+                    row.get("mid") if row.get("price") is None else row.get("price")
+                ),
+                liquidity=_optional_float(row.get("liquidity") or row.get("depth")),
+            )
+        )
+    markets = {
+        participant_id: tuple(markets)
+        for participant_id, markets in markets_by_participant.items()
     }
+    model_provenance = dict(data.get("modelProvenance") or data.get("model_provenance") or {})
+    if "rating_source" in data and "ratingSource" not in model_provenance:
+        model_provenance["ratingSource"] = data["rating_source"]
+    if "bracket_source" in data and "bracketSource" not in model_provenance:
+        model_provenance["bracketSource"] = data["bracket_source"]
+    if "bracket_confidence" in data and "bracketConfidence" not in model_provenance:
+        model_provenance["bracketConfidence"] = data["bracket_confidence"]
     return SimulationConfig(
         participants=participants,
         groups=list(data.get("groups") or []),
@@ -179,11 +240,21 @@ def load_config(data: Mapping[str, Any]) -> SimulationConfig:
         bracket=dict(data.get("bracket") or {}),
         target=dict(data.get("target") or {"type": "champion"}),
         markets=markets,
+        model_provenance=model_provenance,
         iterations=int(data.get("iterations", 20000)),
         seed=int(data.get("seed", 42)),
         min_edge_abs=float(data.get("min_edge_abs", 0.005)),
         min_edge_rel=float(data.get("min_edge_rel", 0.20)),
     )
+
+
+def _market_rows(data: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    rows: list[Mapping[str, Any]] = []
+    for key in ("markets", "predictionMarketBoard", "annotatedBoard"):
+        value = data.get(key)
+        if isinstance(value, list):
+            rows.extend(row for row in value if isinstance(row, Mapping))
+    return rows
 
 
 def _optional_float(value: Any) -> float | None:
@@ -411,6 +482,7 @@ def run_simulation(config: SimulationConfig) -> list[CandidateResult]:
     rng = random.Random(config.seed)
     wins: dict[str, int] = defaultdict(int)
     seen_completed = _participants_with_completed_state(config)
+    config_flags = _config_diagnostic_flags(config)
 
     for _ in range(config.iterations):
         slots, _standings = simulate_groups(config, rng)
@@ -424,38 +496,111 @@ def run_simulation(config: SimulationConfig) -> list[CandidateResult]:
         ):
             wins[participant_id] += 1
 
+    probabilities = {
+        participant_id: wins.get(participant_id, 0) / max(config.iterations, 1)
+        for participant_id in config.participants
+    }
+    distribution_flags = _distribution_diagnostic_flags(probabilities)
+    common_flags = tuple(dict.fromkeys((*config_flags, *distribution_flags)))
+
     rows: list[CandidateResult] = []
     for participant_id, participant in config.participants.items():
-        probability = wins.get(participant_id, 0) / max(config.iterations, 1)
-        market = config.markets.get(participant_id)
-        price = market.reference_price if market else None
-        edge_abs = probability - price if price is not None else None
-        edge_rel = edge_abs / price if edge_abs is not None and price and price > 0 else None
+        probability = probabilities[participant_id]
         classification = _classification(participant, probability, seen_completed)
-        rows.append(
-            CandidateResult(
-                participant_id=participant_id,
-                name=participant.name,
-                probability=probability,
-                wins=wins.get(participant_id, 0),
-                market_price=price,
-                price_source=market.price_source if market else "missing",
-                venue=market.venue if market else "",
-                edge_abs=edge_abs,
-                edge_rel=edge_rel,
-                classification=classification,
-                decision=_decision(
-                    config,
-                    edge_abs,
-                    edge_rel,
-                    classification,
-                    price,
-                    market.price_source if market else "missing",
-                ),
+        evidence_flags = (
+            ("invalid_evidence_direction",) if participant.ignored_evidence else ()
+        )
+        participant_flags = tuple(
+            dict.fromkeys(
+                (
+                    *common_flags,
+                    *evidence_flags,
+                )
             )
         )
+        markets = config.markets.get(participant_id) or (None,)
+        for market in markets:
+            price = market.reference_price if market else None
+            entry = market.entry_price if market else None
+            edge_abs = probability - entry if entry is not None else None
+            edge_rel = edge_abs / entry if edge_abs is not None and entry and entry > 0 else None
+            rows.append(
+                CandidateResult(
+                    participant_id=participant_id,
+                    name=participant.name,
+                    probability=probability,
+                    wins=wins.get(participant_id, 0),
+                    market_price=price,
+                    entry_price=entry,
+                    price_source=market.price_source if market else "missing",
+                    entry_source=market.entry_source if market else "missing",
+                    venue=market.venue if market else "",
+                    edge_abs=edge_abs,
+                    edge_rel=edge_rel,
+                    classification=classification,
+                    decision=_decision(
+                        config,
+                        edge_abs,
+                        edge_rel,
+                        classification,
+                        entry,
+                        market.entry_source if market else "missing",
+                        participant_flags,
+                    ),
+                    diagnostic_flags=participant_flags,
+                    ignored_evidence=participant.ignored_evidence,
+                )
+            )
     rows.sort(key=lambda row: row.probability, reverse=True)
     return rows
+
+
+def _config_diagnostic_flags(config: SimulationConfig) -> tuple[str, ...]:
+    provenance = dict(config.model_provenance or {})
+    flags: list[str] = []
+    rating_source = " ".join(
+        str(provenance.get(key) or "")
+        for key in ("ratingSource", "rating_source", "ratings", "ratingsSource")
+    ).lower()
+    if any(
+        needle in rating_source
+        for needle in (
+            "outright",
+            "winner probability",
+            "champion probability",
+            "futures",
+            "sportsbook fair",
+            "market-implied",
+            "market implied",
+        )
+    ):
+        flags.append("market_implied_ratings_diagnostic_only")
+
+    bracket_source = " ".join(
+        str(provenance.get(key) or "")
+        for key in ("bracketSource", "bracket_source", "bracketConfidence", "bracketQuality")
+    ).lower()
+    bracket_meta = json.dumps(config.bracket, sort_keys=True).lower() if config.bracket else ""
+    if any(
+        needle in f"{bracket_source} {bracket_meta}"
+        for needle in ("approx", "simplified", "assumption", "estimated")
+    ):
+        flags.append("approx_bracket")
+
+    return tuple(dict.fromkeys(flags))
+
+
+def _distribution_diagnostic_flags(probabilities: Mapping[str, float]) -> tuple[str, ...]:
+    if not probabilities:
+        return ()
+    ordered = sorted(probabilities.values(), reverse=True)
+    flags: list[str] = []
+    if sum(ordered[:3]) >= 0.60 and len(ordered) >= 8:
+        flags.append("concentrated_distribution")
+    zero_like = sum(1 for value in ordered if value <= 0.0)
+    if zero_like / len(ordered) >= 0.25:
+        flags.append("zero_probability_mass_warning")
+    return tuple(flags)
 
 
 def _target_successes(
@@ -531,17 +676,27 @@ def _decision(
     edge_rel: float | None,
     classification: str,
     price: float | None,
-    price_source: str,
+    entry_source: str,
+    diagnostic_flags: tuple[str, ...],
 ) -> str:
+    if entry_source == "bid_only":
+        return "WATCH"
     if price is None:
         return "NO_MARKET"
-    if price_source == "bid_only":
-        return "WATCH"
     if classification == "dead_signal":
         return "SKIP"
+    if "market_implied_ratings_diagnostic_only" in diagnostic_flags:
+        return "WATCH"
+    if "invalid_evidence_direction" in diagnostic_flags:
+        return "WATCH"
     if edge_abs is None or edge_rel is None:
         return "WATCH"
     if edge_abs >= config.min_edge_abs and edge_rel >= config.min_edge_rel:
+        if (
+            "approx_bracket" in diagnostic_flags
+            and not bool(config.model_provenance.get("allowActionableApproxBracket"))
+        ):
+            return "WATCH"
         return "BUY_CANDIDATE"
     if edge_abs > 0:
         return "WATCH"
@@ -556,12 +711,16 @@ def rows_as_dicts(rows: list[CandidateResult]) -> list[dict[str, Any]]:
             "probability": round(row.probability, 6),
             "wins": row.wins,
             "market_price": None if row.market_price is None else round(row.market_price, 6),
+            "entry_price": None if row.entry_price is None else round(row.entry_price, 6),
             "price_source": row.price_source,
+            "entry_source": row.entry_source,
             "venue": row.venue,
             "edge_abs": None if row.edge_abs is None else round(row.edge_abs, 6),
             "edge_rel": None if row.edge_rel is None else round(row.edge_rel, 6),
             "classification": row.classification,
             "decision": row.decision,
+            "diagnostic_flags": list(row.diagnostic_flags),
+            "ignoredEvidence": list(row.ignored_evidence),
         }
         for row in rows
     ]
@@ -572,26 +731,29 @@ def render(rows: list[CandidateResult], *, top: int = 20) -> str:
         "EVENT MARKET SIM — path-conditioned fair probabilities",
         "",
         (
-            f"{'#':>3} {'participant':<24} {'sim_p':>8} {'market':>8} "
+            f"{'#':>3} {'participant':<24} {'venue':<12} {'sim_p':>8} {'entry':>8} "
             f"{'edge':>8} {'rel':>8} {'state':<17} decision"
         ),
     ]
     for idx, row in enumerate(rows[:top], 1):
-        market = "-" if row.market_price is None else f"{row.market_price:.4f}"
+        entry = "-" if row.entry_price is None else f"{row.entry_price:.4f}"
         edge = "-" if row.edge_abs is None else f"{row.edge_abs:+.4f}"
         rel = "-" if row.edge_rel is None else f"{row.edge_rel * 100:+.1f}%"
         lines.append(
-            f"{idx:>3} {row.name:<24.24} {row.probability:>8.4f} {market:>8} "
+            f"{idx:>3} {row.name:<24.24} {row.venue:<12.12} {row.probability:>8.4f} {entry:>8} "
             f"{edge:>8} {rel:>8} {row.classification:<17.17} {row.decision}"
         )
     if len(rows) > top:
         lines.append(f"  ... {len(rows) - top} more (see artifacts)")
     lines.append("")
     lines.append(
-        "NOTE: sportsbook-derived fields are not executable. Use this output as the "
-        "path/current-state model, then gate executable trades with order-book price, "
-        "liquidity/depth, and qualitative evidence."
+        "NOTE: sportsbook-derived fields are not executable. Use this output as one "
+        "path/current-state model, then distill it against executable order-book depth, "
+        "other model views, and qualitative evidence before calling value."
     )
+    flags = sorted({flag for row in rows for flag in row.diagnostic_flags})
+    if flags:
+        lines.append(f"DIAGNOSTIC FLAGS: {', '.join(flags)}")
     return "\n".join(lines)
 
 
@@ -613,6 +775,11 @@ def write_artifacts(
                 "seed": config.seed,
                 "min_edge_abs": config.min_edge_abs,
                 "min_edge_rel": config.min_edge_rel,
+                "modelProvenance": dict(config.model_provenance),
+                "diagnosticFlags": sorted(
+                    {flag for row in rows for flag in row.diagnostic_flags}
+                ),
+                "participants": _participant_summary_rows(rows),
                 "rows": dict_rows,
             },
             indent=2,
@@ -627,6 +794,27 @@ def write_artifacts(
             writer.writerows(dict_rows)
         artifacts.append(str(csv_path))
     return artifacts
+
+
+def _participant_summary_rows(rows: list[CandidateResult]) -> list[dict[str, Any]]:
+    by_participant: dict[str, CandidateResult] = {}
+    for row in rows:
+        by_participant.setdefault(row.participant_id, row)
+    return [
+        {
+            "participant_id": row.participant_id,
+            "name": row.name,
+            "probability": round(row.probability, 6),
+            "wins": row.wins,
+            "classification": row.classification,
+            "diagnostic_flags": list(row.diagnostic_flags),
+        }
+        for row in sorted(
+            by_participant.values(),
+            key=lambda item: item.probability,
+            reverse=True,
+        )
+    ]
 
 
 def _main() -> None:
