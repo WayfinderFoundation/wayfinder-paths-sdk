@@ -11,6 +11,11 @@ from wayfinder_paths.adapters.aerodrome_slipstream_adapter.adapter import (
     AerodromeSlipstreamAdapter,
 )
 from wayfinder_paths.core.constants import ZERO_ADDRESS
+from wayfinder_paths.core.constants.aerodrome_slipstream_contracts import (
+    AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGE_CAPS,
+    AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGES_V3,
+    AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL,
+)
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     amounts_for_liq_inrange,
@@ -58,6 +63,23 @@ def test_adapter_type():
 def test_constructor_is_base_only():
     adapter = AerodromeSlipstreamAdapter(config={"deployments": ("initial",)})
     assert adapter.chain_id == CHAIN_ID_BASE
+
+
+def test_constructor_defaults_to_all_current_deployments_and_v3_writes():
+    adapter = AerodromeSlipstreamAdapter()
+
+    assert adapter.default_deployments == [
+        AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL,
+        AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGE_CAPS,
+        AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGES_V3,
+    ]
+    assert adapter.write_deployment == AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGES_V3
+    assert (
+        adapter._deployment(AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGES_V3)[
+            "nonfungible_position_manager"
+        ]
+        == "0xe1f8cd9AC4e4A65F54f38a5CdAfCA44f6dD68b53"
+    )
 
 
 @pytest.mark.parametrize(

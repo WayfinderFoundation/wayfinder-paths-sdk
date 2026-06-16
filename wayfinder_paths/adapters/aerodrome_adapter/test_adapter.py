@@ -1304,6 +1304,9 @@ def test_parse_sugar_pool():
     bribe = "0x" + "66" * 20
     factory = "0x" + "77" * 20
     emissions_token = "0x" + "88" * 20
+    nfpm = "0x" + "99" * 20
+    alm = "0x" + "aa" * 20
+    root = "0x" + "bb" * 20
 
     pool = AerodromeAdapter._parse_sugar_pool(
         [
@@ -1328,11 +1331,17 @@ def test_parse_sugar_pool():
             factory,
             123,
             emissions_token,
+            456,
             30,
             5,
             7,
             11,
+            13,
+            17,
             999,
+            nfpm,
+            alm,
+            root,
         ]
     )
 
@@ -1340,6 +1349,13 @@ def test_parse_sugar_pool():
     assert pool.symbol == "AERO/USDC"
     assert pool.gauge.lower() == gauge.lower()
     assert pool.emissions_token.lower() == emissions_token.lower()
+    assert pool.emissions_cap == 456
+    assert pool.locked == 13
+    assert pool.emerging == 17
+    assert pool.created_at == 999
+    assert pool.nfpm.lower() == nfpm.lower()
+    assert pool.alm.lower() == alm.lower()
+    assert pool.root.lower() == root.lower()
     assert pool.is_v2 is True
     assert pool.is_cl is False
     assert pool.stable is True
@@ -1552,24 +1568,30 @@ async def test_sugar_all_batches_large_limit():
             _addr(i + 6001),
             0,
             _addr(i + 7001),
+            0,
             30,
             5,
             0,
             0,
+            0,
+            0,
             1,
+            _addr(i + 8001),
+            ZERO_ADDRESS,
+            addr,
         )
 
     rows_page_1 = [_row(i) for i in range(300)]
     rows_page_2 = [_row(i) for i in range(300, 350)]
-    seen_calls: list[tuple[int, int]] = []
+    seen_calls: list[tuple[int, int, int]] = []
 
-    def _all(limit: int, offset: int):
-        seen_calls.append((limit, offset))
-        if (limit, offset) == (300, 10):
+    def _all(limit: int, offset: int, pool_filter: int):
+        seen_calls.append((limit, offset, pool_filter))
+        if (limit, offset, pool_filter) == (300, 10, 0):
             return _mock_call(rows_page_1)
-        if (limit, offset) == (50, 310):
+        if (limit, offset, pool_filter) == (50, 310, 0):
             return _mock_call(rows_page_2)
-        raise AssertionError(f"unexpected sugar.all({limit}, {offset})")
+        raise AssertionError(f"unexpected sugar.all({limit}, {offset}, {pool_filter})")
 
     sugar = MagicMock()
     sugar.functions.all = MagicMock(side_effect=_all)
@@ -1584,10 +1606,37 @@ async def test_sugar_all_batches_large_limit():
     ):
         pools = await adapter.sugar_all(limit=350, offset=10)
 
-    assert seen_calls == [(300, 10), (50, 310)]
+    assert seen_calls == [(300, 10, 0), (50, 310, 0)]
     assert len(pools) == 350
     assert pools[0].symbol == "pool-0"
     assert pools[-1].symbol == "pool-349"
+
+
+@pytest.mark.asyncio
+async def test_sugar_epochs_latest_uses_rewards_sugar_contract():
+    adapter = AerodromeAdapter()
+    rewards_sugar = MagicMock()
+    rewards_sugar.functions.epochsLatest = MagicMock(return_value=_mock_call([]))
+
+    seen_addresses: list[str] = []
+
+    def _contract(*, address: str, **_kwargs):
+        seen_addresses.append(address)
+        return rewards_sugar
+
+    mock_web3 = MagicMock()
+    mock_web3.eth.contract = MagicMock(side_effect=_contract)
+
+    with patch.object(
+        aerodrome_adapter_module,
+        "web3_from_chain_id",
+        _web3_ctx(mock_web3),
+    ):
+        rows = await adapter.sugar_epochs_latest(limit=2, offset=3)
+
+    assert rows == []
+    assert seen_addresses == [adapter.core_contracts["rewards_sugar"]]
+    rewards_sugar.functions.epochsLatest.assert_called_once_with(2, 3)
 
 
 @pytest.mark.asyncio

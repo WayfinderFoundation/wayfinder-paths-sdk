@@ -25,6 +25,7 @@ from wayfinder_paths.core.constants.aerodrome_slipstream_abi import (
 from wayfinder_paths.core.constants.aerodrome_slipstream_contracts import (
     AERODROME_SLIPSTREAM_BY_CHAIN,
     AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGE_CAPS,
+    AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGES_V3,
     AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL,
 )
 from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
@@ -133,11 +134,12 @@ class AerodromeSlipstreamAdapter(
             else [
                 AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL,
                 AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGE_CAPS,
+                AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGES_V3,
             ]
         )
         self.write_deployment = (config or {}).get(
             "write_deployment"
-        ) or AERODROME_SLIPSTREAM_DEPLOYMENT_INITIAL
+        ) or AERODROME_SLIPSTREAM_DEPLOYMENT_GAUGES_V3
         if self.write_deployment not in self.supported_deployments:
             raise ValueError(
                 f"Unknown Slipstream write deployment: {self.write_deployment}"
