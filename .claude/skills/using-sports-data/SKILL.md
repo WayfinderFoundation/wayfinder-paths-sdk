@@ -109,10 +109,10 @@ Resource ids are generic and resolve per-league (e.g. `competitors` = players/fi
 | futures | ucl, worldcup, f1, pga |
 | none | cs2, lol, dota2 |
 
-Sportsbook odds/props/futures are **context, never the executable price** — Wayfinder executes
-sports bets only on Polymarket. Compute edges with
-`wayfinder_paths.quant.sports_props.market_edge(model_p, polymarket_price)` against
-`polymarket_read` order-book prices.
+Sportsbook odds/props/futures are **optional context, never the executable price**.
+Wayfinder sports views are actionable only against Polymarket or Hyperliquid prediction
+market books. Compute edges with `wayfinder_paths.quant.sports_props.market_edge(...)`
+or the prediction-market quant helpers against PM/HL order-book prices.
 
 ## Conventions that bite
 
@@ -136,9 +136,9 @@ sports bets only on Polymarket. Compute edges with
 **Betting analysis is a FUNNEL that starts from the executable boards: (1) ENUMERATE
 what's tradeable — the Polymarket per-game event (`get_event` on the
 `{league}-{away}-{home}-{date}` slug) and Hyperliquid HIP-4 outcomes — into a candidate
-table; (2) INFORMATION via the canned pipelines below for DATA + MARKET MATH (complete
-fetches, de-vig, consensus, dislocation gating — correctness you must not hand-roll;
-never pull odds from the web); (3) TRIAGE candidates by liquidity and gap; (4) DEEP-DIVE
+table; (2) INFORMATION via sports data and the canned pipelines below where useful
+(complete fetches, model features, optional sportsbook-context market math; never pull
+odds from the web); (3) TRIAGE candidates by liquidity and gap; (4) DEEP-DIVE
 survivors with whatever data sharpens the number (full matchup history across seasons,
 comparable players vs that opponent, minutes/usage given injuries/lineups — multi-season
 `player_stats`, `matchups`, advanced stats), each input a weighted evidence card; (5)
@@ -153,22 +153,28 @@ the executable prior:**
 poetry run python -m wayfinder_paths.quant.prop_slate \
   --sport nba --game-id <GAME_ID> --season <SEASON> --out .wayfinder_runs/sports
 
-# game markets (moneyline/total/spread) -> model vs consensus de-vigged books
-# (+ the provider's polymarket vendor line as the quasi-executable reference)
+# game markets (moneyline/total/spread) -> data/model context and optional book context
+# (PM/HL order books remain the executable price)
 poetry run python -m wayfinder_paths.quant.game_slate \
   --sport nhl --game-id <GAME_ID> --season <SEASON> --date <GAME_DATE> --out .wayfinder_runs/sports
 ```
 
 ```
-# futures fields (tournament winner / group winner / reach-final) -> de-vigged fair_p per candidate
+# futures fields (tournament winner / group winner / reach-final) -> optional book-context fair_p
 poetry run python -m wayfinder_paths.quant.futures_slate \
   --sport worldcup --market-type outright --out .wayfinder_runs/sports
 
-# book-fair vs Polymarket disagree? -> dislocation check + gated posterior ledger
+# context/model fair vs executable PM/HL disagree? -> dislocation check + gated posterior ledger
 poetry run python -m wayfinder_paths.quant.sports_posterior \
   --market <PM_PRICE> --book <FAIR_P> --vendors <N> --overround <O> \
   [--card "davies_out:against:medium:news"]
 ```
+
+**Composition and autonomy rules:** Every probability, edge, or EV asserted in the final
+answer must appear in a shown table or posterior ledger. If the sports worker returns a
+rendered table, paste the top rows; if it returns only `dataFiles`, read the artifact and
+show the rows. Finish the executable-venue check and top dislocation adjudication
+in-session instead of offering them as follow-ups.
 
 **Executable board rule:** Polymarket lists a per-game EVENT (slug
 `{league}-{away}-{home}-{YYYY-MM-DD}`, e.g. `mlb-lad-cws-2026-06-12`) carrying a whole
@@ -176,19 +182,171 @@ board — alternate spreads/totals, first-half/F5 lines, game props. Hydrate it
 (`polymarket_read get_event`) and enumerate its markets as the executable candidate
 set; `game_slate` emits `alt_lines` (model probabilities for the alt ladder) to price
 them. "No provider props" never means "nothing executable."
+For multi-outcome match boards (soccer/worldcup, tennis sets, MMA method, etc.), preserve
+the returned outcome mapping exactly. A three-way soccer board is home/draw/away; never
+collapse it into a binary or recommend "buy No on the favorite" unless a binary No token
+is explicitly listed. For Hyperliquid HIP-4, only request mids for `#...` assets surfaced
+by the market search or prior metadata; search with plain text `query` + `limit` only,
+do not pass extra filters such as `market_type`, and do not derive sibling asset ids by
+changing the last digit.
 
-**Dislocation rule:** when a slate's de-vigged book number and the Polymarket price for
-the same outcome disagree enough that `sports_posterior.dislocation` flags it, never
-recommend the cheap side on trust — the prior is the EXECUTABLE price, the book number
-enters as one capped evidence card, and the gap must be adjudicated (research: "what
-explains the cheap side?" — post-line news, resolution-rules mismatch, lockup/flow,
-de-vig method risk) before any recommendation. An unexplained dislocation gates to
+**Exact-market hydration rule:** For a named match/fight/event, never conclude "no
+Polymarket market" from a search summary alone. If `polymarket_read(action="search")`
+returns any plausible `eventSlug`, candidate, or event group for the names/date/card,
+immediately hydrate it with `get_event` and inspect the candidate board. If exact-name
+search is empty, run bounded fallback queries for **each competitor/team surname or short
+name independently** plus the sport/card/date, then hydrate every same-card/same-date
+event returned before declaring absence. Broad searches such as "ufc fight" are
+truncation-prone discovery only; they are not negative proof unless every plausible event
+candidate they surface has been hydrated with `get_event`. Only after those hydrated
+checks can you say no executable PM market was found; phrase it as "not surfaced by these
+searches" when coverage is incomplete.
+Likewise, for a named game/fight/event, still search the direct matchup on PM and
+Hyperliquid HIP-4 before calling the analysis complete, even when provider odds are
+unavailable.
+
+**UTC-boundary trap:** US evening games can cross the UTC date line, so a provider date
+filter may return both an in-progress/finished prior game and the scheduled game the user
+asked about. Before analysis, identify the concrete game id, local/UTC start, and status;
+NEVER mix one game's live book odds with another game's pre-game venue board.
+
+**Odds sourcing rule:** never source betting lines from web search or media pages.
+Executable lines come from PM/HL order books. Provider sportsbook odds are optional
+context only; if they are empty, unmatched, or auth-blocked, continue with PM/HL boards,
+sports data, and model estimates rather than checkpointing. Web research is for news and
+qualitative evidence, not odds.
+
+**Dislocation rule:** when an optional sportsbook/context number or model estimate and
+the PM/HL executable price for the same outcome disagree enough that
+`sports_posterior.dislocation` flags it, never recommend the cheap side on trust — the
+prior is the EXECUTABLE price, the context/model number enters as one capped evidence card,
+and the gap must be adjudicated (research: "what explains the cheap side?" —
+post-line news, resolution-rules mismatch, lockup/flow, stale data, method risk) before
+any recommendation. An unexplained dislocation gates to
 WATCH with the EV shown — by design. Sub-threshold gaps are VENUE NOISE, not edge:
 never describe one as "X points too rich/cheap" — say the market is priced within
 normal venue tolerance (a directional view from evidence is "a lean within noise,
 not a value call").
 
-The pipelines are multi-sport (NBA/NHL/MLB/World Cup verified live). MLB notes: props
+For scan questions, CLI-gate every dislocation you headline and fully adjudicate at least
+the largest one: ask research "what explains the cheap side?", fold evidence cards back
+through `sports_posterior`, and show the final gated verdict. Unexplained dislocations are
+candidates, not calls.
+
+### Path-dependent event markets
+
+For tournament winners, group winners, playoff brackets, promotion/relegation,
+championship futures, season awards with staged cuts, or any field market where path
+matters, do not stop at prediction-market cross-venue spreads or optional book-vs-market
+spreads. Build a current-state probability layer; sportsbook odds are optional context,
+not a required input.
+
+Default workflow:
+
+1. Enumerate executable PM/HL boards first.
+2. Ask `wayfinder-sports` for a sport-neutral `eventStatePack`: participants, ratings/form
+   inputs, completed results, standings/bracket/cuts if known, upcoming path, futures_slate
+   fair probabilities if available, and executable PM/HL markets. Sportsbook/futures auth
+   failure must not block this pack.
+3. Ask `wayfinder-research` only for qualitative/current-state evidence cards: injuries,
+   lineups, post-line news, rule/resolution mismatch, liquidity/depth, lockup/flow.
+4. Run `poetry run python -m wayfinder_paths.quant.event_sim --input <event_pack.json>
+   --out .wayfinder_runs/sports` or delegate the pack to `wayfinder-quant`.
+5. Price simulated probabilities against executable order-book entries/depth and gate with
+   `sports_posterior` when dislocations remain large.
+
+Run the path layer now, even early in an event. Do not defer with "run once the group
+stage is 50% complete" or similar. If the official bracket/path is unavailable, run the
+best bounded approximation from known rules and label `pathAssumption: "approximate"`;
+if a path cannot be represented at all, surface `missingPathFields` as the blocker.
+If you skip `event_sim` or a custom simulator, the answer is incomplete for a path market.
+
+For "scan the field/market" questions, the final answer must be the annotated board before
+any single-candidate drilldown. It must include: board coverage counts for each executable
+venue, a ranked top-candidate table from the full joined field, each candidate's state
+classification, path-model status/artifact (or `missingPathFields`), and order-book depth
+only for shortlisted candidates. Never finish with only one or two selected order books.
+Under a hard tool budget, use a bounded scan plan and finish anyway: hydrate the main
+outright board, search the second executable venue, search group/round boards with enough
+candidate coverage to surface multiple event slugs, pull current standings/results using
+the canonical sport slug (for World Cup: `worldcup`, not `soccer`) and a generous `limit`
+so standings are not silently truncated, then fetch mids for the shortlisted match boards
+that surfaced. Prioritize hydrating or directly using group boards for groups with current
+results before spending calls on novelty/entertainment match searches. Do not call
+`mid_prices` for every encoded outcome in a large field; shortlist top/ambiguous outcomes
+first. If group or match boards
+surface in search but are not fully hydrated, classify them as `search_surfaced_unhydrated`,
+not `not_surfaced`. If group or match boards do not surface, report the search coverage and
+move on rather than checkpointing or offering follow-up work.
+For broad multi-category scans ("most mispriced across match, group, outright", "scan
+the whole field"), cap primary-agent collection at **eight external calls**. Reserve one
+call for current state/results with a generous limit and one for match-market mids if match boards surface.
+After the eighth call, stop gathering data and write the final answer from the joined
+board/state you have. Missing category coverage is a finding (`not_surfaced` /
+`search_surfaced_unhydrated` / `missingModelArtifact`), not a reason to continue.
+Never output a progress checkpoint for these scans. Avoid progress-only headings such as
+`Goal`, `Constraints`, `Progress`, `Done`, `In Progress`, `Blocked`, `Critical Context`,
+and `Next Steps` in the answer. A partial annotated board with honest blockers is the
+final deliverable.
+
+The generic pack shape is:
+
+```json
+{
+  "participants": [
+    {"id": "stable-id", "name": "Display Name", "rating": 1800,
+     "state": "clean_unplayed|live_conditioned|post_result_stale|dead_signal"}
+  ],
+  "groups": [
+    {"id": "Group/Stage", "participants": ["id1", "id2"],
+     "qualifiers": [{"rank": 1, "slot": "G1_1"}],
+     "matches": [{"a": "id1", "b": "id2", "status": "completed", "score": [1, 0]}]}
+  ],
+  "wildcards": [{"source_rank": 3, "count": 2, "slot_prefix": "WC"}],
+  "bracket": {"matches": [{"id": "m1", "a": {"slot": "G1_1"}, "b": {"participant": "id3"}}],
+              "champion_match": "m_final"},
+  "target": {"type": "champion|slot|reach_match|match_winner",
+             "slots": ["PROMO1", "PROMO2"], "match": "m_final"},
+  "markets": [{"participant_id": "id1", "venue": "polymarket|hyperliquid", "bid": 0.01, "ask": 0.011}]
+}
+```
+
+Fill only what is known. If the provider/catalog lacks an official path, return
+`missingPathFields`; if you approximate from public rules, set `pathAssumption:
+"approximate"` and list assumptions. Use `target` to avoid winner-take-all overfitting:
+`champion` for outrights, `slot` for promotion/relegation or staged cuts, `reach_match`
+for reach-final/reach-playoff markets, and `match_winner` for a specific stage winner. If
+`event_sim` cannot represent the sport/event, a quant worker may build a custom simulator,
+save artifacts, and document the model and assumptions. Do not create
+event-specific prompt rules.
+
+Classify every surfaced candidate:
+
+- `clean_unplayed`: no relevant result has occurred yet.
+- `live_conditioned`: current results/standings are folded into the model.
+- `post_result_stale`: comparison still uses pre-result odds/model inputs.
+- `dead_signal`: path is mathematically gone or economically irrelevant.
+
+Do not call stale or dead signals value.
+
+### LLM forecasting / prediction-market notes
+
+Use LLMs for retrieval, synthesis, evidence cards, and model selection, not as raw
+uncalibrated probability oracles. Relevant research patterns:
+
+- Retrieval + aggregation improves LLM forecasting over zero-shot (`Approaching Human-Level Forecasting with Language Models`,
+  https://arxiv.org/abs/2402.18563).
+- Live prediction-market evaluation needs timestamp-locked order books, news, and
+  execution simulation (`PolyBench`, https://arxiv.org/abs/2604.14199).
+- Accuracy is not enough; returns depend on execution, downside when wrong, and agreement
+  filters (`Beyond Accuracy: Can LLM Forecasters Profit on Prediction Markets?`,
+  https://openreview.net/pdf?id=TSA5kRUKZv).
+- LLM confidence is often miscalibrated and domain-sensitive; apply posterior gates and
+  calibration checks instead of trusting stated confidence (`KalshiBench`,
+  https://arxiv.org/abs/2512.16030).
+
+The pipelines are multi-sport (NBA/NHL/MLB/World Cup verified live). They are context and
+model helpers, not gates before PM/HL pricing. MLB notes: props
 include one-sided "milestone" quotes (single odds, no under side) — the pipeline skips
 these with a visible count; do NOT model them by hand (a single quote cannot be
 de-vigged). MLB pitcher props project off outs recorded, batter props off plate
@@ -199,11 +357,11 @@ tournament has no completed-game form — game_slate flags `no_form_model` and s
 odds-only views.
 
 One command: fetches props + complete paginated game logs + team pace/defense + injuries,
-models with proper distributions and de-vigged book probabilities, and prints an
+models with proper distributions and optional book-context probabilities, and prints an
 `ACTIONABLE` / `WATCH` (flagged) / `EXCLUDED` (no joinable data) table; writes
 `prop_slate_<game>.csv/.json` artifacts. Output fields per pick: `model_p`, `book_p`,
-`book_edge`, `book_ev`, `kelly`, `proj`, `n`, `flags`. `book_*` numbers are vs the de-vigged
-SPORTSBOOK odds — informational; the executable stage is
+`book_edge`, `book_ev`, `kelly`, `proj`, `n`, `flags`. `book_*` numbers are vs optional
+non-executable sportsbook context — informational; the executable stage is
 `sports_props.market_edge(pick.model_p, polymarket_price)` against a matching Polymarket market.
 
 For custom analysis the pipeline doesn't cover (matchup deep-dives, soccer xG, cross-game
@@ -233,6 +391,16 @@ asyncio.run(main())
 `provider_catalog()`, `backtest_state(action=..., run_id=...)` — all async. Conventions: bulk
 arrays over per-player loops; bounded lookbacks (a season, not all history); big tables go to
 `.wayfinder_runs/sports/` artifacts (return the paths), summaries go in the response.
+
+Local sports scripts are optional accelerators, not blockers. If a script or direct
+`SPORTS_CLIENT` call fails with auth/config errors (`401`, `403`, missing key/config,
+provider entitlement), do not retry or defer. Mark the model artifact as
+`script_auth_unavailable`, use the already gathered MCP snapshots/PM/HL boards, and produce
+a final answer with lower confidence plus explicit `missingPathFields` /
+`missingModelArtifact`. For outrights/path markets, still return an `eventStatePack` from
+known participants/current state/executable PM/HL markets even when `futures_slate` or
+sportsbook futures fail auth. Never turn a script-auth failure into a checkpoint or
+follow-up.
 
 Hard rules for prop scoring scripts (learned from real runs):
 - Use `sports_props` for the math — `devig_two_way` (never compare against raw vigged implied

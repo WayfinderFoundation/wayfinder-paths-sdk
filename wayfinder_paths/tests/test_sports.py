@@ -352,18 +352,21 @@ def test_sports_subagent_prompt_states_key_rules() -> None:
 
 
 def test_dislocation_adjudication_wired_across_agents() -> None:
-    """The posterior flow: primary hard rule, research book-fair card, doctrine prior."""
+    """The posterior flow: primary routes to skill; skill/research preserve doctrine."""
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
-    assert "Dislocation adjudication (HARD RULE)" in primary
-    assert "what explains the cheap side?" in primary
+    assert "/using-sports-data" in primary
+    assert "adjudicate dislocations before calling value" in primary
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+    assert "Dislocation rule" in skill
+    assert "what explains the cheap side?" in skill
+    assert "capped evidence card" in skill
     research = (REPO / ".opencode" / "agents" / "wayfinder-research.md").read_text(
         "utf-8"
     )
     assert "book_fair_evidence_card" in research
     assert "alreadyPriced" in research  # double-counting guard
-    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
-    # prior doctrine: executable price is the prior; book enters as an evidence card
-    assert "capped evidence card" in sports
 
 
 def test_delegators_describe_sports_capabilities() -> None:
@@ -400,7 +403,6 @@ def test_opencode_json_registers_sports_perms() -> None:
 
 def test_observed_failure_modes_are_ruled_out_in_prompts() -> None:
     """Each needle pins a rule added after a specific live failure."""
-    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
         "utf-8"
     )
@@ -409,8 +411,7 @@ def test_observed_failure_modes_are_ruled_out_in_prompts() -> None:
     )
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
     # sub-threshold gaps are noise, never edge (a live run called one '3-5pp too rich')
-    assert "VENUE NOISE" in primary and "lean within noise" in primary
-    assert "VENUE NOISE" in skill
+    assert "VENUE NOISE" in skill and "lean within noise" in skill
     # exact helper kwargs (a live research pass TypeError'd on bid=/ask=)
     assert "yes_bid=" in research and "implied_prior_from_quote(yes_bid=" in research
     # sport slug wrong-guess guidance (a live run tried fifa/fiba)
@@ -421,8 +422,13 @@ def test_observed_failure_modes_are_ruled_out_in_prompts() -> None:
 def test_round2_eval_losses_are_ruled_out_in_prompts() -> None:
     """Round-2 eval losses: numbers summarized away (NBA) and ask-instead-of-act (q2/q3)."""
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
-    assert "Show the numbers (composition rule)" in primary
-    assert "Finish the method in-session (autonomy rule)" in primary
+    assert "Show the numbers" in primary
+    assert "finish the executable-venue check" in primary
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+    assert "Composition and autonomy rules" in skill
+    assert "Finish the executable-venue check" in skill
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
     assert "Include the rendered table itself" in sports
 
@@ -443,12 +449,12 @@ def test_executable_board_enumeration_is_wired() -> None:
     """A user caught both eval arms ignoring Polymarket's 26-market per-game board
     while concluding 'nothing executable'."""
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
-    assert "Enumerate the executable BOARD" in primary
-    assert "mlb-lad-cws-2026-06-12" in primary  # the slug pattern, by example
+    assert "enumerate whole boards" in primary
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
         "utf-8"
     )
     assert "Executable board rule" in skill and "alt_lines" in skill
+    assert "mlb-lad-cws-2026-06-12" in skill  # the slug pattern, by example
 
 
 def test_executable_first_funnel_is_wired() -> None:
@@ -459,7 +465,7 @@ def test_executable_first_funnel_is_wired() -> None:
     assert "DEEP-DIVE each survivor" in sports
     assert "answer IS the annotated board" in sports
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
-    assert "Betting questions START from the executable boards" in primary
+    assert "enumerate executable boards first" in primary
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
         "utf-8"
     )
@@ -470,5 +476,335 @@ def test_utc_boundary_game_disambiguation_rule() -> None:
     """Round-4 eval loss: two same-matchup games under one UTC date filter were
     conflated — live odds of one vs the pre-game board of the other."""
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
-    assert "UTC-boundary trap" in primary
-    assert "NEVER mix one game's live book odds" in primary
+    assert "UTC-boundary game" in primary
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+    assert "UTC-boundary trap" in skill
+    assert "NEVER mix one game's live book odds" in skill
+
+
+def test_path_event_market_workflow_lives_in_sports_skill() -> None:
+    """Keep path-dependent sports workflow out of the primary prompt boilerplate."""
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    quant = (REPO / ".opencode" / "agents" / "wayfinder-quant.md").read_text("utf-8")
+    research = (REPO / ".opencode" / "agents" / "wayfinder-research.md").read_text(
+        "utf-8"
+    )
+
+    assert "/using-sports-data" in primary
+    assert "minimum complete workflow" not in primary
+    assert "poetry run python -m wayfinder_paths.quant.event_sim" not in primary
+    assert "Path-dependent event markets" in skill
+    assert "wayfinder_paths.quant.event_sim" in skill
+    assert "custom simulator" in skill
+    assert "clean_unplayed" in skill and "post_result_stale" in skill
+    assert "eventStatePack" in sports and "missingPathFields" in sports
+    assert "simulationPack" in quant and "NEEDS_MORE_STATE" in quant
+    assert "evidence cards only" in research
+
+
+def test_path_event_market_target_outcomes_are_wired() -> None:
+    """Anti-overfit guard: path markets can be promotion/reach/stage markets,
+    not just trophy winner markets."""
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    quant = (REPO / ".opencode" / "agents" / "wayfinder-quant.md").read_text("utf-8")
+
+    for needle in ("champion", "slot", "reach_match", "match_winner"):
+        assert needle in skill
+        assert needle in quant
+    assert "winner-take-all overfitting" in skill
+    assert "promotion/relegation" in skill
+    assert "target outcome" in sports
+
+
+def test_path_field_scans_require_full_board_before_drilldown() -> None:
+    """GPT-5.5 eval failure: the new agent found a couple of executable order
+    books, but failed to answer the requested full trophy-market scan."""
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+
+    for needle in (
+        "annotated board before",
+        "board coverage counts",
+        "ranked top-candidate table",
+        "path-model status",
+        "Never finish with only one or two selected order books",
+    ):
+        assert needle in skill
+
+
+def test_path_markets_cannot_defer_current_simulation() -> None:
+    """GPT-5.5 eval gap: a better field scan still deferred path simulation
+    because the tournament was early. Path markets need current-state math now."""
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+
+    for needle in (
+        "Run the path layer now",
+        "Do not defer",
+        "pathAssumption",
+        "missingPathFields",
+        "incomplete for a path market",
+    ):
+        assert needle in skill
+
+
+def test_default_sports_eval_questions_cover_current_battery() -> None:
+    eval_script = (REPO / "scripts" / "eval_sports_ab.sh").read_text("utf-8")
+
+    for needle in (
+        "match markets, group winners, and who will win the trophy",
+        "Saudi Arabia, Austria, and Jordan",
+        "moneyline and estimate fair spreads and point/goal totals",
+        "PM/HL as the executable betting surface",
+        "creative supporting data beyond just the World Cup dataset",
+        "provider sportsbook odds as optional context only",
+        "Melissa Mullins vs Bia Mesquita",
+        "do not invent odds, stats, or a recommendation",
+    ):
+        assert needle in eval_script
+
+    assert "Canada vs Bosnia" not in eval_script
+
+
+def test_sports_eval_judge_scores_unsupported_and_estimated_lines() -> None:
+    judge = (REPO / "scripts" / "eval_sports_ab_judge.md").read_text("utf-8")
+
+    for needle in (
+        "Unsupported sports/data trick questions",
+        "reporting unavailable coverage",
+        "invented fight odds",
+        "Estimated spreads/totals",
+        "separated from executable PM/HL lines",
+        "point/goal totals",
+    ):
+        assert needle in judge
+
+
+def test_sports_eval_judge_rewards_executable_market_math_not_sportsbook_gates() -> None:
+    judge = (REPO / "scripts" / "eval_sports_ab_judge.md").read_text("utf-8")
+
+    for needle in (
+        "Executable market math",
+        "PM/HL order-book prices are the executable surface",
+        "preserve multi-outcome mappings",
+        "sportsbook context is used",
+        "not required",
+        "sportsbook_context_optional",
+        "executable_market_math",
+    ):
+        assert needle in judge
+
+    assert "De-vig correctness" not in judge
+    assert "sportsbook_vendors" not in judge
+
+
+def test_sports_eval_harness_rejects_partial_handoff_answers() -> None:
+    eval_script = (REPO / "scripts" / "eval_sports_ab.sh").read_text("utf-8")
+    eval_script_lower = eval_script.lower()
+
+    for needle in (
+        "validate_harvested_answer",
+        "extract_final_from_log",
+        "DB harvest invalid",
+        "FINAL ANSWER",
+        "checkpoint/handoff answer",
+        "Continue if you have next steps",
+        "EVAL_IDLE_TIMEOUT",
+        "idle timeout observed",
+        "EVAL_ONLY_INDEXES",
+        "Reserve one call for current",
+        "generous limit",
+        "home/draw/away",
+        "first non-skill action",
+        "Do not use\nprogress-only headings",
+        "Critical Context",
+        "final answer observed before checkpoint marker",
+        "LIKE '%final answer%'",
+    ):
+        assert needle in eval_script
+    assert "use at most 8 external tool calls" in eval_script_lower
+
+
+def test_sports_skill_requires_exact_market_hydration_and_bounded_scans() -> None:
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+
+    for needle in (
+        "Exact-market hydration rule",
+        "never conclude \"no",
+        "immediately hydrate it with `get_event`",
+        "bounded fallback queries",
+        "each competitor/team surname",
+        "same-card/same-date",
+        "truncation-prone discovery only",
+        "not negative proof",
+        "still search the direct matchup on PM",
+        "Under a hard tool budget",
+        "cap primary-agent collection at **eight external calls**",
+        "Reserve one\ncall for current state/results",
+        "generous `limit`",
+        "Prioritize hydrating or directly using group boards",
+        "search_surfaced_unhydrated",
+        "World Cup: `worldcup`, not `soccer`",
+        "Missing category coverage is a finding",
+        "rather than checkpointing",
+    ):
+        assert needle in skill
+
+    assert "Do not call" in skill
+    assert "`mid_prices`" in skill
+    assert "every encoded outcome in a large field" in skill.replace("\n", " ")
+
+
+def test_primary_agent_has_enough_steps_for_broad_sports_scans() -> None:
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+
+    assert "steps: 32" in primary
+
+
+def test_primary_routes_broad_sports_scans_to_worker() -> None:
+    """Observed q1 failure: the primary spent its budget enumerating venues and
+    checkpointed before synthesis. Broad scans should be worker-first."""
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+
+    for needle in (
+        "Delegate first for broad sports scans",
+        "first non-skill action",
+        "annotated board / `eventStatePack`",
+        "do not spend the primary run enumerating every venue outcome",
+    ):
+        assert needle in primary
+
+    for needle in (
+        "For broad multi-category scans",
+        "coverage counts by executable venue/category",
+        "`missingModelArtifact`",
+        "instead of a progress checkpoint",
+        "Never return a progress checkpoint",
+    ):
+        assert needle in sports
+
+
+def test_sports_worker_hyperliquid_tool_contract_is_explicit() -> None:
+    """Observed q1 failure: the worker passed an unsupported Hyperliquid filter
+    and then stalled. Keep the read-only HL signatures explicit."""
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+
+    for needle in (
+        "You have seven tools",
+        'wayfinder_hyperliquid_search_market(query="world cup", limit=15)',
+        "Do not pass extra filters such as `market_type`",
+        "plain text `query` + `limit`",
+        "shortlisted `#...` assets",
+        "never infer paired asset ids",
+    ):
+        assert needle in sports
+
+    for text in (primary, skill):
+        assert "plain text `query` + `limit`" in text
+        assert "do not pass extra filters such as `market_type`" in text.lower()
+
+    assert '`market_type="hip4"`' not in sports
+
+
+def test_broad_scan_budget_reserves_state_and_unhydrated_coverage() -> None:
+    """Observed q1 loss: the answer called surfaced group/match markets unavailable
+    and skipped current World Cup state. The bounded plan must preserve both."""
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+
+    for text in (skill, sports):
+        assert "search_surfaced_unhydrated" in text
+        assert "worldcup" in text
+
+    assert "candidate coverage to surface multiple event slugs" in skill
+    assert "one for match-market mids" in skill
+    assert "Never output a progress checkpoint" in skill
+    assert "Critical Context" in skill
+    assert "Do not classify a category as absent" in sports
+
+
+def test_multi_outcome_sports_boards_are_not_binary_collapsed() -> None:
+    """Observed q1 loss: HL match markets were treated as binary favorite/no-favorite
+    markets even though soccer boards include an explicit draw outcome."""
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+
+    for text in (skill, sports):
+        assert "home/draw/away" in text
+        assert "draw is" in text.lower() or "three-way soccer board" in text.lower()
+        assert (
+            "never infer paired asset ids" in text.lower()
+            or "do not derive sibling asset ids" in text.lower()
+        )
+
+    assert "buy No on the favorite" in skill
+
+
+def test_sports_skill_does_not_block_on_script_auth_failures() -> None:
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+
+    for needle in (
+        "Local sports scripts are optional accelerators, not blockers",
+        "script_auth_unavailable",
+        "missingModelArtifact",
+        "Never turn a script-auth failure into a checkpoint",
+        "still return an `eventStatePack`",
+        "`futures_slate` or\nsportsbook futures fail auth",
+    ):
+        assert needle in skill
+
+
+def test_sports_prompts_do_not_require_sportsbook_futures_for_event_state_pack() -> None:
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    quant = (REPO / ".opencode" / "agents" / "wayfinder-quant.md").read_text("utf-8")
+
+    for text in (skill, sports):
+        assert "PM/HL" in text
+        assert "not block this pack" in text or "still return the pack" in text
+        assert "script_auth_unavailable" in text
+        assert "missingModelArtifact" in text
+
+    assert "do not treat sportsbook odds in the pack as executable or required" in quant
+    assert "MUST run the matching pipeline FIRST" not in sports
+
+
+def test_sports_skill_has_llm_prediction_market_research_stubs() -> None:
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+    for needle in (
+        "LLM forecasting / prediction-market notes",
+        "Approaching Human-Level Forecasting",
+        "PolyBench",
+        "Beyond Accuracy",
+        "KalshiBench",
+        "calibration checks",
+    ):
+        assert needle in skill

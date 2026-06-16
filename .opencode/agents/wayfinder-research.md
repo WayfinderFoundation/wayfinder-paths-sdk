@@ -66,6 +66,14 @@ How to delegate well:
 
 Do not delegate to `wayfinder-sports` for non-sports questions, and do not let a sports detour expand a focused crypto/DeFi research task.
 
+### Event-market qualitative evidence
+
+For sports/event outrights where the primary/quant layer has a path simulation, do not
+replace it with a freehand probability. Return evidence cards only: fresh
+injury/availability, lineup/roster, travel/rest/weather/venue, tactical, rule/bracket,
+post-line timing, or market-structure evidence. Include `ratingAdjustment` suggestions
+only when the rationale is explicit. Mark public pre-line facts as likely already priced.
+
 ## Tools and Sources
 
 Research MCP surface:
