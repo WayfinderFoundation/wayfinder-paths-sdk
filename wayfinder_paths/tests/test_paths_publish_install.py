@@ -19,6 +19,27 @@ from wayfinder_paths.paths.doctor import DoctorIssue, PathDoctorReport
 from wayfinder_paths.paths.scaffold import init_path
 
 
+def test_paths_api_client_defaults_avoid_slow_ipv6_fallback(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+
+    monkeypatch.setattr("wayfinder_paths.paths.client.httpx.Client", FakeClient)
+
+    client = PathsApiClient(api_base_url="https://paths.example")
+
+    client_kwargs = captured["client_kwargs"]
+    timeout = client_kwargs["timeout"]
+    assert client.base_url == "https://paths.example"
+    assert timeout.connect == 10.0
+    assert timeout.read == 60.0
+    assert timeout.write == 300.0
+    assert timeout.pool == 5.0
+    assert "transport" not in client_kwargs
+
+
 def test_path_publish_uploads_rendered_skill_exports_and_bond_metadata(
     tmp_path: Path, monkeypatch
 ):

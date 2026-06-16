@@ -24,7 +24,9 @@ class PathsApiClient:
     ):
         base = (api_base_url or get_paths_api_base_url()).rstrip("/")
         self.base_url = base
-        self._client = client or httpx.Client(timeout=httpx.Timeout(60))
+        self._client = client or httpx.Client(
+            timeout=httpx.Timeout(connect=10.0, read=60.0, write=300.0, pool=5.0),
+        )
 
     def _headers(self) -> dict[str, str]:
         headers = {"Accept": "application/json"}
