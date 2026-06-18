@@ -88,9 +88,27 @@ def test_mcp_catalog_exposes_shells_tools_in_opencode(monkeypatch) -> None:
 
 def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     primary = _agent_permission("wayfinder")
+    planner = _agent_permission("wayfinder-planner")
     research = _agent_permission("wayfinder-research")
     quant = _agent_permission("wayfinder-quant")
     visual = _agent_permission("wayfinder-visual")
+
+    assert primary["task"]["wayfinder-planner"] == "allow"
+
+    assert planner["*"] == "deny"
+    assert planner["task"]["*"] == "deny"
+    assert planner["question"] == "deny"
+    assert planner["todowrite"] == "deny"
+    assert planner["edit"] == "deny"
+    assert planner["bash"] == "deny"
+    assert planner["websearch"] == "deny"
+    assert planner["webfetch"] == "deny"
+    assert planner["wayfinder_*"] == "deny"
+    assert planner["read"] == "allow"
+    assert planner["grep"] == "allow"
+    assert planner["glob"] == "allow"
+    assert planner["list"] == "allow"
+    assert "write" not in planner
 
     assert primary["wayfinder_*"] == "deny"
     assert primary["wayfinder_core_*"] == "allow"
@@ -293,6 +311,11 @@ def test_opencode_agents_route_research_and_polymarket_tasks() -> None:
     primary = _agent_text("wayfinder")
     research = _agent_text("wayfinder-research")
 
+    assert "Internal planning pass" in primary
+    assert "wayfinder-planner" in primary
+    assert "not as a hard gate" in primary
+    assert "Skip `wayfinder-planner` for simple reads" in primary
+
     assert "1-2 web calls" in primary
     assert "Delegate only when the task needs multi-source synthesis" in primary
     assert "exact dates and windows" in primary
@@ -350,17 +373,17 @@ def test_opencode_agents_route_research_and_polymarket_tasks() -> None:
 
 def test_market_intelligence_agent_prompt_contracts() -> None:
     primary = _agent_text("wayfinder")
+    planner = _agent_text("wayfinder-planner")
     research = _agent_text("wayfinder-research")
     quant = _agent_text("wayfinder-quant")
 
     assert _agent_frontmatter("wayfinder-research")["temperature"] == 0.1
     assert _agent_frontmatter("wayfinder-quant")["temperature"] == 0.1
 
-    assert "executable market/order-book distribution as the prior" in primary
-    assert "Market Intelligence Modes" in primary
-    assert "quote/snapshot updates" in primary
-    assert "audit_only" in primary
-    assert "relatedLogIds" in primary
+    assert "fresh executable pricing as the prior" in primary
+    assert "quote/snapshot updates" in planner
+    assert "audit_only" in planner
+    assert "relatedLogIds" in planner
     assert "exact tool inputs" in primary
     assert "Balance/gas source of truth" in primary
     assert 'core_get_wallets(label="...")' in primary
@@ -373,16 +396,15 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
     assert "buy_amount_pusd" in primary
     assert "sell_amount_shares" in primary
     assert "executionSummary.sharesFilled" in primary
-    assert "Market Research / Thesis Mode" in primary
-    assert "DeFi/yield, basis/carry" in primary
-    assert "Only require `perpSide` and `positionIntent`" in primary
-    assert "best stable APY/rates/yield" in primary
+    assert "wayfinder-research" in planner
+    assert "stable yield/rates" in planner
+    assert "positionIntent" in planner
     assert (
         'research_search_lending(sort="combined_net_supply_apr_now", basis="USD", limit="25")'
-        in primary
+        in planner
     )
-    assert 'research_get_basis_apy_sources(basis_symbol="USD", limit="100")' in primary
-    assert "Do not treat `YIELD_TOKEN` as simple stable lending" in primary
+    assert 'research_get_basis_apy_sources(basis_symbol="USD", limit="100")' in planner
+    assert "Treat `YIELD_TOKEN` as vault/LP/receipt-token yield" in planner
     assert "Token/Perp Research Mode" not in primary
     assert "thesisPieces" not in primary
     assert "Known Context Handoffs" in primary
@@ -394,6 +416,9 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
     assert "resolutionRef" in primary
     assert "edge mode" in primary
     assert "mark_to_market_edge" in primary
+    assert "Single Non-Sports Prediction Market Edge" in planner
+    assert "World Cup Broad Outright Scan" in planner
+    assert "Trade Setup / Short Candidate" in planner
 
     assert "Prediction Market Forecast Mode" in research
     assert "Use the executable market/order-book distribution as the prior" in research
@@ -563,11 +588,50 @@ def test_stable_apy_research_and_adapter_docs_are_current() -> None:
 
 
 def test_hidden_opencode_subagents_do_not_emit_user_suggestions() -> None:
-    for agent in ("wayfinder-research", "wayfinder-visual", "wayfinder-quant"):
+    for agent in (
+        "wayfinder-planner",
+        "wayfinder-research",
+        "wayfinder-visual",
+        "wayfinder-quant",
+    ):
         text = _agent_text(agent)
 
         assert "Do not emit `<userSuggestions>`" in text
         assert "do not call `userSuggestions`" in text
+
+
+def test_wayfinder_planner_is_hidden_advisory_and_non_mutating() -> None:
+    frontmatter = _agent_frontmatter("wayfinder-planner")
+    permission = frontmatter["permission"]
+    text = _agent_text("wayfinder-planner")
+
+    assert frontmatter["mode"] == "subagent"
+    assert frontmatter["hidden"] is True
+    assert frontmatter["steps"] == 8
+    assert frontmatter["temperature"] == 0.1
+    assert permission["*"] == "deny"
+    assert permission["task"]["*"] == "deny"
+    assert permission["question"] == "deny"
+    assert permission["edit"] == "deny"
+    assert permission["bash"] == "deny"
+    assert permission["wayfinder_*"] == "deny"
+    assert permission["read"] == "allow"
+    assert permission["grep"] == "allow"
+    assert permission["glob"] == "allow"
+    assert permission["list"] == "allow"
+    assert "write" not in permission
+
+    assert "Return one JSON object only" in text
+    assert '"recommendedFlow"' in text
+    assert '"knownContextToPass"' in text
+    assert '"packStrategy"' in text
+    assert '"avoidOverkill"' in text
+    assert '"stopConditions"' in text
+    assert "do not let it delay a direct answer" not in text
+    assert "You may inspect local prompt/skill files" in text
+    assert "Do not inspect secrets or `.env` files" in text
+    assert "Simple Sports Schedule" in text
+    assert "Specific Game Lines" in text
 
 
 def test_hidden_analysis_subagents_can_write_bounded_artifacts() -> None:

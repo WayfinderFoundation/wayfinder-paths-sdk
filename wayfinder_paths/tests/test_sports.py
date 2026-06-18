@@ -254,6 +254,7 @@ def _frontmatter(path: Path) -> dict:
 def test_primary_agent_gets_reads_not_facade() -> None:
     fm = _frontmatter(REPO / ".opencode" / "agents" / "wayfinder.md")
     perm = fm["permission"]
+    assert perm["task"]["wayfinder-planner"] == "allow"
     assert perm["task"]["wayfinder-sports"] == "allow"
     assert perm["wayfinder_sports_snapshot"] == "allow"
     assert perm["wayfinder_sports_backtest_state"] == "allow"
@@ -371,10 +372,18 @@ def test_dislocation_adjudication_wired_across_agents() -> None:
 
 def test_delegators_describe_sports_capabilities() -> None:
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    planner = (REPO / ".opencode" / "agents" / "wayfinder-planner.md").read_text(
+        "utf-8"
+    )
     sports_section = primary.split("### wayfinder-sports", 1)[1]
-    for needle in ("Data analysis & modelling", "futures", "xG", "modelling"):
+    for needle in ("futures", "xG", "custom sports modelling"):
         assert needle in sports_section, f"primary sports overview missing: {needle}"
+    assert "Data analysis & modelling" not in sports_section
+    assert "Sports edge scans" not in sports_section
     assert "most complete for NBA" not in primary  # stale capability claim
+
+    for needle in ("sports edge scans", "eventStatePack", "final fair-value range"):
+        assert needle in planner, f"planner sports routing missing: {needle}"
 
     research = (REPO / ".opencode" / "agents" / "wayfinder-research.md").read_text(
         "utf-8"
@@ -422,8 +431,8 @@ def test_observed_failure_modes_are_ruled_out_in_prompts() -> None:
 def test_round2_eval_losses_are_ruled_out_in_prompts() -> None:
     """Round-2 eval losses: numbers summarized away (NBA) and ask-instead-of-act (q2/q3)."""
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
-    assert "Show the numbers" in primary
-    assert "finish the executable-venue check" in primary
+    assert "show the numbers" in primary
+    assert "finish the\nmethod in-session" in primary
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
         "utf-8"
     )
@@ -461,11 +470,15 @@ def test_executable_first_funnel_is_wired() -> None:
     """User directive: start from the PM+HL boards and layer analysis on; deep-dive
     survivors with whatever data sharpens the number."""
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    planner = (REPO / ".opencode" / "agents" / "wayfinder-planner.md").read_text(
+        "utf-8"
+    )
     assert "ENUMERATE THE BOARDS (always step one)" in sports
     assert "DEEP-DIVE each survivor" in sports
     assert "answer IS the annotated board" in sports
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
-    assert "enumerate executable boards first" in primary
+    assert "enumerate whole boards on PM/HL" in primary
+    assert "PM/HL surfacePack" in planner
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
         "utf-8"
     )
@@ -688,17 +701,34 @@ def test_primary_routes_broad_sports_scans_through_ttl_surface_pack() -> None:
     checkpointed before synthesis. Broad scans should share one TTL'd odds
     surface before sports/quant work instead of making every worker re-fetch."""
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    planner = (REPO / ".opencode" / "agents" / "wayfinder-planner.md").read_text(
+        "utf-8"
+    )
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
     quant = (REPO / ".opencode" / "agents" / "wayfinder-quant.md").read_text("utf-8")
 
     for needle in (
-        "Surface first, then delegate for broad sports scans",
-        "first stage is executable-surface discovery or reuse",
-        "TTL'd `surfacePack`",
+        "For broad sports scans",
+        "ask `wayfinder-planner` for the workflow",
+        "one shared executable PM/HL surface pack",
         "surfacePackRefs",
-        "do not spend the primary run enumerating every venue outcome",
+        "Do not make every subagent re-fetch the same odds board",
     ):
         assert needle in primary
+
+    for needle in (
+        "Broad edge scans across sports",
+        "Prefer one shared `surfacePack`",
+        "sports edge scans",
+        "`wayfinder-sports` for modelling/context",
+        "`wayfinder-quant` only for decision/validation",
+        "Always include explicit stop conditions",
+        "ttlSeconds: 60",
+        "ttlSeconds: 30",
+        "ttlSeconds: 300",
+        "do not enumerate every outcome in the primary",
+    ):
+        assert needle in planner
 
     for needle in (
         "For broad multi-category scans",
@@ -721,19 +751,21 @@ def test_primary_routes_broad_sports_scans_through_ttl_surface_pack() -> None:
 
 def test_sports_surface_pack_ttl_and_resume_contract_is_explicit() -> None:
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    planner = (REPO / ".opencode" / "agents" / "wayfinder-planner.md").read_text(
+        "utf-8"
+    )
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
         "utf-8"
     )
 
-    for text in (primary, sports, skill):
+    for text in (planner, sports, skill):
         assert "ttlSeconds: 60" in text
         assert "ttlSeconds: 30" in text
         assert "surfacePackRefs" in text
 
     for needle in (
-        "maximum steps reached",
-        "resume/delegate the next missing step",
+        "resume the next missing step",
         "incomplete_fair_value",
         "not `BUY`",
     ):
@@ -845,11 +877,14 @@ def test_path_market_answers_require_multi_model_distillation() -> None:
         "utf-8"
     )
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    planner = (REPO / ".opencode" / "agents" / "wayfinder-planner.md").read_text(
+        "utf-8"
+    )
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
     quant = (REPO / ".opencode" / "agents" / "wayfinder-quant.md").read_text("utf-8")
     judge = (REPO / "scripts" / "eval_sports_ab_judge.md").read_text("utf-8")
 
-    for text in (skill, primary, sports, quant, judge):
+    for text in (skill, planner, sports, quant, judge):
         assert (
             "latest sim" in text
             or "latest simulator" in text
@@ -857,9 +892,11 @@ def test_path_market_answers_require_multi_model_distillation() -> None:
         )
         assert "final fair value" in text
 
-    for text in (skill, primary, sports):
+    for text in (skill, planner, sports):
         assert "PM/HL prior" in text or "PM/HL priors" in text
         assert "qualitative evidence" in text
+
+    assert "workflow selection lives in `wayfinder-planner`" in primary
 
     assert "diagnostic_only" in skill
     assert "approx_bracket" in skill
