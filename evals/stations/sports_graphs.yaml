@@ -1,0 +1,67 @@
+name: sports_graphs
+description: Production-shaped OpenCode rollouts for market and sports graph/prompt variants.
+candidate_model: wayfinder/deepseek-v4-pro
+judge_model: openai/gpt-5.5
+judge_fallback_model: wayfinder/deepseek-v4-pro
+rubric: scripts/eval_sports_ab_judge.md
+output_dir: .wayfinder_runs/eval_station/sports_graphs
+
+questions:
+  - id: anthropic_openai_ipo_edge
+    text: >-
+      do we think openai or anthropic will ipo first?
+  - id: hype_spcx_short_setup
+    text: >-
+      Hype and SPCX have going crazy, is not a good opportunity to short? if so
+      what might the position look like with stop losses and take profits, if not
+      what would a good entry be for both?
+  - id: world_cup_countries_edge
+    text: >-
+      Lets take a look at the the coutnries to win the world cup and see if any
+      are mis priced - does any edge exist right now?
+  - id: rays_nationals_game_lines
+    text: >-
+      lets take a look at the rays nationls game tomorrow - who will win, ar
+      ethey priced accordingly? are there any game lines worth betting?
+
+variants:
+  - id: pre_sports_baseline
+    description: Baseline top-level prompt before sports-agent routing.
+    overlays:
+      - path: .opencode/agents/wayfinder.md
+        content_from: .opencode/agents/wayfinder-baseline.md
+
+  - id: sports_current
+    description: Current working-tree graph and prompts.
+    overlays:
+      - path: .opencode/agents/wayfinder.md
+        content_from: evals/agent_overlays/sports_current/wayfinder.md
+      - path: .opencode/agents/wayfinder-sports.md
+        content_from: evals/agent_overlays/sports_current/wayfinder-sports.md
+      - path: .opencode/agents/wayfinder-research.md
+        content_from: evals/agent_overlays/sports_current/wayfinder-research.md
+      - path: .opencode/agents/wayfinder-quant.md
+        content_from: evals/agent_overlays/sports_current/wayfinder-quant.md
+      - path: .claude/skills/using-sports-data/SKILL.md
+        content_from: evals/agent_overlays/sports_current/using-sports-data.SKILL.md
+
+  - id: sports_workpack_challenger
+    description: >-
+      WorkPack challenger: current sports graph plus generic persisted packs, sports
+      modes, quant decision/validation, and rehydrate-before-action gates.
+    overlays:
+      - path: .opencode/agents/wayfinder.md
+        content_from: evals/agent_overlays/sports_workpack_challenger/wayfinder.md
+      - path: .opencode/agents/wayfinder-sports.md
+        content_from: evals/agent_overlays/sports_workpack_challenger/wayfinder-sports.md
+      - path: .opencode/agents/wayfinder-research.md
+        content_from: evals/agent_overlays/sports_workpack_challenger/wayfinder-research.md
+      - path: .opencode/agents/wayfinder-quant.md
+        content_from: evals/agent_overlays/sports_workpack_challenger/wayfinder-quant.md
+      - path: .claude/skills/using-sports-data/SKILL.md
+        content_from: evals/agent_overlays/sports_workpack_challenger/using-sports-data.SKILL.md
+
+judge_pairs:
+  - [pre_sports_baseline, sports_current]
+  - [sports_current, sports_workpack_challenger]
+  - [pre_sports_baseline, sports_workpack_challenger]

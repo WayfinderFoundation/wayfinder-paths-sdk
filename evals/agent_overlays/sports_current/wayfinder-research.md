@@ -289,7 +289,7 @@ For general market research findings, include only fields relevant to the market
 
 Every factual claim in `summary`, `keyFindings`, `marketFindings`, `verifiedMetrics`, and `announcements` must cite at least one source. Cite inline with `[sN]` matching `sources[].id` (e.g. "TVL is $2.1B [s1]").
 
-Each `sources` entry requires `id` (short handle: `s1`, `s2`, …), `title` (page title, X post author + topic, or dataset name), and `url` (canonical link, no tracking params). 
+Each `sources` entry requires `id` (short handle: `s1`, `s2`, …), `title` (page title, X post author + topic, or dataset name), and `url` (canonical link, no tracking params).
 
 Prefer primary sources — official docs, blogs, governance posts, exchange notices, X posts from verified protocol accounts.
 

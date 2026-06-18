@@ -285,6 +285,215 @@ def sports_posterior(
     }
 
 
+def model_fair_evidence_card(
+    model_p: float,
+    market_p: float,
+    *,
+    model_type: str,
+    trust: float = 0.55,
+    sample_size: int | None = None,
+    calibrated: bool = False,
+    oos_validated: bool = False,
+    thin_sample: bool = False,
+    market_implied: bool = False,
+    diagnostic_only: bool = False,
+    uncertainty_pp: float | None = None,
+) -> dict[str, Any]:
+    """Represent a sports model probability as capped evidence over the executable prior."""
+
+    trust_eff = float(trust)
+    if calibrated:
+        trust_eff *= 1.1
+    if oos_validated:
+        trust_eff *= 1.1
+    if thin_sample:
+        trust_eff *= 0.65
+    if market_implied:
+        trust_eff *= 0.50
+    if diagnostic_only:
+        trust_eff *= 0.0
+    if uncertainty_pp is not None and float(uncertainty_pp) > 8:
+        trust_eff *= 0.75
+    if sample_size is not None and int(sample_size) < 50:
+        trust_eff *= 0.75
+
+    dlogit = logit(float(model_p)) - logit(float(market_p))
+    return {
+        "claim": f"{model_type} model prices this at {float(model_p):.4f} vs market {float(market_p):.4f}.",
+        "direction": "for_yes" if dlogit > 0 else "against_yes",
+        "llr": trust_eff * abs(dlogit) / _BOOK_CARD_RESIDUAL,
+        "sourceQuality": "market_data",
+        "freshness": "fresh",
+        "independence": "partially_overlapping",
+        "alreadyPriced": "maybe",
+        "resolutionRelevance": "direct",
+        "rationale": (
+            f"model-vs-market log-odds gap {dlogit:+.3f} x effective trust "
+            f"{trust_eff:.2f}"
+        ),
+        "kind": "sports_model",
+        "modelType": model_type,
+        "diagnosticOnly": diagnostic_only,
+    }
+
+
+def simulation_evidence_card(
+    sim_p: float,
+    market_p: float,
+    *,
+    sim_type: str = "monte_carlo",
+    n_sims: int | None = None,
+    path_assumption: str | None = None,
+    rating_source: str | None = None,
+    trust: float = 0.6,
+    diagnostic_only: bool = False,
+    approx_bracket: bool = False,
+) -> dict[str, Any]:
+    """Represent Monte Carlo/path simulation output as capped evidence."""
+
+    trust_eff = float(trust)
+    if n_sims is not None and int(n_sims) < 5000:
+        trust_eff *= 0.75
+    if approx_bracket:
+        trust_eff *= 0.65
+    if diagnostic_only:
+        trust_eff *= 0.0
+    dlogit = logit(float(sim_p)) - logit(float(market_p))
+    return {
+        "claim": f"{sim_type} simulation prices this at {float(sim_p):.4f} vs market {float(market_p):.4f}.",
+        "direction": "for_yes" if dlogit > 0 else "against_yes",
+        "llr": trust_eff * abs(dlogit) / _BOOK_CARD_RESIDUAL,
+        "sourceQuality": "market_data",
+        "freshness": "fresh",
+        "independence": "partially_overlapping",
+        "alreadyPriced": "maybe",
+        "resolutionRelevance": "direct",
+        "rationale": (
+            f"simulation log-odds gap {dlogit:+.3f} x effective trust {trust_eff:.2f}; "
+            f"path={path_assumption or 'unspecified'}, ratings={rating_source or 'unspecified'}"
+        ),
+        "kind": "sports_simulation",
+        "simType": sim_type,
+        "diagnosticOnly": diagnostic_only,
+        "approxBracket": approx_bracket,
+    }
+
+
+def posterior_from_packs(
+    *,
+    surface_pack: dict[str, Any],
+    analysis_pack: dict[str, Any],
+    context_pack: dict[str, Any] | None = None,
+    min_ev: float = 0.02,
+) -> dict[str, Any]:
+    """Build a decisionPack from sports surface/model/context WorkPacks."""
+
+    surface_rows = (surface_pack.get("payload") or {}).get("markets") or []
+    by_key: dict[str, dict[str, Any]] = {}
+    for row in surface_rows:
+        key = str(
+            row.get("participantId")
+            or row.get("participant_id")
+            or row.get("marketId")
+            or row.get("id")
+            or row.get("name")
+        )
+        by_key[key] = row
+
+    context_cards = []
+    if context_pack:
+        context_cards = (context_pack.get("payload") or {}).get("evidenceCards") or []
+
+    decisions = []
+    for model_row in (analysis_pack.get("payload") or {}).get("rows") or []:
+        key = str(
+            model_row.get("participant_id")
+            or model_row.get("participantId")
+            or model_row.get("marketId")
+            or model_row.get("id")
+            or model_row.get("name")
+        )
+        surface = by_key.get(key, {})
+        ask = surface.get("ask") or surface.get("entryPrice") or model_row.get("entryPrice")
+        bid = surface.get("bid")
+        market_p = (
+            (float(bid) + float(ask)) / 2.0
+            if bid is not None and ask is not None
+            else float(ask) if ask is not None
+            else surface.get("marketPrior")
+        )
+        model_p = (
+            model_row.get("modelP")
+            or model_row.get("probability")
+            or model_row.get("pBase")
+        )
+        if market_p is None or model_p is None:
+            decisions.append(
+                {
+                    **model_row,
+                    "decision": "WATCH",
+                    "skipReason": "missing_market_or_model_probability",
+                }
+            )
+            continue
+        cards = [
+            model_fair_evidence_card(
+                float(model_p),
+                float(market_p),
+                model_type=str((analysis_pack.get("payload") or {}).get("recipeId") or "sports_model"),
+                uncertainty_pp=(
+                    abs(float(model_row["pHigh"]) - float(model_row["pLow"])) * 100
+                    if model_row.get("pHigh") is not None and model_row.get("pLow") is not None
+                    else None
+                ),
+            )
+        ]
+        cards.extend(context_cards)
+        posterior = sports_posterior(
+            cards,
+            market_p=float(market_p),
+            yes_bid=float(bid) if bid is not None else None,
+            yes_ask=float(ask) if ask is not None else None,
+            min_ev=min_ev,
+        )
+        decisions.append(
+            {
+                **model_row,
+                "venue": surface.get("venue"),
+                "marketPrior": posterior["marketPrior"],
+                "entryPrice": posterior.get("entryYes"),
+                "pLow": posterior["pLow"],
+                "pBase": posterior["pBase"],
+                "pHigh": posterior["pHigh"],
+                "evYes": posterior["evYes"],
+                "evNo": posterior["evNo"],
+                "decision": posterior["decision"],
+                "posteriorLedger": posterior,
+            }
+        )
+
+    return {
+        "packType": "decisionPack",
+        "domain": "sports",
+        "intent": "sports_decision",
+        "stage": "decision",
+        "schemaVersion": "1.0",
+        "inputPacks": [
+            surface_pack.get("packId"),
+            analysis_pack.get("packId"),
+            *( [context_pack.get("packId")] if context_pack else [] ),
+        ],
+        "summary": "Sports posterior decisions from WorkPacks.",
+        "payload": {"rows": decisions},
+        "reusePolicy": {
+            "canReuseFor": ["final_answer"],
+            "mustRehydrateBefore": ["execute", "place_order", "recommend_buy"],
+            "ttlSeconds": 60,
+        },
+        "sensitivity": "public",
+    }
+
+
 # ── render ───────────────────────────────────────────────────────────────────
 
 

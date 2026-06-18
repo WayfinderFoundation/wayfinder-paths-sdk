@@ -123,7 +123,7 @@ def compact_market_candidate(
         and active is not False
         and closed is not True
     )
-    return {
+    candidate = {
         "slug": first_present(market, "slug", "marketSlug"),
         "eventSlug": event_slug(market) or event_slug_override,
         "question": first_present(market, "question", "title", "symbol"),
@@ -146,6 +146,9 @@ def compact_market_candidate(
         "acceptingOrders": accepting_orders,
         "closed": closed,
     }
+    if isinstance(market.get("_relevance"), dict):
+        candidate["relevance"] = market["_relevance"]
+    return candidate
 
 
 def compact_candidates(

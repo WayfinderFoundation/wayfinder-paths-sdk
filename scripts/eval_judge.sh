@@ -15,18 +15,18 @@ OUT="$REPO/.wayfinder_runs/evals"
 DB="$HOME/.local/share/opencode/opencode.db"
 OPENCODE="${OPENCODE_BIN:-$HOME/.opencode/bin/opencode}"
 # The judge prefers a stronger, DIFFERENT model than the arms (avoids self-preference
-# bias). The default needs an OpenAI provider most people won't have configured — so if
-# its credentials can't be resolved we fall back to a model everyone running this harness
-# already has (the same provider the arms use), with a warning, rather than failing.
-# Override either with JUDGE_MODEL / JUDGE_FALLBACK_MODEL.
+# bias). Default is GPT-5.5. Fallback is opt-in only for local/debug runs so evals do not
+# silently change judge quality.
 JUDGE_MODEL="${JUDGE_MODEL:-openai/gpt-5.5}"
 JUDGE_FALLBACK_MODEL="${JUDGE_FALLBACK_MODEL:-wayfinder/deepseek-v4-pro}"
-TIMEOUT="${JUDGE_TIMEOUT:-900}"
+JUDGE_ALLOW_FALLBACK="${JUDGE_ALLOW_FALLBACK:-0}"
+JUDGE_ATTEMPTS="${JUDGE_ATTEMPTS:-1}"
+TIMEOUT="${JUDGE_TIMEOUT:-}"
 
 # For an openai/* judge, resolve credentials from the wayfinder system config
 # (system.openai.*, env fallback) into the environment so opencode's OpenAI provider can
 # authenticate — single source of truth in the config, the key never touches a tracked
-# file or stdout. If no credentials are available, degrade to the fallback model.
+# file or stdout. If no credentials are available, fail unless fallback is explicit.
 if [[ "$JUDGE_MODEL" == openai/* ]]; then
   eval "$(cd "$REPO" && poetry run python - <<'PY' 2>/dev/null || true
 from wayfinder_paths.core.config import load_config, get_openai_credentials
@@ -40,10 +40,16 @@ if c["organization"]:
 PY
 )"
   if [ -z "${OPENAI_API_KEY:-}" ]; then
-    echo "WARN: $JUDGE_MODEL needs OpenAI credentials (system.openai.* or OPENAI_API_KEY)" \
-         "— none found; falling back to $JUDGE_FALLBACK_MODEL (grounded judge, validated to" \
-         "agree with GPT-5.5). Set JUDGE_MODEL to override." >&2
-    JUDGE_MODEL="$JUDGE_FALLBACK_MODEL"
+    if [ "$JUDGE_ALLOW_FALLBACK" = "1" ]; then
+      echo "WARN: $JUDGE_MODEL needs OpenAI credentials (system.openai.* or OPENAI_API_KEY)" \
+           "— none found; falling back to $JUDGE_FALLBACK_MODEL because" \
+           "JUDGE_ALLOW_FALLBACK=1." >&2
+      JUDGE_MODEL="$JUDGE_FALLBACK_MODEL"
+    else
+      echo "ERROR: $JUDGE_MODEL needs OpenAI credentials (system.openai.* or OPENAI_API_KEY)." \
+           "Set JUDGE_ALLOW_FALLBACK=1 only for local/debug fallback." >&2
+      exit 1
+    fi
   fi
 fi
 
@@ -61,11 +67,19 @@ PROMPT="$OUT/judge_prompt_$TAG.md"
 } > "$PROMPT"
 
 LOG="$OUT/judge_$TAG.log"
-for attempt in 1 2; do
-  (cd "$REPO" && timeout "$TIMEOUT" "$OPENCODE" run --agent wayfinder-eval-judge \
-    -m "$JUDGE_MODEL" "$(cat "$PROMPT")") > "$LOG" 2>&1 && break
-  echo "judge $TAG attempt $attempt failed — $( [ "$attempt" = 1 ] && echo retrying || echo giving up )" >&2
-  [ "$attempt" = 1 ] && sleep 30
+run_judge() {
+  if [ -n "$TIMEOUT" ]; then
+    (cd "$REPO" && timeout "$TIMEOUT" "$OPENCODE" run --agent wayfinder-eval-judge \
+      -m "$JUDGE_MODEL" "$(cat "$PROMPT")")
+  else
+    (cd "$REPO" && "$OPENCODE" run --agent wayfinder-eval-judge \
+      -m "$JUDGE_MODEL" "$(cat "$PROMPT")")
+  fi
+}
+for attempt in $(seq 1 "$JUDGE_ATTEMPTS"); do
+  run_judge > "$LOG" 2>&1 && break
+  echo "judge $TAG attempt $attempt failed — $( [ "$attempt" -lt "$JUDGE_ATTEMPTS" ] && echo retrying || echo giving up )" >&2
+  [ "$attempt" -lt "$JUDGE_ATTEMPTS" ] && sleep 30
 done
 
 python3 - "$TAG" "$LOG" "$DB" "$OUT" <<'PY'

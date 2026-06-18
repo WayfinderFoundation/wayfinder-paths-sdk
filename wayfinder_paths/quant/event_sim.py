@@ -58,6 +58,33 @@ from wayfinder_paths.quant.polymarket_edge import evidence_llr
 
 _ELO_LOGIT_SCALE = 400.0 / math.log(10.0)
 _VALID_EVIDENCE_DIRECTIONS = frozenset({"for_yes", "against_yes"})
+_EVIDENCE_DIRECTION_ALIASES = {
+    "for": "for_yes",
+    "yes": "for_yes",
+    "positive": "for_yes",
+    "bullish": "for_yes",
+    "sign_for": "for_yes",
+    "for_yes": "for_yes",
+    "against": "against_yes",
+    "no": "against_yes",
+    "negative": "against_yes",
+    "bearish": "against_yes",
+    "sign_against": "against_yes",
+    "against_yes": "against_yes",
+}
+
+
+def _normalize_evidence_direction(value: Any) -> str:
+    return _EVIDENCE_DIRECTION_ALIASES.get(str(value or "").strip().lower(), str(value or ""))
+
+
+def _normalize_evidence_card(card: Mapping[str, Any]) -> Mapping[str, Any]:
+    direction = _normalize_evidence_direction(card.get("direction"))
+    if direction == str(card.get("direction") or ""):
+        return card
+    normalized = dict(card)
+    normalized["direction"] = direction
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -198,7 +225,9 @@ def load_config(data: Mapping[str, Any]) -> SimulationConfig:
             rating=float(row.get("rating", 1500.0)),
             state=str(row.get("state") or "clean_unplayed"),
             rating_adjustment=float(row.get("rating_adjustment", 0.0)),
-            evidence=tuple(row.get("evidence") or ()),
+            evidence=tuple(
+                _normalize_evidence_card(card) for card in row.get("evidence") or ()
+            ),
         )
         for row in data.get("participants", [])
     }

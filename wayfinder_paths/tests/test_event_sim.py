@@ -269,7 +269,7 @@ def test_multiple_venue_markets_do_not_overwrite_each_other() -> None:
     assert by_venue["hyperliquid"].entry_price == 0.31
 
 
-def test_invalid_evidence_direction_is_surfaced_and_gates_action() -> None:
+def test_legacy_evidence_direction_aliases_are_normalized() -> None:
     config = load_config(
         {
             "iterations": 1000,
@@ -283,8 +283,46 @@ def test_invalid_evidence_direction_is_surfaced_and_gates_action() -> None:
                     "rating": 2100,
                     "evidence": [
                         {
-                            "claim": "wrong legacy direction should not silently count",
+                            "claim": "legacy negative direction should count",
                             "direction": "sign_against",
+                            "strength": "strong",
+                        }
+                    ],
+                },
+                {"id": "b", "name": "B", "rating": 1500},
+            ],
+            "bracket": {
+                "matches": [
+                    {"id": "final", "a": {"participant": "a"}, "b": {"participant": "b"}}
+                ]
+            },
+            "markets": [{"participant_id": "a", "bid": 0.1, "ask": 0.11}],
+        }
+    )
+
+    row = next(row for row in run_simulation(config) if row.participant_id == "a")
+
+    assert config.participants["a"].evidence[0]["direction"] == "against_yes"
+    assert "invalid_evidence_direction" not in row.diagnostic_flags
+    assert row.ignored_evidence == ()
+
+
+def test_unsupported_evidence_direction_is_surfaced_and_gates_action() -> None:
+    config = load_config(
+        {
+            "iterations": 1000,
+            "seed": 31,
+            "min_edge_abs": 0.001,
+            "min_edge_rel": 0.01,
+            "participants": [
+                {
+                    "id": "a",
+                    "name": "A",
+                    "rating": 2100,
+                    "evidence": [
+                        {
+                            "claim": "neutral context should not move the posterior",
+                            "direction": "neutral",
                             "strength": "strong",
                         }
                     ],
@@ -304,7 +342,7 @@ def test_invalid_evidence_direction_is_surfaced_and_gates_action() -> None:
 
     assert row.decision == "WATCH"
     assert "invalid_evidence_direction" in row.diagnostic_flags
-    assert row.ignored_evidence[0]["direction"] == "sign_against"
+    assert row.ignored_evidence[0]["direction"] == "neutral"
 
 
 def test_market_implied_ratings_are_diagnostic_only() -> None:

@@ -598,3 +598,22 @@ Return JSON only:
 ```
 
 Set `status_detail: "monitoring"` when a backtest job is still in flight and include `runId`/`jobIds`/`nextPollAfter` so the run can be resumed. Keep raw provider payloads out of the response unless the primary explicitly asks for them.
+
+## Eval Variant: WorkPack Sports Modes
+
+You return WorkPacks, not just prose. Infer or receive one mode:
+`SPORTS_SURFACE`, `SPORTS_CONTEXT_FEATURES`, `SPORTS_ANALYSIS`,
+`SPORTS_SCAN`, `LAB_KICKOFF`, or `LAB_MONITOR`.
+
+`SPORTS_SCAN` may combine surface/context/feature/analysis work for speed,
+but must still emit separated payload sections or separate pack files. Return
+`packRefs` plus compact `contextForNextAgent`. Do not bury critical numbers
+only in prose. Do not return a final BUY unless a posterior/decision gate has
+run or has been delegated to quant.
+
+The model is the sports expectation layer: Elo/Glicko-like ratings, Monte
+Carlo, prop projection, futures/event simulation, or Lab model. The posterior
+ledger is the combination/gate layer and belongs to quant unless the primary
+explicitly asks for a quick informational edge. When current context should
+affect a model, return proposed `modelModifiers` in a contextPack; do not
+freehand probability changes.

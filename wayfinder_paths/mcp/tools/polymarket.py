@@ -25,6 +25,7 @@ from wayfinder_paths.mcp.polymarket_order import (
     normalize_pm_side,
     validate_pm_market_order_size,
 )
+from wayfinder_paths.mcp.polymarket_relevance import relevance_search
 from wayfinder_paths.mcp.polymarket_summary import (
     DEFAULT_CANDIDATE_LIMIT,
     compact_candidates,
@@ -296,15 +297,18 @@ async def polymarket_read(
         match action:
             case "search":
                 q = throw_if_empty_str("query is required for search", query)
-                ok_rows, rows = await adapter.search_markets(
-                    query=q,
-                    limit=int(limit),
-                    sort=sort,
-                    status=status,
-                )
-                if not ok_rows:
-                    return _adapter_error(rows)
                 if summary:
+                    relevance = await relevance_search(
+                        adapter,
+                        query=q,
+                        limit=int(limit),
+                        sort=sort,
+                        status=status,
+                        candidate_limit=candidate_limit,
+                    )
+                    if not relevance.ok:
+                        return _adapter_error(relevance.error)
+                    rows = relevance.rows
                     candidates, truncation = compact_candidates(rows, candidate_limit)
                     event_groups = compact_event_groups(rows)
                     return ok(
@@ -312,6 +316,7 @@ async def polymarket_read(
                             "action": action,
                             "query": q,
                             "summaryMode": True,
+                            "relevance": relevance.metadata,
                             "candidates": candidates,
                             "eventGroups": event_groups,
                             "nextSuggestedCalls": next_suggested_calls(
@@ -321,6 +326,14 @@ async def polymarket_read(
                             "truncation": truncation,
                         }
                     )
+                ok_rows, rows = await adapter.search_markets(
+                    query=q,
+                    limit=int(limit),
+                    sort=sort,
+                    status=status,
+                )
+                if not ok_rows:
+                    return _adapter_error(rows)
                 return ok({"action": action, "query": q, "markets": rows})
 
             case "trending":

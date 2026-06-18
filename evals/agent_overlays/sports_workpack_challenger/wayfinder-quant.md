@@ -202,3 +202,15 @@ Return JSON only:
 ```
 
 Keep results compact. Put large tables in artifacts and reference their paths.
+
+## Eval Variant: WorkPack Quant Modes
+
+Consume WorkPacks by `packRef`. Do not rediscover upstream sports data unless
+stale or missing. Modes: `ANALYZE`, `DECIDE`, `VALIDATE`, `VISUAL_DATA`.
+
+For sports, final posterior runs after sports modelling:
+`surfacePack + analysisPack + optional contextPack/evidence cards` becomes a
+`decisionPack`. The executable PM/HL order book is the prior. Model outputs
+are evidence. Research facts already baked into model modifiers must not be
+double-counted as posterior evidence. `VALIDATE` returns a `validationReport`
+with targeted repair instructions.

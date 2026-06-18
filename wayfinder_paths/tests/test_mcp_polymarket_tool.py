@@ -143,6 +143,208 @@ async def test_polymarket_search_suggests_event_hydration_for_grouped_results():
 
 
 @pytest.mark.asyncio
+async def test_polymarket_search_uses_compact_variants_not_generated_slugs():
+    calls: list[str] = []
+
+    async def fake_search_markets(*_args, **kwargs):
+        calls.append(kwargs["query"])
+        if kwargs["query"] == "anthropic openai ipo first":
+            return (
+                True,
+                [
+                    {
+                        "slug": "will-anthropic-or-openai-ipo-first",
+                        "eventSlug": "will-anthropic-or-openai-ipo-first",
+                        "question": "Will Anthropic or OpenAI IPO first?",
+                        "outcomes": ["Anthropic", "OpenAI"],
+                        "outcomePrices": [0.73, 0.27],
+                        "clobTokenIds": ["tok_anthropic", "tok_openai"],
+                        "conditionId": "0xipo",
+                        "enableOrderBook": True,
+                        "acceptingOrders": True,
+                        "active": True,
+                        "closed": False,
+                        "liquidityNum": "10000",
+                        "volume24hr": "5000",
+                    }
+                ],
+            )
+        return (
+            True,
+            [
+                {
+                    "slug": "will-claude-fable-5-be-restored-for-us-customers-by-june-17",
+                    "eventSlug": "claude-fable",
+                    "question": "Will Claude Fable 5 be restored for US customers by June 17?",
+                    "yesPrice": 0.42,
+                    "noPrice": 0.58,
+                    "yesTokenId": "tok_bad_yes",
+                    "noTokenId": "tok_bad_no",
+                    "conditionId": "0xbad",
+                    "liquidity": 999_999.0,
+                    "volume24h": 999_999.0,
+                }
+            ],
+        )
+
+    with (
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.search_markets",
+            new=fake_search_markets,
+        ),
+    ):
+        out = await polymarket_read(
+            "search",
+            query="do we think openai or anthropic will ipo first?",
+            candidate_limit=3,
+        )
+
+    assert out["ok"] is True
+    result = out["result"]
+    assert result["relevance"]["mode"] == "expanded"
+    assert result["relevance"]["directHydrations"] == []
+    assert calls[0] == "openai anthropic ipo first"
+    assert "anthropic openai ipo first" in calls
+    assert result["candidates"][0]["slug"] == "will-anthropic-or-openai-ipo-first"
+
+
+@pytest.mark.asyncio
+async def test_polymarket_search_reranks_relevant_candidate_before_truncation():
+    rows = [
+        {
+            "slug": f"irrelevant-ai-market-{idx}",
+            "eventSlug": "ai-models",
+            "question": f"Will an unrelated AI model lead benchmark {idx}?",
+            "yesPrice": 0.1,
+            "noPrice": 0.9,
+            "yesTokenId": f"tok_bad_yes_{idx}",
+            "noTokenId": f"tok_bad_no_{idx}",
+            "conditionId": f"0xbad{idx}",
+            "liquidity": 1_000_000.0 - idx,
+            "volume24h": 1_000_000.0 - idx,
+        }
+        for idx in range(8)
+    ]
+    rows.append(
+        {
+            "slug": "will-france-win-the-2026-fifa-world-cup-924",
+            "eventSlug": "world-cup-winner",
+            "question": "Will France win the 2026 FIFA World Cup?",
+            "yesPrice": 0.12,
+            "noPrice": 0.88,
+            "yesTokenId": "tok_france_yes",
+            "noTokenId": "tok_france_no",
+            "conditionId": "0xfrance",
+            "liquidity": 10_000.0,
+            "volume24h": 5_000.0,
+        }
+    )
+
+    with (
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.search_markets",
+            new=AsyncMock(return_value=(True, rows)),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_event_by_slug",
+            new=AsyncMock(return_value=(False, "Event not found")),
+        ),
+    ):
+        out = await polymarket_read(
+            "search",
+            query="what are France's world cup odds",
+            candidate_limit=5,
+        )
+
+    assert out["ok"] is True
+    result = out["result"]
+    assert result["candidates"][0]["slug"] == "will-france-win-the-2026-fifa-world-cup-924"
+    assert result["truncation"]["totalAvailable"] == 9
+
+
+@pytest.mark.asyncio
+async def test_polymarket_search_hydrates_parent_event_for_child_market_recall():
+    async def fake_search_markets(*_args, **_kwargs):
+        return (
+            True,
+            [
+                {
+                    "slug": "will-a-uefa-team-win-the-2026-fifa-world-cup",
+                    "eventSlug": "world-cup-winner",
+                    "question": "Will a UEFA team win the 2026 FIFA World Cup?",
+                    "yesPrice": 0.5,
+                    "noPrice": 0.5,
+                    "yesTokenId": "tok_uefa_yes",
+                    "noTokenId": "tok_uefa_no",
+                    "conditionId": "0xuefa",
+                    "liquidity": 200_000.0,
+                    "volume24h": 100_000.0,
+                },
+                {
+                    "slug": "world-cup-halftime-show",
+                    "eventSlug": "world-cup-halftime-show",
+                    "question": "Who will perform at the World Cup halftime show?",
+                    "yesPrice": 0.1,
+                    "noPrice": 0.9,
+                    "yesTokenId": "tok_show_yes",
+                    "noTokenId": "tok_show_no",
+                    "conditionId": "0xshow",
+                    "liquidity": 900_000.0,
+                    "volume24h": 800_000.0,
+                },
+            ],
+        )
+
+    async def fake_get_event_by_slug(_self, slug: str):
+        if slug == "world-cup-winner":
+            return (
+                True,
+                {
+                    "slug": "world-cup-winner",
+                    "title": "World Cup Winner",
+                    "markets": [
+                        {
+                            "slug": "will-france-win-the-2026-fifa-world-cup-924",
+                            "question": "Will France win the 2026 FIFA World Cup?",
+                            "yesPrice": 0.12,
+                            "noPrice": 0.88,
+                            "yesTokenId": "tok_france_yes",
+                            "noTokenId": "tok_france_no",
+                            "conditionId": "0xfrance",
+                            "liquidity": 10_000.0,
+                            "volume24h": 5_000.0,
+                        }
+                    ],
+                },
+            )
+        return False, "Event not found"
+
+    with (
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.search_markets",
+            new=fake_search_markets,
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_event_by_slug",
+            new=fake_get_event_by_slug,
+        ),
+    ):
+        out = await polymarket_read(
+            "search",
+            query="what are France's world cup odds",
+            candidate_limit=5,
+        )
+
+    assert out["ok"] is True
+    result = out["result"]
+    assert "world-cup-winner" in result["relevance"]["eventHydrations"]
+    assert result["candidates"][0]["slug"] == "will-france-win-the-2026-fifa-world-cup-924"
+
+
+@pytest.mark.asyncio
 async def test_polymarket_search_summary_false_preserves_raw_markets():
     with (
         patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),

@@ -1,0 +1,335 @@
+[
+  {
+    "id_type": "market",
+    "id": "will-anthropic-or-openai-ipo-first",
+    "label": "Anthropic or OpenAI IPO first",
+    "queries": [
+      "do we think openai or anthropic will ipo first?",
+      "which company IPOs first OpenAI or Anthropic",
+      "is there an edge on OpenAI versus Anthropic going public"
+    ]
+  },
+  {
+    "id_type": "event",
+    "id": "world-cup-winner",
+    "label": "World Cup Winner",
+    "queries": [
+      "who is most likely to win the world cup",
+      "show me the 2026 world cup outright market",
+      "where are the odds for the tournament winner"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "will-france-win-the-2026-fifa-world-cup-924",
+    "parent_event_id": "world-cup-winner",
+    "label": "France wins 2026 FIFA World Cup",
+    "queries": [
+      "is France worth a bet to win it all",
+      "what are France's world cup odds",
+      "find the market for France winning the tournament"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "will-spain-win-the-2026-fifa-world-cup-963",
+    "parent_event_id": "world-cup-winner",
+    "label": "Spain wins 2026 FIFA World Cup",
+    "queries": [
+      "can Spain win the world cup",
+      "show me Spain outright odds",
+      "is there a market for Spain winning it all"
+    ]
+  },
+  {
+    "id_type": "event",
+    "id": "btc-updown-5m-1781725800",
+    "match": {
+      "event_slug_prefix": "btc-updown-5m-"
+    },
+    "label": "BTC Up or Down 5m",
+    "queries": [
+      "is bitcoin going up in the next few minutes",
+      "show me the quick BTC direction market",
+      "btc 5 minute up down odds"
+    ]
+  },
+  {
+    "id_type": "event",
+    "id": "claude-fable-5-restored-for-us-customers-by-20260613193753196",
+    "label": "Claude Fable 5 restored for US customers by...?",
+    "queries": [
+      "when will Claude Fable be back for US users",
+      "show the market on Fable getting restored",
+      "is Claude access coming back soon"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "will-claude-fable-5-be-restored-for-us-customers-by-july-1-20260613193829179-129-881-748-432-345",
+    "parent_event_id": "claude-fable-5-restored-for-us-customers-by-20260613193753196",
+    "label": "Claude Fable 5 restored by July 1",
+    "queries": [
+      "will Fable be restored by July 1",
+      "odds Claude is back for US users by July",
+      "market for Fable returning before July starts"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "will-claude-fable-5-be-restored-for-us-customers-by-june-26",
+    "parent_event_id": "claude-fable-5-restored-for-us-customers-by-20260613193753196",
+    "label": "Claude Fable 5 restored by June 26",
+    "queries": [
+      "will Claude be fixed by June 26",
+      "Fable restored this week odds",
+      "can US users get Fable again by the 26th"
+    ]
+  },
+  {
+    "id_type": "event",
+    "id": "fifwc-eng-hrv-2026-06-17",
+    "label": "England vs Croatia, World Cup",
+    "queries": [
+      "England Croatia world cup odds",
+      "who is favored in England vs Croatia",
+      "show me the market for the England game today"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "fifwc-eng-hrv-2026-06-17-eng",
+    "parent_event_id": "fifwc-eng-hrv-2026-06-17",
+    "label": "England beats Croatia",
+    "queries": [
+      "is England going to win today",
+      "England moneyline against Croatia",
+      "bet on England in the world cup match"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "fifwc-eng-hrv-2026-06-17-draw",
+    "parent_event_id": "fifwc-eng-hrv-2026-06-17",
+    "label": "England vs Croatia draw",
+    "queries": [
+      "could England Croatia end in a draw",
+      "draw odds for the England match",
+      "market for tie in England versus Croatia"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "fifwc-eng-hrv-2026-06-17-hrv",
+    "parent_event_id": "fifwc-eng-hrv-2026-06-17",
+    "label": "Croatia beats England",
+    "queries": [
+      "can Croatia upset England",
+      "Croatia moneyline against England",
+      "bet on Croatia in the world cup match"
+    ]
+  },
+  {
+    "id_type": "event",
+    "id": "fifwc-gha-pan-2026-06-17",
+    "label": "Ghana vs Panama, World Cup",
+    "queries": [
+      "Ghana Panama world cup odds",
+      "who is favored in Ghana vs Panama",
+      "show me the market for Ghana's game"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "fifwc-gha-pan-2026-06-17-gha",
+    "parent_event_id": "fifwc-gha-pan-2026-06-17",
+    "label": "Ghana beats Panama",
+    "queries": [
+      "will Ghana win tonight",
+      "Ghana moneyline against Panama",
+      "odds for Ghana to beat Panama"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "fifwc-gha-pan-2026-06-17-draw",
+    "parent_event_id": "fifwc-gha-pan-2026-06-17",
+    "label": "Ghana vs Panama draw",
+    "queries": [
+      "could Ghana and Panama draw",
+      "draw odds for Ghana Panama",
+      "market for a tie in the Ghana game"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "fifwc-gha-pan-2026-06-17-pan",
+    "parent_event_id": "fifwc-gha-pan-2026-06-17",
+    "label": "Panama beats Ghana",
+    "queries": [
+      "can Panama beat Ghana",
+      "Panama moneyline odds",
+      "bet on Panama in the world cup match"
+    ]
+  },
+  {
+    "id_type": "event",
+    "id": "what-iranian-demands-will-trump-agree-to-by-june-30",
+    "label": "What Iranian demands will Trump agree to by June 30?",
+    "queries": [
+      "what concessions will Trump make to Iran",
+      "show me Iran deal demands markets",
+      "what does Polymarket say Trump will agree to"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "will-trump-agree-to-unfreeze-iranian-assets-by-june-30",
+    "parent_event_id": "what-iranian-demands-will-trump-agree-to-by-june-30",
+    "label": "Trump agrees to unfreeze Iranian assets by June 30",
+    "queries": [
+      "will the US unfreeze Iran assets",
+      "Iran sanctions asset release odds",
+      "market for Trump releasing frozen Iranian money"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "will-trump-agree-to-withdraw-troops-from-the-iranian-region-by-june-30",
+    "parent_event_id": "what-iranian-demands-will-trump-agree-to-by-june-30",
+    "label": "Trump agrees to troop withdrawal by June 30",
+    "queries": [
+      "will Trump pull troops from the region",
+      "US troop withdrawal Iran deal market",
+      "odds of troop concessions in the Iran talks"
+    ]
+  },
+  {
+    "id_type": "event",
+    "id": "fed-decision-in-july-181",
+    "label": "Fed Decision in July?",
+    "queries": [
+      "what is the fed going to do in july",
+      "show me July FOMC odds",
+      "what are markets pricing for the next rate decision"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "will-there-be-no-change-in-fed-interest-rates-after-the-july-2026-meeting",
+    "parent_event_id": "fed-decision-in-july-181",
+    "label": "No change in Fed interest rates after July 2026 meeting",
+    "queries": [
+      "will the Fed hold rates in July",
+      "odds the Fed does nothing at the next meeting",
+      "is no change priced for the July decision"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "will-the-fed-increase-interest-rates-by-25-bps-after-the-july-2026-meeting",
+    "parent_event_id": "fed-decision-in-july-181",
+    "label": "Fed increases interest rates by 25 bps after July 2026 meeting",
+    "queries": [
+      "will the Fed hike 25 bps in July",
+      "quarter point increase odds at the next FOMC",
+      "is there a market for a July rate hike"
+    ]
+  },
+  {
+    "id_type": "event",
+    "id": "world-cup-team-to-advance-to-knockout-stages",
+    "label": "World Cup: Team to advance to Knockout Stages",
+    "queries": [
+      "who makes the knockout stage",
+      "world cup group qualification odds",
+      "show me markets for teams advancing"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "will-france-advance-to-the-knockout-stages-at-the-2026-fifa-world-cup",
+    "parent_event_id": "world-cup-team-to-advance-to-knockout-stages",
+    "label": "France advances to knockout stages",
+    "queries": [
+      "will France get out of the group",
+      "France to advance odds",
+      "market for France making knockouts"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "will-argentina-advance-to-the-knockout-stages-at-the-2026-fifa-world-cup",
+    "parent_event_id": "world-cup-team-to-advance-to-knockout-stages",
+    "label": "Argentina advances to knockout stages",
+    "queries": [
+      "will Argentina get to knockouts",
+      "Argentina advance from group odds",
+      "market for Argentina making the next round"
+    ]
+  },
+  {
+    "id_type": "event",
+    "id": "which-party-will-win-the-house-in-2026",
+    "label": "Which party will win the House in 2026?",
+    "queries": [
+      "who wins the House in 2026",
+      "midterm house control odds",
+      "show me the 2026 House market"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "will-the-democratic-party-control-the-house-after-the-2026-midterm-elections",
+    "parent_event_id": "which-party-will-win-the-house-in-2026",
+    "label": "Democratic Party controls the House after 2026 midterms",
+    "queries": [
+      "will Democrats take the House",
+      "Dem House control odds",
+      "market for Democrats winning the House in 2026"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "will-the-republican-party-control-the-house-after-the-2026-midterm-elections",
+    "parent_event_id": "which-party-will-win-the-house-in-2026",
+    "label": "Republican Party controls the House after 2026 midterms",
+    "queries": [
+      "will Republicans hold the House",
+      "GOP House control odds",
+      "market for Republicans winning the House in 2026"
+    ]
+  },
+  {
+    "id_type": "event",
+    "id": "world-cup-golden-boot-winner",
+    "label": "World Cup: Golden Boot Winner",
+    "queries": [
+      "who will win the golden boot",
+      "world cup top scorer odds",
+      "show me markets for most goals"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "will-kylian-mbappe-be-the-top-goalscorer-at-the-2026-fifa-world-cup",
+    "parent_event_id": "world-cup-golden-boot-winner",
+    "label": "Kylian Mbappe top goalscorer at 2026 FIFA World Cup",
+    "queries": [
+      "will Mbappe win golden boot",
+      "Mbappe top scorer odds",
+      "market for Kylian scoring the most goals"
+    ]
+  },
+  {
+    "id_type": "market",
+    "id": "will-lionel-messi-be-the-top-goalscorer-at-the-2026-fifa-world-cup",
+    "parent_event_id": "world-cup-golden-boot-winner",
+    "label": "Lionel Messi top goalscorer at 2026 FIFA World Cup",
+    "queries": [
+      "will Messi win golden boot",
+      "Messi top scorer odds",
+      "market for Lionel leading the tournament in goals"
+    ]
+  }
+]

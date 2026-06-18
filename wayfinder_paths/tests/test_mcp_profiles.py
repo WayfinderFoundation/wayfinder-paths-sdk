@@ -175,6 +175,8 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_visual_add_workspace_chart_overlay": "allow",
         "wayfinder_notification_send": "allow",
         "wayfinder_research_*": "deny",
+        "wayfinder_sports_snapshot": "allow",
+        "wayfinder_sports_backtest_state": "allow",
         "wayfinder_core_run_script": "ask",
         "wayfinder_core_run_strategy": "ask",
         "wayfinder_core_runner": "ask",
@@ -387,6 +389,11 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
     assert "contextForNextAgent" in primary
     assert "Do not drop known Polymarket event slugs" in primary
     assert "candidate_limit=20" in primary
+    assert "surfaceLite" in primary
+    assert "surfaceFull" in primary
+    assert "resolutionRef" in primary
+    assert "edge mode" in primary
+    assert "mark_to_market_edge" in primary
 
     assert "Prediction Market Forecast Mode" in research
     assert "Use the executable market/order-book distribution as the prior" in research
@@ -408,9 +415,19 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
     )
     assert 'research_get_basis_apy_sources(basis_symbol="USD", limit="100")' in research
     assert "Treat `YIELD_TOKEN` as vault/LP/receipt-token yield" in research
+    assert "surfaceLite" in research
+    assert "profile != pm_simple_binary" in research
+    assert "price equals probability" in research
+    assert "exit/repricing probability" in research
 
     assert "Market Quant Mode" in quant
     assert "wayfinder_paths.quant.polymarket_edge" in quant
+    assert "prediction_market_payoffs" in quant
+    assert "polymarket_edge` is binary-only" in quant
+    assert "profile != simple_binary" in quant
+    assert "hl_mid_only" in quant
+    assert "settlement_edge" in quant
+    assert "exit-before-close EV" in quant
     assert "hypothesis seeds only" in quant
     assert "positive funding means longs pay shorts" in quant
     assert "RESEARCH_ONLY" in quant
@@ -551,6 +568,32 @@ def test_hidden_opencode_subagents_do_not_emit_user_suggestions() -> None:
 
         assert "Do not emit `<userSuggestions>`" in text
         assert "do not call `userSuggestions`" in text
+
+
+def test_hidden_analysis_subagents_can_write_bounded_artifacts() -> None:
+    for agent, artifact_dir in (
+        ("wayfinder-research", ".wayfinder_runs/research/"),
+        ("wayfinder-sports", ".wayfinder_runs/sports/"),
+        ("wayfinder-quant", ".wayfinder_runs/quant/"),
+    ):
+        permission = _agent_permission(agent)
+        text = _agent_text(agent)
+
+        assert permission["write"] == "allow"
+        assert permission["question"] == "deny"
+        assert artifact_dir in text
+        assert "Never edit repo-tracked source" in text
+        assert "approval-gated" in text
+
+    assert "write" not in _agent_permission("wayfinder-visual")
+
+
+def test_primary_agent_integrates_or_reports_hidden_subagent_blockers() -> None:
+    primary = _agent_text("wayfinder")
+
+    assert "After delegating, integrate the returned artifacts/findings" in primary
+    assert "pending tool" in primary
+    assert "parent task running" in primary
 
 
 def test_claude_settings_reference_registered_tool_names(monkeypatch) -> None:

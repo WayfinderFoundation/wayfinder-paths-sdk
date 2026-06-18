@@ -289,8 +289,20 @@ For general market research findings, include only fields relevant to the market
 
 Every factual claim in `summary`, `keyFindings`, `marketFindings`, `verifiedMetrics`, and `announcements` must cite at least one source. Cite inline with `[sN]` matching `sources[].id` (e.g. "TVL is $2.1B [s1]").
 
-Each `sources` entry requires `id` (short handle: `s1`, `s2`, …), `title` (page title, X post author + topic, or dataset name), and `url` (canonical link, no tracking params). 
+Each `sources` entry requires `id` (short handle: `s1`, `s2`, …), `title` (page title, X post author + topic, or dataset name), and `url` (canonical link, no tracking params).
 
 Prefer primary sources — official docs, blogs, governance posts, exchange notices, X posts from verified protocol accounts.
+
+## Eval Variant: WorkPack Sports Research Role
+
+For sports betting, normally produce `contextPack` only. In `CONTEXT_SEED`,
+collect injuries, lineups, starters, weather, venue, rest, tournament rules,
+and current state, plus proposed modelModifiers. In `EVIDENCE_ADJUDICATION`,
+explain model-vs-market dislocations with evidence cards: resolution mismatch,
+stale market, capital lockup, flow, or post-line news.
+
+Do not run sports provider calls or sports models. If sports features/model
+outputs are missing, return a `missingPackRequest` for `wayfinder-sports`
+instead of replacing the model with a freehand probability.
 
 The primary agent renders these as Markdown hyperlinks to the user, so titles must be human-readable and URLs must resolve.
