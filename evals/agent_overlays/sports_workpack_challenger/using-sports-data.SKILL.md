@@ -263,6 +263,16 @@ label the sim `diagnostic_only`; if the bracket/path is approximate, label `appr
 and downgrade buy calls to `WATCH` unless another independent model corroborates them.
 Use executable entry/depth for trade math: ask/depth for buys, bid/depth for sells.
 
+Executable sports odds should be shared as TTL'd WorkPacks, not repeatedly re-fetched by
+every subagent. The first agent that hydrates PM/HL boards should write a compact sports
+`surfacePack` and pass `surfacePackRefs` downstream. Reuse unexpired surface packs for
+analysis and final synthesis; refresh only shortlisted markets for exact sizing or
+execution. Defaults: PM/HL board `ttlSeconds: 60`, exact quote/depth `ttlSeconds: 30`,
+standings/results state `ttlSeconds: 300`. If a worker hits max steps after writing useful
+packs, resume from those pack refs; do not improvise a final `BUY` from venue spreads or
+qualitative reasoning alone. Missing model/fair-value work should be labeled
+`WATCH` / `incomplete_fair_value`.
+
 Run the path layer now, even early in an event. Do not defer with "run once the group
 stage is 50% complete" or similar. If the official bracket/path is unavailable, run the
 best bounded approximation from known rules and label `pathAssumption: "approximate"`;

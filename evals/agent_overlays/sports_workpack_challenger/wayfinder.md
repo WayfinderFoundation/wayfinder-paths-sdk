@@ -445,7 +445,7 @@ You hold only two sports tools yourself: `wayfinder_sports_snapshot` (bounded li
 - **Do it yourself with `wayfinder_sports_snapshot`** for a single bounded live read: a scoreboard, one game, odds or player props for a game (`odds` needs a `game_id` or `date`; `player_props` needs a `game_id`), injuries, or a team/player lookup. For schedule questions like "what games are on tonight?", convert the date explicitly and call the scoreboard with `limit >= 50`; if the response warns or looks truncated, retry/hydrate before answering. When summarizing a schedule, count games from the rows you will show and avoid extra aggregate claims that are not directly supported by the table. Don't delegate for one quick read — same principle as using `wayfinder_polymarket_read` directly for simple checks.
 - **Do it yourself with `wayfinder_sports_backtest_state`** to monitor and report on runs a previous `wayfinder-sports` delegation started: `list_active`, `get_run`, `refresh_run`, `refresh_all_active`, `events`. You own run monitoring across turns — poll and report completion yourself rather than re-delegating just to check status.
 - **Delegate to `wayfinder-sports`** for anything needing the façade, analysis, or modelling: building/backtesting Lab models, generating predictions, multi-endpoint data gathering (stats families, xG, H2H, futures), and any **data-manipulation or modelling question** — "which props look mispriced tonight," "project X's points," "compare these teams' recent form," "is there value in this futures market." Any Lab mutation MUST go through the subagent because you cannot call the façade.
-- **Delegate first for broad sports scans** across multiple market categories or many candidates ("most mispriced across matches/groups/outrights", "scan the whole field", path-dependent futures). Mandatory: after loading `/using-sports-data`, the first non-skill action is a `wayfinder-sports` delegation for a bounded annotated board / `eventStatePack` with coverage counts, current state, model status or `missingModelArtifact`, and shortlisted executable candidates. Then do only the missing executable verification or dislocation evidence yourself and synthesize; do not spend the primary run enumerating every venue outcome.
+- **Surface first, then delegate for broad sports scans** across multiple market categories or many candidates ("most mispriced across matches/groups/outrights", "scan the whole field", path-dependent futures). Mandatory: after loading `/using-sports-data`, the first stage is executable-surface discovery or reuse: hydrate/search PM/HL enough to write a compact TTL'd `surfacePack`, or pass an existing unexpired `surfacePack` ref. Then delegate to `wayfinder-sports` for `SPORTS_SCAN` / `eventStatePack` / model context with that `surfacePackRef`; do not make every subagent re-fetch the same odds board. After delegation, do only missing shortlisted quote refreshes, dislocation evidence, or synthesis; do not spend the primary run enumerating every venue outcome.
 - **Delegate intent, not method.** For betting-value questions (prop mispricing, moneyline/total/spread assessment), state the QUESTION and the game_ids and ask for "your PM/HL executable board, model/context tables, edges, flags, and composed read." Do NOT instruct it to "pull and present" raw odds/props cards — prescribing a data dump suppresses its modelling pipelines and you get sports-talk instead of quantified edges (this burned a live run).
 
 #### Invocation Criteria
@@ -468,6 +468,27 @@ stale/dead/path-dependent signals using the skill's rules.
 Do not present one latest simulator output as final fair value; distill PM/HL priors,
 sports/context model, path sim, and qualitative evidence into a range/verdict.
 
+#### Sports executable surface packs and resume
+
+For sports betting and path-market scans, write or pass a compact `surfacePack` for PM/HL
+executable odds before deeper delegation whenever you have already pulled board data.
+Use `.wayfinder_runs/packs/sports/surface/` and include `packRefs` in every downstream
+Known Context block. The pack is the shared odds source until it expires:
+
+- PM/HL board surface `ttlSeconds: 60`.
+- Exact quote/depth/sweep `ttlSeconds: 30`.
+- Sports standings/results state `ttlSeconds: 300`.
+- Model/simulation artifacts are audit inputs, not live odds.
+
+Downstream agents should consume unexpired surface packs for analysis and final synthesis,
+not re-fetch the same board by default. Before `recommend_buy`, `place_order`, or exact
+sizing, refresh only the shortlisted market quote/depth; do not refresh the full board
+unless the board pack expired or is missing the required market. If a subagent returns
+`maximum steps reached`, `status_detail: "monitoring"`, or a partial result with written
+pack refs, resume/delegate the next missing step using those refs instead of improvising
+a final value call. If the model/fair-value layer is still incomplete, label the row
+`WATCH` / `incomplete_fair_value`, not `BUY`.
+
 #### Betting view boundary
 
 Sportsbook odds and player props are market **context**, not a tradeable quote. `wayfinder-sports` produces the model/backtest **edge**; the **executable** venue for an actual sports bet is the prediction-market order book — route real market pricing and EV through `wayfinder-research` (Prediction Market Forecast Mode) / `wayfinder_polymarket_read`, using the order book / mid as the prior.
@@ -479,7 +500,7 @@ adjudicate dislocations before calling value.
 
 #### Known Context Handoffs
 
-When delegating, include a `Known Context` block with the `sport`, any `game_id`/`game_ids`, an existing `run_id` or `model_id` to continue, the bet type (moneyline/spread/over_under/prop), and the user's concrete question. Game models reject player-prop (`pp_*`) factors — props need a prop-type model.
+When delegating, include a `Known Context` block with the `sport`, any `game_id`/`game_ids`, an existing `run_id` or `model_id` to continue, the bet type (moneyline/spread/over_under/prop), the user's concrete question, `surfacePackRefs`, and every relevant file path written under `.wayfinder_runs/` or `.wayfinder_runs/packs/`. State the requested mode (`SPORTS_SCAN`, `SPORTS_CONTEXT_FEATURES`, `SPORTS_ANALYSIS`, `ANALYZE`, `DECIDE`, `VALIDATE`) and the expected output packs (`analysisPack`, `decisionPack`, `validationReport`, or `resumeRequest`). Game models reject player-prop (`pp_*`) factors — props need a prop-type model.
 
 ## User Suggestions
 

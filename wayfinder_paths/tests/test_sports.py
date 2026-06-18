@@ -294,7 +294,7 @@ def test_sports_subagent_is_hidden_with_full_facade() -> None:
     fm = _frontmatter(REPO / ".opencode" / "agents" / "wayfinder-sports.md")
     assert fm["mode"] == "subagent"
     assert fm["hidden"] is True
-    assert fm["steps"] == 22  # analysis/modelling workflows need fetch+script headroom
+    assert fm["steps"] == 28  # analysis/modelling workflows need fetch+script headroom
     perm = fm["permission"]
     assert perm["task"]["*"] == "deny"
     assert perm["wayfinder_*"] == "deny"
@@ -626,7 +626,8 @@ def test_sports_eval_harness_rejects_partial_handoff_answers() -> None:
         "Reserve one call for current",
         "generous limit",
         "home/draw/away",
-        "first non-skill action",
+        "compact TTL'd PM/HL surfacePack",
+        "surfacePackRefs",
         "Do not use\nprogress-only headings",
         "Critical Context",
         "final answer observed before checkpoint marker",
@@ -677,21 +678,24 @@ def test_primary_agent_has_enough_steps_for_broad_sports_scans() -> None:
     )
 
     assert "steps: 38" in primary
-    assert "steps: 22" in sports
-    assert "steps: 16" in quant
+    assert "steps: 28" in sports
+    assert "steps: 22" in quant
     assert "steps: 14" in research
 
 
-def test_primary_routes_broad_sports_scans_to_worker() -> None:
+def test_primary_routes_broad_sports_scans_through_ttl_surface_pack() -> None:
     """Observed q1 failure: the primary spent its budget enumerating venues and
-    checkpointed before synthesis. Broad scans should be worker-first."""
+    checkpointed before synthesis. Broad scans should share one TTL'd odds
+    surface before sports/quant work instead of making every worker re-fetch."""
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    quant = (REPO / ".opencode" / "agents" / "wayfinder-quant.md").read_text("utf-8")
 
     for needle in (
-        "Delegate first for broad sports scans",
-        "first non-skill action",
-        "annotated board / `eventStatePack`",
+        "Surface first, then delegate for broad sports scans",
+        "first stage is executable-surface discovery or reuse",
+        "TTL'd `surfacePack`",
+        "surfacePackRefs",
         "do not spend the primary run enumerating every venue outcome",
     ):
         assert needle in primary
@@ -702,8 +706,41 @@ def test_primary_routes_broad_sports_scans_to_worker() -> None:
         "`missingModelArtifact`",
         "instead of a progress checkpoint",
         "Never return a progress checkpoint",
+        "consume those PM/HL executable surfaces",
+        "Do not re-fetch the same PM/HL board",
     ):
         assert needle in sports
+
+    for needle in (
+        "surfacePackRefs",
+        "use unexpired\nPM/HL bid/ask/mid/depth rows",
+        "targeted refresh request",
+    ):
+        assert needle in quant
+
+
+def test_sports_surface_pack_ttl_and_resume_contract_is_explicit() -> None:
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+
+    for text in (primary, sports, skill):
+        assert "ttlSeconds: 60" in text
+        assert "ttlSeconds: 30" in text
+        assert "surfacePackRefs" in text
+
+    for needle in (
+        "maximum steps reached",
+        "resume/delegate the next missing step",
+        "incomplete_fair_value",
+        "not `BUY`",
+    ):
+        assert needle in primary
+
+    assert "resume from those pack refs" in skill
+    assert "packRefs" in sports
 
 
 def test_sports_worker_hyperliquid_tool_contract_is_explicit() -> None:

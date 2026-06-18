@@ -2,7 +2,7 @@
 description: Hidden sports worker for live sports data, data analysis and modelling, and provider-agnostic betting backtests (models, evaluations, predictions, run monitoring).
 mode: subagent
 hidden: true
-steps: 22
+steps: 28
 temperature: 0.1
 permission:
   task:
@@ -397,6 +397,16 @@ market-implied prices, label them diagnostic only. If the bracket/path is approx
 final fair value; the primary/quant must distill PM/HL prior, sports/context model, path
 sim, and qualitative evidence before calling value.
 
+If the primary supplies `surfacePackRefs`, consume those PM/HL executable surfaces as the
+current odds board until their `validUntil` expires. Do not re-fetch the same PM/HL board
+inside the sports worker by default. Use the pack rows for analysis, candidate matching,
+and final handoff; request a targeted refresh only when the pack is expired, lacks the
+needed market, or the next step is exact `recommend_buy` sizing. A board-level sports
+surface pack should normally use `ttlSeconds: 60`; exact quote/depth packs should use
+`ttlSeconds: 30`. If you write a refreshed surface, event state, feature, or analysis
+artifact, return its `packRefs` and file paths in `contextForNextAgent` so the primary or
+quant worker can resume without rediscovering odds.
+
 For broad multi-category scans, return an annotated board before deep-diving one candidate:
 coverage counts by executable venue/category, a ranked shortlist with model probability or
 `missingModelArtifact`, state classification, executable bid/ask/mid where surfaced, and
@@ -577,6 +587,7 @@ Return JSON only:
 ```json
 {
   "summary": "",
+  "packRefs": [],
   "runId": null,
   "modelId": null,
   "jobIds": [],

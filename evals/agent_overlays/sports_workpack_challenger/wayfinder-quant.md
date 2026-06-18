@@ -2,7 +2,7 @@
 description: Hidden quant worker for backtests, Delta Lab time series, CCXT analysis, and long-running analytics scripts.
 mode: subagent
 hidden: true
-steps: 16
+steps: 22
 temperature: 0.1
 permission:
   task:
@@ -173,6 +173,13 @@ one model view, not final fair value: distill it against executable PM/HL priors
 sports/context model, and qualitative evidence. If ratings are market-implied or the
 bracket/path is approximate, surface the diagnostic flags and return `WATCH`/`RESEARCH_ONLY`
 unless an independent model corroborates the edge. Do not invent missing sports data.
+
+When sports context includes `surfacePackRefs`, read those packs first and use unexpired
+PM/HL bid/ask/mid/depth rows as the executable prior. Do not rediscover the same odds
+board. If a board surface is expired, missing the shortlisted market, or the decision needs
+exact target-size `recommend_buy` pricing, return a targeted refresh request in
+`contextForNextAgent` instead of re-fetching a full board yourself. Board surfaces normally
+carry `ttlSeconds: 60`; exact quote/depth packs carry `ttlSeconds: 30`.
 
 ## Evidence Quality
 
