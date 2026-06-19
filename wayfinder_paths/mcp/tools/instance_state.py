@@ -220,7 +220,6 @@ async def visual_set_active_market(
     market_id: str | None = None,
     market_type: str | None = None,
     chain_id: int | None = None,
-    clear_workspace: bool = True,
 ) -> dict[str, Any]:
     """Switch the default Shells chart and trading context to one market.
 
@@ -238,8 +237,6 @@ async def visual_set_active_market(
       market_type: Optional narrowing: hl-perp, hl-spot, onchain-spot,
         polymarket.
       chain_id: Optional EVM chain id for onchain spot resolution.
-      clear_workspace: Set false only if an existing custom pane should stay
-        active while the trading context changes.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
@@ -250,7 +247,6 @@ async def visual_set_active_market(
                 market_id=market_id,
                 market_type=market_type,
                 chain_id=chain_id,
-                clear_workspace=clear_workspace,
             )
         )
     except httpx.HTTPStatusError as exc:
@@ -458,12 +454,21 @@ async def visual_add_workspace_chart_annotation(
     workspace chart, the annotation attaches there. Otherwise it attaches to
     the default live chart for that id.
 
+    For events, catalysts, news, or anything tied to a point in time, use
+    `vertical_line` — it draws a full-height event line at that timestamp,
+    which is the intended look for "show events on the chart". Do NOT use
+    `marker` for events: it renders a small price-anchored arrow, reserved for
+    flagging one specific price at one time (e.g. an entry/exit fill).
+
     Supported annotation types:
-      - horizontal_line: config = {price, color?, label?}
       - vertical_line: config = {time, color?, label?}
-        Use this for date-only events. `time` may be Unix seconds or an ISO
-        date string like "2026-04-19".
+        The event type. Use for catalysts/news/dated events. `time` may be
+        Unix seconds or an ISO date string like "2026-04-19".
+      - horizontal_line: config = {price, color?, label?}
+        A price-level line across all time (support/resistance/targets).
       - marker: config = {time, price?, shape?, color?}
+        A small arrow at one (time, price). Only for flagging a specific price
+        point — not for events.
       - range: config = {from_time?, to_time?, from_price, to_price, color?}
       - text_label: config = {time, price, text, color?}
       - trend: config = {from: {time, price}, to: {time, price}, color?, label?}

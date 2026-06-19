@@ -72,14 +72,12 @@ class InstanceStateClient(WayfinderClient):
         market_id: str | None = None,
         market_type: str | None = None,
         chain_id: int | None = None,
-        clear_workspace: bool = True,
     ) -> dict[str, Any]:
         payload = {
             "query": query,
             "market_id": market_id,
             "market_type": market_type,
             "chain_id": chain_id,
-            "clear_workspace": clear_workspace,
         }
         resp = await self._authed_request(
             "POST",

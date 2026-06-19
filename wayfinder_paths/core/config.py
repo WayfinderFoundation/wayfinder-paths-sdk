@@ -126,8 +126,7 @@ def allow_local_wallets() -> bool:
 
 
 def get_api_key() -> str | None:
-    system = CONFIG.get("system", {})
-    api_key = system.get("api_key")
+    api_key = load_config_json().get("system", {}).get("api_key")
     if api_key:
         return str(api_key).strip()
     return os.environ.get("WAYFINDER_API_KEY")
