@@ -70,9 +70,12 @@ def test_eval_station_records_duration_outside_judge_prompt() -> None:
     assert "duration_seconds" in station_text
     assert "write_markdown_report" in station_text
     assert "build_judge_prompt(" in station_text
-    assert "duration_seconds" not in station_text.split("def build_judge_prompt", 1)[1].split(
-        "\ndef copy_workspace", 1
-    )[0]
+    assert (
+        "duration_seconds"
+        not in station_text.split("def build_judge_prompt", 1)[1].split(
+            "\ndef copy_workspace", 1
+        )[0]
+    )
 
 
 def test_eval_station_flags_checkpoint_final_answers_without_judge_metadata() -> None:
@@ -83,9 +86,12 @@ def test_eval_station_flags_checkpoint_final_answers_without_judge_metadata() ->
     )
 
     assert {issue["code"] for issue in issues} == {"CHECKPOINT_CONTINUATION"}
-    assert station.detect_final_answer_issues(
-        "Authoritative verdict first.\n<userSuggestions />"
-    ) == []
+    assert (
+        station.detect_final_answer_issues(
+            "Authoritative verdict first.\n<userSuggestions />"
+        )
+        == []
+    )
     assert "final_answer_issues" in (REPO / "scripts" / "eval_station.py").read_text(
         "utf-8"
     )
@@ -106,10 +112,14 @@ def test_primary_schedule_reads_use_timezone_aware_sports_snapshot() -> None:
     for path in (
         REPO / ".opencode" / "agents" / "wayfinder.md",
         REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder.md",
-        REPO / "evals" / "agent_overlays" / "sports_workpack_challenger" / "wayfinder.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder.md",
     ):
         text = path.read_text("utf-8")
-        assert 'what games are on tonight?' in text
+        assert "what games are on tonight?" in text
         assert "pass `timezone` to the scoreboard call" in text
         assert "inspect `dateContext`" in text
         assert "`dateContext.truncated` is true" in text
@@ -118,7 +128,9 @@ def test_primary_schedule_reads_use_timezone_aware_sports_snapshot() -> None:
 
 def test_eval_station_materializes_isolated_variant_workspaces() -> None:
     station_text = (REPO / "scripts" / "eval_station.py").read_text("utf-8")
-    config = yaml.safe_load((REPO / "evals" / "stations" / "sports_graphs.yaml").read_text())
+    config = yaml.safe_load(
+        (REPO / "evals" / "stations" / "sports_graphs.yaml").read_text()
+    )
 
     assert "TemporaryDirectory" in station_text
     assert "copy_workspace(root, workspace)" in station_text
@@ -132,7 +144,9 @@ def test_eval_station_materializes_isolated_variant_workspaces() -> None:
     }
 
 
-def test_eval_station_overlay_can_copy_content_from_workspace_file(tmp_path: Path) -> None:
+def test_eval_station_overlay_can_copy_content_from_workspace_file(
+    tmp_path: Path,
+) -> None:
     station = load_eval_station()
     workspace = tmp_path / "repo"
     source = workspace / ".opencode" / "agents" / "wayfinder-baseline.md"
@@ -241,12 +255,12 @@ def test_eval_station_patches_root_opencode_config_used_by_isolated_workspace(
         }
     root_data = __import__("json").loads(root_config.read_text())
     assert root_data["permission"]["wayfinder_core_runner_status"] == "allow"
-    assert root_data["agent"]["wayfinder"]["permission"]["wayfinder_sports_snapshot"] == (
-        "allow"
-    )
-    assert root_data["agent"]["wayfinder"]["permission"]["wayfinder_polymarket_read"] == (
-        "allow"
-    )
+    assert root_data["agent"]["wayfinder"]["permission"][
+        "wayfinder_sports_snapshot"
+    ] == ("allow")
+    assert root_data["agent"]["wayfinder"]["permission"][
+        "wayfinder_polymarket_read"
+    ] == ("allow")
 
 
 def test_eval_station_mcp_url_flag_and_env_are_documented() -> None:
@@ -352,7 +366,9 @@ def test_eval_station_does_not_copy_local_secret_config_into_workspaces() -> Non
     assert 'env["WAYFINDER_CONFIG_PATH"] = str(default_config)' in station_text
 
 
-def test_eval_station_forces_config_api_key_and_clears_local_paths_env(tmp_path: Path) -> None:
+def test_eval_station_forces_config_api_key_and_clears_local_paths_env(
+    tmp_path: Path,
+) -> None:
     station = load_eval_station()
     config = {
         "system": {
@@ -437,7 +453,9 @@ def test_eval_station_workspace_copy_keeps_live_runtime_assets(tmp_path: Path) -
 def test_eval_station_initializes_empty_pack_store(tmp_path: Path) -> None:
     station = load_eval_station()
     workspace = tmp_path / "repo"
-    old_pack = workspace / ".wayfinder_runs" / "packs" / "sports" / "surface" / "old.json"
+    old_pack = (
+        workspace / ".wayfinder_runs" / "packs" / "sports" / "surface" / "old.json"
+    )
     old_pack.parent.mkdir(parents=True)
     old_pack.write_text("{}")
 
@@ -449,8 +467,12 @@ def test_eval_station_initializes_empty_pack_store(tmp_path: Path) -> None:
 
 
 def test_eval_station_challenger_overlay_mentions_workpacks() -> None:
-    config = yaml.safe_load((REPO / "evals" / "stations" / "sports_graphs.yaml").read_text())
-    challenger = next(v for v in config["variants"] if v["id"] == "sports_workpack_challenger")
+    config = yaml.safe_load(
+        (REPO / "evals" / "stations" / "sports_graphs.yaml").read_text()
+    )
+    challenger = next(
+        v for v in config["variants"] if v["id"] == "sports_workpack_challenger"
+    )
     overlay_text = "\n".join(
         (REPO / str(overlay["content_from"])).read_text("utf-8")
         for overlay in challenger["overlays"]
@@ -475,24 +497,37 @@ def test_primary_eval_variants_have_workspace_write_permission() -> None:
         REPO / ".opencode" / "agents" / "wayfinder.md",
         REPO / ".opencode" / "agents" / "wayfinder-baseline.md",
         REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder.md",
-        REPO / "evals" / "agent_overlays" / "sports_workpack_challenger" / "wayfinder.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder.md",
     ):
         frontmatter = path.read_text("utf-8").split("---", 2)[1]
         assert "write: allow" in frontmatter, path
 
 
 def test_eval_station_current_variant_uses_snapshot_overlays() -> None:
-    config = yaml.safe_load((REPO / "evals" / "stations" / "sports_graphs.yaml").read_text())
+    config = yaml.safe_load(
+        (REPO / "evals" / "stations" / "sports_graphs.yaml").read_text()
+    )
     current = next(v for v in config["variants"] if v["id"] == "sports_current")
 
     assert all("content_from" in overlay for overlay in current["overlays"])
-    assert all(str(overlay["content_from"]).startswith("evals/agent_overlays/sports_current/") for overlay in current["overlays"])
+    assert all(
+        str(overlay["content_from"]).startswith("evals/agent_overlays/sports_current/")
+        for overlay in current["overlays"]
+    )
 
 
 def test_eval_station_uses_same_prompt_for_all_variants() -> None:
-    config = yaml.safe_load((REPO / "evals" / "stations" / "sports_graphs.yaml").read_text())
+    config = yaml.safe_load(
+        (REPO / "evals" / "stations" / "sports_graphs.yaml").read_text()
+    )
 
-    assert len({question["text"] for question in config["questions"]}) == len(config["questions"])
+    assert len({question["text"] for question in config["questions"]}) == len(
+        config["questions"]
+    )
     for question in config["questions"]:
         text = question["text"].lower()
         assert "workpack" not in text
@@ -500,9 +535,13 @@ def test_eval_station_uses_same_prompt_for_all_variants() -> None:
 
 
 def test_eval_station_uses_mixed_market_prompt_set() -> None:
-    config = yaml.safe_load((REPO / "evals" / "stations" / "sports_graphs.yaml").read_text())
+    config = yaml.safe_load(
+        (REPO / "evals" / "stations" / "sports_graphs.yaml").read_text()
+    )
 
-    questions = {question["id"]: question["text"].lower() for question in config["questions"]}
+    questions = {
+        question["id"]: question["text"].lower() for question in config["questions"]
+    }
 
     assert set(questions) == {
         "anthropic_openai_ipo_edge",
@@ -510,7 +549,10 @@ def test_eval_station_uses_mixed_market_prompt_set() -> None:
         "world_cup_countries_edge",
         "rays_nationals_game_lines",
     }
-    assert questions["anthropic_openai_ipo_edge"] == "do we think openai or anthropic will ipo first?"
+    assert (
+        questions["anthropic_openai_ipo_edge"]
+        == "do we think openai or anthropic will ipo first?"
+    )
     assert "anthropic-or-openai-ipo-first" not in questions["anthropic_openai_ipo_edge"]
     assert "hype and spcx" in questions["hype_spcx_short_setup"]
     assert "coutnries to win the world cup" in questions["world_cup_countries_edge"]
@@ -562,7 +604,11 @@ def test_simple_prediction_market_fast_edge_prompt_guards() -> None:
     primary_paths = [
         REPO / ".opencode" / "agents" / "wayfinder.md",
         REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder.md",
-        REPO / "evals" / "agent_overlays" / "sports_workpack_challenger" / "wayfinder.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder.md",
     ]
     for path in primary_paths:
         text = path.read_text("utf-8")
@@ -591,7 +637,11 @@ def test_simple_prediction_market_fast_edge_prompt_guards() -> None:
     quant_paths = [
         REPO / ".opencode" / "agents" / "wayfinder-quant.md",
         REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder-quant.md",
-        REPO / "evals" / "agent_overlays" / "sports_workpack_challenger" / "wayfinder-quant.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder-quant.md",
     ]
     for path in quant_paths:
         text = path.read_text("utf-8")

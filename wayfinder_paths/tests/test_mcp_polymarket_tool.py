@@ -260,7 +260,9 @@ async def test_polymarket_search_reranks_relevant_candidate_before_truncation():
 
     assert out["ok"] is True
     result = out["result"]
-    assert result["candidates"][0]["slug"] == "will-france-win-the-2026-fifa-world-cup-924"
+    assert (
+        result["candidates"][0]["slug"] == "will-france-win-the-2026-fifa-world-cup-924"
+    )
     assert result["truncation"]["totalAvailable"] == 9
 
 
@@ -341,7 +343,9 @@ async def test_polymarket_search_hydrates_parent_event_for_child_market_recall()
     assert out["ok"] is True
     result = out["result"]
     assert "world-cup-winner" in result["relevance"]["eventHydrations"]
-    assert result["candidates"][0]["slug"] == "will-france-win-the-2026-fifa-world-cup-924"
+    assert (
+        result["candidates"][0]["slug"] == "will-france-win-the-2026-fifa-world-cup-924"
+    )
 
 
 @pytest.mark.asyncio

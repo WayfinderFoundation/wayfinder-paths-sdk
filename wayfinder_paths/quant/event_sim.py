@@ -75,7 +75,9 @@ _EVIDENCE_DIRECTION_ALIASES = {
 
 
 def _normalize_evidence_direction(value: Any) -> str:
-    return _EVIDENCE_DIRECTION_ALIASES.get(str(value or "").strip().lower(), str(value or ""))
+    return _EVIDENCE_DIRECTION_ALIASES.get(
+        str(value or "").strip().lower(), str(value or "")
+    )
 
 
 def _normalize_evidence_card(card: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -255,7 +257,9 @@ def load_config(data: Mapping[str, Any]) -> SimulationConfig:
         participant_id: tuple(markets)
         for participant_id, markets in markets_by_participant.items()
     }
-    model_provenance = dict(data.get("modelProvenance") or data.get("model_provenance") or {})
+    model_provenance = dict(
+        data.get("modelProvenance") or data.get("model_provenance") or {}
+    )
     if "rating_source" in data and "ratingSource" not in model_provenance:
         model_provenance["ratingSource"] = data["rating_source"]
     if "bracket_source" in data and "bracketSource" not in model_provenance:
@@ -323,7 +327,9 @@ def _rank_key(standing: Standing, rng: random.Random) -> tuple[int, int, int, fl
     return (standing.points, standing.gd, standing.gf, rng.random())
 
 
-def _apply_result(standing_a: Standing, standing_b: Standing, goals_a: int, goals_b: int) -> None:
+def _apply_result(
+    standing_a: Standing, standing_b: Standing, goals_a: int, goals_b: int
+) -> None:
     standing_a.gf += goals_a
     standing_a.ga += goals_b
     standing_b.gf += goals_b
@@ -357,10 +363,14 @@ def simulate_groups(
             b_id = str(match["b"])
             if a_id not in standings or b_id not in standings:
                 raise ValueError(f"group {group_id} references unknown participant")
-            goals_a, goals_b = _match_score(config, match, a_id, b_id, rng, baseline_goals)
+            goals_a, goals_b = _match_score(
+                config, match, a_id, b_id, rng, baseline_goals
+            )
             _apply_result(standings[a_id], standings[b_id], goals_a, goals_b)
 
-        ordered = sorted(standings.values(), key=lambda s: _rank_key(s, rng), reverse=True)
+        ordered = sorted(
+            standings.values(), key=lambda s: _rank_key(s, rng), reverse=True
+        )
         standings_by_group[group_id] = ordered
 
         for qualifier in group.get("qualifiers") or []:
@@ -401,7 +411,9 @@ def _match_score(
     )
 
 
-def _group_matches(group: Mapping[str, Any], participant_ids: list[str]) -> list[dict[str, Any]]:
+def _group_matches(
+    group: Mapping[str, Any], participant_ids: list[str]
+) -> list[dict[str, Any]]:
     matches = [dict(match) for match in group.get("matches") or []]
     if not group.get("complete_round_robin", True):
         return matches
@@ -460,10 +472,16 @@ def _resolve_endpoint(
     raise ValueError(f"invalid bracket endpoint {endpoint!r}")
 
 
-def simulate_bracket(config: SimulationConfig, slots: Mapping[str, str], rng: random.Random) -> str:
-    champion, _match_participants, _match_winners = _simulate_bracket_trace(config, slots, rng)
+def simulate_bracket(
+    config: SimulationConfig, slots: Mapping[str, str], rng: random.Random
+) -> str:
+    champion, _match_participants, _match_winners = _simulate_bracket_trace(
+        config, slots, rng
+    )
     if champion is None:
-        raise ValueError("event config needs bracket.matches or exactly one participant")
+        raise ValueError(
+            "event config needs bracket.matches or exactly one participant"
+        )
     return champion
 
 
@@ -492,7 +510,9 @@ def _simulate_bracket_trace(
         if str(match.get("status") or "scheduled") == "completed":
             winner = str(match["winner"])
             if winner not in (a_id, b_id):
-                raise ValueError(f"completed match {match_id} winner is not a participant")
+                raise ValueError(
+                    f"completed match {match_id} winner is not a participant"
+                )
             winners[match_id] = winner
             continue
         p_a = elo_win_probability(
@@ -515,7 +535,9 @@ def run_simulation(config: SimulationConfig) -> list[CandidateResult]:
 
     for _ in range(config.iterations):
         slots, _standings = simulate_groups(config, rng)
-        champion, match_participants, match_winners = _simulate_bracket_trace(config, slots, rng)
+        champion, match_participants, match_winners = _simulate_bracket_trace(
+            config, slots, rng
+        )
         for participant_id in _target_successes(
             config,
             slots=slots,
@@ -552,7 +574,11 @@ def run_simulation(config: SimulationConfig) -> list[CandidateResult]:
             price = market.reference_price if market else None
             entry = market.entry_price if market else None
             edge_abs = probability - entry if entry is not None else None
-            edge_rel = edge_abs / entry if edge_abs is not None and entry and entry > 0 else None
+            edge_rel = (
+                edge_abs / entry
+                if edge_abs is not None and entry and entry > 0
+                else None
+            )
             rows.append(
                 CandidateResult(
                     participant_id=participant_id,
@@ -607,9 +633,16 @@ def _config_diagnostic_flags(config: SimulationConfig) -> tuple[str, ...]:
 
     bracket_source = " ".join(
         str(provenance.get(key) or "")
-        for key in ("bracketSource", "bracket_source", "bracketConfidence", "bracketQuality")
+        for key in (
+            "bracketSource",
+            "bracket_source",
+            "bracketConfidence",
+            "bracketQuality",
+        )
     ).lower()
-    bracket_meta = json.dumps(config.bracket, sort_keys=True).lower() if config.bracket else ""
+    bracket_meta = (
+        json.dumps(config.bracket, sort_keys=True).lower() if config.bracket else ""
+    )
     if any(
         needle in f"{bracket_source} {bracket_meta}"
         for needle in ("approx", "simplified", "assumption", "estimated")
@@ -619,7 +652,9 @@ def _config_diagnostic_flags(config: SimulationConfig) -> tuple[str, ...]:
     return tuple(dict.fromkeys(flags))
 
 
-def _distribution_diagnostic_flags(probabilities: Mapping[str, float]) -> tuple[str, ...]:
+def _distribution_diagnostic_flags(
+    probabilities: Mapping[str, float],
+) -> tuple[str, ...]:
     if not probabilities:
         return ()
     ordered = sorted(probabilities.values(), reverse=True)
@@ -645,7 +680,9 @@ def _target_successes(
 
     if target_type == "champion":
         if champion is None:
-            raise ValueError("champion target requires bracket.matches or exactly one participant")
+            raise ValueError(
+                "champion target requires bracket.matches or exactly one participant"
+            )
         return {champion}
 
     if target_type == "slot":
@@ -680,7 +717,10 @@ def _participants_with_completed_state(config: SimulationConfig) -> set[str]:
         if str(match.get("status") or "") == "completed":
             for side in ("a", "b"):
                 endpoint = match.get(side)
-                if isinstance(endpoint, Mapping) and endpoint.get("participant") is not None:
+                if (
+                    isinstance(endpoint, Mapping)
+                    and endpoint.get("participant") is not None
+                ):
                     completed.add(str(endpoint["participant"]))
     return completed
 
@@ -721,9 +761,8 @@ def _decision(
     if edge_abs is None or edge_rel is None:
         return "WATCH"
     if edge_abs >= config.min_edge_abs and edge_rel >= config.min_edge_rel:
-        if (
-            "approx_bracket" in diagnostic_flags
-            and not bool(config.model_provenance.get("allowActionableApproxBracket"))
+        if "approx_bracket" in diagnostic_flags and not bool(
+            config.model_provenance.get("allowActionableApproxBracket")
         ):
             return "WATCH"
         return "BUY_CANDIDATE"
@@ -739,8 +778,12 @@ def rows_as_dicts(rows: list[CandidateResult]) -> list[dict[str, Any]]:
             "name": row.name,
             "probability": round(row.probability, 6),
             "wins": row.wins,
-            "market_price": None if row.market_price is None else round(row.market_price, 6),
-            "entry_price": None if row.entry_price is None else round(row.entry_price, 6),
+            "market_price": None
+            if row.market_price is None
+            else round(row.market_price, 6),
+            "entry_price": None
+            if row.entry_price is None
+            else round(row.entry_price, 6),
             "price_source": row.price_source,
             "entry_source": row.entry_source,
             "venue": row.venue,

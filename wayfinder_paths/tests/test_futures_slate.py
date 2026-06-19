@@ -5,7 +5,15 @@ import pytest
 from wayfinder_paths.quant import futures_slate as fs
 
 
-def _row(vendor, name, american, *, market_type="outright", market_name="World Cup Winner", dec=None):
+def _row(
+    vendor,
+    name,
+    american,
+    *,
+    market_type="outright",
+    market_name="World Cup Winner",
+    dec=None,
+):
     return {
         "market_type": market_type,
         "market_name": market_name,
@@ -45,8 +53,12 @@ def test_field_devig_normalizes_per_vendor_and_medians():
 
 def test_multi_market_type_requires_market_name():
     rows = [
-        _row("fanduel", "Spain", -300, market_type="group_winner", market_name="Group A"),
-        _row("fanduel", "Jordan", 800, market_type="group_winner", market_name="Group J"),
+        _row(
+            "fanduel", "Spain", -300, market_type="group_winner", market_name="Group A"
+        ),
+        _row(
+            "fanduel", "Jordan", 800, market_type="group_winner", market_name="Group J"
+        ),
     ]
     with pytest.raises(ValueError, match="market_name"):
         fs.score_futures(rows, market_type="group_winner")

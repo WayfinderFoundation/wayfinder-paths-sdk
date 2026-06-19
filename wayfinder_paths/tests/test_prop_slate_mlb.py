@@ -27,7 +27,11 @@ class StubClient:
 
 def _bat_log(pid, gid, *, name="Shohei Ohtani", team="Los Angeles Dodgers", **stats):
     base = {
-        "player": {"id": pid, "first_name": name.split()[0], "last_name": name.split()[1]},
+        "player": {
+            "id": pid,
+            "first_name": name.split()[0],
+            "last_name": name.split()[1],
+        },
         "game_id": gid,
         "team_name": team,
         "plate_appearances": 4,
@@ -152,10 +156,14 @@ async def test_mlb_slate_scores_nested_markets_and_skips_milestones():
     ]
     # 12 games, most recent (higher game_id) hot: 2 hits; older: 1 hit.
     logs = [
-        _bat_log(208, 5040000 + i, hits=2 if i >= 9 else 1, total_bases=2 if i >= 9 else 1)
+        _bat_log(
+            208, 5040000 + i, hits=2 if i >= 9 else 1, total_bases=2 if i >= 9 else 1
+        )
         for i in range(12)
     ]
-    slate = await ps.fetch_prop_slate("mlb", 5058809, 2026, client=_mlb_stub(props, logs), pace_s=0)
+    slate = await ps.fetch_prop_slate(
+        "mlb", 5058809, 2026, client=_mlb_stub(props, logs), pace_s=0
+    )
 
     assert slate.skipped_one_sided == 2
     assert {p["prop_type"] for p in slate.props} == {"hits", "total_bases"}
@@ -191,15 +199,31 @@ async def test_mlb_pitcher_prop_projects_off_outs():
         gid += 1
         if i % 3 == 0:
             logs.append(
-                _bat_log(6032, gid, name="Garrett Crochet", team="Chicago White Sox",
-                         plate_appearances=0, hits=0, pitching_outs=18, p_k=6)
+                _bat_log(
+                    6032,
+                    gid,
+                    name="Garrett Crochet",
+                    team="Chicago White Sox",
+                    plate_appearances=0,
+                    hits=0,
+                    pitching_outs=18,
+                    p_k=6,
+                )
             )
         else:
             logs.append(
-                _bat_log(6032, gid, name="Garrett Crochet", team="Chicago White Sox",
-                         plate_appearances=2, hits=0)
+                _bat_log(
+                    6032,
+                    gid,
+                    name="Garrett Crochet",
+                    team="Chicago White Sox",
+                    plate_appearances=2,
+                    hits=0,
+                )
             )
-    slate = await ps.fetch_prop_slate("mlb", 5058809, 2026, client=_mlb_stub(props, logs), pace_s=0)
+    slate = await ps.fetch_prop_slate(
+        "mlb", 5058809, 2026, client=_mlb_stub(props, logs), pace_s=0
+    )
     result = ps.score_prop_slate(slate)
     pick = (result.actionable + result.watch)[0]
     assert pick.prop_type == "pitcher_strikeouts"

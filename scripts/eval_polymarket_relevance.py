@@ -32,9 +32,14 @@ def _event_rank(result: dict[str, Any], target_id: str) -> int | None:
     return None
 
 
-def _candidate_event_rank(candidates: list[dict[str, Any]], target_id: str) -> int | None:
+def _candidate_event_rank(
+    candidates: list[dict[str, Any]], target_id: str
+) -> int | None:
     for idx, candidate in enumerate(candidates, 1):
-        if candidate.get("eventSlug") == target_id or candidate.get("slug") == target_id:
+        if (
+            candidate.get("eventSlug") == target_id
+            or candidate.get("slug") == target_id
+        ):
             return idx
     return None
 
@@ -42,7 +47,9 @@ def _candidate_event_rank(candidates: list[dict[str, Any]], target_id: str) -> i
 def _prefix_rank(result: dict[str, Any], prefix: str) -> int | None:
     candidates = result.get("candidates") or []
     for idx, candidate in enumerate(candidates, 1):
-        if str(candidate.get("eventSlug") or "").startswith(prefix) or str(candidate.get("slug") or "").startswith(prefix):
+        if str(candidate.get("eventSlug") or "").startswith(prefix) or str(
+            candidate.get("slug") or ""
+        ).startswith(prefix):
             return idx
     for idx, group in enumerate(result.get("eventGroups") or [], 1):
         if str(group.get("eventSlug") or "").startswith(prefix):
@@ -50,7 +57,9 @@ def _prefix_rank(result: dict[str, Any], prefix: str) -> int | None:
     return None
 
 
-def _pass_for_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, int | None, str]:
+def _pass_for_case(
+    case: dict[str, Any], result: dict[str, Any]
+) -> tuple[bool, int | None, str]:
     target_id = str(case["id"])
     candidates = result.get("candidates") or []
     match = case.get("match") if isinstance(case.get("match"), dict) else {}
@@ -76,7 +85,9 @@ def _pass_for_case(case: dict[str, Any], result: dict[str, Any]) -> tuple[bool, 
     return False, group_rank or candidate_rank, "missing_event_top3_or_candidate_top5"
 
 
-async def _run_query(case: dict[str, Any], query: str, *, candidate_limit: int) -> dict[str, Any]:
+async def _run_query(
+    case: dict[str, Any], query: str, *, candidate_limit: int
+) -> dict[str, Any]:
     started = time.perf_counter()
     out = await polymarket_read(
         "search",
@@ -113,7 +124,9 @@ async def _run_query(case: dict[str, Any], query: str, *, candidate_limit: int) 
         "hitSource": hit_source,
         "elapsedMs": elapsed_ms,
         "candidateSlugs": [c.get("slug") for c in (result.get("candidates") or [])[:5]],
-        "eventGroups": [g.get("eventSlug") for g in (result.get("eventGroups") or [])[:3]],
+        "eventGroups": [
+            g.get("eventSlug") for g in (result.get("eventGroups") or [])[:3]
+        ],
         "relevance": relevance,
         "queryCount": len(relevance.get("queriesTried") or []),
         "directHydrationCount": len(relevance.get("directHydrations") or []),
@@ -153,11 +166,21 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "recallAt5Pct": _pct(sum(1 for rank in ranks if rank <= 5), total),
         "byType": by_type,
         "avgElapsedMs": round(statistics.mean(elapsed), 2) if elapsed else 0.0,
-        "p95ElapsedMs": round(statistics.quantiles(elapsed, n=20)[18], 2) if len(elapsed) >= 20 else max(elapsed, default=0.0),
-        "avgQueryCount": round(statistics.mean(query_counts), 2) if query_counts else 0.0,
-        "p95QueryCount": statistics.quantiles(query_counts, n=20)[18] if len(query_counts) >= 20 else max(query_counts, default=0),
-        "avgDirectHydrations": round(statistics.mean(direct_counts), 2) if direct_counts else 0.0,
-        "avgEventHydrations": round(statistics.mean(event_counts), 2) if event_counts else 0.0,
+        "p95ElapsedMs": round(statistics.quantiles(elapsed, n=20)[18], 2)
+        if len(elapsed) >= 20
+        else max(elapsed, default=0.0),
+        "avgQueryCount": round(statistics.mean(query_counts), 2)
+        if query_counts
+        else 0.0,
+        "p95QueryCount": statistics.quantiles(query_counts, n=20)[18]
+        if len(query_counts) >= 20
+        else max(query_counts, default=0),
+        "avgDirectHydrations": round(statistics.mean(direct_counts), 2)
+        if direct_counts
+        else 0.0,
+        "avgEventHydrations": round(statistics.mean(event_counts), 2)
+        if event_counts
+        else 0.0,
         "modes": {
             mode: sum(1 for row in rows if row.get("mode") == mode)
             for mode in sorted({str(row.get("mode")) for row in rows})
@@ -179,8 +202,12 @@ def _summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 async def _main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate Polymarket relevance search.")
-    parser.add_argument("--fixture", default="evals/fixtures/polymarket_relevance_cases.json")
+    parser = argparse.ArgumentParser(
+        description="Evaluate Polymarket relevance search."
+    )
+    parser.add_argument(
+        "--fixture", default="evals/fixtures/polymarket_relevance_cases.json"
+    )
     parser.add_argument("--max-cases", type=int, default=None)
     parser.add_argument("--candidate-limit", type=int, default=10)
     parser.add_argument("--output", default=None)
@@ -193,7 +220,9 @@ async def _main() -> None:
     rows: list[dict[str, Any]] = []
     for case in cases:
         for query in case.get("queries") or []:
-            rows.append(await _run_query(case, str(query), candidate_limit=args.candidate_limit))
+            rows.append(
+                await _run_query(case, str(query), candidate_limit=args.candidate_limit)
+            )
 
     payload = {"summary": _summary(rows), "rows": rows}
     print(json.dumps(payload["summary"], indent=2))

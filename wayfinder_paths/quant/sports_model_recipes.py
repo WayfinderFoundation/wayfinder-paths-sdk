@@ -45,7 +45,14 @@ SPORTS_MODEL_RECIPES: dict[str, dict[str, Any]] = {
             {"id": "rating_model", "type": "glicko_like_elo"},
             {"id": "score_distribution", "type": "monte_carlo_normal"},
         ],
-        outputs=["modelP", "pLow", "pHigh", "fairSpread", "fairTotal", "scenarioSensitivity"],
+        outputs=[
+            "modelP",
+            "pLow",
+            "pHigh",
+            "fairSpread",
+            "fairTotal",
+            "scenarioSensitivity",
+        ],
     ),
     "nhl_game_elo_poisson_v1": _recipe(
         sport="nhl",
@@ -87,7 +94,14 @@ SPORTS_MODEL_RECIPES: dict[str, dict[str, Any]] = {
         sport="nba",
         market_types=["player_prop"],
         base_models=[{"id": "prop_projection", "type": "minutes_usage_distribution"}],
-        outputs=["modelP", "pLow", "pHigh", "projection", "line", "scenarioSensitivity"],
+        outputs=[
+            "modelP",
+            "pLow",
+            "pHigh",
+            "projection",
+            "line",
+            "scenarioSensitivity",
+        ],
     ),
     "nhl_prop_projection_v1": _recipe(
         sport="nhl",

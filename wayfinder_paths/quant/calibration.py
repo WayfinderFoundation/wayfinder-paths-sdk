@@ -44,13 +44,21 @@ def calibration_buckets(
 
 
 def reliability_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    scored = [row for row in rows if row.get("p") is not None and row.get("outcome") is not None]
+    scored = [
+        row
+        for row in rows
+        if row.get("p") is not None and row.get("outcome") is not None
+    ]
     if not scored:
         return {"count": 0, "brier": None, "logLoss": None, "buckets": []}
     return {
         "count": len(scored),
-        "brier": sum(brier_score(float(row["p"]), int(row["outcome"])) for row in scored) / len(scored),
-        "logLoss": sum(log_loss(float(row["p"]), int(row["outcome"])) for row in scored) / len(scored),
+        "brier": sum(
+            brier_score(float(row["p"]), int(row["outcome"])) for row in scored
+        )
+        / len(scored),
+        "logLoss": sum(log_loss(float(row["p"]), int(row["outcome"])) for row in scored)
+        / len(scored),
         "buckets": calibration_buckets(scored),
     }
 

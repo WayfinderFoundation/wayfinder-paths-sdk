@@ -100,8 +100,16 @@ def update_ratings(
     for result in results:
         a_id = str(result["a"])
         b_id = str(result["b"])
-        a = _grow_rd(updated.get(a_id, Rating(a_id, config.base_rating, config.base_rd)), config, as_of)
-        b = _grow_rd(updated.get(b_id, Rating(b_id, config.base_rating, config.base_rd)), config, as_of)
+        a = _grow_rd(
+            updated.get(a_id, Rating(a_id, config.base_rating, config.base_rd)),
+            config,
+            as_of,
+        )
+        b = _grow_rd(
+            updated.get(b_id, Rating(b_id, config.base_rating, config.base_rd)),
+            config,
+            as_of,
+        )
         score_a = float(result.get("score_a", result.get("a_score", 0)))
         score_b = float(result.get("score_b", result.get("b_score", 0)))
         actual_a = 1.0 if score_a > score_b else 0.0 if score_a < score_b else 0.5
@@ -109,7 +117,11 @@ def update_ratings(
         margin = abs(score_a - score_b)
         margin_scale = 1.0 + min(margin * config.margin_weight, 1.0)
         delta = config.k * margin_scale * (actual_a - expected_a)
-        played_at = str(result.get("played_at") or result.get("date") or datetime.now(UTC).isoformat())
+        played_at = str(
+            result.get("played_at")
+            or result.get("date")
+            or datetime.now(UTC).isoformat()
+        )
         updated[a_id] = Rating(
             a_id,
             a.rating + delta,

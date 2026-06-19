@@ -22,21 +22,30 @@ def _float_or_none(value: Any) -> float | None:
 def normalize_hl_market(raw: Mapping[str, Any]) -> dict[str, Any]:
     """Normalize search/mid/L2/context rows into a compact HL surface payload."""
 
-    asset_ctx = raw.get("assetCtx") or raw.get("asset_context") or raw.get("market") or {}
+    asset_ctx = (
+        raw.get("assetCtx") or raw.get("asset_context") or raw.get("market") or {}
+    )
     l2 = raw.get("l2") or raw.get("l2Book") or raw.get("orderBook") or raw.get("book")
     mid = _float_or_none(raw.get("mid") or raw.get("midPx") or asset_ctx.get("midPx"))
     normalized = {
         "venue": "hyperliquid",
-        "coin": raw.get("coin") or raw.get("name") or raw.get("asset") or raw.get("symbol"),
+        "coin": raw.get("coin")
+        or raw.get("name")
+        or raw.get("asset")
+        or raw.get("symbol"),
         "dex": raw.get("dex") or raw.get("builder") or raw.get("exchange"),
         "mid": mid,
         "l2": l2,
         "assetCtx": dict(asset_ctx) if isinstance(asset_ctx, Mapping) else {},
         "funding": _float_or_none(raw.get("funding") or asset_ctx.get("funding")),
         "openInterest": _float_or_none(
-            raw.get("openInterest") or raw.get("open_interest") or asset_ctx.get("openInterest")
+            raw.get("openInterest")
+            or raw.get("open_interest")
+            or asset_ctx.get("openInterest")
         ),
-        "settlement": raw.get("settlement") or raw.get("resolution") or raw.get("oracleSpec"),
+        "settlement": raw.get("settlement")
+        or raw.get("resolution")
+        or raw.get("oracleSpec"),
         "boundedPayoff": raw.get("boundedPayoff") or raw.get("bounded_event"),
         "oraclePx": _float_or_none(raw.get("oraclePx") or asset_ctx.get("oraclePx")),
         "raw": dict(raw),

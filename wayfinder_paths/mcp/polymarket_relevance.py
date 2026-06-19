@@ -178,7 +178,16 @@ _INTENT_TERMS = {
 
 _WIN_TERMS = {"win", "wins", "winning", "won"}
 _DRAW_TERMS = {"draw", "tie"}
-_MATCH_INTENT_TERMS = {"beat", "draw", "game", "match", "moneyline", "tie", "upset", "vs"}
+_MATCH_INTENT_TERMS = {
+    "beat",
+    "draw",
+    "game",
+    "match",
+    "moneyline",
+    "tie",
+    "upset",
+    "vs",
+}
 _ENTITY_NOISE = {
     "advance",
     "beat",
@@ -221,7 +230,9 @@ _ENTITY_NOISE = {
     "withdraw",
     "withdrawal",
 }
-_SLUGISH_RE = re.compile(r"(?:https?://\S+/)?([a-z0-9]+(?:-[a-z0-9]+){2,})(?:[/?#].*)?$", re.I)
+_SLUGISH_RE = re.compile(
+    r"(?:https?://\S+/)?([a-z0-9]+(?:-[a-z0-9]+){2,})(?:[/?#].*)?$", re.I
+)
 
 
 @dataclass(frozen=True)
@@ -316,7 +327,9 @@ def build_query_plan(query: str) -> QueryPlan:
     signal = [t for t in tokens if t not in _FILLER and t not in _CONNECTORS]
     entities = _extract_entity_pair(tokens) or _infer_entity_pair(tokens, signal)
     intent_terms = [t for t in signal if t in _INTENT_TERMS]
-    entity_terms = _entity_terms(signal=signal, entities=entities, intent_terms=intent_terms)
+    entity_terms = _entity_terms(
+        signal=signal, entities=entities, intent_terms=intent_terms
+    )
     grammar_variants = _grammar_variants(
         tokens=tokens,
         signal=signal,
@@ -392,7 +405,9 @@ def _nearest_signal(tokens: list[str], *, reverse: bool) -> str | None:
     return None
 
 
-def _entity_terms(*, signal: list[str], entities: list[str], intent_terms: list[str]) -> list[str]:
+def _entity_terms(
+    *, signal: list[str], entities: list[str], intent_terms: list[str]
+) -> list[str]:
     terms = list(entities)
     intent = set(intent_terms)
     for token in signal:
@@ -425,7 +440,11 @@ def _grammar_variants(
     if len(entities) >= 2:
         a, b = entities[:2]
         rest = [t for t in signal if t not in {a, b}]
-        if has_match_cue or (has_world_cup and "winner" not in signal_set and "outright" not in signal_set):
+        if has_match_cue or (
+            has_world_cup
+            and "winner" not in signal_set
+            and "outright" not in signal_set
+        ):
             variants.append(" ".join([a, b]))
             if _DRAW_TERMS & signal_set:
                 variants.append(" ".join([a, b, "draw"]))
@@ -437,7 +456,9 @@ def _grammar_variants(
     for idx, token in enumerate(tokens):
         if token not in _WIN_TERMS:
             continue
-        tail = [t for t in tokens[idx + 1 :] if t not in _FILLER and t not in _CONNECTORS]
+        tail = [
+            t for t in tokens[idx + 1 :] if t not in _FILLER and t not in _CONNECTORS
+        ]
         head = [t for t in tokens[:idx] if t not in _FILLER and t not in _CONNECTORS]
         if tail:
             variants.append(" ".join([*tail[:5], "winner"]))
@@ -452,8 +473,10 @@ def _grammar_variants(
     if "rate" in signal_set and "decision" in signal_set and "fed" not in signal_set:
         variants.insert(0, "fed decision")
 
-    if "fed" in signal_set and "july" in signal_set and (
-        {"decision", "rate", "hike", "hold", "increase"} & signal_set
+    if (
+        "fed" in signal_set
+        and "july" in signal_set
+        and ({"decision", "rate", "hike", "hold", "increase"} & signal_set)
     ):
         if "hike" in signal_set or "increase" in signal_set:
             amounts = [t for t in signal if t.isdigit() or t == "bps"]
@@ -490,7 +513,12 @@ def _grammar_variants(
         or {"golden", "boot"} <= signal_set
     )
     if has_top_scorer:
-        event_terms = [t for t in signal if t not in {"top", "goal", "score", "scorer", "goalscorer", "golden", "boot"}]
+        event_terms = [
+            t
+            for t in signal
+            if t
+            not in {"top", "goal", "score", "scorer", "goalscorer", "golden", "boot"}
+        ]
         player_terms = [t for t in entity_terms if t not in {"world", "cup"}]
         if player_terms:
             variants.insert(0, " ".join([*player_terms[:2], "top", "goalscorer"]))
@@ -514,7 +542,9 @@ def _grammar_variants(
             variants.insert(0, "knockout advance")
 
     if entity_terms and _WIN_TERMS & signal_set:
-        event_terms = [t for t in intent_terms if t not in _WIN_TERMS and t not in _DRAW_TERMS]
+        event_terms = [
+            t for t in intent_terms if t not in _WIN_TERMS and t not in _DRAW_TERMS
+        ]
         if event_terms:
             variants.append(" ".join([*entity_terms[:2], "win", *event_terms[:5]]))
 
@@ -538,7 +568,11 @@ def _grammar_variants(
         for t in intent_terms
         if t not in _TEMPORAL_TERMS and t not in _WIN_TERMS and t not in _DRAW_TERMS
     ]
-    if subject_terms and key_actions and len(signal) > len(subject_terms) + len(key_actions):
+    if (
+        subject_terms
+        and key_actions
+        and len(signal) > len(subject_terms) + len(key_actions)
+    ):
         variants.append(" ".join([*subject_terms[:3], *key_actions[:2]]))
 
     return _unique(variants, limit=4)
@@ -567,7 +601,9 @@ def _market_text(market: dict[str, Any]) -> str:
     if isinstance(events, list):
         for item in events[:2]:
             if isinstance(item, dict):
-                pieces.extend(str(item.get(k)) for k in ("title", "slug") if item.get(k))
+                pieces.extend(
+                    str(item.get(k)) for k in ("title", "slug") if item.get(k)
+                )
     return _normalize(" ".join(pieces))
 
 
@@ -607,20 +643,30 @@ def _is_match_reformulation(plan: QueryPlan) -> bool:
     query_tokens = _tokens(plan.search_query)
     if len(plan.entities) >= 2 and query_tokens[:2] == plan.entities[:2]:
         return "winner" not in query_tokens and "outright" not in query_tokens
-    return "match" in query_tokens and any(token in plan.entity_terms for token in query_tokens)
+    return "match" in query_tokens and any(
+        token in plan.entity_terms for token in query_tokens
+    )
 
 
 def _effective_signal_terms(plan: QueryPlan) -> list[str]:
     terms = list(plan.expanded_signal_tokens)
     if _is_match_reformulation(plan):
-        terms = [token for token in terms if token not in {"world", "cup", "tournament", "outright"}]
+        terms = [
+            token
+            for token in terms
+            if token not in {"world", "cup", "tournament", "outright"}
+        ]
     return terms
 
 
 def _effective_intent_terms(plan: QueryPlan) -> list[str]:
     terms = list(plan.intent_terms)
     if _is_match_reformulation(plan):
-        terms = [token for token in terms if token not in {"world", "cup", "tournament", "outright"}]
+        terms = [
+            token
+            for token in terms
+            if token not in {"world", "cup", "tournament", "outright"}
+        ]
     return terms
 
 
@@ -629,8 +675,14 @@ def _market_family_adjustment(text: str, plan: QueryPlan) -> float:
     tokens = set(plan.tokens)
     penalty = 0.0
 
-    wants_say_market = bool({"announcer", "announcers", "say", "word", "phrase"} & signal)
-    if not wants_say_market and ("announcer" in text or "announcers" in text or " will the announcers say " in f" {text} "):
+    wants_say_market = bool(
+        {"announcer", "announcers", "say", "word", "phrase"} & signal
+    )
+    if not wants_say_market and (
+        "announcer" in text
+        or "announcers" in text
+        or " will the announcers say " in f" {text} "
+    ):
         penalty -= 4.0
 
     wants_weather = bool({"temperature", "weather", "rain", "snow", "heat"} & signal)
@@ -649,10 +701,22 @@ def _market_family_adjustment(text: str, plan: QueryPlan) -> float:
     if not wants_dissent and "dissent" in text:
         penalty -= 2.5
 
-    wants_prop = bool({"assist", "assists", "shot", "shots", "goal", "score", "player", "prop"} & signal)
-    wants_top_scorer = bool({"goalscorer", "scorer", "boot"} & signal) or ("most" in tokens and "goal" in signal)
+    wants_prop = bool(
+        {"assist", "assists", "shot", "shots", "goal", "score", "player", "prop"}
+        & signal
+    )
+    wants_top_scorer = bool({"goalscorer", "scorer", "boot"} & signal) or (
+        "most" in tokens and "goal" in signal
+    )
     if not wants_prop and not wants_top_scorer:
-        prop_markers = (" assists ", " shots ", " score a goal ", "player to score", "goals gte", "btts")
+        prop_markers = (
+            " assists ",
+            " shots ",
+            " score a goal ",
+            "player to score",
+            "goals gte",
+            "btts",
+        )
         if any(marker in f" {text} " for marker in prop_markers):
             penalty -= 2.0
 
@@ -712,7 +776,10 @@ def score_market(market: dict[str, Any], plan: QueryPlan) -> dict[str, Any]:
     similarity = SequenceMatcher(None, query_norm, text).ratio() if text else 0.0
     exact_phrase = 1.0 if query_norm and query_norm in text else 0.0
     tradable_bonus = _tradable_bonus(market)
-    liquidity_bonus = min(float(market.get("liquidity") or market.get("liquidityNum") or 0) / 1_000_000, 0.25)
+    liquidity_bonus = min(
+        float(market.get("liquidity") or market.get("liquidityNum") or 0) / 1_000_000,
+        0.25,
+    )
     family_adjustment = _market_family_adjustment(text, plan)
 
     score = (
@@ -752,7 +819,9 @@ def _tradable_bonus(market: dict[str, Any]) -> float:
     return bonus
 
 
-def rerank_markets(markets: list[dict[str, Any]], plan: QueryPlan) -> list[dict[str, Any]]:
+def rerank_markets(
+    markets: list[dict[str, Any]], plan: QueryPlan
+) -> list[dict[str, Any]]:
     ranked: list[dict[str, Any]] = []
     for market in markets:
         row = dict(market)
@@ -762,15 +831,27 @@ def rerank_markets(markets: list[dict[str, Any]], plan: QueryPlan) -> list[dict[
     ranked.sort(
         key=lambda row: (
             float(row.get("_relevance", {}).get("score") or 0),
-            float(row.get("volume24h") or row.get("volume24hr") or row.get("volume24hrClob") or 0),
-            float(row.get("liquidity") or row.get("liquidityNum") or row.get("liquidityClob") or 0),
+            float(
+                row.get("volume24h")
+                or row.get("volume24hr")
+                or row.get("volume24hrClob")
+                or 0
+            ),
+            float(
+                row.get("liquidity")
+                or row.get("liquidityNum")
+                or row.get("liquidityClob")
+                or 0
+            ),
         ),
         reverse=True,
     )
     return ranked
 
 
-def needs_expansion(plan: QueryPlan, ranked: list[dict[str, Any]], raw_rows: list[dict[str, Any]]) -> tuple[bool, str]:
+def needs_expansion(
+    plan: QueryPlan, ranked: list[dict[str, Any]], raw_rows: list[dict[str, Any]]
+) -> tuple[bool, str]:
     if not raw_rows:
         return True, "empty_results"
     if not ranked:
@@ -870,7 +951,9 @@ async def relevance_search(
     if ranked:
         top = ranked[0].get("_relevance", {})
         top_score = float(top.get("score") or 0)
-        metadata["confidence"] = "high" if top_score >= (4.1 if plan.entity_terms else 3.4) else "medium"
+        metadata["confidence"] = (
+            "high" if top_score >= (4.1 if plan.entity_terms else 3.4) else "medium"
+        )
     metadata["elapsedMs"] = round((time.perf_counter() - started) * 1000, 2)
     metadata["returnedRowsBeforeTruncation"] = len(ranked)
 
@@ -963,7 +1046,9 @@ def _event_markets(event: dict[str, Any], slug: str) -> list[dict[str, Any]]:
     return out
 
 
-def _rank_event_slugs(rows: list[dict[str, Any]], plan: QueryPlan, *, limit: int) -> list[str]:
+def _rank_event_slugs(
+    rows: list[dict[str, Any]], plan: QueryPlan, *, limit: int
+) -> list[str]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         slug = str(row.get("eventSlug") or row.get("event_slug") or "").strip()
@@ -981,7 +1066,13 @@ def _rank_event_slugs(rows: list[dict[str, Any]], plan: QueryPlan, *, limit: int
             "_event": {"slug": slug, "title": event_title},
         }
         event_score = float(score_market(synthetic, plan)["score"])
-        row_score = max(float(row.get("_relevance", {}).get("score") or score_market(row, plan)["score"]) for row in group_rows)
+        row_score = max(
+            float(
+                row.get("_relevance", {}).get("score")
+                or score_market(row, plan)["score"]
+            )
+            for row in group_rows
+        )
         score = max(event_score, row_score) + min(len(group_rows), 6) * 0.04
         threshold = 2.6 if not plan.entity_terms else 2.9
         if score >= threshold:

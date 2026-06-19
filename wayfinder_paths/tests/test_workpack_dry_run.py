@@ -83,7 +83,10 @@ def test_validate_decision_requires_surface_pack() -> None:
     report = validate_decision_pack(pack)
 
     assert report["payload"]["status"] == "fail"
-    assert any(issue["code"] == "DECISION_WITHOUT_SURFACE" for issue in report["payload"]["issues"])
+    assert any(
+        issue["code"] == "DECISION_WITHOUT_SURFACE"
+        for issue in report["payload"]["issues"]
+    )
 
 
 def test_validation_report_shape() -> None:

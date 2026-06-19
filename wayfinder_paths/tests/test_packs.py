@@ -26,7 +26,9 @@ def _surface_pack() -> dict:
     }
 
 
-def test_write_pack_creates_path_and_index_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_write_pack_creates_path_and_index_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv(packs.PACKS_ROOT_ENV, str(tmp_path / "packs"))
 
     ref = packs.write_pack(_surface_pack())
@@ -39,7 +41,9 @@ def test_write_pack_creates_path_and_index_record(tmp_path: Path, monkeypatch: p
     assert json.loads(index.read_text().splitlines()[0])["packId"] == ref["packId"]
 
 
-def test_read_pack_by_id_and_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_read_pack_by_id_and_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv(packs.PACKS_ROOT_ENV, str(tmp_path / "packs"))
     ref = packs.write_pack(_surface_pack())
 
@@ -50,7 +54,9 @@ def test_read_pack_by_id_and_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert by_path["packId"] == ref["packId"]
 
 
-def test_latest_pack_filters_by_domain_type_scope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_latest_pack_filters_by_domain_type_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv(packs.PACKS_ROOT_ENV, str(tmp_path / "packs"))
     ref = packs.write_pack(_surface_pack())
     pack = packs.read_pack(str(ref["packId"]))
@@ -65,7 +71,9 @@ def test_latest_pack_filters_by_domain_type_scope(tmp_path: Path, monkeypatch: p
     assert latest["packId"] == ref["packId"]
 
 
-def test_pack_schema_requires_valid_until_or_ttl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pack_schema_requires_valid_until_or_ttl(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv(packs.PACKS_ROOT_ENV, str(tmp_path / "packs"))
     pack = _surface_pack()
     pack["reusePolicy"].pop("ttlSeconds")
@@ -74,7 +82,9 @@ def test_pack_schema_requires_valid_until_or_ttl(tmp_path: Path, monkeypatch: py
         packs.write_pack(pack)
 
 
-def test_surface_pack_requires_rehydrate_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_surface_pack_requires_rehydrate_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv(packs.PACKS_ROOT_ENV, str(tmp_path / "packs"))
     pack = _surface_pack()
     pack["reusePolicy"].pop("mustRehydrateBefore")
@@ -83,7 +93,9 @@ def test_surface_pack_requires_rehydrate_policy(tmp_path: Path, monkeypatch: pyt
         packs.write_pack(pack)
 
 
-def test_mark_pack_stale_updates_file_and_latest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mark_pack_stale_updates_file_and_latest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv(packs.PACKS_ROOT_ENV, str(tmp_path / "packs"))
     ref = packs.write_pack(_surface_pack())
 
@@ -94,7 +106,9 @@ def test_mark_pack_stale_updates_file_and_latest(tmp_path: Path, monkeypatch: py
     assert packs.latest_pack(domain="sports", pack_type="surfacePack") is None
 
 
-def test_pack_ref_is_compact_and_contains_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pack_ref_is_compact_and_contains_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv(packs.PACKS_ROOT_ENV, str(tmp_path / "packs"))
     ref = packs.write_pack(_surface_pack())
 

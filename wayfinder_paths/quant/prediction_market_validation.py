@@ -74,7 +74,12 @@ def validate_surface_lite(surface: Mapping[str, Any]) -> dict[str, Any]:
     issues: list[dict[str, Any]] = []
     profile = str(surface.get("profile") or "")
     if not profile:
-        issues.append(issue("PM_RESOLUTION_PROFILE_MISSING", "surfaceLite has no resolution profile."))
+        issues.append(
+            issue(
+                "PM_RESOLUTION_PROFILE_MISSING",
+                "surfaceLite has no resolution profile.",
+            )
+        )
     missing = require_executable_fields(surface, for_action=False)
     if "rows" in missing:
         issues.append(
@@ -88,7 +93,17 @@ def validate_surface_lite(surface: Mapping[str, Any]) -> dict[str, Any]:
     if profile in NON_BINARY and not (
         surface.get("resolutionRef")
         or surface.get("fullRef")
-        or profile in {"pm_partial_50_50", "partial_50_50", "pm_exclusive_multi", "exclusive_multi", "pm_neg_risk", "neg_risk", "pm_aug_neg_risk", "aug_neg_risk"}
+        or profile
+        in {
+            "pm_partial_50_50",
+            "partial_50_50",
+            "pm_exclusive_multi",
+            "exclusive_multi",
+            "pm_neg_risk",
+            "neg_risk",
+            "pm_aug_neg_risk",
+            "aug_neg_risk",
+        }
     ):
         issues.append(
             issue(
@@ -110,9 +125,13 @@ def validate_resolution_profile(
     issues: list[dict[str, Any]] = []
     profile = str(surface.get("profile") or "")
     if not profile:
-        issues.append(issue("PM_RESOLUTION_PROFILE_MISSING", "Missing resolution profile."))
+        issues.append(
+            issue("PM_RESOLUTION_PROFILE_MISSING", "Missing resolution profile.")
+        )
     if profile in {"pm_custom_resolution", "custom_resolution"}:
-        parsed = (((full_pack or {}).get("payload") or {}).get("resolution") or {}).get("parsed")
+        parsed = (((full_pack or {}).get("payload") or {}).get("resolution") or {}).get(
+            "parsed"
+        )
         if not parsed:
             issues.append(
                 issue(
@@ -141,9 +160,16 @@ def validate_decision_uses_correct_math(
     issues: list[dict[str, Any]] = []
     for row in _decision_rows(decision):
         profile = _profile(surface, row)
-        method = str(row.get("mathHelper") or row.get("posteriorMethod") or row.get("evMethod") or "").lower()
+        method = str(
+            row.get("mathHelper")
+            or row.get("posteriorMethod")
+            or row.get("evMethod")
+            or ""
+        ).lower()
         action = row.get("decision") or row.get("action") or row.get("side")
-        if profile in NON_BINARY and ("binary" in method or method in {"binary_yes_ev", "binary_no_ev"}):
+        if profile in NON_BINARY and (
+            "binary" in method or method in {"binary_yes_ev", "binary_no_ev"}
+        ):
             issues.append(
                 issue(
                     "PM_BINARY_MATH_USED_FOR_NON_BINARY",
@@ -171,7 +197,9 @@ def validate_decision_uses_correct_math(
     return validation_report(stage="prediction_math", issues=issues)
 
 
-def validate_exit_plan(surface: Mapping[str, Any], decision: Mapping[str, Any]) -> dict[str, Any]:
+def validate_exit_plan(
+    surface: Mapping[str, Any], decision: Mapping[str, Any]
+) -> dict[str, Any]:
     """Every actionable edge needs settlement, exit, RV, or arb plan metadata."""
 
     issues: list[dict[str, Any]] = []
@@ -206,7 +234,9 @@ def validate_exit_plan(surface: Mapping[str, Any], decision: Mapping[str, Any]) 
                     )
                 )
         if edge_mode == "settlement_edge":
-            if row.get("settlementEv") is None and not row.get("evBreakdown", {}).get("settlementEv"):
+            if row.get("settlementEv") is None and not row.get("evBreakdown", {}).get(
+                "settlementEv"
+            ):
                 issues.append(
                     issue(
                         "PM_BUY_WITHOUT_EXIT_OR_SETTLEMENT_PLAN",
@@ -222,7 +252,11 @@ def validate_prediction_market_surface_pack(pack: Mapping[str, Any]) -> dict[str
 
     surface = _surface_from_pack(pack)
     issues = validate_surface_lite(surface)["payload"]["issues"]
-    return validation_report(stage="prediction_surface", issues=issues, input_packs=[str(pack.get("packId", ""))])
+    return validation_report(
+        stage="prediction_surface",
+        issues=issues,
+        input_packs=[str(pack.get("packId", ""))],
+    )
 
 
 def validate_prediction_market_decision_pack(pack: Mapping[str, Any]) -> dict[str, Any]:
@@ -232,11 +266,25 @@ def validate_prediction_market_decision_pack(pack: Mapping[str, Any]) -> dict[st
     surface = payload.get("surfaceLite") or {}
     issues: list[dict[str, Any]] = []
     if surface:
-        issues.extend(validate_decision_uses_correct_math(surface, pack)["payload"]["issues"])
+        issues.extend(
+            validate_decision_uses_correct_math(surface, pack)["payload"]["issues"]
+        )
         issues.extend(validate_exit_plan(surface, pack)["payload"]["issues"])
     else:
         for row in _decision_rows(pack):
             surface_row = {"profile": row.get("profile")}
-            issues.extend(validate_decision_uses_correct_math(surface_row, {"payload": {"rows": [row]}})["payload"]["issues"])
-            issues.extend(validate_exit_plan(surface_row, {"payload": {"rows": [row]}})["payload"]["issues"])
-    return validation_report(stage="prediction_decision", issues=issues, input_packs=[str(pack.get("packId", ""))])
+            issues.extend(
+                validate_decision_uses_correct_math(
+                    surface_row, {"payload": {"rows": [row]}}
+                )["payload"]["issues"]
+            )
+            issues.extend(
+                validate_exit_plan(surface_row, {"payload": {"rows": [row]}})[
+                    "payload"
+                ]["issues"]
+            )
+    return validation_report(
+        stage="prediction_decision",
+        issues=issues,
+        input_packs=[str(pack.get("packId", ""))],
+    )

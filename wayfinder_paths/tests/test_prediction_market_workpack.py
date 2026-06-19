@@ -110,7 +110,10 @@ def test_exclusive_multi_requires_all_related_outcomes() -> None:
 
 
 def test_binary_math_on_non_binary_profile_fails_validation() -> None:
-    surface = {"profile": "pm_partial_50_50", "rows": [["Anthropic YES", 0.70, 0.73, 0.715, "ok"]]}
+    surface = {
+        "profile": "pm_partial_50_50",
+        "rows": [["Anthropic YES", 0.70, 0.73, 0.715, "ok"]],
+    }
     decision = {
         "payload": {
             "rows": [
@@ -127,7 +130,10 @@ def test_binary_math_on_non_binary_profile_fails_validation() -> None:
 
     report = validate_decision_uses_correct_math(surface, decision)
 
-    assert any(issue["code"] == "PM_BINARY_MATH_USED_FOR_NON_BINARY" for issue in report["payload"]["issues"])
+    assert any(
+        issue["code"] == "PM_BINARY_MATH_USED_FOR_NON_BINARY"
+        for issue in report["payload"]["issues"]
+    )
 
 
 def test_hyperliquid_mid_only_cannot_be_actionable_buy() -> None:
@@ -148,7 +154,10 @@ def test_hyperliquid_mid_only_cannot_be_actionable_buy() -> None:
     report = validate_decision_uses_correct_math(normalized, decision)
 
     assert normalized["profile"] == "hl_mid_only"
-    assert any(issue["code"] == "PM_HL_MID_ONLY_ACTIONABLE_BUY" for issue in report["payload"]["issues"])
+    assert any(
+        issue["code"] == "PM_HL_MID_ONLY_ACTIONABLE_BUY"
+        for issue in report["payload"]["issues"]
+    )
 
 
 def test_prediction_market_decision_requires_exit_or_settlement_plan() -> None:
@@ -163,7 +172,10 @@ def test_prediction_market_decision_requires_exit_or_settlement_plan() -> None:
         "scope": {},
         "summary": "decision",
         "payload": {
-            "surfaceLite": {"profile": "pm_simple_binary", "rows": [["YES", 0.48, 0.50, 0.49, "ok"]]},
+            "surfaceLite": {
+                "profile": "pm_simple_binary",
+                "rows": [["YES", 0.48, 0.50, 0.49, "ok"]],
+            },
             "rows": [{"decision": "BUY_YES", "entry": 0.50}],
         },
         "inputPacks": ["surface"],
@@ -173,20 +185,32 @@ def test_prediction_market_decision_requires_exit_or_settlement_plan() -> None:
 
     report = validate_decision_pack(decision)
 
-    assert any(issue["code"] == "PM_BUY_WITHOUT_EXIT_OR_SETTLEMENT_PLAN" for issue in report["payload"]["issues"])
+    assert any(
+        issue["code"] == "PM_BUY_WITHOUT_EXIT_OR_SETTLEMENT_PLAN"
+        for issue in report["payload"]["issues"]
+    )
 
 
 def test_mark_to_market_edge_needs_future_bid_assumption() -> None:
     surface = {"profile": "pm_simple_binary", "rows": [["YES", 0.48, 0.50, 0.49, "ok"]]}
-    decision = {"payload": {"rows": [{"decision": "BUY_YES", "edgeMode": "mark_to_market_edge"}]}}
+    decision = {
+        "payload": {
+            "rows": [{"decision": "BUY_YES", "edgeMode": "mark_to_market_edge"}]
+        }
+    }
 
     report = validate_exit_plan(surface, decision)
 
-    assert any(issue["code"] == "PM_EXIT_EDGE_WITHOUT_FUTURE_BID_ASSUMPTION" for issue in report["payload"]["issues"])
+    assert any(
+        issue["code"] == "PM_EXIT_EDGE_WITHOUT_FUTURE_BID_ASSUMPTION"
+        for issue in report["payload"]["issues"]
+    )
 
 
 def test_exit_and_hl_ev_helpers() -> None:
-    assert exit_ev(expected_exit_bid=0.62, entry=0.55, slippage=0.01) == pytest.approx(0.06)
+    assert exit_ev(expected_exit_bid=0.62, entry=0.55, slippage=0.01) == pytest.approx(
+        0.06
+    )
     short = hl_exit_ev(
         side="short",
         entry=100,
@@ -204,7 +228,10 @@ def test_prediction_surface_pack_validation_runs_domain_checks() -> None:
 
     report = validate_surface_pack(pack)
 
-    assert any(issue["code"] == "PM_SURFACE_MISSING_EXECUTABLE_PRICE" for issue in report["payload"]["issues"])
+    assert any(
+        issue["code"] == "PM_SURFACE_MISSING_EXECUTABLE_PRICE"
+        for issue in report["payload"]["issues"]
+    )
 
 
 def test_profile_classifier_detects_augmented_other() -> None:

@@ -59,7 +59,9 @@ def _outcome_labels(full_pack: Mapping[str, Any]) -> list[str]:
     return labels
 
 
-def _exclusive_model(labels: list[str], *, aug_neg_risk: bool = False) -> dict[str, Any]:
+def _exclusive_model(
+    labels: list[str], *, aug_neg_risk: bool = False
+) -> dict[str, Any]:
     warnings: list[str] = []
     states = []
     for label in labels:
@@ -69,13 +71,14 @@ def _exclusive_model(labels: list[str], *, aug_neg_risk: bool = False) -> dict[s
             continue
         states.append(label)
     payoffs = {
-        label: [1.0 if label == state else 0.0 for state in states]
-        for label in states
+        label: [1.0 if label == state else 0.0 for state in states] for label in states
     }
     return {"states": states, "payoffs": payoffs, "warnings": warnings}
 
 
-def expand_resolution_profile(profile: str, full_pack: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def expand_resolution_profile(
+    profile: str, full_pack: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
     """Expand a compact resolver profile into states/payoffs only when needed."""
 
     canonical = _canonical_profile(profile)
@@ -98,7 +101,11 @@ def expand_resolution_profile(profile: str, full_pack: Mapping[str, Any] | None 
     if canonical == "custom_resolution":
         resolution = ((full_pack or {}).get("payload") or {}).get("resolution") or {}
         parsed = resolution.get("parsed")
-        if isinstance(parsed, Mapping) and parsed.get("states") and parsed.get("payoffs"):
+        if (
+            isinstance(parsed, Mapping)
+            and parsed.get("states")
+            and parsed.get("payoffs")
+        ):
             return {"profile": canonical, **dict(parsed), "warnings": []}
         raise ValueError("custom_resolution requires parsed resolver states/payoffs")
     if canonical == "derivative_perp":
@@ -118,14 +125,21 @@ def expected_payout(
     """Return expected redemption payout from state payoffs and probabilities."""
 
     if isinstance(payoffs, Mapping):
-        return sum(float(payoffs[state]) * float(prob) for state, prob in state_probs.items())
+        return sum(
+            float(payoffs[state]) * float(prob) for state, prob in state_probs.items()
+        )
     states = list(state_probs)
     if len(payoffs) != len(states):
         raise ValueError("payoff vector length must match state probabilities")
-    return sum(float(payoff) * float(state_probs[state]) for payoff, state in zip(payoffs, states, strict=True))
+    return sum(
+        float(payoff) * float(state_probs[state])
+        for payoff, state in zip(payoffs, states, strict=True)
+    )
 
 
-def settlement_ev(expected_redemption_payout: float, entry: float, fees: float = 0.0) -> float:
+def settlement_ev(
+    expected_redemption_payout: float, entry: float, fees: float = 0.0
+) -> float:
     """Expected hold-to-resolution EV per share."""
 
     return float(expected_redemption_payout) - float(entry) - float(fees)
@@ -178,14 +192,18 @@ def robust_gate(
         high = settlement_high if settlement_high is not None else exit_high
     else:
         raise ValueError("unsupported edge_mode")
-    passes = conservative is not None and float(conservative) - float(entry) >= float(min_ev)
+    passes = conservative is not None and float(conservative) - float(entry) >= float(
+        min_ev
+    )
     return {
         "edgeMode": mode,
         "entry": float(entry),
         "conservativeValue": conservative,
         "baseValue": base,
         "highValue": high,
-        "conservativeEv": None if conservative is None else float(conservative) - float(entry),
+        "conservativeEv": None
+        if conservative is None
+        else float(conservative) - float(entry),
         "baseEv": None if base is None else float(base) - float(entry),
         "passes": bool(passes),
         "decision": "PASS" if passes else "WATCH",

@@ -223,7 +223,11 @@ def test_bid_only_market_is_not_buy_candidate() -> None:
             ],
             "bracket": {
                 "matches": [
-                    {"id": "final", "a": {"participant": "a"}, "b": {"participant": "b"}}
+                    {
+                        "id": "final",
+                        "a": {"participant": "a"},
+                        "b": {"participant": "b"},
+                    }
                 ]
             },
             "markets": [{"participant_id": "a", "bid": 0.1}],
@@ -249,12 +253,21 @@ def test_multiple_venue_markets_do_not_overwrite_each_other() -> None:
             ],
             "bracket": {
                 "matches": [
-                    {"id": "final", "a": {"participant": "a"}, "b": {"participant": "b"}}
+                    {
+                        "id": "final",
+                        "a": {"participant": "a"},
+                        "b": {"participant": "b"},
+                    }
                 ]
             },
             "markets": [
                 {"participant_id": "a", "venue": "polymarket", "bid": 0.2, "ask": 0.21},
-                {"participant_id": "a", "venue": "hyperliquid", "bid": 0.3, "ask": 0.31},
+                {
+                    "participant_id": "a",
+                    "venue": "hyperliquid",
+                    "bid": 0.3,
+                    "ask": 0.31,
+                },
             ],
         }
     )
@@ -293,7 +306,11 @@ def test_legacy_evidence_direction_aliases_are_normalized() -> None:
             ],
             "bracket": {
                 "matches": [
-                    {"id": "final", "a": {"participant": "a"}, "b": {"participant": "b"}}
+                    {
+                        "id": "final",
+                        "a": {"participant": "a"},
+                        "b": {"participant": "b"},
+                    }
                 ]
             },
             "markets": [{"participant_id": "a", "bid": 0.1, "ask": 0.11}],
@@ -331,7 +348,11 @@ def test_unsupported_evidence_direction_is_surfaced_and_gates_action() -> None:
             ],
             "bracket": {
                 "matches": [
-                    {"id": "final", "a": {"participant": "a"}, "b": {"participant": "b"}}
+                    {
+                        "id": "final",
+                        "a": {"participant": "a"},
+                        "b": {"participant": "b"},
+                    }
                 ]
             },
             "markets": [{"participant_id": "a", "bid": 0.1, "ask": 0.11}],
@@ -361,7 +382,11 @@ def test_market_implied_ratings_are_diagnostic_only() -> None:
             ],
             "bracket": {
                 "matches": [
-                    {"id": "final", "a": {"participant": "a"}, "b": {"participant": "b"}}
+                    {
+                        "id": "final",
+                        "a": {"participant": "a"},
+                        "b": {"participant": "b"},
+                    }
                 ]
             },
             "markets": [{"participant_id": "a", "bid": 0.1, "ask": 0.11}],
@@ -388,7 +413,11 @@ def test_approximate_bracket_downgrades_buy_candidate() -> None:
             ],
             "bracket": {
                 "matches": [
-                    {"id": "final", "a": {"participant": "a"}, "b": {"participant": "b"}}
+                    {
+                        "id": "final",
+                        "a": {"participant": "a"},
+                        "b": {"participant": "b"},
+                    }
                 ]
             },
             "markets": [{"participant_id": "a", "bid": 0.1, "ask": 0.11}],

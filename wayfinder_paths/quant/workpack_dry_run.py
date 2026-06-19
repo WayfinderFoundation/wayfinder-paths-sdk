@@ -87,10 +87,14 @@ def validate_pack_schema(pack: Mapping[str, Any]) -> dict[str, Any]:
                 )
             )
     if pack.get("packType") not in PACK_TYPES:
-        issues.append(issue("INVALID_PACK_TYPE", f"Invalid packType {pack.get('packType')!r}."))
+        issues.append(
+            issue("INVALID_PACK_TYPE", f"Invalid packType {pack.get('packType')!r}.")
+        )
     reuse_policy = pack.get("reusePolicy")
     if not isinstance(reuse_policy, Mapping):
-        issues.append(issue("MISSING_REHYDRATE_POLICY", "reusePolicy must be an object."))
+        issues.append(
+            issue("MISSING_REHYDRATE_POLICY", "reusePolicy must be an object.")
+        )
     elif "mustRehydrateBefore" not in reuse_policy:
         issues.append(
             issue(
@@ -100,7 +104,9 @@ def validate_pack_schema(pack: Mapping[str, Any]) -> dict[str, Any]:
                 auto_fixable=True,
             )
         )
-    return validation_report(stage="schema", issues=issues, input_packs=[str(pack.get("packId", ""))])
+    return validation_report(
+        stage="schema", issues=issues, input_packs=[str(pack.get("packId", ""))]
+    )
 
 
 def validate_pack_lineage(packs: list[Mapping[str, Any]]) -> dict[str, Any]:
@@ -120,7 +126,9 @@ def validate_pack_lineage(packs: list[Mapping[str, Any]]) -> dict[str, Any]:
     return validation_report(stage="lineage", issues=issues, input_packs=list(seen))
 
 
-def validate_rehydrate_policy(pack: Mapping[str, Any], *, action: str) -> dict[str, Any]:
+def validate_rehydrate_policy(
+    pack: Mapping[str, Any], *, action: str
+) -> dict[str, Any]:
     issues = []
     if is_stale(pack):
         issues.append(
@@ -131,7 +139,9 @@ def validate_rehydrate_policy(pack: Mapping[str, Any], *, action: str) -> dict[s
                 auto_fixable=True,
             )
         )
-    must_rehydrate = set((pack.get("reusePolicy") or {}).get("mustRehydrateBefore") or [])
+    must_rehydrate = set(
+        (pack.get("reusePolicy") or {}).get("mustRehydrateBefore") or []
+    )
     if action in must_rehydrate:
         issues.append(
             issue(
@@ -141,7 +151,9 @@ def validate_rehydrate_policy(pack: Mapping[str, Any], *, action: str) -> dict[s
                 auto_fixable=True,
             )
         )
-    return validation_report(stage=f"pre_{action}", issues=issues, input_packs=[str(pack.get("packId", ""))])
+    return validation_report(
+        stage=f"pre_{action}", issues=issues, input_packs=[str(pack.get("packId", ""))]
+    )
 
 
 def validate_surface_pack(pack: Mapping[str, Any]) -> dict[str, Any]:
@@ -149,7 +161,10 @@ def validate_surface_pack(pack: Mapping[str, Any]) -> dict[str, Any]:
     if pack.get("packType") != "surfacePack":
         issues.append(issue("INVALID_PACK_TYPE", "Expected surfacePack."))
     payload = pack.get("payload") or {}
-    if not any(key in payload for key in ("markets", "quotes", "routes", "orderBooks", "balances")):
+    if not any(
+        key in payload
+        for key in ("markets", "quotes", "routes", "orderBooks", "balances")
+    ):
         issues.append(
             issue(
                 "MISSING_EXECUTABLE_PRIOR",
@@ -163,8 +178,12 @@ def validate_surface_pack(pack: Mapping[str, Any]) -> dict[str, Any]:
             validate_prediction_market_surface_pack,
         )
 
-        issues.extend(validate_prediction_market_surface_pack(pack)["payload"]["issues"])
-    return validation_report(stage="surface", issues=issues, input_packs=[str(pack.get("packId", ""))])
+        issues.extend(
+            validate_prediction_market_surface_pack(pack)["payload"]["issues"]
+        )
+    return validation_report(
+        stage="surface", issues=issues, input_packs=[str(pack.get("packId", ""))]
+    )
 
 
 def validate_decision_pack(pack: Mapping[str, Any]) -> dict[str, Any]:
@@ -173,7 +192,9 @@ def validate_decision_pack(pack: Mapping[str, Any]) -> dict[str, Any]:
         issues.append(issue("INVALID_PACK_TYPE", "Expected decisionPack."))
     input_packs = [str(value) for value in pack.get("inputPacks") or []]
     if not input_packs:
-        issues.append(issue("DECISION_WITHOUT_SURFACE", "decisionPack has no inputPacks."))
+        issues.append(
+            issue("DECISION_WITHOUT_SURFACE", "decisionPack has no inputPacks.")
+        )
     payload = pack.get("payload") or {}
     rows = payload.get("rows") or payload.get("decisions") or []
     if not rows:
@@ -190,5 +211,7 @@ def validate_decision_pack(pack: Mapping[str, Any]) -> dict[str, Any]:
             validate_prediction_market_decision_pack,
         )
 
-        issues.extend(validate_prediction_market_decision_pack(pack)["payload"]["issues"])
+        issues.extend(
+            validate_prediction_market_decision_pack(pack)["payload"]["issues"]
+        )
     return validation_report(stage="decision", issues=issues, input_packs=input_packs)

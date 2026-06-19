@@ -20,7 +20,11 @@ def _rows(pack: Mapping[str, Any], *keys: str) -> list[Mapping[str, Any]]:
 
 def _is_actionable(row: Mapping[str, Any]) -> bool:
     decision = str(row.get("decision") or row.get("action") or "").upper()
-    return decision.startswith("BUY") or decision in {"BET", "TRADE", "READY_FOR_APPROVAL"}
+    return decision.startswith("BUY") or decision in {
+        "BET",
+        "TRADE",
+        "READY_FOR_APPROVAL",
+    }
 
 
 def validate_sports_surface(surface_pack: Mapping[str, Any]) -> dict[str, Any]:
@@ -39,7 +43,11 @@ def validate_sports_surface(surface_pack: Mapping[str, Any]) -> dict[str, Any]:
         )
     for market in markets:
         market_type = str(market.get("marketType") or market.get("type") or "").lower()
-        outcomes = [str(out.get("label") or out.get("name") or "").lower() for out in market.get("outcomes") or [] if isinstance(out, Mapping)]
+        outcomes = [
+            str(out.get("label") or out.get("name") or "").lower()
+            for out in market.get("outcomes") or []
+            if isinstance(out, Mapping)
+        ]
         if market_type in {"1x2", "three_way", "three-way", "soccer_moneyline"}:
             if not any(outcome == "draw" for outcome in outcomes):
                 issues.append(
@@ -50,7 +58,11 @@ def validate_sports_surface(surface_pack: Mapping[str, Any]) -> dict[str, Any]:
                         auto_fixable=True,
                     )
                 )
-    return validation_report(stage="sports_surface", issues=issues, input_packs=[str(surface_pack.get("packId", ""))])
+    return validation_report(
+        stage="sports_surface",
+        issues=issues,
+        input_packs=[str(surface_pack.get("packId", ""))],
+    )
 
 
 def validate_sports_features(feature_pack: Mapping[str, Any]) -> dict[str, Any]:
@@ -59,7 +71,9 @@ def validate_sports_features(feature_pack: Mapping[str, Any]) -> dict[str, Any]:
         issues.append(issue("INVALID_PACK_TYPE", "Expected sports featurePack."))
     payload = feature_pack.get("payload") or {}
     if payload.get("usesFutureData") is True:
-        issues.append(issue("FEATURE_LEAKAGE_RISK", "featurePack declares future-data usage."))
+        issues.append(
+            issue("FEATURE_LEAKAGE_RISK", "featurePack declares future-data usage.")
+        )
     if payload.get("thinSample") and not payload.get("thinSampleFlagged"):
         issues.append(
             issue(
@@ -69,7 +83,11 @@ def validate_sports_features(feature_pack: Mapping[str, Any]) -> dict[str, Any]:
                 fix_stage="feature",
             )
         )
-    return validation_report(stage="sports_features", issues=issues, input_packs=[str(feature_pack.get("packId", ""))])
+    return validation_report(
+        stage="sports_features",
+        issues=issues,
+        input_packs=[str(feature_pack.get("packId", ""))],
+    )
 
 
 def validate_sports_modifiers(
@@ -80,10 +98,19 @@ def validate_sports_modifiers(
     issues: list[dict[str, Any]] = []
     modifiers = (context_pack.get("payload") or {}).get("modelModifiers") or []
     for modifier in modifiers:
-        result = validate_modifier(dict(modifier), recipe=dict(recipe), feature_pack=dict(feature_pack))
+        result = validate_modifier(
+            dict(modifier), recipe=dict(recipe), feature_pack=dict(feature_pack)
+        )
         for row in result.get("issues") or []:
             issues.append(row)
-    return validation_report(stage="sports_modifiers", issues=issues, input_packs=[str(context_pack.get("packId", "")), str(feature_pack.get("packId", ""))])
+    return validation_report(
+        stage="sports_modifiers",
+        issues=issues,
+        input_packs=[
+            str(context_pack.get("packId", "")),
+            str(feature_pack.get("packId", "")),
+        ],
+    )
 
 
 def validate_sports_analysis(analysis_pack: Mapping[str, Any]) -> dict[str, Any]:
@@ -110,7 +137,11 @@ def validate_sports_analysis(analysis_pack: Mapping[str, Any]) -> dict[str, Any]
                     fix_stage="decision",
                 )
             )
-    return validation_report(stage="sports_analysis", issues=issues, input_packs=[str(analysis_pack.get("packId", ""))])
+    return validation_report(
+        stage="sports_analysis",
+        issues=issues,
+        input_packs=[str(analysis_pack.get("packId", ""))],
+    )
 
 
 def validate_sports_decision(
@@ -122,7 +153,9 @@ def validate_sports_decision(
     surface_markets = _rows(surface_pack, "markets", "orderBooks", "boards")
     analysis_rows = _rows(analysis_pack, "rows", "markets", "candidates")
     if not surface_markets:
-        issues.append(issue("MISSING_EXECUTABLE_PRIOR", "No executable sports surface rows."))
+        issues.append(
+            issue("MISSING_EXECUTABLE_PRIOR", "No executable sports surface rows.")
+        )
     if not analysis_rows:
         issues.append(issue("DECISION_WITHOUT_ANALYSIS", "No sports analysis rows."))
     for row in _rows(decision_pack, "rows", "decisions"):
@@ -151,7 +184,12 @@ def validate_sports_decision(
             )
         market_type = str(row.get("marketType") or "").lower()
         side = str(row.get("side") or row.get("outcome") or "").lower()
-        if market_type in {"1x2", "three_way", "three-way", "soccer_moneyline"} and side in {"no", "not_favorite"}:
+        if market_type in {
+            "1x2",
+            "three_way",
+            "three-way",
+            "soccer_moneyline",
+        } and side in {"no", "not_favorite"}:
             issues.append(
                 issue(
                     "BINARY_COLLAPSED_MULTI_OUTCOME",

@@ -266,7 +266,9 @@ def configure_workspace_mcp_url(workspace: Path, mcp_url: str | None) -> None:
     root_config_path = workspace / "opencode.json"
     nested_config_path = workspace / ".opencode" / "opencode.json"
     runtime_config = (
-        json.loads(nested_config_path.read_text()) if nested_config_path.exists() else {}
+        json.loads(nested_config_path.read_text())
+        if nested_config_path.exists()
+        else {}
     )
     config_paths = [
         path for path in (root_config_path, nested_config_path) if path.exists()
@@ -362,9 +364,9 @@ def newest_session_for_question(db_path: Path, question: str) -> str | None:
 
 
 def harvest_answer_from_db(db_path: Path, *, title: str, question: str) -> str | None:
-    session_id = newest_session_for_title(db_path, title) or newest_session_for_question(
-        db_path, question
-    )
+    session_id = newest_session_for_title(
+        db_path, title
+    ) or newest_session_for_question(db_path, question)
     if not session_id:
         return None
 
@@ -453,8 +455,12 @@ def _compact_lookup_replay(query: str, response: dict[str, Any]) -> dict[str, An
             "error": response.get("error") or response.get("message") or response,
         }
     result = response.get("result") if isinstance(response.get("result"), dict) else {}
-    relevance = result.get("relevance") if isinstance(result.get("relevance"), dict) else {}
-    candidates = result.get("candidates") if isinstance(result.get("candidates"), list) else []
+    relevance = (
+        result.get("relevance") if isinstance(result.get("relevance"), dict) else {}
+    )
+    candidates = (
+        result.get("candidates") if isinstance(result.get("candidates"), list) else []
+    )
     top = []
     for candidate in candidates[:3]:
         if not isinstance(candidate, dict):
@@ -535,7 +541,9 @@ def collect_lookup_diagnostics(
         replays = [{"ok": False, "error": repr(exc)}]
 
     new_flow = any(
-        bool(item.get("mode") or item.get("queriesTried") or item.get("eventHydrations"))
+        bool(
+            item.get("mode") or item.get("queriesTried") or item.get("eventHydrations")
+        )
         for item in replays
         if isinstance(item, dict)
     )
@@ -600,9 +608,7 @@ def resolve_wayfinder_model_env(model: str, env: dict[str, str]) -> None:
     if key:
         env["WAYFINDER_API_KEY"] = str(key).strip()
         return
-    raise RuntimeError(
-        f"{model} requires WAYFINDER_API_KEY or system.api_key."
-    )
+    raise RuntimeError(f"{model} requires WAYFINDER_API_KEY or system.api_key.")
 
 
 def force_eval_wayfinder_api_env(root: Path, env: dict[str, str]) -> None:
@@ -710,9 +716,7 @@ def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
             status = result["status"]
             if result.get("final_answer_issues"):
                 status = f"{status} ({len(result['final_answer_issues'])} final-answer issue)"
-            lines.append(
-                f"| `{variant_id}` | {status} | {duration} | `{answer}` |"
-            )
+            lines.append(f"| `{variant_id}` | {status} | {duration} | `{answer}` |")
         lookup_rows = [
             (variant_id, result.get("lookup_diagnostics"))
             for variant_id, result in question["variants"].items()
@@ -723,7 +727,13 @@ def write_markdown_report(report: Mapping[str, Any], path: Path) -> None:
             for variant_id, diagnostics in lookup_rows:
                 lines.append(_lookup_report_line(variant_id, diagnostics))
         if question.get("judgments"):
-            lines.extend(["", "| Judge Pair | Verdict | Scores | Duration |", "| --- | --- | --- | ---: |"])
+            lines.extend(
+                [
+                    "",
+                    "| Judge Pair | Verdict | Scores | Duration |",
+                    "| --- | --- | --- | ---: |",
+                ]
+            )
             for judgment in question["judgments"]:
                 verdict = judgment.get("verdict", {})
                 scores = verdict.get("scores", {}) if isinstance(verdict, dict) else {}
@@ -885,7 +895,9 @@ def run_station(args: argparse.Namespace) -> Path:
                 ans_a_path.read_text(errors="replace"),
                 ans_b_path.read_text(errors="replace"),
             )
-            judge_id = f"{station_name}-{qid}-{answer_a}-vs-{answer_b}-{uuid.uuid4().hex[:8]}"
+            judge_id = (
+                f"{station_name}-{qid}-{answer_a}-vs-{answer_b}-{uuid.uuid4().hex[:8]}"
+            )
             prompt_path = question_dir / f"judge_{answer_a}_vs_{answer_b}.prompt.md"
             log_path = question_dir / f"judge_{answer_a}_vs_{answer_b}.log"
             verdict_path = question_dir / f"judge_{answer_a}_vs_{answer_b}.json"
@@ -916,7 +928,9 @@ def run_station(args: argparse.Namespace) -> Path:
                 duration_seconds=duration,
                 started_at=started_at,
                 finished_at=utc_now(),
-                error=error if error else (None if verdict is not None else "no verdict JSON"),
+                error=error
+                if error
+                else (None if verdict is not None else "no verdict JSON"),
             )
             row = asdict(judge_result)
             row["verdict"] = verdict

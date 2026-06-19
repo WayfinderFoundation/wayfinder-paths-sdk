@@ -39,7 +39,9 @@ def _analysis_pack(
     }
 
 
-def _validated_modifiers(recipe_id: str, feature_pack: dict[str, Any], modifiers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _validated_modifiers(
+    recipe_id: str, feature_pack: dict[str, Any], modifiers: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     recipe = SPORTS_MODEL_RECIPES[recipe_id]
     validated = []
     for modifier in modifiers:
@@ -75,7 +77,10 @@ def run_game_simulation(
         sport=sport,
         recipe_id=recipe_id,
         rows=rows,
-        consumed=[str(feature_pack.get("packId", "")), str(context_pack.get("packId", ""))],
+        consumed=[
+            str(feature_pack.get("packId", "")),
+            str(context_pack.get("packId", "")),
+        ],
         summary=f"{sport} game simulation rows from {recipe_id}",
     )
 
@@ -97,7 +102,10 @@ def run_prop_projection(
         sport=sport,
         recipe_id=recipe_id,
         rows=rows,
-        consumed=[str(feature_pack.get("packId", "")), str(context_pack.get("packId", ""))],
+        consumed=[
+            str(feature_pack.get("packId", "")),
+            str(context_pack.get("packId", "")),
+        ],
         summary=f"{sport} prop projection rows from {recipe_id}",
     )
 
@@ -118,6 +126,9 @@ def run_path_simulation(
         sport=str(payload.get("sport") or "sports"),
         recipe_id=recipe_id,
         rows=rows,
-        consumed=[str(event_state_pack.get("packId", "")), str(feature_pack.get("packId", ""))],
+        consumed=[
+            str(event_state_pack.get("packId", "")),
+            str(feature_pack.get("packId", "")),
+        ],
         summary=f"path simulation rows from {recipe_id}",
     )

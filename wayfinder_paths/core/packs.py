@@ -115,7 +115,9 @@ def _append_index(row: Mapping[str, Any]) -> None:
 def _rewrite_index(rows: list[dict[str, Any]]) -> None:
     path = _index_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows)
+    text = "".join(
+        json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows
+    )
     with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as tmp:
         tmp.write(text)
         temp_name = tmp.name
@@ -149,9 +151,7 @@ def _normalize_pack(pack: Mapping[str, Any]) -> dict[str, Any]:
     if pack_type in EXECUTION_SENSITIVE_TYPES:
         must_rehydrate = reuse_policy.get("mustRehydrateBefore")
         if not must_rehydrate:
-            raise ValueError(
-                f"{pack_type} requires reusePolicy.mustRehydrateBefore"
-            )
+            raise ValueError(f"{pack_type} requires reusePolicy.mustRehydrateBefore")
     elif "mustRehydrateBefore" not in reuse_policy:
         reuse_policy["mustRehydrateBefore"] = []
 
@@ -220,7 +220,9 @@ def write_pack(pack: dict[str, Any]) -> dict[str, Any]:
     normalized = _normalize_pack(pack)
     path = _pack_path(normalized)
     if path.exists() and not pack.get("packId"):
-        suffix = hashlib.sha256(json.dumps(normalized, sort_keys=True).encode()).hexdigest()[:6]
+        suffix = hashlib.sha256(
+            json.dumps(normalized, sort_keys=True).encode()
+        ).hexdigest()[:6]
         normalized["packId"] = f"{normalized['packId']}_{suffix}"
         path = _pack_path(normalized)
     normalized["path"] = str(path)

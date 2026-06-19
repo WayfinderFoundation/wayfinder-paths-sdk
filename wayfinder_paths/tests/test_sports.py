@@ -709,7 +709,9 @@ def test_sports_eval_judge_scores_unsupported_and_estimated_lines() -> None:
         assert needle in judge
 
 
-def test_sports_eval_judge_rewards_executable_market_math_not_sportsbook_gates() -> None:
+def test_sports_eval_judge_rewards_executable_market_math_not_sportsbook_gates() -> (
+    None
+):
     judge = (REPO / "scripts" / "eval_sports_ab_judge.md").read_text("utf-8")
 
     for needle in (
@@ -762,7 +764,7 @@ def test_sports_skill_requires_exact_market_hydration_and_bounded_scans() -> Non
 
     for needle in (
         "Exact-market hydration rule",
-        "never conclude \"no",
+        'never conclude "no',
         "immediately hydrate it with `get_event`",
         "bounded fallback queries",
         "each competitor/team surname",
@@ -973,7 +975,9 @@ def test_canonical_live_smoke_script_is_gateway_mediated() -> None:
         assert needle in script
 
 
-def test_sports_prompts_do_not_require_sportsbook_futures_for_event_state_pack() -> None:
+def test_sports_prompts_do_not_require_sportsbook_futures_for_event_state_pack() -> (
+    None
+):
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
         "utf-8"
     )

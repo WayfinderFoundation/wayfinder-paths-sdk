@@ -92,7 +92,9 @@ def test_germany_end_to_end_is_watch_at_conservative_gate():
     assert result["priorSource"] == "ask_only"  # single price = honest ask-only prior
     assert GERMANY_PM < result["pBase"] < GERMANY_BOOK  # pulled partway toward book
     assert result["decision"] == "WATCH"
-    assert result["evYes"] is not None and result["evYes"] > 0  # value shown, not hidden
+    assert (
+        result["evYes"] is not None and result["evYes"] > 0
+    )  # value shown, not hidden
 
     # Corroborating independent evidence CAN clear it.
     cards_plus = cards + [

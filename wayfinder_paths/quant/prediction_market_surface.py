@@ -144,7 +144,10 @@ def classify_resolution_profile(full_pack: Mapping[str, Any]) -> dict[str, Any]:
         return {"profile": classify_hl_profile(payload), "warnings": warnings}
 
     if not markets:
-        return {"profile": "pm_custom_resolution", "warnings": ["no_markets_to_classify"]}
+        return {
+            "profile": "pm_custom_resolution",
+            "warnings": ["no_markets_to_classify"],
+        }
 
     if any(bool(row.get("negRisk") or row.get("neg_risk")) for row in markets):
         labels = [
@@ -154,7 +157,10 @@ def classify_resolution_profile(full_pack: Mapping[str, Any]) -> dict[str, Any]:
             if isinstance(out, Mapping)
         ]
         if any(label.lower() in {"other", "placeholder"} for label in labels):
-            return {"profile": "pm_aug_neg_risk", "warnings": ["augmented_other_requires_rules"]}
+            return {
+                "profile": "pm_aug_neg_risk",
+                "warnings": ["augmented_other_requires_rules"],
+            }
         return {"profile": "pm_neg_risk", "warnings": warnings}
 
     outcome_counts = []
@@ -194,7 +200,8 @@ def compact_surface_lite(full_pack: Mapping[str, Any]) -> dict[str, Any]:
         rows = list(payload["rows"])
 
     ids = {
-        "eventSlug": payload.get("eventSlug") or (payload.get("event") or {}).get("slug"),
+        "eventSlug": payload.get("eventSlug")
+        or (payload.get("event") or {}).get("slug"),
         "conditionId": payload.get("conditionId"),
         "coin": payload.get("coin"),
         "dex": payload.get("dex"),
@@ -202,12 +209,15 @@ def compact_surface_lite(full_pack: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "packType": "surfacePack",
         "domain": "prediction_markets",
-        "venue": str(payload.get("venue") or full_pack.get("venue") or "").lower() or None,
+        "venue": str(payload.get("venue") or full_pack.get("venue") or "").lower()
+        or None,
         "surfaceKind": payload.get("surfaceKind") or profile_info["profile"],
         "observedAt": full_pack.get("observedAt"),
         "validUntil": full_pack.get("validUntil"),
         "event": payload.get("eventSlug") or (payload.get("event") or {}).get("slug"),
-        "market": payload.get("marketSlug") or payload.get("coin") or payload.get("market"),
+        "market": payload.get("marketSlug")
+        or payload.get("coin")
+        or payload.get("market"),
         "profile": profile_info["profile"],
         "rows": rows,
         "ids": {key: value for key, value in ids.items() if value},
@@ -218,7 +228,9 @@ def compact_surface_lite(full_pack: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def require_executable_fields(surface_lite: Mapping[str, Any], *, for_action: bool) -> list[str]:
+def require_executable_fields(
+    surface_lite: Mapping[str, Any], *, for_action: bool
+) -> list[str]:
     """Return missing fields for shortlist/action gates."""
 
     missing: list[str] = []
@@ -234,7 +246,11 @@ def require_executable_fields(surface_lite: Mapping[str, Any], *, for_action: bo
     if for_action:
         has_executable = False
         for row in rows:
-            if isinstance(row, Sequence) and not isinstance(row, (str, bytes)) and len(row) >= 3:
+            if (
+                isinstance(row, Sequence)
+                and not isinstance(row, (str, bytes))
+                and len(row) >= 3
+            ):
                 if row[1] is not None or row[2] is not None:
                     has_executable = True
                     break

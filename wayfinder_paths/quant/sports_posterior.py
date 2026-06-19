@@ -204,7 +204,9 @@ def make_card(spec: str) -> dict[str, Any]:
         )
     name, direction, strength, kind = parts
     if direction not in _DIRECTIONS:
-        raise ValueError(f"direction {direction!r} must be one of {sorted(_DIRECTIONS)}")
+        raise ValueError(
+            f"direction {direction!r} must be one of {sorted(_DIRECTIONS)}"
+        )
     if strength not in _STRENGTHS:
         raise ValueError(f"strength {strength!r} must be one of {list(_STRENGTHS)}")
     if kind not in _CARD_KINDS:
@@ -260,9 +262,7 @@ def sports_posterior(
     entry_yes = reprice.get("entryYes")
     entry_no = reprice.get("entryNo")
     p_base = float(band["pBase"])
-    sizing = (
-        market_edge(p_base, float(entry_yes)) if entry_yes is not None else None
-    )
+    sizing = market_edge(p_base, float(entry_yes)) if entry_yes is not None else None
     return {
         "priorSource": prior_info["priorSource"],
         "marketPrior": prior,
@@ -414,12 +414,17 @@ def posterior_from_packs(
             or model_row.get("name")
         )
         surface = by_key.get(key, {})
-        ask = surface.get("ask") or surface.get("entryPrice") or model_row.get("entryPrice")
+        ask = (
+            surface.get("ask")
+            or surface.get("entryPrice")
+            or model_row.get("entryPrice")
+        )
         bid = surface.get("bid")
         market_p = (
             (float(bid) + float(ask)) / 2.0
             if bid is not None and ask is not None
-            else float(ask) if ask is not None
+            else float(ask)
+            if ask is not None
             else surface.get("marketPrior")
         )
         model_p = (
@@ -440,10 +445,14 @@ def posterior_from_packs(
             model_fair_evidence_card(
                 float(model_p),
                 float(market_p),
-                model_type=str((analysis_pack.get("payload") or {}).get("recipeId") or "sports_model"),
+                model_type=str(
+                    (analysis_pack.get("payload") or {}).get("recipeId")
+                    or "sports_model"
+                ),
                 uncertainty_pp=(
                     abs(float(model_row["pHigh"]) - float(model_row["pLow"])) * 100
-                    if model_row.get("pHigh") is not None and model_row.get("pLow") is not None
+                    if model_row.get("pHigh") is not None
+                    and model_row.get("pLow") is not None
                     else None
                 ),
             )
@@ -481,7 +490,7 @@ def posterior_from_packs(
         "inputPacks": [
             surface_pack.get("packId"),
             analysis_pack.get("packId"),
-            *( [context_pack.get("packId")] if context_pack else [] ),
+            *([context_pack.get("packId")] if context_pack else []),
         ],
         "summary": "Sports posterior decisions from WorkPacks.",
         "payload": {"rows": decisions},
@@ -576,11 +585,17 @@ def _main() -> None:
         description="Blend the executable market prior with evidence cards into a "
         "gated posterior (sports dislocation adjudication)."
     )
-    parser.add_argument("--label", default=None, help="market label echoed in the header")
-    parser.add_argument("--market", type=float, default=None, help="single market price")
+    parser.add_argument(
+        "--label", default=None, help="market label echoed in the header"
+    )
+    parser.add_argument(
+        "--market", type=float, default=None, help="single market price"
+    )
     parser.add_argument("--bid", type=float, default=None, help="executable YES bid")
     parser.add_argument("--ask", type=float, default=None, help="executable YES ask")
-    parser.add_argument("--book", type=float, default=None, help="de-vigged book-fair p")
+    parser.add_argument(
+        "--book", type=float, default=None, help="de-vigged book-fair p"
+    )
     parser.add_argument("--vendors", type=int, default=2)
     parser.add_argument("--overround", type=float, default=None)
     parser.add_argument("--trust", type=float, default=0.7)
@@ -604,7 +619,9 @@ def _main() -> None:
     market_ref = (
         args.market
         if args.market is not None
-        else ((args.bid + args.ask) / 2 if args.bid and args.ask else args.ask or args.bid)
+        else (
+            (args.bid + args.ask) / 2 if args.bid and args.ask else args.ask or args.bid
+        )
     )
     report = None
     cards: list[dict[str, Any]] = []

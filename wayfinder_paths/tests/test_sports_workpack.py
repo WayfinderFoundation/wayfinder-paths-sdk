@@ -25,36 +25,64 @@ def test_sportsbook_only_buy_is_error() -> None:
             ]
         },
     }
-    surface = {"packId": "surface", "payload": {"markets": [{"venue": "polymarket", "ask": 0.4}]}}
+    surface = {
+        "packId": "surface",
+        "payload": {"markets": [{"venue": "polymarket", "ask": 0.4}]},
+    }
     analysis = {"packId": "analysis", "payload": {"rows": [{"modelP": 0.5}]}}
 
     report = validate_sports_decision(decision, surface, analysis)
 
-    assert any(issue["code"] == "SPORTSBOOK_ONLY_MARKED_ACTIONABLE" for issue in report["payload"]["issues"])
+    assert any(
+        issue["code"] == "SPORTSBOOK_ONLY_MARKED_ACTIONABLE"
+        for issue in report["payload"]["issues"]
+    )
 
 
 def test_multioutcome_binary_collapse_is_error() -> None:
     decision = {
         "packId": "decision",
         "packType": "decisionPack",
-        "payload": {"rows": [{"decision": "BUY_NO", "marketType": "1x2", "side": "no", "entryPrice": 0.4}]},
+        "payload": {
+            "rows": [
+                {
+                    "decision": "BUY_NO",
+                    "marketType": "1x2",
+                    "side": "no",
+                    "entryPrice": 0.4,
+                }
+            ]
+        },
     }
-    surface = {"packId": "surface", "payload": {"markets": [{"venue": "hyperliquid", "ask": 0.4}]}}
+    surface = {
+        "packId": "surface",
+        "payload": {"markets": [{"venue": "hyperliquid", "ask": 0.4}]},
+    }
     analysis = {"packId": "analysis", "payload": {"rows": [{"modelP": 0.5}]}}
 
     report = validate_sports_decision(decision, surface, analysis)
 
-    assert any(issue["code"] == "BINARY_COLLAPSED_MULTI_OUTCOME" for issue in report["payload"]["issues"])
+    assert any(
+        issue["code"] == "BINARY_COLLAPSED_MULTI_OUTCOME"
+        for issue in report["payload"]["issues"]
+    )
 
 
 def test_missing_executable_prior_is_error() -> None:
-    decision = {"packId": "decision", "packType": "decisionPack", "payload": {"rows": [{"decision": "BUY_YES"}]}}
+    decision = {
+        "packId": "decision",
+        "packType": "decisionPack",
+        "payload": {"rows": [{"decision": "BUY_YES"}]},
+    }
     surface = {"packId": "surface", "payload": {"markets": []}}
     analysis = {"packId": "analysis", "payload": {"rows": [{"modelP": 0.5}]}}
 
     report = validate_sports_decision(decision, surface, analysis)
 
-    assert any(issue["code"] == "MISSING_EXECUTABLE_PRIOR" for issue in report["payload"]["issues"])
+    assert any(
+        issue["code"] == "MISSING_EXECUTABLE_PRIOR"
+        for issue in report["payload"]["issues"]
+    )
 
 
 def test_three_way_surface_requires_draw_outcome() -> None:
@@ -73,13 +101,20 @@ def test_three_way_surface_requires_draw_outcome() -> None:
 
     report = validate_sports_surface(surface)
 
-    assert any(issue["code"] == "BINARY_COLLAPSED_MULTI_OUTCOME" for issue in report["payload"]["issues"])
+    assert any(
+        issue["code"] == "BINARY_COLLAPSED_MULTI_OUTCOME"
+        for issue in report["payload"]["issues"]
+    )
 
 
 def test_modifier_out_of_bounds_is_error() -> None:
     recipe = SPORTS_MODEL_RECIPES["worldcup_path_mc_v1"]
     modifier = {
-        "target": {"entityType": "team", "entityId": "croatia", "metric": "team_rating_delta"},
+        "target": {
+            "entityType": "team",
+            "entityId": "croatia",
+            "metric": "team_rating_delta",
+        },
         "operation": "add",
         "value": 500,
     }

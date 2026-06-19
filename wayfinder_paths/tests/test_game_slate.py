@@ -226,7 +226,9 @@ def test_whole_number_lines_condition_on_push():
     exact_mean = gs.normal_game_probs(
         110, 110, total_line=220.0, spread_line=None, margin_sigma=12, total_sigma=19
     )
-    assert exact_mean["over"] == pytest.approx(0.5, abs=1e-6)  # symmetric around the line
+    assert exact_mean["over"] == pytest.approx(
+        0.5, abs=1e-6
+    )  # symmetric around the line
 
 
 # ── soccer: three-way moneyline, nested totals, zero-form guard ──────────────
@@ -263,8 +265,16 @@ def _wc_odds_row(vendor, ml_h, ml_d, ml_a, total_markets=()):
 
 def test_three_way_moneyline_devig_and_nested_totals():
     rows = [
-        _wc_odds_row("fanduel", -125, 250, 380, [(1.5, -200, 160), (2.5, 105, -125), (4.5, 600, -1000)]),
-        _wc_odds_row("draftkings", -120, 250, 380, [(2.5, 100, -120), (4.5, 550, -900)]),
+        _wc_odds_row(
+            "fanduel",
+            -125,
+            250,
+            380,
+            [(1.5, -200, 160), (2.5, 105, -125), (4.5, 600, -1000)],
+        ),
+        _wc_odds_row(
+            "draftkings", -120, 250, 380, [(2.5, 100, -120), (4.5, 550, -900)]
+        ),
     ]
     markets = gs.parse_game_odds(rows)
     ml = markets["moneyline"]
@@ -277,7 +287,9 @@ def test_three_way_moneyline_devig_and_nested_totals():
 
 
 def test_draws_sport_emits_three_way_model():
-    p = gs.poisson_game_probs(1.6, 1.1, total_line=2.5, spread_line=None, split_ties=False)
+    p = gs.poisson_game_probs(
+        1.6, 1.1, total_line=2.5, spread_line=None, split_ties=False
+    )
     assert p["home_ml"] + p["draw"] + p["away_ml"] == pytest.approx(1.0, abs=1e-6)
     assert p["draw"] > 0.15  # soccer-range draw mass
 
@@ -289,16 +301,16 @@ def test_draws_sport_emits_three_way_model():
         away={"id": 2, "abbreviation": "BIH"},
         home_form={"for": 1.8, "against": 0.9, "n": 10},
         away_form={"for": 1.1, "against": 1.4, "n": 10},
-        markets=gs.parse_game_odds([_wc_odds_row("fanduel", -125, 250, 380, [(2.5, 105, -125)])]),
+        markets=gs.parse_game_odds(
+            [_wc_odds_row("fanduel", -125, 250, 380, [(2.5, 105, -125)])]
+        ),
     )
     result = gs.score_game_slate(slate)
     names = [v.market for v in result.views]
     assert "moneyline_draw" in names
     draw = next(v for v in result.views if v.market == "moneyline_draw")
     assert draw.model_p is not None and draw.book_p is not None
-    ml_sum = sum(
-        v.model_p for v in result.views if v.market.startswith("moneyline")
-    )
+    ml_sum = sum(v.model_p for v in result.views if v.market.startswith("moneyline"))
     assert ml_sum == pytest.approx(1.0, abs=1e-4)
 
 
@@ -311,7 +323,9 @@ def test_zero_form_guard_yields_odds_only_views():
         away={"id": 2, "abbreviation": "BIH"},
         home_form={"for": 0.0, "against": 0.0, "n": 0},  # tournament just started
         away_form={"for": 0.0, "against": 0.0, "n": 0},
-        markets=gs.parse_game_odds([_wc_odds_row("fanduel", -125, 250, 380, [(2.5, 105, -125)])]),
+        markets=gs.parse_game_odds(
+            [_wc_odds_row("fanduel", -125, 250, 380, [(2.5, 105, -125)])]
+        ),
     )
     result = gs.score_game_slate(slate)
     assert result.lam_home == 0.0 and result.lam_away == 0.0
@@ -350,10 +364,14 @@ def test_pitcher_quality_shrinks_and_clips():
     assert gs._PITCHER_FACTOR_CLIP[0] <= ace["factor"] < 0.8
 
     # Two-start rookie, modestly bad: heavy shrink toward league -> factor near 1
-    rookie = gs._pitcher_quality([{"pitching_outs": 15, "er": 4}, {"pitching_outs": 16, "er": 3}])
+    rookie = gs._pitcher_quality(
+        [{"pitching_outs": 15, "er": 4}, {"pitching_outs": 16, "er": 3}]
+    )
     assert 1.0 < rookie["factor"] < 1.2
     # An extreme blowup sample clips at the bound instead of doubling the opponent
-    blowup = gs._pitcher_quality([{"pitching_outs": 12, "er": 6}, {"pitching_outs": 15, "er": 5}])
+    blowup = gs._pitcher_quality(
+        [{"pitching_outs": 12, "er": 6}, {"pitching_outs": 15, "er": 5}]
+    )
     assert blowup["factor"] == gs._PITCHER_FACTOR_CLIP[1]
 
     assert gs._pitcher_quality([{"pitching_outs": 0, "er": 0}]) is None
@@ -394,7 +412,9 @@ def test_pitcher_factors_adjust_opposing_lambda_and_render():
     info_only = gs.render_game(bare, data_only=True)
     assert "== INFORMATION" in info_only
     assert "REFERENCE MODEL" not in info_only
-    assert "de-vigged" not in info_only or "consensus" not in info_only or True  # no odds in stub
+    assert (
+        "de-vigged" not in info_only or "consensus" not in info_only or True
+    )  # no odds in stub
     assert "sports_posterior" in info_only  # gating pointer survives data-only mode
 
 
@@ -410,14 +430,30 @@ def test_alt_line_ladder_prices_the_executable_board():
         home_form={"for": 4.4, "against": 4.5, "n": 25},
         away_form={"for": 5.2, "against": 3.5, "n": 25},
         markets=gs.parse_game_odds(
-            [{"vendor": "fanduel", "moneyline_home_odds": 150, "moneyline_away_odds": -170,
-              "total_value": "8.5", "total_over_odds": -110, "total_under_odds": -110,
-              "spread_home_value": "1.5", "spread_home_odds": -140, "spread_away_odds": 120}]
+            [
+                {
+                    "vendor": "fanduel",
+                    "moneyline_home_odds": 150,
+                    "moneyline_away_odds": -170,
+                    "total_value": "8.5",
+                    "total_over_odds": -110,
+                    "total_under_odds": -110,
+                    "spread_home_value": "1.5",
+                    "spread_home_odds": -140,
+                    "spread_away_odds": 120,
+                }
+            ]
         ),
     )
     result = gs.score_game_slate(slate)
-    totals = {a["line"]: a["model_p"] for a in result.alt_lines if a["market"] == "total_over"}
-    spreads = {a["line"]: a["model_p"] for a in result.alt_lines if a["market"] == "spread_home"}
+    totals = {
+        a["line"]: a["model_p"] for a in result.alt_lines if a["market"] == "total_over"
+    }
+    spreads = {
+        a["line"]: a["model_p"]
+        for a in result.alt_lines
+        if a["market"] == "spread_home"
+    }
     assert set(totals) == {6.5, 7.5, 9.5, 10.5}  # ladder around the 8.5 consensus line
     assert totals[6.5] > totals[10.5]  # monotone in the line
     assert {-3.5, -2.5, -1.5, 1.5, 2.5, 3.5} == set(spreads)
