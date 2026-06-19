@@ -105,6 +105,44 @@ async def test_visual_create_chart_annualizes_funding_to_percent(monkeypatch) ->
 
 
 @pytest.mark.asyncio
+async def test_visual_create_chart_passes_partial_series_opt_in(monkeypatch) -> None:
+    monkeypatch.setattr(instance_state, "is_opencode_instance", lambda: True)
+
+    captured: dict[str, object] = {}
+
+    async def fake_upsert(chart: dict[str, object]) -> dict[str, object]:
+        captured["chart"] = chart
+        return {"chart_workspace": {"charts": [chart], "activeChartId": chart["id"]}}
+
+    monkeypatch.setattr(
+        instance_state.INSTANCE_STATE_CLIENT,
+        "upsert_workspace_chart",
+        fake_upsert,
+    )
+
+    result = await instance_state.visual_create_chart(
+        chart_id="partial-chart",
+        title="Partial",
+        kind="line",
+        series=[
+            {
+                "id": "hype",
+                "label": "HYPE",
+                "source": {
+                    "type": "dataset_series",
+                    "dataset_id": "hyperliquid.perp.price",
+                    "params": {"coin": "HYPE"},
+                },
+            }
+        ],
+        allow_partial_series=True,
+    )
+
+    assert result["ok"] is True
+    assert captured["chart"]["allow_partial_series"] is True
+
+
+@pytest.mark.asyncio
 async def test_visual_import_chart_spec_imports_safe_spec(
     monkeypatch,
     tmp_path,

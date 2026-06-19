@@ -268,6 +268,7 @@ async def visual_create_chart(
     limit: int | None = None,
     layout: dict[str, Any] | None = None,
     context_market_id: str | None = None,
+    allow_partial_series: bool | None = None,
 ) -> dict[str, Any]:
     """Create or replace a chart in the user's shell chart workspace.
 
@@ -276,6 +277,13 @@ async def visual_create_chart(
     saving; if this returns `ok: false`, revise the source/kind instead of
     telling the user the chart is ready. The chart persists with the current
     OpenCode shell until cleared.
+
+    Search results with `data_status: "unverified"` are discovery-only until
+    this tool successfully validates them. For multi-series charts, every
+    requested series must resolve renderable points by default; if one series
+    is empty, try a verified/catalog-backed source or explain the missing data
+    instead of creating a partial chart. Set `allow_partial_series=True` only
+    when the user explicitly wants partial data.
 
     Supported chart kinds:
       - price_candle: primary market price chart. Use source type
@@ -337,6 +345,8 @@ async def visual_create_chart(
         chart["layout"] = layout
     if context_market_id:
         chart["context_market_id"] = context_market_id
+    if allow_partial_series is not None:
+        chart["allow_partial_series"] = allow_partial_series
     try:
         return ok(await INSTANCE_STATE_CLIENT.upsert_workspace_chart(chart))
     except httpx.HTTPStatusError as exc:
@@ -495,11 +505,12 @@ async def visual_add_workspace_chart_overlay(
     chart_id: str,
     overlay: dict[str, Any],
 ) -> dict[str, Any]:
-    """Append a raw overlay or event marker set to a workspace or default chart.
+    """Add or replace a raw overlay/event marker set on a workspace/default chart.
 
     For event marker sets, use overlay = {"type": "event_markers", "data": [...]}
-    with each event using {time, price?, label?/text?, color?}. The legacy
-    key "markers" is accepted and normalized to "data".
+    with each event using {time, price?, label?/text?, color?}. Use ISO-8601
+    timestamps and a stable overlay id when retrying so the prior marker set is
+    replaced. The legacy key "markers" is accepted and normalized to "data".
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)

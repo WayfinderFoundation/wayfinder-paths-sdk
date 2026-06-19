@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
+from math import isfinite
 from typing import Any
 
 from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
@@ -112,15 +114,20 @@ class InstanceStateClient(WayfinderClient):
         state = await self.get_state()
         workspace = self._workspace_from_state(state)
         overlay = self._normalize_overlay(overlay)
+        warnings = self._event_marker_warnings(overlay)
         chart = self._find_workspace_chart(workspace, chart_id)
         if chart is not None:
-            chart.setdefault("overlays", []).append(overlay)
+            self._upsert_overlay(chart.setdefault("overlays", []), overlay)
         else:
             chart_id = self._resolve_default_chart_id(state, chart_id)
-            workspace.setdefault("defaultAnnotations", {}).setdefault(
+            overlays = workspace.setdefault("defaultAnnotations", {}).setdefault(
                 chart_id, []
-            ).append(overlay)
-        return await self.patch_chart_workspace(self._bump_workspace(workspace))
+            )
+            self._upsert_overlay(overlays, overlay)
+        result = await self.patch_chart_workspace(self._bump_workspace(workspace))
+        if warnings and isinstance(result, dict):
+            result["warnings"] = warnings
+        return result
 
     async def add_workspace_chart_annotation(
         self,
@@ -206,6 +213,80 @@ class InstanceStateClient(WayfinderClient):
         if not isinstance(normalized.get("data"), list) and isinstance(markers, list):
             normalized["data"] = markers
         return normalized
+
+    @staticmethod
+    def _upsert_overlay(overlays: list[Any], overlay: dict[str, Any]) -> None:
+        overlay_id = overlay.get("id") if isinstance(overlay, dict) else None
+        if not overlay_id:
+            overlays.append(overlay)
+            return
+        for idx, existing in enumerate(overlays):
+            if isinstance(existing, dict) and existing.get("id") == overlay_id:
+                overlays[idx] = overlay
+                return
+        overlays.append(overlay)
+
+    @classmethod
+    def _event_marker_warnings(cls, overlay: dict[str, Any]) -> list[str]:
+        if not isinstance(overlay, dict) or overlay.get("type") != "event_markers":
+            return []
+        events = overlay.get("data")
+        if not isinstance(events, list):
+            return []
+
+        has_numeric_time = False
+        has_unparseable_time = False
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            raw_time = event.get("time", event.get("ts"))
+            if cls._is_numeric_time(raw_time):
+                has_numeric_time = True
+            elif not cls._is_iso_time(raw_time):
+                has_unparseable_time = True
+
+        warnings: list[str] = []
+        if has_numeric_time:
+            warnings.append(
+                "event_markers uses numeric Unix timestamps; prefer ISO-8601 "
+                "strings like 2026-05-21T06:00:00Z"
+            )
+        if has_unparseable_time:
+            warnings.append(
+                "event_markers contains an event with an unparseable time; "
+                "prefer ISO-8601 strings like 2026-05-21T06:00:00Z"
+            )
+        return warnings
+
+    @staticmethod
+    def _is_numeric_time(value: Any) -> bool:
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, (int, float)):
+            return isfinite(value)
+        if not isinstance(value, str):
+            return False
+        trimmed = value.strip()
+        if not trimmed:
+            return False
+        try:
+            value = float(trimmed)
+        except ValueError:
+            return False
+        return isfinite(value)
+
+    @staticmethod
+    def _is_iso_time(value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+        trimmed = value.strip()
+        if not trimmed:
+            return False
+        try:
+            datetime.fromisoformat(trimmed.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        return True
 
     @staticmethod
     def _find_workspace_chart(
