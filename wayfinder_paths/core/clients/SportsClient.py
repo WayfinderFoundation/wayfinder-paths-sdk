@@ -36,9 +36,21 @@ class SportsClient(GatewayClient):
         *,
         action: str,
         sport: str,
+        event_id: str | None = None,
         game_id: str | None = None,
+        match_id: str | None = None,
+        fight_id: str | None = None,
+        tournament_id: str | None = None,
+        competitor_id: str | None = None,
+        player_id: str | None = None,
+        team_id: str | None = None,
         search: str | None = None,
         date: str | None = None,
+        timezone: str | None = None,
+        season: str | None = None,
+        prop_type: str | None = None,
+        market_type: str | None = None,
+        vendors: str | None = None,
         limit: int | None = None,
         session_id: str | None = None,
     ) -> Any:
@@ -47,12 +59,36 @@ class SportsClient(GatewayClient):
             "sport": str(sport).strip().lower(),
             "sessionID": self.resolve_session_id(session_id),
         }
+        if event_id:
+            payload["event_id"] = str(event_id).strip()
         if game_id:
             payload["game_id"] = str(game_id).strip()
+        if match_id:
+            payload["match_id"] = str(match_id).strip()
+        if fight_id:
+            payload["fight_id"] = str(fight_id).strip()
+        if tournament_id:
+            payload["tournament_id"] = str(tournament_id).strip()
+        if competitor_id:
+            payload["competitor_id"] = str(competitor_id).strip()
+        if player_id:
+            payload["player_id"] = str(player_id).strip()
+        if team_id:
+            payload["team_id"] = str(team_id).strip()
         if search:
             payload["search"] = str(search).strip()
         if date:
             payload["date"] = str(date).strip()
+        if timezone:
+            payload["timezone"] = str(timezone).strip()
+        if season:
+            payload["season"] = str(season).strip()
+        if prop_type:
+            payload["prop_type"] = str(prop_type).strip()
+        if market_type:
+            payload["market_type"] = str(market_type).strip()
+        if vendors:
+            payload["vendors"] = str(vendors).strip()
         if limit is not None:
             payload["limit"] = int(limit)
         return await self._post_gateway("snapshot", payload)

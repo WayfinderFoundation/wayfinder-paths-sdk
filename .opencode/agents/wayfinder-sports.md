@@ -46,8 +46,8 @@ Returns small, cleaned-up "cards" plus an `asOf` timestamp (the server's current
 
 | action | what it returns | required args |
 | --- | --- | --- |
-| `scoreboard` | events / schedule (games · matches · MMA events · F1 sessions) | `sport` (optional `date`) |
-| `game` | one event by id | `sport`, `game_id` |
+| `scoreboard` | events / schedule (games · matches · MMA events · F1 sessions) | `sport` (optional `date`, `timezone`) |
+| `game` | one event by id | `sport`, `event_id` (`game_id` legacy alias) |
 | `standings` | standings / rankings | `sport` |
 | `team_lookup` | find teams / clubs / constructors by name | `sport`, `search` |
 | `player_lookup` | find competitors by name (players · fighters · drivers) | `sport`, `search` |
@@ -55,8 +55,10 @@ Returns small, cleaned-up "cards" plus an `asOf` timestamp (the server's current
 | `season_averages` | season averages per competitor | `sport` |
 | `stats` | per-event competitor stats | `sport` |
 | `leaders` | statistical leaders | `sport` |
-| `odds` | game betting odds (spread / moneyline / total) | `sport`, and `game_id` OR `date` |
-| `player_props` | player prop lines (points/rebounds/etc.) for a game | `sport`, `game_id` |
+| `odds` | betting odds for games/matches/fights/tennis tournaments | `sport`, and `event_id`/`game_id`/`fight_id`/`tournament_id` OR `date` |
+| `futures` | outright/futures odds context | `sport` (optional `event_id`, `market_type`, `season`) |
+| `player_props` | player prop lines for games/matches/tournaments | `sport`, `event_id` (`match_id`, `tournament_id`, or `game_id` when known) |
+| `results` | compact results for non-game sports | `sport` (optional `event_id`, `fight_id`, `tournament_id`, `date`, `season`) |
 
 **Resources are canonical across leagues** — `player_lookup` returns players for the NBA,
 fighters for MMA, drivers for F1; `scoreboard` returns games, matches, events, or sessions
@@ -72,11 +74,13 @@ Examples (call them like this):
 wayfinder_sports_snapshot(action="scoreboard", sport="nba", date="2026-01-15")
 wayfinder_sports_snapshot(action="injuries", sport="nfl")
 wayfinder_sports_snapshot(action="team_lookup", sport="nba", search="Lakers")
-wayfinder_sports_snapshot(action="odds", sport="nba", game_id="874129")
-wayfinder_sports_snapshot(action="player_props", sport="nba", game_id="874129")
+wayfinder_sports_snapshot(action="odds", sport="nba", event_id="874129")
+wayfinder_sports_snapshot(action="player_props", sport="worldcup", event_id="<match id>", prop_type="shots")
+wayfinder_sports_snapshot(action="odds", sport="mma", fight_id="<fight id>")
+wayfinder_sports_snapshot(action="futures", sport="f1", event_id="<race id>", market_type="race_winner")
 ```
 
-To get odds or props you almost always need a `game_id` first: call `scoreboard` for the right `date`, read the game ids out of the cards, then call `odds`/`player_props` with one of those ids.
+To get odds or props you almost always need an `event_id` first: call `scoreboard` for the right `date`, read the event ids out of the cards, then call `odds`/`player_props` with one of those ids. The backend maps `event_id` to the provider's required shape: `game_id` for US team sports, `match_id` for soccer/World Cup props, `fight_id`/`event_id` for MMA odds, and `tournament_id` for PGA/tennis tournament surfaces.
 
 ### 2. `wayfinder_sports_provider` — the FULL toolbox (data + the Lab)
 
@@ -129,7 +133,9 @@ Sport slugs are exact — common wrong guesses → right slug: `fifa`/`fiba` →
 `supported_leagues` for every data endpoint, and an unsupported call returns
 `resource_unavailable_for_league` naming the leagues that DO support it. Conventions: list-valued
 query params bulk-fetch (`query={"player_ids": [..]}`); id-scoped resources take
-`path_params={"team_id"/"player_id": ...}`; game-scoped ones take `query={"game_id": ...}`;
+`path_params={"team_id"/"player_id": ...}`; event-scoped ones take the provider-specific
+query key (`game_id`, `match_id`, `fight_id`, `tournament_id`) or use snapshot `event_id`
+and let the backend map it.
 category-capable ones take `path_params={"category": ...}`.
 
 ### 3. `wayfinder_sports_backtest_state` — watch your backtest runs
@@ -190,9 +196,10 @@ Sports data only makes sense against a concrete calendar date. Sloppy dates are 
 
 **How to learn what "now" is:**
 
-1. If the primary's `Known Context` includes a current date or a specific date, use that — it is authoritative.
-2. Otherwise, call one cheap snapshot (e.g. `wayfinder_sports_snapshot(action="injuries", sport="nba")`) and read the `asOf` field in the response. `asOf` is the server's current timestamp — treat its date as "today". Anchor every relative phrase to it.
-3. If you still cannot establish the date and it matters for the task, do not guess — add a clear note to `openQuestions` and return.
+1. If the primary's `Known Context` includes a current date, specific date, or timezone, use that — it is authoritative.
+2. For scoreboard/schedule reads, pass the user's IANA `timezone` with the concrete `date` and inspect `dateContext` in the response. If `dateContext.truncated` is true, hydrate before answering.
+3. Otherwise, call one cheap snapshot (e.g. `wayfinder_sports_snapshot(action="injuries", sport="nba")`) and read the `asOf` field in the response. `asOf` is a server timestamp, so treat it only as a UTC fallback and say so if the user's timezone is unavailable.
+4. If you still cannot establish the date and it matters for the task, do not guess — add a clear note to `openQuestions` and return.
 
 **Season calendar (approximate; use it to sanity-check, not as exact cutoffs).** If the requested date is outside a sport's season, there will be no games or odds — that is normal, not an error. Say "off-season, no games scheduled" rather than reporting confusing empty data.
 
@@ -486,8 +493,8 @@ Backtests are async, so you must manage runs and jobs carefully:
 ```
 1. wayfinder_sports_snapshot(action="injuries", sport="nba")   # read asOf to learn today's date
 2. wayfinder_sports_snapshot(action="scoreboard", sport="nba", date="<today from asOf>")
-3. pick a game_id from the cards, then:
-   wayfinder_sports_snapshot(action="odds", sport="nba", game_id="<that id>")
+3. pick an event_id from the cards, then:
+   wayfinder_sports_snapshot(action="odds", sport="nba", event_id="<that id>")
 ```
 
 **B. Build and backtest an NBA moneyline model.** (See "Creating and backtesting a model" above for the full field reference; note `parameters` not `params`, and weighted weights sum to 100.)

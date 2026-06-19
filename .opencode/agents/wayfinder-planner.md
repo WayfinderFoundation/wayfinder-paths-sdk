@@ -109,7 +109,7 @@ Return:
   "usePlannerConfidence": "high",
   "shouldDelegate": false,
   "recommendedFlow": ["sports_snapshot.scoreboard", "final"],
-  "knownContextToPass": {"sport": "mlb", "date": "YYYY-MM-DD"},
+  "knownContextToPass": {"sport": "mlb", "date": "YYYY-MM-DD", "timezone": "IANA timezone"},
   "packStrategy": {"reuseExistingPacks": false, "packsNeeded": [], "ttlNotes": []},
   "avoidOverkill": ["no planner needed next time", "no sports worker", "no modelling"],
   "stopConditions": ["show schedule rows from scoreboard response"],
@@ -171,12 +171,12 @@ Return:
   "rigorTier": 2,
   "usePlannerConfidence": "high",
   "shouldDelegate": true,
-  "recommendedFlow": ["sports_snapshot.scoreboard for date/game_id", "PM/HL game surface", "wayfinder-sports SPORTS_SCAN", "final"],
+  "recommendedFlow": ["sports_snapshot.scoreboard for date/event_id", "PM/HL game surface", "wayfinder-sports SPORTS_SCAN", "final"],
   "knownContextToPass": {"sport": "mlb", "betTypes": ["moneyline", "spread", "total"], "date": "YYYY-MM-DD"},
   "packStrategy": {"reuseExistingPacks": true, "packsNeeded": ["surfacePack", "analysisPack"], "ttlNotes": ["refresh shortlisted executable quote before actionable sizing"]},
   "avoidOverkill": ["no Lab backtest unless requested", "no broad league scan"],
   "stopConditions": ["answer with model fair, executable price, line status, and no-bet/watch/bet view"],
-  "handoffPrompt": "Known Context: game_id=<id if known>; user asks ML/spread/total; return PM/HL executable board, model/context table, edge flags, and caveats."
+  "handoffPrompt": "Known Context: event_id=<id if known>; user asks ML/spread/total; return PM/HL executable board, model/context table, edge flags, and caveats."
 }
 ```
 

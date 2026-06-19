@@ -52,11 +52,11 @@ Resource ids are generic and resolve per-league (e.g. `competitors` = players/fi
 | `data.lineups.list`, `data.plays.list` | lineups, play-by-play | `query.game_id` (game-scoped) |
 | `data.matchups.list` | tennis head-to-head; MLB batter-vs-pitcher | tennis: `query` player ids; MLB versus: batter/pitcher ids |
 | `data.career_stats.list` | career stats (tennis) | `query.player_id` |
-| `data.shots.list` | soccer shot maps with **xG** | `query.game_id` |
-| `data.match_events.list` | soccer goals/cards/subs | `query.game_id` |
-| `data.momentum.list`, `data.pregame_forms.list` | soccer momentum / recent form | `query.game_id` |
+| `data.shots.list` | soccer shot maps with **xG** | `query.match_id`/`game_id` depending on league |
+| `data.match_events.list` | soccer goals/cards/subs | `query.match_id`/`game_id` depending on league |
+| `data.momentum.list`, `data.pregame_forms.list` | soccer momentum / recent form | `query.match_id`/`game_id` depending on league |
 | `data.rosters.list` | rosters; NFL depth charts | soccer: `query`; NFL: `path_params.team_id` |
-| `data.results.list` | F1 session results / PGA tournament results / MMA fight results | `query`: season/event filters |
+| `data.results.list` | F1 session results / PGA tournament results / MMA fight results | `query`: season/event/fight/tournament filters |
 | `data.qualifying.list`, `data.pit_stops.list`, `data.laps.list` | F1 detail (plan-gated upstream) | `query` session/event ids |
 | `data.venues.list` | circuits / stadiums / courses | — |
 | `data.round_stats.list` | PGA strokes-gained round stats | `query` tournament/player |
@@ -65,9 +65,9 @@ Resource ids are generic and resolve per-league (e.g. `competitors` = players/fi
 | `data.conferences.list`, `data.bracket.list` | college conferences / March Madness bracket | `query.season` |
 | `data.player_contracts.list`, `data.team_contracts.list` | NBA salaries/payroll (plan-gated upstream) | `query` |
 | `data.shot_locations.list` | WNBA shooting zones | `query` player/season |
-| `data.odds.list` | game odds (spread/moneyline/total) | `query`: `game_id` OR `date` (NBA accepts arrays) |
-| `data.player_props.list` | player prop lines + over/under odds | `query.game_id` (required) |
-| `data.futures.list` | outright/futures odds | `query.season` |
+| `data.odds.list` | odds context | snapshot: `event_id`/`game_id`/`fight_id`/`tournament_id` OR `date`; façade: provider-specific ids |
+| `data.player_props.list` | player prop lines + over/under odds | snapshot: `event_id`; façade: `game_id`, `match_id`, or `tournament_id` |
+| `data.futures.list` | outright/futures odds | snapshot: `season`, optional `event_id`/`market_type`; façade: provider-specific filters |
 
 ## Which sports have what (highlights — catalog is authoritative)
 
@@ -126,7 +126,13 @@ or the prediction-market quant helpers against PM/HL order-book prices.
   `regular`/`playoffs` where supported; game logs accept `postseason` true/false.
 - **Id-scoped resources**: where the error or this doc says per-team/per-player, pass
   `path_params={"team_id": ...}` or `{"player_id": ...}` (NFL rosters, NHL season stats).
-- **Game-scoped resources** need an event id: `query={"game_id": ...}` (or `path_params.id`).
+- **Snapshot id convention**: prefer `event_id` from scoreboard cards. The backend maps it to
+  `game_id` for US team sports, `match_id` for soccer/World Cup props, `fight_id`/`event_id`
+  for MMA odds, `tournament_id` for PGA props and tennis tournament odds, and `event_ids[]`
+  for F1 futures. `game_id` remains a legacy alias.
+- **Provider façade id convention**: use the exact provider filter requested by the endpoint
+  (`game_id`, `match_id`, `fight_id`, `tournament_id`, `event_ids[]`, etc.); call catalog or
+  read errors instead of guessing.
 - **Caching**: non-live data (stats/averages/rosters) is cached server-side for hours — repeats
   are cheap; odds/props/futures stay near-live (~15s). Still batch.
 - **Pagination**: `per_page` (max 100) + cursor in `meta.next_cursor` where present.
@@ -205,10 +211,11 @@ Likewise, for a named game/fight/event, still search the direct matchup on PM an
 Hyperliquid HIP-4 before calling the analysis complete, even when provider odds are
 unavailable.
 
-**UTC-boundary trap:** US evening games can cross the UTC date line, so a provider date
-filter may return both an in-progress/finished prior game and the scheduled game the user
-asked about. Before analysis, identify the concrete game id, local/UTC start, and status;
-NEVER mix one game's live book odds with another game's pre-game venue board.
+**UTC-boundary trap:** US evening games can cross the UTC date line. For scoreboard reads,
+pass the user's IANA `timezone` with the concrete `date` and inspect the returned
+`dateContext` before answering. Before analysis, identify the concrete game id, local/UTC
+start, and status; NEVER mix one game's live book odds with another game's pre-game venue
+board.
 
 **Odds sourcing rule:** never source betting lines from web search or media pages.
 Executable lines come from PM/HL order books. Provider sportsbook odds are optional

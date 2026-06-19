@@ -36,9 +36,21 @@ def _gateway_err(exc: SportsGatewayAPIError) -> dict[str, Any]:
 async def sports_snapshot(
     action: str,
     sport: str,
+    event_id: str = "_",
     game_id: str = "_",
+    match_id: str = "_",
+    fight_id: str = "_",
+    tournament_id: str = "_",
+    competitor_id: str = "_",
+    player_id: str = "_",
+    team_id: str = "_",
     search: str = "_",
     date: str = "_",
+    timezone: str = "_",
+    season: str = "_",
+    prop_type: str = "_",
+    market_type: str = "_",
+    vendors: str = "_",
     limit: str | int = "_",
     sessionID: str = "_",
 ) -> dict[str, Any]:
@@ -52,11 +64,25 @@ async def sports_snapshot(
 
     Args:
         action: scoreboard | game | standings | team_lookup | player_lookup | injuries |
-            season_averages | stats | leaders | odds | player_props.
+            season_averages | stats | leaders | odds | futures | player_props | results.
         sport: League code, e.g. nba, nfl, mlb, nhl, epl, mma, f1, atp, pga, ...
-        game_id: Required for action=game and player_props; for odds, pass game_id or date.
+        event_id: Preferred canonical event id for games, matches, fights, tournaments,
+            sessions, or races. Legacy game_id also works.
+        game_id: Backward-compatible alias for event_id on game-shaped sports.
+        match_id: Explicit soccer/tennis match id when known.
+        fight_id: Explicit MMA fight id when known.
+        tournament_id: Explicit PGA/tennis tournament id when known.
+        competitor_id: Generic player/fighter/driver id filter.
+        player_id: Provider-compatible player id alias for competitor_id.
+        team_id: Team/club/constructor id filter when supported.
         search: Name query for team_lookup / player_lookup.
         date: Optional ISO date (YYYY-MM-DD) for scoreboard/odds.
+        timezone: Optional IANA timezone for interpreting scoreboard dates, e.g.
+            America/Toronto. If omitted, the backend defaults to UTC and warns.
+        season: Optional season/year filter.
+        prop_type: Optional prop type filter for player_props.
+        market_type: Optional market/futures type filter.
+        vendors: Optional comma-separated vendor filter.
         limit: Max cards (1-50, default 10).
         sessionID: OpenCode session id, or "_" to resolve from the environment.
     """
@@ -65,9 +91,21 @@ async def sports_snapshot(
         result = await SPORTS_CLIENT.snapshot(
             action=action,
             sport=sport,
+            event_id=optional_str(event_id, field_name="event_id"),
             game_id=optional_str(game_id, field_name="game_id"),
+            match_id=optional_str(match_id, field_name="match_id"),
+            fight_id=optional_str(fight_id, field_name="fight_id"),
+            tournament_id=optional_str(tournament_id, field_name="tournament_id"),
+            competitor_id=optional_str(competitor_id, field_name="competitor_id"),
+            player_id=optional_str(player_id, field_name="player_id"),
+            team_id=optional_str(team_id, field_name="team_id"),
             search=optional_str(search, field_name="search"),
             date=optional_str(date, field_name="date"),
+            timezone=optional_str(timezone, field_name="timezone"),
+            season=optional_str(season, field_name="season"),
+            prop_type=optional_str(prop_type, field_name="prop_type"),
+            market_type=optional_str(market_type, field_name="market_type"),
+            vendors=optional_str(vendors, field_name="vendors"),
             limit=parsed_limit,
             session_id=sessionID,
         )

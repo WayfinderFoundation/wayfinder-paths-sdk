@@ -67,7 +67,7 @@ Delegate when the research question involves any of the above. Examples: "what's
 
 How to delegate well:
 
-- Pass a compact `Known Context` block: the `sport` (any league for data/analysis; nba/nfl/nhl/mlb for Lab backtests), concrete `YYYY-MM-DD` dates (convert "today/this week" first — sports are date-driven and have off-seasons), any `game_id`/`game_ids`, an existing `run_id`/`model_id` to continue, the bet type (moneyline/spread/over_under/prop), and the concrete question.
+- Pass a compact `Known Context` block: the `sport` (any league for data/analysis; nba/nfl/nhl/mlb for Lab backtests), concrete `YYYY-MM-DD` dates (convert "today/this week" first — sports are date-driven and have off-seasons), any `event_id`/`event_ids` (`game_id`, `match_id`, `fight_id`, or `tournament_id` only when specifically known), an existing `run_id`/`model_id` to continue, the bet type (moneyline/spread/over_under/prop), and the concrete question.
 - Sports backtests are async. `wayfinder-sports` returns `runId`/`modelId`/`jobIds`/`status`/`nextPollAfter`. **Preserve these handles** in your own output (`contextForNextAgent`) so the primary can monitor the run to completion — do not sit and poll yourself.
 - Betting boundary (composes with your forecast work): sportsbook odds and props from `wayfinder-sports` are market **context**, not an executable price. The tradeable prior is the prediction-market order book — use your own `polymarket_read` / Prediction Market Forecast Mode for the executable price, and treat the sports model's backtested **edge** as a signal layered on top of that price.
 - If a sports task is the whole job (not part of broader research), set `recommendedNextAgent: "wayfinder-sports"` and hand back rather than duplicating its work.

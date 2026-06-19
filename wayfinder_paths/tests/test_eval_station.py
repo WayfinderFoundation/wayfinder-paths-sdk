@@ -102,7 +102,7 @@ def test_eval_station_exports_wayfinder_key_for_candidate_provider() -> None:
     assert "resolve_wayfinder_model_env(candidate_model, env)" in station_text
 
 
-def test_primary_schedule_reads_use_generous_sports_snapshot_limit() -> None:
+def test_primary_schedule_reads_use_timezone_aware_sports_snapshot() -> None:
     for path in (
         REPO / ".opencode" / "agents" / "wayfinder.md",
         REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder.md",
@@ -110,8 +110,9 @@ def test_primary_schedule_reads_use_generous_sports_snapshot_limit() -> None:
     ):
         text = path.read_text("utf-8")
         assert 'what games are on tonight?' in text
-        assert "scoreboard with `limit >= 50`" in text
-        assert "retry/hydrate before answering" in text
+        assert "pass `timezone` to the scoreboard call" in text
+        assert "inspect `dateContext`" in text
+        assert "`dateContext.truncated` is true" in text
         assert "count games from the rows you will show" in text
 
 

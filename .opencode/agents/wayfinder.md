@@ -436,11 +436,11 @@ The sports specialist handles provider-agnostic sports data, stats, injuries, od
 
 You hold only two sports tools yourself: `wayfinder_sports_snapshot` (bounded live reads) and `wayfinder_sports_backtest_state` (run monitoring). The full provider façade (`wayfinder_sports_provider`) is **denied to you** and lives only in `wayfinder-sports`.
 
-- **Do it yourself with `wayfinder_sports_snapshot`** for a single bounded live read: a scoreboard, one game, odds or player props for a game (`odds` needs a `game_id` or `date`; `player_props` needs a `game_id`), injuries, or a team/player lookup. For schedule questions like "what games are on tonight?", convert the date explicitly and call the scoreboard with `limit >= 50`; if the response warns or looks truncated, retry/hydrate before answering. When summarizing a schedule, count games from the rows you will show and avoid extra aggregate claims that are not directly supported by the table. Don't delegate for one quick read — same principle as using `wayfinder_polymarket_read` directly for simple checks.
+- **Do it yourself with `wayfinder_sports_snapshot`** for a single bounded live read: a scoreboard, one event, odds, futures, player props, results, injuries, or a team/player lookup. Use `event_id` as the preferred id from scoreboard cards; `game_id` still works for legacy team-sport calls. The backend maps `event_id` to sport-specific provider keys (`game_id`, `match_id`, `fight_id`, `tournament_id`), so World Cup/soccer props, MMA odds, PGA/tennis tournaments, and F1 futures do not need raw provider calls for quick reads. For schedule questions like "what games are on tonight?", convert the date explicitly in the user's timezone, pass `timezone` to the scoreboard call, and inspect `dateContext`; if `dateContext.truncated` is true or warnings show provider pagination/filtering issues, retry/hydrate before answering. When summarizing a schedule, count games from the rows you will show and avoid extra aggregate claims that are not directly supported by the table. Don't delegate for one quick read — same principle as using `wayfinder_polymarket_read` directly for simple checks.
 - **Do it yourself with `wayfinder_sports_backtest_state`** to monitor and report on runs a previous `wayfinder-sports` delegation started: `list_active`, `get_run`, `refresh_run`, `refresh_all_active`, `events`. You own run monitoring across turns — poll and report completion yourself rather than re-delegating just to check status.
 - **Delegate to `wayfinder-sports`** for anything needing the façade, analysis, or modelling: backtests, predictions, multi-endpoint sports data, futures/path state, props, form/matchup analysis, or any "which bets look good / is there value" question. Any Lab mutation MUST go through the subagent because you cannot call the façade.
 - **For broad sports scans**, ask `wayfinder-planner` for the workflow, load `/using-sports-data`, then use or create one shared executable PM/HL surface pack before sports/quant delegation. Do not make every subagent re-fetch the same odds board.
-- **Delegate intent, not method.** State the question, dates/game IDs, bet types, existing pack refs, and desired output. Do not ask for raw odds dumps when you need quantified edges.
+- **Delegate intent, not method.** State the question, dates/event IDs, bet types, existing pack refs, and desired output. Do not ask for raw odds dumps when you need quantified edges.
 
 #### Invocation Criteria
 
@@ -475,7 +475,7 @@ adjudicate dislocations before calling value.
 
 #### Known Context Handoffs
 
-When delegating, include a `Known Context` block with the sport, date, game IDs, run/model IDs, bet types, concrete question, planner `handoffPrompt`, `surfacePackRefs`, and relevant `.wayfinder_runs/` paths. Use planner guidance for modes and expected packs.
+When delegating, include a `Known Context` block with the sport, date, event IDs (`game_id`/`match_id`/`fight_id`/`tournament_id` only when specifically known), run/model IDs, bet types, concrete question, planner `handoffPrompt`, `surfacePackRefs`, and relevant `.wayfinder_runs/` paths. Use planner guidance for modes and expected packs.
 
 ## User Suggestions
 

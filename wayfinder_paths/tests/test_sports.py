@@ -66,6 +66,77 @@ async def test_snapshot_builds_gateway_request() -> None:
 
 
 @pytest.mark.asyncio
+async def test_snapshot_sends_timezone_for_scoreboard_dates() -> None:
+    client = SportsClient()
+    captured: dict = {}
+
+    async def fake(method, url, *, json=None, **kwargs):
+        captured.update(method=method, url=url, json=json)
+        resp = MagicMock()
+        resp.json.return_value = {"cards": []}
+        return resp
+
+    client._authed_request = fake  # type: ignore[assignment]
+    await client.snapshot(
+        action="scoreboard",
+        sport="MLB",
+        date="2026-06-19",
+        timezone="America/Toronto",
+        session_id="s1",
+    )
+
+    assert captured["json"]["date"] == "2026-06-19"
+    assert captured["json"]["timezone"] == "America/Toronto"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_sends_canonical_event_filters() -> None:
+    client = SportsClient()
+    captured: dict = {}
+
+    async def fake(method, url, *, json=None, **kwargs):
+        captured.update(method=method, url=url, json=json)
+        resp = MagicMock()
+        resp.json.return_value = {"cards": []}
+        return resp
+
+    client._authed_request = fake  # type: ignore[assignment]
+    await client.snapshot(
+        action="player_props",
+        sport="worldcup",
+        event_id="10",
+        match_id="10",
+        fight_id="301",
+        tournament_id="20",
+        competitor_id="557",
+        player_id="557",
+        team_id="1",
+        season="2026",
+        prop_type="shots",
+        market_type="race_winner",
+        vendors="draftkings,fanduel",
+        session_id="s1",
+    )
+
+    assert captured["json"] == {
+        "action": "player_props",
+        "sport": "worldcup",
+        "sessionID": "s1",
+        "event_id": "10",
+        "match_id": "10",
+        "fight_id": "301",
+        "tournament_id": "20",
+        "competitor_id": "557",
+        "player_id": "557",
+        "team_id": "1",
+        "season": "2026",
+        "prop_type": "shots",
+        "market_type": "race_winner",
+        "vendors": "draftkings,fanduel",
+    }
+
+
+@pytest.mark.asyncio
 async def test_provider_call_builds_gateway_request() -> None:
     client = SportsClient()
     captured: dict = {}
@@ -174,6 +245,40 @@ async def test_sports_tools_validate_json_objects_and_limits() -> None:
     assert result["ok"] is False
     assert result["error"]["code"] == "invalid_argument"
     assert result["error"]["details"]["field"] == "limit"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_tool_forwards_canonical_filters(monkeypatch) -> None:
+    from wayfinder_paths.mcp.tools import sports as sports_tools
+
+    captured: dict = {}
+
+    async def fake_snapshot(**kwargs):
+        captured.update(kwargs)
+        return {"cards": []}
+
+    monkeypatch.setattr(sports_tools.SPORTS_CLIENT, "snapshot", fake_snapshot)
+    result = await sports_tools.sports_snapshot(
+        action="futures",
+        sport="f1",
+        event_id="9",
+        tournament_id="20",
+        competitor_id="44",
+        season="2026",
+        market_type="race_winner",
+        vendors="draftkings",
+        limit="5",
+        sessionID="s",
+    )
+
+    assert result["ok"] is True
+    assert captured["event_id"] == "9"
+    assert captured["tournament_id"] == "20"
+    assert captured["competitor_id"] == "44"
+    assert captured["season"] == "2026"
+    assert captured["market_type"] == "race_winner"
+    assert captured["vendors"] == "draftkings"
+    assert captured["limit"] == 5
 
 
 @pytest.mark.asyncio
@@ -853,6 +958,19 @@ def test_sports_skill_does_not_block_on_script_auth_failures() -> None:
         "`futures_slate` or\nsportsbook futures fail auth",
     ):
         assert needle in skill
+
+
+def test_canonical_live_smoke_script_is_gateway_mediated() -> None:
+    script = (REPO / "scripts" / "sports_canonical_live_smoke.py").read_text("utf-8")
+
+    assert "SPORTS_CLIENT.snapshot" in script
+    assert "https://api.balldontlie.io" not in script
+    for status in ("pass", "empty_ok", "auth_scope_blocked", "schema_error"):
+        assert status in script
+    assert '"provider_misconfigured"' in script
+    assert "or exc.code in AUTH_CODES" in script
+    for needle in ("worldcup", "mma", "atp", "wta", "f1", "pga", "event_id"):
+        assert needle in script
 
 
 def test_sports_prompts_do_not_require_sportsbook_futures_for_event_state_pack() -> None:
