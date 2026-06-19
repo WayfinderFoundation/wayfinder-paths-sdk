@@ -255,11 +255,19 @@ Default workflow:
    inputs, completed results, standings/bracket/cuts if known, upcoming path, futures_slate
    fair probabilities if available, and executable PM/HL markets. Sportsbook/futures auth
    failure must not block this pack.
-3. Ask `wayfinder-research` only for qualitative/current-state evidence cards: injuries,
+3. Run event_sim validation/smoke before any full simulation: low iterations, short
+   timeout, and fail fast on missing group slots, impossible wildcard slots,
+   unknown participants, or unsupported target shapes. Generated custom-simulator debugging gets
+   one repair max.
+4. Ask `wayfinder-research` only after a first shortlist/model pass unless the user
+   explicitly asks for broad qualitative research. It should return qualitative/current-state
+   evidence cards in a `contextPack` / `modelModifiers` artifact: injuries,
    lineups, post-line news, rule/resolution mismatch, liquidity/depth, lockup/flow.
-4. Run `poetry run python -m wayfinder_paths.quant.event_sim --input <event_pack.json>
+   Prose-only research is final-synthesis-only and must not be described as consumed by
+   the simulator.
+5. Run `poetry run python -m wayfinder_paths.quant.event_sim --input <event_pack.json>
    --out .wayfinder_runs/sports` or delegate the pack to `wayfinder-quant`.
-5. Price simulated probabilities against executable order-book entries/depth and gate with
+6. Price simulated probabilities against executable order-book entries/depth and gate with
    `sports_posterior` when dislocations remain large.
 
 The simulator is one model view, not the answer. Final synthesis must distill multiple
@@ -285,6 +293,9 @@ stage is 50% complete" or similar. If the official bracket/path is unavailable, 
 best bounded approximation from known rules and label `pathAssumption: "approximate"`;
 if a path cannot be represented at all, surface `missingPathFields` as the blocker.
 If you skip `event_sim` or a custom simulator, the answer is incomplete for a path market.
+Before running a full path model, the event pack must pass the smoke/validation step above.
+If validation fails, return `WATCH` / `incomplete_fair_value` / `NEEDS_MORE_STATE` with the
+validation issues rather than spending the turn repairing a malformed bracket.
 
 For "scan the field/market" questions, the final answer must be the annotated board before
 any single-candidate drilldown. It must include: board coverage counts for each executable

@@ -448,6 +448,135 @@ def _assign_wildcards(
             slots[f"{prefix}{idx}"] = standing.participant_id
 
 
+def validate_config(config: SimulationConfig) -> list[str]:
+    """Return structural issues that would make a path simulation misleading.
+
+    Runtime bracket failures used to appear only after a long Monte Carlo loop. Keep
+    this validation intentionally structural and deterministic: it checks that bracket
+    slots can be produced, winner references are valid, and champion brackets actually
+    route all first-place group qualifiers into the champion path.
+    """
+    issues: list[str] = []
+    bracket = config.bracket or {}
+    matches = list(bracket.get("matches") or [])
+    if not matches:
+        return issues
+
+    match_ids = [str(match.get("id")) for match in matches if match.get("id") is not None]
+    match_id_set = set(match_ids)
+    if len(match_ids) != len(match_id_set):
+        issues.append("bracket contains duplicate match ids")
+
+    possible_slots = _possible_slots(config)
+    referenced_slots: set[str] = set()
+    for match in matches:
+        match_id = str(match.get("id") or "<missing>")
+        for side in ("a", "b"):
+            endpoint = match.get(side)
+            if not isinstance(endpoint, Mapping):
+                issues.append(f"match {match_id} has invalid {side} endpoint")
+                continue
+            participant_id = endpoint.get("participant")
+            if participant_id is not None and str(participant_id) not in config.participants:
+                issues.append(
+                    f"match {match_id} references unknown participant {participant_id!r}"
+                )
+            slot = endpoint.get("slot")
+            if slot is not None:
+                slot_name = str(slot)
+                referenced_slots.add(slot_name)
+                if possible_slots and slot_name not in possible_slots:
+                    issues.append(
+                        f"match {match_id} references slot {slot_name!r} that cannot be assigned"
+                    )
+            winner = endpoint.get("winner")
+            if winner is not None and str(winner) not in match_id_set:
+                issues.append(
+                    f"match {match_id} references unknown winner {str(winner)!r}"
+                )
+
+    champion_match = str(bracket.get("champion_match") or matches[-1].get("id"))
+    target_type = str((config.target or {}).get("type") or "champion")
+    if target_type == "champion" and champion_match not in match_id_set:
+        issues.append(f"champion_match {champion_match!r} is not in bracket.matches")
+
+    if target_type == "champion" and champion_match in match_id_set:
+        reachable_slots = _reachable_bracket_slots(matches, champion_match)
+        for slot in _first_place_qualifier_slots(config):
+            if slot not in reachable_slots:
+                issues.append(
+                    f"champion bracket does not include first-place slot {slot!r}"
+                )
+
+    for slot in _target_slot_names(config):
+        if possible_slots and slot not in possible_slots:
+            issues.append(f"target references slot {slot!r} that cannot be assigned")
+
+    return issues
+
+
+def _possible_slots(config: SimulationConfig) -> set[str]:
+    slots: set[str] = set()
+    for group in config.groups:
+        group_id = str(group.get("id") or "")
+        for qualifier in group.get("qualifiers") or []:
+            rank = int(qualifier["rank"])
+            slots.add(str(qualifier.get("slot") or f"{group_id}_{rank}"))
+    for wildcard in config.wildcards:
+        count = int(wildcard["count"])
+        prefix = str(wildcard.get("slot_prefix") or f"WC{int(wildcard['source_rank'])}")
+        for idx in range(1, count + 1):
+            slots.add(f"{prefix}{idx}")
+    return slots
+
+
+def _first_place_qualifier_slots(config: SimulationConfig) -> set[str]:
+    slots: set[str] = set()
+    for group in config.groups:
+        group_id = str(group.get("id") or "")
+        for qualifier in group.get("qualifiers") or []:
+            if int(qualifier["rank"]) == 1:
+                slots.add(str(qualifier.get("slot") or f"{group_id}_1"))
+    return slots
+
+
+def _target_slot_names(config: SimulationConfig) -> set[str]:
+    target = dict(config.target or {})
+    if str(target.get("type") or "champion") != "slot":
+        return set()
+    slot_names = target.get("slots")
+    if slot_names is None and target.get("slot") is not None:
+        slot_names = [target["slot"]]
+    return {str(slot) for slot in (slot_names or [])}
+
+
+def _reachable_bracket_slots(
+    matches: list[Mapping[str, Any]], champion_match: str
+) -> set[str]:
+    by_id = {str(match["id"]): match for match in matches if match.get("id") is not None}
+    reachable: set[str] = set()
+    seen_matches: set[str] = set()
+
+    def visit_match(match_id: str) -> None:
+        if match_id in seen_matches:
+            return
+        seen_matches.add(match_id)
+        match = by_id.get(match_id)
+        if not match:
+            return
+        for side in ("a", "b"):
+            endpoint = match.get(side)
+            if not isinstance(endpoint, Mapping):
+                continue
+            if endpoint.get("slot") is not None:
+                reachable.add(str(endpoint["slot"]))
+            if endpoint.get("winner") is not None:
+                visit_match(str(endpoint["winner"]))
+
+    visit_match(champion_match)
+    return reachable
+
+
 def _resolve_endpoint(
     endpoint: Any,
     slots: Mapping[str, str],
@@ -528,6 +657,12 @@ def _simulate_bracket_trace(
 
 
 def run_simulation(config: SimulationConfig) -> list[CandidateResult]:
+    validation_issues = validate_config(config)
+    if validation_issues:
+        raise ValueError(
+            "invalid event_sim config: " + "; ".join(validation_issues)
+        )
+
     rng = random.Random(config.seed)
     wins: dict[str, int] = defaultdict(int)
     seen_completed = _participants_with_completed_state(config)

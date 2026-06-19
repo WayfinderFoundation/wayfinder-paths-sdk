@@ -403,6 +403,13 @@ market-implied prices, label them diagnostic only. If the bracket/path is approx
 `pathAssumption: "approximate"` / `approx_bracket`. Do not present one latest sim result as
 final fair value; the primary/quant must distill PM/HL prior, sports/context model, path
 sim, and qualitative evidence before calling value.
+Make event packs validation-friendly: bracket endpoints must reference slots that are
+actually produced by group qualifiers or wildcard prefixes; every viable first-place slot
+in a champion market should reach the champion path; wildcard counts must match the slots
+the bracket consumes. If any of those are unknown, put them in `missingPathFields` instead
+of handing quant a pack that will need a long repair. Include `contextForNextAgent` with
+the exact event pack path, `surfacePackRefs`, model artifacts, `pathAssumption`, and any
+evidence-card questions that should be researched after the first shortlist.
 
 If the primary supplies `surfacePackRefs`, consume those PM/HL executable surfaces as the
 current odds board until their `validUntil` expires. Do not re-fetch the same PM/HL board
@@ -427,6 +434,10 @@ state/results calls, use the sport slug `worldcup` with an explicit generous `li
 Never return a progress checkpoint for broad scans. Do not answer with progress-only
 headings like `Goal`, `Progress`, `In Progress`, `Blocked`, `Critical Context`, or
 `Next Steps`; return the partial annotated board and blockers as the final finding.
+
+For path-market research handoff, ask for structured `contextPack` / `modelModifiers` /
+evidence cards only after the surface/model pass identifies candidates or blockers. If
+research returns prose without cards or pack refs, mark it final-synthesis-only; do not claim the simulator consumed it.
 
 `game_slate` models expected scores from each team's completed games (Poisson for
 nhl/mlb/soccer, normal for nba/nfl), emits optional provider/book context when available,

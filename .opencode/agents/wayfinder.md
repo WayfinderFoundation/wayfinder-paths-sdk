@@ -343,6 +343,18 @@ Skip `wayfinder-planner` for simple reads and fast paths: schedules, scores, sta
 
 Treat planner output as advice. Follow its `recommendedFlow`, `knownContextToPass`, `packStrategy`, `avoidOverkill`, and `stopConditions` when useful, but do not let it delay a direct answer. If it recommends a flow that is stale, too broad, or conflicts with the user's newest request, keep the useful stop conditions and choose the narrower path.
 
+### Balanced Rigor Budget
+
+Default to the smallest tier that can answer authoritatively:
+
+- **Tier 0** direct reads: schedules, scores, standings, one known market, balances, or chart switches. No planner, no subagent, no scripts.
+- **Tier 1** simple `FAST_EDGE`: one named non-sports market/event. Pull executable PM/HL surfaces, classify resolution, do a small evidence check, answer; no quant, no backtest, no local script.
+- **Tier 2** focused specialist: one game, one prop slate, one asset/trade setup. Use at most one specialist and one bounded script path; allow one repair, then return the best complete answer with blockers.
+- **Tier 3** broad scan: collect a shared surface first, shortlist, then deepen. Run research after shortlist unless the user explicitly asks for broad qualitative research.
+- **Tier 4** path/model-heavy work: require pack validation and a smoke run before full simulation. If validation fails, return `NEEDS_MORE_STATE` / `incomplete_fair_value` with the missing fields instead of debugging generated scripts.
+
+Research intended to move a model or quant decision must return structured `contextPack` / `modelModifiers` / evidence cards and `packRefs`. If it only returns prose, treat it as final-synthesis-only evidence and do not imply that quant or the simulator consumed it.
+
 ### wayfinder-research
 
 Crypto market/protocol/news/social/DeFi/yield/funding/lending/borrow-route/basis/listing/catalyst research, Alpha Lab, Goldsky, DeFiLlama, and Delta Lab snapshots.
@@ -362,6 +374,8 @@ For smaller tasks (documentation checks, one-off source verification, current st
 When delegating to research, quant, sports, or visual agents, include a compact `Known Context` block with the IDs, current rows, pack refs, source refs, dates, wallet labels, and user constraints you already have. Receiving agents should rehydrate exact IDs/refs first instead of rediscovering from natural language.
 
 When a subagent returns `contextForNextAgent`, forward the relevant parts to the next subagent or use them yourself. Do not drop known Polymarket event slugs or outcome token IDs when asking for a forecast after charting or discovery.
+
+For broad/path sports or prediction-market scans, do not launch research in parallel with the first surface/model pass unless the user asked for broad qualitative research. First produce a shortlist or explicit evidence questions; research should run after the first shortlist, then return structured evidence cards. If you hand quant a context block, include the actual `contextPack`/`modelModifiers`/evidence-card refs, not just a prose summary.
 
 #### Attribution
 

@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from wayfinder_paths.quant.event_sim import load_config, run_simulation
 
 
@@ -171,6 +173,90 @@ def test_partial_group_pack_simulates_remaining_round_robin() -> None:
 
     assert probs["a"] > 0.0
     assert probs["b"] > probs["a"]
+
+
+def test_champion_bracket_requires_first_place_slots_to_reach_target() -> None:
+    """Fail fast when a generated event pack leaves a group winner outside the
+    champion path instead of running a long malformed Monte Carlo."""
+    config = load_config(
+        {
+            "iterations": 1000,
+            "seed": 101,
+            "participants": [
+                {"id": "a", "name": "A", "rating": 1900},
+                {"id": "b", "name": "B", "rating": 1800},
+                {"id": "c", "name": "C", "rating": 1700},
+                {"id": "d", "name": "D", "rating": 1600},
+            ],
+            "groups": [
+                {
+                    "id": "G1",
+                    "participants": ["a", "b"],
+                    "qualifiers": [{"rank": 1, "slot": "G1_1"}],
+                },
+                {
+                    "id": "G2",
+                    "participants": ["c", "d"],
+                    "qualifiers": [{"rank": 1, "slot": "G2_1"}],
+                },
+            ],
+            "bracket": {
+                "matches": [
+                    {
+                        "id": "final",
+                        "a": {"slot": "G1_1"},
+                        "b": {"participant": "b"},
+                    }
+                ],
+                "champion_match": "final",
+            },
+            "target": {"type": "champion"},
+        }
+    )
+
+    with pytest.raises(ValueError, match="first-place slot 'G2_1'"):
+        run_simulation(config)
+
+
+def test_wildcard_slots_are_validated_before_long_run() -> None:
+    config = load_config(
+        {
+            "iterations": 1000,
+            "seed": 103,
+            "participants": [
+                {"id": "a", "name": "A", "rating": 1900},
+                {"id": "b", "name": "B", "rating": 1800},
+                {"id": "c", "name": "C", "rating": 1700},
+                {"id": "d", "name": "D", "rating": 1600},
+                {"id": "e", "name": "E", "rating": 1500},
+                {"id": "f", "name": "F", "rating": 1400},
+            ],
+            "groups": [
+                {
+                    "id": "G1",
+                    "participants": ["a", "b", "c"],
+                    "qualifiers": [{"rank": 1, "slot": "G1_1"}],
+                },
+                {
+                    "id": "G2",
+                    "participants": ["d", "e", "f"],
+                    "qualifiers": [{"rank": 1, "slot": "G2_1"}],
+                },
+            ],
+            "wildcards": [{"source_rank": 2, "count": 1, "slot_prefix": "WC"}],
+            "bracket": {
+                "matches": [
+                    {"id": "s1", "a": {"slot": "G1_1"}, "b": {"slot": "WC2"}},
+                    {"id": "final", "a": {"winner": "s1"}, "b": {"slot": "G2_1"}},
+                ],
+                "champion_match": "final",
+            },
+            "target": {"type": "champion"},
+        }
+    )
+
+    with pytest.raises(ValueError, match="slot 'WC2' that cannot be assigned"):
+        run_simulation(config)
 
 
 def test_slot_target_supports_non_winner_take_all_markets() -> None:

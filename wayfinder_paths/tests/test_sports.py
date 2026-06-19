@@ -1026,6 +1026,86 @@ def test_path_market_answers_require_multi_model_distillation() -> None:
     assert "RESEARCH_ONLY" in quant
 
 
+def test_balanced_rigor_budget_ladder_is_declared() -> None:
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    planner = (REPO / ".opencode" / "agents" / "wayfinder-planner.md").read_text(
+        "utf-8"
+    )
+    quant = (REPO / ".opencode" / "agents" / "wayfinder-quant.md").read_text("utf-8")
+
+    for needle in (
+        "Balanced Rigor Budget",
+        "Tier 0",
+        "Tier 1",
+        "Tier 2",
+        "Tier 3",
+        "Tier 4",
+        "one repair",
+    ):
+        assert needle in primary
+
+    for needle in (
+        '"budgetTier"',
+        '"maxExternalCalls"',
+        '"allowedSubagents"',
+        '"scriptPolicy"',
+        "smoke simulation",
+        "one repair max",
+    ):
+        assert needle in planner
+
+    assert "one failed run plus one repair" in quant
+
+
+def test_path_market_research_evidence_must_be_structured_before_quant() -> None:
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    research = (REPO / ".opencode" / "agents" / "wayfinder-research.md").read_text(
+        "utf-8"
+    )
+    quant = (REPO / ".opencode" / "agents" / "wayfinder-quant.md").read_text("utf-8")
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+
+    for text in (primary, sports, research, quant, skill):
+        assert "contextPack" in text
+        assert "modelModifiers" in text
+        assert "final-synthesis-only" in text
+
+    assert "after the first shortlist" in primary
+    assert "after a first shortlist/model pass" in skill
+    assert "do not imply" in primary
+    assert "do not claim the simulator consumed it" in sports
+
+
+def test_path_market_sim_requires_validation_before_full_run() -> None:
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    planner = (REPO / ".opencode" / "agents" / "wayfinder-planner.md").read_text(
+        "utf-8"
+    )
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    quant = (REPO / ".opencode" / "agents" / "wayfinder-quant.md").read_text("utf-8")
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+
+    for text in (primary, planner, quant, skill):
+        assert "smoke" in text
+        assert "NEEDS_MORE_STATE" in text
+
+    for needle in (
+        "missing group slots",
+        "impossible wildcard slots",
+        "unknown participants",
+        "unsupported target shapes",
+    ):
+        assert needle in skill
+
+    assert "validation-friendly" in sports
+    assert "wildcard counts must match" in sports
+
+
 def test_grounded_eval_judge_uses_current_hyperliquid_search_contract() -> None:
     judge = (REPO / ".opencode" / "agents" / "wayfinder-eval-judge.md").read_text(
         "utf-8"

@@ -165,14 +165,26 @@ When a `Known Context` block contains such a pack, treat it as your input data a
 
 For path-dependent event markets, consume the handed-over `eventStatePack` or artifact.
 Respect its target outcome (`champion`, `slot`, `reach_match`, or `match_winner`) and run
-`wayfinder_paths.quant.event_sim` by default; if the pack cannot represent the event,
-build a bounded custom simulator, save artifacts, and document assumptions. Return a
+`wayfinder_paths.quant.event_sim` by default. Before a full run, execute the built-in
+event_sim validation/smoke path with low iterations and a short timeout; if validation
+reports missing bracket slots, impossible wildcard slots, unsupported target shape, or
+unknown participants, return `NEEDS_MORE_STATE` with the exact validation issues instead
+of spending minutes on a broken pack. If the pack cannot represent the event, build a
+bounded custom simulator only when the primary explicitly asked for repair or no generic
+representation exists; generated-simulator debugging gets one failed run plus one repair
+max, then stop with `NEEDS_MORE_STATE` / `incomplete_fair_value`.
+
+Return a
 `simulationPack`, candidate classifications, executable-price edge math, and
 `NEEDS_MORE_STATE` when the current state/path is insufficient. Treat simulator output as
 one model view, not final fair value: distill it against executable PM/HL priors, any
 sports/context model, and qualitative evidence. If ratings are market-implied or the
 bracket/path is approximate, surface the diagnostic flags and return `WATCH`/`RESEARCH_ONLY`
 unless an independent model corroborates the edge. Do not invent missing sports data.
+If the Known Context lacks actual `contextPack`, `modelModifiers`, or evidence cards from
+research, state that qualitative evidence was not consumed by the simulation; do not imply
+a prose research summary moved the model. Treat prose-only research as
+final-synthesis-only unless the primary supplies structured evidence in the handoff.
 
 When sports context includes `surfacePackRefs`, read those packs first and use unexpired
 PM/HL bid/ask/mid/depth rows as the executable prior. Do not rediscover the same odds

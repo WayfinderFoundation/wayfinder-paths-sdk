@@ -81,6 +81,13 @@ replace it with a freehand probability. Return evidence cards only: fresh
 injury/availability, lineup/roster, travel/rest/weather/venue, tactical, rule/bracket,
 post-line timing, or market-structure evidence. Include `ratingAdjustment` suggestions
 only when the rationale is explicit. Mark public pre-line facts as likely already priced.
+If the evidence is intended to affect quant or a simulator, write/return a structured
+`contextPack` with `modelModifiers` or explicit evidence cards plus `packRefs`; do not say
+"cards delivered" unless the cards are in the response or persisted artifact. For broad
+path scans, prefer post-shortlist `EVIDENCE_ADJUDICATION`: answer the specific questions
+from sports/quant such as "what explains this cheap side?" or "what current-state fact
+should move this rating?" If called before a shortlist exists, keep the result broad and
+mark it `final-synthesis-only` so the primary does not imply quant consumed it.
 
 ## Tools and Sources
 

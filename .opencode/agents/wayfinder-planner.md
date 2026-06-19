@@ -54,6 +54,11 @@ Return one JSON object only. Do not wrap it in Markdown. Keep fields compact and
 {
   "intent": "simple_read|single_market_edge|broad_scan|path_dependent_market|trade_setup|research_thesis|execution_prep|visualization",
   "rigorTier": 0,
+  "budgetTier": "tier0_direct|tier1_fast_edge|tier2_focused|tier3_broad_scan|tier4_path_model",
+  "maxExternalCalls": 0,
+  "allowedSubagents": [],
+  "scriptPolicy": "none",
+  "firstAnswerStop": "",
   "usePlannerConfidence": "low|medium|high",
   "shouldDelegate": false,
   "recommendedFlow": ["direct_tool", "final"],
@@ -77,13 +82,22 @@ Return one JSON object only. Do not wrap it in Markdown. Keep fields compact and
 - `3`: broad scan or multi-market comparison; surface first, then focused delegation.
 - `4`: path-dependent, model-heavy, or portfolio-grade analysis; use packs plus quant validation.
 
+Budget guidance:
+
+- Tier 0: `maxExternalCalls` 1-3, `allowedSubagents` [], `scriptPolicy` "none".
+- Tier 1: `maxExternalCalls` 3-5, `allowedSubagents` [] by default, `scriptPolicy` "none".
+- Tier 2: one specialist, one bounded script path, and one repair max.
+- Tier 3: cap the primary collection pass at eight external calls, surface/shortlist first, then deepen only candidates/blockers.
+- Tier 4: validate packs and run a smoke simulation with low iterations/short timeout before the full model; if validation fails, stop with `NEEDS_MORE_STATE`.
+
 ## Planning Rules
 
 - Prefer direct primary tools for cheap reads.
 - Prefer one shared `surfacePack` or known-context handoff over repeated market discovery.
 - For sports edge scans, recommend executable PM/HL surface first, then `wayfinder-sports` for modelling/context, then `wayfinder-quant` only for decision/validation when needed. Load or cite `/using-sports-data` in the primary's next step for deep sports work.
 - For sports broad scans, use a compact TTL'd `surfacePack` under `.wayfinder_runs/packs/sports/surface/`, pass `surfacePackRefs` downstream, and avoid making every worker re-fetch the board. Use `ttlSeconds: 60` for PM/HL board surfaces, `ttlSeconds: 30` for exact quote/depth/sweep, and `ttlSeconds: 300` for standings/results state.
-- For path-dependent sports markets, ask for an `eventStatePack`, model/sim range, stale/dead/live-conditioned classification, and final fair-value range. Distill the PM/HL prior, sports/context model, path simulation, and qualitative evidence. Do not let the primary present one latest simulator output as final fair value.
+- For path-dependent sports markets, ask for an `eventStatePack`, model/sim range, stale/dead/live-conditioned classification, and final fair-value range. Distill the PM/HL prior, sports/context model, path simulation, and qualitative evidence. Do not let the primary present one latest simulator output as final fair value. Research should normally happen after the first model/shortlist pass and should return structured evidence cards or `contextPack` refs, not general prose.
+- For path-dependent model runs, require an `event_sim validation`/smoke step before a full simulation. Generated-simulator debugging gets one repair max; after that, return `NEEDS_MORE_STATE` or `incomplete_fair_value`.
 - For non-sports prediction markets, recommend compact `surfaceLite` / persisted `surfaceFull`; use research only for evidence or resolution context. For one named market/event, keep `FAST_EDGE`: PM/HL surface, likely event/market hydration, executable bid/ask/depth, resolution profile, small evidence pass, then answer.
 - For multi-outcome or non-standard PM markets, pass `resolutionRef`/`fullRef` rather than raw payout matrices, and require edge mode: `settlement_edge`, `mark_to_market_edge`, `relative_value_edge`, or `arb_or_conversion_edge`.
 - For stable yield/rates, route to `wayfinder-research` first and start from Delta Lab: lending-only `research_search_lending(sort="combined_net_supply_apr_now", basis="USD", limit="25")`; broad stable yield `research_get_basis_apy_sources(basis_symbol="USD", limit="100")`. Treat `YIELD_TOKEN` as vault/LP/receipt-token yield, not simple stable lending.
@@ -106,6 +120,11 @@ Return:
 {
   "intent": "simple_read",
   "rigorTier": 0,
+  "budgetTier": "tier0_direct",
+  "maxExternalCalls": 1,
+  "allowedSubagents": [],
+  "scriptPolicy": "none",
+  "firstAnswerStop": "show schedule rows from scoreboard response",
   "usePlannerConfidence": "high",
   "shouldDelegate": false,
   "recommendedFlow": ["sports_snapshot.scoreboard", "final"],
@@ -127,6 +146,11 @@ Return:
 {
   "intent": "single_market_edge",
   "rigorTier": 1,
+  "budgetTier": "tier1_fast_edge",
+  "maxExternalCalls": 5,
+  "allowedSubagents": [],
+  "scriptPolicy": "none",
+  "firstAnswerStop": "answer once executable board, resolution profile, and evidence are sufficient",
   "usePlannerConfidence": "medium",
   "shouldDelegate": false,
   "recommendedFlow": ["pm_hl_surface", "resolution_profile", "small_evidence_check", "final"],
@@ -148,9 +172,14 @@ Return:
 {
   "intent": "path_dependent_market",
   "rigorTier": 4,
+  "budgetTier": "tier4_path_model",
+  "maxExternalCalls": 8,
+  "allowedSubagents": ["wayfinder-sports", "wayfinder-quant", "wayfinder-research after shortlist"],
+  "scriptPolicy": "validate event pack, smoke run, then full event_sim; one repair max",
+  "firstAnswerStop": "final table includes market price, fair range, status, and BUY/WATCH/SKIP/NEEDS_REPAIR",
   "usePlannerConfidence": "high",
   "shouldDelegate": true,
-  "recommendedFlow": ["load /using-sports-data", "PM/HL surfacePack", "wayfinder-sports SPORTS_SCAN", "wayfinder-quant DECIDE/VALIDATE if fair-value pack exists", "final annotated board"],
+  "recommendedFlow": ["load /using-sports-data", "PM/HL surfacePack", "wayfinder-sports SPORTS_SCAN", "event_sim validation/smoke", "wayfinder-quant DECIDE/VALIDATE if fair-value pack exists", "wayfinder-research evidence after shortlist if needed", "final annotated board"],
   "knownContextToPass": {"sport": "worldcup", "marketTypes": ["outright"], "requiredClassifications": ["clean_unplayed", "live_conditioned", "post_result_stale", "dead_signal"]},
   "packStrategy": {"reuseExistingPacks": true, "packsNeeded": ["surfacePack", "eventStatePack", "analysisPack", "decisionPack"], "ttlNotes": ["PM/HL board ttlSeconds: 60", "shortlisted quote ttlSeconds: 30"]},
   "avoidOverkill": ["do not enumerate every outcome in the primary", "do not re-fetch PM/HL board in every worker", "do not present one latest sim as final fair"],
@@ -169,6 +198,11 @@ Return:
 {
   "intent": "single_market_edge",
   "rigorTier": 2,
+  "budgetTier": "tier2_focused",
+  "maxExternalCalls": 6,
+  "allowedSubagents": ["wayfinder-sports"],
+  "scriptPolicy": "one bounded game_slate/script path; one repair max",
+  "firstAnswerStop": "answer with model fair, executable price, line status, and no-bet/watch/bet view",
   "usePlannerConfidence": "high",
   "shouldDelegate": true,
   "recommendedFlow": ["sports_snapshot.scoreboard for date/event_id", "PM/HL game surface", "wayfinder-sports SPORTS_SCAN", "final"],
@@ -190,6 +224,11 @@ Return:
 {
   "intent": "trade_setup",
   "rigorTier": 3,
+  "budgetTier": "tier3_broad_scan",
+  "maxExternalCalls": 8,
+  "allowedSubagents": ["wayfinder-research", "wayfinder-quant when sizing/stops need math"],
+  "scriptPolicy": "bounded scenario script only if it materially changes sizing",
+  "firstAnswerStop": "provide execute/watch/skip, position sketch, invalidation, and exact missing data if not executable",
   "usePlannerConfidence": "high",
   "shouldDelegate": true,
   "recommendedFlow": ["current tradable surface", "wayfinder-research thesis/risk", "wayfinder-quant scenarios if sizing/stops need math", "final trade plan"],
