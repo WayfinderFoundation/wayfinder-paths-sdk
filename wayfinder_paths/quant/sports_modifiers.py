@@ -10,7 +10,6 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-
 DEFAULT_MODIFIER_BOUNDS = {
     "team_rating_delta": {"soft": [-35, 35], "hard": [-75, 75]},
     "player_minutes_multiplier": {"soft": [0.75, 1.15], "hard": [0.50, 1.30]},

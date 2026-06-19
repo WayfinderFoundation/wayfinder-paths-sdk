@@ -8,7 +8,10 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
-from wayfinder_paths.core.clients.PolymarketClient import PolymarketSort, PolymarketStatus
+from wayfinder_paths.core.clients.PolymarketClient import (
+    PolymarketSort,
+    PolymarketStatus,
+)
 
 _MAX_RECALL_LIMIT = 50
 _MAX_EXTRA_SEARCHES = 1
@@ -933,7 +936,7 @@ async def _expand(
             asyncio.gather(*tasks, return_exceptions=True),
             timeout=_EXPANSION_TIMEOUT_S,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return [], tried_queries, direct_hydrations, event_hydrations
 
     rows: list[dict[str, Any]] = []

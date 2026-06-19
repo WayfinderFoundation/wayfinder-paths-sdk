@@ -18,18 +18,20 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
-import sys
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from wayfinder_paths.core import config as wf_config
-from wayfinder_paths.core.clients.SportsClient import SPORTS_CLIENT, SportsGatewayAPIError
-
+from wayfinder_paths.core import config as wf_config  # noqa: E402
+from wayfinder_paths.core.clients.SportsClient import (  # noqa: E402
+    SPORTS_CLIENT,
+    SportsGatewayAPIError,
+)
 
 AUTH_CODES = {
     "provider_misconfigured",
