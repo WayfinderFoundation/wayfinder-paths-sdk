@@ -647,6 +647,12 @@ def test_wayfinder_planner_is_hidden_advisory_and_non_mutating() -> None:
     assert "Do not inspect secrets or `.env` files" in text
     assert "Simple Sports Schedule" in text
     assert "Specific Game Lines" in text
+    assert "Novelty / Broadcast Sports Props" in text
+    assert '"intent": "novelty_prop_edge"' in text
+    assert '"shouldDelegate": false' in text
+    assert '"no game_slate"' in text
+    assert '"no prop_slate"' in text
+    assert "best BUY (heuristic)" in text
 
 
 def test_hidden_analysis_subagents_can_write_bounded_artifacts() -> None:

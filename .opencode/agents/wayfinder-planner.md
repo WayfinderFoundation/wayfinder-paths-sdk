@@ -214,6 +214,32 @@ Return:
 }
 ```
 
+### Novelty / Broadcast Sports Props
+
+User: "can we look at the FIFA World Cup games today and see if there are any prop bets worth taking or selling?"
+
+If the surfaced board is announcer-word, broadcast, novelty, or bespoke Polymarket/HL props rather than statistical player/team props, return:
+
+```json
+{
+  "intent": "novelty_prop_edge",
+  "rigorTier": 1,
+  "budgetTier": "tier1_fast_edge",
+  "maxExternalCalls": 6,
+  "allowedSubagents": [],
+  "scriptPolicy": "none",
+  "firstAnswerStop": "answer with a ranked heuristic BUY/SELL/WATCH/SKIP shortlist once executable prop boards are hydrated",
+  "usePlannerConfidence": "high",
+  "shouldDelegate": false,
+  "recommendedFlow": ["PM/HL board search", "hydrate relevant event ladders", "cross-market relative pricing", "resolution/spread/liquidity check", "final ranked heuristic shortlist"],
+  "knownContextToPass": {"lens": "broadcast_or_novelty_props", "avoid": ["game_slate", "prop_slate"]},
+  "packStrategy": {"reuseExistingPacks": true, "packsNeeded": ["surfaceLite"], "ttlNotes": ["refresh shortlisted bid/ask/depth before execution"]},
+  "avoidOverkill": ["no sports worker unless statistical props appear", "no game_slate", "no prop_slate", "no formal model required for heuristic edge"],
+  "stopConditions": ["final includes best BUY (heuristic), best SELL/NO (heuristic), watchlist, and skip reasons for bad spread/thin markets"],
+  "handoffPrompt": ""
+}
+```
+
 ### Trade Setup / Short Candidate
 
 User: "HYPE and SPCX have gone crazy, is this a good short? what position, stops, take profits, or good entry?"

@@ -457,6 +457,35 @@ def test_sports_subagent_prompt_states_key_rules() -> None:
     assert "sports_posterior" in skill
 
 
+def test_novelty_broadcast_props_use_fast_heuristic_path() -> None:
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    primary_lower = primary.lower()
+    assert "choose the betting lens before delegating" in primary_lower
+    assert "broadcast/announcer-word" in primary_lower
+    assert "buy (heuristic)" in primary_lower
+    assert "do **not** default these markets to `game_slate`" in primary_lower
+    assert "statistical player/game props and game lines delegate" in primary_lower
+
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    sports_lower = sports.lower()
+    assert "novelty / broadcast props fast path" in sports_lower
+    assert "not statistical player/team props" in sports_lower
+    assert "do not default to `game_slate`, `prop_slate`" in sports_lower
+    assert "compare the same word/condition across related" in sports_lower
+    assert "unsupported \"true probability\" claims" in sports
+
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+    skill_lower = skill.lower()
+    skill_compact = " ".join(skill_lower.split())
+    assert "novelty/broadcast props are a fast heuristic path" in skill_lower
+    assert "do not run" in skill_lower
+    assert "`game_slate`, `prop_slate`, or lab" in skill_lower
+    assert "buy (heuristic)" in skill_lower
+    assert "avoid unsupported true-prob claims" in skill_compact
+
+
 def test_dislocation_adjudication_wired_across_agents() -> None:
     """The posterior flow: primary routes to skill; skill/research preserve doctrine."""
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")

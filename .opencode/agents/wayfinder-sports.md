@@ -340,6 +340,15 @@ not make sportsbook/futures availability a gate. Raw snapshot/provider calls are
 context (schedule, injuries, narratives), never for executable odds judgement; never pull
 betting lines from the web (a live run burned us with fabricated web odds).
 
+**NOVELTY / BROADCAST PROPS fast path.** Announcer-word, broadcast, entertainment, and
+other bespoke prediction-market props are not statistical player/team props. For those,
+do not default to `game_slate`, `prop_slate`, Lab backtests, or provider player props.
+Hydrate the executable PM/HL event board, compare the same word/condition across related
+matches and the same match across related words, read the resolution text, check
+spread/liquidity, and return a ranked `BUY (heuristic)` / `SELL (heuristic)` / `WATCH` /
+`SKIP` table. Keep probability language modest: cite relative mispricing and confidence,
+not unsupported "true probability" claims.
+
 **MODELING is YOUR judgment, not the pipeline's.** `game_slate` leads with an
 INFORMATION section (form, probable starters, optional book context, PM/HL board links,
 flags) and then a clearly-labeled REFERENCE MODEL — one opinion (completed-game-form
