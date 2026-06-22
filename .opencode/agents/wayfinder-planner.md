@@ -225,17 +225,18 @@ If the surfaced board is announcer-word, broadcast, novelty, or bespoke Polymark
   "intent": "novelty_prop_edge",
   "rigorTier": 1,
   "budgetTier": "tier1_fast_edge",
-  "maxExternalCalls": 6,
+  "maxExternalCalls": 8,
   "allowedSubagents": [],
   "scriptPolicy": "none",
-  "firstAnswerStop": "answer with a ranked heuristic BUY/SELL/WATCH/SKIP shortlist once executable prop boards are hydrated",
+  "firstAnswerStop": "answer with a ranked heuristic BUY/SELL/WATCH/SKIP shortlist once prop categories are discovered and executable boards are hydrated",
   "usePlannerConfidence": "high",
   "shouldDelegate": false,
-  "recommendedFlow": ["PM/HL board search", "hydrate relevant event ladders", "cross-market relative pricing", "resolution/spread/liquidity check", "final ranked heuristic shortlist"],
+  "recommendedFlow": ["identify relevant games", "cheap prop-category discovery across each game", "hydrate top event ladders by category", "cross-market relative pricing", "resolution/spread/liquidity check", "final ranked heuristic shortlist"],
+  "categoryDiscovery": ["match_outcomes", "announcer_or_broadcast_words", "exact_score", "more_markets_or_specials", "visible_player_or_team_stat_props"],
   "knownContextToPass": {"lens": "broadcast_or_novelty_props", "avoid": ["game_slate", "prop_slate"]},
   "packStrategy": {"reuseExistingPacks": true, "packsNeeded": ["surfaceLite"], "ttlNotes": ["refresh shortlisted bid/ask/depth before execution"]},
-  "avoidOverkill": ["no sports worker unless statistical props appear", "no game_slate", "no prop_slate", "no formal model required for heuristic edge"],
-  "stopConditions": ["final includes best BUY (heuristic), best SELL/NO (heuristic), watchlist, and skip reasons for bad spread/thin markets"],
+  "avoidOverkill": ["no sports worker unless statistical props appear", "no game_slate", "no prop_slate", "no formal model required for heuristic edge", "do not stop at the first prop category that returns results"],
+  "stopConditions": ["final includes categories scanned/not found", "final includes best BUY (heuristic), best SELL/NO (heuristic), watchlist, and skip reasons for bad spread/thin markets"],
   "handoffPrompt": ""
 }
 ```

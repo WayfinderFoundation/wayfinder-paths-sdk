@@ -650,8 +650,13 @@ def test_wayfinder_planner_is_hidden_advisory_and_non_mutating() -> None:
     assert "Novelty / Broadcast Sports Props" in text
     assert '"intent": "novelty_prop_edge"' in text
     assert '"shouldDelegate": false' in text
+    assert '"categoryDiscovery"' in text
+    assert '"exact_score"' in text
+    assert '"more_markets_or_specials"' in text
     assert '"no game_slate"' in text
     assert '"no prop_slate"' in text
+    assert "do not stop at the first prop category" in text
+    assert "categories scanned/not found" in text
     assert "best BUY (heuristic)" in text
 
 

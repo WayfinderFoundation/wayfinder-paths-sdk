@@ -156,11 +156,15 @@ the executable prior:**
 
 **Novelty/broadcast props are a fast heuristic path, not a sports-stat model.** If the
 board is announcer-word, broadcast, entertainment, or bespoke PM/HL props, do not run
-`game_slate`, `prop_slate`, or Lab just because the user said "prop." Hydrate the event
-ladder, compare related prices across matches/words, inspect resolution text, and gate
-by spread/liquidity. It is valid to return `BUY (heuristic)` / `SELL (heuristic)` when
-the relative-pricing gap is obvious; label confidence and avoid unsupported true-prob
-claims.
+`game_slate`, `prop_slate`, or Lab just because the user said "prop." For broad "any
+props worth taking/selling" requests, first run cheap category discovery across the
+relevant games: match outcomes, announcer/broadcast words, exact score, more-markets,
+specials, and any visible player/team statistical props. Do not stop at the first prop
+category that returns results. Hydrate the discovered event ladders, compare related
+prices across matches/words, inspect resolution text, and gate by spread/liquidity.
+It is valid to return `BUY (heuristic)` / `SELL (heuristic)` when the relative-pricing
+gap is obvious; include categories scanned/not found, label confidence, and avoid
+unsupported true-prob claims.
 
 ```
 # player props -> ACTIONABLE/WATCH/EXCLUDED EV table

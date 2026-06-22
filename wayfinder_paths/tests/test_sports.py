@@ -463,16 +463,24 @@ def test_novelty_broadcast_props_use_fast_heuristic_path() -> None:
     assert "choose the betting lens before delegating" in primary_lower
     assert "broadcast/announcer-word" in primary_lower
     assert "buy (heuristic)" in primary_lower
+    assert "cheap category-discovery pass" in primary_lower
+    assert "exact score" in primary_lower
+    assert "do **not** stop after the first prop category" in primary_lower
+    assert "which categories were scanned" in primary_lower
     assert "do **not** default these markets to `game_slate`" in primary_lower
     assert "statistical player/game props and game lines delegate" in primary_lower
 
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
     sports_lower = sports.lower()
+    sports_compact = " ".join(sports.split())
     assert "novelty / broadcast props fast path" in sports_lower
     assert "not statistical player/team props" in sports_lower
     assert "do not default to `game_slate`, `prop_slate`" in sports_lower
+    assert "cheap category discovery" in sports_lower
+    assert "more-markets" in sports_lower
+    assert "scanned / not found" in sports_lower
     assert "compare the same word/condition across related" in sports_lower
-    assert "unsupported \"true probability\" claims" in sports
+    assert "unsupported \"true probability\" claims" in sports_compact
 
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
         "utf-8"
@@ -482,6 +490,9 @@ def test_novelty_broadcast_props_use_fast_heuristic_path() -> None:
     assert "novelty/broadcast props are a fast heuristic path" in skill_lower
     assert "do not run" in skill_lower
     assert "`game_slate`, `prop_slate`, or lab" in skill_lower
+    assert "cheap category discovery" in skill_lower
+    assert "do not stop at the first prop category" in skill_compact
+    assert "categories scanned/not found" in skill_lower
     assert "buy (heuristic)" in skill_lower
     assert "avoid unsupported true-prob claims" in skill_compact
 
