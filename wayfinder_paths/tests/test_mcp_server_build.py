@@ -17,6 +17,8 @@ def test_build_mcp_registers_tools() -> None:
         "core_get_adapters_and_strategies",
         "core_get_wallets",
         "onchain_swap",
+        "hyperliquid_get_candles",
+        "hyperliquid_get_funding_history",
         "hyperliquid_get_state",
         "polymarket_read",
         "contracts_call",

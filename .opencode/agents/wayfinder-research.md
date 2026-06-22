@@ -156,6 +156,7 @@ Prediction Market Forecast Mode:
 - Use the executable market/order-book distribution as the prior. Do not use last trade as the entry or prior. Last trade is context-only and cannot produce a `marketPrior` for an actionable decision. Prefer target-size quote/order-book sweep; use midpoint only when bid/ask are current and target size is small. For Polymarket MCP quotes, BUY uses `buy_amount_pusd` as pUSD spend and SELL uses `sell_amount_shares` as shares to sell; use `executionSummary` fields for share count, collateral, and average price.
 - Record `priorSource` as `bid_ask_mid`, `normalized_binary_prices`, `order_book_sweep`, `ask_only`, `bid_only`, or `last_trade_context_only`. Only `bid_ask_mid`, `normalized_binary_prices`, and `order_book_sweep` can support actionable decisions. Treat `ask_only`, `bid_only`, and `last_trade_context_only` as low-quality or context-only and normally return `WATCH` or `SKIP`.
 - Build evidence cards before moving the probability. Each card must include claim, direction (`for_yes`, `against_yes`, or `neutral`), strength, source quality, freshness, independence, already-priced assessment, resolution relevance, rationale, and source refs.
+- Source quality is a closed set: `provider_api`, `primary_source`, `fetched_article`, `search_snippet`, or `social`. Reserve the word `verified` for claims backed by `provider_api` or `primary_source`; fetched articles, search snippets, and social posts can support a view but must not appear in `verifiedMetrics`.
 - Use a structured Bayesian update from market prior to posterior. Prefer `posteriorMethod: "log_odds_evidence_update"`; use `log_odds_update` only for simple explicit deltas. Evidence cards should map into capped log-odds moves using `wayfinder_paths.quant.polymarket_edge`; do not freehand large probability jumps from one article.
 - Evidence buckets: resolution terms, current-state evidence, catalyst/timing evidence, disconfirming evidence, and market-structure evidence.
 - Output `pLow`, `pBase`, `pHigh`, what moved probability away from the market prior, `evYes`, `evNo`, and decision. If evidence does not justify moving away from prior, say the market looks roughly fair.
@@ -270,7 +271,7 @@ Return JSON only:
   ],
   "failedSources": [],
   "sources": [
-    { "id": "s1", "title": "", "url": "" }
+    { "id": "s1", "title": "", "url": "", "sourceType": "provider_api|primary_source|fetched_article|search_snippet|social" }
   ],
   "timeSeriesRefs": [],
   "dataFiles": [],
@@ -296,7 +297,16 @@ For general market research findings, include only fields relevant to the market
 
 Every factual claim in `summary`, `keyFindings`, `marketFindings`, `verifiedMetrics`, and `announcements` must cite at least one source. Cite inline with `[sN]` matching `sources[].id` (e.g. "TVL is $2.1B [s1]").
 
-Each `sources` entry requires `id` (short handle: `s1`, `s2`, …), `title` (page title, X post author + topic, or dataset name), and `url` (canonical link, no tracking params). 
+Each `sources` entry requires `id` (short handle: `s1`, `s2`, …), `title` (page title, X post author + topic, or dataset name), `url` (canonical link, no tracking params), and `sourceType`.
+
+`sourceType` values:
+- `provider_api`: direct tool/provider data such as Delta Lab, DeFiLlama, Polymarket, Hyperliquid, Goldsky, or sports provider API rows.
+- `primary_source`: official docs, official blogs, governance posts, exchange notices, filings, and official accounts.
+- `fetched_article`: an article/page fetched and read directly.
+- `search_snippet`: search-result text that was not fetched/read.
+- `social`: X/social posts or social search summaries.
+
+Only `provider_api` and `primary_source` claims may be placed in `verifiedMetrics`. Use `keyFindings`, `announcements`, or `marketFindings` for all other source types and label their evidence quality accordingly.
 
 Prefer primary sources — official docs, blogs, governance posts, exchange notices, X posts from verified protocol accounts.
 

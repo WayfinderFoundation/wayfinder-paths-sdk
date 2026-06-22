@@ -14,8 +14,9 @@ class InstanceStateClient(WayfinderClient):
     def _opencode_base_url(self) -> str:
         return f"{get_api_base_url()}/opencode"
 
-    async def get_state(self) -> dict[str, Any]:
-        resp = await self._authed_request("GET", f"{self._base_url()}/")
+    async def get_state(self, *, include_health: bool = False) -> dict[str, Any]:
+        params = {"include_health": "true"} if include_health else None
+        resp = await self._authed_request("GET", f"{self._base_url()}/", params=params)
         return resp.json()
 
     async def search_chart_series(
@@ -41,8 +42,8 @@ class InstanceStateClient(WayfinderClient):
         )
         return resp.json()
 
-    async def get_frontend_context(self) -> dict[str, Any]:
-        state = await self.get_state()
+    async def get_frontend_context(self, *, include_health: bool = False) -> dict[str, Any]:
+        state = await self.get_state(include_health=include_health)
         return state["frontend_context"]
 
     async def get_chart_id(self) -> str:

@@ -162,16 +162,18 @@ def _compact_chart_import_result(
 
 
 @catch_errors
-async def visual_get_frontend_context() -> dict[str, Any]:
+async def visual_get_frontend_context(include_health: bool = False) -> dict[str, Any]:
     """Read the current frontend UI state.
 
     Returns what the user is currently viewing plus any chart workspace
-    created by agent tools.
+    created by agent tools. Set `include_health=True` when repairing or
+    auditing workspace chart sources; this adds bounded chart health warnings
+    and replacement candidates when the backend can validate them.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
     try:
-        return ok(await INSTANCE_STATE_CLIENT.get_state())
+        return ok(await INSTANCE_STATE_CLIENT.get_state(include_health=include_health))
     except httpx.HTTPStatusError as exc:
         return err("state_http_error", f"HTTP {exc.response.status_code}")
 

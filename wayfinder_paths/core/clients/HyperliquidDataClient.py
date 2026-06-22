@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Required, TypedDict
+from typing import NotRequired, Required, TypedDict
 
 from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
 from wayfinder_paths.core.config import get_api_base_url
@@ -18,6 +18,8 @@ class CandleEntry(TypedDict):
     h: Required[str | None]
     l: Required[str | None]  # noqa: E741
     c: Required[str | None]
+    v: NotRequired[str | None]
+    n: NotRequired[int | None]
 
 
 class HyperliquidDataClient(WayfinderClient):
@@ -28,16 +30,27 @@ class HyperliquidDataClient(WayfinderClient):
     async def get_funding_history(
         self, coin: str, start_ms: int, end_ms: int
     ) -> list[FundingHistoryEntry]:
+        data = await self.get_funding_history_response(coin, start_ms, end_ms)
+        return data.get("rows", [])
+
+    async def get_funding_history_response(
+        self, coin: str, start_ms: int, end_ms: int
+    ) -> dict:
         url = f"{self.api_base_url}/funding/"
         params = {"coin": coin, "start_ms": start_ms, "end_ms": end_ms}
         resp = await self._authed_request("GET", url, params=params)
         resp.raise_for_status()
-        data = resp.json()
-        return data.get("rows", [])
+        return resp.json()
 
     async def get_candles(
         self, coin: str, start_ms: int, end_ms: int, interval: str = "1h"
     ) -> list[CandleEntry]:
+        data = await self.get_candles_response(coin, start_ms, end_ms, interval)
+        return data.get("rows", [])
+
+    async def get_candles_response(
+        self, coin: str, start_ms: int, end_ms: int, interval: str = "1h"
+    ) -> dict:
         url = f"{self.api_base_url}/candles/"
         params = {
             "coin": coin,
@@ -47,8 +60,7 @@ class HyperliquidDataClient(WayfinderClient):
         }
         resp = await self._authed_request("GET", url, params=params)
         resp.raise_for_status()
-        data = resp.json()
-        return data.get("rows", [])
+        return resp.json()
 
 
 HYPERLIQUID_DATA_CLIENT = HyperliquidDataClient()

@@ -4,6 +4,7 @@ import asyncio
 import difflib
 import math
 import re
+import time
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -12,6 +13,7 @@ from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
     decode_outcome_encoding,
     outcome_asset_id,
 )
+from wayfinder_paths.core.clients.HyperliquidDataClient import HYPERLIQUID_DATA_CLIENT
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.constants.hyperliquid import (
     ARBITRUM_USDC_ADDRESS,
@@ -263,6 +265,30 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _time_range_ms(
+    *,
+    lookback_hours: int,
+    start_ms: int | None,
+    end_ms: int | None,
+) -> tuple[int, int]:
+    if start_ms is None and end_ms is None:
+        end = int(time.time() * 1000)
+        hours = max(1, min(int(lookback_hours or 0) or 168, 24 * 365 * 5))
+        return end - hours * 3_600_000, end
+    if start_ms is None or end_ms is None:
+        raise ValueError("Provide both start_ms and end_ms, or neither.")
+    if end_ms <= start_ms:
+        raise ValueError("end_ms must be greater than start_ms.")
+    return int(start_ms), int(end_ms)
+
+
+def _tail_rows(rows: Any, limit: int) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+    safe_limit = max(1, min(int(limit or 0) or 500, 10_000))
+    return [row for row in rows[-safe_limit:] if isinstance(row, dict)]
 
 
 def _position_for_coin(user_state: dict[str, Any], coin: str) -> dict[str, Any] | None:
@@ -1898,6 +1924,82 @@ async def hyperliquid_get_trade_asset(label: str, asset_name: str) -> dict[str, 
             asset_name=asset_name,
             perp_state=perp,
         )
+    )
+
+
+@catch_errors
+async def hyperliquid_get_candles(
+    asset_name: str,
+    interval: str = "1h",
+    lookback_hours: int = 168,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """
+    Fetch historical Hyperliquid perp candles from the backend time-series service.
+
+    asset_name: Hyperliquid coin or canonical market name. Core perps may be
+        passed as "HYPE" or "HYPE-USDC"; HIP-3/dex perps require the dex prefix
+        such as "xyz:SPCX".
+    interval: Candle interval, e.g. "1m", "5m", "15m", "1h", "4h", "1d".
+    lookback_hours: Used when start_ms/end_ms are omitted.
+    start_ms/end_ms: Optional exact UTC millisecond range; provide both or neither.
+    limit: Max rows returned after backend fetch/resampling.
+    """
+    asset = throw_if_empty_str("asset_name is required", asset_name)
+    start, end = _time_range_ms(
+        lookback_hours=lookback_hours,
+        start_ms=start_ms,
+        end_ms=end_ms,
+    )
+    response = await HYPERLIQUID_DATA_CLIENT.get_candles_response(
+        asset,
+        start,
+        end,
+        interval,
+    )
+    rows = _tail_rows(response.get("rows"), limit)
+    return ok(
+        {
+            **response,
+            "rows": rows,
+            "row_count": len(rows),
+            "requested_asset_name": asset,
+            "requested_interval": interval,
+        }
+    )
+
+
+@catch_errors
+async def hyperliquid_get_funding_history(
+    asset_name: str,
+    lookback_hours: int = 168,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """
+    Fetch historical Hyperliquid perp funding rows from the backend time-series service.
+
+    asset_name accepts core coins like "HYPE" / "HYPE-USDC" and dex-prefixed
+    markets like "xyz:SPCX".
+    """
+    asset = throw_if_empty_str("asset_name is required", asset_name)
+    start, end = _time_range_ms(
+        lookback_hours=lookback_hours,
+        start_ms=start_ms,
+        end_ms=end_ms,
+    )
+    response = await HYPERLIQUID_DATA_CLIENT.get_funding_history_response(asset, start, end)
+    rows = _tail_rows(response.get("rows"), limit)
+    return ok(
+        {
+            **response,
+            "rows": rows,
+            "row_count": len(rows),
+            "requested_asset_name": asset,
+        }
     )
 
 

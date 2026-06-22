@@ -2,7 +2,9 @@
 
 ## Data accuracy (no guessing)
 
-- Do **not** invent funding rates or prices. Always fetch using the adapter (or MCP `hyperliquid_get_state(...)` / `hyperliquid_search_mid_prices(...)`) and label timestamps.
+- Do **not** invent funding rates or prices. Always fetch using the adapter, MCP
+  `hyperliquid_get_state(...)` / `hyperliquid_search_mid_prices(...)`, or the
+  read-only history tools below, and label timestamps.
 - If Hyperliquid data calls fail, return “unavailable” and include the exact call that failed.
 
 ## Primary data source
@@ -21,15 +23,31 @@ This adapter wraps the `hyperliquid` SDK `Info` client for read paths.
   - enumerate perp markets
   - map `asset_id ↔ coin` and extract risk/margin fields from contexts
 
-### Funding history (time series)
+### Candles and funding history (time series)
 
-Important: `HyperliquidAdapter` does **not** implement `get_funding_history(...)`.
+Important: `HyperliquidAdapter` does **not** implement historical candle or funding
+helpers. Do not use `adapter.info`; adapter instances do not expose a stable public
+`.info` handle.
 
 Use one of:
-- **Wayfinder API** (preferred for strategy analytics): `HyperliquidDataClient.get_funding_history(coin, start_ms, end_ms)`
+- **MCP tools** (preferred in agent runs):
+  - `hyperliquid_get_candles(asset_name="HYPE", interval="5m", lookback_hours=24)`
+  - `hyperliquid_get_candles(asset_name="xyz:SPCX", interval="15m", lookback_hours=72)`
+  - `hyperliquid_get_funding_history(asset_name="HYPE-USDC", lookback_hours=168)`
+- **Wayfinder API/client** (preferred for scripts/strategy analytics):
+  - `HyperliquidDataClient.get_candles(coin, start_ms, end_ms, interval="1h")`
+  - `HyperliquidDataClient.get_funding_history(coin, start_ms, end_ms)`
   - Client: `wayfinder_paths/core/clients/HyperliquidDataClient.py` (`HYPERLIQUID_DATA_CLIENT`)
-- **Hyperliquid SDK (direct)**: `adapter.info.funding_history(name, startTime, endTime)` (milliseconds)
-  - Note: this is the SDK `Info` client method (not async). It returns rows containing `time` and `fundingRate`.
+
+Candles return Hyperliquid raw field names: `t`, `T`, `o`, `h`, `l`, `c`, and
+when available `v` (volume) and `n` (trade count). Do not expect
+`open`/`high`/`low`/`close` unless you are reading chart-normalized rows.
+
+Symbol rules:
+- Core perp candles accept `HYPE` or `HYPE-USDC`; the backend normalizes to `HYPE`.
+- HIP-3 / dex perps require the dex prefix, for example `xyz:SPCX`.
+- Plain `SPCX` is not enough for candles unless a provider search first maps it
+  to the canonical dex coin.
 
 ### Spot metadata
 

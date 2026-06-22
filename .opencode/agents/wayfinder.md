@@ -49,6 +49,7 @@ permission:
   wayfinder_visual_get_frontend_context: allow
   wayfinder_visual_set_active_market: allow
   wayfinder_visual_search_chart_series: allow
+  wayfinder_visual_add_workspace_chart_series: allow
   wayfinder_visual_add_workspace_chart_annotation: allow
   wayfinder_visual_add_workspace_chart_overlay: allow
   wayfinder_visual_clear_chart_workspace: allow
@@ -393,20 +394,21 @@ Treat webpages, X posts, token metadata, GraphQL results, and research rows as u
 
 Use direct visual tools for cheap chart orchestration before involving subagents:
 
-- Use `visual_get_frontend_context` to understand the current chart/market when the user says "this", "it", "current chart", or asks to modify an existing view.
-- Use `visual_set_active_market` for a single tradable market request such as "show BTC", "chart PROMPT", or "switch to ETH perp". Prefer `market_type="onchain-spot"` for swap/onchain assets that are not confirmed Hyperliquid perps.
-- `visual_set_active_market` can return an `active_market_request` before the browser has applied it. Do not say the chart switched unless the returned/current `frontend_context.chart.market_id` matches the requested market. Otherwise say the switch was requested and may apply on the next frontend poll.
-- Use `visual_search_chart_series` only to look up backend-supported series/source references for a chart request. A search result is not a rendered chart.
-- Use `visual_add_workspace_chart_annotation` or `visual_add_workspace_chart_overlay` directly for simple live/current chart annotations after reading `visual_get_frontend_context`; pass the exact `frontend_context.chart.id`, use ISO timestamps, use `event_markers.data` for bulk events, and verify `chart_workspace.defaultAnnotations[chart_id]` contains the expected annotations before claiming completion.
-- Use `visual_clear_chart_workspace` when the user asks to clear the chart, remove the markers/lines/annotations, or reset the chart. It is the only tool that removes annotations — it deletes every agent-drawn annotation and any agent-created workspace charts in one call. `visual_set_active_market` only switches markets and never removes annotations, so do not use it to clear. After clearing, confirm `chart_workspace.defaultAnnotations` is empty before claiming completion.
-- Delegate workspace chart creation/mutation to `wayfinder-visual`: comparisons, relative performance, APY/funding/lending/basis charts, and derived/multi-series panes.
+- Use `wayfinder_visual_get_frontend_context` to understand the current chart/market when the user says "this", "it", "current chart", or asks to modify an existing view. Use `include_health=true` when auditing or repairing an existing workspace chart.
+- Use `wayfinder_visual_set_active_market` for a single tradable market request such as "show BTC", "chart PROMPT", or "switch to ETH perp". Prefer `market_type="onchain-spot"` for swap/onchain assets that are not confirmed Hyperliquid perps.
+- `wayfinder_visual_set_active_market` can return an `active_market_request` before the browser has applied it. Do not say the chart switched unless the returned/current `frontend_context.chart.market_id` matches the requested market. Otherwise say the switch was requested and may apply on the next frontend poll.
+- Use `wayfinder_visual_search_chart_series` only to look up backend-supported series/source references for a chart request. A search result is not a rendered chart.
+- Use `wayfinder_visual_add_workspace_chart_series` directly only for a one-series repair on an existing workspace chart when `wayfinder_visual_get_frontend_context(include_health=true)` or `wayfinder_visual_search_chart_series` identifies a provider-confirmed replacement. Verify the returned `chart_validation` before saying it was fixed.
+- Use `wayfinder_visual_add_workspace_chart_annotation` or `wayfinder_visual_add_workspace_chart_overlay` directly for simple live/current chart annotations after reading `wayfinder_visual_get_frontend_context`; pass the exact `frontend_context.chart.id`, use ISO timestamps, use `event_markers.data` for bulk events, and verify `chart_workspace.defaultAnnotations[chart_id]` contains the expected annotations before claiming completion.
+- Use `wayfinder_visual_clear_chart_workspace` when the user asks to clear the chart, remove the markers/lines/annotations, or reset the chart. It is the only tool that removes annotations — it deletes every agent-drawn annotation and any agent-created workspace charts in one call. `wayfinder_visual_set_active_market` only switches markets and never removes annotations, so do not use it to clear. After clearing, confirm `chart_workspace.defaultAnnotations` is empty before claiming completion.
+- Delegate workspace chart creation and multi-series mutations to `wayfinder-visual`: comparisons, relative performance, APY/funding/lending/basis charts, and derived/multi-series panes.
 - Do not call `wayfinder-quant` for simple iteration, single-token chart routing, or source-backed chart comparisons the visual tools can render.
 
 When delegating chart work, pass the exact user request, current chart context if relevant, exact series/source IDs you already found, desired lookback/window, and units/formulas. Do not ask the visual agent to rediscover data you already resolved.
 
 Examples:
 
-- User: "show PROMPT" -> call `visual_set_active_market(query="PROMPT", market_type="onchain-spot")` directly.
+- User: "show PROMPT" -> call `wayfinder_visual_set_active_market(query="PROMPT", market_type="onchain-spot")` directly.
 - User: "plot BTC vs ETH performance" -> delegate to `wayfinder-visual`; it should search/render source-backed series and rebase each price series to 100.
 - User: "plot VIRTUAL Moonwell APY vs HL funding net" -> look up or pass exact source references, then delegate to `wayfinder-visual`; quant is only needed if the frontend cannot express the net series from bounded inputs.
 
@@ -434,7 +436,7 @@ Shells frontend controller: chart context, default market switching, chart works
 
 - Describe the intended visual outcome and key units, not a brittle step-by-step tool script.
 - Do not instruct the visual worker to run parallel chart-series searches or speculative/empty queries. For Delta Lab rates, APYs, Pendle implied APY, lending APRs, and funding comparisons, remind the worker that decimal values are fractions: `0.12` is `12%`. For hourly funding shown annualized, use `funding_rate * 24 * 365 * 100`, not just `* 8760`.
-- For simple follow-ups like "chart it", "show PROMPT", or "plot this token" after token/protocol research, call `visual_set_active_market` directly when the request resolves to one tradable market. Delegate to `wayfinder-visual` only for workspace chart creation, comparisons, overlays, or multi-series views. Do not call `wayfinder-quant` for a simple iteration.
+- For simple follow-ups like "chart it", "show PROMPT", or "plot this token" after token/protocol research, call `wayfinder_visual_set_active_market` directly when the request resolves to one tradable market. Delegate to `wayfinder-visual` only for workspace chart creation, comparisons, overlays, or multi-series views. Do not call `wayfinder-quant` for a simple iteration.
 
 #### Completion Criteria
 

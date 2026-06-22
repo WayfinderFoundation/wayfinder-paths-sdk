@@ -650,6 +650,39 @@ def test_simple_prediction_market_fast_edge_prompt_guards() -> None:
         assert "Do not inspect helper source" in text
 
 
+def test_eval_overlays_include_chart_repair_and_source_quality_guards() -> None:
+    primary_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder.md",
+    ]
+    for path in primary_paths:
+        text = path.read_text("utf-8")
+        assert "wayfinder_visual_add_workspace_chart_series" in text
+        assert "include_health=true" in text
+        assert "provider-confirmed replacement" in text
+        assert "Verify the returned `chart_validation`" in text
+
+    research_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder-research.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder-research.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder-research.md",
+    ]
+    for path in research_paths:
+        text = path.read_text("utf-8")
+        assert "`provider_api`, `primary_source`, `fetched_article`, `search_snippet`, or `social`" in text
+        assert '"sourceType": "provider_api|primary_source|fetched_article|search_snippet|social"' in text
+        assert "Only `provider_api` and `primary_source` claims may be placed in `verifiedMetrics`" in text
+
+
 def test_eval_judge_prompt_conflict_is_removed() -> None:
     rubric = (REPO / "scripts" / "eval_sports_ab_judge.md").read_text("utf-8")
     judge = (REPO / ".opencode" / "agents" / "wayfinder-eval-judge.md").read_text(

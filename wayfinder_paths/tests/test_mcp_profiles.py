@@ -120,6 +120,7 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     assert primary["wayfinder_visual_get_frontend_context"] == "allow"
     assert primary["wayfinder_visual_set_active_market"] == "allow"
     assert primary["wayfinder_visual_search_chart_series"] == "allow"
+    assert primary["wayfinder_visual_add_workspace_chart_series"] == "allow"
     assert primary["wayfinder_visual_add_workspace_chart_annotation"] == "allow"
     assert primary["wayfinder_visual_add_workspace_chart_overlay"] == "allow"
     assert primary["wayfinder_visual_clear_chart_workspace"] == "allow"
@@ -190,6 +191,7 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_visual_get_frontend_context": "allow",
         "wayfinder_visual_set_active_market": "allow",
         "wayfinder_visual_search_chart_series": "allow",
+        "wayfinder_visual_add_workspace_chart_series": "allow",
         "wayfinder_visual_add_workspace_chart_annotation": "allow",
         "wayfinder_visual_add_workspace_chart_overlay": "allow",
         "wayfinder_visual_clear_chart_workspace": "allow",
@@ -278,18 +280,29 @@ def test_opencode_agents_route_simple_onchain_token_charts_without_quant() -> No
     visual = _agent_text("wayfinder-visual")
 
     assert "Chart Fast Path" in primary
-    assert "visual_get_frontend_context" in primary
-    assert "visual_set_active_market" in primary
-    assert "visual_search_chart_series" in primary
+    assert "wayfinder_visual_get_frontend_context" in primary
+    assert "wayfinder_visual_set_active_market" in primary
+    assert "wayfinder_visual_search_chart_series" in primary
+    assert "wayfinder_visual_add_workspace_chart_series" in primary
     assert "Do not call `wayfinder-quant`" in primary
     assert "simple iteration" in primary
-    assert "call `visual_set_active_market` directly" in primary
-    assert "Delegate to `wayfinder-visual` only for workspace chart creation" in primary
+    assert "provider-confirmed replacement" in primary
+    assert "Delegate workspace chart creation and multi-series mutations" in primary
 
     assert "Single-token chart fast path" in visual
     assert 'market_type="onchain-spot"' in visual
     assert "Do not call `visual_search_chart_series`" in visual
     assert "do not substitute a speculative perp or funding series" in visual
+
+
+def test_research_agent_requires_source_type_and_verified_metric_gate() -> None:
+    research = _agent_text("wayfinder-research")
+
+    assert "sourceType" in research
+    assert "provider_api" in research
+    assert "primary_source" in research
+    assert "search_snippet" in research
+    assert "Only `provider_api` and `primary_source` claims may be placed in `verifiedMetrics`" in research
 
 
 def test_visual_agent_prefers_source_refs_and_importable_specs() -> None:

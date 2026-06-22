@@ -8,6 +8,28 @@ from wayfinder_paths.mcp.tools import instance_state
 
 
 @pytest.mark.asyncio
+async def test_visual_get_frontend_context_passes_include_health(monkeypatch) -> None:
+    monkeypatch.setattr(instance_state, "is_opencode_instance", lambda: True)
+
+    captured: dict[str, object] = {}
+
+    async def fake_get_state(*, include_health: bool = False) -> dict[str, object]:
+        captured["include_health"] = include_health
+        return {
+            "frontend_context": {},
+            "chart_workspace": {"health": {"status": "ok"}},
+        }
+
+    monkeypatch.setattr(instance_state.INSTANCE_STATE_CLIENT, "get_state", fake_get_state)
+
+    result = await instance_state.visual_get_frontend_context(include_health=True)
+
+    assert result["ok"] is True
+    assert captured["include_health"] is True
+    assert result["result"]["chart_workspace"]["health"]["status"] == "ok"
+
+
+@pytest.mark.asyncio
 async def test_visual_create_chart_normalizes_delta_lab_rate_fields(
     monkeypatch,
 ) -> None:
