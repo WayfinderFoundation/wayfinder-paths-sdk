@@ -81,9 +81,13 @@ Question-specific grading notes:
 - **HYPE/SPCX short setup** — high scores identify the exact instruments (HYPE perp/spot
   vs any similarly named ticker; SPCX equity/ETF/venue availability), pull current price
   context where available, check whether a short is actually executable, and define a
-  risk plan with invalidation, stop, target, sizing/risk budget, and entry conditions.
-  Penalize naked short recommendations with no borrow/funding/liquidity/volatility check,
-  or confusing HYPE with unrelated "hype" narratives.
+  price-action thesis with invalidation, stop, target, sizing/risk budget, and entry
+  conditions. For "wild", "puke", "squeeze", or short/medium-term setup language, reward
+  a bounded historical analog/event-study when time-series data exists: comparable move
+  definition, forward horizons, sample size, and confidence. Penalize naked short
+  recommendations with no borrow/funding/OI/liquidity/volatility check, confusing HYPE
+  with unrelated "hype" narratives, or letting adjacent yield/basis/Pendle ideas dominate
+  without marking them `adjacent / needs verification`.
 - **World Cup countries/outrights** — high scores hydrate the country-winner board across
   PM/HL, condition on current tournament state, classify stale/live/clean signals, and use
   a path-aware model or explicit path assumptions. Penalize stopping at book-vs-market or

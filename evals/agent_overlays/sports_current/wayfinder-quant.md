@@ -140,6 +140,14 @@ Market intelligence log:
 
 Perp funding convention: positive funding means longs pay shorts. For funding-adjusted returns, long return is `price_return - funding`; short return is `-price_return + funding`.
 
+Market-intel historical analog / event-study:
+
+- Use this when the user or primary asks what usually happens after a big move, puke, squeeze, breakout, funding/OI shock, or other short/medium-term trade setup pattern.
+- Prefer the exact Delta Lab/venue instrument. If unavailable, use a clearly verified proxy and label it as a proxy. Never silently substitute an unrelated asset.
+- Keep the event definition simple and reproducible: recent return over the comparable lookback plus optional funding, OI, volume, or liquidity regime filters only when those fields are available.
+- Default forward horizons: 1d, 3d, 7d, 14d, and 30d when the series supports them. Report mean/median forward returns, hit rate, sample size, date range, frequency, and major data gaps.
+- Treat thin samples, post-listing assets, and proxy data as low confidence. Do not overfit filters just to produce a trade; a compact "data is too thin" result is acceptable.
+
 If the requested analysis needs a visual workspace update, return chart-ready data and a `visualSpec`; do not call visual tools yourself. The primary agent will pass that spec to `wayfinder-visual`.
 
 Chart handoff rules:

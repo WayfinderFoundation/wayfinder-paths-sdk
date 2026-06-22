@@ -434,6 +434,7 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
     assert "Single Non-Sports Prediction Market Edge" in planner
     assert "World Cup Broad Outright Scan" in planner
     assert "Trade Setup / Short Candidate" in planner
+    assert "bounded historical analog if price action is central" in planner
 
     assert "Prediction Market Forecast Mode" in research
     assert "Use the executable market/order-book distribution as the prior" in research
@@ -459,6 +460,10 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
     assert "profile != pm_simple_binary" in research
     assert "price equals probability" in research
     assert "exit/repricing probability" in research
+    assert "wild price action" in research
+    assert "bounded historical analog / event-study" in research
+    assert "raw row dumps" in research
+    assert "adjacent / needs verification" in research
 
     assert "Market Quant Mode" in quant
     assert "wayfinder_paths.quant.polymarket_edge" in quant
@@ -474,6 +479,14 @@ def test_market_intelligence_agent_prompt_contracts() -> None:
     assert "DO_NOT_TRADE" in quant
     assert "Known Context" in quant
     assert "contextForNextAgent" in quant
+    assert "Market-intel historical analog / event-study" in quant
+    assert "Default forward horizons" in quant
+    assert "sample size" in quant
+    assert "Do not overfit filters" in quant
+
+    assert "Market-Intel Trade Setup Lens" in primary
+    assert "price action has been wild" in primary
+    assert "tool-output rows" in primary
 
     visual = _agent_text("wayfinder-visual")
     assert "Known Context" in visual

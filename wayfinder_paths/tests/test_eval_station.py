@@ -586,6 +586,10 @@ def test_eval_judge_rubric_supports_mixed_market_domains() -> None:
         "market and sports edge answer quality",
         "IPO prediction markets",
         "HYPE/SPCX short setup",
+        "price-action thesis",
+        "bounded historical analog/event-study",
+        "forward horizons, sample size",
+        "`adjacent / needs verification`",
         "World Cup countries/outrights",
         "Specific MLB game lines",
         "bounded grounding pass",
@@ -598,6 +602,56 @@ def test_eval_judge_rubric_supports_mixed_market_domains() -> None:
         "trailing `<userSuggestions>` block",
     ):
         assert needle in rubric
+
+
+def test_market_intel_trade_setup_prompt_overlays() -> None:
+    primary_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder.md",
+    ]
+    for path in primary_paths:
+        text = path.read_text("utf-8")
+        assert "price action has been wild" in text
+        assert "sample size" in text
+        assert "forward horizons" in text
+        assert "adjacent / needs verification" in text
+
+    research_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder-research.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder-research.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder-research.md",
+    ]
+    for path in research_paths:
+        text = path.read_text("utf-8")
+        assert "wild price action" in text
+        assert "bounded historical analog / event-study" in text
+        assert "raw row dumps" in text
+        assert "adjacent / needs verification" in text
+
+    quant_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder-quant.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder-quant.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder-quant.md",
+    ]
+    for path in quant_paths:
+        text = path.read_text("utf-8")
+        assert "Market-intel historical analog / event-study" in text
+        assert "Default forward horizons" in text
+        assert "sample size" in text
+        assert "Do not overfit filters" in text
 
 
 def test_simple_prediction_market_fast_edge_prompt_guards() -> None:

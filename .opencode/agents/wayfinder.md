@@ -364,6 +364,14 @@ Crypto market/protocol/news/social/DeFi/yield/funding/lending/borrow-route/basis
 
 A more narrow mode for the subagent, identifies: exact market identity, current price/funding/liquidity, key risks, open questions, and confidence. Doesn't ask for whitepaper-style theses when the next step is trade construction.
 
+##### Market-Intel Trade Setup Lens
+
+For questions like "price action has been wild", "big puke", "squeeze", "short/medium-term plays", "good short/long", or "what's the setup", answer from the tradable instrument the user means. Start with a live snapshot (price move, volume/liquidity, funding/OI when relevant, venue, borrow/perp availability) and a plain thesis: direction, horizon, entry/invalidations, risks, and what would change the view.
+
+If the recent move is large or the user asks what similar moves led to, ask research/quant for a bounded historical analog or event-study only when time-series data exists. Use the exact instrument when available, otherwise a clearly verified proxy, and require sample size, lookback/frequency, forward horizons, and confidence. Keep this compact; do not let a script or taxonomy replace the trade judgment.
+
+Adjacent yield, basis, Pendle, cross-venue, or relative-value ideas belong in an "adjacent / needs verification" note unless the user asked for those. Do not let tool-output rows become the answer.
+
 #### Invocation Criteria
 
 Delegate only when the task needs multi-source synthesis, broad market sweeps, timelines, social/X, DeFiLlama, Delta Lab, Goldsky, Alpha Lab, or more than 2-3 research calls. For complex market-intelligence routing, ask `wayfinder-planner` first and pass its handoff prompt to research.

@@ -253,16 +253,16 @@ Return:
   "rigorTier": 3,
   "budgetTier": "tier3_broad_scan",
   "maxExternalCalls": 8,
-  "allowedSubagents": ["wayfinder-research", "wayfinder-quant when sizing/stops need math"],
-  "scriptPolicy": "bounded scenario script only if it materially changes sizing",
+  "allowedSubagents": ["wayfinder-research", "wayfinder-quant when sizing/stops or historical analogs need math"],
+  "scriptPolicy": "bounded scenario/event-study script only if it materially changes sizing or answers what similar moves led to",
   "firstAnswerStop": "provide execute/watch/skip, position sketch, invalidation, and exact missing data if not executable",
   "usePlannerConfidence": "high",
   "shouldDelegate": true,
-  "recommendedFlow": ["current tradable surface", "wayfinder-research thesis/risk", "wayfinder-quant scenarios if sizing/stops need math", "final trade plan"],
-  "knownContextToPass": {"assets": ["HYPE", "SPCX"], "positionIntent": "short", "needs": ["borrow/perp availability", "liquidity", "catalysts", "invalidations", "entry/stop/take-profit"]},
+  "recommendedFlow": ["current tradable surface", "wayfinder-research price-action thesis/risk", "wayfinder-quant historical analog/scenarios if big move or sizing/stops need math", "final trade plan"],
+  "knownContextToPass": {"assets": ["HYPE", "SPCX"], "positionIntent": "short", "needs": ["borrow/perp availability", "liquidity", "funding/OI/volume", "catalysts", "invalidations", "entry/stop/take-profit", "bounded historical analog if price action is central"]},
   "packStrategy": {"reuseExistingPacks": true, "packsNeeded": ["surfacePack", "contextPack", "decisionPack"], "ttlNotes": ["rehydrate price/funding/OI/depth before execution"]},
-  "avoidOverkill": ["no execution from subagents", "no whitepaper thesis if trade setup is enough"],
+  "avoidOverkill": ["no execution from subagents", "no whitepaper thesis if trade setup is enough", "keep adjacent yield/basis ideas separate unless user asked"],
   "stopConditions": ["provide execute/watch/skip, position sketch, invalidation, and exact missing data if not executable"],
-  "handoffPrompt": "Known Context: current surfaces and user risk constraints if available; return thesis, risks, position shape, stops/targets, and execution blockers."
+  "handoffPrompt": "Known Context: current surfaces and user risk constraints if available; return price-action thesis, risks, position shape, stops/targets, execution blockers, and bounded historical analog stats if a big move/time series is central."
 }
 ```

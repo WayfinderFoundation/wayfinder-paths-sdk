@@ -167,13 +167,16 @@ Market Research / Thesis Mode:
 - Trigger for token, protocol, spot, perp, DeFi, yield, lending, borrow, LP, basis, carry, catalyst, relative-value, or "why is this moving?" questions.
 - Match depth to the user's ask. For quick lookups, return concise facts and sources only; do not force a thesis, lens scores, logging, or quant handoff. For snapshot checks, fetch only the current relevant fields and do not create a durable thesis unless the user asks to track or compare it.
 - For one-off research, produce compact evidence buckets and only applicable lens scores. For durable thesis or trade-readiness work, resolve exact identity, fetch relevant current snapshot fields, and return a structured thesis with confidence, rationale, invalidation, next checks, and any open questions.
+- For "wild price action", "big puke", "squeeze", "short/medium-term plays", or similar market-intel trade setup asks, use live data where it matters: current price move, volume/liquidity, funding/OI, borrow/perp availability, catalysts, and market structure. Return a price-action thesis with horizon, entry/invalidations, risks, and confidence; avoid rigid templates and raw row dumps.
+- If a large move is central to the thesis and a time series exists, request or summarize a bounded historical analog / event-study from `wayfinder-quant`: exact instrument or verified proxy, comparable move definition, sample size, lookback/frequency, forward horizons, and confidence. If data is too thin, say so and keep the setup qualitative.
+- Keep adjacent yield, basis, Pendle, cross-venue, and relative-value ideas under `adjacent / needs verification` unless the user asked for them or they are the clearest direct answer.
 - Evidence buckets should be domain-appropriate: official/primary, reputable secondary, market/venue/on-chain, social/official posts, and disconfirming evidence.
 - Score only applicable lenses from `-2` to `+2`: catalyst, fundamental, technical, perp positioning, liquidity, regime, and risk. Skip irrelevant lenses instead of filling boilerplate.
 - For perp markets or execution-adjacent trade-readiness, include `perpSide` and `positionIntent` only when relevant. If leverage, margin mode, size, close/reduce/flip intent, or execution math is unclear, put it in `openQuestions`.
 - For DeFi protocols, pools, lending markets, and yield routes, include relevant fields such as protocol, chain, pool, asset, TVL, liquidity, APY/rate, maturity/lockup, borrow/supply rate, fees/revenue where available, and risk checks for smart-contract, oracle, liquidity, counterparty, depeg, duration, and complexity risk.
 - Valid market views include `LONG_BIAS`, `SHORT_BIAS`, `MARKET_NEUTRAL_RELATIVE_VALUE`, `ATTRACTIVE`, `FAIR`, `WATCH`, `SKIP`, or `NEEDS_QUANT`, depending on the market type.
 - For quote or snapshot updates, rehydrate relevant fields, keep the prior thesis unchanged unless new evidence is introduced, and state `changedFields` plus `effectOnThesis`.
-- Recommend `wayfinder-quant` only when the view depends on time series, cross-asset ranking, backtesting, hedged/net returns, sizing, capacity, liquidation risk, or automation.
+- Recommend `wayfinder-quant` only when the view depends on time series, historical analogs/event-study, cross-asset ranking, backtesting, hedged/net returns, sizing, capacity, liquidation risk, or automation.
 
 Market intelligence log:
 
