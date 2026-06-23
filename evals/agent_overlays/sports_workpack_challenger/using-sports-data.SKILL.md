@@ -144,7 +144,10 @@ what's tradeable — the Polymarket per-game event (`get_event` on the
 `{league}-{away}-{home}-{date}` slug) and Hyperliquid HIP-4 outcomes — into a candidate
 table; (2) INFORMATION via sports data and the canned pipelines below where useful
 (complete fetches, model features, optional sportsbook-context market math; never pull
-odds from the web); (3) TRIAGE candidates by liquidity and gap; (4) DEEP-DIVE
+odds from the web); (3) TRIAGE candidates by liquidity and fair-value delta
+(hypothesized fair probability/range minus executable PM/HL price); use PM/HL
+cross-venue differences as venue-noise/liquidity sanity checks, not the main
+objective; (4) DEEP-DIVE
 survivors with whatever data sharpens the number (full matchup history across seasons,
 comparable players vs that opponent, minutes/usage given injuries/lineups — multi-season
 `player_stats`, `matchups`, advanced stats), each input a weighted evidence card; (5)
@@ -254,7 +257,9 @@ any recommendation. An unexplained dislocation gates to
 WATCH with the EV shown — by design. Sub-threshold gaps are VENUE NOISE, not edge:
 never describe one as "X points too rich/cheap" — say the market is priced within
 normal venue tolerance (a directional view from evidence is "a lean within noise,
-not a value call").
+not a value call"). Absence of a cross-venue arbitrage path is not a skip reason:
+the user cares about fair-value delta versus executable price unless they explicitly
+ask for arbs.
 
 For scan questions, CLI-gate every dislocation you headline and fully adjudicate at least
 the largest one: ask research "what explains the cheap side?", fold evidence cards back
@@ -431,6 +436,9 @@ models with proper distributions and optional book-context probabilities, and pr
 `book_edge`, `book_ev`, `kelly`, `proj`, `n`, `flags`. `book_*` numbers are vs optional
 non-executable sportsbook context — informational; the executable stage is
 `sports_props.market_edge(pick.model_p, polymarket_price)` against a matching Polymarket market.
+Only compare a model/context probability to the same executable outcome. A player
+anytime-goal probability is not an edge against a team moneyline; if the matching
+executable prop is absent, label the model output context-only / informational-only.
 
 For custom analysis the pipeline doesn't cover (matchup deep-dives, soccer xG, cross-game
 studies), write a bounded script. Fetch through `SPORTS_CLIENT` (same backend gateway as the MCP

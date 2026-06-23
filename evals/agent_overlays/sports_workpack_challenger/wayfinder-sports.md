@@ -587,8 +587,10 @@ from what is tradeable and deepens analysis only where it pays:
    (INFORMATION section / `--data-only`; form, probable starters, optional book context,
    `alt_lines` to match board lines), `prop_slate`, `futures_slate`. Never source odds
    from the web; missing sportsbook context is not a blocker.
-3. **TRIAGE** — rank candidates by liquidity and |model/book vs venue price| gap; drop
-   dead markets with a stated reason. Only survivors earn a deep dive.
+3. **TRIAGE** — rank candidates by liquidity and fair-value delta: hypothesized
+   fair probability/range minus executable PM/HL price. Use PM/HL differences as
+   venue-noise/depth sanity checks, not the main objective; drop dead markets with
+   a stated reason. Only survivors earn a deep dive.
 4. **DEEP-DIVE each survivor — use whatever data sharpens the number.** The reference
    model is a starting opinion; for a market you might actually call, build the best
    probability you can from the full catalog, e.g. for a player prop: the player's COMPLETE
@@ -617,8 +619,11 @@ report's `required_questions` into `openQuestions` for a research pass ("what ex
 cheap side?"). The posterior CLI's ledger — prior = the executable price, the book number as
 ONE capped evidence card — is the only way to fold the book view in; an unexplained
 dislocation alone never clears the conservative gate, by design.
+Frame these findings as possible fair-value delta, not arbitrage; lack of cross-venue
+arb is not a skip reason when the executable price is cheap versus a defensible fair
+range.
 
-**Coverage reality:** Polymarket lists mostly **game-level / outcome** markets (winner, series), and player-prop markets only for marquee games. If no Polymarket market exists for a specific prop, the model number is **informational only** — say so; don't manufacture an executable edge against a sportsbook line.
+**Coverage reality:** Polymarket lists mostly **game-level / outcome** markets (winner, series), and player-prop markets only for marquee games. If no Polymarket market exists for a specific prop, the model number is **informational only** — say so; don't manufacture an executable edge against a sportsbook line. Do not compare player-level model probabilities to team-level markets like moneyline; if the matching executable prop is absent, it is context-only.
 
 ## Tool budget
 

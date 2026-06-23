@@ -655,6 +655,124 @@ def test_dislocation_adjudication_wired_across_agents() -> None:
     assert "alreadyPriced" in research  # double-counting guard
 
 
+def test_sports_scan_lens_uses_fair_value_delta_not_arbability() -> None:
+    primary_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder.md",
+    ]
+    sports_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder-sports.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder-sports.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder-sports.md",
+    ]
+    skill_paths = [
+        REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_current"
+        / "using-sports-data.SKILL.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "using-sports-data.SKILL.md",
+    ]
+
+    for path in primary_paths:
+        text = path.read_text("utf-8")
+        assert "fair-value delta shortlist" in text
+        assert "hypothesized fair probability/range vs executable price" in text
+        assert "not whether cross-venue arb is possible" in text
+        assert "lack of a cross-venue arb is not a skip reason" in text
+        assert "cross-venue board and value/fade shortlist" not in text
+
+    for path in sports_paths:
+        text = path.read_text("utf-8")
+        compact = " ".join(text.split())
+        assert "fair-value delta: hypothesized" in compact
+        assert "Use PM/HL differences as" in compact
+        assert "lack of cross-venue arb is not a skip reason" in compact
+
+    for path in skill_paths:
+        text = path.read_text("utf-8")
+        compact = " ".join(text.split())
+        assert "fair-value delta" in compact
+        assert "hypothesized fair probability/range minus executable PM/HL price" in compact
+        assert "Absence of a cross-venue arbitrage path is not a skip reason" in compact
+
+
+def test_unmatched_sports_model_outputs_are_context_only() -> None:
+    sports_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder-sports.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder-sports.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder-sports.md",
+    ]
+    skill_paths = [
+        REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_current"
+        / "using-sports-data.SKILL.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "using-sports-data.SKILL.md",
+    ]
+
+    for path in sports_paths:
+        text = path.read_text("utf-8")
+        assert "Do not compare player-level model probabilities to team-level markets" in text
+        assert "if the matching executable prop is absent, it is context-only" in text
+
+    for path in skill_paths:
+        text = path.read_text("utf-8")
+        compact = " ".join(text.split())
+        assert "A player anytime-goal probability is not an edge against a team moneyline" in compact
+        assert "if the matching executable prop is absent" in compact
+        assert "context-only / informational-only" in compact
+
+
+def test_ghana_style_gap_regression_frames_fair_value_not_cross_venue_arb() -> None:
+    """Regression for the June 23 Ghana case: PM 4.5%, HL 2.75%, context ~6.2%."""
+    pm_price = 0.045
+    hl_price = 0.0275
+    fair_context = 0.062
+
+    assert fair_context - hl_price > fair_context - pm_price
+    assert round((fair_context - hl_price) * 100, 2) == 3.45
+
+    combined = "\n".join(
+        [
+            (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8"),
+            (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text(
+                "utf-8"
+            ),
+            (
+                REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md"
+            ).read_text("utf-8"),
+        ]
+    )
+    assert "fair-value delta" in combined
+    assert "lack of a cross-venue arb is not a skip reason" in combined
+    assert "Absence of a cross-venue arbitrage path is not a skip reason" in combined
+
+
 def test_delegators_describe_sports_capabilities() -> None:
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
     planner = (REPO / ".opencode" / "agents" / "wayfinder-planner.md").read_text(
@@ -1281,6 +1399,8 @@ def test_trader_first_pass_is_behavior_first_not_forced_template() -> None:
             "Return 1-3 concrete",
             "sports_state=not_hydrated",
             "simulation on the shortlist as second-stage validation",
+            "fair-value delta shortlist",
+            "hypothesized fair probability/range vs executable price",
         ):
             assert needle in text
 
