@@ -1199,6 +1199,26 @@ def test_market_intel_historical_analog_is_second_stage_validation() -> None:
         assert "entry" in text and "invalidation" in text and "risk" in text
 
 
+def test_polymarket_research_prompt_preserves_token_ids_for_depth_calls() -> None:
+    prompt_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder-research.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder-research.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder-research.md",
+    ]
+
+    for path in prompt_paths:
+        text = path.read_text("utf-8")
+        assert "Carry `outcomes[].tokenId`" in text
+        assert "handoffs, and compaction" in text
+        assert "prefer the exact `token_id`" in text
+        assert "Never pass loose natural labels" in text
+        assert "rehydrate with `search`/`get_event` first" in text
+
+
 def test_path_market_research_evidence_must_be_structured_before_quant() -> None:
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
