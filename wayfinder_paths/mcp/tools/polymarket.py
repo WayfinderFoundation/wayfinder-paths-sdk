@@ -139,23 +139,26 @@ async def _resolve_read_token_id(
             },
         )
 
+    exact_market_resolution_error: str | None = None
     ok_m, market = await adapter.get_market_by_slug(slug)
     if ok_m and isinstance(market, dict):
         ok_tid, resolved = adapter.resolve_clob_token_id(market=market, outcome=outcome)
-        if not ok_tid:
-            return False, {"code": "token_resolution_failed", "message": resolved}
-        return (
-            True,
-            {
-                "token_id": resolved,
-                "resolution": {
-                    "source": "market_slug",
-                    "market_slug": market.get("slug") or slug,
-                    "question": market.get("question"),
-                    "outcome": outcome,
+        if ok_tid:
+            return (
+                True,
+                {
+                    "token_id": resolved,
+                    "resolution": {
+                        "source": "market_slug",
+                        "market_slug": market.get("slug") or slug,
+                        "question": market.get("question"),
+                        "outcome": outcome,
+                    },
                 },
-            },
-        )
+            )
+        exact_market_resolution_error = resolved
+        if "missing clobtokenids" not in str(resolved).lower():
+            return False, {"code": "token_resolution_failed", "message": resolved}
 
     if event:
         ok_e, event_payload = await adapter.get_event_by_slug(event)
@@ -253,6 +256,7 @@ async def _resolve_read_token_id(
             ),
             "market_slug": slug,
             "event_slug": event or None,
+            "exactMarketError": exact_market_resolution_error,
             "lookupError": rows if not ok_s else None,
         },
     )

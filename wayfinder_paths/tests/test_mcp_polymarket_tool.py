@@ -702,6 +702,54 @@ async def test_polymarket_order_book_resolves_loose_market_slug_with_search_fall
 
 
 @pytest.mark.asyncio
+async def test_polymarket_order_book_falls_back_when_slug_lookup_is_not_clob_tradable():
+    non_clob_market = {
+        "slug": "brazil",
+        "question": "Brazil",
+        "outcomes": ["Yes", "No"],
+    }
+    rows = [
+        {
+            "slug": "will-brazil-win-the-2026-fifa-world-cup-183",
+            "eventSlug": "world-cup-winner",
+            "question": "Will Brazil win the 2026 FIFA World Cup?",
+            "yesTokenId": "tok_brazil_yes",
+            "noTokenId": "tok_brazil_no",
+            "yesPrice": 0.0505,
+            "noPrice": 0.9495,
+            "liquidity": 3406600.0,
+            "volume24h": 1283310.0,
+        }
+    ]
+    get_order_book = AsyncMock(return_value=(True, {"bids": [], "asks": []}))
+    with (
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_market_by_slug",
+            new=AsyncMock(return_value=(True, non_clob_market)),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.search_markets",
+            new=AsyncMock(return_value=(True, rows)),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_order_book",
+            new=get_order_book,
+        ),
+    ):
+        out = await polymarket_read(
+            "order_book",
+            market_slug="brazil",
+            outcome="YES",
+        )
+
+    assert out["ok"] is True
+    assert out["result"]["token_id"] == "tok_brazil_yes"
+    assert out["result"]["resolution"]["source"] == "search_market_match"
+    assert get_order_book.await_args.kwargs["token_id"] == "tok_brazil_yes"
+
+
+@pytest.mark.asyncio
 async def test_polymarket_order_book_returns_candidates_for_ambiguous_loose_slug():
     rows = [
         {
