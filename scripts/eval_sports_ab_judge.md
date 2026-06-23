@@ -56,13 +56,16 @@ Score each answer 0–10 on every criterion:
    condition on completed games/matches, standings, injuries/availability, and timestamps?
    Answers that compare pre-event model numbers to post-result markets without labeling the
    mismatch score low.
-10. **Path/simulation depth** — for outrights, brackets, group winners, season awards, or
-   any field market where path matters, does the answer go beyond cross-venue price gaps
-   into a transparent path model, bracket/state simulation, or explicit path assumptions?
-   Stopping at PM-vs-HL or optional book-vs-market spread comparison scores low. So does
-   presenting a single latest simulator output as final fair value without distilling it
-   against executable market priors, model provenance, current-state evidence, and
-   diagnostic flags such as approximate bracket or market-implied ratings.
+10. **Path/simulation discipline** — for outrights, brackets, group winners, season
+   awards, or any field market where path matters, does the answer first build an
+   executable board with current-state/path assumptions and a value/fade shortlist, then
+   use or clearly reserve bracket/state simulation as second-stage validation for
+   shortlisted candidates? A strong first-pass answer may label simulation not yet run,
+   as long as it does not claim final fair value. Stopping at PM-vs-HL or optional
+   book-vs-market spread comparison without sports/context conditioning scores low. So
+   does presenting a single latest simulator output as final fair value without
+   distilling it against executable market priors, model provenance, current-state
+   evidence, and diagnostic flags such as approximate bracket or market-implied ratings.
 
 Question-specific grading notes:
 
@@ -82,16 +85,20 @@ Question-specific grading notes:
   vs any similarly named ticker; SPCX equity/ETF/venue availability), pull current price
   context where available, check whether a short is actually executable, and define a
   price-action thesis with invalidation, stop, target, sizing/risk budget, and entry
-  conditions. For "wild", "puke", "squeeze", or short/medium-term setup language, reward
-  a bounded historical analog/event-study when time-series data exists: comparable move
-  definition, forward horizons, sample size, and confidence. Penalize naked short
+  conditions before adjacent ideas. For "wild", "puke", "squeeze", or short/medium-term
+  setup language, reward a bounded historical analog/event-study when directly requested
+  or when the first setup is too uncertain without it: comparable move definition,
+  forward horizons, sample size, and confidence. Penalize naked short
   recommendations with no borrow/funding/OI/liquidity/volatility check, confusing HYPE
   with unrelated "hype" narratives, or letting adjacent yield/basis/Pendle ideas dominate
   without marking them `adjacent / needs verification`.
 - **World Cup countries/outrights** — high scores hydrate the country-winner board across
-  PM/HL, condition on current tournament state, classify stale/live/clean signals, and use
-  a path-aware model or explicit path assumptions. Penalize stopping at book-vs-market or
-  PM-vs-HL spread comparisons.
+  PM/HL, add bounded sports/research context, condition on current tournament state,
+  classify stale/live/clean signals, and produce an opinionated value/fade shortlist.
+  Simulation/path assumptions are strongest as second-stage validation after the shortlist
+  or as a clear caveat when not yet run. Penalize stopping at book-vs-market or PM-vs-HL
+  spread comparisons without sports context, and penalize claiming final fair value
+  without path modelling or a caveat.
 - **Specific MLB game lines** — high scores resolve the exact Rays/Nationals game date,
   starter/injury/weather context where available, executable PM/HL board coverage if it
   exists, and fair moneyline/game-line estimates with clear uncertainty. Penalize failure

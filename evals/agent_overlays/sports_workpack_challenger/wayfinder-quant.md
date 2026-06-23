@@ -143,6 +143,7 @@ Perp funding convention: positive funding means longs pay shorts. For funding-ad
 Market-intel historical analog / event-study:
 
 - Use this when the user or primary asks what usually happens after a big move, puke, squeeze, breakout, funding/OI shock, or other short/medium-term trade setup pattern.
+- Treat it as second-stage validation after the primary/research first-pass trade thesis, unless the user directly asked for historical forward-return behavior first. Do not let analog work replace the concrete setup, entry, invalidation, and risk view.
 - Prefer the exact Delta Lab/venue instrument. If unavailable, use a clearly verified proxy and label it as a proxy. Never silently substitute an unrelated asset.
 - Keep the event definition simple and reproducible: recent return over the comparable lookback plus optional funding, OI, volume, or liquidity regime filters only when those fields are available.
 - Default forward horizons: 1d, 3d, 7d, 14d, and 30d when the series supports them. Report mean/median forward returns, hit rate, sample size, date range, frequency, and major data gaps.

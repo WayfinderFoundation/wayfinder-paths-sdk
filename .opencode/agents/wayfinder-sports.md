@@ -398,12 +398,15 @@ pipelines de-vig home/draw/away together and the model prices the draw; a brand-
 tournament has no completed-game form, so game_slate emits odds-only views flagged
 `no_form_model` — bring tournament-external form/news via your delegator instead of
 inventing a model. All of this is optional context unless it maps to a surfaced PM/HL
-order book.
+order book. For broad outright questions, return a compact first-pass sports context
+board when that is enough to help the primary shortlist; do not force full path
+simulation before the market board has candidates.
 
 ### Event-state packs for path-dependent markets
 
 For outrights/fields where the path matters, `futures_slate` is optional market context,
-not the task. Always return a sport-neutral `eventStatePack` for the primary/quant
+not the task. After the primary has a shortlist, or when the user explicitly asks for
+full modelling first, return a sport-neutral `eventStatePack` for the primary/quant
 handoff: participants, completed state/results, standings or bracket/cut structure when
 known, ratings/form inputs, target outcome, PM/HL executable markets, and
 `missingPathFields` for anything unavailable. If sportsbook futures or `futures_slate`

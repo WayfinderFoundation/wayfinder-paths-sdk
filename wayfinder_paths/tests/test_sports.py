@@ -700,21 +700,31 @@ def test_path_field_scans_require_full_board_before_drilldown() -> None:
         assert needle in skill
 
 
-def test_path_markets_cannot_defer_current_simulation() -> None:
-    """GPT-5.5 eval gap: a better field scan still deferred path simulation
-    because the tournament was early. Path markets need current-state math now."""
-    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
-        "utf-8"
-    )
+def test_path_markets_shortlist_before_second_stage_simulation() -> None:
+    """Broad path scans should answer now, then validate shortlisted candidates."""
+    skill_paths = [
+        REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "using-sports-data.SKILL.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "using-sports-data.SKILL.md",
+    ]
 
-    for needle in (
-        "Run the path layer now",
-        "Do not defer",
-        "pathAssumption",
-        "missingPathFields",
-        "incomplete for a path market",
-    ):
-        assert needle in skill
+    for path in skill_paths:
+        skill = path.read_text("utf-8")
+        compact = " ".join(skill.split())
+        for needle in (
+            "Default first-pass workflow",
+            "Return the desk-analyst board and value/fade shortlist before any full path model",
+            "Run the first-pass board now",
+            "Full path simulation is the second-stage validation",
+            "state that simulation is not yet run",
+            "pathAssumption",
+            "missingPathFields",
+        ):
+            assert needle in compact
 
 
 def test_default_sports_eval_questions_cover_current_battery() -> None:
@@ -767,6 +777,24 @@ def test_sports_eval_judge_rewards_executable_market_math_not_sportsbook_gates()
 
     assert "De-vig correctness" not in judge
     assert "sportsbook_vendors" not in judge
+
+
+def test_sports_eval_judge_rewards_first_pass_before_simulation() -> None:
+    judge = (REPO / "scripts" / "eval_sports_ab_judge.md").read_text("utf-8")
+
+    for needle in (
+        "Path/simulation discipline",
+        "first build an\n   executable board",
+        "use or clearly reserve bracket/state simulation as second-stage validation",
+        "simulation not yet run",
+        "does not claim final fair value",
+        "World Cup countries/outrights",
+        "opinionated value/fade shortlist",
+        "HYPE/SPCX short setup",
+        "conditions before adjacent ideas",
+        "when directly requested",
+    ):
+        assert needle in judge
 
 
 def test_sports_eval_harness_rejects_partial_handoff_answers() -> None:
@@ -1095,6 +1123,80 @@ def test_balanced_rigor_budget_ladder_is_declared() -> None:
         assert needle in planner
 
     assert "one failed run plus one repair" in quant
+
+
+def test_trader_first_pass_is_behavior_first_not_forced_template() -> None:
+    primary_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder.md",
+        REPO / "evals" / "agent_overlays" / "sports_workpack_challenger" / "wayfinder.md",
+    ]
+
+    for path in primary_paths:
+        text = path.read_text("utf-8")
+        for needle in (
+            "Trader First Pass",
+            "desk-analyst first pass",
+            "behavior, not a fixed template",
+            "do not force rigid taxonomies",
+            "Return 1-3 concrete",
+            "sports_state=not_hydrated",
+            "simulation on the shortlist as second-stage validation",
+        ):
+            assert needle in text
+
+
+def test_world_cup_outright_planner_shortlists_before_simulation() -> None:
+    planner = (REPO / ".opencode" / "agents" / "wayfinder-planner.md").read_text(
+        "utf-8"
+    )
+
+    for needle in (
+        '"rigorTier": 3',
+        '"budgetTier": "tier3_broad_scan"',
+        "market board + bounded sports/research context -> shortlist -> optional simulation",
+        "no full simulation until after shortlist",
+        "PM/HL country surfacePack",
+        "first-pass value/fade shortlist",
+        "optional event_sim validation on shortlisted candidates",
+        "eventStatePack only after shortlist",
+    ):
+        assert needle in planner
+
+
+def test_sports_tool_unavailable_path_fails_fast_to_market_board() -> None:
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+
+    for needle in (
+        "Fail fast if sports tools are unavailable",
+        "do not repeatedly retry the same invalid call",
+        "do not debug ad hoc `/tmp` scripts",
+        "sports_state=not_hydrated",
+        "one repair max",
+        "Continue from executable PM/HL surfaces",
+    ):
+        assert needle in primary
+
+
+def test_market_intel_historical_analog_is_second_stage_validation() -> None:
+    prompt_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder.md",
+        REPO / ".opencode" / "agents" / "wayfinder-quant.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder-quant.md",
+        REPO / "evals" / "agent_overlays" / "sports_workpack_challenger" / "wayfinder.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder-quant.md",
+    ]
+
+    for path in prompt_paths:
+        text = path.read_text("utf-8")
+        assert "second-stage validation" in text
+        assert "first-pass" in text
+        assert "entry" in text and "invalidation" in text and "risk" in text
 
 
 def test_path_market_research_evidence_must_be_structured_before_quant() -> None:

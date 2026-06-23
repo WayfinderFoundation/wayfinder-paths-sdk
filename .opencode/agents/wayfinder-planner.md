@@ -88,15 +88,15 @@ Budget guidance:
 - Tier 1: `maxExternalCalls` 3-5, `allowedSubagents` [] by default, `scriptPolicy` "none".
 - Tier 2: one specialist, one bounded script path, and one repair max.
 - Tier 3: cap the primary collection pass at eight external calls, surface/shortlist first, then deepen only candidates/blockers.
-- Tier 4: validate packs and run a smoke simulation with low iterations/short timeout before the full model; if validation fails, stop with `NEEDS_MORE_STATE`.
+- Tier 4: use after a first shortlist exists or when the user explicitly asks for full modelling; validate packs and run a smoke simulation with low iterations/short timeout before the full model; if validation fails, stop with `NEEDS_MORE_STATE`.
 
 ## Planning Rules
 
 - Prefer direct primary tools for cheap reads.
 - Prefer one shared `surfacePack` or known-context handoff over repeated market discovery.
-- For sports edge scans, recommend executable PM/HL surface first, then `wayfinder-sports` for modelling/context, then `wayfinder-quant` only for decision/validation when needed. Load or cite `/using-sports-data` in the primary's next step for deep sports work.
-- For sports broad scans, use a compact TTL'd `surfacePack` under `.wayfinder_runs/packs/sports/surface/`, pass `surfacePackRefs` downstream, and avoid making every worker re-fetch the board. Use `ttlSeconds: 60` for PM/HL board surfaces, `ttlSeconds: 30` for exact quote/depth/sweep, and `ttlSeconds: 300` for standings/results state.
-- For path-dependent sports markets, ask for an `eventStatePack`, model/sim range, stale/dead/live-conditioned classification, and final fair-value range. Distill the PM/HL prior, sports/context model, path simulation, and qualitative evidence. Do not let the primary present one latest simulator output as final fair value. Research should normally happen after the first model/shortlist pass and should return structured evidence cards or `contextPack` refs, not general prose.
+- For sports edge scans, recommend executable PM/HL surface first, then bounded sports/research context, then an opinionated desk-analyst shortlist. Use `wayfinder-sports` for modelling/context when it materially improves the first pass; use `wayfinder-quant` only for decision/validation when needed. Load or cite `/using-sports-data` in the primary's next step for deep sports work.
+- For sports broad scans, use a compact TTL'd PM/HL surfacePack (`surfacePack`) under `.wayfinder_runs/packs/sports/surface/`, pass `surfacePackRefs` downstream, and avoid making every worker re-fetch the board. Use `ttlSeconds: 60` for PM/HL board surfaces, `ttlSeconds: 30` for exact quote/depth/sweep, and `ttlSeconds: 300` for standings/results state.
+- For path-dependent sports markets, recommend: market board + bounded sports/research context -> shortlist -> optional simulation. The first pass should classify obvious stale/dead/live-conditioned signals and state missing path fields, but should not wait on full `event_sim`. After shortlist, ask for an `eventStatePack`, model/sim range, and final fair-value range/validation. Distill the PM/HL prior, sports/context model, path simulation, and qualitative evidence. Do not let the primary present one latest simulator output as final fair value. Research should normally happen after the first shortlist/model pass and should return structured evidence cards or `contextPack` refs, not general prose.
 - For path-dependent model runs, require an `event_sim validation`/smoke step before a full simulation. Generated-simulator debugging gets one repair max; after that, return `NEEDS_MORE_STATE` or `incomplete_fair_value`.
 - For non-sports prediction markets, recommend compact `surfaceLite` / persisted `surfaceFull`; use research only for evidence or resolution context. For one named market/event, keep `FAST_EDGE`: PM/HL surface, likely event/market hydration, executable bid/ask/depth, resolution profile, small evidence pass, then answer.
 - For multi-outcome or non-standard PM markets, pass `resolutionRef`/`fullRef` rather than raw payout matrices, and require edge mode: `settlement_edge`, `mark_to_market_edge`, `relative_value_edge`, or `arb_or_conversion_edge`.
@@ -171,20 +171,20 @@ Return:
 ```json
 {
   "intent": "path_dependent_market",
-  "rigorTier": 4,
-  "budgetTier": "tier4_path_model",
+  "rigorTier": 3,
+  "budgetTier": "tier3_broad_scan",
   "maxExternalCalls": 8,
-  "allowedSubagents": ["wayfinder-sports", "wayfinder-quant", "wayfinder-research after shortlist"],
-  "scriptPolicy": "validate event pack, smoke run, then full event_sim; one repair max",
-  "firstAnswerStop": "final table includes market price, fair range, status, and BUY/WATCH/SKIP/NEEDS_REPAIR",
+  "allowedSubagents": ["wayfinder-sports for bounded current-state/context", "wayfinder-research after shortlist", "wayfinder-quant optional simulation after shortlist"],
+  "scriptPolicy": "no full simulation until after shortlist; if validating shortlisted candidates, smoke run before full event_sim; one repair max",
+  "firstAnswerStop": "desk-analyst board includes PM/HL price, sports/research context, value/fade status, and missing simulation caveat",
   "usePlannerConfidence": "high",
   "shouldDelegate": true,
-  "recommendedFlow": ["load /using-sports-data", "PM/HL surfacePack", "wayfinder-sports SPORTS_SCAN", "event_sim validation/smoke", "wayfinder-quant DECIDE/VALIDATE if fair-value pack exists", "wayfinder-research evidence after shortlist if needed", "final annotated board"],
+  "recommendedFlow": ["load /using-sports-data", "PM/HL country surfacePack", "bounded sports state/context", "first-pass value/fade shortlist", "wayfinder-research evidence after shortlist if needed", "optional event_sim validation on shortlisted candidates"],
   "knownContextToPass": {"sport": "worldcup", "marketTypes": ["outright"], "requiredClassifications": ["clean_unplayed", "live_conditioned", "post_result_stale", "dead_signal"]},
-  "packStrategy": {"reuseExistingPacks": true, "packsNeeded": ["surfacePack", "eventStatePack", "analysisPack", "decisionPack"], "ttlNotes": ["PM/HL board ttlSeconds: 60", "shortlisted quote ttlSeconds: 30"]},
-  "avoidOverkill": ["do not enumerate every outcome in the primary", "do not re-fetch PM/HL board in every worker", "do not present one latest sim as final fair"],
-  "stopConditions": ["final table includes market price, fair range, status, and BUY/WATCH/SKIP/NEEDS_REPAIR"],
-  "handoffPrompt": "Known Context: sport=worldcup; surfacePackRefs=<refs>; ask for executable board coverage, event state, model/fair ranges, missingPathFields, and compact candidate table."
+  "packStrategy": {"reuseExistingPacks": true, "packsNeeded": ["surfacePack", "contextPack", "eventStatePack only after shortlist"], "ttlNotes": ["PM/HL board ttlSeconds: 60", "shortlisted quote ttlSeconds: 30"]},
+  "avoidOverkill": ["do not enumerate every outcome in the primary unless compact", "do not re-fetch PM/HL board in every worker", "do not run full simulation before candidate selection"],
+  "stopConditions": ["first-pass board includes market price, value/fade status, sports/research context, and simulation-not-yet-run caveat"],
+  "handoffPrompt": "Known Context: sport=worldcup; surfacePackRefs=<refs>; ask for executable country board coverage, bounded current-state sports context, missingPathFields, and compact value/fade candidate table. Do not run full event_sim before the shortlist."
 }
 ```
 
@@ -258,11 +258,11 @@ Return:
   "firstAnswerStop": "provide execute/watch/skip, position sketch, invalidation, and exact missing data if not executable",
   "usePlannerConfidence": "high",
   "shouldDelegate": true,
-  "recommendedFlow": ["current tradable surface", "wayfinder-research price-action thesis/risk", "wayfinder-quant historical analog/scenarios if big move or sizing/stops need math", "final trade plan"],
-  "knownContextToPass": {"assets": ["HYPE", "SPCX"], "positionIntent": "short", "needs": ["borrow/perp availability", "liquidity", "funding/OI/volume", "catalysts", "invalidations", "entry/stop/take-profit", "bounded historical analog if price action is central"]},
+  "recommendedFlow": ["current tradable surface", "wayfinder-research price-action thesis/risk", "wayfinder-quant historical analog/scenarios only if requested, setup is too uncertain without it, or sizing/stops need math", "final trade plan"],
+  "knownContextToPass": {"assets": ["HYPE", "SPCX"], "positionIntent": "short", "needs": ["borrow/perp availability", "liquidity", "funding/OI/volume", "catalysts", "invalidations", "entry/stop/take-profit", "bounded historical analog if requested or setup is too uncertain without it"]},
   "packStrategy": {"reuseExistingPacks": true, "packsNeeded": ["surfacePack", "contextPack", "decisionPack"], "ttlNotes": ["rehydrate price/funding/OI/depth before execution"]},
   "avoidOverkill": ["no execution from subagents", "no whitepaper thesis if trade setup is enough", "keep adjacent yield/basis ideas separate unless user asked"],
   "stopConditions": ["provide execute/watch/skip, position sketch, invalidation, and exact missing data if not executable"],
-  "handoffPrompt": "Known Context: current surfaces and user risk constraints if available; return price-action thesis, risks, position shape, stops/targets, execution blockers, and bounded historical analog stats if a big move/time series is central."
+  "handoffPrompt": "Known Context: current surfaces and user risk constraints if available; return price-action thesis, risks, position shape, stops/targets, execution blockers, and bounded historical analog stats only if requested or the setup is too uncertain without them."
 }
 ```

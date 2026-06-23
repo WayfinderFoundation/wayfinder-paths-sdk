@@ -340,6 +340,20 @@ not make sportsbook/futures availability a gate. Raw snapshot/provider calls are
 context (schedule, injuries, narratives), never for executable odds judgement; never pull
 betting lines from the web (a live run burned us with fabricated web odds).
 
+**NOVELTY / BROADCAST PROPS fast path.** Announcer-word, broadcast, entertainment, and
+other bespoke prediction-market props are not statistical player/team props. For those,
+do not default to `game_slate`, `prop_slate`, Lab backtests, or provider player props.
+For broad "any props worth taking/selling" requests, first run cheap category discovery
+across the relevant games: match outcomes, announcer/broadcast words, exact score,
+more-markets, specials, and any visible player/team statistical props. Do not stop at
+the first prop category that returns results. Hydrate the executable PM/HL event boards
+for the discovered categories, compare the same word/condition across related matches
+and the same match across related words, read the resolution text, check spread/liquidity,
+and return a ranked `BUY (heuristic)` / `SELL (heuristic)` / `WATCH` / `SKIP` table.
+Include a compact "scanned / not found" line so the user can see the breadth. Keep
+probability language modest: cite relative mispricing and confidence, not unsupported
+"true probability" claims.
+
 **MODELING is YOUR judgment, not the pipeline's.** `game_slate` leads with an
 INFORMATION section (form, probable starters, optional book context, PM/HL board links,
 flags) and then a clearly-labeled REFERENCE MODEL — one opinion (completed-game-form
@@ -384,12 +398,15 @@ pipelines de-vig home/draw/away together and the model prices the draw; a brand-
 tournament has no completed-game form, so game_slate emits odds-only views flagged
 `no_form_model` — bring tournament-external form/news via your delegator instead of
 inventing a model. All of this is optional context unless it maps to a surfaced PM/HL
-order book.
+order book. For broad outright questions, return a compact first-pass sports context
+board when that is enough to help the primary shortlist; do not force full path
+simulation before the market board has candidates.
 
 ### Event-state packs for path-dependent markets
 
 For outrights/fields where the path matters, `futures_slate` is optional market context,
-not the task. Always return a sport-neutral `eventStatePack` for the primary/quant
+not the task. After the primary has a shortlist, or when the user explicitly asks for
+full modelling first, return a sport-neutral `eventStatePack` for the primary/quant
 handoff: participants, completed state/results, standings or bracket/cut structure when
 known, ratings/form inputs, target outcome, PM/HL executable markets, and
 `missingPathFields` for anything unavailable. If sportsbook futures or `futures_slate`
@@ -403,6 +420,13 @@ market-implied prices, label them diagnostic only. If the bracket/path is approx
 `pathAssumption: "approximate"` / `approx_bracket`. Do not present one latest sim result as
 final fair value; the primary/quant must distill PM/HL prior, sports/context model, path
 sim, and qualitative evidence before calling value.
+Make event packs validation-friendly: bracket endpoints must reference slots that are
+actually produced by group qualifiers or wildcard prefixes; every viable first-place slot
+in a champion market should reach the champion path; wildcard counts must match the slots
+the bracket consumes. If any of those are unknown, put them in `missingPathFields` instead
+of handing quant a pack that will need a long repair. Include `contextForNextAgent` with
+the exact event pack path, `surfacePackRefs`, model artifacts, `pathAssumption`, and any
+evidence-card questions that should be researched after the first shortlist.
 
 If the primary supplies `surfacePackRefs`, consume those PM/HL executable surfaces as the
 current odds board until their `validUntil` expires. Do not re-fetch the same PM/HL board
@@ -427,6 +451,10 @@ state/results calls, use the sport slug `worldcup` with an explicit generous `li
 Never return a progress checkpoint for broad scans. Do not answer with progress-only
 headings like `Goal`, `Progress`, `In Progress`, `Blocked`, `Critical Context`, or
 `Next Steps`; return the partial annotated board and blockers as the final finding.
+
+For path-market research handoff, ask for structured `contextPack` / `modelModifiers` /
+evidence cards only after the surface/model pass identifies candidates or blockers. If
+research returns prose without cards or pack refs, mark it final-synthesis-only; do not claim the simulator consumed it.
 
 `game_slate` models expected scores from each team's completed games (Poisson for
 nhl/mlb/soccer, normal for nba/nfl), emits optional provider/book context when available,

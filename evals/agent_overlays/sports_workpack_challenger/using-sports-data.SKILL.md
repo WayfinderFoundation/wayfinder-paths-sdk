@@ -248,18 +248,32 @@ matters, do not stop at prediction-market cross-venue spreads or optional book-v
 spreads. Build a current-state probability layer; sportsbook odds are optional context,
 not a required input.
 
-Default workflow:
+Default first-pass workflow:
 
-1. Enumerate executable PM/HL boards first.
-2. Ask `wayfinder-sports` for a sport-neutral `eventStatePack`: participants, ratings/form
-   inputs, completed results, standings/bracket/cuts if known, upcoming path, futures_slate
-   fair probabilities if available, and executable PM/HL markets. Sportsbook/futures auth
-   failure must not block this pack.
-3. Ask `wayfinder-research` only for qualitative/current-state evidence cards: injuries,
+1. Enumerate executable PM/HL boards first, then add bounded sports state/context that
+   helps interpret the board: completed results, standings/bracket/cuts if cheap,
+   injuries/availability, futures context, and obvious missing path fields.
+2. Return the desk-analyst board and value/fade shortlist before any full path model. The
+   first pass should include board coverage counts, state classification, and
+   `path-model status` such as `not_run_shortlist_first` or `missingPathFields`.
+3. Ask `wayfinder-research` only after a first shortlist/model pass unless the user
+   explicitly asks for broad qualitative research. It should return qualitative/current-state
+   evidence cards in a `contextPack` / `modelModifiers` artifact: injuries,
    lineups, post-line news, rule/resolution mismatch, liquidity/depth, lockup/flow.
-4. Run `poetry run python -m wayfinder_paths.quant.event_sim --input <event_pack.json>
+   Prose-only research is final-synthesis-only and must not be described as consumed by
+   the simulator.
+4. For shortlisted candidates, or when the user explicitly asks for full modelling first,
+   ask `wayfinder-sports` for a sport-neutral `eventStatePack`: participants,
+   ratings/form inputs, completed results, standings/bracket/cuts if known, upcoming path,
+   futures_slate fair probabilities if available, and executable PM/HL markets.
+   Sportsbook/futures auth failure must not block this pack.
+5. Run event_sim validation/smoke before any full simulation: low iterations, short
+   timeout, and fail fast on missing group slots, impossible wildcard slots,
+   unknown participants, or unsupported target shapes. Generated custom-simulator debugging
+   gets one repair max.
+6. Run `poetry run python -m wayfinder_paths.quant.event_sim --input <event_pack.json>
    --out .wayfinder_runs/sports` or delegate the pack to `wayfinder-quant`.
-5. Price simulated probabilities against executable order-book entries/depth and gate with
+7. Price simulated probabilities against executable order-book entries/depth and gate with
    `sports_posterior` when dislocations remain large.
 
 The simulator is one model view, not the answer. Final synthesis must distill multiple
@@ -280,11 +294,14 @@ packs, resume from those pack refs; do not improvise a final `BUY` from venue sp
 qualitative reasoning alone. Missing model/fair-value work should be labeled
 `WATCH` / `incomplete_fair_value`.
 
-Run the path layer now, even early in an event. Do not defer with "run once the group
-stage is 50% complete" or similar. If the official bracket/path is unavailable, run the
+Run the first-pass board now, even early in an event. Do not defer with "run once the group
+stage is 50% complete" or similar. Full path simulation is the second-stage validation
+step after the shortlist; if the user explicitly asks for modelling first, skip straight
+to the path layer. If the official bracket/path is unavailable for validation, run the
 best bounded approximation from known rules and label `pathAssumption: "approximate"`;
 if a path cannot be represented at all, surface `missingPathFields` as the blocker.
-If you skip `event_sim` or a custom simulator, the answer is incomplete for a path market.
+If a final answer claims fair value without `event_sim` or a custom simulator, label it
+`WATCH` / `incomplete_fair_value` and state that simulation is not yet run.
 
 For "scan the field/market" questions, the final answer must be the annotated board before
 any single-candidate drilldown. It must include: board coverage counts for each executable

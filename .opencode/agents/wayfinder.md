@@ -351,10 +351,18 @@ Default to the smallest tier that can answer authoritatively:
 - **Tier 0** direct reads: schedules, scores, standings, one known market, balances, or chart switches. No planner, no subagent, no scripts.
 - **Tier 1** simple `FAST_EDGE`: one named non-sports market/event. Pull executable PM/HL surfaces, classify resolution, do a small evidence check, answer; no quant, no backtest, no local script.
 - **Tier 2** focused specialist: one game, one prop slate, one asset/trade setup. Use at most one specialist and one bounded script path; allow one repair, then return the best complete answer with blockers.
-- **Tier 3** broad scan: collect a shared surface first, shortlist, then deepen. Run research after shortlist unless the user explicitly asks for broad qualitative research.
-- **Tier 4** path/model-heavy work: require pack validation and a smoke run before full simulation. If validation fails, return `NEEDS_MORE_STATE` / `incomplete_fair_value` with the missing fields instead of debugging generated scripts.
+- **Tier 3** broad scan: collect a shared executable surface plus bounded sports/research context first, give a desk-analyst shortlist, then deepen only the candidates or blockers. Run research after shortlist unless the user explicitly asks for broad qualitative research.
+- **Tier 4** path/model-heavy validation: use after a first shortlist exists or when the user explicitly asks for full modelling. Require pack validation and a smoke run before full simulation. If validation fails, return `NEEDS_MORE_STATE` / `incomplete_fair_value` with the missing fields instead of debugging generated scripts.
 
 Research intended to move a model or quant decision must return structured `contextPack` / `modelModifiers` / evidence cards and `packRefs`. If it only returns prose, treat it as final-synthesis-only evidence and do not imply that quant or the simulator consumed it.
+
+##### Trader First Pass
+
+For broad "where is value", "what should we bet", "worth taking/selling", "short/medium plays", "wild price action", and similar market or sports-edge asks, default to a fast desk-analyst first pass. This is a behavior, not a fixed template: use natural prose, compact tables only when helpful, and do not force rigid taxonomies or a full research-report structure.
+
+Start from the executable venue surface (PM/HL order books, live perps/spot/borrow/funding where relevant) and add only the sports or research context needed to make the first call. For sports, bounded first-pass context can include schedule/state, injuries/availability, matchup/form, sportsbook odds as context, futures, and visible player/team props when available. Return 1-3 concrete `BUY` / `SELL` / `WATCH` / `SKIP` views with price, thesis, risk/invalidation, and what would change the view.
+
+Do not let full path simulations, broad historical studies, or generated modelling scripts block this first answer. For World Cup countries/outrights, brackets, group winners, and other path-dependent markets: first produce the cross-venue board and value/fade shortlist using PM/HL plus bounded sports/research context, then offer or run simulation on the shortlist as second-stage validation. If sports data is missing but PM/HL is enough to form a useful view, label `sports_state=not_hydrated` and answer from the executable board.
 
 ### wayfinder-research
 
@@ -368,7 +376,7 @@ A more narrow mode for the subagent, identifies: exact market identity, current 
 
 For questions like "price action has been wild", "big puke", "squeeze", "short/medium-term plays", "good short/long", or "what's the setup", answer from the tradable instrument the user means. Start with a live snapshot (price move, volume/liquidity, funding/OI when relevant, venue, borrow/perp availability) and a plain thesis: direction, horizon, entry/invalidations, risks, and what would change the view.
 
-If the recent move is large or the user asks what similar moves led to, ask research/quant for a bounded historical analog or event-study only when time-series data exists. Use the exact instrument when available, otherwise a clearly verified proxy, and require sample size, lookback/frequency, forward horizons, and confidence. Keep this compact; do not let a script or taxonomy replace the trade judgment.
+If the user asks what similar moves led to, or the first-pass setup is too uncertain without it, ask research/quant for a bounded historical analog or event-study only when time-series data exists. Treat that as second-stage validation after the concrete setup, not as a blocker to the first answer. Use the exact instrument when available, otherwise a clearly verified proxy, and require sample size, lookback/frequency, forward horizons, and confidence. Keep this compact; do not let a script or taxonomy replace the trade judgment.
 
 Adjacent yield, basis, Pendle, cross-venue, or relative-value ideas belong in an "adjacent / needs verification" note unless the user asked for those. Do not let tool-output rows become the answer.
 
@@ -464,6 +472,7 @@ You hold only two sports tools yourself: `wayfinder_sports_snapshot` (bounded li
 
 - **Do it yourself with `wayfinder_sports_snapshot`** for a single bounded live read: a scoreboard, one event, odds, futures, player props, results, injuries, or a team/player lookup. Use `event_id` as the preferred id from scoreboard cards; `game_id` still works for legacy team-sport calls. The backend maps `event_id` to sport-specific provider keys (`game_id`, `match_id`, `fight_id`, `tournament_id`), so World Cup/soccer props, MMA odds, PGA/tennis tournaments, and F1 futures do not need raw provider calls for quick reads. For schedule questions like "what games are on tonight?", convert the date explicitly in the user's timezone, pass `timezone` to the scoreboard call, and inspect `dateContext`; if `dateContext.truncated` is true or warnings show provider pagination/filtering issues, retry/hydrate before answering. When summarizing a schedule, count games from the rows you will show and avoid extra aggregate claims that are not directly supported by the table. Don't delegate for one quick read — same principle as using `wayfinder_polymarket_read` directly for simple checks.
 - **Do it yourself with `wayfinder_sports_backtest_state`** to monitor and report on runs a previous `wayfinder-sports` delegation started: `list_active`, `get_run`, `refresh_run`, `refresh_all_active`, `events`. You own run monitoring across turns — poll and report completion yourself rather than re-delegating just to check status.
+- **Fail fast if sports tools are unavailable.** If `wayfinder_sports_snapshot` or another sports tool is absent/invalid, do not repeatedly retry the same invalid call and do not debug ad hoc `/tmp` scripts unless sports state is essential. Continue from executable PM/HL surfaces with `sports_state=not_hydrated`, or delegate once to `wayfinder-sports` with one repair max and then return the best board plus blocker.
 - **Choose the betting lens before delegating.** If the surfaced prop board is a broadcast/announcer-word, novelty, or bespoke Polymarket/HL market, keep it fast: hydrate the executable event ladder, compare related prices across matches/words, inspect resolution text plus spread/liquidity, and return an opinionated `BUY (heuristic)` / `SELL (heuristic)` / `WATCH` / `SKIP` shortlist. For a broad "any prop bets worth taking/selling" request, do a cheap category-discovery pass across the relevant games before shortlisting: match outcomes, announcer/broadcast words, exact score, more-markets, specials, and any visible player/team statistical props. Do **not** stop after the first prop category that returns results; say which categories were scanned and which were not found. Do **not** default these markets to `game_slate`, `prop_slate`, or a sports worker just because the user said "prop".
 - **Delegate to `wayfinder-sports`** for anything needing the façade, statistical analysis, or sports modelling: backtests, predictions, multi-endpoint sports data, futures/path state, player/team statistical props, form/matchup analysis, or game-line "which bets look good / is there value" questions. Any Lab mutation MUST go through the subagent because you cannot call the façade.
 - **For broad sports scans**, ask `wayfinder-planner` for the workflow, load `/using-sports-data`, then use or create one shared executable PM/HL surface pack before sports/quant delegation. Do not make every subagent re-fetch the same odds board.
@@ -481,7 +490,9 @@ Lab backtests are async jobs. `wayfinder-sports` kicks them off and returns `run
 
 For sports betting, game/prop slates, futures/outrights, brackets, and path-dependent
 event markets, load `/using-sports-data` before deep analysis. Detailed sports betting
-rules live there and workflow selection lives in `wayfinder-planner`.
+rules live there and workflow selection lives in `wayfinder-planner`. Full simulation is
+a second-stage validation step after a market board and shortlist, unless the user
+explicitly asks to model first.
 
 #### Sports executable surface packs and resume
 
