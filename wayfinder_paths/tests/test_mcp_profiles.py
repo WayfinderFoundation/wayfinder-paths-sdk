@@ -660,17 +660,22 @@ def test_wayfinder_planner_is_hidden_advisory_and_non_mutating() -> None:
     assert "Do not inspect secrets or `.env` files" in text
     assert "Simple Sports Schedule" in text
     assert "Specific Game Lines" in text
-    assert "Novelty / Broadcast Sports Props" in text
-    assert '"intent": "novelty_prop_edge"' in text
-    assert '"shouldDelegate": false' in text
+    assert "Broad Sports Props / Crossbets" in text
+    assert '"intent": "sports_prop_crossbet_edge"' in text
+    assert '"shouldDelegate": "conditional_after_surface_if_stat_props_or_sports_context_needed"' in text
     assert '"categoryDiscovery"' in text
+    assert '"match_outcomes_or_game_lines"' in text
+    assert '"visible_player_or_team_stat_props"' in text
+    assert '"goals_points_totals_or_bands"' in text
     assert '"exact_score"' in text
     assert '"more_markets_or_specials"' in text
-    assert '"no game_slate"' in text
-    assert '"no prop_slate"' in text
+    assert '"announcer_or_broadcast_words_secondary"' in text
+    assert "no full game_slate/prop_slate" in text
+    assert "do not center word/phrase markets" in text
     assert "do not stop at the first prop category" in text
-    assert "categories scanned/not found" in text
-    assert "best BUY (heuristic)" in text
+    assert "categories scanned/found/not_found/unavailable" in text
+    assert "at least one non-word category attempt" in text
+    assert "best BUY" in text
 
 
 def test_hidden_analysis_subagents_can_write_bounded_artifacts() -> None:

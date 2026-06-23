@@ -457,29 +457,36 @@ def test_sports_subagent_prompt_states_key_rules() -> None:
     assert "sports_posterior" in skill
 
 
-def test_novelty_broadcast_props_use_fast_heuristic_path() -> None:
+def test_broad_prop_scans_prioritize_sports_markets_before_words() -> None:
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
     primary_lower = primary.lower()
     assert "choose the betting lens before delegating" in primary_lower
     assert "broadcast/announcer-word" in primary_lower
+    assert "prop bets / crossbets" in primary_lower
+    assert "match outcomes/game lines" in primary_lower
+    assert "visible player or team stat props" in primary_lower
+    assert "goals/points/totals/bands" in primary_lower
+    assert "secondary novelty bucket" in primary_lower
+    assert "do **not** center the answer on word/phrase markets" in primary_lower
     assert "buy (heuristic)" in primary_lower
-    assert "cheap category-discovery pass" in primary_lower
     assert "exact score" in primary_lower
-    assert "do **not** stop after the first prop category" in primary_lower
+    assert "do **not** stop after the first category" in primary_lower
     assert "which categories were scanned" in primary_lower
-    assert "do **not** default these markets to `game_slate`" in primary_lower
-    assert "statistical player/game props and game lines delegate" in primary_lower
+    assert "do **not** default to `game_slate`" in primary_lower
+    assert "delegate only when statistical props" in primary_lower
 
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
     sports_lower = sports.lower()
     sports_compact = " ".join(sports.split())
-    assert "novelty / broadcast props fast path" in sports_lower
-    assert "not statistical player/team props" in sports_lower
-    assert "do not default to `game_slate`, `prop_slate`" in sports_lower
-    assert "cheap category discovery" in sports_lower
+    assert "broad prop / crossbet scan priority" in sports_lower
+    assert "start with actual sports markets, not word/phrase markets" in sports_lower
+    assert "visible player or team stat props" in sports_lower
+    assert "goals/points/totals/bands" in sports_lower
+    assert "announcer/broadcast words as a secondary novelty bucket" in sports_lower
     assert "more-markets" in sports_lower
-    assert "scanned / not found" in sports_lower
-    assert "compare the same word/condition across related" in sports_lower
+    assert "scanned / found / not found / unavailable" in sports_lower
+    assert "do not center the final answer on them" in sports_compact.lower()
+    assert "compare related prices" in sports_lower
     assert "unsupported \"true probability\" claims" in sports_compact
 
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
@@ -487,13 +494,15 @@ def test_novelty_broadcast_props_use_fast_heuristic_path() -> None:
     )
     skill_lower = skill.lower()
     skill_compact = " ".join(skill_lower.split())
-    assert "novelty/broadcast props are a fast heuristic path" in skill_lower
-    assert "do not run" in skill_lower
-    assert "`game_slate`, `prop_slate`, or lab" in skill_lower
-    assert "cheap category discovery" in skill_lower
-    assert "do not stop at the first prop category" in skill_compact
-    assert "categories scanned/not found" in skill_lower
+    assert "broad prop/crossbet scans are sports-first" in skill_lower
+    assert "match outcomes/game lines" in skill_lower
+    assert "visible player/team stat props" in skill_lower
+    assert "goals" in skill_lower and "points" in skill_lower
+    assert "secondary novelty bucket" in skill_lower
+    assert "do not stop at the first category" in skill_compact
+    assert "categories scanned/found/not found" in skill_lower
     assert "buy (heuristic)" in skill_lower
+    assert "do not center word/phrase markets" in skill_lower
     assert "avoid unsupported true-prob claims" in skill_compact
 
 

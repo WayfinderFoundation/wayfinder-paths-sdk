@@ -154,6 +154,19 @@ REFERENCE MODEL (one opinion — adjust or replace it; `--data-only` for facts a
 and your own view is expressed as evidence cards gated through `sports_posterior` over
 the executable prior:**
 
+**Broad prop/crossbet scans are sports-first, with novelty second.** For broad "any
+props worth taking/selling" requests, first run cheap category discovery across real
+sports markets: match outcomes/game lines, visible player/team stat props, goals,
+points, totals/bands, exact score, more-markets, and specials. Treat announcer-word,
+broadcast, entertainment, and other bespoke PM/HL props as a secondary novelty bucket,
+not the default center of the answer. Do not stop at the first category that returns
+results. Hydrate the discovered event ladders, inspect resolution text, and gate by
+spread/liquidity. It is valid to return `BUY (heuristic)` / `SELL (heuristic)` when
+the relative-pricing gap is obvious, but do not center word/phrase markets unless the
+user explicitly asked for broadcast props or non-word categories were scanned and did
+not surface useful executable markets. Include categories scanned/found/not found,
+label confidence, and avoid unsupported true-prob claims.
+
 ```
 # player props -> ACTIONABLE/WATCH/EXCLUDED EV table
 poetry run python -m wayfinder_paths.quant.prop_slate \

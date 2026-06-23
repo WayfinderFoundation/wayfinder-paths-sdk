@@ -214,29 +214,29 @@ Return:
 }
 ```
 
-### Novelty / Broadcast Sports Props
+### Broad Sports Props / Crossbets
 
 User: "can we look at the FIFA World Cup games today and see if there are any prop bets worth taking or selling?"
 
-If the surfaced board is announcer-word, broadcast, novelty, or bespoke Polymarket/HL props rather than statistical player/team props, return:
+For broad prop/crossbet scans, try real sports markets before word/phrase novelty markets. Return:
 
 ```json
 {
-  "intent": "novelty_prop_edge",
-  "rigorTier": 1,
-  "budgetTier": "tier1_fast_edge",
-  "maxExternalCalls": 8,
-  "allowedSubagents": [],
+  "intent": "sports_prop_crossbet_edge",
+  "rigorTier": 2,
+  "budgetTier": "tier1_fast_edge_with_bounded_sports_context",
+  "maxExternalCalls": 12,
+  "allowedSubagents": ["wayfinder-sports"],
   "scriptPolicy": "none",
-  "firstAnswerStop": "answer with a ranked heuristic BUY/SELL/WATCH/SKIP shortlist once prop categories are discovered and executable boards are hydrated",
+  "firstAnswerStop": "answer with a ranked BUY/SELL/WATCH/SKIP shortlist once non-word prop/game categories have been attempted or marked not_found/unavailable and executable boards are hydrated",
   "usePlannerConfidence": "high",
-  "shouldDelegate": false,
-  "recommendedFlow": ["identify relevant games", "cheap prop-category discovery across each game", "hydrate top event ladders by category", "cross-market relative pricing", "resolution/spread/liquidity check", "final ranked heuristic shortlist"],
-  "categoryDiscovery": ["match_outcomes", "announcer_or_broadcast_words", "exact_score", "more_markets_or_specials", "visible_player_or_team_stat_props"],
-  "knownContextToPass": {"lens": "broadcast_or_novelty_props", "avoid": ["game_slate", "prop_slate"]},
+  "shouldDelegate": "conditional_after_surface_if_stat_props_or_sports_context_needed",
+  "recommendedFlow": ["identify relevant games", "non-word-first category discovery across each game", "hydrate top PM/HL event ladders by category", "use bounded sports context for player/team props if surfaced", "cross-market relative pricing", "resolution/spread/liquidity check", "final ranked desk-analyst shortlist"],
+  "categoryDiscovery": ["match_outcomes_or_game_lines", "visible_player_or_team_stat_props", "goals_points_totals_or_bands", "exact_score", "more_markets_or_specials", "announcer_or_broadcast_words_secondary"],
+  "knownContextToPass": {"lens": "broad_sports_props_first", "wordMarkets": "secondary_only_unless_explicit_or_best_after_scan"},
   "packStrategy": {"reuseExistingPacks": true, "packsNeeded": ["surfaceLite"], "ttlNotes": ["refresh shortlisted bid/ask/depth before execution"]},
-  "avoidOverkill": ["no sports worker unless statistical props appear", "no game_slate", "no prop_slate", "no formal model required for heuristic edge", "do not stop at the first prop category that returns results"],
-  "stopConditions": ["final includes categories scanned/not found", "final includes best BUY (heuristic), best SELL/NO (heuristic), watchlist, and skip reasons for bad spread/thin markets"],
+  "avoidOverkill": ["no full game_slate/prop_slate unless statistical props surface and modelling is needed", "do not center word/phrase markets unless explicit or no useful non-word category surfaced", "do not stop at the first prop category that returns results"],
+  "stopConditions": ["final includes categories scanned/found/not_found/unavailable", "final includes at least one non-word category attempt before any word-market recommendation", "final includes best BUY, best SELL/NO, watchlist, and skip reasons for bad spread/thin markets"],
   "handoffPrompt": ""
 }
 ```

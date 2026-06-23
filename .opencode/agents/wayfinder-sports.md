@@ -340,19 +340,21 @@ not make sportsbook/futures availability a gate. Raw snapshot/provider calls are
 context (schedule, injuries, narratives), never for executable odds judgement; never pull
 betting lines from the web (a live run burned us with fabricated web odds).
 
-**NOVELTY / BROADCAST PROPS fast path.** Announcer-word, broadcast, entertainment, and
-other bespoke prediction-market props are not statistical player/team props. For those,
-do not default to `game_slate`, `prop_slate`, Lab backtests, or provider player props.
-For broad "any props worth taking/selling" requests, first run cheap category discovery
-across the relevant games: match outcomes, announcer/broadcast words, exact score,
-more-markets, specials, and any visible player/team statistical props. Do not stop at
-the first prop category that returns results. Hydrate the executable PM/HL event boards
-for the discovered categories, compare the same word/condition across related matches
-and the same match across related words, read the resolution text, check spread/liquidity,
-and return a ranked `BUY (heuristic)` / `SELL (heuristic)` / `WATCH` / `SKIP` table.
-Include a compact "scanned / not found" line so the user can see the breadth. Keep
-probability language modest: cite relative mispricing and confidence, not unsupported
-"true probability" claims.
+**BROAD PROP / CROSSBET scan priority.** For broad "any props worth taking/selling"
+requests, start with actual sports markets, not word/phrase markets. Cheap category
+discovery should attempt: match outcomes/game lines, visible player or team stat props,
+goals/points/totals/bands, exact score, more-markets/specials, and only then
+announcer/broadcast words as a secondary novelty bucket. Do not stop at the first
+category that returns results. Hydrate the executable PM/HL event boards for the
+discovered categories and include a compact "scanned / found / not found / unavailable"
+line so the user can see breadth. Announcer-word, broadcast, entertainment, and other
+bespoke PM/HL props can still use the fast heuristic path, but do not center the final
+answer on them unless the user explicitly asked for broadcast props or the non-word
+categories were searched and did not surface useful executable markets. For true
+novelty-only boards, compare related prices, read the resolution text, check
+spread/liquidity, and return a ranked `BUY (heuristic)` / `SELL (heuristic)` / `WATCH`
+/ `SKIP` table. Keep probability language modest: cite relative mispricing and
+confidence, not unsupported "true probability" claims.
 
 **MODELING is YOUR judgment, not the pipeline's.** `game_slate` leads with an
 INFORMATION section (form, probable starters, optional book context, PM/HL board links,
