@@ -2166,3 +2166,56 @@ async def hyperliquid_search_market(
             "outcomes": outcome_hits,
         }
     )
+
+
+def _hip4_asset_names(outcomes: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    for market in outcomes:
+        if market.get("class") == "priceBinary":
+            sides = market.get("sides") or []
+        else:
+            sides = [
+                side
+                for outcome in market.get("outcomes") or []
+                for side in outcome.get("sides") or []
+            ]
+        for side in sides:
+            asset_name = side.get("asset_name")
+            if isinstance(asset_name, str) and asset_name.startswith("#"):
+                names.append(asset_name)
+    return list(dict.fromkeys(names))
+
+
+@catch_errors
+async def hyperliquid_search_hip4(
+    query: str,
+    limit: int = 15,
+) -> dict[str, Any]:
+    """
+    Search only Hyperliquid HIP-4 outcome markets by a simple query string.
+
+    Use this for sports, prediction markets, and "will X happen" searches. It
+    deliberately excludes perps, HIP-3 builder markets, and spot assets so broad
+    sports queries do not return large unrelated asset boards.
+
+    query: A simple string containing market text, for example: world cup, election, bitcoin above.
+    limit: Max HIP-4 outcome markets to return (1-20, default 15).
+    """
+    parsed_limit = optional_int(limit, field_name="limit", min_value=1, max_value=20) or 15
+    result = await hyperliquid_search_market(
+        query=query,
+        limit=parsed_limit,
+        market_type=MARKET_TYPE_HIP4,
+    )
+    if not result.get("ok"):
+        return result
+    outcomes = result.get("result", {}).get("outcomes") or []
+    return ok(
+        {
+            "market_type": MARKET_TYPE_HIP4,
+            "query": query,
+            "limit": parsed_limit,
+            "outcomes": outcomes,
+            "asset_names": _hip4_asset_names(outcomes),
+        }
+    )

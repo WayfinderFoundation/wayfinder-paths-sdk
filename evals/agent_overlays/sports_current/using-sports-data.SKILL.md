@@ -157,15 +157,23 @@ the executable prior:**
 **Broad prop/crossbet scans are sports-first, with novelty second.** For broad "any
 props worth taking/selling" requests, first run cheap category discovery across real
 sports markets: match outcomes/game lines, visible player/team stat props, goals,
-points, totals/bands, exact score, more-markets, and specials. Treat announcer-word,
+points, totals/bands, exact score, more-markets, and specials. Then scan announcer-word,
 broadcast, entertainment, and other bespoke PM/HL props as a secondary novelty bucket,
-not the default center of the answer. Do not stop at the first category that returns
-results. Hydrate the discovered event ladders, inspect resolution text, and gate by
-spread/liquidity. It is valid to return `BUY (heuristic)` / `SELL (heuristic)` when
-the relative-pricing gap is obvious, but do not center word/phrase markets unless the
-user explicitly asked for broadcast props or non-word categories were scanned and did
-not surface useful executable markets. Include categories scanned/found/not found,
-label confidence, and avoid unsupported true-prob claims.
+not the default center of the answer; secondary means scan after sports props, not skip.
+Do not stop at the first category that returns results. If search surfaces `more-markets`,
+specials, exact-score, or announcer/broadcast event groups, hydrate the top
+liquid/relevant event before any global prop conclusion. Hydrate discovered event ladders,
+inspect resolution text, and gate by spread/liquidity. It is valid to return
+`BUY (heuristic)` / `SELL (heuristic)` when the relative-pricing gap is obvious, but do
+not center word/phrase markets unless the user explicitly asked for broadcast props or
+they are the best surfaced board after the scan. Include categories scanned/found/hydrated
+/skipped/not found/unavailable. A broad `NO EDGE` claim is allowed only after surfaced
+categories are hydrated or explicitly skipped with reason; otherwise scope it to checked
+categories. For live sportsbook `player_props`, default to `limit=20`, page with
+`offset=20` only when useful, and prefer `prop_type`/`vendors` filters over full-board
+pulls. Before final BUY/SELL/NO EDGE, do a bounded context/research check on shortlisted
+or ambiguous markets: current state, availability/injuries, lineup/news, and resolution
+facts. Avoid unsupported true-prob claims.
 
 ```
 # player props -> ACTIONABLE/WATCH/EXCLUDED EV table
@@ -205,9 +213,9 @@ For multi-outcome match boards (soccer/worldcup, tennis sets, MMA method, etc.),
 the returned outcome mapping exactly. A three-way soccer board is home/draw/away; never
 collapse it into a binary or recommend "buy No on the favorite" unless a binary No token
 is explicitly listed. For Hyperliquid HIP-4, only request mids for `#...` assets surfaced
-by the market search or prior metadata; search with plain text `query` + `limit` only,
-do not pass extra filters such as `market_type`, and do not derive sibling asset ids by
-changing the last digit.
+by the market search or prior metadata; for sports/prediction-market discovery call
+`wayfinder_hyperliquid_search_hip4(query="...", limit=15)` so perps/spots are filtered
+out by construction, and do not derive sibling asset ids by changing the last digit.
 
 **Exact-market hydration rule:** For a named match/fight/event, never conclude "no
 Polymarket market" from a search summary alone. If `polymarket_read(action="search")`

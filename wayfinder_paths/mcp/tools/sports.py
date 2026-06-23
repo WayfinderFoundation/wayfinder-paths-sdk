@@ -20,6 +20,7 @@ from wayfinder_paths.core.clients.SportsClient import (
     SportsGatewayAPIError,
 )
 from wayfinder_paths.mcp.arg_validation import (
+    MCPArgumentError,
     optional_int,
     optional_json_object,
     optional_str,
@@ -32,6 +33,36 @@ def _gateway_err(exc: SportsGatewayAPIError) -> dict[str, Any]:
     return err(exc.code, exc.message, exc.details)
 
 
+def _optional_id_list(value: Any, *, field_name: str) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        values = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        raw = str(value).strip()
+        if raw.lower() in {"", "_", "none", "null"}:
+            return None
+        values = [part.strip() for part in raw.split(",") if part.strip()]
+    if not values:
+        return None
+    if len(values) > 50:
+        raise MCPArgumentError(
+            f"{field_name} must contain 50 ids or fewer",
+            field=field_name,
+            received=value,
+        )
+    return values
+
+
+def _single_or_list_id(value: Any, *, field_name: str) -> tuple[str | None, list[str] | None]:
+    values = _optional_id_list(value, field_name=field_name)
+    if not values:
+        return None, None
+    if len(values) == 1:
+        return values[0], None
+    return None, values
+
+
 @catch_errors
 async def sports_snapshot(
     action: str,
@@ -42,7 +73,9 @@ async def sports_snapshot(
     fight_id: str = "_",
     tournament_id: str = "_",
     competitor_id: str = "_",
+    competitor_ids: list[str] | str = "_",
     player_id: str = "_",
+    player_ids: list[str] | str = "_",
     team_id: str = "_",
     search: str = "_",
     date: str = "_",
@@ -52,6 +85,7 @@ async def sports_snapshot(
     market_type: str = "_",
     vendors: str = "_",
     limit: str | int = "_",
+    offset: str | int = "_",
     sessionID: str = "_",
 ) -> dict[str, Any]:
     """Live sports snapshot (bounded reads, normalized cards).
@@ -73,7 +107,9 @@ async def sports_snapshot(
         fight_id: Explicit MMA fight id when known.
         tournament_id: Explicit PGA/tennis tournament id when known.
         competitor_id: Generic player/fighter/driver id filter.
+        competitor_ids: Generic competitor id list filter; comma-separated strings work.
         player_id: Provider-compatible player id alias for competitor_id.
+        player_ids: Provider-compatible player id list filter; comma-separated strings work.
         team_id: Team/club/constructor id filter when supported.
         search: Name query for team_lookup / player_lookup.
         date: Optional ISO date (YYYY-MM-DD) for scoreboard/odds.
@@ -84,9 +120,34 @@ async def sports_snapshot(
         market_type: Optional market/futures type filter.
         vendors: Optional comma-separated vendor filter.
         limit: Max cards (1-50, default 10).
+        offset: Optional result offset for paged reads when the backend supports it.
         sessionID: OpenCode session id, or "_" to resolve from the environment.
     """
     parsed_limit = optional_int(limit, field_name="limit", min_value=1, max_value=50)
+    parsed_offset = optional_int(offset, field_name="offset", min_value=0)
+    parsed_competitor_id, parsed_competitor_ids_from_single = _single_or_list_id(
+        competitor_id,
+        field_name="competitor_id",
+    )
+    parsed_player_id, parsed_player_ids_from_single = _single_or_list_id(
+        player_id,
+        field_name="player_id",
+    )
+    parsed_competitor_ids = _optional_id_list(
+        competitor_ids,
+        field_name="competitor_ids",
+    )
+    parsed_player_ids = _optional_id_list(
+        player_ids,
+        field_name="player_ids",
+    )
+    effective_limit = (
+        parsed_limit
+        if parsed_limit is not None
+        else 20
+        if str(action).strip().lower() == "player_props"
+        else None
+    )
     try:
         result = await SPORTS_CLIENT.snapshot(
             action=action,
@@ -96,8 +157,10 @@ async def sports_snapshot(
             match_id=optional_str(match_id, field_name="match_id"),
             fight_id=optional_str(fight_id, field_name="fight_id"),
             tournament_id=optional_str(tournament_id, field_name="tournament_id"),
-            competitor_id=optional_str(competitor_id, field_name="competitor_id"),
-            player_id=optional_str(player_id, field_name="player_id"),
+            competitor_id=parsed_competitor_id,
+            competitor_ids=parsed_competitor_ids or parsed_competitor_ids_from_single,
+            player_id=parsed_player_id,
+            player_ids=parsed_player_ids or parsed_player_ids_from_single,
             team_id=optional_str(team_id, field_name="team_id"),
             search=optional_str(search, field_name="search"),
             date=optional_str(date, field_name="date"),
@@ -106,7 +169,8 @@ async def sports_snapshot(
             prop_type=optional_str(prop_type, field_name="prop_type"),
             market_type=optional_str(market_type, field_name="market_type"),
             vendors=optional_str(vendors, field_name="vendors"),
-            limit=parsed_limit,
+            limit=effective_limit,
+            offset=parsed_offset,
             session_id=sessionID,
         )
     except SportsGatewayAPIError as exc:

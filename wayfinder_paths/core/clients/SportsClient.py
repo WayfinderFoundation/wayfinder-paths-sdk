@@ -42,7 +42,9 @@ class SportsClient(GatewayClient):
         fight_id: str | None = None,
         tournament_id: str | None = None,
         competitor_id: str | None = None,
+        competitor_ids: list[str] | None = None,
         player_id: str | None = None,
+        player_ids: list[str] | None = None,
         team_id: str | None = None,
         search: str | None = None,
         date: str | None = None,
@@ -52,6 +54,7 @@ class SportsClient(GatewayClient):
         market_type: str | None = None,
         vendors: str | None = None,
         limit: int | None = None,
+        offset: int | None = None,
         session_id: str | None = None,
     ) -> Any:
         payload: dict[str, Any] = {
@@ -71,8 +74,12 @@ class SportsClient(GatewayClient):
             payload["tournament_id"] = str(tournament_id).strip()
         if competitor_id:
             payload["competitor_id"] = str(competitor_id).strip()
+        if competitor_ids:
+            payload["competitor_ids"] = [str(v).strip() for v in competitor_ids if str(v).strip()]
         if player_id:
             payload["player_id"] = str(player_id).strip()
+        if player_ids:
+            payload["player_ids"] = [str(v).strip() for v in player_ids if str(v).strip()]
         if team_id:
             payload["team_id"] = str(team_id).strip()
         if search:
@@ -91,6 +98,8 @@ class SportsClient(GatewayClient):
             payload["vendors"] = str(vendors).strip()
         if limit is not None:
             payload["limit"] = int(limit)
+        if offset is not None:
+            payload["offset"] = int(offset)
         return await self._post_gateway("snapshot", payload)
 
     async def backtest_state(

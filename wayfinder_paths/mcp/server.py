@@ -81,6 +81,7 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_place_limit_order,
     hyperliquid_place_market_order,
     hyperliquid_place_trigger_order,
+    hyperliquid_search_hip4,
     hyperliquid_search_market,
     hyperliquid_search_mid_prices,
     hyperliquid_update_leverage,
@@ -170,6 +171,7 @@ def build_mcp(
     mcp.tool()(hyperliquid_get_state)
     mcp.tool()(hyperliquid_get_trade_asset)
     mcp.tool()(hyperliquid_search_market)
+    mcp.tool()(hyperliquid_search_hip4)
     mcp.tool()(hyperliquid_search_mid_prices)
     mcp.tool()(hyperliquid_get_candles)
     mcp.tool()(hyperliquid_get_funding_history)

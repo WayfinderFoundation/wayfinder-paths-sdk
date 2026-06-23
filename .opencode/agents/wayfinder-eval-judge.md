@@ -11,6 +11,7 @@ permission:
   wayfinder_*: deny
   # grounding reads only — no execution; web/research is bounded validation context only
   wayfinder_polymarket_read: allow
+  wayfinder_hyperliquid_search_hip4: allow
   wayfinder_hyperliquid_search_market: allow
   wayfinder_hyperliquid_search_mid_prices: allow
   wayfinder_sports_snapshot: allow
@@ -48,10 +49,10 @@ coverage and source quality:
    A failed or empty PM search,
    broad Gamma/tag scan miss, or web-search miss is not proof of absence until direct
    market slug hydration has failed. Enumerate the relevant board, resolution
-   text, outcomes, bid/ask or prices, and liquidity. Use `wayfinder_hyperliquid_search_market`
-   with plain text `query` + `limit` only, then `wayfinder_hyperliquid_search_mid_prices`
-   for HL outcome boards where relevant. Do not pass extra
-   filters such as `market_type`. For non-binary or non-standard boards, check whether
+   text, outcomes, bid/ask or prices, and liquidity. For sports/prediction-market outcome
+   boards, use `wayfinder_hyperliquid_search_hip4(query="...", limit=15)`, then
+   `wayfinder_hyperliquid_search_mid_prices` for surfaced `#...` assets. Use unfiltered
+   HL search only when judging asset/perp/spot discovery (perps/spots). For non-binary or non-standard boards, check whether
    the answer preserves a compact executable board and explains the resolution profile /
    edge mode; do not require a full payout matrix inline if the answer correctly uses a
    resolver/profile reference and gates the decision.

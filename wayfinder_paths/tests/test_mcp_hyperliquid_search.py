@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_search_market
+from wayfinder_paths.mcp.tools.hyperliquid import (
+    hyperliquid_search_hip4,
+    hyperliquid_search_market,
+)
 
 # Live HL tests — assertions check the expected set is a SUBSET of returned
 # names so the suite stays green as HL adds/removes markets.
@@ -72,6 +75,19 @@ async def test_search_market_type_filter():
 
     assert res_hip4["result"]["perps"] == [] and res_hip4["result"]["spots"] == []
     assert res_hip4["result"]["outcomes"]
+
+
+@pytest.mark.asyncio
+async def test_search_hip4_wrapper_only_returns_outcomes():
+    res = await hyperliquid_search_hip4("bitcoin", limit=10)
+    assert res["ok"]
+    result = res["result"]
+
+    assert result["market_type"] == "hip4"
+    assert "perps" not in result and "spots" not in result
+    assert result["outcomes"]
+    assert result["asset_names"]
+    assert all(name.startswith("#") for name in result["asset_names"])
 
 
 @pytest.mark.asyncio

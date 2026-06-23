@@ -85,7 +85,7 @@ Evidence can include injury/availability, lineup/roster, travel/rest/weather/ven
 tactical, rule/bracket, post-line timing, or market-structure evidence. Include
 `modelModifiers` / `contextPack` suggestions when a model slot is clear, but do not force
 unsupported markets into modifier slots. For unsupported markets, express the signal as
-evidence cards, path/scenario hints, or an explicit `deskOverride` candidate. Do not say
+evidence cards only, path/scenario hints, or an explicit `deskOverride` candidate. Do not say
 "pack delivered" unless the cards/pack are in the response or persisted artifact. For
 broad path scans, prefer post-shortlist `EVIDENCE_ADJUDICATION`: answer the specific
 questions from sports/quant such as "what explains this cheap side?" or "what current-state

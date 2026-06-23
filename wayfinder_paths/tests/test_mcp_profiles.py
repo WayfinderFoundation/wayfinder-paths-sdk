@@ -672,9 +672,15 @@ def test_wayfinder_planner_is_hidden_advisory_and_non_mutating() -> None:
     assert '"announcer_or_broadcast_words_secondary"' in text
     assert "no full game_slate/prop_slate" in text
     assert "do not center word/phrase markets" in text
+    assert "do not skip surfaced more-markets/specials/announcer buckets" in text
     assert "do not stop at the first prop category" in text
-    assert "categories scanned/found/not_found/unavailable" in text
+    assert "categories scanned/found/hydrated/skipped/not_found/unavailable" in text
     assert "at least one non-word category attempt" in text
+    assert "final scopes no-edge claims when categories remain unchecked" in text
+    assert "use player_props limit=20 and offset only if paging matters" in text
+    assert "bounded sports/research context for shortlisted or ambiguous markets" in text
+    assert '["wayfinder-sports", "wayfinder-research"]' in text
+    assert "wayfinder_hyperliquid_search_hip4" in text
     assert "best BUY" in text
 
 

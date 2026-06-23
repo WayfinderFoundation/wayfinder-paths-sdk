@@ -115,6 +115,8 @@ async def test_snapshot_sends_canonical_event_filters() -> None:
         prop_type="shots",
         market_type="race_winner",
         vendors="draftkings,fanduel",
+        limit=20,
+        offset=20,
         session_id="s1",
     )
 
@@ -133,7 +135,33 @@ async def test_snapshot_sends_canonical_event_filters() -> None:
         "prop_type": "shots",
         "market_type": "race_winner",
         "vendors": "draftkings,fanduel",
+        "limit": 20,
+        "offset": 20,
     }
+
+
+@pytest.mark.asyncio
+async def test_snapshot_sends_player_id_lists() -> None:
+    client = SportsClient()
+    captured: dict = {}
+
+    async def fake(method, url, *, json=None, **kwargs):
+        captured.update(method=method, url=url, json=json)
+        resp = MagicMock()
+        resp.json.return_value = {"cards": []}
+        return resp
+
+    client._authed_request = fake  # type: ignore[assignment]
+    await client.snapshot(
+        action="player_lookup",
+        sport="worldcup",
+        competitor_ids=["20", "21"],
+        player_ids=["10", "11"],
+        session_id="s1",
+    )
+
+    assert captured["json"]["competitor_ids"] == ["20", "21"]
+    assert captured["json"]["player_ids"] == ["10", "11"]
 
 
 @pytest.mark.asyncio
@@ -246,6 +274,16 @@ async def test_sports_tools_validate_json_objects_and_limits() -> None:
     assert result["error"]["code"] == "invalid_argument"
     assert result["error"]["details"]["field"] == "limit"
 
+    result = await sports_snapshot(
+        action="player_props",
+        sport="worldcup",
+        offset="-1",
+        sessionID="s",
+    )
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_argument"
+    assert result["error"]["details"]["field"] == "offset"
+
 
 @pytest.mark.asyncio
 async def test_snapshot_tool_forwards_canonical_filters(monkeypatch) -> None:
@@ -268,6 +306,7 @@ async def test_snapshot_tool_forwards_canonical_filters(monkeypatch) -> None:
         market_type="race_winner",
         vendors="draftkings",
         limit="5",
+        offset="20",
         sessionID="s",
     )
 
@@ -279,6 +318,54 @@ async def test_snapshot_tool_forwards_canonical_filters(monkeypatch) -> None:
     assert captured["market_type"] == "race_winner"
     assert captured["vendors"] == "draftkings"
     assert captured["limit"] == 5
+    assert captured["offset"] == 20
+
+
+@pytest.mark.asyncio
+async def test_snapshot_tool_defaults_player_props_limit(monkeypatch) -> None:
+    from wayfinder_paths.mcp.tools import sports as sports_tools
+
+    captured: dict = {}
+
+    async def fake_snapshot(**kwargs):
+        captured.update(kwargs)
+        return {"cards": []}
+
+    monkeypatch.setattr(sports_tools.SPORTS_CLIENT, "snapshot", fake_snapshot)
+    result = await sports_tools.sports_snapshot(
+        action="player_props",
+        sport="worldcup",
+        event_id="123",
+        sessionID="s",
+    )
+
+    assert result["ok"] is True
+    assert captured["limit"] == 20
+
+
+@pytest.mark.asyncio
+async def test_snapshot_tool_normalizes_player_id_lists(monkeypatch) -> None:
+    from wayfinder_paths.mcp.tools import sports as sports_tools
+
+    captured: dict = {}
+
+    async def fake_snapshot(**kwargs):
+        captured.update(kwargs)
+        return {"cards": []}
+
+    monkeypatch.setattr(sports_tools.SPORTS_CLIENT, "snapshot", fake_snapshot)
+    result = await sports_tools.sports_snapshot(
+        action="player_lookup",
+        sport="worldcup",
+        player_id="10, 11",
+        competitor_ids=["20", "21"],
+        sessionID="s",
+    )
+
+    assert result["ok"] is True
+    assert captured["player_id"] is None
+    assert captured["player_ids"] == ["10", "11"]
+    assert captured["competitor_ids"] == ["20", "21"]
 
 
 @pytest.mark.asyncio
@@ -408,6 +495,7 @@ def test_sports_subagent_is_hidden_with_full_facade() -> None:
     assert perm["wayfinder_sports_backtest_state"] == "allow"
     assert perm["wayfinder_sports_provider"] == "allow"
     # executable-board enumeration: read-only HIP-4 access (the second venue)
+    assert perm["wayfinder_hyperliquid_search_hip4"] == "allow"
     assert perm["wayfinder_hyperliquid_search_market"] == "allow"
     assert perm["wayfinder_hyperliquid_search_mid_prices"] == "allow"
 
@@ -461,14 +549,21 @@ def test_broad_prop_scans_prioritize_sports_markets_before_words() -> None:
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
     primary_lower = primary.lower()
     assert "choose the betting lens before delegating" in primary_lower
-    assert "broadcast/announcer-word" in primary_lower
+    assert "announcer/broadcast" in primary_lower
     assert "prop bets / crossbets" in primary_lower
     assert "match outcomes/game lines" in primary_lower
     assert "visible player or team stat props" in primary_lower
     assert "goals/points/totals/bands" in primary_lower
     assert "secondary novelty bucket" in primary_lower
-    assert "do **not** center the answer on word/phrase markets" in primary_lower
-    assert "buy (heuristic)" in primary_lower
+    assert "secondary means scan after sports props, not skip" in primary_lower
+    assert "hydrate the top liquid/relevant event before a global prop conclusion" in primary_lower
+    assert "a broad `no edge` claim is allowed only after surfaced categories" in primary_lower
+    assert "no edge in match outcomes and liquid player props checked" in primary_lower
+    assert "use `limit=20` by default" in primary_lower
+    assert "page with `offset=20`" in primary_lower
+    assert "bounded research/context pass" in primary_lower
+    assert "surfaced-but-unhydrated event slugs" in primary_lower
+    assert "search_surfaced_unhydrated" in primary_lower
     assert "exact score" in primary_lower
     assert "do **not** stop after the first category" in primary_lower
     assert "which categories were scanned" in primary_lower
@@ -478,14 +573,19 @@ def test_broad_prop_scans_prioritize_sports_markets_before_words() -> None:
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
     sports_lower = sports.lower()
     sports_compact = " ".join(sports.split())
+    sports_compact_lower = sports_compact.lower()
     assert "broad prop / crossbet scan priority" in sports_lower
     assert "start with actual sports markets, not word/phrase markets" in sports_lower
     assert "visible player or team stat props" in sports_lower
     assert "goals/points/totals/bands" in sports_lower
     assert "announcer/broadcast words as a secondary novelty bucket" in sports_lower
+    assert "secondary means scan after sports props, not skip" in sports_compact_lower
     assert "more-markets" in sports_lower
-    assert "scanned / found / not found / unavailable" in sports_lower
-    assert "do not center the final answer on them" in sports_compact.lower()
+    assert "scanned / found / hydrated / skipped / not found / unavailable" in sports_lower
+    assert "a broad `no edge` claim is allowed only after surfaced categories" in sports_lower
+    assert "`player_props` reads should default to `limit=20`" in sports_lower
+    assert "page with `offset=20`" in sports_lower
+    assert "bounded context/research check" in sports_lower
     assert "compare related prices" in sports_lower
     assert "unsupported \"true probability\" claims" in sports_compact
 
@@ -500,10 +600,41 @@ def test_broad_prop_scans_prioritize_sports_markets_before_words() -> None:
     assert "goals" in skill_lower and "points" in skill_lower
     assert "secondary novelty bucket" in skill_lower
     assert "do not stop at the first category" in skill_compact
-    assert "categories scanned/found/not found" in skill_lower
+    assert "categories scanned/found/hydrated" in skill_lower
+    assert "a broad `no edge` claim is allowed only after surfaced" in skill_lower
+    assert "default to `limit=20`" in skill_lower
+    assert "`offset=20`" in skill_lower
+    assert "bounded context/research check" in skill_lower
     assert "buy (heuristic)" in skill_lower
-    assert "do not center word/phrase markets" in skill_lower
     assert "avoid unsupported true-prob claims" in skill_compact
+
+
+def test_june_23_world_cup_prop_scan_no_edge_guard() -> None:
+    """Regression for free-seeking-moon: the June 23 scan surfaced
+    Portugal/Uzbekistan more-markets and announcer events, then claimed no edge
+    after checking only match outcomes plus one player-prop board."""
+    surfaced_categories = {
+        "fifwc-prt-uzb-2026-06-23-more-markets": "more-markets",
+        "what-will-the-announcers-say-during-england-vs-ghana-world-cup-match": "announcer/broadcast",
+    }
+    assert surfaced_categories
+
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text(
+        "utf-8"
+    )
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+    combined = "\n".join([primary, sports, skill]).lower()
+
+    assert "more-markets" in combined
+    assert "announcer/broadcast" in combined
+    assert "hydrate the top liquid/relevant event before a global prop conclusion" in combined
+    assert "a broad `no edge` claim is allowed only after surfaced categories" in combined
+    assert "otherwise scope the claim" in combined
+    assert "no edge in match outcomes and liquid player props checked" in combined
+    assert "search_surfaced_unhydrated" in combined
 
 
 def test_dislocation_adjudication_wired_across_agents() -> None:
@@ -960,8 +1091,8 @@ def test_sports_surface_pack_ttl_and_resume_contract_is_explicit() -> None:
 
 
 def test_sports_worker_hyperliquid_tool_contract_is_explicit() -> None:
-    """Observed q1 failure: the worker passed an unsupported Hyperliquid filter
-    and then stalled. Keep the read-only HL signatures explicit."""
+    """Sports prediction-market searches should use the HIP-4 filter to avoid
+    bloated perp/spot payloads."""
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
@@ -969,20 +1100,19 @@ def test_sports_worker_hyperliquid_tool_contract_is_explicit() -> None:
     )
 
     for needle in (
-        "You have seven tools",
-        'wayfinder_hyperliquid_search_market(query="world cup", limit=15)',
-        "Do not pass extra filters such as `market_type`",
-        "plain text `query` + `limit`",
+        "You have eight tools",
+        'wayfinder_hyperliquid_search_hip4(query="world cup", limit=15)',
+        "perps/spots",
         "shortlisted `#...` assets",
         "never infer paired asset ids",
     ):
         assert needle in sports
 
     for text in (primary, skill):
-        assert "plain text `query` + `limit`" in text
-        assert "do not pass extra filters such as `market_type`" in text.lower()
+        assert "wayfinder_hyperliquid_search_hip4" in text
+        assert "perps/spots" in text
 
-    assert '`market_type="hip4"`' not in sports
+    assert "Do not pass extra filters such as `market_type`" not in sports
 
 
 def test_broad_scan_budget_reserves_state_and_unhydrated_coverage() -> None:
@@ -1369,9 +1499,9 @@ def test_grounded_eval_judge_uses_current_hyperliquid_search_contract() -> None:
         "utf-8"
     )
 
-    assert "plain text `query` + `limit` only" in judge
-    assert "Do not pass extra\n   filters such as `market_type`" in judge
-    assert '`market_type="hip4"`' not in judge
+    assert "wayfinder_hyperliquid_search_hip4" in judge
+    assert "perps/spots" in judge
+    assert "Do not pass extra" not in judge
 
 
 def test_sports_skill_has_llm_prediction_market_research_stubs() -> None:

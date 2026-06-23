@@ -778,6 +778,7 @@ def test_eval_judge_has_read_only_validation_tools() -> None:
 
     for allowed in (
         "wayfinder_polymarket_read: allow",
+        "wayfinder_hyperliquid_search_hip4: allow",
         "wayfinder_hyperliquid_search_market: allow",
         "wayfinder_hyperliquid_search_mid_prices: allow",
         "wayfinder_sports_snapshot: allow",
