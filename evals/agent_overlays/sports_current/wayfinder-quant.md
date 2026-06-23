@@ -183,6 +183,20 @@ sports/context model, and qualitative evidence. If ratings are market-implied or
 bracket/path is approximate, surface the diagnostic flags and return `WATCH`/`RESEARCH_ONLY`
 unless an independent model corroborates the edge. Do not invent missing sports data.
 
+If Known Context includes a `researchInfluencePack`, consume it before starting overlapping
+research or simulation work. Leave a compact consumption ledger: accepted, rejected, and
+deferred signals; whether each changed a model input, posterior/range, ranking,
+recommendation, or nothing; and why. Apply bounded `modelModifiers` when slots are valid;
+otherwise translate evidence cards, `researcherOpinion`, `influenceHints`, path/scenario
+hints, or a visible `deskOverride` candidate into the appropriate quant output, or reject
+them as stale/weak/already priced.
+
+If the Known Context lacks actual `researchInfluencePack`, `contextPack`, `modelModifiers`,
+or evidence cards from research, state that qualitative evidence was not consumed by the
+simulation; do not imply a prose research summary moved the model. Treat prose-only
+research as final-synthesis-only unless the primary supplies structured evidence in the
+handoff.
+
 When sports context includes `surfacePackRefs`, read those packs first and use unexpired
 PM/HL bid/ask/mid/depth rows as the executable prior. Do not rediscover the same odds
 board. If a board surface is expired, missing the shortlisted market, or the decision needs

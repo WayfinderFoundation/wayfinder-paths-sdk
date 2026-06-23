@@ -338,6 +338,10 @@ Start from the executable venue surface (PM/HL order books, live perps/spot/borr
 
 Do not let full path simulations, broad historical studies, or generated modelling scripts block this first answer. For World Cup countries/outrights, brackets, group winners, and other path-dependent markets: first produce the cross-venue board and value/fade shortlist using PM/HL plus bounded sports/research context, then offer or run simulation on the shortlist as second-stage validation. If sports data is missing but PM/HL is enough to form a useful view, label `sports_state=not_hydrated` and answer from the executable board.
 
+Research intended to move a model, quant decision, or desk view should return a reusable `researchInfluencePack`: affected markets/outcomes, `researcherOpinion`, confidence, evidence cards, source refs, freshness, already-priced risk, invalidators, open questions, and flexible `influenceHints`. A `contextPack` / `modelModifiers` section is one valid typed form for known models, not a prerequisite for the research to matter. If research only returns prose without evidence/source refs or a pack ref, treat it as final-synthesis-only evidence and do not imply that quant, sports, or the simulator consumed it.
+
+When consuming a `researchInfluencePack`, leave a short research consumption ledger: accepted, rejected, and deferred signals; whether each changed a model input, posterior/range, rank/order, recommendation, or nothing; and why. Downstream agents may apply bounded model modifiers, convert evidence into posterior shifts, translate path/scenario hints, accept a visible `deskOverride`, run one targeted follow-up on an open question, or reject the signal as stale/weak/already priced. Desk overrides are allowed when the researcher identifies strong evidence the model is blind to, but they must be explicit and must not silently overwrite executable market priors or model outputs.
+
 ### wayfinder-research
 
 Crypto market/protocol/news/social/DeFi/yield/funding/lending/borrow-route/basis/listing/catalyst research, Alpha Lab, Goldsky, DeFiLlama, and Delta Lab snapshots.
@@ -349,6 +353,8 @@ A more narrow mode for the subagent, identifies: exact market identity, current 
 ##### Market Intelligence Modes
 
 Ask `wayfinder-research` for Prediction Market Forecast Mode when a task needs Polymarket odds, resolution rules, evidence updates, and executable EV. It must start from the current executable market/order-book distribution as the prior and return structured posterior fields.
+
+For broad/path sports or prediction-market scans, do not launch research in parallel with the first surface/model pass unless the user asked for broad qualitative research. First produce a shortlist or explicit evidence questions; research should run after the first shortlist, then return a reusable `researchInfluencePack` with evidence cards, influence hints, optional `contextPack`/`modelModifiers`, and pack refs. If you hand quant a context block, include the actual `researchInfluencePack` / `contextPack` / `modelModifiers` / evidence-card refs, not just a prose summary.
 
 Ask `wayfinder-research` for Market Research / Thesis Mode when a task needs token, protocol, spot, perp, DeFi/yield, basis/carry, catalyst, or relative-value research. It should return relevant thesis, snapshot, evidence, lens-score, and open-question fields. Only require `perpSide` and `positionIntent` for perp markets or execution-adjacent trade-readiness.
 

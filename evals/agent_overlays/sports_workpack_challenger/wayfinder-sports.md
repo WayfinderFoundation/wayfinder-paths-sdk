@@ -452,9 +452,11 @@ Never return a progress checkpoint for broad scans. Do not answer with progress-
 headings like `Goal`, `Progress`, `In Progress`, `Blocked`, `Critical Context`, or
 `Next Steps`; return the partial annotated board and blockers as the final finding.
 
-For path-market research handoff, ask for structured `contextPack` / `modelModifiers` /
-evidence cards only after the surface/model pass identifies candidates or blockers. If
-research returns prose without cards or pack refs, mark it final-synthesis-only; do not claim the simulator consumed it.
+For path-market research handoff, ask for a reusable `researchInfluencePack` only after
+the surface/model pass identifies candidates or blockers. The pack may contain evidence
+cards, `researcherOpinion`, `influenceHints`, optional `contextPack` / `modelModifiers`,
+`deskOverride` candidates, and pack refs. If research returns prose without cards/source
+refs or pack refs, mark it final-synthesis-only; do not claim the simulator consumed it.
 
 `game_slate` models expected scores from each team's completed games (Poisson for
 nhl/mlb/soccer, normal for nba/nfl), emits optional provider/book context when available,
@@ -660,6 +662,8 @@ run or has been delegated to quant.
 The model is the sports expectation layer: Elo/Glicko-like ratings, Monte
 Carlo, prop projection, futures/event simulation, or Lab model. The posterior
 ledger is the combination/gate layer and belongs to quant unless the primary
-explicitly asks for a quick informational edge. When current context should
-affect a model, return proposed `modelModifiers` in a contextPack; do not
-freehand probability changes.
+explicitly asks for a quick informational edge. When current context should affect a
+model, return proposed `modelModifiers` in a contextPack when a slot is clear.
+Otherwise return evidence cards and `influenceHints` in a `researchInfluencePack`, and
+let the primary/quant layer decide whether to apply, reject, defer, or treat it as a
+visible desk override candidate. Do not silently freehand probability changes.

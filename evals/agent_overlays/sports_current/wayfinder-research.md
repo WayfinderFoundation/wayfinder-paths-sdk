@@ -77,10 +77,15 @@ Do not delegate to `wayfinder-sports` for non-sports questions, and do not let a
 ### Event-market qualitative evidence
 
 For sports/event outrights where the primary/quant layer has a path simulation, do not
-replace it with a freehand probability. Return evidence cards only: fresh
-injury/availability, lineup/roster, travel/rest/weather/venue, tactical, rule/bracket,
-post-line timing, or market-structure evidence. Include `ratingAdjustment` suggestions
-only when the rationale is explicit. Mark public pre-line facts as likely already priced.
+silently replace it with a freehand probability. Return a reusable
+`researchInfluencePack` that can move the desk view or feed later modelling: affected
+markets/outcomes, `researcherOpinion`, confidence, evidence cards, source refs, freshness,
+already-priced risk, invalidators, open questions, and flexible `influenceHints`.
+Evidence can include injury/availability, lineup/roster, travel/rest/weather/venue,
+tactical, rule/bracket, post-line timing, or market-structure evidence. Include
+`modelModifiers` / `contextPack` suggestions when a model slot is clear, but do not force
+unsupported markets into modifier slots. For unsupported markets, express the signal as
+evidence cards, path/scenario hints, or an explicit `deskOverride` candidate.
 
 ## Tools and Sources
 
@@ -149,8 +154,10 @@ Prediction Market Forecast Mode:
 - Use the executable market/order-book distribution as the prior. Do not use last trade as the entry or prior. Last trade is context-only and cannot produce a `marketPrior` for an actionable decision. Prefer target-size quote/order-book sweep; use midpoint only when bid/ask are current and target size is small. For Polymarket MCP quotes, BUY uses `buy_amount_pusd` as pUSD spend and SELL uses `sell_amount_shares` as shares to sell; use `executionSummary` fields for share count, collateral, and average price.
 - Record `priorSource` as `bid_ask_mid`, `normalized_binary_prices`, `order_book_sweep`, `ask_only`, `bid_only`, or `last_trade_context_only`. Only `bid_ask_mid`, `normalized_binary_prices`, and `order_book_sweep` can support actionable decisions. Treat `ask_only`, `bid_only`, and `last_trade_context_only` as low-quality or context-only and normally return `WATCH` or `SKIP`.
 - Build evidence cards before moving the probability. Each card must include claim, direction (`for_yes`, `against_yes`, or `neutral`), strength, source quality, freshness, independence, already-priced assessment, resolution relevance, rationale, and source refs.
+- When evidence is hard to map into a precise probability, still emit the research view as a `researchInfluencePack` rather than burying it in prose. Use `researcherOpinion` for side/lean, qualitative magnitude, uncertainty, time horizon, invalidators, and why the model or market may be stale. Use `influenceHints` such as `posterior_shift`, `model_input_hint`, `path_scenario`, `desk_override`, `watch_only`, or `needs_followup`; these are hints for the primary/quant/sports agents, not mandatory math.
 - Source quality is a closed set: `provider_api`, `primary_source`, `fetched_article`, `search_snippet`, or `social`. Reserve the word `verified` for claims backed by `provider_api` or `primary_source`; fetched articles, search snippets, and social posts can support a view but must not appear in `verifiedMetrics`.
 - Use a structured Bayesian update from market prior to posterior. Prefer `posteriorMethod: "log_odds_evidence_update"`; use `log_odds_update` only for simple explicit deltas. Evidence cards should map into capped log-odds moves using `wayfinder_paths.quant.polymarket_edge`; do not freehand large probability jumps from one article.
+- A `deskOverride` may be returned when strong, fresh evidence suggests the model or market prior is blind to a catalyst or current-state change. It must include source refs, disconfirming checks, invalidators, confidence, affected markets/outcomes, and why normal model/posterior machinery may underreact. Mark it as an override candidate, not as a silent replacement for market prior or model output.
 - Evidence buckets: resolution terms, current-state evidence, catalyst/timing evidence, disconfirming evidence, and market-structure evidence.
 - Output `pLow`, `pBase`, `pHigh`, what moved probability away from the market prior, `evYes`, `evNo`, and decision. If evidence does not justify moving away from prior, say the market looks roughly fair.
 - Gate `BUY_YES` and `BUY_NO` decisions on conservative EV (`pLow` for YES, `pHigh` for NO), not base-case EV alone.

@@ -269,11 +269,12 @@ Default first-pass workflow:
    first pass should include board coverage counts, state classification, and
    `path-model status` such as `not_run_shortlist_first` or `missingPathFields`.
 3. Ask `wayfinder-research` only after a first shortlist/model pass unless the user
-   explicitly asks for broad qualitative research. It should return qualitative/current-state
-   evidence cards in a `contextPack` / `modelModifiers` artifact: injuries,
-   lineups, post-line news, rule/resolution mismatch, liquidity/depth, lockup/flow.
-   Prose-only research is final-synthesis-only and must not be described as consumed by
-   the simulator.
+   explicitly asks for broad qualitative research. It should return a reusable
+   `researchInfluencePack`: evidence cards, `researcherOpinion`, `influenceHints`,
+   optional `contextPack` / `modelModifiers`, source refs, invalidators, and open
+   questions for injuries, lineups, post-line news, rule/resolution mismatch,
+   liquidity/depth, lockup/flow, or path/scenario changes. Prose-only research is
+   final-synthesis-only and must not be described as consumed by the simulator.
 4. For shortlisted candidates, or when the user explicitly asks for full modelling first,
    ask `wayfinder-sports` for a sport-neutral `eventStatePack`: participants,
    ratings/form inputs, completed results, standings/bracket/cuts if known, upcoming path,
@@ -389,8 +390,11 @@ Do not call stale or dead signals value.
 
 ### LLM forecasting / prediction-market notes
 
-Use LLMs for retrieval, synthesis, evidence cards, and model selection, not as raw
-uncalibrated probability oracles. Relevant research patterns:
+Use LLMs for retrieval, synthesis, evidence cards, `researchInfluencePack` artifacts, and
+model selection, not as raw uncalibrated probability oracles. A strong researcher view can
+be a visible desk override candidate, but the consuming agent must ledger whether it was
+accepted, rejected, or deferred and must show why it changed the final view. Relevant
+research patterns:
 
 - Retrieval + aggregation improves LLM forecasting over zero-shot (`Approaching Human-Level Forecasting with Language Models`,
   https://arxiv.org/abs/2402.18563).

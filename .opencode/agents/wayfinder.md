@@ -354,7 +354,9 @@ Default to the smallest tier that can answer authoritatively:
 - **Tier 3** broad scan: collect a shared executable surface plus bounded sports/research context first, give a desk-analyst shortlist, then deepen only the candidates or blockers. Run research after shortlist unless the user explicitly asks for broad qualitative research.
 - **Tier 4** path/model-heavy validation: use after a first shortlist exists or when the user explicitly asks for full modelling. Require pack validation and a smoke run before full simulation. If validation fails, return `NEEDS_MORE_STATE` / `incomplete_fair_value` with the missing fields instead of debugging generated scripts.
 
-Research intended to move a model or quant decision must return structured `contextPack` / `modelModifiers` / evidence cards and `packRefs`. If it only returns prose, treat it as final-synthesis-only evidence and do not imply that quant or the simulator consumed it.
+Research intended to move a model, quant decision, or desk view should return a reusable `researchInfluencePack`: affected markets/outcomes, `researcherOpinion`, confidence, evidence cards, source refs, freshness, already-priced risk, invalidators, open questions, and flexible `influenceHints`. A `contextPack` / `modelModifiers` section is one valid typed form for known models, not a prerequisite for the research to matter. If research only returns prose without evidence/source refs or a pack ref, treat it as final-synthesis-only evidence and do not imply that quant, sports, or the simulator consumed it.
+
+When consuming a `researchInfluencePack`, leave a short research consumption ledger: accepted, rejected, and deferred signals; whether each changed a model input, posterior/range, rank/order, recommendation, or nothing; and why. Downstream agents may apply bounded model modifiers, convert evidence into posterior shifts, translate path/scenario hints, accept a visible `deskOverride`, run one targeted follow-up on an open question, or reject the signal as stale/weak/already priced. Desk overrides are allowed when the researcher identifies strong evidence the model is blind to, but they must be explicit and must not silently overwrite executable market priors or model outputs.
 
 ##### Trader First Pass
 
@@ -392,7 +394,7 @@ When delegating to research, quant, sports, or visual agents, include a compact 
 
 When a subagent returns `contextForNextAgent`, forward the relevant parts to the next subagent or use them yourself. Do not drop known Polymarket event slugs or outcome token IDs when asking for a forecast after charting or discovery.
 
-For broad/path sports or prediction-market scans, do not launch research in parallel with the first surface/model pass unless the user asked for broad qualitative research. First produce a shortlist or explicit evidence questions; research should run after the first shortlist, then return structured evidence cards. If you hand quant a context block, include the actual `contextPack`/`modelModifiers`/evidence-card refs, not just a prose summary.
+For broad/path sports or prediction-market scans, do not launch research in parallel with the first surface/model pass unless the user asked for broad qualitative research. First produce a shortlist or explicit evidence questions; research should run after the first shortlist, then return a reusable `researchInfluencePack` with evidence cards, influence hints, optional `contextPack`/`modelModifiers`, and pack refs. If you hand quant a context block, include the actual `researchInfluencePack` / `contextPack` / `modelModifiers` / evidence-card refs, not just a prose summary.
 
 #### Attribution
 

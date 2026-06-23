@@ -1241,6 +1241,93 @@ def test_path_market_research_evidence_must_be_structured_before_quant() -> None
     assert "do not claim the simulator consumed it" in sports
 
 
+def test_research_influence_pack_is_flexible_and_ledgered() -> None:
+    primary_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder.md",
+        REPO / "evals" / "agent_overlays" / "sports_workpack_challenger" / "wayfinder.md",
+    ]
+    research_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder-research.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder-research.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder-research.md",
+    ]
+    sports_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder-sports.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder-sports.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder-sports.md",
+    ]
+    quant_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder-quant.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder-quant.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder-quant.md",
+    ]
+    skill_paths = [
+        REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "using-sports-data.SKILL.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "using-sports-data.SKILL.md",
+    ]
+
+    for path in primary_paths:
+        text = path.read_text("utf-8")
+        assert "researchInfluencePack" in text
+        assert "not a prerequisite for the research to matter" in text
+        assert "research consumption ledger" in text
+        assert "accepted, rejected, and deferred" in text
+        assert "deskOverride" in text
+        assert "must not silently overwrite executable market priors" in text
+
+    for path in research_paths:
+        text = path.read_text("utf-8")
+        assert "researchInfluencePack" in text
+        assert "researcherOpinion" in text
+        assert "influenceHints" in text
+        assert "unsupported markets into modifier slots" in text
+        assert "not mandatory math" in text
+        assert "deskOverride" in text
+        assert "override candidate" in text
+
+    for path in sports_paths:
+        text = path.read_text("utf-8")
+        assert "researchInfluencePack" in text
+        assert "researcherOpinion" in text
+        assert "influenceHints" in text
+        assert "deskOverride" in text
+        assert "final-synthesis-only" in text
+
+    for path in quant_paths:
+        text = path.read_text("utf-8")
+        assert "researchInfluencePack" in text
+        assert "consume it before starting overlapping" in text
+        assert "consumption ledger" in text
+        assert "accepted, rejected, and" in text
+        assert "deskOverride" in text
+
+    for path in skill_paths:
+        text = path.read_text("utf-8")
+        assert "researchInfluencePack" in text
+        assert "researcherOpinion" in text
+        assert "influenceHints" in text
+        assert "visible desk override candidate" in text
+        assert "accepted, rejected, or deferred" in text
+
+
 def test_path_market_sim_requires_validation_before_full_run() -> None:
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
     planner = (REPO / ".opencode" / "agents" / "wayfinder-planner.md").read_text(
