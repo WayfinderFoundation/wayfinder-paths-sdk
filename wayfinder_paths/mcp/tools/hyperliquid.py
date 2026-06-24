@@ -2020,7 +2020,9 @@ async def hyperliquid_get_funding_history(
         start_ms=start_ms,
         end_ms=end_ms,
     )
-    response = await HYPERLIQUID_DATA_CLIENT.get_funding_history_response(asset, start, end)
+    response = await HYPERLIQUID_DATA_CLIENT.get_funding_history_response(
+        asset, start, end
+    )
     rows = _tail_rows(response.get("rows"), limit)
     return ok(
         {
@@ -2369,7 +2371,9 @@ def _compact_hip4_market(
         name = str(market.get("name") or "")
         is_match_market = " vs " in name.lower()
         if is_match_market and matched:
-            matched_names = {str(outcome.get("name") or "").lower() for outcome in matched}
+            matched_names = {
+                str(outcome.get("name") or "").lower() for outcome in matched
+            }
             for outcome in outcomes:
                 outcome_name = str(outcome.get("name") or "")
                 if outcome_name.lower() == "draw" and "draw" not in matched_names:
@@ -2403,8 +2407,13 @@ def _truncate_hip4_description_fields(value: Any) -> Any:
             key: _truncate_hip4_description_fields(item) for key, item in value.items()
         }
         description = next_value.get("description")
-        if isinstance(description, str) and len(description) > HIP4_DESCRIPTION_CHAR_LIMIT:
-            next_value["description"] = description[:HIP4_DESCRIPTION_CHAR_LIMIT].rstrip()
+        if (
+            isinstance(description, str)
+            and len(description) > HIP4_DESCRIPTION_CHAR_LIMIT
+        ):
+            next_value["description"] = description[
+                :HIP4_DESCRIPTION_CHAR_LIMIT
+            ].rstrip()
             next_value["description_truncated"] = True
         return next_value
     if isinstance(value, list):
@@ -2435,7 +2444,9 @@ async def hyperliquid_search_hip4(
     limit: Max HIP-4 outcome markets to return (1-20, default 15).
     include_details: If true, return the richer market shape with long descriptions capped.
     """
-    parsed_limit = optional_int(limit, field_name="limit", min_value=1, max_value=20) or 15
+    parsed_limit = (
+        optional_int(limit, field_name="limit", min_value=1, max_value=20) or 15
+    )
     adapter = HyperliquidAdapter()
     outcome_ok, outcome_data = await adapter.get_outcome_markets()
     if not outcome_ok:

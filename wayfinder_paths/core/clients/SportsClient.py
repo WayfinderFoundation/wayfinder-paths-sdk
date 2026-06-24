@@ -80,11 +80,15 @@ class SportsClient(GatewayClient):
         if competitor_id:
             payload["competitor_id"] = str(competitor_id).strip()
         if competitor_ids:
-            payload["competitor_ids"] = [str(v).strip() for v in competitor_ids if str(v).strip()]
+            payload["competitor_ids"] = [
+                str(v).strip() for v in competitor_ids if str(v).strip()
+            ]
         if player_id:
             payload["player_id"] = str(player_id).strip()
         if player_ids:
-            payload["player_ids"] = [str(v).strip() for v in player_ids if str(v).strip()]
+            payload["player_ids"] = [
+                str(v).strip() for v in player_ids if str(v).strip()
+            ]
         if team_id:
             payload["team_id"] = str(team_id).strip()
         if search:

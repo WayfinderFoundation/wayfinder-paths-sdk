@@ -17,7 +17,11 @@ def _names(rows):
 
 
 def _named_side(asset_name: str, label: str) -> dict:
-    return {"name": label, "asset_name": asset_name, "description": f"{asset_name}: {label}"}
+    return {
+        "name": label,
+        "asset_name": asset_name,
+        "description": f"{asset_name}: {label}",
+    }
 
 
 def _world_cup_match_market() -> dict:
@@ -172,7 +176,9 @@ async def test_search_hip4_wrapper_only_returns_outcomes():
 
 @pytest.mark.asyncio
 async def test_search_hip4_compacts_and_ranks_specific_world_cup_query(monkeypatch):
-    monkeypatch.setattr(HyperliquidAdapter, "get_outcome_markets", _mock_outcome_markets)
+    monkeypatch.setattr(
+        HyperliquidAdapter, "get_outcome_markets", _mock_outcome_markets
+    )
 
     res = await hyperliquid_search_hip4("world cup switzerland canada", limit=15)
     assert res["ok"]
@@ -221,7 +227,9 @@ async def test_search_hip4_compacts_and_ranks_specific_world_cup_query(monkeypat
 
 @pytest.mark.asyncio
 async def test_search_hip4_include_details_caps_descriptions(monkeypatch):
-    monkeypatch.setattr(HyperliquidAdapter, "get_outcome_markets", _mock_outcome_markets)
+    monkeypatch.setattr(
+        HyperliquidAdapter, "get_outcome_markets", _mock_outcome_markets
+    )
 
     res = await hyperliquid_search_hip4(
         "world cup switzerland canada",

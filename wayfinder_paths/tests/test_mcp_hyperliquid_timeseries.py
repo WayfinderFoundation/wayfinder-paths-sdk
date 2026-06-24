@@ -7,7 +7,9 @@ from wayfinder_paths.mcp.tools import hyperliquid
 
 @pytest.mark.asyncio
 async def test_hyperliquid_get_candles_returns_bounded_rows(monkeypatch) -> None:
-    async def fake_response(coin: str, start_ms: int, end_ms: int, interval: str) -> dict:
+    async def fake_response(
+        coin: str, start_ms: int, end_ms: int, interval: str
+    ) -> dict:
         return {
             "coin": "HYPE",
             "interval": interval,

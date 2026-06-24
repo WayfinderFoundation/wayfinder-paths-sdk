@@ -302,7 +302,10 @@ def test_research_agent_requires_source_type_and_verified_metric_gate() -> None:
     assert "provider_api" in research
     assert "primary_source" in research
     assert "search_snippet" in research
-    assert "Only `provider_api` and `primary_source` claims may be placed in `verifiedMetrics`" in research
+    assert (
+        "Only `provider_api` and `primary_source` claims may be placed in `verifiedMetrics`"
+        in research
+    )
 
 
 def test_visual_agent_prefers_source_refs_and_importable_specs() -> None:
@@ -662,7 +665,10 @@ def test_wayfinder_planner_is_hidden_advisory_and_non_mutating() -> None:
     assert "Specific Game Lines" in text
     assert "Broad Sports Props / Crossbets" in text
     assert '"intent": "sports_prop_crossbet_edge"' in text
-    assert '"shouldDelegate": "conditional_after_surface_if_stat_props_or_sports_context_needed"' in text
+    assert (
+        '"shouldDelegate": "conditional_after_surface_if_stat_props_or_sports_context_needed"'
+        in text
+    )
     assert '"categoryDiscovery"' in text
     assert '"match_outcomes_or_game_lines"' in text
     assert '"visible_player_or_team_stat_props"' in text
@@ -678,7 +684,9 @@ def test_wayfinder_planner_is_hidden_advisory_and_non_mutating() -> None:
     assert "at least one non-word category attempt" in text
     assert "final scopes no-edge claims when categories remain unchecked" in text
     assert "use player_props limit=20 and offset only if paging matters" in text
-    assert "bounded sports/research context for shortlisted or ambiguous markets" in text
+    assert (
+        "bounded sports/research context for shortlisted or ambiguous markets" in text
+    )
     assert '["wayfinder-sports", "wayfinder-research"]' in text
     assert "wayfinder_hyperliquid_search_hip4" in text
     assert "best BUY" in text

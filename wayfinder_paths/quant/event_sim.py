@@ -462,7 +462,9 @@ def validate_config(config: SimulationConfig) -> list[str]:
     if not matches:
         return issues
 
-    match_ids = [str(match.get("id")) for match in matches if match.get("id") is not None]
+    match_ids = [
+        str(match.get("id")) for match in matches if match.get("id") is not None
+    ]
     match_id_set = set(match_ids)
     if len(match_ids) != len(match_id_set):
         issues.append("bracket contains duplicate match ids")
@@ -477,7 +479,10 @@ def validate_config(config: SimulationConfig) -> list[str]:
                 issues.append(f"match {match_id} has invalid {side} endpoint")
                 continue
             participant_id = endpoint.get("participant")
-            if participant_id is not None and str(participant_id) not in config.participants:
+            if (
+                participant_id is not None
+                and str(participant_id) not in config.participants
+            ):
                 issues.append(
                     f"match {match_id} references unknown participant {participant_id!r}"
                 )
@@ -553,7 +558,9 @@ def _target_slot_names(config: SimulationConfig) -> set[str]:
 def _reachable_bracket_slots(
     matches: list[Mapping[str, Any]], champion_match: str
 ) -> set[str]:
-    by_id = {str(match["id"]): match for match in matches if match.get("id") is not None}
+    by_id = {
+        str(match["id"]): match for match in matches if match.get("id") is not None
+    }
     reachable: set[str] = set()
     seen_matches: set[str] = set()
 
@@ -659,9 +666,7 @@ def _simulate_bracket_trace(
 def run_simulation(config: SimulationConfig) -> list[CandidateResult]:
     validation_issues = validate_config(config)
     if validation_issues:
-        raise ValueError(
-            "invalid event_sim config: " + "; ".join(validation_issues)
-        )
+        raise ValueError("invalid event_sim config: " + "; ".join(validation_issues))
 
     rng = random.Random(config.seed)
     wins: dict[str, int] = defaultdict(int)

@@ -732,9 +732,18 @@ def test_eval_overlays_include_chart_repair_and_source_quality_guards() -> None:
     ]
     for path in research_paths:
         text = path.read_text("utf-8")
-        assert "`provider_api`, `primary_source`, `fetched_article`, `search_snippet`, or `social`" in text
-        assert '"sourceType": "provider_api|primary_source|fetched_article|search_snippet|social"' in text
-        assert "Only `provider_api` and `primary_source` claims may be placed in `verifiedMetrics`" in text
+        assert (
+            "`provider_api`, `primary_source`, `fetched_article`, `search_snippet`, or `social`"
+            in text
+        )
+        assert (
+            '"sourceType": "provider_api|primary_source|fetched_article|search_snippet|social"'
+            in text
+        )
+        assert (
+            "Only `provider_api` and `primary_source` claims may be placed in `verifiedMetrics`"
+            in text
+        )
 
 
 def test_eval_judge_prompt_conflict_is_removed() -> None:

@@ -502,8 +502,10 @@ explicitly asks to model first.
 For sports betting and path-market scans, pass `surfacePackRefs` and other `packRefs`
 downstream whenever available. Reuse unexpired packs and refresh only shortlisted
 quotes/depth before actionable recommendations. If a subagent returns partial pack refs,
-resume the next missing step from those refs. If fair value is incomplete, label the row
-`WATCH` / `incomplete_fair_value`, not `BUY`.
+resume the next missing step from those refs. Treat broad sports scans as `SPORTS_SCAN`
+workflows. Expected reusable packs can include `surfacePack`, `contextPack`,
+`featurePack`, `analysisPack`, `decisionPack`, and `validationReport`. If fair value
+is incomplete, label the row `WATCH` / `incomplete_fair_value`, not `BUY`.
 
 #### Betting view boundary
 

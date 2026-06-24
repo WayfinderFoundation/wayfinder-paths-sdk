@@ -130,7 +130,9 @@ async def _polymarket_event_summary(
     child_markets = [
         market
         for child in child_events
-        for market in event_markets(child, event_slug_override=str(child.get("slug") or ""))
+        for market in event_markets(
+            child, event_slug_override=str(child.get("slug") or "")
+        )
     ]
     markets = parent_markets + child_markets
     candidates, truncation = compact_candidates(
@@ -208,7 +210,9 @@ def _market_lookup_score(market: dict[str, Any], query: str) -> float:
     return 0.0
 
 
-def _compact_resolution_candidates(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _compact_resolution_candidates(
+    markets: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     candidates, _ = compact_candidates(markets, min(len(markets), 5) or 5)
     return candidates
 
@@ -319,9 +323,13 @@ async def _resolve_read_token_id(
         )
         best = scored[0] if scored else None
         second_score = scored[1][1] if len(scored) > 1 else 0.0
-        confident_unique_match = best and best[1] >= 0.75 and (
-            best[1] - second_score >= 0.15
-            or (best[1] >= 0.98 and second_score < 0.98)
+        confident_unique_match = (
+            best
+            and best[1] >= 0.75
+            and (
+                best[1] - second_score >= 0.15
+                or (best[1] >= 0.98 and second_score < 0.98)
+            )
         )
         if confident_unique_match:
             market = best[0]

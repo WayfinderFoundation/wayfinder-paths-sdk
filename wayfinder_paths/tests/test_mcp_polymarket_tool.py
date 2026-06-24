@@ -607,7 +607,9 @@ async def test_polymarket_search_exact_sports_url_hydrates_event():
     assert result["exactEventHydration"] is True
     assert result["eventSlug"] == "fifwc-che-can-2026-06-24"
     assert result["sportsBoard"]["totalMarketCount"] == 1
-    assert result["candidates"][0]["sportsMarketType"] == "soccer_player_goalkeeper_saves"
+    assert (
+        result["candidates"][0]["sportsMarketType"] == "soccer_player_goalkeeper_saves"
+    )
     get_event.assert_awaited_once()
     search.assert_not_awaited()
 

@@ -20,7 +20,9 @@ async def test_visual_get_frontend_context_passes_include_health(monkeypatch) ->
             "chart_workspace": {"health": {"status": "ok"}},
         }
 
-    monkeypatch.setattr(instance_state.INSTANCE_STATE_CLIENT, "get_state", fake_get_state)
+    monkeypatch.setattr(
+        instance_state.INSTANCE_STATE_CLIENT, "get_state", fake_get_state
+    )
 
     result = await instance_state.visual_get_frontend_context(include_health=True)
 

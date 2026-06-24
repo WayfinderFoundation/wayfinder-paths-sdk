@@ -574,12 +574,20 @@ def test_broad_prop_scans_prioritize_sports_markets_before_words() -> None:
     assert "goals/points/totals/bands" in primary_lower
     assert "secondary novelty bucket" in primary_lower
     assert "secondary means scan after sports props, not skip" in primary_lower
-    assert "hydrate the top liquid/relevant event before a global prop conclusion" in primary_lower
-    assert "a broad `no edge` claim is allowed only after surfaced categories" in primary_lower
+    assert (
+        "hydrate the top liquid/relevant event before a global prop conclusion"
+        in primary_lower
+    )
+    assert (
+        "a broad `no edge` claim is allowed only after surfaced categories"
+        in primary_lower
+    )
     assert "no edge in match outcomes and liquid player props checked" in primary_lower
     assert "use `limit=20` by default" in primary_lower
     assert "page with `offset=20`" in primary_lower
-    assert "run `wayfinder-sports` and `wayfinder-research` in parallel" in primary_lower
+    assert (
+        "run `wayfinder-sports` and `wayfinder-research` in parallel" in primary_lower
+    )
     assert "research_state=not_hydrated" in primary_lower
     assert "market/odds-only" in primary_lower
     assert "surfaced-but-unhydrated event slugs" in primary_lower
@@ -601,14 +609,19 @@ def test_broad_prop_scans_prioritize_sports_markets_before_words() -> None:
     assert "announcer/broadcast words as a secondary novelty bucket" in sports_lower
     assert "secondary means scan after sports props, not skip" in sports_compact_lower
     assert "more-markets" in sports_lower
-    assert "scanned / found / hydrated / skipped / not found / unavailable" in sports_lower
-    assert "a broad `no edge` claim is allowed only after surfaced categories" in sports_lower
+    assert (
+        "scanned / found / hydrated / skipped / not found / unavailable" in sports_lower
+    )
+    assert (
+        "a broad `no edge` claim is allowed only after surfaced categories"
+        in sports_lower
+    )
     assert "`player_props` reads should default to `limit=20`" in sports_lower
     assert "page with `offset=20`" in sports_lower
     assert "when the primary runs this as the sports-data lane" in sports_lower
     assert "unsupported endpoint notes" in sports_compact_lower
     assert "compare related prices" in sports_lower
-    assert "unsupported \"true probability\" claims" in sports_compact
+    assert 'unsupported "true probability" claims' in sports_compact
 
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
         "utf-8"
@@ -642,9 +655,7 @@ def test_june_23_world_cup_prop_scan_no_edge_guard() -> None:
     assert surfaced_categories
 
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
-    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text(
-        "utf-8"
-    )
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
     skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
         "utf-8"
     )
@@ -652,8 +663,13 @@ def test_june_23_world_cup_prop_scan_no_edge_guard() -> None:
 
     assert "more-markets" in combined
     assert "announcer/broadcast" in combined
-    assert "hydrate the top liquid/relevant event before a global prop conclusion" in combined
-    assert "a broad `no edge` claim is allowed only after surfaced categories" in combined
+    assert (
+        "hydrate the top liquid/relevant event before a global prop conclusion"
+        in combined
+    )
+    assert (
+        "a broad `no edge` claim is allowed only after surfaced categories" in combined
+    )
     assert "otherwise scope the claim" in combined
     assert "no edge in match outcomes and liquid player props checked" in combined
     assert "search_surfaced_unhydrated" in combined
@@ -729,7 +745,10 @@ def test_sports_scan_lens_uses_fair_value_delta_not_arbability() -> None:
         text = path.read_text("utf-8")
         compact = " ".join(text.split())
         assert "fair-value delta" in compact
-        assert "hypothesized fair probability/range minus executable PM/HL price" in compact
+        assert (
+            "hypothesized fair probability/range minus executable PM/HL price"
+            in compact
+        )
         assert "Absence of a cross-venue arbitrage path is not a skip reason" in compact
 
 
@@ -759,13 +778,19 @@ def test_unmatched_sports_model_outputs_are_context_only() -> None:
 
     for path in sports_paths:
         text = path.read_text("utf-8")
-        assert "Do not compare player-level model probabilities to team-level markets" in text
+        assert (
+            "Do not compare player-level model probabilities to team-level markets"
+            in text
+        )
         assert "if the matching executable prop is absent, it is context-only" in text
 
     for path in skill_paths:
         text = path.read_text("utf-8")
         compact = " ".join(text.split())
-        assert "A player anytime-goal probability is not an edge against a team moneyline" in compact
+        assert (
+            "A player anytime-goal probability is not an edge against a team moneyline"
+            in compact
+        )
         assert "if the matching executable prop is absent" in compact
         assert "context-only / informational-only" in compact
 
@@ -782,12 +807,10 @@ def test_ghana_style_gap_regression_frames_fair_value_not_cross_venue_arb() -> N
     combined = "\n".join(
         [
             (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8"),
-            (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text(
+            (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8"),
+            (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
                 "utf-8"
             ),
-            (
-                REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md"
-            ).read_text("utf-8"),
         ]
     )
     assert "fair-value delta" in combined
@@ -984,7 +1007,11 @@ def test_path_markets_shortlist_before_second_stage_simulation() -> None:
     """Broad path scans should answer now, then validate shortlisted candidates."""
     skill_paths = [
         REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md",
-        REPO / "evals" / "agent_overlays" / "sports_current" / "using-sports-data.SKILL.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_current"
+        / "using-sports-data.SKILL.md",
         REPO
         / "evals"
         / "agent_overlays"
@@ -1141,7 +1168,11 @@ def test_broad_sports_scans_run_sports_and_research_lanes_after_surface() -> Non
     prompt_paths = [
         REPO / ".opencode" / "agents" / "wayfinder.md",
         REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder.md",
-        REPO / "evals" / "agent_overlays" / "sports_workpack_challenger" / "wayfinder.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder.md",
     ]
     research_paths = [
         REPO / ".opencode" / "agents" / "wayfinder-research.md",
@@ -1163,7 +1194,11 @@ def test_broad_sports_scans_run_sports_and_research_lanes_after_surface() -> Non
     ]
     skill_paths = [
         REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md",
-        REPO / "evals" / "agent_overlays" / "sports_current" / "using-sports-data.SKILL.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_current"
+        / "using-sports-data.SKILL.md",
         REPO
         / "evals"
         / "agent_overlays"
@@ -1185,7 +1220,10 @@ def test_broad_sports_scans_run_sports_and_research_lanes_after_surface() -> Non
         assert "Event-market and sports current-news evidence" in text
         assert "As the research lane" in text
         assert "target 5-8 search results" in compact
-        assert "Do not call sports tools directly, infer pregame form from unsupported sports endpoints" in compact
+        assert (
+            "Do not call sports tools directly, infer pregame form from unsupported sports endpoints"
+            in compact
+        )
 
     for path in sports_paths:
         text = path.read_text("utf-8")
@@ -1216,7 +1254,11 @@ def test_worldcup_pregame_forms_unavailable_guard_is_prompted() -> None:
     ]
     skill_paths = [
         REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md",
-        REPO / "evals" / "agent_overlays" / "sports_current" / "using-sports-data.SKILL.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_current"
+        / "using-sports-data.SKILL.md",
         REPO
         / "evals"
         / "agent_overlays"
@@ -1228,7 +1270,10 @@ def test_worldcup_pregame_forms_unavailable_guard_is_prompted() -> None:
         text = path.read_text("utf-8")
         compact = " ".join(text.split())
         assert "task-local unavailable-resource guard" in text
-        assert "do not retry the same `(endpoint_id, sport)` combo for each game/match" in compact
+        assert (
+            "do not retry the same `(endpoint_id, sport)` combo for each game/match"
+            in compact
+        )
         assert "do **not** call `data.pregame_forms.list`" in text
         assert "`soccer` is not a valid substitute" in text
         assert "unavailableResources" in text
@@ -1382,7 +1427,9 @@ def test_broad_scan_budget_reserves_state_and_unhydrated_coverage() -> None:
     assert "Do not classify a category as absent" in sports
 
 
-def test_sports_prop_hydration_uses_pm_child_events_and_sports_worker_enrichment() -> None:
+def test_sports_prop_hydration_uses_pm_child_events_and_sports_worker_enrichment() -> (
+    None
+):
     """Observed CH-CAN failure: the parent PM event had only moneyline markets,
     while hundreds of props lived under child events. Player identity/stat
     enrichment should stay in the sports worker."""
@@ -1402,7 +1449,7 @@ def test_sports_prop_hydration_uses_pm_child_events_and_sports_worker_enrichment
     for needle in (
         "consume that executable board before searching again",
         "child events often hold player props/specials",
-        "do not say \"no Polymarket props\" until surfaced child",
+        'do not say "no Polymarket props" until surfaced child',
     ):
         assert needle in sports
 
@@ -1550,7 +1597,11 @@ def test_trader_first_pass_is_behavior_first_not_forced_template() -> None:
     primary_paths = [
         REPO / ".opencode" / "agents" / "wayfinder.md",
         REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder.md",
-        REPO / "evals" / "agent_overlays" / "sports_workpack_challenger" / "wayfinder.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder.md",
     ]
 
     for path in primary_paths:
@@ -1607,7 +1658,11 @@ def test_market_intel_historical_analog_is_second_stage_validation() -> None:
         REPO / ".opencode" / "agents" / "wayfinder-quant.md",
         REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder.md",
         REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder-quant.md",
-        REPO / "evals" / "agent_overlays" / "sports_workpack_challenger" / "wayfinder.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder.md",
         REPO
         / "evals"
         / "agent_overlays"
@@ -1668,7 +1723,11 @@ def test_research_influence_pack_is_flexible_and_ledgered() -> None:
     primary_paths = [
         REPO / ".opencode" / "agents" / "wayfinder.md",
         REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder.md",
-        REPO / "evals" / "agent_overlays" / "sports_workpack_challenger" / "wayfinder.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder.md",
     ]
     research_paths = [
         REPO / ".opencode" / "agents" / "wayfinder-research.md",
@@ -1699,7 +1758,11 @@ def test_research_influence_pack_is_flexible_and_ledgered() -> None:
     ]
     skill_paths = [
         REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md",
-        REPO / "evals" / "agent_overlays" / "sports_current" / "using-sports-data.SKILL.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_current"
+        / "using-sports-data.SKILL.md",
         REPO
         / "evals"
         / "agent_overlays"

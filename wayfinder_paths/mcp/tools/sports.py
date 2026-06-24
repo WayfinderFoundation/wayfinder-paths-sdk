@@ -54,7 +54,9 @@ def _optional_id_list(value: Any, *, field_name: str) -> list[str] | None:
     return values
 
 
-def _single_or_list_id(value: Any, *, field_name: str) -> tuple[str | None, list[str] | None]:
+def _single_or_list_id(
+    value: Any, *, field_name: str
+) -> tuple[str | None, list[str] | None]:
     values = _optional_id_list(value, field_name=field_name)
     if not values:
         return None, None

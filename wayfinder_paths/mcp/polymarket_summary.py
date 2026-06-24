@@ -209,7 +209,9 @@ def compact_candidates(
     return candidates, truncation
 
 
-def event_markets(event: dict[str, Any], *, event_slug_override: str | None = None) -> list[dict[str, Any]]:
+def event_markets(
+    event: dict[str, Any], *, event_slug_override: str | None = None
+) -> list[dict[str, Any]]:
     slug = str(event.get("slug") or event_slug_override or "").strip() or None
     markets: list[dict[str, Any]] = []
     for market in event.get("markets", []):
@@ -244,7 +246,9 @@ def compact_child_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     (
                         float(
                             as_float(
-                                first_present(m, "liquidity", "liquidityNum", "liquidityClob")
+                                first_present(
+                                    m, "liquidity", "liquidityNum", "liquidityClob"
+                                )
                             )
                             or 0
                         )
@@ -256,7 +260,9 @@ def compact_child_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     (
                         float(
                             as_float(
-                                first_present(m, "volume24h", "volume24hr", "volume24hrClob")
+                                first_present(
+                                    m, "volume24h", "volume24hr", "volume24hrClob"
+                                )
                             )
                             or 0
                         )

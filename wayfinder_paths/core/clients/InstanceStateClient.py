@@ -42,7 +42,9 @@ class InstanceStateClient(WayfinderClient):
         )
         return resp.json()
 
-    async def get_frontend_context(self, *, include_health: bool = False) -> dict[str, Any]:
+    async def get_frontend_context(
+        self, *, include_health: bool = False
+    ) -> dict[str, Any]:
         state = await self.get_state(include_health=include_health)
         return state["frontend_context"]
 
