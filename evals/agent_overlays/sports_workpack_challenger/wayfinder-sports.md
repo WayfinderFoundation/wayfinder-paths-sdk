@@ -171,9 +171,7 @@ wayfinder_hyperliquid_search_hip4(query="world cup", limit=15)
 wayfinder_hyperliquid_search_mid_prices(asset_names=["#1730", "#1760"])
 ```
 
-For sports and prediction-market searches, use `wayfinder_hyperliquid_search_hip4` to keep perps/spots
-out of the response by construction. Use unfiltered HL search only for explicit asset/perp/spot discovery;
-if a HIP-4 search result is too broad, narrow the plain text `query` or reduce `limit`.
+For sports and prediction-market searches, use `wayfinder_hyperliquid_search_hip4` to keep perps/spots out of the response and get compact rows by default. Use unfiltered HL search only for explicit asset/perp/spot discovery; if a HIP-4 search result is too broad, narrow the plain text `query` or reduce `limit`. Use `include_details=true` only for a shortlisted market whose resolver text matters.
 For sports match boards, preserve the exact returned outcomes. Soccer/worldcup match
 markets are usually three-way 1X2 (home/draw/away); draw is its own outcome, not "No".
 Only call mids for `#...` assets returned by search/metadata; never infer paired asset ids
@@ -355,9 +353,7 @@ breadth. A broad `NO EDGE` claim is allowed only after surfaced categories are h
 or explicitly skipped with reason; otherwise scope the claim to checked categories. Live
 `player_props` reads should default to `limit=20`; page with `offset=20` only when the
 first page is still relevant, and prefer `prop_type`/`vendors` filters to full-board pulls.
-Before final BUY/SELL/NO EDGE on a broad scan, do a bounded context/research check on
-shortlisted or ambiguous markets (current match state, availability/injuries, lineup/news,
-and resolution facts) without full path simulation unless the shortlist needs it. For true
+Before final BUY/SELL/NO EDGE on a broad scan, do a bounded context/research check on shortlisted or ambiguous markets (current match state, availability/injuries, lineup/news, and resolution facts). If skipped or unavailable, label `research_state=not_hydrated` or `market/odds-only` and scope the conclusion. Offer deeper dual sports-data + research validation after the shortlist; reserve simulation for shortlisted path-dependent candidates. For true
 novelty-only boards, compare related prices, read the resolution text, check spread/liquidity,
 and return a ranked `BUY (heuristic)` / `SELL (heuristic)` / `WATCH` / `SKIP` table. Keep
 probability language modest: cite relative mispricing and

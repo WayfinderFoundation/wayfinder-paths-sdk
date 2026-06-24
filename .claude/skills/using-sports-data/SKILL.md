@@ -174,9 +174,7 @@ they are the best surfaced board after the scan. Include categories scanned/foun
 categories are hydrated or explicitly skipped with reason; otherwise scope it to checked
 categories. For live sportsbook `player_props`, default to `limit=20`, page with
 `offset=20` only when useful, and prefer `prop_type`/`vendors` filters over full-board
-pulls. Before final BUY/SELL/NO EDGE, do a bounded context/research check on shortlisted
-or ambiguous markets: current state, availability/injuries, lineup/news, and resolution
-facts. Avoid unsupported true-prob claims.
+pulls. Before final BUY/SELL/NO EDGE, do a bounded context/research check on shortlisted or ambiguous markets: current state, availability/injuries, lineup/news, and resolution facts. If skipped or unavailable, label `research_state=not_hydrated` or `market/odds-only` and scope the conclusion. Offer deeper dual sports-data + research validation after the shortlist. Avoid unsupported true-prob claims.
 
 ```
 # player props -> ACTIONABLE/WATCH/EXCLUDED EV table
@@ -351,9 +349,9 @@ surface in search but are not fully hydrated, classify them as `search_surfaced_
 not `not_surfaced`. If group or match boards do not surface, report the search coverage and
 move on rather than checkpointing or offering follow-up work.
 For broad multi-category scans ("most mispriced across match, group, outright", "scan
-the whole field"), cap primary-agent collection at **eight external calls**. Reserve one
+the whole field"), cap primary-agent collection at **sixteen external calls**. Reserve one
 call for current state/results with a generous limit and one for match-market mids if match boards surface.
-After the eighth call, stop gathering data and write the final answer from the joined
+After the sixteenth call, stop gathering data and write the final answer from the joined
 board/state you have. Missing category coverage is a finding (`not_surfaced` /
 `search_surfaced_unhydrated` / `missingModelArtifact`), not a reason to continue.
 Never output a progress checkpoint for these scans. Avoid progress-only headings such as

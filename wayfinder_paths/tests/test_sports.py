@@ -66,6 +66,24 @@ async def test_snapshot_builds_gateway_request() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("sport", ["fifa", "FIBA"])
+async def test_snapshot_normalizes_worldcup_sport_aliases(sport: str) -> None:
+    client = SportsClient()
+    captured: dict = {}
+
+    async def fake(method, url, *, json=None, **kwargs):
+        captured.update(method=method, url=url, json=json)
+        resp = MagicMock()
+        resp.json.return_value = {"cards": []}
+        return resp
+
+    client._authed_request = fake  # type: ignore[assignment]
+    await client.snapshot(action="scoreboard", sport=sport, session_id="s1")
+
+    assert captured["json"]["sport"] == "worldcup"
+
+
+@pytest.mark.asyncio
 async def test_snapshot_sends_timezone_for_scoreboard_dates() -> None:
     client = SportsClient()
     captured: dict = {}
@@ -562,6 +580,9 @@ def test_broad_prop_scans_prioritize_sports_markets_before_words() -> None:
     assert "use `limit=20` by default" in primary_lower
     assert "page with `offset=20`" in primary_lower
     assert "bounded research/context pass" in primary_lower
+    assert "research_state=not_hydrated" in primary_lower
+    assert "market/odds-only" in primary_lower
+    assert "deeper dual sports-data + research validation" in primary_lower
     assert "surfaced-but-unhydrated event slugs" in primary_lower
     assert "search_surfaced_unhydrated" in primary_lower
     assert "exact score" in primary_lower
@@ -586,6 +607,9 @@ def test_broad_prop_scans_prioritize_sports_markets_before_words() -> None:
     assert "`player_props` reads should default to `limit=20`" in sports_lower
     assert "page with `offset=20`" in sports_lower
     assert "bounded context/research check" in sports_lower
+    assert "research_state=not_hydrated" in sports_lower
+    assert "market/odds-only" in sports_lower
+    assert "deeper dual sports-data + research validation" in sports_lower
     assert "compare related prices" in sports_lower
     assert "unsupported \"true probability\" claims" in sports_compact
 
@@ -1080,7 +1104,7 @@ def test_sports_eval_harness_rejects_partial_handoff_answers() -> None:
         "LIKE '%final answer%'",
     ):
         assert needle in eval_script
-    assert "use at most 8 external tool calls" in eval_script_lower
+    assert "use at most 16 external tool calls" in eval_script_lower
 
 
 def test_sports_skill_requires_exact_market_hydration_and_bounded_scans() -> None:
@@ -1099,7 +1123,7 @@ def test_sports_skill_requires_exact_market_hydration_and_bounded_scans() -> Non
         "not negative proof",
         "still search the direct matchup on PM",
         "Under a hard tool budget",
-        "cap primary-agent collection at **eight external calls**",
+        "cap primary-agent collection at **sixteen external calls**",
         "Reserve one\ncall for current state/results",
         "generous `limit`",
         "Prioritize hydrating or directly using group boards",
@@ -1221,6 +1245,8 @@ def test_sports_worker_hyperliquid_tool_contract_is_explicit() -> None:
         "You have eight tools",
         'wayfinder_hyperliquid_search_hip4(query="world cup", limit=15)',
         "perps/spots",
+        "compact rows",
+        "include_details=true",
         "shortlisted `#...` assets",
         "never infer paired asset ids",
     ):

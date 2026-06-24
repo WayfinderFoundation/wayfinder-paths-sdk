@@ -87,7 +87,7 @@ Budget guidance:
 - Tier 0: `maxExternalCalls` 1-3, `allowedSubagents` [], `scriptPolicy` "none".
 - Tier 1: `maxExternalCalls` 3-5, `allowedSubagents` [] by default, `scriptPolicy` "none".
 - Tier 2: one specialist, one bounded script path, and one repair max.
-- Tier 3: cap the primary collection pass at eight external calls, surface/shortlist first, then deepen only candidates/blockers.
+- Tier 3: cap the primary collection pass at sixteen external calls, surface/shortlist first, then deepen only candidates/blockers.
 - Tier 4: use after a first shortlist exists or when the user explicitly asks for full modelling; validate packs and run a smoke simulation with low iterations/short timeout before the full model; if validation fails, stop with `NEEDS_MORE_STATE`.
 
 ## Planning Rules
@@ -173,7 +173,7 @@ Return:
   "intent": "path_dependent_market",
   "rigorTier": 3,
   "budgetTier": "tier3_broad_scan",
-  "maxExternalCalls": 8,
+  "maxExternalCalls": 16,
   "allowedSubagents": ["wayfinder-sports for bounded current-state/context", "wayfinder-research after shortlist for researchInfluencePack", "wayfinder-quant optional simulation after shortlist"],
   "scriptPolicy": "no full simulation until after shortlist; if validating shortlisted candidates, smoke run before full event_sim; one repair max",
   "firstAnswerStop": "desk-analyst board includes PM/HL price, sports/research context, value/fade status, and missing simulation caveat",
@@ -225,7 +225,7 @@ For broad prop/crossbet scans, try real sports markets before word/phrase novelt
   "intent": "sports_prop_crossbet_edge",
   "rigorTier": 2,
   "budgetTier": "tier1_fast_edge_with_bounded_sports_context",
-  "maxExternalCalls": 12,
+  "maxExternalCalls": 16,
   "allowedSubagents": ["wayfinder-sports"],
   "scriptPolicy": "none",
   "firstAnswerStop": "answer with a ranked BUY/SELL/WATCH/SKIP shortlist after surfaced categories are hydrated or explicitly skipped; scope any no-edge claim to checked categories",

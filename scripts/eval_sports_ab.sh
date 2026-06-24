@@ -200,11 +200,11 @@ Eval harness instruction: finish the task in this single run. Do not output a pr
 summary, checkpoint, TODO list, or \"continue if you have next steps\" handoff. Do not use
 progress-only headings like Goal, Constraints, Progress, Done, In Progress, Blocked,
 Critical Context, or Next Steps. If some data is unavailable, state the limitation and
-produce the best final answer now. You have a hard budget of 10 external tool calls
+produce the best final answer now. You have a hard budget of 18 external tool calls
 total; after that, stop gathering data and write the final answer. For broad sports scan
 questions across multiple market categories, after loading the sports skill, first build
 or reuse a compact TTL'd PM/HL surfacePack, then delegate to wayfinder-sports with
-surfacePackRefs for the annotated board/eventStatePack. Use at most 8 external tool calls before writing the answer. Reserve one call for current
+surfacePackRefs for the annotated board/eventStatePack. Use at most 16 external tool calls before writing the answer. Reserve one call for current
 sport state/results with a generous limit, prioritize group boards for groups with current
 results, and one call for match-market mids when match boards surface. Treat three-way
 match boards as home/draw/away, not binary yes/no markets. Your final answer must start

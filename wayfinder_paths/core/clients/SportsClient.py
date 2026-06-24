@@ -11,6 +11,10 @@ SESSION_ENV_KEYS = (
     "OPENCODE_SESSIONID",
     "OPENCODE_INSTANCE_ID",
 )
+SPORT_ALIASES = {
+    "fifa": "worldcup",
+    "fiba": "worldcup",
+}
 
 
 class SportsGatewayAPIError(GatewayAPIError):
@@ -57,9 +61,10 @@ class SportsClient(GatewayClient):
         offset: int | None = None,
         session_id: str | None = None,
     ) -> Any:
+        sport_slug = str(sport).strip().lower()
         payload: dict[str, Any] = {
             "action": str(action).strip(),
-            "sport": str(sport).strip().lower(),
+            "sport": SPORT_ALIASES.get(sport_slug, sport_slug),
             "sessionID": self.resolve_session_id(session_id),
         }
         if event_id:
