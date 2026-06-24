@@ -1,0 +1,27 @@
+schema_version: "0.1"
+status: wip
+entrypoint: "wayfinder_paths.strategies.prjx_khype_lp.strategy.PrjxKhypeLpStrategy"
+permissions:
+  policy: |
+    (wallet.id == 'FORMAT_WALLET_ID') AND (
+      # Allow WHYPE wrap/unwrap
+      (action.type == 'whype_deposit') OR
+      (action.type == 'whype_withdraw') OR
+      # Allow ERC20 approvals for PRJX NPM and Router
+      (action.type == 'erc20_approve') OR
+      # Allow PRJX NPM operations (mint, collect, burn, increaseLiquidity, decreaseLiquidity)
+      (action.type == 'prjx_npm') OR
+      # Allow swaps via PRJX Router
+      (action.type == 'swap' AND action.chain_id == 999) OR
+      # Allow withdrawals to main wallet
+      (action.type == 'erc20_transfer' AND action.to == main_wallet.address)
+    )
+adapters:
+  - name: "BALANCE"
+    capabilities: ["wallet_read", "wallet_transfer"]
+  - name: "LEDGER"
+    capabilities: ["ledger.read", "ledger.write", "strategy.transactions"]
+  - name: "TOKEN"
+    capabilities: ["token.read"]
+  - name: "BRAP"
+    capabilities: ["swap.quote", "swap.execute"]
