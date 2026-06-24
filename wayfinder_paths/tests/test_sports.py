@@ -1278,6 +1278,40 @@ def test_broad_scan_budget_reserves_state_and_unhydrated_coverage() -> None:
     assert "Do not classify a category as absent" in sports
 
 
+def test_sports_prop_hydration_uses_pm_child_events_and_sports_worker_enrichment() -> None:
+    """Observed CH-CAN failure: the parent PM event had only moneyline markets,
+    while hundreds of props lived under child events. Player identity/stat
+    enrichment should stay in the sports worker."""
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+    sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
+    skill = (REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md").read_text(
+        "utf-8"
+    )
+
+    for needle in (
+        "Player lookup, competitor-id hydration, player props, and player/team prop enrichment belong to `wayfinder-sports`",
+        "use returned `sportsBoard`, `childEvents`, and `categorySummary`",
+        "For sportsbook/statistical `player_props`, delegate to `wayfinder-sports`",
+    ):
+        assert needle in primary
+
+    for needle in (
+        "consume that executable board before searching again",
+        "child events often hold player props/specials",
+        "do not say \"no Polymarket props\" until surfaced child",
+    ):
+        assert needle in sports
+
+    for needle in (
+        "board may be split across parent and child events",
+        "use `sportsBoard`, `childEvents`, and\n`categorySummary`",
+        "page candidates with `offset`",
+    ):
+        assert needle in skill
+
+    assert "Polymarket lists mostly **game-level / outcome** markets" not in sports
+
+
 def test_multi_outcome_sports_boards_are_not_binary_collapsed() -> None:
     """Observed q1 loss: HL match markets were treated as binary favorite/no-favorite
     markets even though soccer boards include an explicit draw outcome."""

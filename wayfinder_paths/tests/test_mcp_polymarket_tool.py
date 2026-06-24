@@ -452,6 +452,167 @@ async def test_polymarket_get_event_summary_returns_compact_candidates():
 
 
 @pytest.mark.asyncio
+async def test_polymarket_get_event_summary_hydrates_sports_child_events():
+    event = {
+        "id": "351763",
+        "slug": "fifwc-che-can-2026-06-24",
+        "title": "Switzerland vs. Canada",
+        "gameId": 90086957,
+        "tags": [{"slug": "sports"}],
+        "markets": [
+            {
+                "slug": "fifwc-che-can-2026-06-24-che",
+                "question": "Will Switzerland win?",
+                "outcomes": ["Yes", "No"],
+                "outcomePrices": [0.42, 0.58],
+                "clobTokenIds": ["parent_yes", "parent_no"],
+                "sportsMarketType": "moneyline",
+                "bestBid": 0.41,
+                "bestAsk": 0.42,
+                "enableOrderBook": True,
+                "acceptingOrders": True,
+                "active": True,
+                "closed": False,
+            }
+        ],
+    }
+    child_events = [
+        {
+            "id": "619747",
+            "slug": "fifwc-che-can-2026-06-24-player-props",
+            "title": "Switzerland vs. Canada - Player Props",
+            "markets": [
+                {
+                    "slug": "fifwc-che-can-2026-06-24-shots-david-gte2",
+                    "question": "Jonathan David: 2+ shots",
+                    "groupItemTitle": "Jonathan David: 2+ shots",
+                    "sportsMarketType": "soccer_player_shots",
+                    "outcomes": ["Yes", "No"],
+                    "outcomePrices": [0.55, 0.45],
+                    "clobTokenIds": ["child_yes", "child_no"],
+                    "line": 1.5,
+                    "liquidity": "1000",
+                    "volume24hr": "500",
+                    "bestBid": 0.54,
+                    "bestAsk": 0.55,
+                    "enableOrderBook": True,
+                    "acceptingOrders": True,
+                    "active": True,
+                    "closed": False,
+                    "marketMetadata": {
+                        "opticOddsMarketName": "Player Shots",
+                        "opticOddsPlayerId": "player-1",
+                        "opticOddsSelection": "Jonathan David Over 1.5",
+                        "largeIgnoredField": "x" * 1000,
+                    },
+                }
+            ],
+        }
+    ]
+
+    with (
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_event_by_slug",
+            new=AsyncMock(return_value=(True, event)),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.list_events",
+            new=AsyncMock(return_value=(True, child_events)),
+        ),
+    ):
+        out = await polymarket_read(
+            "get_event",
+            event_slug="fifwc-che-can-2026-06-24",
+            candidate_limit=10,
+        )
+
+    assert out["ok"] is True
+    result = out["result"]
+    assert result["sportsBoard"] == {
+        "parentMarketCount": 1,
+        "childEventCount": 1,
+        "childMarketCount": 1,
+        "totalMarketCount": 2,
+    }
+    assert result["childEvents"][0]["slug"] == "fifwc-che-can-2026-06-24-player-props"
+    assert result["childEvents"][0]["marketCount"] == 1
+    assert result["categorySummary"][0]["sportsMarketType"] == "soccer_player_shots"
+    child = next(
+        c for c in result["candidates"] if c["slug"].endswith("shots-david-gte2")
+    )
+    assert child["eventSlug"] == "fifwc-che-can-2026-06-24-player-props"
+    assert child["sportsMarketType"] == "soccer_player_shots"
+    assert child["groupItemTitle"] == "Jonathan David: 2+ shots"
+    assert child["line"] == 1.5
+    assert child["outcomes"][0]["tokenId"] == "child_yes"
+    assert child["marketMetadata"] == {
+        "opticOddsMarketName": "Player Shots",
+        "opticOddsPlayerId": "player-1",
+        "opticOddsSelection": "Jonathan David Over 1.5",
+    }
+
+
+@pytest.mark.asyncio
+async def test_polymarket_search_exact_sports_url_hydrates_event():
+    event = {
+        "id": "351763",
+        "slug": "fifwc-che-can-2026-06-24",
+        "gameId": 90086957,
+        "markets": [],
+    }
+    child_events = [
+        {
+            "id": "619747",
+            "slug": "fifwc-che-can-2026-06-24-player-props",
+            "markets": [
+                {
+                    "slug": "fifwc-che-can-2026-06-24-saves-crepeau-gte3",
+                    "question": "Maxime Crepeau: 3+ saves",
+                    "sportsMarketType": "soccer_player_goalkeeper_saves",
+                    "outcomes": ["Yes", "No"],
+                    "outcomePrices": [0.4, 0.6],
+                    "clobTokenIds": ["yes", "no"],
+                    "enableOrderBook": True,
+                    "acceptingOrders": True,
+                    "active": True,
+                    "closed": False,
+                }
+            ],
+        }
+    ]
+
+    get_event = AsyncMock(return_value=(True, event))
+    search = AsyncMock()
+    with (
+        patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.get_event_by_slug",
+            new=get_event,
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.polymarket.PolymarketAdapter.list_events",
+            new=AsyncMock(return_value=(True, child_events)),
+        ),
+        patch("wayfinder_paths.mcp.tools.polymarket.relevance_search", new=search),
+    ):
+        out = await polymarket_read(
+            "search",
+            query="https://polymarket.com/sports/world-cup/fifwc-che-can-2026-06-24",
+        )
+
+    assert out["ok"] is True
+    result = out["result"]
+    assert result["action"] == "search"
+    assert result["exactEventHydration"] is True
+    assert result["eventSlug"] == "fifwc-che-can-2026-06-24"
+    assert result["sportsBoard"]["totalMarketCount"] == 1
+    assert result["candidates"][0]["sportsMarketType"] == "soccer_player_goalkeeper_saves"
+    get_event.assert_awaited_once()
+    search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_polymarket_get_event_default_returns_ten_candidates_and_suggests_more():
     event = {
         "slug": "date-ladder",

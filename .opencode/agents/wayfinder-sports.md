@@ -347,7 +347,10 @@ goals/points/totals/bands, exact score, more-markets/specials, and then
 announcer/broadcast words as a secondary novelty bucket. Secondary means scan after
 sports props, not skip. If search surfaces `more-markets`, specials, exact-score, or
 announcer/broadcast event groups, hydrate the top liquid/relevant event before a global
-prop conclusion. Do not stop at the first category that returns results. Include a compact
+prop conclusion. If the primary passes `sportsBoard`, `childEvents`, or
+`categorySummary` from Polymarket, consume that executable board before searching again:
+child events often hold player props/specials that are absent from the parent moneyline
+event. Do not stop at the first category that returns results. Include a compact
 "scanned / found / hydrated / skipped / not found / unavailable" line so the user can see
 breadth. A broad `NO EDGE` claim is allowed only after surfaced categories are hydrated
 or explicitly skipped with reason; otherwise scope the claim to checked categories. Live
@@ -619,7 +622,16 @@ Frame these findings as possible fair-value delta, not arbitrage; lack of cross-
 arb is not a skip reason when the executable price is cheap versus a defensible fair
 range.
 
-**Coverage reality:** Polymarket lists mostly **game-level / outcome** markets (winner, series), and player-prop markets only for marquee games. If no Polymarket market exists for a specific prop, the model number is **informational only** — say so; don't manufacture an executable edge against a sportsbook line. Do not compare player-level model probabilities to team-level markets like moneyline; if the matching executable prop is absent, it is context-only.
+**Coverage reality:** Polymarket sports boards may be split across a parent event and
+child events. The parent can show only moneyline/match outcomes while child events carry
+player props, more-markets, specials, exact score, or broadcast props. Treat
+`sportsBoard`, `childEvents`, and `categorySummary` from `wayfinder_polymarket_read` as
+the coverage source of truth; do not say "no Polymarket props" until surfaced child
+categories have been hydrated or explicitly skipped. If no matching executable
+Polymarket/HL market exists for a specific prop after that check, the model number is
+**informational only** — say so; don't manufacture an executable edge against a sportsbook
+line. Do not compare player-level model probabilities to team-level markets like
+moneyline; if the matching executable prop is absent, it is context-only.
 
 ## Tool budget
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -29,11 +30,14 @@ from wayfinder_paths.mcp.polymarket_relevance import relevance_search
 from wayfinder_paths.mcp.polymarket_summary import (
     DEFAULT_CANDIDATE_LIMIT,
     compact_candidates,
+    compact_category_summary,
+    compact_child_events,
     compact_event,
     compact_event_groups,
     compact_market_detail,
     compact_order_book,
     compact_truncation,
+    event_markets,
     next_suggested_calls,
 )
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
@@ -60,6 +64,110 @@ def _normalize_pm_lookup_text(value: Any) -> str:
     return " ".join(
         "".join(ch.lower() if ch.isalnum() else " " for ch in str(value or "")).split()
     )
+
+
+def _extract_polymarket_event_slug(value: Any) -> tuple[str | None, bool]:
+    text = str(value or "").strip()
+    if not text:
+        return None, False
+    match = re.search(
+        r"polymarket\.com/(?:[a-z]{2}/)?(?:sports/[^/\s]+/|event/)([a-z0-9][a-z0-9-]+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        return match.group(1), True
+    if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)+", text):
+        return text, False
+    return None, False
+
+
+def _is_polymarket_sports_event(event: dict[str, Any]) -> bool:
+    if event.get("gameId") or event.get("sport"):
+        return True
+    tags = event.get("tags")
+    if isinstance(tags, list):
+        for tag in tags:
+            if not isinstance(tag, dict):
+                continue
+            slug = str(tag.get("slug") or "").lower()
+            if slug in {"sports", "games", "soccer", "fifa-world-cup"}:
+                return True
+    return False
+
+
+async def _polymarket_event_summary(
+    adapter: PolymarketAdapter,
+    *,
+    action: str,
+    slug: str,
+    candidate_limit: int,
+    offset: int = 0,
+    query: str | None = None,
+    exact_event_hydration: bool = False,
+) -> tuple[bool, dict[str, Any]]:
+    ok_e, e = await adapter.get_event_by_slug(slug)
+    if not ok_e:
+        assert isinstance(e, (dict, str))
+        return False, e if isinstance(e, dict) else {"code": "error", "message": str(e)}
+    assert isinstance(e, dict)
+
+    child_events: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    parent_id = str(e.get("id") or "").strip()
+    if parent_id and _is_polymarket_sports_event(e):
+        ok_children, children = await adapter.list_events(
+            parent_event_id=parent_id,
+            limit=50,
+            closed=False,
+        )
+        if ok_children and isinstance(children, list):
+            child_events = [child for child in children if isinstance(child, dict)]
+        elif not ok_children:
+            warnings.append("sports child-event hydration failed; parent markets only")
+
+    parent_markets = event_markets(e, event_slug_override=slug)
+    child_markets = [
+        market
+        for child in child_events
+        for market in event_markets(child, event_slug_override=str(child.get("slug") or ""))
+    ]
+    markets = parent_markets + child_markets
+    candidates, truncation = compact_candidates(
+        markets,
+        candidate_limit,
+        event_slug_override=slug,
+        sort_open_first=True,
+        offset=offset,
+    )
+    payload: dict[str, Any] = {
+        "action": action,
+        "summaryMode": True,
+        "event": compact_event(e),
+        "candidates": candidates,
+        "nextSuggestedCalls": next_suggested_calls(
+            event_slug_value=slug,
+            truncation=truncation,
+        ),
+        "truncation": truncation,
+    }
+    if query is not None:
+        payload["query"] = query
+    if exact_event_hydration:
+        payload["exactEventHydration"] = True
+        payload["eventSlug"] = slug
+    if child_events:
+        payload["sportsBoard"] = {
+            "parentMarketCount": len(parent_markets),
+            "childEventCount": len(child_events),
+            "childMarketCount": len(child_markets),
+            "totalMarketCount": len(markets),
+        }
+        payload["childEvents"] = compact_child_events(child_events)
+        payload["categorySummary"] = compact_category_summary(markets)
+    if warnings:
+        payload["warnings"] = warnings
+    return True, payload
 
 
 def _summary_outcome_token_id(market: dict[str, Any], outcome: str | int) -> str | None:
@@ -507,6 +615,22 @@ async def polymarket_read(
             case "search":
                 q = throw_if_empty_str("query is required for search", query)
                 if summary:
+                    exact_slug, strict_exact = _extract_polymarket_event_slug(q)
+                    if exact_slug:
+                        ok_summary, payload = await _polymarket_event_summary(
+                            adapter,
+                            action=action,
+                            slug=exact_slug,
+                            candidate_limit=candidate_limit,
+                            offset=int(offset),
+                            query=q,
+                            exact_event_hydration=True,
+                        )
+                        if ok_summary:
+                            return ok(payload)
+                        if strict_exact:
+                            return _adapter_error(payload)
+
                     relevance = await relevance_search(
                         adapter,
                         query=q,
@@ -591,30 +715,20 @@ async def polymarket_read(
 
             case "get_event":
                 slug = throw_if_empty_str("event_slug is required", event_slug)
+                if summary:
+                    ok_summary, payload = await _polymarket_event_summary(
+                        adapter,
+                        action=action,
+                        slug=slug,
+                        candidate_limit=candidate_limit,
+                        offset=int(offset),
+                    )
+                    if not ok_summary:
+                        return _adapter_error(payload)
+                    return ok(payload)
                 ok_e, e = await adapter.get_event_by_slug(slug)
                 if not ok_e:
                     return _adapter_error(e)
-                if summary:
-                    markets = [m for m in e.get("markets", []) if isinstance(m, dict)]
-                    candidates, truncation = compact_candidates(
-                        markets,
-                        candidate_limit,
-                        event_slug_override=slug,
-                        sort_open_first=True,
-                    )
-                    return ok(
-                        {
-                            "action": action,
-                            "summaryMode": True,
-                            "event": compact_event(e),
-                            "candidates": candidates,
-                            "nextSuggestedCalls": next_suggested_calls(
-                                event_slug_value=slug,
-                                truncation=truncation,
-                            ),
-                            "truncation": truncation,
-                        }
-                    )
                 return ok({"action": action, "event": e})
 
             case "quote":

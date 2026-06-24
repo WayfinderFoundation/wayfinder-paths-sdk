@@ -6,6 +6,16 @@ from typing import Any, Literal
 from wayfinder_paths.mcp.polymarket_order import as_float, first_present
 
 DEFAULT_CANDIDATE_LIMIT = 10
+_SPORTS_METADATA_KEYS = (
+    "opticOddsFixtureId",
+    "opticOddsMarketId",
+    "opticOddsMarketName",
+    "opticOddsPlayerId",
+    "opticOddsPoints",
+    "opticOddsSelection",
+    "opticOddsSelectionLine",
+    "opticOddsTeamId",
+)
 
 
 def compact_truncation(total: int, returned: int) -> dict[str, Any]:
@@ -148,6 +158,21 @@ def compact_market_candidate(
     }
     if isinstance(market.get("_relevance"), dict):
         candidate["relevance"] = market["_relevance"]
+    for source_key, output_key in (
+        ("sportsMarketType", "sportsMarketType"),
+        ("groupItemTitle", "groupItemTitle"),
+        ("line", "line"),
+    ):
+        value = market.get(source_key)
+        if value not in (None, ""):
+            candidate[output_key] = value
+    metadata = market.get("marketMetadata")
+    if isinstance(metadata, dict):
+        compact_metadata = {
+            key: metadata[key] for key in _SPORTS_METADATA_KEYS if key in metadata
+        }
+        if compact_metadata:
+            candidate["marketMetadata"] = compact_metadata
     return candidate
 
 
@@ -157,6 +182,7 @@ def compact_candidates(
     *,
     event_slug_override: str | None = None,
     sort_open_first: bool = False,
+    offset: int = 0,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     limit = max(0, int(candidate_limit))
     candidates = [
@@ -174,8 +200,131 @@ def compact_candidates(
                 -float(c.get("liquidity") or 0),
             )
         )
-    candidates = candidates[:limit]
-    return candidates, compact_truncation(len(markets), len(candidates))
+    total = len(candidates)
+    start = max(0, int(offset or 0))
+    candidates = candidates[start : start + limit]
+    truncation = compact_truncation(total, len(candidates))
+    if start:
+        truncation["offset"] = start
+    return candidates, truncation
+
+
+def event_markets(event: dict[str, Any], *, event_slug_override: str | None = None) -> list[dict[str, Any]]:
+    slug = str(event.get("slug") or event_slug_override or "").strip() or None
+    markets: list[dict[str, Any]] = []
+    for market in event.get("markets", []):
+        if not isinstance(market, dict):
+            continue
+        row = dict(market)
+        if slug and not event_slug(row):
+            row["_event"] = {"slug": slug}
+        markets.append(row)
+    return markets
+
+
+def compact_child_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    children: list[dict[str, Any]] = []
+    for event in events:
+        markets = event_markets(event)
+        market_types = sorted(
+            {
+                str(m.get("sportsMarketType"))
+                for m in markets
+                if m.get("sportsMarketType")
+            }
+        )
+        children.append(
+            {
+                "id": event.get("id"),
+                "slug": event.get("slug"),
+                "title": event.get("title"),
+                "marketCount": len(markets),
+                "sportsMarketTypes": market_types,
+                "maxLiquidity": max(
+                    (
+                        float(
+                            as_float(
+                                first_present(m, "liquidity", "liquidityNum", "liquidityClob")
+                            )
+                            or 0
+                        )
+                        for m in markets
+                    ),
+                    default=0.0,
+                ),
+                "maxVolume24h": max(
+                    (
+                        float(
+                            as_float(
+                                first_present(m, "volume24h", "volume24hr", "volume24hrClob")
+                            )
+                            or 0
+                        )
+                        for m in markets
+                    ),
+                    default=0.0,
+                ),
+                "nextSuggestedCall": {
+                    "action": "get_event",
+                    "event_slug": event.get("slug"),
+                    "candidate_limit": 20,
+                },
+            }
+        )
+    children.sort(
+        key=lambda e: (
+            -int(e["marketCount"]),
+            -float(e["maxVolume24h"]),
+            -float(e["maxLiquidity"]),
+        )
+    )
+    return children
+
+
+def compact_category_summary(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for market in markets:
+        category = str(market.get("sportsMarketType") or "uncategorized")
+        grouped.setdefault(category, []).append(market)
+
+    categories: list[dict[str, Any]] = []
+    for category, rows in grouped.items():
+        candidates = [compact_market_candidate(m) for m in rows]
+        candidates.sort(
+            key=lambda c: (
+                -float(c.get("volume24h") or 0),
+                -float(c.get("liquidity") or 0),
+            )
+        )
+        event_slugs = sorted(
+            {str(c.get("eventSlug")) for c in candidates if c.get("eventSlug")}
+        )
+        categories.append(
+            {
+                "sportsMarketType": category,
+                "marketCount": len(rows),
+                "eventSlugs": event_slugs,
+                "topQuestions": [
+                    str(c.get("question")) for c in candidates[:3] if c.get("question")
+                ],
+                "maxLiquidity": max(
+                    (float(c.get("liquidity") or 0) for c in candidates),
+                    default=0.0,
+                ),
+                "maxVolume24h": max(
+                    (float(c.get("volume24h") or 0) for c in candidates),
+                    default=0.0,
+                ),
+            }
+        )
+    categories.sort(
+        key=lambda c: (
+            -int(c["marketCount"]),
+            -float(c["maxVolume24h"]),
+            -float(c["maxLiquidity"]),
+        )
+    )
+    return categories
 
 
 def compact_event_groups(markets: list[dict[str, Any]]) -> list[dict[str, Any]]:

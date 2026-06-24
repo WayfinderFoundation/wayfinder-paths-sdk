@@ -205,11 +205,15 @@ show the rows. Finish the executable-venue check and top dislocation adjudicatio
 in-session instead of offering them as follow-ups.
 
 **Executable board rule:** Polymarket lists a per-game EVENT (slug
-`{league}-{away}-{home}-{YYYY-MM-DD}`, e.g. `mlb-lad-cws-2026-06-12`) carrying a whole
-board — alternate spreads/totals, first-half/F5 lines, game props. Hydrate it
-(`polymarket_read get_event`) and enumerate its markets as the executable candidate
-set; `game_slate` emits `alt_lines` (model probabilities for the alt ladder) to price
-them. "No provider props" never means "nothing executable."
+`{league}-{away}-{home}-{YYYY-MM-DD}`, e.g. `mlb-lad-cws-2026-06-12`) but the visible
+board may be split across parent and child events. Hydrate the exact event
+(`polymarket_read get_event`) and use `sportsBoard`, `childEvents`, and
+`categorySummary` as the executable coverage map; child events can hold player props,
+more-markets, specials, exact score, and broadcast props even when the parent event only
+shows match outcomes. Hydrate or inspect surfaced child categories before saying a
+Polymarket prop category is absent, and page candidates with `offset` when the category is
+large. `game_slate` emits `alt_lines` (model probabilities for the alt ladder) to price
+game lines. "No provider props" never means "nothing executable."
 For multi-outcome match boards (soccer/worldcup, tennis sets, MMA method, etc.), preserve
 the returned outcome mapping exactly. A three-way soccer board is home/draw/away; never
 collapse it into a binary or recommend "buy No on the favorite" unless a binary No token

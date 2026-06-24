@@ -155,6 +155,15 @@ class PolymarketAdapter(BaseAdapter):
                 out[key] = json.loads(out[key])
         return out
 
+    @classmethod
+    def _normalize_event(cls, event: dict[str, Any]) -> dict[str, Any]:
+        out = dict(event)
+        if isinstance(out.get("markets"), list):
+            out["markets"] = [
+                cls._normalize_market(m) for m in out["markets"] if isinstance(m, dict)
+            ]
+        return out
+
     @staticmethod
     def _gamma_hint(
         *,
@@ -300,7 +309,7 @@ class PolymarketAdapter(BaseAdapter):
                 return False, self._gamma_unexpected_response(
                     endpoint=endpoint, expected="list", actual=type(data).__name__
                 )
-            return True, data
+            return True, [self._normalize_event(e) for e in data if isinstance(e, dict)]
         except Exception as exc:  # noqa: BLE001
             return False, self._gamma_error(exc, endpoint=endpoint)
 
@@ -337,10 +346,7 @@ class PolymarketAdapter(BaseAdapter):
                     actual=type(data).__name__,
                     slug=slug,
                 )
-            if "markets" in data:
-                data = dict(data)
-                data["markets"] = [self._normalize_market(m) for m in data["markets"]]
-            return True, data
+            return True, self._normalize_event(data)
         except Exception as exc:  # noqa: BLE001
             return False, self._gamma_error(exc, endpoint=endpoint, slug=slug)
 
