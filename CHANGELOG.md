@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.11.1] - 2026-06-23
+
+Added
+
+1. **Sports desk-analyst workflow**: broad sports and market-edge prompts now produce a fast executable PM/HL board, a concise BUY/SELL/WATCH/SKIP shortlist, and defer heavy simulation until after candidates are selected.
+2. **Sports data gateway tools**: added provider-agnostic `sports_snapshot`, `sports_backtest_state`, and hidden sports-worker provider facade support for bounded live sports data, run monitoring, and model workflows.
+3. **Sports regression evals**: added coverage for World Cup prop scans, country/outright scans, fair-value delta framing, unavailable sports-tool fail-fast behavior, and HYPE/SPCX trade setup routing.
+
+Changed
+
+1. **Prediction-market sports routing**: broad prop scans now check real sports markets before novelty word/phrase markets, hydrate surfaced buckets before global no-edge claims, and default live player-prop reads to bounded pages.
+2. **Sports edge framing**: PM/HL cross-venue gaps are treated as venue-noise and liquidity context; recommendations focus on hypothesized fair-value delta versus executable price.
+3. **Research influence flow**: research signals are ledgered as evidence/context or bounded model modifiers rather than silent freehand probability jumps.
+
+Fixed
+
+1. **Polymarket read hydration**: price, order-book, and price-history reads can resolve exact or loose `market_slug` plus outcome when the agent does not already have a token id.
+2. **Hyperliquid HIP-4 discovery**: added a dedicated outcome-market search wrapper so sports scans do not pull large unrelated perp/spot boards.
+3. **Sports answer failure modes**: prompts now guard against repeated invalid sports-tool retries, unsupported model-to-market comparisons, and unscoped "no edge" conclusions.
+
 ## [0.11.0] - 2026-06-10
 
 Added
