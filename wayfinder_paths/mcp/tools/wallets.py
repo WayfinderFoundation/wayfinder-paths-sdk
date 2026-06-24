@@ -505,25 +505,38 @@ async def core_get_wallets(
 
 
 @catch_errors
-async def onchain_get_wallet_activity(label: str) -> dict[str, Any]:
-    """Return the last 20 on-chain transactions for a wallet across supported chains.
+async def onchain_get_wallet_activity(
+    label: str | None = None,
+    wallet_address: str | None = None,
+    limit: int = 20,
+    offset: str | None = None,
+) -> dict[str, Any]:
+    """Return on-chain transactions for a wallet across supported chains.
+
+    Pass either a configured wallet label or a raw wallet address. To crawl
+    further back, pass the previous response's next_offset as offset.
 
     Args:
         label: Wallet label as configured in config.json, e.g. main.
+        wallet_address: Raw wallet address; takes precedence over label.
+        limit: Number of transactions to return (default 20).
+        offset: Pagination cursor from a prior response's next_offset.
     """
-    w = await find_wallet_by_label(label)
-    if not w:
-        return err("not_found", f"Wallet not found: {label}")
-
-    address = normalize_address(w.get("address"))
+    address, lbl = await resolve_wallet_address(
+        wallet_label=label, wallet_address=wallet_address
+    )
     if not address:
-        return err("invalid_wallet", f"Invalid address for wallet: {label}")
+        if lbl:
+            return err("not_found", f"Wallet not found: {lbl}")
+        return err("invalid_request", "label or wallet_address is required")
 
-    data = await BALANCE_CLIENT.get_wallet_activity(wallet_address=address, limit=20)
+    data = await BALANCE_CLIENT.get_wallet_activity(
+        wallet_address=address, limit=limit, offset=offset
+    )
 
     return ok(
         {
-            "label": label,
+            "label": lbl,
             "address": address,
             "activity": data.get("activity", []),
             "next_offset": data.get("next_offset"),
