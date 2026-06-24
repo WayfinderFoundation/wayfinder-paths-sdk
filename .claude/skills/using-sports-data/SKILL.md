@@ -18,6 +18,8 @@ key never leaves the backend; the surface is provider-agnostic):
 
 An unsupported (resource, sport) combo returns `resource_unavailable_for_league` **with the
 leagues that DO support it** — never guess availability, read the error or the catalog.
+Within one task, treat that error as a task-local unavailable-resource guard: do not retry
+the same `(endpoint_id, sport)` combo for every game/match.
 
 Leagues: `nba nfl mlb nhl wnba ncaaf ncaab ncaaw cbb epl laliga seriea bundesliga ligue1 ucl
 mls worldcup mma f1 atp wta pga cs2 lol dota2`. Lab (backtesting) = **nba/nfl/nhl/mlb only**.
@@ -54,7 +56,7 @@ Resource ids are generic and resolve per-league (e.g. `competitors` = players/fi
 | `data.career_stats.list` | career stats (tennis) | `query.player_id` |
 | `data.shots.list` | soccer shot maps with **xG** | `query.match_id`/`game_id` depending on league |
 | `data.match_events.list` | soccer goals/cards/subs | `query.match_id`/`game_id` depending on league |
-| `data.momentum.list`, `data.pregame_forms.list` | soccer momentum / recent form | `query.match_id`/`game_id` depending on league |
+| `data.momentum.list`, `data.pregame_forms.list` | soccer momentum / recent form where catalog-supported; not guaranteed for every soccer-family league | `query.match_id`/`game_id` depending on league |
 | `data.rosters.list` | rosters; NFL depth charts | soccer: `query`; NFL: `path_params.team_id` |
 | `data.results.list` | F1 session results / PGA tournament results / MMA fight results | `query`: season/event/fight/tournament filters |
 | `data.qualifying.list`, `data.pit_stops.list`, `data.laps.list` | F1 detail (plan-gated upstream) | `query` session/event ids |
@@ -84,9 +86,14 @@ Resource ids are generic and resolve per-league (e.g. `competitors` = players/fi
 - **nhl** — box scores, plays, injuries, standings; season stats are **per-player/per-team
   id-scoped** (no flat game-log endpoint); player/team leaders; odds + props.
 - **wnba** — NBA-style stats + advanced + **shot_locations**; odds + props.
-- **soccer** (epl/laliga/seriea/bundesliga/ligue1/ucl/mls/worldcup) — matches, rosters, injuries,
-  standings, player/team match stats, **xG shots**, match events, momentum, pregame forms;
-  odds + props; **futures** for ucl/worldcup. EPL serves from its v2 API transparently.
+- **soccer leagues** (epl/laliga/seriea/bundesliga/ligue1/ucl/mls) — matches, rosters,
+  injuries, standings, player/team match stats, **xG shots**, match events, momentum and
+  pregame forms where the catalog lists support; odds + props; **futures** for ucl.
+  EPL serves from its v2 API transparently.
+- **worldcup** — matches, standings/results, odds, player props, and futures where live.
+  Do **not** call `data.pregame_forms.list` for `worldcup` unless the runtime catalog
+  explicitly lists `worldcup` in `supported_leagues`; current `resource_unavailable_for_league`
+  means use standings/results plus web/news research for pregame form.
 - **tennis** (atp/wta) — players, matches, rankings (as `standings`), **head-to-head matchups**,
   match stats, career stats; odds only.
 - **mma** — fighters, events (cards), **fight results** (`data.results.list`), fight stats,
@@ -174,7 +181,12 @@ they are the best surfaced board after the scan. Include categories scanned/foun
 categories are hydrated or explicitly skipped with reason; otherwise scope it to checked
 categories. For live sportsbook `player_props`, default to `limit=20`, page with
 `offset=20` only when useful, and prefer `prop_type`/`vendors` filters over full-board
-pulls. Before final BUY/SELL/NO EDGE, do a bounded context/research check on shortlisted or ambiguous markets: current state, availability/injuries, lineup/news, and resolution facts. If skipped or unavailable, label `research_state=not_hydrated` or `market/odds-only` and scope the conclusion. Offer deeper dual sports-data + research validation after the shortlist. Avoid unsupported true-prob claims.
+pulls. Before final BUY/SELL/NO EDGE, the primary should run sports data and research as
+bounded lanes after the initial executable board/shortlist exists: sports for event
+state/odds/props/supported form inputs/unsupported endpoint notes, research for current
+news and resolution facts. If skipped or unavailable, label `sports_state=not_hydrated`,
+`research_state=not_hydrated`, or `market/odds-only` and scope the conclusion. Avoid
+unsupported true-prob claims.
 
 ```
 # player props -> ACTIONABLE/WATCH/EXCLUDED EV table
@@ -284,13 +296,12 @@ Default first-pass workflow:
 2. Return the desk-analyst board and value/fade shortlist before any full path model. The
    first pass should include board coverage counts, state classification, and
    `path-model status` such as `not_run_shortlist_first` or `missingPathFields`.
-3. Ask `wayfinder-research` only after a first shortlist/model pass unless the user
-   explicitly asks for broad qualitative research. It should return a reusable
-   `researchInfluencePack`: evidence cards, `researcherOpinion`, `influenceHints`,
-   optional `contextPack` / `modelModifiers`, source refs, invalidators, and open
-   questions for injuries, lineups, post-line news, rule/resolution mismatch,
-   liquidity/depth, lockup/flow, or path/scenario changes. Prose-only research is
-   final-synthesis-only and must not be described as consumed by the simulator.
+3. After the initial executable board and tentative shortlist/evidence questions exist,
+   run sports data and research as parallel bounded lanes when both can move fair value.
+   `wayfinder-sports` returns sports state/context; `wayfinder-research` returns a reusable
+   `researchInfluencePack` with evidence cards, `researcherOpinion`, `influenceHints`,
+   optional `contextPack` / `modelModifiers`, or final-synthesis-only evidence when no pack
+   is justified.
 4. For shortlisted candidates, or when the user explicitly asks for full modelling first,
    ask `wayfinder-sports` for a sport-neutral `eventStatePack`: participants,
    ratings/form inputs, completed results, standings/bracket/cuts if known, upcoming path,
@@ -344,7 +355,10 @@ Under a hard tool budget, use a bounded scan plan and finish anyway: hydrate the
 outright board, search the second executable venue, search group/round boards with enough
 candidate coverage to surface multiple event slugs, pull current standings/results using
 the canonical sport slug (for World Cup: `worldcup`, not `soccer`) and a generous `limit`
-so standings are not silently truncated, then fetch mids for the shortlisted match boards
+so standings are not silently truncated. Do not call `data.pregame_forms.list` for
+`worldcup` unless the catalog explicitly supports it; after one
+`resource_unavailable_for_league` for `pregame_forms` + `worldcup`, do not retry it for
+later matches and use the research lane for current form/news instead. Then fetch mids for the shortlisted match boards
 that surfaced. Prioritize hydrating or directly using group boards for groups with current
 results before spending calls on novelty/entertainment match searches. Do not call
 `mid_prices` for every encoded outcome in a large field; shortlist top/ambiguous outcomes

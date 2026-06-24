@@ -94,9 +94,9 @@ Budget guidance:
 
 - Prefer direct primary tools for cheap reads.
 - Prefer one shared `surfacePack` or known-context handoff over repeated market discovery.
-- For sports edge scans, recommend executable PM/HL surface first, then bounded sports/research context, then an opinionated desk-analyst shortlist. Use `wayfinder-sports` for modelling/context when it materially improves the first pass; use `wayfinder-quant` only for decision/validation when needed. Load or cite `/using-sports-data` in the primary's next step for deep sports work.
+- For sports edge scans, recommend: executable PM/HL surface -> bounded sports-data + research/news lanes when both can move fair value -> opinionated desk-analyst shortlist. Use `wayfinder-sports` for modelling/context, and `wayfinder-quant` only for decision/validation when needed, second-stage by default. Load or cite `/using-sports-data` for deep sports work.
 - For sports broad scans, use a compact TTL'd PM/HL surfacePack (`surfacePack`) under `.wayfinder_runs/packs/sports/surface/`, pass `surfacePackRefs` downstream, and avoid making every worker re-fetch the board. Use `ttlSeconds: 60` for PM/HL board surfaces, `ttlSeconds: 30` for exact quote/depth/sweep, and `ttlSeconds: 300` for standings/results state.
-- For path-dependent sports markets, recommend: market board + bounded sports/research context -> shortlist -> optional simulation. The first pass should classify obvious stale/dead/live-conditioned signals and state missing path fields, but should not wait on full `event_sim`. After shortlist, ask for an `eventStatePack`, model/sim range, and final fair-value range/validation. Distill the PM/HL prior, sports/context model, path simulation, and qualitative evidence. Do not let the primary present one latest simulator output as final fair value. Research should normally happen after the first shortlist/model pass and should return a reusable `researchInfluencePack` with evidence cards, `researcherOpinion`, flexible `influenceHints`, optional `contextPack`/`modelModifiers`, and pack refs; downstream agents should consume it before doing overlapping research.
+- For path-dependent sports markets, recommend: market board -> tentative shortlist/evidence questions -> parallel bounded sports/research context -> shortlist -> optional simulation. The first pass should classify stale/dead/live-conditioned signals and missing path fields without waiting on full `event_sim`. After shortlist, ask for `eventStatePack`, model/sim range, and final fair-value range/validation. Distill PM/HL prior, sports/context model, path simulation, and qualitative evidence; do not present one latest simulator output as final fair value. Research should return a reusable `researchInfluencePack`; downstream agents should consume it before overlapping research.
 - For path-dependent model runs, require an `event_sim validation`/smoke step before a full simulation. Generated-simulator debugging gets one repair max; after that, return `NEEDS_MORE_STATE` or `incomplete_fair_value`.
 - For non-sports prediction markets, recommend compact `surfaceLite` / persisted `surfaceFull`; use research only for evidence or resolution context. For one named market/event, keep `FAST_EDGE`: PM/HL surface, likely event/market hydration, executable bid/ask/depth, resolution profile, small evidence pass, then answer.
 - For multi-outcome or non-standard PM markets, pass `resolutionRef`/`fullRef` rather than raw payout matrices, and require edge mode: `settlement_edge`, `mark_to_market_edge`, `relative_value_edge`, or `arb_or_conversion_edge`.
@@ -205,7 +205,7 @@ Return:
   "firstAnswerStop": "answer with model fair, executable price, line status, and no-bet/watch/bet view",
   "usePlannerConfidence": "high",
   "shouldDelegate": true,
-  "recommendedFlow": ["sports_snapshot.scoreboard for date/event_id", "PM/HL game surface", "wayfinder-sports SPORTS_SCAN", "final"],
+  "recommendedFlow": ["sports_snapshot.scoreboard for date/event_id", "PM/HL game surface", "bounded sports-data + research/news lanes when context can move fair value", "final"],
   "knownContextToPass": {"sport": "mlb", "betTypes": ["moneyline", "spread", "total"], "date": "YYYY-MM-DD"},
   "packStrategy": {"reuseExistingPacks": true, "packsNeeded": ["surfacePack", "analysisPack"], "ttlNotes": ["refresh shortlisted executable quote before actionable sizing"]},
   "avoidOverkill": ["no Lab backtest unless requested", "no broad league scan"],
@@ -226,12 +226,12 @@ For broad prop/crossbet scans, try real sports markets before word/phrase novelt
   "rigorTier": 2,
   "budgetTier": "tier1_fast_edge_with_bounded_sports_context",
   "maxExternalCalls": 16,
-  "allowedSubagents": ["wayfinder-sports"],
+  "allowedSubagents": ["wayfinder-sports", "wayfinder-research"],
   "scriptPolicy": "none",
   "firstAnswerStop": "answer with a ranked BUY/SELL/WATCH/SKIP shortlist after surfaced categories are hydrated or explicitly skipped; scope any no-edge claim to checked categories",
   "usePlannerConfidence": "high",
   "shouldDelegate": "conditional_after_surface_if_stat_props_or_sports_context_needed",
-  "recommendedFlow": ["identify relevant games", "category discovery across each game using Polymarket search/get_event and wayfinder_hyperliquid_search_hip4 for HL", "hydrate top PM/HL event ladders by category including surfaced more-markets/specials/announcer events", "use player_props limit=20 and offset only if paging matters", "bounded sports/research context for shortlisted or ambiguous markets", "cross-market relative pricing", "resolution/spread/liquidity check", "final ranked desk-analyst shortlist"],
+  "recommendedFlow": ["identify relevant games", "category discovery across each game using Polymarket search/get_event and wayfinder_hyperliquid_search_hip4 for HL", "hydrate top PM/HL event ladders by category including surfaced more-markets/specials/announcer events", "use player_props limit=20 and offset only if paging matters", "bounded sports-data + research/news lanes for shortlisted or ambiguous markets", "fair-value delta ranking", "resolution/spread/liquidity check", "final ranked desk-analyst shortlist"],
   "categoryDiscovery": ["match_outcomes_or_game_lines", "visible_player_or_team_stat_props", "goals_points_totals_or_bands", "exact_score", "more_markets_or_specials", "announcer_or_broadcast_words_secondary"],
   "knownContextToPass": {"lens": "broad_sports_props_first", "wordMarkets": "secondary_means_scan_after_sports_not_skip", "noEdgeRule": "global_no_edge_requires_hydrated_or_skipped_surfaced_categories"},
   "packStrategy": {"reuseExistingPacks": true, "packsNeeded": ["surfaceLite"], "ttlNotes": ["refresh shortlisted bid/ask/depth before execution"]},

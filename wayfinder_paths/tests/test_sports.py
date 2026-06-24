@@ -579,10 +579,9 @@ def test_broad_prop_scans_prioritize_sports_markets_before_words() -> None:
     assert "no edge in match outcomes and liquid player props checked" in primary_lower
     assert "use `limit=20` by default" in primary_lower
     assert "page with `offset=20`" in primary_lower
-    assert "bounded research/context pass" in primary_lower
+    assert "run `wayfinder-sports` and `wayfinder-research` in parallel" in primary_lower
     assert "research_state=not_hydrated" in primary_lower
     assert "market/odds-only" in primary_lower
-    assert "deeper dual sports-data + research validation" in primary_lower
     assert "surfaced-but-unhydrated event slugs" in primary_lower
     assert "search_surfaced_unhydrated" in primary_lower
     assert "exact score" in primary_lower
@@ -606,10 +605,8 @@ def test_broad_prop_scans_prioritize_sports_markets_before_words() -> None:
     assert "a broad `no edge` claim is allowed only after surfaced categories" in sports_lower
     assert "`player_props` reads should default to `limit=20`" in sports_lower
     assert "page with `offset=20`" in sports_lower
-    assert "bounded context/research check" in sports_lower
-    assert "research_state=not_hydrated" in sports_lower
-    assert "market/odds-only" in sports_lower
-    assert "deeper dual sports-data + research validation" in sports_lower
+    assert "when the primary runs this as the sports-data lane" in sports_lower
+    assert "unsupported endpoint notes" in sports_compact_lower
     assert "compare related prices" in sports_lower
     assert "unsupported \"true probability\" claims" in sports_compact
 
@@ -628,7 +625,8 @@ def test_broad_prop_scans_prioritize_sports_markets_before_words() -> None:
     assert "a broad `no edge` claim is allowed only after surfaced" in skill_lower
     assert "default to `limit=20`" in skill_lower
     assert "`offset=20`" in skill_lower
-    assert "bounded context/research check" in skill_lower
+    assert "bounded lanes after the initial executable board/shortlist" in skill_lower
+    assert "research for current news" in skill_compact
     assert "buy (heuristic)" in skill_lower
     assert "avoid unsupported true-prob claims" in skill_compact
 
@@ -1139,6 +1137,112 @@ def test_sports_skill_requires_exact_market_hydration_and_bounded_scans() -> Non
     assert "every encoded outcome in a large field" in skill.replace("\n", " ")
 
 
+def test_broad_sports_scans_run_sports_and_research_lanes_after_surface() -> None:
+    prompt_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder.md",
+        REPO / "evals" / "agent_overlays" / "sports_workpack_challenger" / "wayfinder.md",
+    ]
+    research_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder-research.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder-research.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder-research.md",
+    ]
+    sports_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder-sports.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder-sports.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder-sports.md",
+    ]
+    skill_paths = [
+        REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "using-sports-data.SKILL.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "using-sports-data.SKILL.md",
+    ]
+    planner = (REPO / ".opencode" / "agents" / "wayfinder-planner.md").read_text(
+        "utf-8"
+    )
+
+    for path in prompt_paths:
+        text = path.read_text("utf-8")
+        assert "run `wayfinder-sports` and `wayfinder-research` in parallel" in text
+        assert "research_state=not_hydrated" in text
+
+    for path in research_paths:
+        text = path.read_text("utf-8")
+        compact = " ".join(text.split())
+        assert "Event-market and sports current-news evidence" in text
+        assert "As the research lane" in text
+        assert "target 5-8 search results" in compact
+        assert "Do not call sports tools directly, infer pregame form from unsupported sports endpoints" in compact
+
+    for path in sports_paths:
+        text = path.read_text("utf-8")
+        compact = " ".join(text.split())
+        assert "When the primary runs this as the sports-data lane" in text
+        assert "unsupported endpoint notes" in compact
+        assert "unavailableResources" in text
+
+    for path in skill_paths:
+        text = path.read_text("utf-8")
+        compact = " ".join(text.split())
+        assert "parallel bounded lanes" in text
+        assert "sports for event state" in compact
+        assert "research for current news" in compact
+
+    assert "bounded sports-data + research/news lanes" in planner
+
+
+def test_worldcup_pregame_forms_unavailable_guard_is_prompted() -> None:
+    sports_paths = [
+        REPO / ".opencode" / "agents" / "wayfinder-sports.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "wayfinder-sports.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "wayfinder-sports.md",
+    ]
+    skill_paths = [
+        REPO / ".claude" / "skills" / "using-sports-data" / "SKILL.md",
+        REPO / "evals" / "agent_overlays" / "sports_current" / "using-sports-data.SKILL.md",
+        REPO
+        / "evals"
+        / "agent_overlays"
+        / "sports_workpack_challenger"
+        / "using-sports-data.SKILL.md",
+    ]
+
+    for path in sports_paths:
+        text = path.read_text("utf-8")
+        compact = " ".join(text.split())
+        assert "task-local unavailable-resource guard" in text
+        assert "do not retry the same `(endpoint_id, sport)` combo for each game/match" in compact
+        assert "do **not** call `data.pregame_forms.list`" in text
+        assert "`soccer` is not a valid substitute" in text
+        assert "unavailableResources" in text
+
+    for path in skill_paths:
+        text = path.read_text("utf-8")
+        compact = " ".join(text.split())
+        assert "task-local unavailable-resource guard" in text
+        assert "do not retry it for later matches" in compact
+        assert "Do **not** call `data.pregame_forms.list` for `worldcup`" in text
+        assert "`worldcup`, not `soccer`" in text
+        assert "use the research lane for current form/news instead" in text
+
+
 def test_primary_agent_has_enough_steps_for_broad_sports_scans() -> None:
     primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
     sports = (REPO / ".opencode" / "agents" / "wayfinder-sports.md").read_text("utf-8")
@@ -1473,7 +1577,7 @@ def test_world_cup_outright_planner_shortlists_before_simulation() -> None:
     for needle in (
         '"rigorTier": 3',
         '"budgetTier": "tier3_broad_scan"',
-        "market board + bounded sports/research context -> shortlist -> optional simulation",
+        "market board -> tentative shortlist/evidence questions -> parallel bounded sports/research context -> shortlist -> optional simulation",
         "no full simulation until after shortlist",
         "PM/HL country surfacePack",
         "first-pass value/fade shortlist",
@@ -1554,8 +1658,8 @@ def test_path_market_research_evidence_must_be_structured_before_quant() -> None
         assert "modelModifiers" in text
         assert "final-synthesis-only" in text
 
-    assert "after the first shortlist" in primary
-    assert "after a first shortlist/model pass" in skill
+    assert "After the initial board/shortlist" in primary
+    assert "After the initial executable board" in skill
     assert "do not imply" in primary
     assert "do not claim the simulator consumed it" in sports
 

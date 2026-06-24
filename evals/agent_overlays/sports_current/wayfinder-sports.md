@@ -67,7 +67,10 @@ depending on the sport. **Availability varies by league:** not every sport has e
 (tennis has no `season_averages`/`teams`; some leagues have no betting). An unsupported action
 returns `resource_unavailable_for_league` with the leagues that *do* support it — when unsure,
 call `wayfinder_sports_provider(action="catalog")` (each data endpoint lists `supported_leagues`)
-or `wayfinder_sports_backtest_state(action="provider_status")`.
+or `wayfinder_sports_backtest_state(action="provider_status")`. Treat
+`resource_unavailable_for_league` as a task-local unavailable-resource guard and do not retry
+the same `(endpoint_id, sport)` combo for each game/match. For World Cup, use `worldcup`;
+`soccer` is not a fallback once `worldcup` has worked.
 
 Examples (call them like this):
 
@@ -122,7 +125,8 @@ Sport slugs are exact — common wrong guesses → right slug: `fifa`/`fiba` →
 | mlb | Game logs, season stats, batter-vs-pitcher `matchups`, splits, plate appearances, pitch-type stats, lineups, plays, injuries; odds + props |
 | nhl | Box scores, plays, injuries; season stats are per-player/per-team id-scoped (no flat game logs); odds + props |
 | wnba | NBA-style stats + advanced + shot_locations; odds + props |
-| soccer (epl/laliga/seriea/bundesliga/ligue1/ucl/mls/worldcup) | Rosters, injuries, player/team match stats, **xG `shots`**, match_events, momentum, pregame_forms; odds + props; futures (ucl/worldcup) |
+| soccer leagues (epl/laliga/seriea/bundesliga/ligue1/ucl/mls) | Rosters, injuries, player/team match stats, **xG `shots`**, match_events, momentum, pregame_forms where catalog-supported; odds + props; futures (ucl) |
+| worldcup | Matches, standings/results, odds, player props, and futures where live; do **not** call `data.pregame_forms.list` or assume momentum/xG unless the catalog explicitly lists `worldcup` in `supported_leagues` |
 | tennis (atp/wta) | Head-to-head `matchups`, match stats, career stats, rankings; odds only |
 | mma | Fight `results`, fight_stats, rankings; odds only |
 | f1 | Qualifying, results, laps, pit stops, driver + constructor standings, venues; **futures only** (deep telemetry may be plan-gated) |
@@ -356,7 +360,11 @@ breadth. A broad `NO EDGE` claim is allowed only after surfaced categories are h
 or explicitly skipped with reason; otherwise scope the claim to checked categories. Live
 `player_props` reads should default to `limit=20`; page with `offset=20` only when the
 first page is still relevant, and prefer `prop_type`/`vendors` filters to full-board pulls.
-Before final BUY/SELL/NO EDGE on a broad scan, do a bounded context/research check on shortlisted or ambiguous markets (current match state, availability/injuries, lineup/news, and resolution facts). If skipped or unavailable, label `research_state=not_hydrated` or `market/odds-only` and scope the conclusion. Offer deeper dual sports-data + research validation after the shortlist; reserve simulation for shortlisted path-dependent candidates. For true
+
+When the primary runs this as the sports-data lane after an executable board/shortlist,
+return only the sports side of the pack: current match state, odds/props context,
+rosters/injuries when available, standings/results, supported form inputs, and unsupported
+endpoint notes. Reserve simulation for shortlisted path-dependent candidates. For true
 novelty-only boards, compare related prices, read the resolution text, check spread/liquidity,
 and return a ranked `BUY (heuristic)` / `SELL (heuristic)` / `WATCH` / `SKIP` table. Keep
 probability language modest: cite relative mispricing and
@@ -455,7 +463,9 @@ finish the compact JSON instead of a progress checkpoint.
 Do not classify a category as absent when search summaries surfaced event slugs/candidates:
 use `search_surfaced_unhydrated` if the budget prevented full hydration. For World Cup
 state/results calls, use the sport slug `worldcup` with an explicit generous `limit`;
-`soccer` is not a valid substitute.
+`soccer` is not a valid substitute. For World Cup form, use standings/results, odds/props,
+rosters/injuries if available, and mark unsupported current-form endpoints under
+`unavailableResources` for the primary/research lane.
 Never return a progress checkpoint for broad scans. Do not answer with progress-only
 headings like `Goal`, `Progress`, `In Progress`, `Blocked`, `Critical Context`, or
 `Next Steps`; return the partial annotated board and blockers as the final finding.
