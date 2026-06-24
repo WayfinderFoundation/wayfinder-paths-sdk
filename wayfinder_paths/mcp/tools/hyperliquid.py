@@ -2100,19 +2100,25 @@ async def hyperliquid_search_market(
         adapter.get_outcome_markets(),
     )
     if not perp_ok:
-        perp_data = {"universe": []}
+        perp_data = [{"universe": []}, []]
     if not spot_ok:
-        spot_data = []
+        spot_data = {}
     if not outcome_ok:
         outcome_data = []
 
     # HIP-3 builder dexes carry a `<dex>:<base>` prefix; core perps don't have
     # a quote suffix, so tack on `-USDC` to render the canonical coin path.
+    perp_meta = (
+        perp_data[0] if isinstance(perp_data, (list, tuple)) and perp_data else {}
+    )
+    perp_universe = perp_meta.get("universe", []) if isinstance(perp_meta, dict) else []
     perps = [
         name if ":" in (name := entry["name"]) else f"{name}-USDC"
-        for entry in perp_data[0]["universe"]
+        for entry in perp_universe
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str)
     ]
-    spots = list(spot_data)
+    spots = list(spot_data) if isinstance(spot_data, dict) else []
+    outcome_data = outcome_data if isinstance(outcome_data, list) else []
 
     if not query.strip():
         perp_hits = [{"name": p} for p in perps[:limit]]

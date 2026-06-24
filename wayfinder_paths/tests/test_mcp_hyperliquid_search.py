@@ -8,8 +8,9 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_search_market,
 )
 
-# Live HL tests — assertions check the expected set is a SUBSET of returned
-# names so the suite stays green as HL adds/removes markets.
+# Live HL tests use subset assertions so the suite stays green as HL adds or
+# removes markets. Regression tests patch the adapter to avoid rate-limit and
+# market-inventory drift.
 
 
 def _names(rows):
@@ -84,7 +85,18 @@ def _btc_bucket_market() -> dict:
         "outcomes": [
             {
                 "bucket_index": 0,
-                "sides": [_named_side("#5660", "Yes"), _named_side("#5661", "No")],
+                "sides": [
+                    {
+                        "name": "Yes",
+                        "asset_name": "#5660",
+                        "description": "BTC < 62000 at 2026-06-24T06:00:00Z",
+                    },
+                    {
+                        "name": "No",
+                        "asset_name": "#5661",
+                        "description": "BTC >= 62000 at 2026-06-24T06:00:00Z",
+                    },
+                ],
             }
         ],
     }
@@ -96,6 +108,41 @@ async def _mock_outcome_markets(self):
         _world_cup_match_market(),
         _btc_bucket_market(),
     ]
+
+
+async def _mock_meta_and_asset_ctxs(self):
+    return True, [
+        {
+            "universe": [
+                {"name": "BTC"},
+                {"name": "ETH"},
+                {"name": "GAS"},
+                {"name": "xyz:BTC"},
+                {"name": "flx:BTC"},
+                {"name": "hyna:BTC"},
+                {"name": "cash:BTC"},
+                {"name": "xyz:NATGAS"},
+                {"name": "xyz:BRENTOIL"},
+                {"name": "flx:OIL"},
+                {"name": "vntl:ENERGY"},
+                {"name": "km:USOIL"},
+                {"name": "cash:WTI"},
+            ]
+        },
+        [],
+    ]
+
+
+async def _mock_failed_meta_and_asset_ctxs(self):
+    return False, "429 Too Many Requests"
+
+
+async def _mock_spot_assets(self):
+    return True, {
+        "UBTC/USDC": 10001,
+        "UBTC/USDH": 10002,
+        "KNTQ/USDH": 10003,
+    }
 
 
 @pytest.mark.asyncio
@@ -144,11 +191,22 @@ async def test_search_kinetiq_resolves_to_kntq_spot():
 
 
 @pytest.mark.asyncio
-async def test_search_market_type_filter():
+async def test_search_market_type_filter(monkeypatch):
+    monkeypatch.setattr(
+        HyperliquidAdapter, "get_meta_and_asset_ctxs", _mock_meta_and_asset_ctxs
+    )
+    monkeypatch.setattr(HyperliquidAdapter, "get_spot_assets", _mock_spot_assets)
+    monkeypatch.setattr(
+        HyperliquidAdapter, "get_outcome_markets", _mock_outcome_markets
+    )
+
     res_perp = await hyperliquid_search_market("bitcoin", limit=10, market_type="perp")
     res_hip3 = await hyperliquid_search_market("bitcoin", limit=10, market_type="hip3")
     res_hip4 = await hyperliquid_search_market("bitcoin", limit=10, market_type="hip4")
 
+    assert res_perp["ok"]
+    assert res_hip3["ok"]
+    assert res_hip4["ok"]
     assert {"BTC-USDC"} <= _names(res_perp["result"]["perps"])
     assert not any(":" in r["name"] for r in res_perp["result"]["perps"])
     assert res_perp["result"]["spots"] == [] and res_perp["result"]["outcomes"] == []
@@ -158,6 +216,24 @@ async def test_search_market_type_filter():
 
     assert res_hip4["result"]["perps"] == [] and res_hip4["result"]["spots"] == []
     assert res_hip4["result"]["outcomes"]
+
+
+@pytest.mark.asyncio
+async def test_search_market_handles_perp_meta_failure_without_error(monkeypatch):
+    monkeypatch.setattr(
+        HyperliquidAdapter,
+        "get_meta_and_asset_ctxs",
+        _mock_failed_meta_and_asset_ctxs,
+    )
+    monkeypatch.setattr(HyperliquidAdapter, "get_spot_assets", _mock_spot_assets)
+    monkeypatch.setattr(
+        HyperliquidAdapter, "get_outcome_markets", _mock_outcome_markets
+    )
+
+    res = await hyperliquid_search_market("bitcoin", limit=10, market_type="perp")
+
+    assert res["ok"]
+    assert res["result"] == {"perps": [], "spots": [], "outcomes": []}
 
 
 @pytest.mark.asyncio
@@ -248,7 +324,15 @@ async def test_search_hip4_include_details_caps_descriptions(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_search_oil_futures():
+async def test_search_oil_futures(monkeypatch):
+    monkeypatch.setattr(
+        HyperliquidAdapter, "get_meta_and_asset_ctxs", _mock_meta_and_asset_ctxs
+    )
+    monkeypatch.setattr(HyperliquidAdapter, "get_spot_assets", _mock_spot_assets)
+    monkeypatch.setattr(
+        HyperliquidAdapter, "get_outcome_markets", _mock_outcome_markets
+    )
+
     res = await hyperliquid_search_market("oil futures", limit=20)
     assert res["ok"]
     result = res["result"]
