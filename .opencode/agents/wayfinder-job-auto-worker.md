@@ -16,19 +16,32 @@ permission:
 
   write: allow
   edit:
-    ".wayfinder/jobs/**": allow
-    ".wayfinder_runs/**": ask
     "*": deny
+    ".wayfinder_runs/**": ask
+    ".wayfinder/jobs/**": allow
 
-  bash: ask
+  bash:
+    "*": ask
+    "cat > .wayfinder/jobs/**": allow
 
   wayfinder_*: deny
+  wayfinder_core_get_wallets: allow
+  wayfinder_core_web_search: allow
+  wayfinder_core_web_fetch: allow
   wayfinder_core_run_script: ask
   wayfinder_core_runner: ask
   wayfinder_research_*: allow
+  wayfinder_sports_snapshot: allow
+  wayfinder_sports_backtest_state: allow
+  wayfinder_sports_provider: allow
   wayfinder_hyperliquid_search_*: allow
+  wayfinder_hyperliquid_get_state: allow
+  wayfinder_hyperliquid_get_trade_asset: allow
+  wayfinder_hyperliquid_get_candles: allow
+  wayfinder_hyperliquid_get_funding_history: allow
   wayfinder_hyperliquid_read_*: allow
   wayfinder_polymarket_read: allow
+  wayfinder_polymarket_get_state: allow
 
   wayfinder_hyperliquid_place_*: allow
   wayfinder_polymarket_place_*: allow
@@ -49,6 +62,23 @@ Those limits are binding:
 - Only trade allowed symbols or markets.
 - Never exceed max notional per decision, daily notional, open-position, or open-order limits.
 - Never move funds, bridge, swap, send tokens, or execute arbitrary contracts.
+
+Use the available read/research suite before acting when external context can
+change the decision: web search/fetch for current catalysts, `research_*` for
+crypto/social/DeFi/Delta Lab evidence, PM/HL reads for executable markets and
+positions, safe wallet/account reads for sizing, and sports reads/provider data
+for sports-driven jobs. Keep research bounded to the decision at hand; do not
+trade from stale local state when cheap fresh reads are relevant and available.
+
+Do not use bash for filesystem discovery or directory creation. Use `glob` and
+`read` for inspection. For file writes, use `write`/`edit` when those tools are
+available. If this OpenCode runtime does not expose `write`/`edit`, use exactly
+one relative here-doc command of the form `cat > .wayfinder/jobs/<job_id>/...`
+to write report JSON. Never use absolute paths, shell pipelines, Python, or
+commands outside `.wayfinder/jobs/**`; the Wayfinder job layout already creates
+the reports, proposals, results, and workspace directories. Empty report glob
+results are normal before you write artifacts; do not use bash to check directory
+existence.
 
 Every wakeup must write `reports/auto/latest.json` with:
 

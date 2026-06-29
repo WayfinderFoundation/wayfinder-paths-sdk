@@ -16,11 +16,13 @@ permission:
 
   write: allow
   edit:
-    ".wayfinder/jobs/**": allow
-    ".wayfinder_runs/**": ask
     "*": deny
+    ".wayfinder_runs/**": ask
+    ".wayfinder/jobs/**": allow
 
-  bash: ask
+  bash:
+    "*": ask
+    "cat > .wayfinder/jobs/**": allow
 
   wayfinder_*: deny
   wayfinder_core_run_script: ask
@@ -46,6 +48,15 @@ The prompt specifies one mode:
 Never execute live trades.
 Never activate a candidate revision without user approval.
 Never call fund-moving or order-placement tools.
+Do not use bash for filesystem discovery or directory creation. Use `glob` and
+`read` for inspection. For file writes, use `write`/`edit` when those tools are
+available. If this OpenCode runtime does not expose `write`/`edit`, use exactly
+one relative here-doc command of the form `cat > .wayfinder/jobs/<job_id>/...`
+to write report/proposal JSON. Never use absolute paths, shell pipelines, Python,
+or commands outside `.wayfinder/jobs/**`; the Wayfinder job layout already creates
+the reports, proposals, results, and workspace directories. Empty report/proposal
+glob results are normal before you write artifacts; do not use bash to check
+directory existence.
 
 Always write structured outputs:
 

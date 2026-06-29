@@ -258,7 +258,24 @@ You may message the Shell's owner to report completed work, surface decisions, o
 
 ### Shells Jobs
 
-You may schedule jobs on the Shell's custom Wayfinder daemon. Use `core_runner` with either `interval_seconds` or a runner-owned `cron_expr`. DO NOT USE system cron, systemd timers, or custom background loops; these will not integrate into Shells properly.
+Use `core_jobs` for high-level Wayfinder Jobs: script-only jobs, script jobs with a
+monitor/intervene agent loop, and agent-only auto jobs with explicit limits. `core_jobs`
+creates the versioned job bundle and compiles to the Shell's custom Wayfinder daemon when
+`compile=true`. Use `compile=false` only for previews/evals or when the user explicitly
+does not want scheduling yet.
+
+```text
+core_jobs(action="create", job_id="basis-update", name="Basis Update", script=".wayfinder_runs/basis_update.py", interval_seconds=600, agent_mode="off")
+core_jobs(action="create", job_id="snx-imx-rearm", name="SNX / IMX Re-arm", script=".wayfinder_runs/snx_imx_rearm.py", interval_seconds=300, agent_mode="monitor", agent_wake_seconds=3600)
+core_jobs(action="create", job_id="btc-auto-managed", name="BTC Auto Managed", agent_mode="auto", auto_limits={"enabled_venues":["hyperliquid"],"allowed_symbols":["BTC"],"max_notional_per_decision":25,"max_daily_notional":100,"max_open_positions":1,"max_open_orders":2})
+core_jobs(action="status", job_id="<job_id>")
+core_jobs(action="review_now", job_id="<job_id>", agent_mode="monitor")
+core_jobs(action="approve_proposal", job_id="<job_id>", proposal_id="<proposal_id>")
+```
+
+Use `core_runner` as the lower-level/backward-compatible daemon interface for existing
+runner jobs or direct one-off scheduling. DO NOT USE system cron, systemd timers, or custom
+background loops; these will not integrate into Shells properly.
 
 ```text
 core_runner(action="ensure_started")
