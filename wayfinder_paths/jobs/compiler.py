@@ -18,6 +18,7 @@ class JobCompiler:
     def compile(self, job: WayfinderJob, *, start_daemon: bool = True) -> dict[str, Any]:
         root = self.store.init_layout(job)
         wrappers = self._write_wrappers(job, root)
+        previous_links = self.store.read_json(job.id, "runner_links.json", default={}) or {}
         if start_daemon:
             self.bridge.ensure_started()
 
@@ -35,6 +36,9 @@ class JobCompiler:
                 env={"WAYFINDER_HIGH_LEVEL_JOB_ID": job.id},
             )
             linked.append({"loop": "script", "runner_job_name": job.script_loop.runner_job_name, "response": resp})
+        elif job.script_loop.runner_job_name and _was_linked(previous_links, "script"):
+            resp = self.bridge.delete(job.script_loop.runner_job_name)
+            linked.append({"loop": "script", "runner_job_name": job.script_loop.runner_job_name, "response": resp})
 
         if job.agent_loop.enabled and job.agent_loop.mode != "off":
             resp = self.bridge.add_or_update_script_job(
@@ -49,6 +53,9 @@ class JobCompiler:
                     "WAYFINDER_JOB_AGENT_MODE": job.agent_loop.mode,
                 },
             )
+            linked.append({"loop": "agent", "runner_job_name": job.agent_loop.runner_job_name, "response": resp})
+        elif job.agent_loop.runner_job_name and _was_linked(previous_links, "agent"):
+            resp = self.bridge.delete(job.agent_loop.runner_job_name)
             linked.append({"loop": "agent", "runner_job_name": job.agent_loop.runner_job_name, "response": resp})
 
         payload = {"job_id": job.id, "jobs": linked}
@@ -115,3 +122,8 @@ def compile_job(job_id: str, *, start_daemon: bool = True) -> dict[str, Any]:
     job = store.load(job_id)
     result = JobCompiler(store=store).compile(job, start_daemon=start_daemon)
     return json.loads(json.dumps(result, default=str))
+
+
+def _was_linked(previous_links: dict[str, Any], loop: str) -> bool:
+    jobs = previous_links.get("jobs") if isinstance(previous_links, dict) else []
+    return any(isinstance(item, dict) and item.get("loop") == loop for item in jobs or [])

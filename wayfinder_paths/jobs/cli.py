@@ -6,7 +6,12 @@ from typing import Any
 import click
 
 from wayfinder_paths.jobs.compiler import JobCompiler
-from wayfinder_paths.jobs.models import AgentMode, WayfinderJob
+from wayfinder_paths.jobs.models import (
+    AgentMode,
+    WayfinderJob,
+    infer_job_kind,
+    normalize_agent_mode,
+)
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
@@ -33,11 +38,18 @@ def job_cli() -> None:
 @click.option("--timeout", "timeout_seconds", type=int, default=120, show_default=True)
 @click.option(
     "--agent-mode",
-    type=click.Choice(["off", "monitor", "improve", "decide"]),
+    type=click.Choice(["off", "monitor", "intervene", "auto", "improve", "decide"]),
     default="off",
     show_default=True,
 )
 @click.option("--agent-wake", "agent_wake_seconds", type=int, default=None)
+@click.option("--auto-venue", "auto_venues", multiple=True)
+@click.option("--auto-symbol", "auto_symbols", multiple=True)
+@click.option("--auto-market", "auto_markets", multiple=True)
+@click.option("--max-notional", "max_notional_per_decision", type=float, default=None)
+@click.option("--max-daily-notional", type=float, default=None)
+@click.option("--max-open-positions", type=int, default=None)
+@click.option("--max-open-orders", type=int, default=None)
 @click.option("--no-compile", is_flag=True, default=False)
 def create_cmd(
     job_id: str,
@@ -50,10 +62,18 @@ def create_cmd(
     timeout_seconds: int,
     agent_mode: AgentMode,
     agent_wake_seconds: int | None,
+    auto_venues: tuple[str, ...],
+    auto_symbols: tuple[str, ...],
+    auto_markets: tuple[str, ...],
+    max_notional_per_decision: float | None,
+    max_daily_notional: float | None,
+    max_open_positions: int | None,
+    max_open_orders: int | None,
     no_compile: bool,
 ) -> None:
-    if not script and agent_mode == "off":
-        raise click.UsageError("Provide --script and/or --agent-mode monitor|improve")
+    normalized_mode = normalize_agent_mode(agent_mode)
+    if not script and normalized_mode != "auto":
+        raise click.UsageError("Provide --script, or use --agent-mode auto for agent-only jobs")
     if script and not interval_seconds and not cron_expr:
         raise click.UsageError("Script jobs require --interval or --cron")
 
@@ -67,8 +87,17 @@ def create_cmd(
         cron_expr=cron_expr,
         timezone=timezone,
         timeout_seconds=timeout_seconds,
-        agent_mode=agent_mode,
+        agent_mode=normalized_mode,
         agent_wake_seconds=agent_wake_seconds,
+        auto_limits=_auto_limits_from_options(
+            venues=auto_venues,
+            symbols=auto_symbols,
+            markets=auto_markets,
+            max_notional_per_decision=max_notional_per_decision,
+            max_daily_notional=max_daily_notional,
+            max_open_positions=max_open_positions,
+            max_open_orders=max_open_orders,
+        ),
     )
     path = store.save(job)
     result: dict[str, Any] = {"job": job.to_dict(), "job_yaml": str(path)}
@@ -119,13 +148,15 @@ def agent_group() -> None:
 
 @agent_group.command(name="set-mode", help="Set agent mode and recompile runner links.")
 @click.argument("job_id")
-@click.argument("mode", type=click.Choice(["off", "monitor", "improve", "decide"]))
+@click.argument("mode", type=click.Choice(["off", "monitor", "intervene", "auto", "improve", "decide"]))
 @click.option("--wake", "wake_seconds", type=int, default=None)
 def agent_set_mode_cmd(job_id: str, mode: AgentMode, wake_seconds: int | None) -> None:
     store = JobStore()
     job = store.load(job_id)
-    job.agent_loop.mode = mode
-    job.agent_loop.enabled = mode != "off"
+    normalized_mode = normalize_agent_mode(mode)
+    job.agent_loop.mode = normalized_mode
+    job.agent_loop.enabled = normalized_mode != "off"
+    job.job_kind = infer_job_kind(job.script_loop.enabled, normalized_mode)
     if wake_seconds is not None:
         job.agent_loop.wake_interval_seconds = wake_seconds
     store.save(job)
@@ -136,9 +167,9 @@ def agent_set_mode_cmd(job_id: str, mode: AgentMode, wake_seconds: int | None) -
 
 @agent_group.command(name="review-now", help="Run a headless worker review immediately.")
 @click.argument("job_id")
-@click.option("--mode", type=click.Choice(["monitor", "improve", "decide"]), default=None)
+@click.option("--mode", type=click.Choice(["monitor", "intervene", "auto", "improve", "decide"]), default=None)
 def review_now_cmd(job_id: str, mode: str | None) -> None:
-    result = run_job_worker(job_id, mode=mode or "monitor")
+    result = run_job_worker(job_id, mode=normalize_agent_mode(mode or "monitor"))
     _echo_json({"ok": True, "result": result})
 
 
@@ -215,3 +246,31 @@ def delete_cmd(job_id: str) -> None:
     store.refresh_scorecard(job_id, {"health": "unknown", "deleted": True})
     sync_all_jobs(store=store)
     _echo_json({"ok": True, "result": responses})
+
+
+def _auto_limits_from_options(
+    *,
+    venues: tuple[str, ...],
+    symbols: tuple[str, ...],
+    markets: tuple[str, ...],
+    max_notional_per_decision: float | None,
+    max_daily_notional: float | None,
+    max_open_positions: int | None,
+    max_open_orders: int | None,
+) -> dict[str, Any]:
+    limits: dict[str, Any] = {}
+    if venues:
+        limits["enabled_venues"] = [str(v) for v in venues]
+    if symbols:
+        limits["allowed_symbols"] = [str(v) for v in symbols]
+    if markets:
+        limits["allowed_markets"] = [str(v) for v in markets]
+    if max_notional_per_decision is not None:
+        limits["max_notional_per_decision"] = float(max_notional_per_decision)
+    if max_daily_notional is not None:
+        limits["max_daily_notional"] = float(max_daily_notional)
+    if max_open_positions is not None:
+        limits["max_open_positions"] = int(max_open_positions)
+    if max_open_orders is not None:
+        limits["max_open_orders"] = int(max_open_orders)
+    return limits

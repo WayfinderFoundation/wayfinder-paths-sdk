@@ -1,5 +1,5 @@
 ---
-description: Hidden worker for monitoring and improving Wayfinder jobs from durable job memory and logs.
+description: Hidden worker for monitoring and intervening on Wayfinder jobs from durable job memory and logs.
 mode: subagent
 hidden: true
 temperature: 0.1
@@ -41,8 +41,7 @@ You operate on a Wayfinder job bundle.
 The prompt specifies one mode:
 
 - `monitor`: read-only except reports and memory updates.
-- `improve`: may create candidate patches and proposal files under `.wayfinder/jobs`.
-- `decide`: typed decision mode only; never execute.
+- `intervene`: may create candidate patches and proposal files under `.wayfinder/jobs`.
 
 Never execute live trades.
 Never activate a candidate revision without user approval.

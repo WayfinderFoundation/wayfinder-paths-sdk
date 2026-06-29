@@ -32,8 +32,8 @@ class JobStore:
             "results/forward",
             "proposals",
             "reports/monitor",
-            "reports/improve",
-            "reports/decide",
+            "reports/intervene",
+            "reports/auto",
             "sessions",
         ]:
             (root / relative).mkdir(parents=True, exist_ok=True)
@@ -169,7 +169,8 @@ class JobStore:
             "Current rule:\n"
             "- Active revision is the source of truth.\n"
             "- Script runs should write structured results and emit chat only on meaningful transitions.\n"
-            "- Agent changes require user approval before activation.\n\n"
+            "- Intervene-mode agent changes require user approval before activation.\n"
+            "- Auto-mode agent decisions must respect the job's configured live limits.\n\n"
             "Known lessons:\n"
             "- None yet.\n\n"
             "Current concern:\n"

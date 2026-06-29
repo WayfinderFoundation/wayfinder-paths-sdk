@@ -6,6 +6,7 @@ from pathlib import Path
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.worker import run_job_worker
 
 
 def test_job_store_creates_versioned_bundle(tmp_path: Path) -> None:
@@ -74,3 +75,68 @@ def test_job_compiler_writes_runner_wrappers(tmp_path: Path, monkeypatch) -> Non
         )
     )
     assert links == result
+
+
+def test_legacy_agent_modes_normalize() -> None:
+    improve_job = WayfinderJob.from_dict(
+        {
+            "id": "legacy-improve",
+            "name": "Legacy Improve",
+            "script_loop": {"enabled": True},
+            "agent_loop": {"enabled": True, "mode": "improve"},
+        }
+    )
+    decide_job = WayfinderJob.from_dict(
+        {
+            "id": "legacy-decide",
+            "name": "Legacy Decide",
+            "script_loop": {"enabled": False},
+            "agent_loop": {"enabled": True, "mode": "decide"},
+        }
+    )
+
+    assert improve_job.agent_loop.mode == "intervene"
+    assert improve_job.job_kind == "script_agent"
+    assert decide_job.agent_loop.mode == "auto"
+    assert decide_job.job_kind == "agent_only"
+
+
+def test_auto_agent_job_can_run_without_script() -> None:
+    job = WayfinderJob.new(
+        "auto-demo",
+        agent_mode="auto",
+        auto_limits={
+            "enabled_venues": ["hyperliquid"],
+            "allowed_symbols": ["BTC"],
+            "max_notional_per_decision": 25,
+            "max_daily_notional": 100,
+            "max_open_positions": 1,
+            "max_open_orders": 2,
+        },
+    )
+
+    assert job.job_kind == "agent_only"
+    assert job.script_loop.enabled is False
+    assert job.agent_loop.enabled is True
+    assert job.agent_loop.mode == "auto"
+    assert job.agent_loop.wake_interval_seconds == 900
+    assert job.agent_loop.auto_limits["allowed_symbols"] == ["BTC"]
+
+
+def test_auto_worker_blocks_missing_limits(tmp_path: Path, monkeypatch) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("auto-demo", agent_mode="auto")
+    store.save(job)
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.JobStore", lambda: store)
+
+    report = run_job_worker("auto-demo", mode="auto")
+
+    assert report["status"] == "red"
+    assert report["queued"] is False
+    assert "enabled_venues" in str(report["error"])
+    latest = json.loads(
+        (tmp_path / ".wayfinder/jobs/auto-demo/reports/auto/latest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert latest["summary"].startswith("Auto agent blocked")

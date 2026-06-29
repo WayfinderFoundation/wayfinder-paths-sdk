@@ -5,12 +5,47 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-SCHEMA_VERSION = "0.1"
+SCHEMA_VERSION = "0.2"
 JOB_WORKER_AGENT_NAME = "wayfinder-job-worker"
+JOB_AUTO_WORKER_AGENT_NAME = "wayfinder-job-auto-worker"
 
-AgentMode = Literal["off", "monitor", "improve", "decide"]
+AgentMode = Literal["off", "monitor", "intervene", "auto"]
+JobKind = Literal["script_only", "script_agent", "agent_only"]
 JobHealth = Literal["green", "yellow", "red", "unknown"]
 ProposalStatus = Literal["pending", "approved", "rejected"]
+
+AGENT_MODE_ALIASES = {
+    "improve": "intervene",
+    "decide": "auto",
+}
+
+
+def normalize_agent_mode(value: str | None) -> AgentMode:
+    raw = str(value or "off").strip().lower()
+    raw = AGENT_MODE_ALIASES.get(raw, raw)
+    if raw in {"off", "monitor", "intervene", "auto"}:
+        return raw  # type: ignore[return-value]
+    return "off"
+
+
+def default_auto_limits() -> dict[str, Any]:
+    return {
+        "enabled_venues": [],
+        "allowed_symbols": [],
+        "allowed_markets": [],
+        "max_notional_per_decision": 0,
+        "max_daily_notional": 0,
+        "max_open_positions": 0,
+        "max_open_orders": 0,
+    }
+
+
+def infer_job_kind(script_enabled: bool, agent_mode: AgentMode) -> JobKind:
+    if script_enabled and agent_mode == "off":
+        return "script_only"
+    if script_enabled:
+        return "script_agent"
+    return "agent_only"
 
 
 def utc_now_iso() -> str:
@@ -78,12 +113,12 @@ class AgentLoop:
     agent_name: str = JOB_WORKER_AGENT_NAME
     opencode_session_policy: str = "child_of_controller"
     triggers: list[str] = field(default_factory=list)
+    auto_limits: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> AgentLoop:
         data = dict(data or {})
-        raw_mode = str(data.get("mode") or "off")
-        mode: AgentMode = raw_mode if raw_mode in {"off", "monitor", "improve", "decide"} else "off"  # type: ignore[assignment]
+        mode = normalize_agent_mode(data.get("mode"))
         return cls(
             enabled=bool(data.get("enabled", mode != "off")),
             mode=mode,
@@ -97,6 +132,7 @@ class AgentLoop:
                 data.get("opencode_session_policy") or "child_of_controller"
             ),
             triggers=[str(v) for v in data.get("triggers") or []],
+            auto_limits=dict(data.get("auto_limits") or {}),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -111,6 +147,7 @@ class AgentLoop:
             "agent_name": self.agent_name,
             "opencode_session_policy": self.opencode_session_policy,
             "triggers": list(self.triggers),
+            "auto_limits": dict(self.auto_limits),
         }
 
 
@@ -118,6 +155,7 @@ class AgentLoop:
 class WayfinderJob:
     id: str
     name: str
+    job_kind: JobKind = "script_only"
     goal: str = ""
     domain: str | None = None
     created_at: str = field(default_factory=utc_now_iso)
@@ -143,10 +181,13 @@ class WayfinderJob:
         timeout_seconds: int = 120,
         agent_mode: AgentMode = "off",
         agent_wake_seconds: int | None = None,
+        auto_limits: dict[str, Any] | None = None,
     ) -> WayfinderJob:
         jid = safe_job_id(job_id)
+        normalized_mode = normalize_agent_mode(agent_mode)
+        script_enabled = bool(script)
         script_loop = ScriptLoop(
-            enabled=bool(script),
+            enabled=script_enabled,
             runner_job_name=f"{jid}-script",
             entrypoint=script,
             interval_seconds=interval_seconds,
@@ -155,12 +196,16 @@ class WayfinderJob:
             timeout_seconds=timeout_seconds,
             state_key=jid.replace("-", "_"),
         )
-        agent_enabled = agent_mode != "off"
+        agent_enabled = normalized_mode != "off"
+        auto_limits_payload = default_auto_limits()
+        if auto_limits:
+            auto_limits_payload.update(auto_limits)
         agent_loop = AgentLoop(
             enabled=agent_enabled,
-            mode=agent_mode,
+            mode=normalized_mode,
             runner_job_name=f"{jid}-agent",
-            wake_interval_seconds=agent_wake_seconds or (3600 if agent_enabled else None),
+            wake_interval_seconds=agent_wake_seconds
+            or (900 if normalized_mode == "auto" else 3600 if agent_enabled else None),
             timezone=timezone,
             triggers=[
                 "script_failure",
@@ -168,10 +213,12 @@ class WayfinderJob:
                 "health_red",
                 "proposal_created",
             ],
+            auto_limits=auto_limits_payload if normalized_mode == "auto" else {},
         )
         return cls(
             id=jid,
             name=name or jid.replace("-", " ").title(),
+            job_kind=infer_job_kind(script_enabled, normalized_mode),
             goal=goal,
             versioning={
                 "active_revision": None,
@@ -205,17 +252,26 @@ class WayfinderJob:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> WayfinderJob:
+        script_loop = ScriptLoop.from_dict(data.get("script_loop"))
+        agent_loop = AgentLoop.from_dict(data.get("agent_loop"))
+        raw_kind = str(data.get("job_kind") or "").strip()
+        job_kind: JobKind = (
+            raw_kind
+            if raw_kind in {"script_only", "script_agent", "agent_only"}
+            else infer_job_kind(script_loop.enabled, agent_loop.mode)
+        )  # type: ignore[assignment]
         return cls(
             id=safe_job_id(str(data["id"])),
             name=str(data.get("name") or data["id"]),
+            job_kind=job_kind,
             goal=str(data.get("goal") or ""),
             domain=data.get("domain"),
             created_at=str(data.get("created_at") or utc_now_iso()),
             updated_at=str(data.get("updated_at") or utc_now_iso()),
             controller=dict(data.get("controller") or {}),
             versioning=dict(data.get("versioning") or {}),
-            script_loop=ScriptLoop.from_dict(data.get("script_loop")),
-            agent_loop=AgentLoop.from_dict(data.get("agent_loop")),
+            script_loop=script_loop,
+            agent_loop=agent_loop,
             performance=dict(data.get("performance") or {}),
             reporting=dict(data.get("reporting") or {}),
         )
@@ -225,6 +281,7 @@ class WayfinderJob:
             "schema_version": SCHEMA_VERSION,
             "id": self.id,
             "name": self.name,
+            "job_kind": self.job_kind,
             "goal": self.goal,
             "domain": self.domain,
             "created_at": self.created_at,

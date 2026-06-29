@@ -3,7 +3,11 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from wayfinder_paths.jobs.compiler import JobCompiler
-from wayfinder_paths.jobs.models import AgentMode, WayfinderJob
+from wayfinder_paths.jobs.models import (
+    WayfinderJob,
+    infer_job_kind,
+    normalize_agent_mode,
+)
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
@@ -39,8 +43,9 @@ async def core_jobs(
     cron_expr: str | None = None,
     timezone: str | None = None,
     timeout_seconds: int | None = None,
-    agent_mode: Literal["off", "monitor", "improve", "decide"] | None = None,
+    agent_mode: Literal["off", "monitor", "intervene", "auto", "improve", "decide"] | None = None,
     agent_wake_seconds: int | None = None,
+    auto_limits: dict[str, Any] | None = None,
     proposal_id: str | None = None,
     compile: bool = True,  # noqa: A002
 ) -> dict[str, Any]:
@@ -53,7 +58,8 @@ async def core_jobs(
 
     Typical flow:
       - `create` with `script` + `interval_seconds` for script-only jobs.
-      - `create` with `agent_mode="monitor"` or `"improve"` for supervised jobs.
+      - `create` with `agent_mode="monitor"` or `"intervene"` for supervised jobs.
+      - `create` with `agent_mode="auto"` and `auto_limits` for agent-only auto jobs.
       - `review_now` to queue an immediate worker wakeup.
       - `approve_proposal` / `reject_proposal` after the worker creates proposals.
     """
@@ -71,14 +77,14 @@ async def core_jobs(
         return err("invalid_request", "job_id is required")
 
     if action == "create":
-        if not script and (agent_mode or "off") == "off":
+        mode = normalize_agent_mode(agent_mode)
+        if not script and mode != "auto":
             return err(
                 "invalid_request",
-                "create requires script and/or agent_mode monitor|improve",
+                "create requires script, or agent_mode auto for agent-only jobs",
             )
         if script and not interval_seconds and not cron_expr:
             return err("invalid_request", "script jobs require interval_seconds or cron_expr")
-        mode: AgentMode = agent_mode or "off"
         job = WayfinderJob.new(
             job_id,
             name=name,
@@ -90,6 +96,7 @@ async def core_jobs(
             timeout_seconds=timeout_seconds or 120,
             agent_mode=mode,
             agent_wake_seconds=agent_wake_seconds,
+            auto_limits=auto_limits,
         )
         job_path = store.save(job)
         result: dict[str, Any] = {"job": job.to_dict(), "job_yaml": str(job_path)}
@@ -102,10 +109,11 @@ async def core_jobs(
         return ok(snapshot_job(job_id, store=store))
 
     if action == "set_agent_mode":
-        mode = agent_mode or "monitor"
+        mode = normalize_agent_mode(agent_mode or "monitor")
         job = store.load(job_id)
         job.agent_loop.mode = mode
         job.agent_loop.enabled = mode != "off"
+        job.job_kind = infer_job_kind(job.script_loop.enabled, mode)
         if agent_wake_seconds is not None:
             job.agent_loop.wake_interval_seconds = int(agent_wake_seconds)
         store.save(job)
@@ -114,7 +122,9 @@ async def core_jobs(
         return ok(result)
 
     if action == "review_now":
-        mode = agent_mode if agent_mode in {"monitor", "improve", "decide"} else "monitor"
+        mode = normalize_agent_mode(agent_mode or "monitor")
+        if mode == "off":
+            mode = "monitor"
         return ok(run_job_worker(job_id, mode=mode))
 
     if action == "proposals":

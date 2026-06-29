@@ -54,7 +54,16 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
     scorecard = store.read_json(job_id, "scorecard.json", default={}) or {}
     runner_links = store.read_json(job_id, "runner_links.json", default={}) or {}
     latest_monitor = store.read_json(job_id, "reports/monitor/latest.json", default=None)
-    latest_improve = store.read_json(job_id, "reports/improve/latest.json", default=None)
+    latest_intervene = store.read_json(
+        job_id,
+        "reports/intervene/latest.json",
+        default=store.read_json(job_id, "reports/improve/latest.json", default=None),
+    )
+    latest_auto = store.read_json(
+        job_id,
+        "reports/auto/latest.json",
+        default=store.read_json(job_id, "reports/decide/latest.json", default=None),
+    )
     return {
         "job": job.to_dict(),
         "scorecard": scorecard,
@@ -62,7 +71,8 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         "proposals": store.proposals(job_id),
         "reports": {
             "monitor": latest_monitor,
-            "improve": latest_improve,
+            "intervene": latest_intervene,
+            "auto": latest_auto,
         },
     }
 
