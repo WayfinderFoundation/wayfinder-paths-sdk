@@ -11,6 +11,7 @@ Usage:
 
 import sys
 
+from wayfinder_paths.jobs.cli import job_cli
 from wayfinder_paths.mcp.cli_builder import build_cli
 from wayfinder_paths.mcp.server import mcp
 from wayfinder_paths.paths.cli import path_cli
@@ -28,10 +29,11 @@ def _first_command(argv: list[str]) -> str | None:
 
 def main():
     first_command = _first_command(sys.argv[1:])
-    if first_command and first_command not in {"path", "runner"}:
+    if first_command and first_command not in {"job", "path", "runner"}:
         maybe_heartbeat_installed_paths(trigger="mcp-cli")
 
     cli = build_cli(mcp)
+    cli.add_command(job_cli)
     cli.add_command(runner_cli)
     cli.add_command(path_cli)
     cli(standalone_mode=True)

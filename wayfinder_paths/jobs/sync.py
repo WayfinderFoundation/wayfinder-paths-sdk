@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+from typing import Any
+
+import httpx
+from loguru import logger
+
+from wayfinder_paths.core.config import (
+    get_api_base_url,
+    get_api_key,
+    get_opencode_instance_id,
+)
+from wayfinder_paths.jobs.store import JobStore
+
+
+class WayfinderJobsClient:
+    def __init__(self) -> None:
+        self._client = httpx.Client(timeout=httpx.Timeout(10), follow_redirects=True)
+
+    def _base_url(self) -> str | None:
+        instance_id = get_opencode_instance_id()
+        if not instance_id:
+            return None
+        return f"{get_api_base_url()}/opencode/instances/{instance_id}/wayfinder-jobs"
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        api_key = get_api_key()
+        if api_key:
+            headers["X-API-KEY"] = api_key
+        return headers
+
+    def sync(self, jobs: list[dict[str, Any]]) -> None:
+        base_url = self._base_url()
+        if not base_url:
+            return
+        try:
+            resp = self._client.post(
+                f"{base_url}/sync/",
+                json={"jobs": jobs},
+                headers=self._headers(),
+            )
+            resp.raise_for_status()
+        except Exception:
+            logger.opt(exception=True).warning("Failed to sync Wayfinder jobs to backend")
+
+
+WAYFINDER_JOBS_CLIENT = WayfinderJobsClient()
+
+
+def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any]:
+    store = store or JobStore()
+    job = store.load(job_id)
+    scorecard = store.read_json(job_id, "scorecard.json", default={}) or {}
+    runner_links = store.read_json(job_id, "runner_links.json", default={}) or {}
+    latest_monitor = store.read_json(job_id, "reports/monitor/latest.json", default=None)
+    latest_improve = store.read_json(job_id, "reports/improve/latest.json", default=None)
+    return {
+        "job": job.to_dict(),
+        "scorecard": scorecard,
+        "runner_links": runner_links,
+        "proposals": store.proposals(job_id),
+        "reports": {
+            "monitor": latest_monitor,
+            "improve": latest_improve,
+        },
+    }
+
+
+def sync_all_jobs(*, store: JobStore | None = None) -> None:
+    store = store or JobStore()
+    snapshots = [snapshot_job(job.id, store=store) for job in store.list_jobs()]
+    WAYFINDER_JOBS_CLIENT.sync(snapshots)
