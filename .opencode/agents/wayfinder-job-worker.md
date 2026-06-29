@@ -1,6 +1,6 @@
 ---
 description: Hidden worker for monitoring and intervening on Wayfinder jobs from durable job memory and logs.
-mode: subagent
+mode: primary
 hidden: true
 temperature: 0.1
 steps: 10

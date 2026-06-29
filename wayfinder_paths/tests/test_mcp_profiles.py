@@ -631,6 +631,17 @@ def test_hidden_opencode_subagents_do_not_emit_user_suggestions() -> None:
         assert "do not call `userSuggestions`" in text
 
 
+def test_job_workers_are_hidden_primary_agents_for_headless_runs() -> None:
+    for agent in ("wayfinder-job-worker", "wayfinder-job-auto-worker"):
+        frontmatter = _agent_frontmatter(agent)
+        permission = frontmatter["permission"]
+
+        assert frontmatter["mode"] == "primary"
+        assert frontmatter["hidden"] is True
+        assert permission["question"] == "deny"
+        assert permission["task"]["*"] == "deny"
+
+
 def test_wayfinder_planner_is_hidden_advisory_and_non_mutating() -> None:
     frontmatter = _agent_frontmatter("wayfinder-planner")
     permission = frontmatter["permission"]

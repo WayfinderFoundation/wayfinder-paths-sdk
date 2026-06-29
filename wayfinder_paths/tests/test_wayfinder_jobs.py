@@ -8,7 +8,12 @@ from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import sync_all_jobs
-from wayfinder_paths.jobs.worker import run_job_worker
+from wayfinder_paths.jobs.worker import (
+    DYNAMIC_CONTEXT_MARKER,
+    STABLE_PREFIX_END_MARKER,
+    _build_worker_prompt_sections,
+    run_job_worker,
+)
 
 
 def test_job_store_creates_versioned_bundle(tmp_path: Path) -> None:
@@ -142,6 +147,114 @@ def test_auto_worker_blocks_missing_limits(tmp_path: Path, monkeypatch) -> None:
         )
     )
     assert latest["summary"].startswith("Auto agent blocked")
+
+
+def test_worker_prompt_keeps_dynamic_context_after_stable_prefix(
+    tmp_path: Path,
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "cache-demo",
+        goal="Keep the long-lived contract stable.",
+        script="workspace/src/loop.py",
+        agent_mode="monitor",
+    )
+    store.save(job)
+    first = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="monitor",
+        snapshot={"job": job.to_dict(), "scorecard": {"health": "green"}},
+    )
+
+    store.append_journal(job.id, {"type": "script_run", "summary": "new run"})
+    store.write_json(
+        job.id,
+        "reports/monitor/latest.json",
+        {"created_at": "dynamic", "summary": "changed"},
+    )
+    second = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="monitor",
+        snapshot={
+            "job": job.to_dict(),
+            "scorecard": {"health": "yellow"},
+            "reports": {"monitor": {"summary": "changed"}},
+        },
+    )
+
+    assert first["stable_prefix"] == second["stable_prefix"]
+    assert first["stable_prefix_hash"] == second["stable_prefix_hash"]
+    assert first["dynamic_context_hash"] != second["dynamic_context_hash"]
+    assert first["prompt"].index(STABLE_PREFIX_END_MARKER) < first["prompt"].index(
+        DYNAMIC_CONTEXT_MARKER
+    )
+    assert "new run" not in first["stable_prefix"]
+    assert "new run" in second["dynamic_context"]
+
+
+def test_worker_prompt_stable_hash_changes_when_memory_changes(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("cache-memory", agent_mode="monitor")
+    store.save(job)
+    snapshot = {"job": job.to_dict()}
+    first = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="monitor",
+        snapshot=snapshot,
+    )
+
+    (store.job_dir(job.id) / "memory.md").write_text(
+        "# Cache Memory\n\nKnown lessons:\n- New durable lesson.\n",
+        encoding="utf-8",
+    )
+    second = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="monitor",
+        snapshot=snapshot,
+    )
+
+    assert first["stable_prefix_hash"] != second["stable_prefix_hash"]
+    assert "New durable lesson" in second["stable_prefix"]
+
+
+def test_worker_report_includes_cache_metadata(tmp_path: Path, monkeypatch) -> None:
+    class FakeOpenCodeClient:
+        def healthy(self) -> bool:
+            return True
+
+        def find_child_session(self, *, parent_id, title):  # noqa: ANN001
+            return None
+
+        def create_session(self, *, parent_id=None, title=None, agent=None):  # noqa: ANN001
+            return "session-cache-demo-monitor"
+
+        def prompt_async(self, session_id: str, text: str, *, agent=None) -> bool:  # noqa: ANN001
+            assert session_id == "session-cache-demo-monitor"
+            assert text.index(STABLE_PREFIX_END_MARKER) < text.index(
+                DYNAMIC_CONTEXT_MARKER
+            )
+            return True
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("cache-report", agent_mode="monitor")
+    store.save(job)
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.JobStore", lambda: store)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.OPENCODE_CLIENT", FakeOpenCodeClient()
+    )
+
+    report = run_job_worker(job.id, mode="monitor")
+
+    assert report["status"] == "green"
+    assert report["cache"]["prompt_cache_key"] == "session-cache-demo-monitor"
+    assert len(report["cache"]["stable_prefix_hash"]) == 64
+    assert len(report["cache"]["dynamic_context_hash"]) == 64
+    scorecard = store.read_json(job.id, "scorecard.json", default={})
+    assert scorecard["last_agent_cache"] == report["cache"]
 
 
 def test_runner_bridge_starts_daemon_with_defaults(tmp_path: Path, monkeypatch) -> None:

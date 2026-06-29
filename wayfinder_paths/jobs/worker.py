@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,9 @@ from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
 
 JOB_RESULT_MARKER = "WAYFINDER_JOB_RESULT "
+STABLE_PREFIX_END_MARKER = "## End Stable Cache Prefix"
+DYNAMIC_CONTEXT_MARKER = "## Dynamic Wakeup Context"
+VOLATILE_STABLE_KEYS = {"created_at", "updated_at", "ts"}
 
 
 def _read_text(path: Path, *, max_chars: int = 12_000) -> str:
@@ -31,6 +35,104 @@ def _read_text(path: Path, *, max_chars: int = 12_000) -> str:
     return text[-max_chars:]
 
 
+def _canonical_json(data: Any, *, max_chars: int | None = None) -> str:
+    text = json.dumps(data, indent=2, sort_keys=True, default=str)
+    if max_chars is not None and len(text) > max_chars:
+        return text[:max_chars] + "\n...<truncated>"
+    return text
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _drop_volatile_stable_keys(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            str(key): _drop_volatile_stable_keys(item)
+            for key, item in sorted(value.items())
+            if str(key) not in VOLATILE_STABLE_KEYS
+        }
+    if isinstance(value, list):
+        return [_drop_volatile_stable_keys(item) for item in value]
+    return value
+
+
+def _stable_job_payload(
+    job_data: dict[str, Any], memory_json: dict[str, Any]
+) -> dict[str, Any]:
+    return {
+        "job": _drop_volatile_stable_keys(job_data),
+        "memory_json": _drop_volatile_stable_keys(memory_json),
+    }
+
+
+def _dynamic_snapshot_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "scorecard": snapshot.get("scorecard") or {},
+        "runner_links": snapshot.get("runner_links") or {},
+        "proposals": snapshot.get("proposals") or [],
+        "reports": snapshot.get("reports") or {},
+    }
+
+
+def _build_worker_prompt_sections(
+    *,
+    store: JobStore,
+    job_id: str,
+    mode: str,
+    snapshot: dict[str, Any],
+) -> dict[str, str]:
+    root = store.job_dir(job_id)
+    job_data = snapshot.get("job") or store.load(job_id).to_dict()
+    memory_md = _read_text(root / "memory.md", max_chars=6000)
+    memory_json = store.read_json(job_id, "memory.json", default={}) or {}
+    recent_journal = _read_text(root / "journal.jsonl", max_chars=4000)
+    stable_payload = _stable_job_payload(job_data, memory_json)
+    dynamic_payload = _dynamic_snapshot_payload(snapshot)
+
+    stable_prefix = (
+        "Run a Wayfinder job worker wakeup.\n\n"
+        f"Mode: {mode}\n"
+        "Cache contract:\n"
+        "- This prefix is intentionally stable for this job and mode.\n"
+        "- Live prices, timestamps, recent logs, reports, and run results appear after "
+        f"`{STABLE_PREFIX_END_MARKER}`.\n"
+        "- Update durable memory only when the job's standing goals, constraints, "
+        "rules, or lessons materially change.\n\n"
+        "Rules:\n"
+        "- Monitor mode is read-only except reports/memory.\n"
+        "- Intervene mode may create candidate proposals under the job bundle, but cannot activate them.\n"
+        "- Auto mode may execute live trades only inside the configured auto_limits.\n"
+        "- Never move funds, send onchain transactions, or execute contracts.\n"
+        "- Always write/return a compact structured finding.\n\n"
+        "Stable job spec:\n"
+        f"{_canonical_json(stable_payload, max_chars=12000)}\n\n"
+        "Durable job memory:\n"
+        f"{memory_md}\n\n"
+        f"{STABLE_PREFIX_END_MARKER}\n"
+    )
+    dynamic_context = (
+        f"{DYNAMIC_CONTEXT_MARKER}\n"
+        "Current snapshot:\n"
+        f"{_canonical_json(dynamic_payload, max_chars=12000)}\n\n"
+        "Recent journal:\n"
+        f"{recent_journal}\n\n"
+        "Task:\n"
+        "- Review the dynamic context against the stable job contract.\n"
+        "- Write the appropriate monitor/intervene/auto report.\n"
+        "- Emit a user-visible result only for meaningful state transitions, "
+        "warnings, proposals, or blocked auto decisions.\n"
+    )
+    return {
+        "prompt": stable_prefix + "\n" + dynamic_context,
+        "stable_prefix": stable_prefix,
+        "dynamic_context": dynamic_context,
+        "stable_prefix_hash": _sha256_text(stable_prefix),
+        "dynamic_context_hash": _sha256_text(dynamic_context),
+    }
+
+
 def _build_worker_prompt(
     *,
     store: JobStore,
@@ -38,25 +140,12 @@ def _build_worker_prompt(
     mode: str,
     snapshot: dict[str, Any],
 ) -> str:
-    root = store.job_dir(job_id)
-    memory_md = _read_text(root / "memory.md", max_chars=6000)
-    recent_journal = _read_text(root / "journal.jsonl", max_chars=4000)
-    return (
-        "Run a Wayfinder job worker wakeup.\n\n"
-        f"Mode: {mode}\n"
-        "Rules:\n"
-        "- Monitor mode is read-only except reports/memory.\n"
-        "- Intervene mode may create candidate proposals under the job bundle, but cannot activate them.\n"
-        "- Auto mode may execute live trades only inside the configured auto_limits.\n"
-        "- Never move funds, send onchain transactions, or execute contracts.\n"
-        "- Always write/return a compact structured finding.\n\n"
-        "Job snapshot:\n"
-        f"{json.dumps(snapshot, indent=2, default=str)[:12000]}\n\n"
-        "Memory:\n"
-        f"{memory_md}\n\n"
-        "Recent journal:\n"
-        f"{recent_journal}\n"
-    )
+    return _build_worker_prompt_sections(
+        store=store,
+        job_id=job_id,
+        mode=mode,
+        snapshot=snapshot,
+    )["prompt"]
 
 
 def run_job_worker(job_id: str, mode: str = "monitor") -> dict[str, Any]:
@@ -70,9 +159,7 @@ def run_job_worker(job_id: str, mode: str = "monitor") -> dict[str, Any]:
     snapshot = snapshot_job(job.id, store=store)
 
     blocked_reason = (
-        _auto_limits_error(job.agent_loop.auto_limits)
-        if mode_typed == "auto"
-        else None
+        _auto_limits_error(job.agent_loop.auto_limits) if mode_typed == "auto" else None
     )
     if blocked_reason:
         report = _write_report(
@@ -98,12 +185,13 @@ def run_job_worker(job_id: str, mode: str = "monitor") -> dict[str, Any]:
         )
         return report
 
-    prompt = _build_worker_prompt(
+    prompt_sections = _build_worker_prompt_sections(
         store=store,
         job_id=job.id,
         mode=mode_typed,
         snapshot=snapshot,
     )
+    prompt = prompt_sections["prompt"]
 
     session_id = _ensure_worker_session(job.id, mode_typed)
     queued = False
@@ -132,6 +220,12 @@ def run_job_worker(job_id: str, mode: str = "monitor") -> dict[str, Any]:
         session_id=session_id,
         queued=queued,
         error=error,
+        cache={
+            "prompt_cache_key": session_id,
+            "stable_prefix_hash": prompt_sections["stable_prefix_hash"],
+            "dynamic_context_hash": prompt_sections["dynamic_context_hash"],
+            "metrics": "not_available",
+        },
     )
 
     if report["status"] != "green":
@@ -170,7 +264,9 @@ def _ensure_worker_session(job_id: str, mode: str) -> str | None:
             agent=agent_name,
         )
     except Exception:
-        logger.opt(exception=True).debug("Failed to create/find OpenCode job worker session")
+        logger.opt(exception=True).debug(
+            "Failed to create/find OpenCode job worker session"
+        )
         return None
 
 
@@ -184,6 +280,7 @@ def _write_report(
     session_id: str | None,
     queued: bool,
     error: str | None,
+    cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     report_dir = store.job_dir(job_id) / "reports" / mode
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -197,24 +294,33 @@ def _write_report(
         "error": error,
         "created_at": utc_now_iso(),
     }
+    if cache is not None:
+        report["cache"] = cache
     (report_dir / "latest.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    scorecard_updates: dict[str, Any] = {
+        "health": status,
+        "last_agent_check_at": report["created_at"],
+        "last_agent_mode": mode,
+        "last_agent_summary": report["summary"],
+    }
+    if cache is not None:
+        scorecard_updates["last_agent_cache"] = cache
     store.refresh_scorecard(
         job_id,
-        {
-            "health": status,
-            "last_agent_check_at": report["created_at"],
-            "last_agent_mode": mode,
-            "last_agent_summary": report["summary"],
-        },
+        scorecard_updates,
     )
-    store.append_journal(job_id, {"type": "agent_wakeup", "mode": mode, "report": report})
+    store.append_journal(
+        job_id, {"type": "agent_wakeup", "mode": mode, "report": report}
+    )
 
     try:
         sync_all_jobs(store=store)
     except Exception:
-        logger.opt(exception=True).debug("Wayfinder job sync failed after worker wakeup")
+        logger.opt(exception=True).debug(
+            "Wayfinder job sync failed after worker wakeup"
+        )
     return report
 
 
@@ -224,9 +330,15 @@ def _agent_name_for_mode(mode: str) -> str:
 
 def _auto_limits_error(limits: dict[str, Any] | None) -> str | None:
     data = dict(limits or {})
-    venues = [str(v).strip() for v in data.get("enabled_venues") or [] if str(v).strip()]
-    symbols = [str(v).strip() for v in data.get("allowed_symbols") or [] if str(v).strip()]
-    markets = [str(v).strip() for v in data.get("allowed_markets") or [] if str(v).strip()]
+    venues = [
+        str(v).strip() for v in data.get("enabled_venues") or [] if str(v).strip()
+    ]
+    symbols = [
+        str(v).strip() for v in data.get("allowed_symbols") or [] if str(v).strip()
+    ]
+    markets = [
+        str(v).strip() for v in data.get("allowed_markets") or [] if str(v).strip()
+    ]
     if not venues:
         return "enabled_venues must include at least one venue"
     if not symbols and not markets:

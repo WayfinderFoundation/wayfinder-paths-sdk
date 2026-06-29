@@ -1,6 +1,6 @@
 ---
 description: Hidden worker for full-auto Wayfinder jobs with bounded live trading permissions.
-mode: subagent
+mode: primary
 hidden: true
 temperature: 0.1
 steps: 16
