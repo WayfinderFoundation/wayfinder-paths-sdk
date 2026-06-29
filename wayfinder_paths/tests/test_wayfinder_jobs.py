@@ -5,7 +5,9 @@ from pathlib import Path
 
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.models import WayfinderJob
+from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.sync import sync_all_jobs
 from wayfinder_paths.jobs.worker import run_job_worker
 
 
@@ -140,3 +142,34 @@ def test_auto_worker_blocks_missing_limits(tmp_path: Path, monkeypatch) -> None:
         )
     )
     assert latest["summary"].startswith("Auto agent blocked")
+
+
+def test_runner_bridge_starts_daemon_with_defaults(tmp_path: Path, monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_ensure_daemon_started(**kwargs):
+        captured.update(kwargs)
+        return True, {"status": "ok"}
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.runner_bridge.ensure_daemon_started",
+        fake_ensure_daemon_started,
+    )
+
+    result = RunnerBridge(repo_root=tmp_path).ensure_started()
+
+    assert result["ok"] is True
+    assert captured["paths"].repo_root == tmp_path.resolve()
+    assert captured["tick_seconds"] == 1.0
+    assert captured["max_workers"] == 4
+    assert captured["max_failures"] == 5
+    assert captured["default_timeout_seconds"] == 20 * 60
+    assert captured["log_level"] == "INFO"
+
+
+def test_sync_all_jobs_noops_outside_opencode(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("OPENCODE_INSTANCE_ID", raising=False)
+    store = JobStore(repo_root=tmp_path)
+    store.save(WayfinderJob.new("local-script", script="workspace/src/loop.py"))
+
+    sync_all_jobs(store=store)

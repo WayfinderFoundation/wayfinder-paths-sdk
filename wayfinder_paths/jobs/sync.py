@@ -9,6 +9,7 @@ from wayfinder_paths.core.config import (
     get_api_base_url,
     get_api_key,
     get_opencode_instance_id,
+    is_opencode_instance,
 )
 from wayfinder_paths.jobs.store import JobStore
 
@@ -18,6 +19,8 @@ class WayfinderJobsClient:
         self._client = httpx.Client(timeout=httpx.Timeout(10), follow_redirects=True)
 
     def _base_url(self) -> str | None:
+        if not is_opencode_instance():
+            return None
         instance_id = get_opencode_instance_id()
         if not instance_id:
             return None

@@ -18,7 +18,14 @@ class RunnerBridge:
         self.client = RunnerControlClient(sock_path=self.paths.sock_path)
 
     def ensure_started(self) -> dict[str, Any]:
-        started, info = ensure_daemon_started(paths=self.paths)
+        started, info = ensure_daemon_started(
+            paths=self.paths,
+            tick_seconds=1.0,
+            max_workers=4,
+            max_failures=5,
+            default_timeout_seconds=20 * 60,
+            log_level="INFO",
+        )
         return {"ok": bool(started), "result": info if started else None, "error": None if started else info}
 
     def add_or_update_script_job(
