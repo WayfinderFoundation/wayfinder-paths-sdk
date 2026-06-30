@@ -128,7 +128,7 @@ class CompletedBarsView:
         frame = self._filter_symbol(symbol)
         if frame.empty:
             raise ValueError("No completed bars available")
-        return dict(frame.iloc[-1].to_dict())
+        return frame.iloc[-1].to_dict()
 
     def window(self, n: int, symbol: str | None = None) -> CompletedBarsView:
         if n <= 0:
@@ -180,7 +180,7 @@ class CompletedBarsView:
         return self._bars.copy()
 
     def to_rows(self) -> list[dict[str, Any]]:
-        return [dict(row) for row in self._bars.to_dict(orient="records")]
+        return self._bars.to_dict(orient="records")
 
     def _filter_symbol(self, symbol: str | None) -> pd.DataFrame:
         if symbol is None:
@@ -471,9 +471,4 @@ def _bar_value(bar: Mapping[str, Any] | MarketBar, key: str) -> float:
 
 
 def _float_or_none(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+    return float(value) if value is not None else None

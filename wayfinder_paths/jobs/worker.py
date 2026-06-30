@@ -264,7 +264,7 @@ def run_job_worker(
                 apply_proposal_id=apply_proposal_id,
                 claim_application_before_prompt=True,
             )
-            application_claim = prompt_sections.get("application_claim")
+            application_claim = prompt_sections["application_claim"]
         except Exception as exc:
             error = f"Application claim failed: {exc}"
             session_id = None
@@ -439,7 +439,7 @@ def _agent_name_for_mode(mode: str) -> str:
 
 
 def _auto_limits_error(limits: dict[str, Any] | None) -> str | None:
-    data = dict(limits or {})
+    data = limits or {}
     venues = [
         str(v).strip() for v in data.get("enabled_venues") or [] if str(v).strip()
     ]
@@ -459,10 +459,6 @@ def _auto_limits_error(limits: dict[str, Any] | None) -> str | None:
         "max_open_positions",
         "max_open_orders",
     ):
-        try:
-            value = float(data.get(key) or 0)
-        except (TypeError, ValueError):
-            value = 0
-        if value <= 0:
+        if float(data.get(key) or 0) <= 0:
             return f"{key} must be greater than 0"
     return None

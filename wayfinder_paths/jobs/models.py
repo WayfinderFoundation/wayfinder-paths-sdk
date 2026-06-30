@@ -87,7 +87,7 @@ class ScriptLoop:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> ScriptLoop:
-        data = dict(data or {})
+        data = data or {}
         return cls(
             enabled=bool(data.get("enabled", False)),
             runner_job_name=str(data.get("runner_job_name") or ""),
@@ -130,7 +130,7 @@ class AgentLoop:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> AgentLoop:
-        data = dict(data or {})
+        data = data or {}
         mode = normalize_agent_mode(data.get("mode"))
         return cls(
             enabled=bool(data.get("enabled", mode != "off")),

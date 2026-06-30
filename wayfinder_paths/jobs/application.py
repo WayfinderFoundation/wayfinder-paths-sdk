@@ -302,26 +302,15 @@ def _apply_runner_action(
 ) -> list[dict[str, Any]]:
     responses: list[dict[str, Any]] = []
     runner_action = getattr(bridge, action)
-    if job.script_loop.enabled and job.script_loop.runner_job_name:
-        responses.append(
-            {
-                "loop": "script",
-                "runner_job_name": job.script_loop.runner_job_name,
-                "response": _safe_runner_call(
-                    runner_action, job.script_loop.runner_job_name
-                ),
-            }
-        )
-    if job.agent_loop.enabled and job.agent_loop.runner_job_name:
-        responses.append(
-            {
-                "loop": "agent",
-                "runner_job_name": job.agent_loop.runner_job_name,
-                "response": _safe_runner_call(
-                    runner_action, job.agent_loop.runner_job_name
-                ),
-            }
-        )
+    for loop_name, loop in (("script", job.script_loop), ("agent", job.agent_loop)):
+        if loop.enabled and loop.runner_job_name:
+            responses.append(
+                {
+                    "loop": loop_name,
+                    "runner_job_name": loop.runner_job_name,
+                    "response": _safe_runner_call(runner_action, loop.runner_job_name),
+                }
+            )
     return responses
 
 

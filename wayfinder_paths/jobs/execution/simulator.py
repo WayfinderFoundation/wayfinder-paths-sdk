@@ -23,6 +23,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     PositionLedger,
     StateSnapshot,
     TradeCapacity,
+    _float_or_none,
 )
 from wayfinder_paths.jobs.execution.validation import validate_execution_trace
 
@@ -161,7 +162,7 @@ def simulate_execution(
             continue
         default_bar = next(iter(bars_by_symbol.values()))
         for symbol, bar in bars_by_symbol.items():
-            price_series.setdefault(symbol, []).append(
+            price_series[symbol].append(
                 {"timestamp": timestamp.isoformat(), "value": bar.close}
             )
         ledger.on_bar_tick(timestamp)
@@ -560,12 +561,3 @@ def _grid_row(result: ExecutionBacktestResult, *, rank_by: str) -> dict[str, Any
         "validation": result.validation,
         rank_by: result.stats.get(rank_by),
     }
-
-
-def _float_or_none(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None

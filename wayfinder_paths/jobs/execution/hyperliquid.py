@@ -15,6 +15,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     OrderIntent,
     StateSnapshot,
     TradeCapacity,
+    _float_or_none,
 )
 
 
@@ -223,12 +224,3 @@ def _float_pair(data: dict[str, Any], key: str) -> tuple[float | None, float | N
             return _float_or_none(first), _float_or_none(second)
         case _:
             return None, None
-
-
-def _float_or_none(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None

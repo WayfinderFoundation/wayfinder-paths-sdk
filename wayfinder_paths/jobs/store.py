@@ -485,19 +485,18 @@ class JobStore:
         scorecard["updated_at"] = utc_now_iso()
         if updates:
             scorecard.update(updates)
+        proposals = self.proposals(job_id)
         scorecard["pending_proposals"] = sum(
-            1
-            for proposal in self.proposals(job_id)
-            if proposal.get("status") == "pending"
+            1 for proposal in proposals if proposal.get("status") == "pending"
         )
         scorecard["queued_proposal_applications"] = sum(
             1
-            for proposal in self.proposals(job_id)
+            for proposal in proposals
             if (proposal.get("application") or {}).get("status") == "queued"
         )
         scorecard["applying_proposal_applications"] = sum(
             1
-            for proposal in self.proposals(job_id)
+            for proposal in proposals
             if (proposal.get("application") or {}).get("status") == "applying"
         )
         self.write_json(job_id, "scorecard.json", scorecard)

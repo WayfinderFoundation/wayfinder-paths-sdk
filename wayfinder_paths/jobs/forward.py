@@ -315,11 +315,8 @@ def _resolve_forward_dir(
 
 
 def _job_id_from_forward_dir(path: Path) -> str | None:
-    try:
-        if path.name == "forward" and path.parent.name == "results":
-            return path.parent.parent.name
-    except Exception:
-        return None
+    if path.name == "forward" and path.parent.name == "results":
+        return path.parent.parent.name
     return None
 
 
@@ -381,7 +378,4 @@ def _extract_net_pnl(row: Mapping[str, Any]) -> float | None:
             value = pnl
     if value is None:
         value = row.get("net_pnl")
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+    return float(value) if value is not None else None
