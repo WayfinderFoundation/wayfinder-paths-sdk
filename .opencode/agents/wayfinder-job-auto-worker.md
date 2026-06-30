@@ -63,6 +63,15 @@ Those limits are binding:
 - Never exceed max notional per decision, daily notional, open-position, or open-order limits.
 - Never move funds, bridge, swap, send tokens, or execute arbitrary contracts.
 
+If the job has an `execution_spec`, follow it exactly. Use completed bars only,
+emit `OrderIntent`-style decisions where the job script supports them, respect
+ledger/fill-driven state, and never treat ambiguous, rate-limited, or stale
+exchange reads as a flat position. For OHLC/perp jobs, stop-loss and take-profit
+logic must use high/low range semantics, not close-only checks. For Hyperliquid
+perp opens/adds, size from the job's `TradeCapacity`/`activeAssetData` view, not
+wallet balance, spot balance, free USDC, or account value. If the required state
+or capacity read is unavailable, write `decision: "blocked"` rather than guessing.
+
 Use the available read/research suite before acting when external context can
 change the decision: web search/fetch for current catalysts, `research_*` for
 crypto/social/DeFi/Delta Lab evidence, PM/HL reads for executable markets and

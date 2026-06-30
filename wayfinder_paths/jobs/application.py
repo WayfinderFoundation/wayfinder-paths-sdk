@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.jobs.compiler import JobCompiler
+from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
@@ -82,6 +83,12 @@ def validate_application_candidate(
         if require_judge is None
         else require_judge,
     )
+    validation = _with_execution_validation(
+        store,
+        job_id,
+        proposal,
+        validation,
+    )
     store.record_proposal_application_validation(job_id, proposal_id, validation)
     return validation
 
@@ -112,6 +119,12 @@ def complete_application(
             proposal=proposal,
             candidate_dir=candidate_dir,
             require_judge=bool(proposal.get("judge_required")),
+        )
+        deterministic_validation = _with_execution_validation(
+            store,
+            job_id,
+            proposal,
+            deterministic_validation,
         )
         store.record_proposal_application_validation(
             job_id,
@@ -413,3 +426,50 @@ def _write_apply_report(
         "rollback": rollback,
     }
     store.write_json(job_id, "reports/apply/latest.json", payload)
+
+
+def _with_execution_validation(
+    store: JobStore,
+    job_id: str,
+    proposal: dict[str, Any],
+    validation: dict[str, Any],
+) -> dict[str, Any]:
+    candidate_dir = _candidate_dir_from_proposal(store, job_id, proposal)
+    has_spec = (candidate_dir / "execution_spec.json").exists()
+    candidate_job_yaml = candidate_dir / "job.yaml"
+    if candidate_job_yaml.exists():
+        try:
+            import yaml
+
+            job_data = (
+                yaml.safe_load(candidate_job_yaml.read_text(encoding="utf-8")) or {}
+            )
+            has_spec = has_spec or bool(
+                isinstance(job_data, dict) and job_data.get("execution_spec")
+            )
+        except Exception:
+            pass
+    if not has_spec:
+        return validation
+    execution_validation = validate_execution_job(
+        job_id,
+        candidate_dir=candidate_dir,
+        store=store,
+    )
+    checks = list(validation.get("checks") or [])
+    checks.append(
+        {
+            "name": "execution_candidate_validation",
+            "passed": execution_validation.get("status") == "passed",
+            "details": execution_validation,
+        }
+    )
+    return {
+        **validation,
+        "status": "passed"
+        if validation.get("status") == "passed"
+        and execution_validation.get("status") == "passed"
+        else "failed",
+        "checks": checks,
+        "execution_validation": execution_validation,
+    }

@@ -164,6 +164,76 @@ def test_wayfinder_jobs_eval_validates_two_iteration_workers(tmp_path: Path) -> 
     )
 
 
+def test_wayfinder_jobs_eval_validates_hard_execution_backtest(
+    tmp_path: Path,
+) -> None:
+    module = load_eval_module()
+    case = module.EXECUTION_BACKTEST_CASES[0]
+    workspace = tmp_path / "execution-backtest"
+    workspace.mkdir()
+
+    module.create_expected_execution_backtest_bundle(workspace, case)
+    report = module.validate_execution_backtest_case(workspace, case)
+
+    assert report["status"] == "passed", report
+    for name in (
+        "execution_spec_present",
+        "execution_spec_completed_bars",
+        "strategy_unified_entrypoint",
+        "strategy_uses_order_intent",
+        "single_backtest_trace_valid",
+        "grid_summary_written",
+        "validation_report_passed",
+        "visualization_has_entry_exit_markers",
+    ):
+        assert any(
+            check["name"] == name and check["passed"] for check in report["checks"]
+        ), name
+
+
+def test_wayfinder_jobs_eval_hard_live_forces_live_judge(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    module = load_eval_module()
+    captured: dict[str, object] = {}
+
+    def fake_run(case, **kwargs):
+        captured["case_id"] = case.id
+        captured["live"] = kwargs["live"]
+        captured["judge"] = kwargs["judge"]
+        return {
+            "case_id": case.id,
+            "status": "passed",
+            "kind": "execution_backtest",
+        }
+
+    monkeypatch.setattr(module, "run_creation_case", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "run_worker_case", lambda *args, **kwargs: None)
+    monkeypatch.setattr(module, "run_execution_backtest_case", fake_run)
+    monkeypatch.setattr(module, "resolve_wayfinder_model_env", lambda *args: None)
+    monkeypatch.setattr(
+        module,
+        "resolve_judge_model",
+        lambda requested, **kwargs: "openai/gpt-5.5",
+    )
+
+    rc = module.main(
+        [
+            "--hard-live",
+            "--output-dir",
+            str(tmp_path / "evals"),
+        ]
+    )
+
+    assert rc == 0
+    assert captured == {
+        "case_id": "hard_execution_backtest_creation",
+        "live": True,
+        "judge": True,
+    }
+
+
 def test_wayfinder_jobs_judge_prompt_is_repo_grounded(tmp_path: Path) -> None:
     module = load_eval_module()
     workspace = tmp_path / "workspace"
@@ -238,6 +308,12 @@ def test_wayfinder_jobs_eval_command_shapes() -> None:
     assert judge[:4] == ["/bin/opencode", "run", "--agent", "wayfinder-eval-judge"]
     assert "--dir" in judge
 
+    execution_prompt = module.build_execution_backtest_prompt(
+        module.EXECUTION_BACKTEST_CASES[0]
+    )
+    assert "one unified strategy script" in execution_prompt
+    assert "run the local execution backtest and grid validation" in execution_prompt
+
 
 def test_wayfinder_jobs_forward_telemetry_guidance() -> None:
     skill = (
@@ -259,6 +335,13 @@ def test_wayfinder_jobs_forward_telemetry_guidance() -> None:
         "partial fills",
         "reconcile live positions",
         "Never duplicate a pending stop/limit order blindly",
+        "ExecutionSpec",
+        "CompletedBarsView",
+        "OrderIntent",
+        "BracketEngine",
+        "simulate_execution",
+        "run_execution_grid",
+        "wayfinder job validate",
     ):
         assert needle in skill
 
@@ -269,6 +352,10 @@ def test_wayfinder_jobs_forward_telemetry_guidance() -> None:
         "scenario_plan",
         "decide_from_snapshot",
         "fallback/debug context",
+        "execution-contract path",
+        "CompletedBarsView",
+        "OrderIntent",
+        "TradeCapacity",
     ):
         assert needle in primary
 
@@ -319,6 +406,8 @@ def test_wayfinder_jobs_worker_prompts_scope_bash_fallback(tmp_path: Path) -> No
     assert "scenario_plan" in worker_text
     assert "validate_application" in worker_text
     assert "validation fails, read the failed checks" in worker_text
+    assert "validate_job" in worker_text
+    assert "wayfinder job backtest" in worker_text
     assert "decide_from_snapshot" in worker_text
     assert "violates the approved intent contract" in worker_text
     assert "`proposal.status` is only `pending`" in worker_text
@@ -409,6 +498,9 @@ def test_eval_judge_supports_wayfinder_jobs_pass_fail() -> None:
         "Strategy correctness",
         "intent_contract",
         "scenario_plan",
+        "Execution backtest correctness",
+        "completed-only bars",
+        "OHLC high/low",
         '"verdict": "pass|fail"',
     ):
         assert needle in rubric

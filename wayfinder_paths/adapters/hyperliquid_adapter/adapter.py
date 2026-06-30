@@ -1280,6 +1280,7 @@ class HyperliquidAdapter(BaseAdapter):
         limit_price: float | None = None,
         builder: dict[str, Any] | None = None,
         reduce_only: bool = True,
+        cloid: str | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         builder_fee = self._mandatory_builder_fee(builder)
         await self.ensure_unified_account(address)
@@ -1297,7 +1298,7 @@ class HyperliquidAdapter(BaseAdapter):
                 asset_id, limit_price if limit_price is not None else trigger_price
             )
         order_actions = self._create_hypecore_order_actions(
-            asset_id, is_buy, price, size, reduce_only, order_type, builder_info
+            asset_id, is_buy, price, size, reduce_only, order_type, builder_info, cloid
         )
         result = await self._sign_and_broadcast_hypecore(order_actions, address)
 
@@ -1315,6 +1316,7 @@ class HyperliquidAdapter(BaseAdapter):
         trigger_price: float,
         size: float,
         address: str,
+        cloid: str | None = None,
     ) -> tuple[bool, dict[str, Any]]:
         return await self.place_trigger_order(
             asset_id=asset_id,
@@ -1324,6 +1326,7 @@ class HyperliquidAdapter(BaseAdapter):
             address=address,
             tpsl="sl",
             is_market=True,
+            cloid=cloid,
         )
 
     async def get_user_fills(

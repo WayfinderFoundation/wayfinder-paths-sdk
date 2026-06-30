@@ -150,13 +150,19 @@ class JobCompiler:
         return wrapper_paths
 
     def _job_env(self, job: WayfinderJob, root: Path) -> dict[str, str]:
-        return {
+        env = {
             "WAYFINDER_HIGH_LEVEL_JOB_ID": job.id,
             "WAYFINDER_JOB_DIR": str(root),
             "WAYFINDER_FORWARD_DIR": str(root / "results" / "forward"),
             "WAYFINDER_JOB_MODE": str(job.script_loop.mode or "paper"),
             "WAYFINDER_JOB_REVISION": str(job.versioning.get("active_revision") or ""),
         }
+        spec_path = root / "execution_spec.json"
+        if job.execution_spec:
+            self.store.write_json(job.id, "execution_spec.json", job.execution_spec)
+        if spec_path.exists():
+            env["WAYFINDER_EXECUTION_SPEC"] = str(spec_path)
+        return env
 
 
 def compile_job(job_id: str, *, start_daemon: bool = True) -> dict[str, Any]:

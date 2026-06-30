@@ -108,6 +108,66 @@ For async execution such as stop losses, limit orders, or cancel/replace flows:
 - Emit `WAYFINDER_JOB_RESULT` only for meaningful state transitions, warnings,
   fills, blocked execution, or failures; routine healthy checks should stay quiet.
 
+## Execution-contract jobs
+
+For new scheduled trading jobs that need backtests, grid search, paper, or live
+forward execution, prefer the additive execution-contract path over ad-hoc
+backtest scripts. Existing jobs without an execution spec are legacy-compatible
+and should not be migrated unless the user asks.
+
+Use one script for backtest/grid/forward. The script should expose
+`build_strategy(params)` returning an object with `decide(ctx)`, or expose a
+top-level `decide(ctx)`. The strategy emits `OrderIntent` objects only; it does
+not call live order tools, mutate position state, or write fills directly.
+
+Execution-contract primitives live in `wayfinder_paths.jobs.execution`:
+
+- `ExecutionSpec` / `.wayfinder/jobs/<job_id>/execution_spec.json` records the
+  execution contract: venue, market kind, completed-bar policy, fill model,
+  data-source policy, ledger state, and validation mode.
+- `CompletedBarsView` is the only OHLC/perp market view for strategy decisions.
+  It contains completed candles only and prevents future-bar access in simulator
+  ticks. `EventMarketView` is for prediction markets. `TokenState` is read-only
+  enrichment and is never an execution venue.
+- `OrderIntent`, `FillEvent`, and `PositionLedger` keep strategy logic separate
+  from execution/state. Positions change only through fills.
+- `BracketEngine` handles stop-loss and take-profit checks with OHLC high/low,
+  including conservative same-bar stop/TP ambiguity.
+- `simulate_execution(...)` runs one backtest from the same entrypoint.
+  `run_execution_grid(...)` runs parameter sweeps with fresh strategy state per
+  parameter set. `wayfinder job backtest <job_id> [--grid grid.json] [--workers N]`
+  writes validation-ready traces and visualization artifacts.
+- `wayfinder job validate <job_id> [--strict]` composes static checks, scenario
+  fixtures, backtest traces, and forward artifacts. Soft mode writes reports
+  without blocking legacy jobs.
+
+Hard constraints for execution-spec trading jobs:
+
+- Use completed bars only; never trade from the current in-progress candle.
+- Use OHLC high/low for all stops and take profits. Close-only stop logic is
+  invalid for OHLC bars.
+- Do not pre-shift targets to avoid lookahead when the fill model already uses
+  `next_bar_open`.
+- Never clear position state manually. State is ledger/fill-driven.
+- Never treat `ambiguous`, `rate_limited`, or `stale` exchange state as flat.
+- Never report order success unless the fill/status confirms success.
+- Never use CCXT or external candles when `data_contract.no_external_ccxt` is
+  true; use the SDK safe market client or prepared local fixtures.
+- For Hyperliquid perp sizing, use the `TradeCapacity` helper based on
+  `activeAssetData.availableToTrade`, not wallet USDC, spot balance, account
+  value, or internal estimates.
+- Represent protective exits as bracket metadata or explicit stop/TP intents.
+
+Mandatory self-check before emitting any `OrderIntent`:
+
+1. Is the market view completed-only?
+2. Are stops/take profits represented through bracket/explicit intents and
+   evaluated with OHLC high/low?
+3. Is the state snapshot valid, not ambiguous/rate-limited/stale?
+4. Was sizing checked through `TradeCapacity` when opening or adding risk?
+5. Will backtest, paper, and forward use the same strategy entrypoint and
+   intent/fill/ledger semantics?
+
 ## Wallet helpers in scripts
 
 Don't grep `config.json` for `wallets[]` or read wallet files directly — on Wayfinder Shells the remote wallets aren't in `config.json` and you'll miss them. Use the helpers:

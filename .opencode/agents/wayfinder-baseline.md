@@ -93,6 +93,18 @@ Before any script imports or calls a protocol adapter, load the matching protoco
 
 For backtests or bar-driven strategy work, use the current completed row as signal data and never use the current open/in-progress provider candle. Framework `target_positions.loc[t]` are decision targets formed after completed bar `t`; do not pre-shift targets or code exits as `close[t-1]` just to avoid lookahead. `fill_model="next_bar_open"` handles entry/exit at `t+1`; `fill_model="replay"` is only for live/history reconciliation because it can use same-bar information. If adapting an already-executed exposure vector from an external script, convert it to framework decision targets first, e.g. `target = exposure.shift(-1)`.
 
+For new scheduled trading jobs, use the execution-contract path from
+`/writing-wayfinder-scripts`: one script exposes `build_strategy(params)` or
+`decide(ctx)` and emits `OrderIntent` only; backtest/grid/forward all call that
+same entrypoint. Use `CompletedBarsView` for OHLC/perps, OHLC high/low for
+stops and take profits, ledger/fill-driven state, `TradeCapacity` for
+Hyperliquid sizing, and `wayfinder job validate` before presenting the job as
+ready. `EventMarketView` covers Polymarket-style prediction markets;
+`TokenState`/CoinGecko-style data is enrichment only, not an execution venue.
+Never treat ambiguous or rate-limited exchange state as flat, never clear
+positions manually, and never use CCXT/external candles when an execution spec
+disallows them.
+
 ## Blockchain & Wayfinder Domain Knowledge
 
 Do not assume a market or token exists or does not exist. Always search or read through the relevant tools.

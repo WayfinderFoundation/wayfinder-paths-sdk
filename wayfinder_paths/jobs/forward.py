@@ -125,6 +125,22 @@ class ForwardRecorder:
     ) -> dict[str, Any]:
         return self.append("trade", _merge_payload(payload, fields))
 
+    def record_trade_open(
+        self, payload: Mapping[str, Any] | None = None, **fields: Any
+    ) -> dict[str, Any]:
+        row = _merge_payload(payload, fields)
+        row.setdefault("status", "open")
+        row.setdefault("event", "trade_open")
+        return self.append("trade", row)
+
+    def record_trade_close(
+        self, payload: Mapping[str, Any] | None = None, **fields: Any
+    ) -> dict[str, Any]:
+        row = _merge_payload(payload, fields)
+        row.setdefault("status", "closed")
+        row.setdefault("event", "trade_close")
+        return self.append("trade", row)
+
     def record_order(
         self, payload: Mapping[str, Any] | None = None, **fields: Any
     ) -> dict[str, Any]:
@@ -217,6 +233,14 @@ def record_run(*args: Any, **kwargs: Any) -> dict[str, Any]:
 
 def record_trade(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return get_forward_recorder().record_trade(*args, **kwargs)
+
+
+def record_trade_open(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    return get_forward_recorder().record_trade_open(*args, **kwargs)
+
+
+def record_trade_close(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    return get_forward_recorder().record_trade_close(*args, **kwargs)
 
 
 def record_order(*args: Any, **kwargs: Any) -> dict[str, Any]:

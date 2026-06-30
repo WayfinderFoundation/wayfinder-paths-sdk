@@ -116,6 +116,28 @@ Application correctness is stricter than "the script runs":
 - If the implementation is runnable but violates the approved intent contract,
   complete the application as failed.
 
+Execution-spec job changes are stricter still:
+
+- Preserve backwards compatibility. Jobs without `execution_spec` stay on their
+  existing script/backtest path unless the proposal explicitly migrates them.
+- For jobs with `execution_spec`, the candidate script should expose
+  `build_strategy(params)` or `decide(ctx)` and emit `OrderIntent` objects only.
+  Do not call live order tools, mutate the ledger directly, or maintain a
+  separate simplified backtest function.
+- Use `CompletedBarsView` for OHLC/perps, `EventMarketView` for prediction
+  markets, and `TokenState` only as read-only enrichment.
+- Stops and take profits must use OHLC high/low semantics or `BracketEngine`.
+  Close-only stop/TP logic is invalid.
+- Never clear local position state from ambiguous, rate-limited, or stale
+  exchange reads. State must reconcile through snapshots and fills.
+- Hyperliquid opens/adds must size through `TradeCapacity`/`activeAssetData`,
+  not wallet balance or free USDC.
+- Run `core_jobs(action="validate_job", job_id=...)` or
+  `poetry run wayfinder job validate <job_id>` after an execution-spec patch.
+  If a backtest/grid artifact is part of the proposal, run
+  `poetry run wayfinder job backtest <job_id> [--grid grid.json]` and include
+  validation attempts in the apply report.
+
 Always write structured outputs:
 
 - `reports/<mode>/latest.json` with health, summary, findings, and recommended action.

@@ -11,6 +11,7 @@ from wayfinder_paths.jobs.application import (
     validate_application_candidate,
 )
 from wayfinder_paths.jobs.compiler import JobCompiler
+from wayfinder_paths.jobs.execution.job import backtest_execution_job, validate_job
 from wayfinder_paths.jobs.models import (
     AgentMode,
     WayfinderJob,
@@ -134,6 +135,43 @@ def list_cmd() -> None:
 def status_cmd(job_id: str) -> None:
     store = JobStore()
     _echo_json({"ok": True, "result": snapshot_job(job_id, store=store)})
+
+
+@job_cli.command(
+    name="validate", help="Validate a high-level job's execution contract."
+)
+@click.argument("job_id")
+@click.option("--strict", is_flag=True, default=False)
+def validate_cmd(job_id: str, strict: bool) -> None:
+    store = JobStore()
+    result = validate_job(job_id, strict=strict, store=store)
+    _echo_json({"ok": result.get("status") == "passed", "result": result})
+    if strict and result.get("status") != "passed":
+        raise click.ClickException("job validation failed")
+
+
+@job_cli.command(name="backtest", help="Run an execution-contract backtest for a job.")
+@click.argument("job_id")
+@click.option("--grid", "grid_path", default=None)
+@click.option("--workers", type=int, default=1, show_default=True)
+@click.option(
+    "--parallel",
+    type=click.Choice(["serial", "thread", "process"]),
+    default="serial",
+    show_default=True,
+)
+def backtest_cmd(
+    job_id: str, grid_path: str | None, workers: int, parallel: str
+) -> None:
+    store = JobStore()
+    result = backtest_execution_job(
+        job_id,
+        grid_path=grid_path,
+        workers=workers,
+        parallel=parallel,
+        store=store,
+    )
+    _echo_json({"ok": True, "result": result})
 
 
 @job_cli.command(name="report", help="Show a compact terminal report for a job.")

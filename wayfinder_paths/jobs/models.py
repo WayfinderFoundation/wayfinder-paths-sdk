@@ -179,6 +179,7 @@ class WayfinderJob:
     agent_loop: AgentLoop = field(default_factory=AgentLoop)
     performance: dict[str, Any] = field(default_factory=dict)
     reporting: dict[str, Any] = field(default_factory=dict)
+    execution_spec: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def new(
@@ -240,6 +241,7 @@ class WayfinderJob:
             },
             script_loop=script_loop,
             agent_loop=agent_loop,
+            execution_spec={},
             performance={
                 "baseline_backtest": "results/backtest/baseline.json",
                 "forward_results": DEFAULT_FORWARD_TRADES,
@@ -294,6 +296,7 @@ class WayfinderJob:
             agent_loop=agent_loop,
             performance=dict(data.get("performance") or {}),
             reporting=dict(data.get("reporting") or {}),
+            execution_spec=dict(data.get("execution_spec") or {}),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -310,6 +313,7 @@ class WayfinderJob:
             "versioning": dict(self.versioning),
             "script_loop": self.script_loop.to_dict(),
             "agent_loop": self.agent_loop.to_dict(),
+            "execution_spec": dict(self.execution_spec),
             "performance": dict(self.performance),
             "reporting": dict(self.reporting),
         }

@@ -52,6 +52,7 @@ class JobStore:
             "reports/intervene",
             "reports/auto",
             "reports/apply",
+            "reports/validation",
             "sessions",
         ]:
             (root / relative).mkdir(parents=True, exist_ok=True)

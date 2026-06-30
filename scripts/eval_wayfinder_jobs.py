@@ -32,6 +32,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from wayfinder_paths.jobs.execution.job import backtest_execution_job
+from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.forward import ForwardRecorder
 from wayfinder_paths.jobs.models import (
     JOB_AUTO_WORKER_AGENT_NAME,
@@ -90,6 +92,13 @@ class WorkerCase:
     kind: WorkerKind
     agent_name: str
     complex_apply: bool = False
+
+
+@dataclass(frozen=True)
+class ExecutionBacktestCase:
+    id: str
+    job_id: str
+    prompt: str
 
 
 CREATION_CASES = [
@@ -174,6 +183,31 @@ WORKER_CASES = [
 SCRIPT_AGENT_PROPOSAL_ID = "prop_rearm_guard_v1"
 
 
+EXECUTION_BACKTEST_CASES = [
+    ExecutionBacktestCase(
+        id="hard_execution_backtest_creation",
+        job_id="eval-hard-execution-backtest",
+        prompt=(
+            "Create a Wayfinder execution-spec trading job named Eval Hard Execution "
+            "Backtest. Use one unified strategy script under the job workspace. The "
+            "same script must expose build_strategy(params) and be usable for "
+            "backtest, grid search, and forward execution. Use only local fake OHLC "
+            "fixtures supplied in this eval; do not fetch live market data and do "
+            "not call any real order-placement or fund-moving tools. The job must "
+            "include execution_spec.json or job.yaml execution_spec for Hyperliquid "
+            "perps with completed_only bars, next_bar_open fills, no_external_ccxt, "
+            "ledger_only state, and OHLC high/low stop/TP rules. Write fixture bars "
+            "to results/backtest/input_bars.json, run a single execution backtest, "
+            "run a grid search with at least two parameter sets, run job validation, "
+            "and leave results/backtest/visualization.json plus reports/validation/"
+            "latest.json. The strategy must use OrderIntent and protective bracket "
+            "metadata, not direct live order calls or legacy quick_backtest as final "
+            "validation."
+        ),
+    )
+]
+
+
 def script_agent_intent_contract() -> dict[str, Any]:
     return {
         "intent": "Reduce false blocked re-arm states without allowing one-sided entries.",
@@ -255,6 +289,38 @@ def script_agent_scenario_plan() -> dict[str, Any]:
             },
         ],
     }
+
+
+def execution_backtest_bars() -> list[dict[str, Any]]:
+    return [
+        {
+            "timestamp": "2026-01-01T00:00:00Z",
+            "symbol": "SNX",
+            "open": 10.0,
+            "high": 10.8,
+            "low": 9.8,
+            "close": 10.5,
+            "volume": 100,
+        },
+        {
+            "timestamp": "2026-01-01T00:05:00Z",
+            "symbol": "SNX",
+            "open": 10.6,
+            "high": 12.2,
+            "low": 10.1,
+            "close": 11.8,
+            "volume": 150,
+        },
+        {
+            "timestamp": "2026-01-01T00:10:00Z",
+            "symbol": "SNX",
+            "open": 11.8,
+            "high": 12.0,
+            "low": 9.4,
+            "close": 9.8,
+            "volume": 175,
+        },
+    ]
 
 
 def repo_root() -> Path:
@@ -420,6 +486,78 @@ def create_expected_job_bundle(workspace: Path, case: CreationCase) -> Path:
     return store.save(job)
 
 
+def create_expected_execution_backtest_bundle(
+    workspace: Path, case: ExecutionBacktestCase
+) -> Path:
+    store = JobStore(repo_root=workspace)
+    job = WayfinderJob.new(
+        case.job_id,
+        name="Eval Hard Execution Backtest",
+        goal="Create and validate a same-script execution backtest.",
+        script=f".wayfinder/jobs/{case.job_id}/workspace/src/strategy.py",
+        interval_seconds=300,
+        agent_mode="off",
+    )
+    spec = ExecutionSpec().to_dict()
+    spec["validation"]["require_scenarios"] = True
+    spec["validation"]["execution_scenario_plan"] = {
+        "scenarios": [
+            {
+                "name": "entry_and_bracket_exit",
+                "bars": execution_backtest_bars(),
+                "params": {"threshold": 10.4, "initial_capital": 1000},
+                "expect": {"min_trades": 2, "execution_valid": True},
+            }
+        ]
+    }
+    job.execution_spec = spec
+    path = store.save(job)
+    root = store.job_dir(job.id)
+    script = root / "workspace" / "src" / "strategy.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        """
+from __future__ import annotations
+
+from wayfinder_paths.jobs.execution import OrderIntent
+
+
+class Strategy:
+    def __init__(self, params: dict):
+        self.params = params
+
+    def decide(self, ctx):
+        latest = ctx.view.latest("SNX")
+        threshold = float(self.params.get("threshold", 10.4))
+        if not ctx.ledger.positions and float(latest["close"]) > threshold:
+            return [
+                OrderIntent(
+                    action="OPEN",
+                    venue="hyperliquid",
+                    symbol="SNX",
+                    side="long",
+                    size=1,
+                    bracket={"stop_loss": 9.5, "take_profit": 12.0},
+                )
+            ]
+        return []
+
+
+def build_strategy(params: dict) -> Strategy:
+    return Strategy(params)
+""".lstrip(),
+        encoding="utf-8",
+    )
+    write_json(
+        root / "results" / "backtest" / "input_bars.json", execution_backtest_bars()
+    )
+    grid_path = root / "workspace" / "config" / "grid.json"
+    write_json(grid_path, {"threshold": [10.4, 99.0], "initial_capital": [1000]})
+    backtest_execution_job(job.id, store=store)
+    backtest_execution_job(job.id, grid_path=grid_path, store=store)
+    return path
+
+
 def script_entrypoint_path(
     workspace: Path, script_loop: Mapping[str, Any], *, job_id: str | None = None
 ) -> Path:
@@ -554,6 +692,133 @@ def validate_creation_case(workspace: Path, case: CreationCase) -> dict[str, Any
         "status": "passed" if all(check["passed"] for check in checks) else "failed",
         "checks": checks,
         "job_yaml": str(path),
+    }
+
+
+def validate_execution_backtest_case(
+    workspace: Path, case: ExecutionBacktestCase, *, log_text: str = ""
+) -> dict[str, Any]:
+    root = workspace / ".wayfinder" / "jobs" / case.job_id
+    job_yaml_path = root / "job.yaml"
+    job_data = (
+        yaml.safe_load(job_yaml_path.read_text(encoding="utf-8"))
+        if job_yaml_path.exists()
+        else None
+    )
+    execution_spec_path = root / "execution_spec.json"
+    execution_spec = (
+        read_json(execution_spec_path, default={})
+        if execution_spec_path.exists()
+        else {}
+    )
+    if isinstance(job_data, dict) and not execution_spec:
+        embedded_spec = job_data.get("execution_spec")
+        execution_spec = embedded_spec if isinstance(embedded_spec, dict) else {}
+    script_loop = job_data.get("script_loop") if isinstance(job_data, dict) else {}
+    script_path = (
+        script_entrypoint_path(workspace, script_loop, job_id=case.job_id)
+        if isinstance(script_loop, Mapping)
+        else root / "__missing_script__"
+    )
+    script_text = (
+        script_path.read_text(encoding="utf-8", errors="replace")
+        if script_path.exists()
+        else ""
+    )
+    latest = read_json(root / "results" / "backtest" / "latest.json", default={}) or {}
+    visualization = (
+        read_json(root / "results" / "backtest" / "visualization.json", default={})
+        or {}
+    )
+    validation = (
+        read_json(root / "reports" / "validation" / "latest.json", default={}) or {}
+    )
+    grid_summaries = list(
+        (root / "results" / "backtest" / "grids").glob("*/summary.json")
+    )
+    forbidden_tools = [
+        "wayfinder_hyperliquid_place_",
+        "wayfinder_polymarket_place_",
+        "wayfinder_onchain_swap",
+        "wayfinder_onchain_send",
+        "wayfinder_contracts_execute",
+    ]
+    forbidden_hits = [name for name in forbidden_tools if name in log_text]
+    markers = visualization.get("markers") if isinstance(visualization, dict) else []
+    checks = [
+        {"name": "job_yaml_exists", "passed": job_yaml_path.exists()},
+        {"name": "job_yaml_mapping", "passed": isinstance(job_data, dict)},
+        {
+            "name": "execution_spec_present",
+            "passed": isinstance(execution_spec, dict) and bool(execution_spec),
+        },
+        {
+            "name": "execution_spec_completed_bars",
+            "passed": execution_spec.get("bar_model") == "completed_only"
+            and execution_spec.get("fill_model") == "next_bar_open",
+        },
+        {
+            "name": "execution_spec_disallows_ccxt",
+            "passed": bool(
+                (execution_spec.get("data_contract") or {}).get("no_external_ccxt")
+            ),
+        },
+        {"name": "strategy_script_exists", "passed": script_path.exists()},
+        {
+            "name": "strategy_unified_entrypoint",
+            "passed": "def build_strategy" in script_text
+            or "def decide" in script_text,
+        },
+        {
+            "name": "strategy_uses_order_intent",
+            "passed": "OrderIntent" in script_text,
+        },
+        {
+            "name": "strategy_uses_bracket_or_ohlc_helper",
+            "passed": "bracket=" in script_text
+            or "BracketEngine" in script_text
+            or "ohlc_" in script_text,
+        },
+        {
+            "name": "no_legacy_quick_backtest_final_validation",
+            "passed": "quick_backtest" not in script_text,
+        },
+        {
+            "name": "no_ccxt_external_candles",
+            "passed": "ccxt" not in script_text.lower(),
+        },
+        {"name": "single_backtest_written", "passed": bool(latest)},
+        {
+            "name": "single_backtest_trace_valid",
+            "passed": bool((latest.get("validation") or {}).get("execution_valid")),
+        },
+        {
+            "name": "grid_summary_written",
+            "passed": bool(grid_summaries),
+            "count": len(grid_summaries),
+        },
+        {
+            "name": "validation_report_passed",
+            "passed": validation.get("status") == "passed",
+        },
+        {
+            "name": "visualization_has_equity",
+            "passed": bool((visualization.get("series") or [{}])[0].get("points"))
+            if isinstance(visualization, dict)
+            else False,
+        },
+        {
+            "name": "visualization_has_entry_exit_markers",
+            "passed": isinstance(markers, list)
+            and any(marker.get("kind") == "entry" for marker in markers)
+            and any(marker.get("kind") == "exit" for marker in markers),
+        },
+        {"name": "no_real_order_tool_calls", "passed": not forbidden_hits},
+    ]
+    return {
+        "status": "passed" if all(check["passed"] for check in checks) else "failed",
+        "checks": checks,
+        "job_dir": str(root),
     }
 
 
@@ -1190,6 +1455,18 @@ def build_creation_prompt(case: CreationCase) -> str:
     )
 
 
+def build_execution_backtest_prompt(case: ExecutionBacktestCase) -> str:
+    return (
+        f"{case.prompt}\n\n"
+        f"Use the exact job_id `{case.job_id}`.\n\n"
+        "Hard eval requirements: finish in this single run, run the local execution "
+        "backtest and grid validation yourself, and leave all artifacts under the "
+        "job directory. Do not output a progress checkpoint or ask follow-up "
+        "questions. The final answer must start with `FINAL ANSWER` and include "
+        "the job id, the backtest artifact paths, and the validation status."
+    )
+
+
 def build_worker_prompt(case: WorkerCase, *, iteration: int) -> str:
     if case.kind == "script_agent_worker":
         mode = "monitor" if iteration == 1 else "intervene"
@@ -1681,6 +1958,100 @@ def run_creation_case(
     }
 
 
+def run_execution_backtest_case(
+    case: ExecutionBacktestCase,
+    *,
+    live: bool,
+    judge: bool,
+    output_dir: Path,
+    opencode_bin: str,
+    model: str,
+    judge_model: str,
+    timeout_seconds: int,
+    env: Mapping[str, str],
+    db_path: Path,
+) -> dict[str, Any]:
+    case_dir = output_dir / case.id
+    case_dir.mkdir(parents=True, exist_ok=True)
+    agent_output = ""
+    with tempfile.TemporaryDirectory(prefix=f"wf-job-eval-{case.id}-") as tmp:
+        workspace = Path(tmp) / "repo"
+        copy_workspace(repo_root(), workspace)
+        prompt = build_execution_backtest_prompt(case)
+        (case_dir / "prompt.md").write_text(prompt, encoding="utf-8")
+        log_text = ""
+        if live:
+            title = f"eval/jobs/{case.id}/{uuid.uuid4().hex[:8]}"
+            log_path = case_dir / "agent.log"
+            command = build_candidate_command(
+                opencode_bin,
+                model,
+                prompt,
+                directory=workspace,
+                title=title,
+            )
+            returncode, duration, error = run_process(
+                command,
+                cwd=workspace,
+                env=env,
+                log_path=log_path,
+                timeout_seconds=timeout_seconds,
+            )
+            agent_output = harvest_answer(log_path, db_path, title=title)
+            log_text = log_path.read_text(encoding="utf-8", errors="replace")
+        else:
+            create_expected_execution_backtest_bundle(workspace, case)
+            returncode, duration, error = 0, 0.0, None
+        validator = validate_execution_backtest_case(
+            workspace,
+            case,
+            log_text=log_text,
+        )
+        write_json(case_dir / "validator.json", validator)
+        kept = case_dir / "workspace"
+        if kept.exists():
+            shutil.rmtree(kept)
+        shutil.copytree(workspace, kept)
+        judge_result = None
+        if judge:
+            rubric = (repo_root() / JUDGE_RUBRIC).read_text(encoding="utf-8")
+            prompt_for_judge = build_jobs_judge_prompt(
+                rubric_text=rubric,
+                case_id=case.id,
+                task=prompt,
+                workspace=kept,
+                job_id=case.job_id,
+                validator_report=validator,
+                agent_output=agent_output,
+            )
+            judge_result = run_judge(
+                case_id=case.id,
+                prompt=prompt_for_judge,
+                output_dir=case_dir,
+                opencode_bin=opencode_bin,
+                judge_model=judge_model,
+                timeout_seconds=timeout_seconds,
+                env=env,
+                db_path=db_path,
+            )
+    status = (
+        "passed"
+        if validator["status"] == "passed"
+        and (not judge_result or judge_result["status"] == "passed")
+        else "failed"
+    )
+    return {
+        "case_id": case.id,
+        "status": status,
+        "kind": "execution_backtest",
+        "live_returncode": returncode,
+        "duration_seconds": round(duration, 3),
+        "error": error,
+        "validator": validator,
+        "judge": judge_result,
+    }
+
+
 def run_worker_case(
     case: WorkerCase,
     *,
@@ -1876,6 +2247,12 @@ def selected_worker_cases(selection: str) -> list[WorkerCase]:
     return [case for case in WORKER_CASES if case.id == selection]
 
 
+def selected_execution_backtest_cases(selection: str) -> list[ExecutionBacktestCase]:
+    if selection in {"all", "execution_backtest"}:
+        return EXECUTION_BACKTEST_CASES
+    return [case for case in EXECUTION_BACKTEST_CASES if case.id == selection]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1885,14 +2262,24 @@ def main(argv: list[str] | None = None) -> int:
             "all",
             "creation",
             "workers",
+            "execution_backtest",
             *[case.id for case in CREATION_CASES],
             *[case.id for case in WORKER_CASES],
+            *[case.id for case in EXECUTION_BACKTEST_CASES],
         ],
     )
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--live", action="store_true", help="Run real OpenCode agents.")
     parser.add_argument(
         "--judge", action="store_true", help="Run the stronger pass/fail judge."
+    )
+    parser.add_argument(
+        "--hard-live",
+        action="store_true",
+        help=(
+            "Run the hard same-script execution backtest creation eval live and "
+            "require the judge."
+        ),
     )
     parser.add_argument("--iterations", type=int, default=2)
     parser.add_argument("--model", default=DEFAULT_CANDIDATE_MODEL)
@@ -1903,6 +2290,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--opencode-db", default=DEFAULT_DB)
     parser.add_argument("--timeout", type=int, default=600)
     args = parser.parse_args(argv)
+
+    if args.hard_live:
+        args.case = "hard_execution_backtest_creation"
+        args.live = True
+        args.judge = True
 
     if args.iterations < 1:
         raise SystemExit("--iterations must be >= 1")
@@ -1952,6 +2344,20 @@ def main(argv: list[str] | None = None) -> int:
             live=args.live,
             judge=args.judge,
             iterations=args.iterations,
+            output_dir=output_dir,
+            opencode_bin=args.opencode_bin,
+            model=args.model,
+            judge_model=judge_model,
+            timeout_seconds=args.timeout,
+            env=env,
+            db_path=db_path,
+        )
+        report["cases"].append(result)
+    for case in selected_execution_backtest_cases(args.case):
+        result = run_execution_backtest_case(
+            case,
+            live=args.live,
+            judge=args.judge,
             output_dir=output_dir,
             opencode_bin=args.opencode_bin,
             model=args.model,

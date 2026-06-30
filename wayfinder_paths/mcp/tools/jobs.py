@@ -8,6 +8,7 @@ from wayfinder_paths.jobs.application import (
     validate_application_candidate,
 )
 from wayfinder_paths.jobs.compiler import JobCompiler
+from wayfinder_paths.jobs.execution.job import backtest_execution_job, validate_job
 from wayfinder_paths.jobs.models import (
     WayfinderJob,
     infer_job_kind,
@@ -26,6 +27,8 @@ JobAction = Literal[
     "report",
     "set_agent_mode",
     "review_now",
+    "validate_job",
+    "backtest_job",
     "proposals",
     "approve_proposal",
     "reject_proposal",
@@ -61,6 +64,10 @@ async def core_jobs(
     changed_files: list[str] | None = None,
     validation: dict[str, Any] | None = None,
     error: str | None = None,
+    strict: bool = False,
+    grid_path: str | None = None,
+    workers: int = 1,
+    parallel: Literal["serial", "thread", "process"] = "serial",
     compile: bool = True,  # noqa: A002
 ) -> dict[str, Any]:
     """Manage high-level Wayfinder jobs.
@@ -78,6 +85,7 @@ async def core_jobs(
       - `approve_proposal` / `reject_proposal` after the worker creates proposals.
       - `claim_application` / `validate_application` / `complete_application`
         from an apply worker.
+      - `validate_job` / `backtest_job` for execution-spec jobs.
     """
 
     store = JobStore()
@@ -144,6 +152,20 @@ async def core_jobs(
         if mode == "off":
             mode = "monitor"
         return ok(run_job_worker(job_id, mode=mode, apply_proposal_id=proposal_id))
+
+    if action == "validate_job":
+        return ok(validate_job(job_id, strict=strict, store=store))
+
+    if action == "backtest_job":
+        return ok(
+            backtest_execution_job(
+                job_id,
+                grid_path=grid_path,
+                workers=workers,
+                parallel=parallel,
+                store=store,
+            )
+        )
 
     if action == "proposals":
         return ok(store.proposals(job_id))
