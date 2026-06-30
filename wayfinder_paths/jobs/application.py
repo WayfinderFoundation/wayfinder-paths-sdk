@@ -1,0 +1,415 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+from pathlib import Path
+from typing import Any
+
+from wayfinder_paths.jobs.compiler import JobCompiler
+from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.runner_bridge import RunnerBridge
+from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.sync import sync_all_jobs
+from wayfinder_paths.jobs.validation import (
+    compact_json,
+    validate_candidate_application,
+    validation_summary,
+)
+
+
+def pause_job_loops(store: JobStore, job_id: str) -> list[dict[str, Any]]:
+    job = store.load(job_id)
+    bridge = RunnerBridge(repo_root=store.repo_root)
+    return _apply_runner_action(bridge, job, "pause")
+
+
+def resume_job_loops(store: JobStore, job_id: str) -> list[dict[str, Any]]:
+    job = store.load(job_id)
+    bridge = RunnerBridge(repo_root=store.repo_root)
+    return _apply_runner_action(bridge, job, "resume")
+
+
+def claim_application(store: JobStore, job_id: str, proposal_id: str) -> dict[str, Any]:
+    proposal = store.load_proposal(job_id, proposal_id)
+    application_status = str(
+        (proposal.get("application") or {}).get("status") or "not_requested"
+    )
+    if proposal.get("status") != "approved":
+        raise ValueError(f"Proposal is not approved: {proposal_id}")
+    if application_status not in {"queued", "failed"}:
+        raise ValueError(
+            f"Proposal application is not queued: {proposal_id} ({application_status})"
+        )
+    paused = pause_job_loops(store, job_id)
+    try:
+        candidate = _prepare_candidate_workspace(store, job_id, proposal_id)
+        proposal = store.claim_proposal_application(
+            job_id,
+            proposal_id,
+            paused_runner_jobs=paused,
+            candidate=candidate,
+        )
+    except Exception:
+        resume_job_loops(store, job_id)
+        raise
+    sync_all_jobs(store=store)
+    return {"proposal": proposal, "paused_runner_jobs": paused, "candidate": candidate}
+
+
+def validate_application_candidate(
+    store: JobStore,
+    job_id: str,
+    proposal_id: str,
+    *,
+    require_judge: bool | None = None,
+) -> dict[str, Any]:
+    proposal = store.load_proposal(job_id, proposal_id)
+    application_status = str(
+        (proposal.get("application") or {}).get("status") or "not_requested"
+    )
+    if application_status != "applying":
+        raise ValueError(
+            f"Proposal application is not applying: {proposal_id} "
+            f"({application_status})"
+        )
+    validation = validate_candidate_application(
+        repo_root=store.repo_root,
+        job_dir=store.job_dir(job_id),
+        proposal=proposal,
+        candidate_dir=_candidate_dir_from_proposal(store, job_id, proposal),
+        require_judge=bool(proposal.get("judge_required"))
+        if require_judge is None
+        else require_judge,
+    )
+    store.record_proposal_application_validation(job_id, proposal_id, validation)
+    return validation
+
+
+def complete_application(
+    store: JobStore,
+    job_id: str,
+    proposal_id: str,
+    *,
+    status: str,
+    changed_files: list[str] | None = None,
+    validation: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    runner_responses: list[dict[str, Any]] = []
+    compile_result: dict[str, Any] | None = None
+    final_status = status
+    final_error = error
+    promoted_revision: str | None = None
+    deterministic_validation: dict[str, Any] | None = None
+    rollback: dict[str, Any] | None = None
+    if status == "applied":
+        proposal = store.load_proposal(job_id, proposal_id)
+        candidate_dir = _candidate_dir_from_proposal(store, job_id, proposal)
+        deterministic_validation = validate_candidate_application(
+            repo_root=store.repo_root,
+            job_dir=store.job_dir(job_id),
+            proposal=proposal,
+            candidate_dir=candidate_dir,
+            require_judge=bool(proposal.get("judge_required")),
+        )
+        store.record_proposal_application_validation(
+            job_id,
+            proposal_id,
+            deterministic_validation,
+        )
+        if deterministic_validation["status"] != "passed":
+            final_status = "failed"
+            final_error = "Candidate validation failed: " + compact_json(
+                validation_summary(deterministic_validation)
+            )
+        else:
+            backup_dir = _backup_active_workspace(store, job_id, proposal_id)
+            try:
+                _promote_candidate(store, job_id, candidate_dir)
+                job = store.load(job_id)
+                promoted_revision = _record_promoted_revision(
+                    store,
+                    job_id,
+                    proposal_id,
+                    changed_files=changed_files,
+                    validation=deterministic_validation,
+                )
+                job.versioning["active_revision"] = promoted_revision
+                store.save(job)
+                job = store.load(job_id)
+                compile_result = JobCompiler(store=store).compile(job)
+                sync_all_jobs(store=store)
+            except Exception as exc:
+                rollback = _restore_active_workspace(store, job_id, backup_dir)
+                final_status = "failed"
+                final_error = str(exc)
+            if final_status == "applied":
+                _write_apply_report(
+                    store,
+                    job_id,
+                    proposal_id,
+                    status="green",
+                    summary="Applied approved proposal after deterministic validation.",
+                    changed_files=changed_files or [],
+                    validation=deterministic_validation,
+                    promoted_revision=promoted_revision,
+                    compile_result=compile_result,
+                )
+            else:
+                _write_apply_report(
+                    store,
+                    job_id,
+                    proposal_id,
+                    status="red",
+                    summary=f"Failed to apply approved proposal: {final_error}",
+                    changed_files=changed_files or [],
+                    validation=deterministic_validation,
+                    promoted_revision=promoted_revision,
+                    compile_result=compile_result,
+                    error=final_error,
+                    rollback=rollback,
+                )
+    elif status == "failed":
+        _write_apply_report(
+            store,
+            job_id,
+            proposal_id,
+            status="red",
+            summary=f"Application failed before promotion: {final_error or 'unspecified'}",
+            changed_files=changed_files or [],
+            validation=validation or {},
+            error=final_error,
+        )
+    runner_responses = resume_job_loops(store, job_id)
+    validation_payload = dict(validation or {})
+    if deterministic_validation is not None:
+        validation_payload["deterministic_validation"] = deterministic_validation
+    proposal = store.load_proposal(job_id, proposal_id)
+    validation_attempts = (proposal.get("application") or {}).get("validation_attempts")
+    if validation_attempts and "validation_attempts" not in validation_payload:
+        validation_payload["validation_attempts"] = validation_attempts
+    if promoted_revision:
+        validation_payload["promoted_revision"] = promoted_revision
+    if rollback:
+        validation_payload["rollback"] = rollback
+    proposal = store.complete_proposal_application(
+        job_id,
+        proposal_id,
+        status=final_status,  # type: ignore[arg-type]
+        changed_files=changed_files,
+        validation=validation_payload,
+        error=final_error,
+        runner_responses=runner_responses,
+        promoted_revision=promoted_revision,
+        rollback=rollback,
+    )
+    sync_all_jobs(store=store)
+    return {
+        "proposal": proposal,
+        "compile": compile_result,
+        "deterministic_validation": deterministic_validation,
+        "promoted_revision": promoted_revision,
+        "rollback": rollback,
+        "resumed_runner_jobs": runner_responses,
+    }
+
+
+def _apply_runner_action(
+    bridge: RunnerBridge, job: Any, action: str
+) -> list[dict[str, Any]]:
+    responses: list[dict[str, Any]] = []
+    runner_action = getattr(bridge, action)
+    if job.script_loop.enabled and job.script_loop.runner_job_name:
+        responses.append(
+            {
+                "loop": "script",
+                "runner_job_name": job.script_loop.runner_job_name,
+                "response": _safe_runner_call(
+                    runner_action, job.script_loop.runner_job_name
+                ),
+            }
+        )
+    if job.agent_loop.enabled and job.agent_loop.runner_job_name:
+        responses.append(
+            {
+                "loop": "agent",
+                "runner_job_name": job.agent_loop.runner_job_name,
+                "response": _safe_runner_call(
+                    runner_action, job.agent_loop.runner_job_name
+                ),
+            }
+        )
+    return responses
+
+
+def _safe_runner_call(action: Any, name: str) -> dict[str, Any]:
+    try:
+        return action(name)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "name": name}
+
+
+def _prepare_candidate_workspace(
+    store: JobStore, job_id: str, proposal_id: str
+) -> dict[str, Any]:
+    root = store.job_dir(job_id)
+    candidate_dir = root / "applications" / proposal_id / "candidate"
+    if candidate_dir.exists():
+        shutil.rmtree(candidate_dir)
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    workspace_src = root / "workspace"
+    workspace_dst = candidate_dir / "workspace"
+    if workspace_src.exists():
+        shutil.copytree(workspace_src, workspace_dst)
+    else:
+        workspace_dst.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(root / "job.yaml", candidate_dir / "job.yaml")
+    return {
+        "candidate_workspace": str(workspace_dst.relative_to(store.repo_root)),
+        "candidate_job_yaml": str(
+            (candidate_dir / "job.yaml").relative_to(store.repo_root)
+        ),
+        "candidate_dir": str(candidate_dir.relative_to(store.repo_root)),
+    }
+
+
+def _candidate_dir_from_proposal(
+    store: JobStore, job_id: str, proposal: dict[str, Any]
+) -> Path:
+    application = proposal.get("application") or {}
+    candidate_dir = application.get("candidate_dir")
+    if candidate_dir:
+        path = store.repo_root / str(candidate_dir)
+        if path.exists():
+            return path
+    return (
+        store.job_dir(job_id)
+        / "applications"
+        / str(proposal["proposal_id"])
+        / "candidate"
+    )
+
+
+def _backup_active_workspace(store: JobStore, job_id: str, proposal_id: str) -> Path:
+    root = store.job_dir(job_id)
+    backup_dir = root / "applications" / proposal_id / "backup"
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    if (root / "workspace").exists():
+        shutil.copytree(root / "workspace", backup_dir / "workspace")
+    shutil.copy2(root / "job.yaml", backup_dir / "job.yaml")
+    return backup_dir
+
+
+def _promote_candidate(store: JobStore, job_id: str, candidate_dir: Path) -> None:
+    root = store.job_dir(job_id)
+    candidate_workspace = candidate_dir / "workspace"
+    candidate_job_yaml = candidate_dir / "job.yaml"
+    if not candidate_workspace.exists():
+        raise FileNotFoundError(f"candidate workspace missing: {candidate_workspace}")
+    if not candidate_job_yaml.exists():
+        raise FileNotFoundError(f"candidate job.yaml missing: {candidate_job_yaml}")
+    active_workspace = root / "workspace"
+    if active_workspace.exists():
+        shutil.rmtree(active_workspace)
+    shutil.copytree(candidate_workspace, active_workspace)
+    shutil.copy2(candidate_job_yaml, root / "job.yaml")
+
+
+def _restore_active_workspace(
+    store: JobStore, job_id: str, backup_dir: Path
+) -> dict[str, Any]:
+    root = store.job_dir(job_id)
+    active_workspace = root / "workspace"
+    if active_workspace.exists():
+        shutil.rmtree(active_workspace)
+    if (backup_dir / "workspace").exists():
+        shutil.copytree(backup_dir / "workspace", active_workspace)
+    shutil.copy2(backup_dir / "job.yaml", root / "job.yaml")
+    return {
+        "restored": True,
+        "backup_dir": str(backup_dir.relative_to(store.repo_root)),
+    }
+
+
+def _record_promoted_revision(
+    store: JobStore,
+    job_id: str,
+    proposal_id: str,
+    *,
+    changed_files: list[str] | None,
+    validation: dict[str, Any] | None,
+) -> str:
+    root = store.job_dir(job_id)
+    digest = hashlib.sha256()
+    for path in sorted((root / "workspace").rglob("*")):
+        if path.is_file():
+            digest.update(str(path.relative_to(root)).encode("utf-8"))
+            digest.update(path.read_bytes())
+    digest.update((root / "job.yaml").read_bytes())
+    revision = digest.hexdigest()[:12]
+    active = {
+        "job_id": job_id,
+        "active_revision": revision,
+        "active_label": f"proposal/{proposal_id}",
+        "proposal_id": proposal_id,
+    }
+    store.write_json(job_id, "versions/active.json", active)
+    store.append_journal(
+        job_id,
+        {
+            "type": "proposal_promoted",
+            "proposal_id": proposal_id,
+            "revision": revision,
+            "changed_files": changed_files or [],
+            "validation_status": (validation or {}).get("status"),
+        },
+    )
+    revisions_path = root / "versions" / "revisions.jsonl"
+    revisions_path.parent.mkdir(parents=True, exist_ok=True)
+    revisions_path.open("a", encoding="utf-8").write(
+        json.dumps(
+            {
+                "ts": utc_now_iso(),
+                "revision": revision,
+                "proposal_id": proposal_id,
+                "changed_files": changed_files or [],
+                "validation_status": (validation or {}).get("status"),
+            },
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    return revision
+
+
+def _write_apply_report(
+    store: JobStore,
+    job_id: str,
+    proposal_id: str,
+    *,
+    status: str,
+    summary: str,
+    changed_files: list[str],
+    validation: dict[str, Any] | None = None,
+    promoted_revision: str | None = None,
+    compile_result: dict[str, Any] | None = None,
+    error: str | None = None,
+    rollback: dict[str, Any] | None = None,
+) -> None:
+    payload = {
+        "job_id": job_id,
+        "mode": "apply",
+        "status": status,
+        "apply_proposal_id": proposal_id,
+        "summary": summary,
+        "changed_files": changed_files,
+        "validation": validation or {},
+        "promoted_revision": promoted_revision,
+        "compile": compile_result,
+        "error": error,
+        "rollback": rollback,
+    }
+    store.write_json(job_id, "reports/apply/latest.json", payload)

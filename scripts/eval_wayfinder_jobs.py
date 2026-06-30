@@ -32,12 +32,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from wayfinder_paths.jobs.forward import ForwardRecorder
 from wayfinder_paths.jobs.models import (
     JOB_AUTO_WORKER_AGENT_NAME,
     JOB_WORKER_AGENT_NAME,
     WayfinderJob,
 )
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.validation import validate_candidate_application
+from wayfinder_paths.jobs.worker import prepare_job_worker_prompt
 
 DEFAULT_CANDIDATE_MODEL = "wayfinder/deepseek-v4-pro"
 DEFAULT_JUDGE_MODEL = "openai/gpt-5.5"
@@ -64,6 +67,7 @@ WORKSPACE_IGNORE_NAMES = {
 CODE_CONTEXT_FILES = [
     "wayfinder_paths/jobs/models.py",
     "wayfinder_paths/jobs/store.py",
+    "wayfinder_paths/jobs/forward.py",
     "wayfinder_paths/jobs/worker.py",
     "wayfinder_paths/mcp/tools/jobs.py",
 ]
@@ -85,6 +89,7 @@ class WorkerCase:
     job_id: str
     kind: WorkerKind
     agent_name: str
+    complex_apply: bool = False
 
 
 CREATION_CASES = [
@@ -97,6 +102,10 @@ CREATION_CASES = [
             "strategy script at `.wayfinder_runs/eval_inputs/sma_rearm_strategy.py`. "
             "It should run every 300 seconds in paper mode with no agent loop. "
             'Use `wayfinder_core_jobs(action="create", compile=false)` if available; '
+            "if MCP tools are unavailable, use `poetry run wayfinder job create "
+            'eval-sma-rearm-script --name "Eval SMA Re-arm Script" --script '
+            '".wayfinder_runs/eval_inputs/sma_rearm_strategy.py" --interval 300 '
+            "--agent-mode off --no-compile`. "
             "do not start the runner daemon or schedule the loop during this eval. "
             "When done, summarize the created job id and key fields."
         ),
@@ -111,7 +120,12 @@ CREATION_CASES = [
             "sma_rearm_strategy.py`. It should run every 300 seconds in paper mode, "
             "with an hourly monitor agent loop. Use `wayfinder_core_jobs(action="
             '"create", compile=false)` if available; do not start scheduling in '
-            "this eval. When done, summarize the job id, script interval, and agent "
+            "this eval. If MCP tools are unavailable, use `poetry run wayfinder "
+            'job create eval-sma-rearm-supervised --name "Eval SMA Re-arm '
+            'Supervised" --script ".wayfinder_runs/eval_inputs/'
+            'sma_rearm_strategy.py" --interval 300 --agent-mode monitor '
+            "--agent-wake 3600 --no-compile`. "
+            "When done, summarize the job id, script interval, and agent "
             "mode."
         ),
     ),
@@ -125,6 +139,11 @@ CREATION_CASES = [
             "`hyperliquid`, allowed symbol `BTC`, max_notional_per_decision 25, "
             "max_daily_notional 100, max_open_positions 1, and max_open_orders 2. "
             'Use `wayfinder_core_jobs(action="create", compile=false)` if available; '
+            "if MCP tools are unavailable, use `poetry run wayfinder job create "
+            'eval-btc-auto-managed --name "Eval BTC Auto Managed" --agent-mode '
+            "auto --auto-venue hyperliquid --auto-symbol BTC --max-notional 25 "
+            "--max-daily-notional 100 --max-open-positions 1 --max-open-orders 2 "
+            "--no-compile`. "
             "this is a creation eval, so do not start scheduling. Summarize the "
             "configured auto limits."
         ),
@@ -139,12 +158,103 @@ WORKER_CASES = [
         agent_name=JOB_WORKER_AGENT_NAME,
     ),
     WorkerCase(
+        id="worker_script_agent_complex_apply",
+        job_id="eval-snx-imx-complex-rearm",
+        kind="script_agent_worker",
+        agent_name=JOB_WORKER_AGENT_NAME,
+        complex_apply=True,
+    ),
+    WorkerCase(
         id="worker_auto_two_step",
         job_id="eval-btc-auto-managed",
         kind="auto_worker",
         agent_name=JOB_AUTO_WORKER_AGENT_NAME,
     ),
 ]
+SCRIPT_AGENT_PROPOSAL_ID = "prop_rearm_guard_v1"
+
+
+def script_agent_intent_contract() -> dict[str, Any]:
+    return {
+        "intent": "Reduce false blocked re-arm states without allowing one-sided entries.",
+        "rules_changed": [
+            "Add an explicit rearm_guard reason when IMX is near clear but SNX remains blocked."
+        ],
+        "rules_unchanged": [
+            "Only enter when both SNX and IMX close above SMA50.",
+            "Ignore in-progress candles.",
+            "Keep paper-mode forward telemetry.",
+        ],
+        "risk_constraints": [
+            "No live order placement in this eval.",
+            "No duplicate pending stop or limit orders.",
+        ],
+        "entry_conditions": ["SNX close > SMA50 and IMX close > SMA50."],
+        "exit_conditions": ["No exit rule change in this proposal."],
+        "known_non_goals": ["Do not loosen both-leg confirmation."],
+    }
+
+
+def script_agent_scenario_plan() -> dict[str, Any]:
+    return {
+        "decision_function": "decide_from_snapshot",
+        "scenarios": [
+            {
+                "name": "entry_allowed_both_rearmed",
+                "category": "entry_allowed",
+                "snapshot": {
+                    "latest": {
+                        "snx_close": 0.224,
+                        "snx_sma50": 0.220,
+                        "imx_close": 0.136,
+                        "imx_sma50": 0.134,
+                        "bar_complete": True,
+                    }
+                },
+                "state": {},
+                "expect": {
+                    "action": "paper_enter",
+                    "reason_contains": "both legs cleared",
+                },
+            },
+            {
+                "name": "entry_blocked_snx_not_rearmed",
+                "category": "entry_blocked",
+                "snapshot": {
+                    "latest": {
+                        "snx_close": 0.217,
+                        "snx_sma50": 0.220,
+                        "imx_close": 0.1335,
+                        "imx_sma50": 0.134,
+                        "bar_complete": True,
+                    }
+                },
+                "state": {},
+                "expect": {
+                    "action": "wait",
+                    "reason_contains": "rearm_guard",
+                },
+            },
+            {
+                "name": "in_progress_candle_ignored",
+                "category": "no_lookahead",
+                "snapshot": {
+                    "latest": {
+                        "snx_close": 0.230,
+                        "snx_sma50": 0.220,
+                        "imx_close": 0.140,
+                        "imx_sma50": 0.134,
+                        "bar_complete": False,
+                    }
+                },
+                "state": {},
+                "expect": {
+                    "action": "wait",
+                    "reason_contains": "in-progress",
+                },
+            },
+        ],
+    }
 
 
 def repo_root() -> Path:
@@ -191,6 +301,8 @@ import csv
 import json
 from pathlib import Path
 
+from wayfinder_paths.jobs.forward import get_forward_recorder
+
 
 DATA = Path(__file__).with_name("sma_rearm_prices.csv")
 
@@ -203,14 +315,45 @@ def load_rows() -> list[dict[str, float]]:
     return rows
 
 
+def decide_from_snapshot(snapshot: dict, state: dict | None = None) -> dict:
+    latest = snapshot["latest"]
+    if latest.get("bar_complete") is False:
+        return {
+            "action": "wait",
+            "reason": "in-progress candle ignored",
+            "blocked_reasons": ["in_progress_candle"],
+        }
+    if latest["snx_close"] > latest["snx_sma50"] and latest["imx_close"] > latest["imx_sma50"]:
+        return {
+            "action": "paper_enter",
+            "reason": "Both legs cleared SMA50.",
+            "blocked_reasons": [],
+        }
+    return {
+        "action": "wait",
+        "reason": "SNX still below SMA50; IMX is near clear.",
+        "blocked_reasons": ["snx_rearm_blocked"],
+    }
+
+
 def main() -> None:
     rows = load_rows()
     latest = rows[-1]
-    decision = "wait"
-    reason = "SNX still below SMA50; IMX is near clear."
-    if latest["snx_close"] > latest["snx_sma50"] and latest["imx_close"] > latest["imx_sma50"]:
-        decision = "paper_enter"
-        reason = "Both legs cleared SMA50."
+    result = decide_from_snapshot({"latest": latest}, {})
+    decision = result["action"]
+    reason = result["reason"]
+    try:
+        get_forward_recorder().record_run(
+            decision=decision,
+            reason=reason,
+            state={"latest": latest},
+            metrics={
+                "snx_gap_to_clear": latest["snx_close"] - latest["snx_sma50"],
+                "imx_gap_to_clear": latest["imx_close"] - latest["imx_sma50"],
+            },
+        )
+    except RuntimeError:
+        pass
     print(json.dumps({"status": "ok", "decision": decision, "reason": reason}))
 
 
@@ -277,6 +420,50 @@ def create_expected_job_bundle(workspace: Path, case: CreationCase) -> Path:
     return store.save(job)
 
 
+def script_entrypoint_path(
+    workspace: Path, script_loop: Mapping[str, Any], *, job_id: str | None = None
+) -> Path:
+    entrypoint = str(script_loop.get("entrypoint") or "")
+    if not entrypoint:
+        return workspace / "__missing_script_entrypoint__"
+    path = Path(entrypoint)
+    if path.is_absolute():
+        return path
+    if job_id and path.parts and path.parts[0] == "workspace":
+        return workspace / ".wayfinder" / "jobs" / job_id / path
+    return workspace / path
+
+
+def validate_script_forward_telemetry(
+    workspace: Path, script_loop: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    script_path = script_entrypoint_path(workspace, script_loop)
+    checks: list[dict[str, Any]] = [
+        {
+            "name": "script_entrypoint_exists",
+            "passed": script_path.exists(),
+            "path": str(script_path),
+        }
+    ]
+    if not script_path.exists():
+        return checks
+
+    text = script_path.read_text(encoding="utf-8")
+    checks.extend(
+        [
+            {
+                "name": "script_imports_forward_recorder",
+                "passed": "get_forward_recorder" in text,
+            },
+            {
+                "name": "script_records_forward_run",
+                "passed": "record_run(" in text,
+            },
+        ]
+    )
+    return checks
+
+
 def validate_creation_case(workspace: Path, case: CreationCase) -> dict[str, Any]:
     path = workspace / ".wayfinder" / "jobs" / case.job_id / "job.yaml"
     checks: list[dict[str, Any]] = []
@@ -313,6 +500,7 @@ def validate_creation_case(workspace: Path, case: CreationCase) -> dict[str, Any
                 },
             ]
         )
+        checks.extend(validate_script_forward_telemetry(workspace, script_loop))
     elif case.kind == "script_agent":
         checks.extend(
             [
@@ -334,6 +522,7 @@ def validate_creation_case(workspace: Path, case: CreationCase) -> dict[str, Any
                 },
             ]
         )
+        checks.extend(validate_script_forward_telemetry(workspace, script_loop))
     else:
         limits = agent_loop.get("auto_limits") or {}
         checks.extend(
@@ -368,8 +557,12 @@ def validate_creation_case(workspace: Path, case: CreationCase) -> dict[str, Any
     }
 
 
-def setup_script_agent_worker_fixture(workspace: Path, *, iteration: int) -> WorkerCase:
-    case = WORKER_CASES[0]
+def setup_script_agent_worker_fixture(
+    workspace: Path, *, iteration: int, case: WorkerCase | None = None
+) -> WorkerCase:
+    case = case or next(
+        item for item in WORKER_CASES if item.id == "worker_script_agent_two_step"
+    )
     script = write_strategy_fixture(workspace)
     store = JobStore(repo_root=workspace)
     job = WayfinderJob.new(
@@ -420,13 +613,25 @@ def setup_script_agent_worker_fixture(workspace: Path, *, iteration: int) -> Wor
                 {"trade": 4, "pnl": -0.7, "reason": "missed synchronized clear"},
             ]
         )
-    (root / "results" / "forward" / "runs.jsonl").write_text(
-        "".join(json.dumps(row, sort_keys=True) + "\n" for row in runs),
-        encoding="utf-8",
+    recorder = ForwardRecorder(
+        job_id=job.id,
+        forward_dir=root / "results" / "forward",
+        mode="paper",
+        revision=str(job.versioning.get("active_revision") or ""),
     )
-    (root / "results" / "forward" / "trades.jsonl").write_text(
-        "".join(json.dumps(row, sort_keys=True) + "\n" for row in trades),
-        encoding="utf-8",
+    for row in runs:
+        recorder.record_run(row, status="ok")
+    for row in trades:
+        recorder.record_trade(row)
+    recorder.record_order(
+        {
+            "order_id": "eval-pending-stop-001",
+            "trade_id": "eval-open-trade",
+            "status": "pending",
+            "order_type": "stop_loss",
+            "reason": "async stop-loss state for worker eval",
+            "reconciliation": "pending order still live",
+        }
     )
     write_json(
         root / "results" / "forward" / "summary.json",
@@ -457,7 +662,7 @@ def setup_script_agent_worker_fixture(workspace: Path, *, iteration: int) -> Wor
 
 
 def setup_auto_worker_fixture(workspace: Path, *, iteration: int) -> WorkerCase:
-    case = WORKER_CASES[1]
+    case = next(item for item in WORKER_CASES if item.kind == "auto_worker")
     store = JobStore(repo_root=workspace)
     job = WayfinderJob.new(
         case.job_id,
@@ -534,6 +739,12 @@ def validate_worker_case(
             checks.append({"name": "no_premature_proposal", "passed": not proposals})
         else:
             pending = [item for item in proposals if item.get("status") == "pending"]
+            premature_applications = [
+                item
+                for item in proposals
+                if (item.get("application") or {}).get("status")
+                in {"queued", "applying", "applied"}
+            ]
             checks.extend(
                 [
                     {"name": "pending_proposal_created", "passed": bool(pending)},
@@ -542,6 +753,10 @@ def validate_worker_case(
                         "passed": not any(
                             item.get("status") == "approved" for item in proposals
                         ),
+                    },
+                    {
+                        "name": "proposal_application_not_queued_preapproval",
+                        "passed": not premature_applications,
                     },
                 ]
             )
@@ -608,6 +823,139 @@ def validate_worker_case(
     }
 
 
+def approve_worker_proposal_for_application(
+    workspace: Path, case: WorkerCase
+) -> dict[str, Any]:
+    store = JobStore(repo_root=workspace)
+    return store.approve_proposal(case.job_id, SCRIPT_AGENT_PROPOSAL_ID)
+
+
+def validate_application_case(
+    workspace: Path, case: WorkerCase, *, log_text: str = ""
+) -> dict[str, Any]:
+    root = workspace / ".wayfinder" / "jobs" / case.job_id
+    proposal = (
+        read_json(root / "proposals" / f"{SCRIPT_AGENT_PROPOSAL_ID}.json", default={})
+        or {}
+    )
+    application = proposal.get("application") or {}
+    job_yaml = yaml.safe_load((root / "job.yaml").read_text(encoding="utf-8"))
+    script_loop = job_yaml.get("script_loop") or {}
+    script_path = script_entrypoint_path(workspace, script_loop, job_id=case.job_id)
+    script_text = (
+        script_path.read_text(encoding="utf-8", errors="replace")
+        if script_path.exists()
+        else ""
+    )
+    report = read_json(root / "reports" / "apply" / "latest.json", default={}) or {}
+    validation = application.get("validation") or {}
+    deterministic_validation = (
+        validation.get("deterministic_validation") or report.get("validation") or {}
+    )
+    validation_attempts = (
+        validation.get("validation_attempts") or report.get("validation_attempts") or []
+    )
+    deterministic_checks = deterministic_validation.get("checks") or []
+    scenario_checks = [
+        check
+        for check in deterministic_checks
+        if isinstance(check, Mapping)
+        and str(check.get("name") or "").startswith("scenario_")
+    ]
+    journal = (root / "journal.jsonl").read_text(encoding="utf-8", errors="replace")
+    forbidden_tools = [
+        "wayfinder_hyperliquid_place_",
+        "wayfinder_polymarket_place_",
+        "wayfinder_onchain_swap",
+        "wayfinder_onchain_send",
+        "wayfinder_contracts_execute",
+    ]
+    forbidden_hits = [name for name in forbidden_tools if name in log_text]
+    checks = [
+        {"name": "proposal_exists", "passed": bool(proposal)},
+        {"name": "proposal_approved", "passed": proposal.get("status") == "approved"},
+        {
+            "name": "application_applied",
+            "passed": application.get("status") == "applied",
+        },
+        {
+            "name": "claim_recorded",
+            "passed": "proposal_apply_started" in journal,
+        },
+        {
+            "name": "completion_recorded",
+            "passed": "proposal_apply_finished" in journal,
+        },
+        {"name": "apply_report_exists", "passed": bool(report)},
+        {
+            "name": "apply_report_references_proposal",
+            "passed": report.get("apply_proposal_id") == SCRIPT_AGENT_PROPOSAL_ID
+            or report.get("proposal_id") == SCRIPT_AGENT_PROPOSAL_ID,
+        },
+        {
+            "name": "changed_files_recorded",
+            "passed": bool(application.get("changed_files")),
+        },
+        {"name": "validation_recorded", "passed": bool(application.get("validation"))},
+        {
+            "name": "deterministic_validation_passed",
+            "passed": deterministic_validation.get("status") == "passed",
+        },
+        {
+            "name": "scenario_validation_passed",
+            "passed": bool(scenario_checks)
+            and all(bool(check.get("passed")) for check in scenario_checks),
+        },
+        {
+            "name": "promoted_revision_recorded",
+            "passed": bool(
+                application.get("promoted_revision")
+                or validation.get("promoted_revision")
+                or report.get("promoted_revision")
+            ),
+        },
+        {
+            "name": "complex_apply_feedback_loop",
+            "passed": not case.complex_apply
+            or (
+                isinstance(validation_attempts, list)
+                and len(validation_attempts) >= 2
+                and validation_attempts[0].get("status") == "failed"
+                and validation_attempts[-1].get("status") == "passed"
+            ),
+        },
+        {"name": "script_entrypoint_exists", "passed": script_path.exists()},
+        {
+            "name": "script_moved_into_job_workspace",
+            "passed": (
+                ".wayfinder/jobs/" in str(script_loop.get("entrypoint") or "")
+                and "/workspace/" in str(script_loop.get("entrypoint") or "")
+            )
+            or str(script_loop.get("entrypoint") or "").startswith("workspace/"),
+        },
+        {
+            "name": "script_keeps_forward_recorder",
+            "passed": "get_forward_recorder" in script_text
+            and "record_run(" in script_text,
+        },
+        {
+            "name": "script_contains_rearm_guard_change",
+            "passed": "rearm_guard" in script_text.lower()
+            or "near-clear" in script_text.lower()
+            or "near_clear" in script_text.lower()
+            or "rearm_tolerance" in script_text.lower()
+            or "tolerance band" in script_text.lower()
+            or "tolerance-band" in json.dumps(report).lower(),
+        },
+        {"name": "no_real_order_tool_calls", "passed": not forbidden_hits},
+    ]
+    return {
+        "status": "passed" if all(check["passed"] for check in checks) else "failed",
+        "checks": checks,
+        "job_dir": str(root),
+    }
+
+
 def write_valid_worker_artifacts(
     workspace: Path, case: WorkerCase, *, iteration: int
 ) -> None:
@@ -641,14 +989,16 @@ def write_valid_worker_artifacts(
                 },
             )
             write_json(
-                root / "proposals" / "prop_rearm_guard_v1.json",
+                root / "proposals" / f"{SCRIPT_AGENT_PROPOSAL_ID}.json",
                 {
-                    "proposal_id": "prop_rearm_guard_v1",
+                    "proposal_id": SCRIPT_AGENT_PROPOSAL_ID,
                     "job_id": case.job_id,
                     "status": "pending",
                     "proposed_change": {
                         "summary": "Add an early-warning state for IMX near-clear, but keep both-leg confirmation."
                     },
+                    "intent_contract": script_agent_intent_contract(),
+                    "scenario_plan": script_agent_scenario_plan(),
                     "validation": {"backtest_required": True, "paper_required": True},
                     "approval": {"required": True, "status": "pending"},
                 },
@@ -698,6 +1048,138 @@ def write_valid_worker_artifacts(
         )
 
 
+def write_valid_application_artifacts(workspace: Path, case: WorkerCase) -> None:
+    """Create expected-good apply artifacts for deterministic validator tests."""
+    store = JobStore(repo_root=workspace)
+    root = store.job_dir(case.job_id)
+    proposal = store.load_proposal(case.job_id, SCRIPT_AGENT_PROPOSAL_ID)
+    if proposal.get("status") != "approved":
+        store.approve_proposal(case.job_id, SCRIPT_AGENT_PROPOSAL_ID)
+    candidate_dir = root / "applications" / SCRIPT_AGENT_PROPOSAL_ID / "candidate"
+    if candidate_dir.exists():
+        shutil.rmtree(candidate_dir)
+    candidate_workspace = candidate_dir / "workspace"
+    candidate_workspace.mkdir(parents=True, exist_ok=True)
+    if (root / "workspace").exists():
+        shutil.copytree(root / "workspace", candidate_workspace, dirs_exist_ok=True)
+    shutil.copy2(root / "job.yaml", candidate_dir / "job.yaml")
+    proposal = store.load_proposal(case.job_id, SCRIPT_AGENT_PROPOSAL_ID)
+    if (proposal.get("application") or {}).get("status") != "applying":
+        store.claim_proposal_application(
+            case.job_id,
+            SCRIPT_AGENT_PROPOSAL_ID,
+            paused_runner_jobs=[
+                {"loop": "script", "runner_job_name": "eval-snx-imx-rearm-script"},
+                {"loop": "agent", "runner_job_name": "eval-snx-imx-rearm-agent"},
+            ],
+            candidate={
+                "candidate_workspace": str(
+                    candidate_workspace.relative_to(store.repo_root)
+                ),
+                "candidate_job_yaml": str(
+                    (candidate_dir / "job.yaml").relative_to(store.repo_root)
+                ),
+                "candidate_dir": str(candidate_dir.relative_to(store.repo_root)),
+            },
+        )
+    source_script = (
+        workspace / ".wayfinder_runs" / "eval_inputs" / "sma_rearm_strategy.py"
+    )
+    source_csv = workspace / ".wayfinder_runs" / "eval_inputs" / "sma_rearm_prices.csv"
+    new_script = candidate_workspace / "src" / "sma_rearm_strategy.py"
+    new_csv = candidate_workspace / "src" / "sma_rearm_prices.csv"
+    validation_attempts: list[dict[str, Any]] = []
+
+    def stage_candidate(*, rearm_reason: str) -> dict[str, Any]:
+        job_yaml_path = candidate_dir / "job.yaml"
+        job_yaml = yaml.safe_load(job_yaml_path.read_text(encoding="utf-8"))
+        new_script.parent.mkdir(parents=True, exist_ok=True)
+        text = source_script.read_text(encoding="utf-8")
+        text = text.replace(
+            '"reason": "SNX still below SMA50; IMX is near clear."',
+            f'"reason": "{rearm_reason}"',
+        )
+        text += "\nREARM_GUARD_ENABLED = True\n"
+        new_script.write_text(text, encoding="utf-8")
+        shutil.copy2(source_csv, new_csv)
+        job_yaml["script_loop"]["entrypoint"] = (
+            f".wayfinder/jobs/{case.job_id}/workspace/src/sma_rearm_strategy.py"
+        )
+        job_yaml_path.write_text(
+            yaml.safe_dump(job_yaml, sort_keys=False), encoding="utf-8"
+        )
+        proposal = store.load_proposal(case.job_id, SCRIPT_AGENT_PROPOSAL_ID)
+        result = validate_candidate_application(
+            repo_root=workspace,
+            job_dir=root,
+            proposal=proposal,
+            candidate_dir=candidate_dir,
+        )
+        validation_attempts.append(
+            {
+                "attempt": len(validation_attempts) + 1,
+                "status": result["status"],
+                "failed_checks": [
+                    check.get("name")
+                    for check in result.get("checks", [])
+                    if isinstance(check, Mapping) and not check.get("passed")
+                ],
+            }
+        )
+        return result
+
+    if case.complex_apply:
+        deterministic_validation = stage_candidate(
+            rearm_reason="SNX still below SMA50; IMX is near clear."
+        )
+        if deterministic_validation["status"] == "passed":
+            raise AssertionError("complex apply fixture should fail first validation")
+    deterministic_validation = stage_candidate(
+        rearm_reason="rearm_guard: SNX still below SMA50; IMX is near-clear."
+    )
+    if deterministic_validation["status"] != "passed":
+        raise AssertionError(deterministic_validation)
+    active_workspace = root / "workspace"
+    if active_workspace.exists():
+        shutil.rmtree(active_workspace)
+    shutil.copytree(candidate_workspace, active_workspace)
+    shutil.copy2(candidate_dir / "job.yaml", root / "job.yaml")
+    relative_changed = "workspace/src/sma_rearm_strategy.py"
+    promoted_revision = "eval-deterministic-revision"
+    store.complete_proposal_application(
+        case.job_id,
+        SCRIPT_AGENT_PROPOSAL_ID,
+        status="applied",
+        changed_files=[relative_changed, "job.yaml"],
+        validation={
+            "py_compile": "passed",
+            "telemetry_preserved": True,
+            "deterministic_validation": deterministic_validation,
+            "validation_attempts": validation_attempts,
+            "promoted_revision": promoted_revision,
+        },
+        promoted_revision=promoted_revision,
+        runner_responses=[
+            {"loop": "script", "response": {"ok": True, "action": "resume"}},
+            {"loop": "agent", "response": {"ok": True, "action": "resume"}},
+        ],
+    )
+    write_json(
+        root / "reports" / "apply" / "latest.json",
+        {
+            "job_id": case.job_id,
+            "mode": "apply",
+            "status": "green",
+            "apply_proposal_id": SCRIPT_AGENT_PROPOSAL_ID,
+            "summary": "Applied rearm guard proposal and preserved forward logging.",
+            "changed_files": [relative_changed, "job.yaml"],
+            "validation": deterministic_validation,
+            "validation_attempts": validation_attempts,
+            "promoted_revision": promoted_revision,
+        },
+    )
+
+
 def build_creation_prompt(case: CreationCase) -> str:
     return (
         f"{case.prompt}\n\n"
@@ -714,7 +1196,11 @@ def build_worker_prompt(case: WorkerCase, *, iteration: int) -> str:
         expected = (
             "write a monitor report only; do not create a proposal yet"
             if iteration == 1
-            else "write an intervene report and create one pending proposal; do not activate it"
+            else (
+                "write a concise intervene report and create one pending proposal "
+                f"with exact proposal_id `{SCRIPT_AGENT_PROPOSAL_ID}`; do not "
+                "activate it"
+            )
         )
         return (
             f"Run iteration {iteration} for Wayfinder job `{case.job_id}` in {mode} mode.\n"
@@ -722,11 +1208,24 @@ def build_worker_prompt(case: WorkerCase, *, iteration: int) -> str:
             "and strategy script in this workspace. This is an eval with fake data.\n"
             "Use glob/read for inspection. Use write/edit if available. If this "
             "OpenCode runtime does not expose write/edit, write artifacts with a "
-            "single relative here-doc command like `cat > .wayfinder/jobs/<job_id>/...`; "
-            "do not use absolute paths, shell pipelines, Python, or mkdir. The reports "
-            "and proposals directories already exist. Empty report/proposal globs are "
-            "normal before you write artifacts; do not use bash to check directories.\n"
+            "single relative here-doc command like `cat > .wayfinder/jobs/<job_id>/...`. "
+            "Normal local development tools are allowed for this worker, including "
+            "shell, Python/YAML helpers, `mkdir -p`, and syntax checks. Keep durable "
+            "changes under `.wayfinder/jobs/<job_id>/`.\n"
             f"Expected next action: {expected}.\n"
+            "Keep artifacts compact enough to finish inside the worker step budget. "
+            "For iteration 2, write the proposal immediately after the intervene "
+            "report; memory updates are optional and lower priority. The proposal "
+            'JSON must use `status: "pending"`; do not use `queued` for '
+            "`proposal.status`, and do not set `application.status` to `queued` "
+            "in a newly created proposal. Leave application absent or set "
+            "`application.status` to `not_requested`; the SDK approval flow queues "
+            "application only after user approval. Include an `intent_contract` "
+            "with intent, rules_changed, rules_unchanged, risk_constraints, "
+            "entry_conditions, exit_conditions, and known_non_goals. Include a "
+            "`scenario_plan` using decision_function `decide_from_snapshot` with "
+            "scenarios for entry allowed, entry blocked by SNX not re-armed, and "
+            "in-progress candle ignored.\n"
             "Write the structured files under `.wayfinder/jobs/<job_id>/reports` and "
             "`.wayfinder/jobs/<job_id>/proposals` as appropriate. Do not place trades, "
             "do not ask questions, and do not activate proposals."
@@ -747,14 +1246,26 @@ def build_worker_prompt(case: WorkerCase, *, iteration: int) -> str:
         "as actionable when risk limits permit; weaker edges should be skipped.\n"
         "Use glob/read for inspection. Use write/edit if available. If this "
         "OpenCode runtime does not expose write/edit, write artifacts with a "
-        "single relative here-doc command like `cat > .wayfinder/jobs/<job_id>/...`; "
-        "do not use absolute paths, shell pipelines, Python, or mkdir. The reports "
-        "directory already exists. Empty report globs are normal before you write "
-        "artifacts; do not use bash to check directories.\n"
+        "single relative here-doc command like `cat > .wayfinder/jobs/<job_id>/...`. "
+        "Normal local development tools are allowed for this worker, including "
+        "shell, Python/YAML helpers, `mkdir -p`, and syntax checks. Keep durable "
+        "changes under `.wayfinder/jobs/<job_id>/`.\n"
         f"Expected next action: {expected}.\n"
         "Write `.wayfinder/jobs/<job_id>/reports/auto/latest.json` with decision, "
         "orders, risk_limits, and next_check."
     )
+
+
+def build_application_prompt(workspace: Path, case: WorkerCase) -> str:
+    store = JobStore(repo_root=workspace)
+    sections = prepare_job_worker_prompt(
+        store=store,
+        job_id=case.job_id,
+        mode="intervene",
+        apply_proposal_id=SCRIPT_AGENT_PROPOSAL_ID,
+        claim_application_before_prompt=True,
+    )
+    return str(sections["prompt"])
 
 
 def build_candidate_command(
@@ -1192,7 +1703,9 @@ def run_worker_case(
         copy_workspace(repo_root(), workspace)
         for iteration in range(1, iterations + 1):
             if case.kind == "script_agent_worker":
-                setup_script_agent_worker_fixture(workspace, iteration=iteration)
+                setup_script_agent_worker_fixture(
+                    workspace, iteration=iteration, case=case
+                )
             else:
                 setup_auto_worker_fixture(workspace, iteration=iteration)
             prompt = build_worker_prompt(case, iteration=iteration)
@@ -1263,18 +1776,91 @@ def run_worker_case(
                     "judge": judge_result,
                 }
             )
+        application_report = None
+        if case.kind == "script_agent_worker" and iterations >= 2:
+            apply_dir = case_dir / "application"
+            apply_dir.mkdir(parents=True, exist_ok=True)
+            approve_worker_proposal_for_application(workspace, case)
+            apply_prompt = build_application_prompt(workspace, case)
+            (apply_dir / "prompt.md").write_text(apply_prompt, encoding="utf-8")
+            apply_log_text = ""
+            if live:
+                title = f"eval/jobs/{case.id}/apply/{uuid.uuid4().hex[:8]}"
+                log_path = apply_dir / "worker.log"
+                command = build_worker_command(
+                    opencode_bin,
+                    model,
+                    case.agent_name,
+                    apply_prompt,
+                    directory=workspace,
+                    title=title,
+                )
+                apply_returncode, apply_duration, apply_error = run_process(
+                    command,
+                    cwd=workspace,
+                    env=env,
+                    log_path=log_path,
+                    timeout_seconds=timeout_seconds,
+                )
+                apply_agent_output = harvest_answer(log_path, db_path, title=title)
+                apply_log_text = log_path.read_text(encoding="utf-8", errors="replace")
+            else:
+                write_valid_application_artifacts(workspace, case)
+                apply_returncode, apply_duration, apply_error = 0, 0.0, None
+                apply_agent_output = ""
+            application_validator = validate_application_case(
+                workspace,
+                case,
+                log_text=apply_log_text,
+            )
+            write_json(apply_dir / "validator.json", application_validator)
+            application_judge = None
+            if judge:
+                rubric = (repo_root() / JUDGE_RUBRIC).read_text(encoding="utf-8")
+                judge_prompt = build_jobs_judge_prompt(
+                    rubric_text=rubric,
+                    case_id=f"{case.id}:application",
+                    task=apply_prompt,
+                    workspace=workspace,
+                    job_id=case.job_id,
+                    validator_report=application_validator,
+                    agent_output=apply_agent_output,
+                )
+                application_judge = run_judge(
+                    case_id=f"{case.id}.application",
+                    prompt=judge_prompt,
+                    output_dir=apply_dir,
+                    opencode_bin=opencode_bin,
+                    judge_model=judge_model,
+                    timeout_seconds=timeout_seconds,
+                    env=env,
+                    db_path=db_path,
+                )
+            application_report = {
+                "status": "passed"
+                if application_validator["status"] == "passed"
+                and (not application_judge or application_judge["status"] == "passed")
+                else "failed",
+                "returncode": apply_returncode,
+                "duration_seconds": round(apply_duration, 3),
+                "error": apply_error,
+                "validator": application_validator,
+                "judge": application_judge,
+            }
         kept = case_dir / "workspace"
         if kept.exists():
             shutil.rmtree(kept)
         shutil.copytree(workspace, kept)
+    reports_ok = all(item["status"] == "passed" for item in iteration_reports)
+    if application_report:
+        reports_ok = reports_ok and application_report["status"] == "passed"
     return {
         "case_id": case.id,
-        "status": "passed"
-        if all(item["status"] == "passed" for item in iteration_reports)
-        else "failed",
+        "status": "passed" if reports_ok else "failed",
         "kind": case.kind,
         "agent_name": case.agent_name,
         "iterations": iteration_reports,
+        "application": application_report,
     }
 
 

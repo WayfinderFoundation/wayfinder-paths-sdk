@@ -31,6 +31,34 @@ def test_wayfinder_jobs_eval_validates_all_creation_types(tmp_path: Path) -> Non
         assert all(check["passed"] for check in report["checks"])
 
 
+def test_wayfinder_jobs_creation_validator_requires_forward_telemetry(
+    tmp_path: Path,
+) -> None:
+    module = load_eval_module()
+    case = module.CREATION_CASES[0]
+    workspace = tmp_path / case.id
+    workspace.mkdir()
+    module.create_expected_job_bundle(workspace, case)
+
+    script = workspace / ".wayfinder_runs" / "eval_inputs" / "sma_rearm_strategy.py"
+    script.write_text(
+        "print({'status': 'ok', 'decision': 'wait'})\n",
+        encoding="utf-8",
+    )
+
+    report = module.validate_creation_case(workspace, case)
+
+    assert report["status"] == "failed"
+    assert any(
+        check["name"] == "script_imports_forward_recorder" and not check["passed"]
+        for check in report["checks"]
+    )
+    assert any(
+        check["name"] == "script_records_forward_run" and not check["passed"]
+        for check in report["checks"]
+    )
+
+
 def test_wayfinder_jobs_eval_validates_two_iteration_workers(tmp_path: Path) -> None:
     module = load_eval_module()
 
@@ -115,6 +143,26 @@ def test_wayfinder_jobs_eval_validates_two_iteration_workers(tmp_path: Path) -> 
         for check in unsafe_auto["checks"]
     )
 
+    complex_workspace = tmp_path / "complex-apply"
+    complex_workspace.mkdir()
+    complex_case = next(
+        case
+        for case in module.WORKER_CASES
+        if case.id == "worker_script_agent_complex_apply"
+    )
+    module.setup_script_agent_worker_fixture(
+        complex_workspace, iteration=2, case=complex_case
+    )
+    module.write_valid_worker_artifacts(complex_workspace, complex_case, iteration=2)
+    module.approve_worker_proposal_for_application(complex_workspace, complex_case)
+    module.write_valid_application_artifacts(complex_workspace, complex_case)
+    complex_apply = module.validate_application_case(complex_workspace, complex_case)
+    assert complex_apply["status"] == "passed", complex_apply
+    assert any(
+        check["name"] == "complex_apply_feedback_loop" and check["passed"]
+        for check in complex_apply["checks"]
+    )
+
 
 def test_wayfinder_jobs_judge_prompt_is_repo_grounded(tmp_path: Path) -> None:
     module = load_eval_module()
@@ -191,32 +239,115 @@ def test_wayfinder_jobs_eval_command_shapes() -> None:
     assert "--dir" in judge
 
 
-def test_wayfinder_jobs_worker_prompts_scope_bash_fallback() -> None:
+def test_wayfinder_jobs_forward_telemetry_guidance() -> None:
+    skill = (
+        REPO / ".claude" / "skills" / "writing-wayfinder-scripts" / "SKILL.md"
+    ).read_text("utf-8")
+    primary = (REPO / ".opencode" / "agents" / "wayfinder.md").read_text("utf-8")
+
+    for needle in (
+        "recommended, not mandatory",
+        "get_forward_recorder",
+        "runs.jsonl",
+        "trades.jsonl",
+        "orders.jsonl",
+        "fills.jsonl",
+        "decide_from_snapshot",
+        "intent_contract",
+        "stop losses",
+        "limit orders",
+        "partial fills",
+        "reconcile live positions",
+        "Never duplicate a pending stop/limit order blindly",
+    ):
+        assert needle in skill
+
+    for needle in (
+        "Before coding a script for `core_jobs`, load `/writing-wayfinder-scripts`",
+        "optional forward recorder helper",
+        "intent_contract",
+        "scenario_plan",
+        "decide_from_snapshot",
+        "fallback/debug context",
+    ):
+        assert needle in primary
+
+
+def test_wayfinder_jobs_worker_prompts_scope_bash_fallback(tmp_path: Path) -> None:
     module = load_eval_module()
 
     for case in module.WORKER_CASES:
         prompt = module.build_worker_prompt(case, iteration=1)
         assert "Use glob/read for inspection" in prompt
         assert "cat > .wayfinder/jobs/<job_id>/..." in prompt
-        assert "do not use absolute paths" in prompt
+        assert "Normal local development tools are allowed" in prompt
+        assert "Python/YAML helpers" in prompt
+        if case.kind == "script_agent_worker":
+            proposal_prompt = module.build_worker_prompt(case, iteration=2)
+            assert 'status: "pending"' in proposal_prompt
+            assert "do not set `application.status` to `queued`" in (proposal_prompt)
+            assert "the SDK approval flow queues application" in proposal_prompt
+            assert "intent_contract" in proposal_prompt
+            assert "scenario_plan" in proposal_prompt
+            apply_workspace = tmp_path / f"apply-prompt-{case.id}"
+            apply_workspace.mkdir(parents=True)
+            module.setup_script_agent_worker_fixture(
+                apply_workspace, iteration=2, case=case
+            )
+            module.write_valid_worker_artifacts(apply_workspace, case, iteration=2)
+            module.approve_worker_proposal_for_application(apply_workspace, case)
+            apply_prompt = module.build_application_prompt(apply_workspace, case)
+            proposal = module.JobStore(repo_root=apply_workspace).load_proposal(
+                case.job_id,
+                module.SCRIPT_AGENT_PROPOSAL_ID,
+            )
+            assert proposal["application"]["status"] == "applying"
+            assert "validate_application" in apply_prompt
+            assert "failed checks" in apply_prompt
+            assert "candidate workspace" in apply_prompt
+            assert "same apply wake" in apply_prompt
+            assert "complex apply eval" not in apply_prompt
 
-    for path in (
-        REPO / ".opencode" / "agents" / "wayfinder-job-worker.md",
-        REPO / ".opencode" / "agents" / "wayfinder-job-auto-worker.md",
+    worker_text = (REPO / ".opencode" / "agents" / "wayfinder-job-worker.md").read_text(
+        "utf-8"
+    )
+    assert '    "*": allow' in worker_text
+    assert "Use normal local development tools" in worker_text
+    assert "Python, YAML helpers, tests, and syntax" in worker_text
+    assert "Keep validation bounded" in worker_text
+    assert "intent_contract" in worker_text
+    assert "scenario_plan" in worker_text
+    assert "validate_application" in worker_text
+    assert "validation fails, read the failed checks" in worker_text
+    assert "decide_from_snapshot" in worker_text
+    assert "violates the approved intent contract" in worker_text
+    assert "`proposal.status` is only `pending`" in worker_text
+    assert "Do not use `queued` for `proposal.status`" in worker_text
+    assert "Never call fund-moving or order-placement tools" in worker_text
+    for needle in (
+        "wayfinder_hyperliquid_place_*: deny",
+        "wayfinder_polymarket_place_*: deny",
+        "wayfinder_onchain_swap: deny",
+        "wayfinder_onchain_send: deny",
+        "wayfinder_contracts_execute: deny",
     ):
-        text = path.read_text("utf-8")
-        assert '"cat > .wayfinder/jobs/**": allow' in text
-        assert '"*": ask' in text
-        assert "Never use absolute paths" in text
-        assert "reports, proposals, results, and workspace directories" in text
+        assert needle in worker_text
 
-        bash_fallback = text.index('    "*": ask')
-        bash_allow = text.index('    "cat > .wayfinder/jobs/**": allow')
-        assert bash_fallback < bash_allow
+    auto_text = (
+        REPO / ".opencode" / "agents" / "wayfinder-job-auto-worker.md"
+    ).read_text("utf-8")
+    assert '"cat > .wayfinder/jobs/**": allow' in auto_text
+    assert '"*": ask' in auto_text
+    assert "Never use absolute paths" in auto_text
+    assert "reports, proposals, results, and workspace directories" in auto_text
 
-        edit_deny = text.index('    "*": deny')
-        edit_allow = text.index('    ".wayfinder/jobs/**": allow')
-        assert edit_deny < edit_allow
+    bash_fallback = auto_text.index('    "*": ask')
+    bash_allow = auto_text.index('    "cat > .wayfinder/jobs/**": allow')
+    assert bash_fallback < bash_allow
+
+    edit_deny = auto_text.index('    "*": deny')
+    edit_allow = auto_text.index('    ".wayfinder/jobs/**": allow')
+    assert edit_deny < edit_allow
 
 
 def test_wayfinder_jobs_auto_worker_has_research_read_surface() -> None:
@@ -275,6 +406,9 @@ def test_eval_judge_supports_wayfinder_jobs_pass_fail() -> None:
         "Wayfinder Jobs Eval Judge Rubric",
         "current SDK codebase",
         "Job schema correctness",
+        "Strategy correctness",
+        "intent_contract",
+        "scenario_plan",
         '"verdict": "pass|fail"',
     ):
         assert needle in rubric

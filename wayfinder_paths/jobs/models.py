@@ -8,11 +8,24 @@ from typing import Any, Literal
 SCHEMA_VERSION = "0.2"
 JOB_WORKER_AGENT_NAME = "wayfinder-job-worker"
 JOB_AUTO_WORKER_AGENT_NAME = "wayfinder-job-auto-worker"
+DEFAULT_FORWARD_RUNS = "results/forward/runs.jsonl"
+DEFAULT_FORWARD_TRADES = "results/forward/trades.jsonl"
+DEFAULT_FORWARD_ORDERS = "results/forward/orders.jsonl"
+DEFAULT_FORWARD_FILLS = "results/forward/fills.jsonl"
+DEFAULT_FORWARD_SUMMARY = "results/forward/summary.json"
 
 AgentMode = Literal["off", "monitor", "intervene", "auto"]
 JobKind = Literal["script_only", "script_agent", "agent_only"]
 JobHealth = Literal["green", "yellow", "red", "unknown"]
 ProposalStatus = Literal["pending", "approved", "rejected"]
+ApplicationStatus = Literal[
+    "not_requested",
+    "queued",
+    "applying",
+    "applied",
+    "failed",
+    "canceled",
+]
 
 AGENT_MODE_ALIASES = {
     "improve": "intervene",
@@ -229,7 +242,14 @@ class WayfinderJob:
             agent_loop=agent_loop,
             performance={
                 "baseline_backtest": "results/backtest/baseline.json",
-                "forward_results": "results/forward/trades.jsonl",
+                "forward_results": DEFAULT_FORWARD_TRADES,
+                "forward": {
+                    "runs": DEFAULT_FORWARD_RUNS,
+                    "trades": DEFAULT_FORWARD_TRADES,
+                    "orders": DEFAULT_FORWARD_ORDERS,
+                    "fills": DEFAULT_FORWARD_FILLS,
+                    "summary": DEFAULT_FORWARD_SUMMARY,
+                },
                 "drift_policy": {
                     "min_forward_trades": 20,
                     "warn_if_win_rate_delta_below": -0.20,

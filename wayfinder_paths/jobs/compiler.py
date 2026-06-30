@@ -15,17 +15,24 @@ class JobCompiler:
         self.store = store or JobStore()
         self.bridge = RunnerBridge(repo_root=self.store.repo_root)
 
-    def compile(self, job: WayfinderJob, *, start_daemon: bool = True) -> dict[str, Any]:
+    def compile(
+        self, job: WayfinderJob, *, start_daemon: bool = True
+    ) -> dict[str, Any]:
         root = self.store.init_layout(job)
         wrappers = self._write_wrappers(job, root)
-        previous_links = self.store.read_json(job.id, "runner_links.json", default={}) or {}
+        previous_links = (
+            self.store.read_json(job.id, "runner_links.json", default={}) or {}
+        )
+        job_env = self._job_env(job, root)
         if start_daemon:
             self.bridge.ensure_started()
 
         linked: list[dict[str, Any]] = []
         if job.script_loop.enabled:
             if not wrappers.get("script"):
-                raise ValueError("script loop is enabled but no script wrapper was generated")
+                raise ValueError(
+                    "script loop is enabled but no script wrapper was generated"
+                )
             resp = self.bridge.add_or_update_script_job(
                 name=job.script_loop.runner_job_name,
                 script_path=wrappers["script"],
@@ -33,12 +40,24 @@ class JobCompiler:
                 cron_expr=job.script_loop.cron_expr,
                 timezone=job.script_loop.timezone,
                 timeout_seconds=job.script_loop.timeout_seconds,
-                env={"WAYFINDER_HIGH_LEVEL_JOB_ID": job.id},
+                env=job_env,
             )
-            linked.append({"loop": "script", "runner_job_name": job.script_loop.runner_job_name, "response": resp})
+            linked.append(
+                {
+                    "loop": "script",
+                    "runner_job_name": job.script_loop.runner_job_name,
+                    "response": resp,
+                }
+            )
         elif job.script_loop.runner_job_name and _was_linked(previous_links, "script"):
             resp = self.bridge.delete(job.script_loop.runner_job_name)
-            linked.append({"loop": "script", "runner_job_name": job.script_loop.runner_job_name, "response": resp})
+            linked.append(
+                {
+                    "loop": "script",
+                    "runner_job_name": job.script_loop.runner_job_name,
+                    "response": resp,
+                }
+            )
 
         if job.agent_loop.enabled and job.agent_loop.mode != "off":
             resp = self.bridge.add_or_update_script_job(
@@ -49,14 +68,26 @@ class JobCompiler:
                 timezone=job.agent_loop.timezone,
                 timeout_seconds=job.agent_loop.timeout_seconds,
                 env={
-                    "WAYFINDER_HIGH_LEVEL_JOB_ID": job.id,
+                    **job_env,
                     "WAYFINDER_JOB_AGENT_MODE": job.agent_loop.mode,
                 },
             )
-            linked.append({"loop": "agent", "runner_job_name": job.agent_loop.runner_job_name, "response": resp})
+            linked.append(
+                {
+                    "loop": "agent",
+                    "runner_job_name": job.agent_loop.runner_job_name,
+                    "response": resp,
+                }
+            )
         elif job.agent_loop.runner_job_name and _was_linked(previous_links, "agent"):
             resp = self.bridge.delete(job.agent_loop.runner_job_name)
-            linked.append({"loop": "agent", "runner_job_name": job.agent_loop.runner_job_name, "response": resp})
+            linked.append(
+                {
+                    "loop": "agent",
+                    "runner_job_name": job.agent_loop.runner_job_name,
+                    "response": resp,
+                }
+            )
 
         payload = {"job_id": job.id, "jobs": linked}
         self.store.write_json(job.id, "runner_links.json", payload)
@@ -92,7 +123,9 @@ class JobCompiler:
                 ).lstrip(),
                 encoding="utf-8",
             )
-            wrapper_paths["script"] = str(script_wrapper.relative_to(self.store.repo_root))
+            wrapper_paths["script"] = str(
+                script_wrapper.relative_to(self.store.repo_root)
+            )
 
         agent_wrapper = self.store.runs_jobs_dir / f"{safe_module_name}_agent.py"
         agent_wrapper.write_text(
@@ -116,6 +149,15 @@ class JobCompiler:
         wrapper_paths["agent"] = str(agent_wrapper.relative_to(self.store.repo_root))
         return wrapper_paths
 
+    def _job_env(self, job: WayfinderJob, root: Path) -> dict[str, str]:
+        return {
+            "WAYFINDER_HIGH_LEVEL_JOB_ID": job.id,
+            "WAYFINDER_JOB_DIR": str(root),
+            "WAYFINDER_FORWARD_DIR": str(root / "results" / "forward"),
+            "WAYFINDER_JOB_MODE": str(job.script_loop.mode or "paper"),
+            "WAYFINDER_JOB_REVISION": str(job.versioning.get("active_revision") or ""),
+        }
+
 
 def compile_job(job_id: str, *, start_daemon: bool = True) -> dict[str, Any]:
     store = JobStore()
@@ -126,4 +168,6 @@ def compile_job(job_id: str, *, start_daemon: bool = True) -> dict[str, Any]:
 
 def _was_linked(previous_links: dict[str, Any], loop: str) -> bool:
     jobs = previous_links.get("jobs") if isinstance(previous_links, dict) else []
-    return any(isinstance(item, dict) and item.get("loop") == loop for item in jobs or [])
+    return any(
+        isinstance(item, dict) and item.get("loop") == loop for item in jobs or []
+    )

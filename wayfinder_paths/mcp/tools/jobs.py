@@ -2,6 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
+from wayfinder_paths.jobs.application import (
+    claim_application,
+    complete_application,
+    validate_application_candidate,
+)
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.models import (
     WayfinderJob,
@@ -24,6 +29,10 @@ JobAction = Literal[
     "proposals",
     "approve_proposal",
     "reject_proposal",
+    "apply_proposal",
+    "claim_application",
+    "validate_application",
+    "complete_application",
     "pause",
     "resume",
     "delete",
@@ -43,10 +52,15 @@ async def core_jobs(
     cron_expr: str | None = None,
     timezone: str | None = None,
     timeout_seconds: int | None = None,
-    agent_mode: Literal["off", "monitor", "intervene", "auto", "improve", "decide"] | None = None,
+    agent_mode: Literal["off", "monitor", "intervene", "auto", "improve", "decide"]
+    | None = None,
     agent_wake_seconds: int | None = None,
     auto_limits: dict[str, Any] | None = None,
     proposal_id: str | None = None,
+    application_status: Literal["applied", "failed"] | None = None,
+    changed_files: list[str] | None = None,
+    validation: dict[str, Any] | None = None,
+    error: str | None = None,
     compile: bool = True,  # noqa: A002
 ) -> dict[str, Any]:
     """Manage high-level Wayfinder jobs.
@@ -62,6 +76,8 @@ async def core_jobs(
       - `create` with `agent_mode="auto"` and `auto_limits` for agent-only auto jobs.
       - `review_now` to queue an immediate worker wakeup.
       - `approve_proposal` / `reject_proposal` after the worker creates proposals.
+      - `claim_application` / `validate_application` / `complete_application`
+        from an apply worker.
     """
 
     store = JobStore()
@@ -84,7 +100,9 @@ async def core_jobs(
                 "create requires script, or agent_mode auto for agent-only jobs",
             )
         if script and not interval_seconds and not cron_expr:
-            return err("invalid_request", "script jobs require interval_seconds or cron_expr")
+            return err(
+                "invalid_request", "script jobs require interval_seconds or cron_expr"
+            )
         job = WayfinderJob.new(
             job_id,
             name=name,
@@ -125,22 +143,64 @@ async def core_jobs(
         mode = normalize_agent_mode(agent_mode or "monitor")
         if mode == "off":
             mode = "monitor"
-        return ok(run_job_worker(job_id, mode=mode))
+        return ok(run_job_worker(job_id, mode=mode, apply_proposal_id=proposal_id))
 
     if action == "proposals":
         return ok(store.proposals(job_id))
 
-    if action in {"approve_proposal", "reject_proposal"}:
+    if action in {
+        "approve_proposal",
+        "reject_proposal",
+        "apply_proposal",
+        "claim_application",
+        "validate_application",
+        "complete_application",
+    }:
         if not proposal_id:
             return err("invalid_request", "proposal_id is required")
-        status = "approved" if action == "approve_proposal" else "rejected"
-        proposal = store.set_proposal_status(job_id, proposal_id, status)
-        store.append_journal(
-            job_id,
-            {"type": action, "proposal_id": proposal_id, "status": status},
-        )
-        sync_all_jobs(store=store)
-        return ok(proposal)
+        if action == "approve_proposal":
+            proposal = store.approve_proposal(job_id, proposal_id)
+            wakeup = run_job_worker(
+                job_id,
+                mode="intervene",
+                apply_proposal_id=proposal_id,
+            )
+            sync_all_jobs(store=store)
+            return ok({"proposal": proposal, "wakeup": wakeup})
+        if action == "reject_proposal":
+            proposal = store.reject_proposal(job_id, proposal_id)
+            sync_all_jobs(store=store)
+            return ok(proposal)
+        if action == "apply_proposal":
+            proposal = store.queue_proposal_application(job_id, proposal_id)
+            wakeup = run_job_worker(
+                job_id,
+                mode="intervene",
+                apply_proposal_id=proposal_id,
+            )
+            sync_all_jobs(store=store)
+            return ok({"proposal": proposal, "wakeup": wakeup})
+        if action == "claim_application":
+            return ok(claim_application(store, job_id, proposal_id))
+        if action == "validate_application":
+            return ok(validate_application_candidate(store, job_id, proposal_id))
+        if action == "complete_application":
+            if application_status not in {"applied", "failed"}:
+                return err(
+                    "invalid_request",
+                    "application_status must be applied or failed",
+                )
+            return ok(
+                complete_application(
+                    store,
+                    job_id,
+                    proposal_id,
+                    status=application_status,
+                    changed_files=changed_files,
+                    validation=validation,
+                    error=error,
+                )
+            )
 
     if action in {"pause", "resume", "delete"}:
         job = store.load(job_id)

@@ -53,6 +53,61 @@ sync access, use `get_web3s_from_chain_id(chain_id)` instead.
 
 Run scripts with poetry: `poetry run python .wayfinder_runs/my_script.py`
 
+## Wayfinder Job forward telemetry
+
+When a script will be scheduled with `core_jobs`, prefer structured forward
+telemetry in addition to normal stdout. This is **recommended, not mandatory**:
+jobs should still run if a strategy has no useful trade/order lifecycle data yet.
+
+Use the optional recorder helper instead of hand-writing paths:
+
+```python
+from wayfinder_paths.jobs.forward import get_forward_recorder
+
+rec = get_forward_recorder()
+rec.record_run(
+    decision="wait",
+    reason="IMX cleared; SNX still blocked",
+    state={"IMX": {"rearm": "cleared"}, "SNX": {"rearm": "blocked"}},
+    metrics={"snx_gap_to_clear_pct": -2.72},
+)
+```
+
+Compiled jobs expose `WAYFINDER_HIGH_LEVEL_JOB_ID`, `WAYFINDER_JOB_DIR`,
+`WAYFINDER_FORWARD_DIR`, `WAYFINDER_JOB_MODE`, and `WAYFINDER_JOB_REVISION`.
+The recorder uses those automatically and appends loose JSONL rows under
+`.wayfinder/jobs/<job_id>/results/forward/`.
+
+For script+agent jobs that may later receive intervention proposals, prefer to
+put the strategy's core decision logic in a reusable function such as
+`decide_from_snapshot(snapshot, state) -> dict`. The scheduled `main()` should
+call that function with live/forward data, and proposal scenario tests should
+call the same function with fixture snapshots. This lets the apply worker prove
+that a candidate change satisfies the approved `intent_contract` instead of only
+proving that the script compiles.
+
+Recommended files and use:
+
+- `runs.jsonl` — one row per scheduled check: signal state, decision, reason,
+  metrics, live position state, and reconciliation result.
+- `trades.jsonl` — one row per closed trade when available: entry state, exit
+  state, tags/reasons, realized PnL, fees, slippage, and risk-plan outcome.
+- `orders.jsonl` — submitted/canceled/replaced order lifecycle records.
+- `fills.jsonl` — fill lifecycle records, including partial fills.
+
+For async execution such as stop losses, limit orders, or cancel/replace flows:
+
+- Persist pending order state durably; use `wayfinder_paths.runner.monitor_state`
+  for job-local state, not `/tmp`.
+- On every run, reconcile live positions, open orders, partial fills, and recent
+  fills before submitting new orders.
+- Never duplicate a pending stop/limit order blindly after restart, timeout, or
+  ambiguous API response.
+- Record the submitted stop/limit order, later fill/cancel/expiry, and the
+  reconciliation decision that caused any replacement.
+- Emit `WAYFINDER_JOB_RESULT` only for meaningful state transitions, warnings,
+  fills, blocked execution, or failures; routine healthy checks should stay quiet.
+
 ## Wallet helpers in scripts
 
 Don't grep `config.json` for `wallets[]` or read wallet files directly — on Wayfinder Shells the remote wallets aren't in `config.json` and you'll miss them. Use the helpers:

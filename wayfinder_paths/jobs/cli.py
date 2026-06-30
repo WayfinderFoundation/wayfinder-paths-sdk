@@ -5,6 +5,11 @@ from typing import Any
 
 import click
 
+from wayfinder_paths.jobs.application import (
+    claim_application,
+    complete_application,
+    validate_application_candidate,
+)
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.models import (
     AgentMode,
@@ -22,7 +27,9 @@ def _echo_json(data: Any) -> None:
     click.echo(json.dumps(data, indent=2, default=str))
 
 
-@click.group(name="job", help="High-level Wayfinder jobs: script loop + optional agent loop.")
+@click.group(
+    name="job", help="High-level Wayfinder jobs: script loop + optional agent loop."
+)
 def job_cli() -> None:
     pass
 
@@ -31,7 +38,9 @@ def job_cli() -> None:
 @click.argument("job_id")
 @click.option("--name", default=None)
 @click.option("--goal", default="")
-@click.option("--script", default=None, help="Script entrypoint for the deterministic loop.")
+@click.option(
+    "--script", default=None, help="Script entrypoint for the deterministic loop."
+)
 @click.option("--interval", "interval_seconds", type=int, default=None)
 @click.option("--cron", "cron_expr", default=None)
 @click.option("--timezone", default="UTC", show_default=True)
@@ -73,7 +82,9 @@ def create_cmd(
 ) -> None:
     normalized_mode = normalize_agent_mode(agent_mode)
     if not script and normalized_mode != "auto":
-        raise click.UsageError("Provide --script, or use --agent-mode auto for agent-only jobs")
+        raise click.UsageError(
+            "Provide --script, or use --agent-mode auto for agent-only jobs"
+        )
     if script and not interval_seconds and not cron_expr:
         raise click.UsageError("Script jobs require --interval or --cron")
 
@@ -110,7 +121,12 @@ def create_cmd(
 @job_cli.command(name="list", help="List high-level Wayfinder jobs.")
 def list_cmd() -> None:
     store = JobStore()
-    _echo_json({"ok": True, "result": [snapshot_job(job.id, store=store) for job in store.list_jobs()]})
+    _echo_json(
+        {
+            "ok": True,
+            "result": [snapshot_job(job.id, store=store) for job in store.list_jobs()],
+        }
+    )
 
 
 @job_cli.command(name="status", help="Show a high-level job snapshot.")
@@ -134,7 +150,9 @@ def report_cmd(job_id: str) -> None:
     click.echo(f"Health: {scorecard.get('health', 'unknown')}")
     click.echo(f"Script loop: {'on' if job['script_loop'].get('enabled') else 'off'}")
     click.echo(f"Agent loop: {job['agent_loop'].get('mode', 'off')}")
-    click.echo(f"Pending proposals: {sum(1 for p in proposals if p.get('status') == 'pending')}")
+    click.echo(
+        f"Pending proposals: {sum(1 for p in proposals if p.get('status') == 'pending')}"
+    )
     latest_summary = scorecard.get("last_agent_summary")
     if latest_summary:
         click.echo("")
@@ -148,7 +166,10 @@ def agent_group() -> None:
 
 @agent_group.command(name="set-mode", help="Set agent mode and recompile runner links.")
 @click.argument("job_id")
-@click.argument("mode", type=click.Choice(["off", "monitor", "intervene", "auto", "improve", "decide"]))
+@click.argument(
+    "mode",
+    type=click.Choice(["off", "monitor", "intervene", "auto", "improve", "decide"]),
+)
 @click.option("--wake", "wake_seconds", type=int, default=None)
 def agent_set_mode_cmd(job_id: str, mode: AgentMode, wake_seconds: int | None) -> None:
     store = JobStore()
@@ -165,11 +186,24 @@ def agent_set_mode_cmd(job_id: str, mode: AgentMode, wake_seconds: int | None) -
     _echo_json({"ok": True, "result": result})
 
 
-@agent_group.command(name="review-now", help="Run a headless worker review immediately.")
+@agent_group.command(
+    name="review-now", help="Run a headless worker review immediately."
+)
 @click.argument("job_id")
-@click.option("--mode", type=click.Choice(["monitor", "intervene", "auto", "improve", "decide"]), default=None)
-def review_now_cmd(job_id: str, mode: str | None) -> None:
-    result = run_job_worker(job_id, mode=normalize_agent_mode(mode or "monitor"))
+@click.option(
+    "--mode",
+    type=click.Choice(["monitor", "intervene", "auto", "improve", "decide"]),
+    default=None,
+)
+@click.option("--apply-proposal-id", default=None)
+def review_now_cmd(
+    job_id: str, mode: str | None, apply_proposal_id: str | None
+) -> None:
+    result = run_job_worker(
+        job_id,
+        mode=normalize_agent_mode(mode or "monitor"),
+        apply_proposal_id=apply_proposal_id,
+    )
     _echo_json({"ok": True, "result": result})
 
 
@@ -185,10 +219,14 @@ def proposals_cmd(job_id: str) -> None:
 @click.argument("proposal_id")
 def approve_cmd(job_id: str, proposal_id: str) -> None:
     store = JobStore()
-    proposal = store.set_proposal_status(job_id, proposal_id, "approved")
-    store.append_journal(job_id, {"type": "proposal_approved", "proposal_id": proposal_id})
+    proposal = store.approve_proposal(job_id, proposal_id)
+    wakeup = run_job_worker(
+        job_id,
+        mode="intervene",
+        apply_proposal_id=proposal_id,
+    )
     sync_all_jobs(store=store)
-    _echo_json({"ok": True, "result": proposal})
+    _echo_json({"ok": True, "result": {"proposal": proposal, "wakeup": wakeup}})
 
 
 @job_cli.command(name="reject", help="Reject a pending proposal.")
@@ -196,10 +234,83 @@ def approve_cmd(job_id: str, proposal_id: str) -> None:
 @click.argument("proposal_id")
 def reject_cmd(job_id: str, proposal_id: str) -> None:
     store = JobStore()
-    proposal = store.set_proposal_status(job_id, proposal_id, "rejected")
-    store.append_journal(job_id, {"type": "proposal_rejected", "proposal_id": proposal_id})
+    proposal = store.reject_proposal(job_id, proposal_id)
     sync_all_jobs(store=store)
     _echo_json({"ok": True, "result": proposal})
+
+
+@job_cli.command(name="apply-proposal", help="Queue apply for an approved proposal.")
+@click.argument("job_id")
+@click.argument("proposal_id")
+def apply_proposal_cmd(job_id: str, proposal_id: str) -> None:
+    store = JobStore()
+    proposal = store.queue_proposal_application(job_id, proposal_id)
+    wakeup = run_job_worker(
+        job_id,
+        mode="intervene",
+        apply_proposal_id=proposal_id,
+    )
+    sync_all_jobs(store=store)
+    _echo_json({"ok": True, "result": {"proposal": proposal, "wakeup": wakeup}})
+
+
+@job_cli.command(
+    name="claim-application", help="Claim an approved proposal for application."
+)
+@click.argument("job_id")
+@click.argument("proposal_id")
+def claim_application_cmd(job_id: str, proposal_id: str) -> None:
+    store = JobStore()
+    _echo_json({"ok": True, "result": claim_application(store, job_id, proposal_id)})
+
+
+@job_cli.command(
+    name="validate-application",
+    help="Validate the staged candidate for an in-progress proposal application.",
+)
+@click.argument("job_id")
+@click.argument("proposal_id")
+def validate_application_cmd(job_id: str, proposal_id: str) -> None:
+    store = JobStore()
+    _echo_json(
+        {
+            "ok": True,
+            "result": validate_application_candidate(store, job_id, proposal_id),
+        }
+    )
+
+
+@job_cli.command(name="complete-application", help="Finish a proposal application.")
+@click.argument("job_id")
+@click.argument("proposal_id")
+@click.option("--status", type=click.Choice(["applied", "failed"]), required=True)
+@click.option("--changed-file", "changed_files", multiple=True)
+@click.option("--validation-json", default=None)
+@click.option("--error", "error_text", default=None)
+def complete_application_cmd(
+    job_id: str,
+    proposal_id: str,
+    status: str,
+    changed_files: tuple[str, ...],
+    validation_json: str | None,
+    error_text: str | None,
+) -> None:
+    store = JobStore()
+    validation = json.loads(validation_json) if validation_json else {}
+    _echo_json(
+        {
+            "ok": True,
+            "result": complete_application(
+                store,
+                job_id,
+                proposal_id,
+                status=status,
+                changed_files=list(changed_files),
+                validation=validation,
+                error=error_text,
+            ),
+        }
+    )
 
 
 @job_cli.command(name="pause", help="Pause a job's runner loops.")

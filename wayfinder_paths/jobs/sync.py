@@ -11,6 +11,7 @@ from wayfinder_paths.core.config import (
     get_opencode_instance_id,
     is_opencode_instance,
 )
+from wayfinder_paths.jobs.forward import load_forward_snapshot
 from wayfinder_paths.jobs.store import JobStore
 
 
@@ -45,7 +46,9 @@ class WayfinderJobsClient:
             )
             resp.raise_for_status()
         except Exception:
-            logger.opt(exception=True).warning("Failed to sync Wayfinder jobs to backend")
+            logger.opt(exception=True).warning(
+                "Failed to sync Wayfinder jobs to backend"
+            )
 
 
 WAYFINDER_JOBS_CLIENT = WayfinderJobsClient()
@@ -56,7 +59,9 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
     job = store.load(job_id)
     scorecard = store.read_json(job_id, "scorecard.json", default={}) or {}
     runner_links = store.read_json(job_id, "runner_links.json", default={}) or {}
-    latest_monitor = store.read_json(job_id, "reports/monitor/latest.json", default=None)
+    latest_monitor = store.read_json(
+        job_id, "reports/monitor/latest.json", default=None
+    )
     latest_intervene = store.read_json(
         job_id,
         "reports/intervene/latest.json",
@@ -70,8 +75,10 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
     return {
         "job": job.to_dict(),
         "scorecard": scorecard,
+        "forward": load_forward_snapshot(job_id, store=store, limit=25),
         "runner_links": runner_links,
         "proposals": store.proposals(job_id),
+        "proposal_queue": store.proposal_queue(job_id),
         "reports": {
             "monitor": latest_monitor,
             "intervene": latest_intervene,
