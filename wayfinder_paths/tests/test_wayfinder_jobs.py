@@ -218,6 +218,37 @@ def test_job_compiler_writes_runner_wrappers(tmp_path: Path, monkeypatch) -> Non
     assert links == result
 
 
+def test_job_compiler_resolves_workspace_entrypoint_to_job_workspace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class FakeBridge:
+        def __init__(self, *, repo_root=None):  # noqa: ANN001
+            self.repo_root = repo_root
+
+        def ensure_started(self):
+            return {"ok": True}
+
+        def add_or_update_script_job(self, **kwargs):
+            return {"ok": True, "result": {"name": kwargs["name"]}}
+
+    monkeypatch.setattr("wayfinder_paths.jobs.compiler.RunnerBridge", FakeBridge)
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "workspace-script",
+        script="workspace/src/loop.py",
+        interval_seconds=60,
+    )
+    root = store.init_layout(job)
+    script = root / "workspace" / "src" / "loop.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    store.save(job)
+
+    JobCompiler(store=store).compile(job, start_daemon=False)
+
+    wrapper = tmp_path / ".wayfinder_runs/jobs/workspace_script_script.py"
+    assert str(script) in wrapper.read_text(encoding="utf-8")
+
+
 def test_legacy_agent_modes_normalize() -> None:
     improve_job = WayfinderJob.from_dict(
         {
@@ -599,6 +630,76 @@ def test_complete_application_fails_runnable_strategy_that_violates_intent(
     assert (store.job_dir(job.id) / "job.yaml").read_text(
         encoding="utf-8"
     ) == original_job_yaml
+
+
+def test_complete_application_validation_exception_marks_failed_and_resumes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[tuple[str, str]] = []
+
+    class FakeBridge:
+        def __init__(self, *, repo_root=None):  # noqa: ANN001
+            self.repo_root = repo_root
+
+        def pause(self, name: str) -> dict:
+            calls.append(("pause", name))
+            return {"ok": True, "paused": name}
+
+        def resume(self, name: str) -> dict:
+            calls.append(("resume", name))
+            return {"ok": True, "resumed": name}
+
+    monkeypatch.setattr("wayfinder_paths.jobs.application.RunnerBridge", FakeBridge)
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "apply-error-demo",
+        script=".wayfinder_runs/demo.py",
+        interval_seconds=60,
+        agent_mode="intervene",
+    )
+    store.save(job)
+    store.write_proposal(
+        job.id,
+        {
+            "proposal_id": "prop_error",
+            "job_id": job.id,
+            "status": "approved",
+            "application": {"status": "queued"},
+            "proposed_change": {"summary": "Add the rearm guard."},
+            "intent_contract": _intent_contract(),
+            "scenario_plan": _scenario_plan(),
+        },
+    )
+    claim_application(store, job.id, "prop_error")
+
+    def raise_validation(**kwargs):  # noqa: ANN003
+        raise RuntimeError("validator exploded")
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.application.validate_candidate_application",
+        raise_validation,
+    )
+
+    completed = complete_application(
+        store,
+        job.id,
+        "prop_error",
+        status="applied",
+        changed_files=["workspace/src/fast_loop.py"],
+    )
+
+    assert completed["proposal"]["application"]["status"] == "failed"
+    assert completed["proposal"]["application"]["error"] == "validator exploded"
+    assert completed["deterministic_validation"]["status"] == "failed"
+    assert ("resume", "apply-error-demo-script") in calls
+    assert ("resume", "apply-error-demo-agent") in calls
+    report = json.loads(
+        (store.job_dir(job.id) / "reports/apply/latest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["status"] == "red"
+    assert report["error"] == "validator exploded"
 
 
 def test_runner_bridge_starts_daemon_with_defaults(tmp_path: Path, monkeypatch) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,49 @@ class JobStore:
 
     def job_yaml_path(self, job_id: str) -> Path:
         return self.job_dir(job_id) / "job.yaml"
+
+    def resolve_script_entrypoint(
+        self,
+        job_id: str,
+        job_data: Mapping[str, Any],
+        *,
+        candidate_dir: str | Path | None = None,
+    ) -> Path | None:
+        script_loop = (
+            job_data.get("script_loop") if isinstance(job_data, Mapping) else {}
+        )
+        if not isinstance(script_loop, Mapping) or not script_loop.get("enabled"):
+            return None
+        raw = str(script_loop.get("entrypoint") or "").strip()
+        if not raw:
+            return None
+
+        root = self.job_dir(job_id)
+        active_workspace = root / "workspace"
+        candidate_root = Path(candidate_dir) if candidate_dir else None
+        candidate_workspace = candidate_root / "workspace" if candidate_root else None
+        target_workspace = candidate_workspace or active_workspace
+        path = Path(raw)
+
+        if path.is_absolute():
+            if candidate_workspace is None:
+                return path
+            resolved = path.resolve()
+            for workspace in (active_workspace, candidate_workspace):
+                try:
+                    suffix = resolved.relative_to(workspace.resolve())
+                except ValueError:
+                    continue
+                return candidate_workspace / suffix
+            return path
+
+        parts = path.parts
+        if ".wayfinder" in parts and "workspace" in parts:
+            workspace_index = parts.index("workspace")
+            return target_workspace.joinpath(*parts[workspace_index + 1 :])
+        if parts and parts[0] == "workspace":
+            return (candidate_root or root) / path
+        return self.repo_root / path
 
     def init_layout(self, job: WayfinderJob) -> Path:
         root = self.job_dir(job.id)

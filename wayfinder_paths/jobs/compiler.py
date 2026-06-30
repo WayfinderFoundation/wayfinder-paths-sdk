@@ -99,9 +99,9 @@ class JobCompiler:
         wrapper_paths: dict[str, str] = {}
 
         if job.script_loop.enabled and job.script_loop.entrypoint:
-            entrypoint = Path(job.script_loop.entrypoint)
-            if not entrypoint.is_absolute():
-                entrypoint = self.store.repo_root / entrypoint
+            entrypoint = self.store.resolve_script_entrypoint(job.id, job.to_dict())
+            if entrypoint is None:
+                raise ValueError("script loop is enabled but entrypoint is missing")
             script_wrapper = self.store.runs_jobs_dir / f"{safe_module_name}_script.py"
             script_wrapper.write_text(
                 dedent(

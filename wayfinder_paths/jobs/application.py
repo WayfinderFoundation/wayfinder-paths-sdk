@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,16 @@ from wayfinder_paths.jobs.validation import (
     validate_candidate_application,
     validation_summary,
 )
+
+
+@dataclass
+class _ApplicationOutcome:
+    final_status: str
+    final_error: str | None = None
+    deterministic_validation: dict[str, Any] | None = None
+    promoted_revision: str | None = None
+    compile_result: dict[str, Any] | None = None
+    rollback: dict[str, Any] | None = None
 
 
 def pause_job_loops(store: JobStore, job_id: str) -> list[dict[str, Any]]:
@@ -103,129 +114,185 @@ def complete_application(
     validation: dict[str, Any] | None = None,
     error: str | None = None,
 ) -> dict[str, Any]:
-    runner_responses: list[dict[str, Any]] = []
-    compile_result: dict[str, Any] | None = None
-    final_status = status
-    final_error = error
-    promoted_revision: str | None = None
-    deterministic_validation: dict[str, Any] | None = None
-    rollback: dict[str, Any] | None = None
-    if status == "applied":
-        proposal = store.load_proposal(job_id, proposal_id)
-        candidate_dir = _candidate_dir_from_proposal(store, job_id, proposal)
-        deterministic_validation = validate_candidate_application(
-            repo_root=store.repo_root,
-            job_dir=store.job_dir(job_id),
-            proposal=proposal,
-            candidate_dir=candidate_dir,
-            require_judge=bool(proposal.get("judge_required")),
-        )
-        deterministic_validation = _with_execution_validation(
-            store,
-            job_id,
-            proposal,
-            deterministic_validation,
-        )
-        store.record_proposal_application_validation(
-            job_id,
-            proposal_id,
-            deterministic_validation,
-        )
-        if deterministic_validation["status"] != "passed":
-            final_status = "failed"
-            final_error = "Candidate validation failed: " + compact_json(
-                validation_summary(deterministic_validation)
+    outcome = _ApplicationOutcome(final_status=status, final_error=error)
+    try:
+        if status == "applied":
+            outcome = _complete_applied_application(
+                store,
+                job_id,
+                proposal_id,
+                changed_files=changed_files,
             )
-        else:
-            backup_dir = _backup_active_workspace(store, job_id, proposal_id)
-            try:
-                _promote_candidate(store, job_id, candidate_dir)
-                job = store.load(job_id)
-                promoted_revision = _record_promoted_revision(
-                    store,
-                    job_id,
-                    proposal_id,
-                    changed_files=changed_files,
-                    validation=deterministic_validation,
-                )
-                job.versioning["active_revision"] = promoted_revision
-                store.save(job)
-                job = store.load(job_id)
-                compile_result = JobCompiler(store=store).compile(job)
-                sync_all_jobs(store=store)
-            except Exception as exc:
-                rollback = _restore_active_workspace(store, job_id, backup_dir)
-                final_status = "failed"
-                final_error = str(exc)
-            if final_status == "applied":
-                _write_apply_report(
-                    store,
-                    job_id,
-                    proposal_id,
-                    status="green",
-                    summary="Applied approved proposal after deterministic validation.",
-                    changed_files=changed_files or [],
-                    validation=deterministic_validation,
-                    promoted_revision=promoted_revision,
-                    compile_result=compile_result,
-                )
-            else:
-                _write_apply_report(
-                    store,
-                    job_id,
-                    proposal_id,
-                    status="red",
-                    summary=f"Failed to apply approved proposal: {final_error}",
-                    changed_files=changed_files or [],
-                    validation=deterministic_validation,
-                    promoted_revision=promoted_revision,
-                    compile_result=compile_result,
-                    error=final_error,
-                    rollback=rollback,
-                )
-    elif status == "failed":
+        elif status == "failed":
+            _write_apply_report(
+                store,
+                job_id,
+                proposal_id,
+                status="red",
+                summary=f"Application failed before promotion: {error or 'unspecified'}",
+                changed_files=changed_files or [],
+                validation=validation or {},
+                error=error,
+            )
+    except Exception as exc:
+        outcome.final_status = "failed"
+        outcome.final_error = str(exc)
+        outcome.deterministic_validation = outcome.deterministic_validation or {
+            "status": "failed",
+            "checks": [],
+            "error": outcome.final_error,
+        }
+        try:
+            _write_apply_report(
+                store,
+                job_id,
+                proposal_id,
+                status="red",
+                summary=f"Failed to apply approved proposal: {outcome.final_error}",
+                changed_files=changed_files or [],
+                validation=outcome.deterministic_validation,
+                promoted_revision=outcome.promoted_revision,
+                compile_result=outcome.compile_result,
+                error=outcome.final_error,
+                rollback=outcome.rollback,
+            )
+        except Exception:
+            pass
+    runner_responses = resume_job_loops(store, job_id)
+    validation_payload = dict(validation or {})
+    if outcome.deterministic_validation is not None:
+        validation_payload["deterministic_validation"] = (
+            outcome.deterministic_validation
+        )
+    proposal = store.load_proposal(job_id, proposal_id)
+    validation_attempts = (proposal.get("application") or {}).get("validation_attempts")
+    if validation_attempts and "validation_attempts" not in validation_payload:
+        validation_payload["validation_attempts"] = validation_attempts
+    if outcome.promoted_revision:
+        validation_payload["promoted_revision"] = outcome.promoted_revision
+    if outcome.rollback:
+        validation_payload["rollback"] = outcome.rollback
+    proposal = store.complete_proposal_application(
+        job_id,
+        proposal_id,
+        status=outcome.final_status,  # type: ignore[arg-type]
+        changed_files=changed_files,
+        validation=validation_payload,
+        error=outcome.final_error,
+        runner_responses=runner_responses,
+        promoted_revision=outcome.promoted_revision,
+        rollback=outcome.rollback,
+    )
+    sync_all_jobs(store=store)
+    return {
+        "proposal": proposal,
+        "compile": outcome.compile_result,
+        "deterministic_validation": outcome.deterministic_validation,
+        "promoted_revision": outcome.promoted_revision,
+        "rollback": outcome.rollback,
+        "resumed_runner_jobs": runner_responses,
+    }
+
+
+def _complete_applied_application(
+    store: JobStore,
+    job_id: str,
+    proposal_id: str,
+    *,
+    changed_files: list[str] | None,
+) -> _ApplicationOutcome:
+    proposal = store.load_proposal(job_id, proposal_id)
+    candidate_dir = _candidate_dir_from_proposal(store, job_id, proposal)
+    deterministic_validation = validate_candidate_application(
+        repo_root=store.repo_root,
+        job_dir=store.job_dir(job_id),
+        proposal=proposal,
+        candidate_dir=candidate_dir,
+        require_judge=bool(proposal.get("judge_required")),
+    )
+    deterministic_validation = _with_execution_validation(
+        store,
+        job_id,
+        proposal,
+        deterministic_validation,
+    )
+    store.record_proposal_application_validation(
+        job_id,
+        proposal_id,
+        deterministic_validation,
+    )
+    if deterministic_validation["status"] != "passed":
+        final_error = "Candidate validation failed: " + compact_json(
+            validation_summary(deterministic_validation)
+        )
         _write_apply_report(
             store,
             job_id,
             proposal_id,
             status="red",
-            summary=f"Application failed before promotion: {final_error or 'unspecified'}",
+            summary=f"Failed to apply approved proposal: {final_error}",
             changed_files=changed_files or [],
-            validation=validation or {},
+            validation=deterministic_validation,
             error=final_error,
         )
-    runner_responses = resume_job_loops(store, job_id)
-    validation_payload = dict(validation or {})
-    if deterministic_validation is not None:
-        validation_payload["deterministic_validation"] = deterministic_validation
-    proposal = store.load_proposal(job_id, proposal_id)
-    validation_attempts = (proposal.get("application") or {}).get("validation_attempts")
-    if validation_attempts and "validation_attempts" not in validation_payload:
-        validation_payload["validation_attempts"] = validation_attempts
-    if promoted_revision:
-        validation_payload["promoted_revision"] = promoted_revision
-    if rollback:
-        validation_payload["rollback"] = rollback
-    proposal = store.complete_proposal_application(
-        job_id,
-        proposal_id,
-        status=final_status,  # type: ignore[arg-type]
-        changed_files=changed_files,
-        validation=validation_payload,
-        error=final_error,
-        runner_responses=runner_responses,
-        promoted_revision=promoted_revision,
-        rollback=rollback,
+        return _ApplicationOutcome(
+            final_status="failed",
+            final_error=final_error,
+            deterministic_validation=deterministic_validation,
+        )
+
+    backup_dir = _backup_active_workspace(store, job_id, proposal_id)
+    outcome = _ApplicationOutcome(
+        final_status="applied",
+        deterministic_validation=deterministic_validation,
     )
-    sync_all_jobs(store=store)
-    return {
-        "proposal": proposal,
-        "compile": compile_result,
-        "deterministic_validation": deterministic_validation,
-        "promoted_revision": promoted_revision,
-        "rollback": rollback,
-        "resumed_runner_jobs": runner_responses,
-    }
+    try:
+        _promote_candidate(store, job_id, candidate_dir)
+        job = store.load(job_id)
+        outcome.promoted_revision = _record_promoted_revision(
+            store,
+            job_id,
+            proposal_id,
+            changed_files=changed_files,
+            validation=deterministic_validation,
+        )
+        job.versioning["active_revision"] = outcome.promoted_revision
+        store.save(job)
+        job = store.load(job_id)
+        outcome.compile_result = JobCompiler(store=store).compile(job)
+        sync_all_jobs(store=store)
+    except Exception as exc:
+        outcome.rollback = _restore_active_workspace(store, job_id, backup_dir)
+        outcome.final_status = "failed"
+        outcome.final_error = str(exc)
+
+    if outcome.final_status == "applied":
+        _write_apply_report(
+            store,
+            job_id,
+            proposal_id,
+            status="green",
+            summary="Applied approved proposal after deterministic validation.",
+            changed_files=changed_files or [],
+            validation=deterministic_validation,
+            promoted_revision=outcome.promoted_revision,
+            compile_result=outcome.compile_result,
+        )
+    else:
+        _write_apply_report(
+            store,
+            job_id,
+            proposal_id,
+            status="red",
+            summary=f"Failed to apply approved proposal: {outcome.final_error}",
+            changed_files=changed_files or [],
+            validation=deterministic_validation,
+            promoted_revision=outcome.promoted_revision,
+            compile_result=outcome.compile_result,
+            error=outcome.final_error,
+            rollback=outcome.rollback,
+        )
+    return outcome
 
 
 def _apply_runner_action(

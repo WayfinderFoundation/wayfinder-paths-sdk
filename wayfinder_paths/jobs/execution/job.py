@@ -29,7 +29,7 @@ def backtest_execution_job(
     root = store.job_dir(job_id)
     job_data = _load_job_yaml(root)
     spec = ExecutionSpec.from_dict(_load_spec(root, job_data))
-    script = _script_path(root, job_data, store.repo_root)
+    script = store.resolve_script_entrypoint(job_id, job_data)
     if script is None or not script.exists():
         raise FileNotFoundError(
             f"Execution script not found for job {job_id}: {script}"
@@ -129,25 +129,6 @@ def _load_dataset(
         "workspace/config/backtest_bars.json, execution_scenario_plan bars, or "
         "execution_spec.validation.fixture_bars."
     )
-
-
-def _script_path(root: Path, job_data: dict[str, Any], repo_root: Path) -> Path | None:
-    script_loop = job_data.get("script_loop") or {}
-    if not isinstance(script_loop, dict) or not script_loop.get("enabled"):
-        return None
-    raw = str(script_loop.get("entrypoint") or "").strip()
-    if not raw:
-        return None
-    path = Path(raw)
-    if path.is_absolute():
-        return path
-    parts = path.parts
-    if ".wayfinder" in parts and "workspace" in parts:
-        workspace_index = parts.index("workspace")
-        return root / "workspace" / Path(*parts[workspace_index + 1 :])
-    if parts and parts[0] == "workspace":
-        return root / path
-    return repo_root / path
 
 
 def _load_json(path: Path) -> Any:

@@ -59,6 +59,8 @@ WORKSPACE_IGNORE_NAMES = {
     ".pytest_cache",
     ".ruff_cache",
     ".env",
+    ".wayfinder",
+    ".wayfinder_runs",
     "config.json",
     "htmlcov",
     "dist",
@@ -561,21 +563,25 @@ def build_strategy(params: dict) -> Strategy:
 def script_entrypoint_path(
     workspace: Path, script_loop: Mapping[str, Any], *, job_id: str | None = None
 ) -> Path:
+    if job_id:
+        resolved = JobStore(repo_root=workspace).resolve_script_entrypoint(
+            job_id,
+            {"script_loop": dict(script_loop)},
+        )
+        return resolved or workspace / "__missing_script_entrypoint__"
     entrypoint = str(script_loop.get("entrypoint") or "")
     if not entrypoint:
         return workspace / "__missing_script_entrypoint__"
     path = Path(entrypoint)
     if path.is_absolute():
         return path
-    if job_id and path.parts and path.parts[0] == "workspace":
-        return workspace / ".wayfinder" / "jobs" / job_id / path
     return workspace / path
 
 
 def validate_script_forward_telemetry(
-    workspace: Path, script_loop: Mapping[str, Any]
+    workspace: Path, script_loop: Mapping[str, Any], *, job_id: str
 ) -> list[dict[str, Any]]:
-    script_path = script_entrypoint_path(workspace, script_loop)
+    script_path = script_entrypoint_path(workspace, script_loop, job_id=job_id)
     checks: list[dict[str, Any]] = [
         {
             "name": "script_entrypoint_exists",
@@ -643,7 +649,13 @@ def validate_creation_case(workspace: Path, case: CreationCase) -> dict[str, Any
                 },
             ]
         )
-        checks.extend(validate_script_forward_telemetry(workspace, script_loop))
+        checks.extend(
+            validate_script_forward_telemetry(
+                workspace,
+                script_loop,
+                job_id=case.job_id,
+            )
+        )
     elif case.kind == "script_agent":
         checks.extend(
             [
@@ -665,7 +677,13 @@ def validate_creation_case(workspace: Path, case: CreationCase) -> dict[str, Any
                 },
             ]
         )
-        checks.extend(validate_script_forward_telemetry(workspace, script_loop))
+        checks.extend(
+            validate_script_forward_telemetry(
+                workspace,
+                script_loop,
+                job_id=case.job_id,
+            )
+        )
     else:
         limits = agent_loop.get("auto_limits") or {}
         checks.extend(
@@ -1922,7 +1940,7 @@ def run_creation_case(
         kept = case_dir / "workspace"
         if kept.exists():
             shutil.rmtree(kept)
-        shutil.copytree(workspace, kept)
+        copy_workspace(workspace, kept)
         judge_result = None
         if judge:
             rubric = (repo_root() / JUDGE_RUBRIC).read_text(encoding="utf-8")
@@ -2016,7 +2034,7 @@ def run_execution_backtest_case(
         kept = case_dir / "workspace"
         if kept.exists():
             shutil.rmtree(kept)
-        shutil.copytree(workspace, kept)
+        copy_workspace(workspace, kept)
         judge_result = None
         if judge:
             rubric = (repo_root() / JUDGE_RUBRIC).read_text(encoding="utf-8")
@@ -2226,7 +2244,7 @@ def run_worker_case(
         kept = case_dir / "workspace"
         if kept.exists():
             shutil.rmtree(kept)
-        shutil.copytree(workspace, kept)
+        copy_workspace(workspace, kept)
     reports_ok = all(item["status"] == "passed" for item in iteration_reports)
     if application_report:
         reports_ok = reports_ok and application_report["status"] == "passed"

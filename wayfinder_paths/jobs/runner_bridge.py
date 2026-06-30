@@ -26,7 +26,11 @@ class RunnerBridge:
             default_timeout_seconds=20 * 60,
             log_level="INFO",
         )
-        return {"ok": bool(started), "result": info if started else None, "error": None if started else info}
+        return {
+            "ok": bool(started),
+            "result": info if started else None,
+            "error": None if started else info,
+        }
 
     def add_or_update_script_job(
         self,

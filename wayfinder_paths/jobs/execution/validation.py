@@ -149,7 +149,11 @@ def validate_execution_job(
 
     spec = ExecutionSpec.from_dict(spec_data)
     checks.extend(_execution_spec_checks(spec))
-    script_path = _script_path(root, job_data, store.repo_root)
+    script_path = store.resolve_script_entrypoint(
+        job_id,
+        job_data,
+        candidate_dir=root if candidate_dir else None,
+    )
     checks.append(
         {
             "name": "execution_script_exists",
@@ -374,27 +378,6 @@ def _latest_trace_validation(root: Path, spec: ExecutionSpec) -> dict[str, Any] 
             "critical_failures": ["latest backtest trace missing"],
         }
     return validate_execution_trace(trace, spec)
-
-
-def _script_path(
-    root: Path, job_data: Mapping[str, Any], repo_root: Path
-) -> Path | None:
-    script_loop = job_data.get("script_loop") if isinstance(job_data, Mapping) else {}
-    if not isinstance(script_loop, Mapping) or not script_loop.get("enabled"):
-        return None
-    raw = str(script_loop.get("entrypoint") or "").strip()
-    if not raw:
-        return None
-    path = Path(raw)
-    if path.is_absolute():
-        return path
-    parts = path.parts
-    if ".wayfinder" in parts and "workspace" in parts:
-        workspace_index = parts.index("workspace")
-        return root / "workspace" / Path(*parts[workspace_index + 1 :])
-    if parts and parts[0] == "workspace":
-        return root / path
-    return repo_root / path
 
 
 def _load_module(script_path: Path) -> Any:

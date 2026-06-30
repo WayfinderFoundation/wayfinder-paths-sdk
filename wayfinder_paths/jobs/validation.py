@@ -12,6 +12,8 @@ from typing import Any
 
 import yaml
 
+from wayfinder_paths.jobs.store import JobStore
+
 REQUIRED_INTENT_FIELDS = (
     "intent",
     "rules_changed",
@@ -83,6 +85,7 @@ def validate_candidate_application(
         job_dir=job_dir,
         candidate_dir=candidate_dir,
         job_data=job_data,
+        proposal=proposal,
     )
     checks.append(
         {
@@ -274,38 +277,14 @@ def _candidate_script_path(
     job_dir: Path,
     candidate_dir: Path,
     job_data: Mapping[str, Any],
+    proposal: Mapping[str, Any],
 ) -> Path | None:
-    script_loop = job_data.get("script_loop")
-    match script_loop:
-        case Mapping() if script_loop.get("enabled"):
-            pass
-        case _:
-            return None
-    entrypoint = str(script_loop.get("entrypoint") or "").strip()
-    if not entrypoint:
-        return None
-    path = Path(entrypoint)
-    active_workspace = job_dir / "workspace"
-    candidate_workspace = candidate_dir / "workspace"
-
-    if path.is_absolute():
-        try:
-            suffix = path.resolve().relative_to(active_workspace.resolve())
-            return candidate_workspace / suffix
-        except ValueError:
-            try:
-                suffix = path.resolve().relative_to(candidate_workspace.resolve())
-                return candidate_workspace / suffix
-            except ValueError:
-                return path
-
-    parts = path.parts
-    if ".wayfinder" in parts and "workspace" in parts:
-        workspace_index = parts.index("workspace")
-        return candidate_workspace.joinpath(*parts[workspace_index + 1 :])
-    if parts and parts[0] == "workspace":
-        return candidate_dir / path
-    return repo_root / path
+    job_id = str(proposal.get("job_id") or job_dir.name)
+    return JobStore(repo_root=repo_root).resolve_script_entrypoint(
+        job_id,
+        job_data,
+        candidate_dir=candidate_dir,
+    )
 
 
 def _load_module(script_path: Path) -> Any | None:
