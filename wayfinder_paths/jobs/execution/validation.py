@@ -31,24 +31,34 @@ MANUAL_STATE_CLEAR_PATTERNS = (
 )
 
 
+def _is_mapping(value: Any) -> bool:
+    match value:
+        case Mapping():
+            return True
+        case _:
+            return False
+
+
 def validate_execution_trace(
     trace: Mapping[str, Any],
     execution_spec: ExecutionSpec | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    spec = (
-        execution_spec
-        if isinstance(execution_spec, ExecutionSpec)
-        else ExecutionSpec.from_dict(execution_spec or trace.get("execution_spec"))
-    )
+    match execution_spec:
+        case ExecutionSpec():
+            spec = execution_spec
+        case _:
+            spec = ExecutionSpec.from_dict(
+                execution_spec or trace.get("execution_spec")
+            )
     issues: list[str] = []
     warnings: list[str] = []
     critical_failures: list[str] = []
 
-    runs = trace.get("runs") if isinstance(trace, Mapping) else []
+    runs = trace.get("runs") or []
     visible_counts = [
-        int(item.get("visible_bar_count"))
-        for item in runs or []
-        if isinstance(item, Mapping) and item.get("visible_bar_count") is not None
+        int(item["visible_bar_count"])
+        for item in runs
+        if _is_mapping(item) and item.get("visible_bar_count") is not None
     ]
     no_lookahead = visible_counts == sorted(visible_counts)
     if not no_lookahead:
@@ -56,11 +66,11 @@ def validate_execution_trace(
             "visible bar count moved backward or leaked future bars"
         )
 
-    bracket_events = trace.get("bracket_events") if isinstance(trace, Mapping) else []
+    bracket_events = trace.get("bracket_events") or []
     ohlc_correct = all(
         bool(item.get("used_ohlc"))
-        for item in bracket_events or []
-        if isinstance(item, Mapping) and item.get("hit")
+        for item in bracket_events
+        if _is_mapping(item) and item.get("hit")
     )
     if not ohlc_correct:
         critical_failures.append("bracket event missing OHLC high/low evaluation")
@@ -69,21 +79,19 @@ def validate_execution_trace(
             "no bracket events recorded; stop/TP behavior was not exercised"
         )
 
-    fills = trace.get("fills") if isinstance(trace, Mapping) else []
+    fills = trace.get("fills") or []
     hidden_success = [
         fill
-        for fill in fills or []
-        if isinstance(fill, Mapping)
+        for fill in fills
+        if _is_mapping(fill)
         and str(fill.get("status")).lower() not in {"filled", "partial"}
         and not fill.get("error")
     ]
     if hidden_success:
         issues.append("non-filled order statuses must not be reported as success")
 
-    ledger_snapshots = (
-        trace.get("ledger_snapshots") if isinstance(trace, Mapping) else []
-    )
-    ledger_valid = all(isinstance(item, Mapping) for item in ledger_snapshots or [])
+    ledger_snapshots = trace.get("ledger_snapshots") or []
+    ledger_valid = all(_is_mapping(item) for item in ledger_snapshots)
     if not ledger_valid:
         critical_failures.append("ledger snapshots are malformed")
 
@@ -121,11 +129,13 @@ def validate_execution_job(
     if job_yaml_path.exists():
         try:
             loaded = yaml.safe_load(job_yaml_path.read_text(encoding="utf-8")) or {}
-            if isinstance(loaded, dict):
-                job_data = loaded
-            checks.append(
-                {"name": "job_yaml_parse", "passed": isinstance(loaded, dict)}
-            )
+            match loaded:
+                case dict():
+                    job_data = loaded
+                    yaml_ok = True
+                case _:
+                    yaml_ok = False
+            checks.append({"name": "job_yaml_parse", "passed": yaml_ok})
         except Exception as exc:
             checks.append(
                 {"name": "job_yaml_parse", "passed": False, "error": str(exc)}
@@ -185,15 +195,15 @@ def validate_execution_job(
 def _load_execution_spec(
     root: Path, job_data: Mapping[str, Any]
 ) -> tuple[dict[str, Any], Path | None]:
-    embedded = job_data.get("execution_spec")
-    if isinstance(embedded, Mapping):
-        return dict(embedded), None
+    match job_data.get("execution_spec"):
+        case Mapping() as embedded:
+            return dict(embedded), None
     path = root / "execution_spec.json"
     if path.exists():
         try:
-            loaded = json.loads(path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                return loaded, path
+            match json.loads(path.read_text(encoding="utf-8")):
+                case dict() as loaded:
+                    return loaded, path
         except Exception:
             return {}, path
     return {}, None
@@ -295,12 +305,17 @@ def _execution_scenario_checks(
                 "blocking": bool(spec.validation.get("require_scenarios")),
             }
         ]
-    scenarios = (
-        scenario_plan.get("scenarios") if isinstance(scenario_plan, Mapping) else None
-    )
-    if not isinstance(scenarios, list) or not scenarios:
-        return [{"name": "execution_scenario_plan_present", "passed": False}]
-    from wayfinder_paths.jobs.execution.simulator import (
+    match scenario_plan:
+        case Mapping():
+            scenarios = scenario_plan.get("scenarios")
+        case _:
+            scenarios = None
+    match scenarios:
+        case list() if scenarios:
+            pass
+        case _:
+            return [{"name": "execution_scenario_plan_present", "passed": False}]
+    from wayfinder_paths.jobs.execution.simulator import (  # circular import
         PreparedExecutionDataset,
         simulate_execution,
     )
@@ -345,16 +360,13 @@ def _execution_scenario_checks(
 def _scenario_matches(result: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
     if not expected:
         return True
-    if "min_trades" in expected and len(result.get("trades") or []) < int(
-        expected["min_trades"]
-    ):
+    trades = result["trades"]
+    if "min_trades" in expected and len(trades) < int(expected["min_trades"]):
         return False
-    if "max_trades" in expected and len(result.get("trades") or []) > int(
-        expected["max_trades"]
-    ):
+    if "max_trades" in expected and len(trades) > int(expected["max_trades"]):
         return False
     if "execution_valid" in expected:
-        actual = (result.get("validation") or {}).get("execution_valid")
+        actual = result["validation"]["execution_valid"]
         if bool(actual) is not bool(expected["execution_valid"]):
             return False
     return True
@@ -371,13 +383,19 @@ def _latest_trace_validation(root: Path, spec: ExecutionSpec) -> dict[str, Any] 
             "execution_valid": False,
             "critical_failures": ["latest backtest JSON is invalid"],
         }
-    trace = data.get("trace") if isinstance(data, Mapping) else None
-    if not isinstance(trace, Mapping):
-        return {
-            "execution_valid": False,
-            "critical_failures": ["latest backtest trace missing"],
-        }
-    return validate_execution_trace(trace, spec)
+    match data:
+        case Mapping():
+            trace = data.get("trace")
+        case _:
+            trace = None
+    match trace:
+        case Mapping():
+            return validate_execution_trace(trace, spec)
+        case _:
+            return {
+                "execution_valid": False,
+                "critical_failures": ["latest backtest trace missing"],
+            }
 
 
 def _load_module(script_path: Path) -> Any:
@@ -398,7 +416,7 @@ def _load_module(script_path: Path) -> Any:
 
 
 def _report(checks: list[dict[str, Any]], *, strict: bool) -> dict[str, Any]:
-    failed = [check for check in checks if not check.get("passed")]
+    failed = [check for check in checks if not check["passed"]]
     blocking = [
         check for check in failed if strict or check.get("blocking", True) is not False
     ]

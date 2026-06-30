@@ -32,6 +32,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from wayfinder_paths.core.config import (
+    get_api_key,
+    get_openai_credentials,
+    load_config,
+)
 from wayfinder_paths.jobs.execution.job import backtest_execution_job
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.forward import ForwardRecorder
@@ -74,6 +79,13 @@ CODE_CONTEXT_FILES = [
     "wayfinder_paths/jobs/forward.py",
     "wayfinder_paths/jobs/worker.py",
     "wayfinder_paths/mcp/tools/jobs.py",
+]
+FORBIDDEN_ORDER_TOOLS = [
+    "wayfinder_hyperliquid_place_",
+    "wayfinder_polymarket_place_",
+    "wayfinder_onchain_swap",
+    "wayfinder_onchain_send",
+    "wayfinder_contracts_execute",
 ]
 CreationKind = Literal["script_only", "script_agent", "agent_only"]
 WorkerKind = Literal["script_agent_worker", "auto_worker"]
@@ -728,21 +740,31 @@ def validate_execution_backtest_case(
         if job_yaml_path.exists()
         else None
     )
+    match job_data:
+        case dict():
+            job_is_mapping = True
+        case _:
+            job_is_mapping = False
     execution_spec_path = root / "execution_spec.json"
     execution_spec = (
         read_json(execution_spec_path, default={})
         if execution_spec_path.exists()
         else {}
     )
-    if isinstance(job_data, dict) and not execution_spec:
-        embedded_spec = job_data.get("execution_spec")
-        execution_spec = embedded_spec if isinstance(embedded_spec, dict) else {}
-    script_loop = job_data.get("script_loop") if isinstance(job_data, dict) else {}
-    script_path = (
-        script_entrypoint_path(workspace, script_loop, job_id=case.job_id)
-        if isinstance(script_loop, Mapping)
-        else root / "__missing_script__"
-    )
+    if job_is_mapping and not execution_spec:
+        match job_data.get("execution_spec"):
+            case dict() as embedded_spec:
+                execution_spec = embedded_spec
+            case _:
+                execution_spec = {}
+    script_loop = job_data.get("script_loop") if job_is_mapping else {}
+    match script_loop:
+        case Mapping():
+            script_path = script_entrypoint_path(
+                workspace, script_loop, job_id=case.job_id
+            )
+        case _:
+            script_path = root / "__missing_script__"
     script_text = (
         script_path.read_text(encoding="utf-8", errors="replace")
         if script_path.exists()
@@ -753,27 +775,32 @@ def validate_execution_backtest_case(
         read_json(root / "results" / "backtest" / "visualization.json", default={})
         or {}
     )
+    match visualization:
+        case dict():
+            viz_is_mapping = True
+        case _:
+            viz_is_mapping = False
     validation = (
         read_json(root / "reports" / "validation" / "latest.json", default={}) or {}
     )
     grid_summaries = list(
         (root / "results" / "backtest" / "grids").glob("*/summary.json")
     )
-    forbidden_tools = [
-        "wayfinder_hyperliquid_place_",
-        "wayfinder_polymarket_place_",
-        "wayfinder_onchain_swap",
-        "wayfinder_onchain_send",
-        "wayfinder_contracts_execute",
-    ]
-    forbidden_hits = [name for name in forbidden_tools if name in log_text]
-    markers = visualization.get("markers") if isinstance(visualization, dict) else []
+    forbidden_hits = [name for name in FORBIDDEN_ORDER_TOOLS if name in log_text]
+    markers = visualization.get("markers") if viz_is_mapping else []
+    match markers:
+        case list():
+            has_entry_exit_markers = any(
+                marker.get("kind") == "entry" for marker in markers
+            ) and any(marker.get("kind") == "exit" for marker in markers)
+        case _:
+            has_entry_exit_markers = False
     checks = [
         {"name": "job_yaml_exists", "passed": job_yaml_path.exists()},
-        {"name": "job_yaml_mapping", "passed": isinstance(job_data, dict)},
+        {"name": "job_yaml_mapping", "passed": job_is_mapping},
         {
             "name": "execution_spec_present",
-            "passed": isinstance(execution_spec, dict) and bool(execution_spec),
+            "passed": bool(execution_spec),
         },
         {
             "name": "execution_spec_completed_bars",
@@ -827,14 +854,12 @@ def validate_execution_backtest_case(
         {
             "name": "visualization_has_equity",
             "passed": bool((visualization.get("series") or [{}])[0].get("points"))
-            if isinstance(visualization, dict)
+            if viz_is_mapping
             else False,
         },
         {
             "name": "visualization_has_entry_exit_markers",
-            "passed": isinstance(markers, list)
-            and any(marker.get("kind") == "entry" for marker in markers)
-            and any(marker.get("kind") == "exit" for marker in markers),
+            "passed": has_entry_exit_markers,
         },
         {"name": "no_real_order_tool_calls", "passed": not forbidden_hits},
     ]
@@ -1065,14 +1090,7 @@ def validate_worker_case(
             case list():
                 orders_attempted = bool(orders)
                 orders_successful = bool(orders)
-        forbidden_tools = [
-            "wayfinder_hyperliquid_place_",
-            "wayfinder_polymarket_place_",
-            "wayfinder_onchain_swap",
-            "wayfinder_onchain_send",
-            "wayfinder_contracts_execute",
-        ]
-        forbidden_hits = [name for name in forbidden_tools if name in log_text]
+        forbidden_hits = [name for name in FORBIDDEN_ORDER_TOOLS if name in log_text]
         checks.extend(
             [
                 {"name": "auto_report_exists", "passed": bool(report)},
@@ -1151,14 +1169,7 @@ def validate_application_case(
         if str(check.get("name") or "").startswith("scenario_")
     ]
     journal = (root / "journal.jsonl").read_text(encoding="utf-8", errors="replace")
-    forbidden_tools = [
-        "wayfinder_hyperliquid_place_",
-        "wayfinder_polymarket_place_",
-        "wayfinder_onchain_swap",
-        "wayfinder_onchain_send",
-        "wayfinder_contracts_execute",
-    ]
-    forbidden_hits = [name for name in forbidden_tools if name in log_text]
+    forbidden_hits = [name for name in FORBIDDEN_ORDER_TOOLS if name in log_text]
     checks = [
         {"name": "proposal_exists", "passed": bool(proposal)},
         {"name": "proposal_approved", "passed": proposal.get("status") == "approved"},
@@ -1408,7 +1419,7 @@ def write_valid_application_artifacts(workspace: Path, case: WorkerCase) -> None
                 "status": result["status"],
                 "failed_checks": [
                     check.get("name")
-                    for check in result.get("checks", [])
+                    for check in result["checks"]
                     if not check.get("passed")
                 ],
             }
@@ -1800,8 +1811,6 @@ def resolve_wayfinder_model_env(model: str, env: dict[str, str]) -> None:
     if not model.startswith("wayfinder/") or env.get("WAYFINDER_API_KEY"):
         return
     try:
-        from wayfinder_paths.core.config import get_api_key, load_config
-
         load_config()
         key = get_api_key()
     except Exception:
@@ -1823,8 +1832,6 @@ def resolve_judge_model(
     if env.get("OPENAI_API_KEY"):
         return requested_model
     try:
-        from wayfinder_paths.core.config import get_openai_credentials, load_config
-
         load_config()
         creds = get_openai_credentials()
     except Exception:

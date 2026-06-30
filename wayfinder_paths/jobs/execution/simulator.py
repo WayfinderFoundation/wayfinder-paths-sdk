@@ -26,6 +26,8 @@ from wayfinder_paths.jobs.execution.primitives import (
 )
 from wayfinder_paths.jobs.execution.validation import validate_execution_trace
 
+REDUCE_ONLY_ACTIONS = frozenset({"CLOSE", "STOP_LOSS", "TAKE_PROFIT"})
+
 
 @dataclass
 class PreparedExecutionDataset:
@@ -113,8 +115,7 @@ class BacktestBroker:
             avg_price=float(fill_price),
             fee=float(fee),
             client_order_id=intent.client_order_id,
-            reduce_only=intent.reduce_only
-            or intent.action in {"CLOSE", "STOP_LOSS", "TAKE_PROFIT"},
+            reduce_only=intent.reduce_only or intent.action in REDUCE_ONLY_ACTIONS,
             raw={
                 "intent_action": intent.action,
                 "intent_metadata": intent.metadata,
@@ -130,11 +131,11 @@ def simulate_execution(
     execution_spec: ExecutionSpec | Mapping[str, Any] | None = None,
     params: Mapping[str, Any] | None = None,
 ) -> ExecutionBacktestResult:
-    spec = (
-        execution_spec
-        if isinstance(execution_spec, ExecutionSpec)
-        else ExecutionSpec.from_dict(execution_spec)
-    )
+    match execution_spec:
+        case ExecutionSpec():
+            spec = execution_spec
+        case _:
+            spec = ExecutionSpec.from_dict(execution_spec)
     params_data = dict(params or {})
     strategy = _load_strategy(script_entrypoint, params_data)
     broker = BacktestBroker(
@@ -248,9 +249,7 @@ def simulate_execution(
         trace.runs.append(
             {
                 "timestamp": timestamp.isoformat(),
-                "visible_bar_count": len(ctx.view.to_frame())
-                if isinstance(ctx.view, CompletedBarsView)
-                else None,
+                "visible_bar_count": len(ctx.view.to_frame()),
             }
         )
 
@@ -320,11 +319,11 @@ def run_execution_grid(
             )
     elif parallel == "process":
         payload = dataset.to_dict()
-        spec_dict = (
-            execution_spec.to_dict()
-            if isinstance(execution_spec, ExecutionSpec)
-            else dict(execution_spec or {})
-        )
+        match execution_spec:
+            case ExecutionSpec():
+                spec_dict = execution_spec.to_dict()
+            case _:
+                spec_dict = dict(execution_spec or {})
         with ProcessPoolExecutor(max_workers=workers) as executor:
             results = list(
                 executor.map(
@@ -339,17 +338,11 @@ def run_execution_grid(
         raise ValueError("parallel must be serial, thread, or process")
 
     run_rows = [_grid_row(result, rank_by=rank_by) for result in results]
-    valid = [
-        row
-        for row in run_rows
-        if row.get("validation", {}).get("execution_valid") is True
-    ]
+    valid = [row for row in run_rows if row["validation"]["execution_valid"] is True]
     invalid = [
-        row
-        for row in run_rows
-        if row.get("validation", {}).get("execution_valid") is not True
+        row for row in run_rows if row["validation"]["execution_valid"] is not True
     ]
-    ranked = sorted(valid, key=lambda row: float(row.get(rank_by) or 0), reverse=True)
+    ranked = sorted(valid, key=lambda row: float(row[rank_by] or 0), reverse=True)
     return ExecutionGridResult(
         grid_id=grid_id,
         rank_by=rank_by,
@@ -365,25 +358,30 @@ def write_backtest_artifacts(
 ) -> dict[str, str]:
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
-    if isinstance(result, ExecutionGridResult):
-        summary = root / "summary.json"
-        runs = root / "runs.jsonl"
-        summary.write_text(
-            json.dumps(result.to_dict(), indent=2, default=str) + "\n", encoding="utf-8"
-        )
-        with runs.open("w", encoding="utf-8") as handle:
-            for row in result.runs:
-                handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
-        return {"summary": str(summary), "runs": str(runs)}
-    latest = root / "latest.json"
-    visualization = root / "visualization.json"
-    latest.write_text(
-        json.dumps(result.to_dict(), indent=2, default=str) + "\n", encoding="utf-8"
-    )
-    visualization.write_text(
-        json.dumps(result.visualization, indent=2, default=str) + "\n", encoding="utf-8"
-    )
-    return {"latest": str(latest), "visualization": str(visualization)}
+    match result:
+        case ExecutionGridResult():
+            summary = root / "summary.json"
+            runs = root / "runs.jsonl"
+            summary.write_text(
+                json.dumps(result.to_dict(), indent=2, default=str) + "\n",
+                encoding="utf-8",
+            )
+            with runs.open("w", encoding="utf-8") as handle:
+                for row in result.runs:
+                    handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+            return {"summary": str(summary), "runs": str(runs)}
+        case _:
+            latest = root / "latest.json"
+            visualization = root / "visualization.json"
+            latest.write_text(
+                json.dumps(result.to_dict(), indent=2, default=str) + "\n",
+                encoding="utf-8",
+            )
+            visualization.write_text(
+                json.dumps(result.visualization, indent=2, default=str) + "\n",
+                encoding="utf-8",
+            )
+            return {"latest": str(latest), "visualization": str(visualization)}
 
 
 def _process_run(
@@ -429,11 +427,13 @@ def _call_decide(strategy: Any, ctx: ExecutionContext) -> list[Any]:
     result = decide(ctx)
     if asyncio.iscoroutine(result):
         result = asyncio.run(result)
-    if result is None:
-        return []
-    if isinstance(result, Mapping):
-        return [result]
-    return list(result)
+    match result:
+        case None:
+            return []
+        case Mapping():
+            return [result]
+        case _:
+            return list(result)
 
 
 def _evaluate_brackets(
@@ -519,24 +519,19 @@ def _stats(
 def _markers(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
     markers: list[dict[str, Any]] = []
     for trade in trades:
-        raw = trade.get("raw") if isinstance(trade.get("raw"), Mapping) else {}
-        metadata = (
-            raw.get("intent_metadata")
-            if isinstance(raw.get("intent_metadata"), Mapping)
-            else {}
-        )
-        action = str(raw.get("intent_action") or "").upper()
+        raw = trade["raw"]
+        metadata = raw["intent_metadata"]
+        action = str(raw["intent_action"] or "").upper()
         markers.append(
             {
-                "timestamp": trade.get("timestamp"),
-                "symbol": trade.get("symbol"),
-                "side": metadata.get("position_side") or trade.get("side"),
-                "price": trade.get("avg_price"),
+                "timestamp": trade["timestamp"],
+                "symbol": trade["symbol"],
+                "side": metadata.get("position_side") or trade["side"],
+                "price": trade["avg_price"],
                 "kind": "exit"
-                if trade.get("reduce_only")
-                or action in {"CLOSE", "STOP_LOSS", "TAKE_PROFIT"}
+                if trade["reduce_only"] or action in REDUCE_ONLY_ACTIONS
                 else "entry",
-                "label": action or ("exit" if trade.get("reduce_only") else "entry"),
+                "label": action or ("exit" if trade["reduce_only"] else "entry"),
             }
         )
     return markers
@@ -545,11 +540,16 @@ def _markers(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _expand_grid(
     param_grid: Mapping[str, list[Any]] | list[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
-    if isinstance(param_grid, list):
-        return [dict(item) for item in param_grid]
-    keys = list(param_grid.keys())
-    values = [param_grid[key] for key in keys]
-    return [dict(zip(keys, combo, strict=True)) for combo in itertools.product(*values)]
+    match param_grid:
+        case list():
+            return [dict(item) for item in param_grid]
+        case _:
+            keys = list(param_grid.keys())
+            values = [param_grid[key] for key in keys]
+            return [
+                dict(zip(keys, combo, strict=True))
+                for combo in itertools.product(*values)
+            ]
 
 
 def _grid_row(result: ExecutionBacktestResult, *, rank_by: str) -> dict[str, Any]:

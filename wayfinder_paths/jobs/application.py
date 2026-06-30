@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.models import utc_now_iso
@@ -506,14 +508,12 @@ def _with_execution_validation(
     candidate_job_yaml = candidate_dir / "job.yaml"
     if candidate_job_yaml.exists():
         try:
-            import yaml
-
             job_data = (
                 yaml.safe_load(candidate_job_yaml.read_text(encoding="utf-8")) or {}
             )
-            has_spec = has_spec or bool(
-                isinstance(job_data, dict) and job_data.get("execution_spec")
-            )
+            match job_data:
+                case dict() if job_data.get("execution_spec"):
+                    has_spec = True
         except Exception:
             pass
     if not has_spec:

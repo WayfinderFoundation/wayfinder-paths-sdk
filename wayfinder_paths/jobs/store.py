@@ -46,11 +46,12 @@ class JobStore:
         *,
         candidate_dir: str | Path | None = None,
     ) -> Path | None:
-        script_loop = (
-            job_data.get("script_loop") if isinstance(job_data, Mapping) else {}
-        )
-        if not isinstance(script_loop, Mapping) or not script_loop.get("enabled"):
-            return None
+        script_loop = job_data.get("script_loop")
+        match script_loop:
+            case Mapping() if script_loop.get("enabled"):
+                pass
+            case _:
+                return None
         raw = str(script_loop.get("entrypoint") or "").strip()
         if not raw:
             return None

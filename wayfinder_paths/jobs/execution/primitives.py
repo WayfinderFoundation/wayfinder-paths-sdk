@@ -49,9 +49,13 @@ class ExecutionSpec:
         for key in asdict(spec):
             if key in payload:
                 setattr(spec, key, payload[key])
-        spec.ohlc_rules = {**cls().ohlc_rules, **dict(spec.ohlc_rules or {})}
-        spec.data_contract = {**cls().data_contract, **dict(spec.data_contract or {})}
-        spec.validation = {**cls().validation, **dict(spec.validation or {})}
+        defaults = cls()
+        spec.ohlc_rules = {**defaults.ohlc_rules, **dict(spec.ohlc_rules or {})}
+        spec.data_contract = {
+            **defaults.data_contract,
+            **dict(spec.data_contract or {}),
+        }
+        spec.validation = {**defaults.validation, **dict(spec.validation or {})}
         return spec
 
     def to_dict(self) -> dict[str, Any]:
@@ -140,18 +144,19 @@ class CompletedBarsView:
     def through(
         self, index_or_time: int | str | datetime | pd.Timestamp
     ) -> CompletedBarsView:
-        if isinstance(index_or_time, int):
-            timestamps = self.timestamps
-            if not timestamps:
-                return CompletedBarsView(self._bars.iloc[0:0])
-            index = min(max(index_or_time, 0), len(timestamps) - 1)
-            cutoff = timestamps[index]
-        else:
-            cutoff = pd.Timestamp(index_or_time)
-            if cutoff.tzinfo is None:
-                cutoff = cutoff.tz_localize("UTC")
-            else:
-                cutoff = cutoff.tz_convert("UTC")
+        match index_or_time:
+            case int():
+                timestamps = self.timestamps
+                if not timestamps:
+                    return CompletedBarsView(self._bars.iloc[0:0])
+                index = min(max(index_or_time, 0), len(timestamps) - 1)
+                cutoff = timestamps[index]
+            case _:
+                cutoff = pd.Timestamp(index_or_time)
+                if cutoff.tzinfo is None:
+                    cutoff = cutoff.tz_localize("UTC")
+                else:
+                    cutoff = cutoff.tz_convert("UTC")
         return CompletedBarsView(self._bars[self._bars["timestamp"] <= cutoff])
 
     def row_at(self, timestamp: pd.Timestamp, symbol: str | None = None) -> MarketBar:
@@ -168,7 +173,7 @@ class CompletedBarsView:
             high=float(row["high"]),
             low=float(row["low"]),
             close=float(row["close"]),
-            volume=None if pd.isna(row.get("volume")) else float(row.get("volume")),
+            volume=None if pd.isna(row["volume"]) else float(row["volume"]),
         )
 
     def to_frame(self) -> pd.DataFrame:
@@ -224,21 +229,23 @@ class OrderIntent:
 
     @classmethod
     def from_any(cls, value: OrderIntent | Mapping[str, Any]) -> OrderIntent:
-        if isinstance(value, OrderIntent):
-            return value
-        data = dict(value)
-        return cls(
-            action=str(data.get("action") or "").upper(),  # type: ignore[arg-type]
-            venue=str(data.get("venue") or "hyperliquid"),
-            symbol=str(data.get("symbol") or data.get("market_id") or ""),
-            side=str(data.get("side") or ""),
-            size=_float_or_none(data.get("size")),
-            notional=_float_or_none(data.get("notional")),
-            reduce_only=bool(data.get("reduce_only", False)),
-            client_order_id=data.get("client_order_id"),
-            bracket=dict(data.get("bracket") or {}) or None,
-            metadata=dict(data.get("metadata") or {}),
-        )
+        match value:
+            case OrderIntent():
+                return value
+            case _:
+                data = dict(value)
+                return cls(
+                    action=str(data.get("action") or "").upper(),  # type: ignore[arg-type]
+                    venue=str(data.get("venue") or "hyperliquid"),
+                    symbol=str(data.get("symbol") or data.get("market_id") or ""),
+                    side=str(data.get("side") or ""),
+                    size=_float_or_none(data.get("size")),
+                    notional=_float_or_none(data.get("notional")),
+                    reduce_only=bool(data.get("reduce_only", False)),
+                    client_order_id=data.get("client_order_id"),
+                    bracket=dict(data.get("bracket") or {}) or None,
+                    metadata=dict(data.get("metadata") or {}),
+                )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -405,38 +412,19 @@ class BracketEngine:
         )
         if stop_hit and tp_hit:
             exit_type = "STOP_LOSS" if policy == "conservative" else "TAKE_PROFIT"
-            level = stop_loss if exit_type == "STOP_LOSS" else take_profit
-            return {
-                "hit": True,
-                "exit_type": exit_type,
-                "price": level,
-                "ambiguous": True,
-                "policy": policy,
-                "used_ohlc": True,
-            }
-        if stop_hit:
-            return {
-                "hit": True,
-                "exit_type": "STOP_LOSS",
-                "price": stop_loss,
-                "ambiguous": False,
-                "policy": policy,
-                "used_ohlc": True,
-            }
-        if tp_hit:
-            return {
-                "hit": True,
-                "exit_type": "TAKE_PROFIT",
-                "price": take_profit,
-                "ambiguous": False,
-                "policy": policy,
-                "used_ohlc": True,
-            }
+            price = stop_loss if exit_type == "STOP_LOSS" else take_profit
+            hit, ambiguous = True, True
+        elif stop_hit:
+            exit_type, price, hit, ambiguous = "STOP_LOSS", stop_loss, True, False
+        elif tp_hit:
+            exit_type, price, hit, ambiguous = "TAKE_PROFIT", take_profit, True, False
+        else:
+            exit_type, price, hit, ambiguous = None, None, False, False
         return {
-            "hit": False,
-            "exit_type": None,
-            "price": None,
-            "ambiguous": False,
+            "hit": hit,
+            "exit_type": exit_type,
+            "price": price,
+            "ambiguous": ambiguous,
             "policy": policy,
             "used_ohlc": True,
         }
@@ -475,9 +463,11 @@ def _normalize_side(side: str) -> str:
 
 
 def _bar_value(bar: Mapping[str, Any] | MarketBar, key: str) -> float:
-    if isinstance(bar, MarketBar):
-        return float(getattr(bar, key))
-    return float(bar[key])
+    match bar:
+        case MarketBar():
+            return float(getattr(bar, key))
+        case _:
+            return float(bar[key])
 
 
 def _float_or_none(value: Any) -> float | None:

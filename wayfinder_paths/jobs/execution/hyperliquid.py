@@ -56,10 +56,10 @@ def summarize_trade_capacity(
 ) -> TradeCapacity:
     available_long, available_short = _float_pair(active_asset_data, "availableToTrade")
     max_long, max_short = _float_pair(active_asset_data, "maxTradeSzs")
-    leverage = active_asset_data.get("leverage")
     leverage_value = None
-    if isinstance(leverage, dict):
-        leverage_value = _float_or_none(leverage.get("value"))
+    match active_asset_data.get("leverage"):
+        case dict() as leverage:
+            leverage_value = _float_or_none(leverage.get("value"))
     mark_px = _float_or_none(active_asset_data.get("markPx"))
     wants_short = str(side).lower() in {"sell", "short"}
     available_margin = available_short if wants_short else available_long
@@ -85,18 +85,24 @@ def summarize_trade_capacity(
 async def get_trade_capacity(
     label: str, asset_name: str, side: str = "buy"
 ) -> TradeCapacity:
+    # lazy: keeps execution/ decoupled from the MCP tool stack (backtest path never loads it) and patchable in tests
     from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_get_trade_asset
 
     result = await hyperliquid_get_trade_asset(label=label, asset_name=asset_name)
+    unsafe = TradeCapacity(safe=False, source="activeAssetData.availableToTrade")
     data = None
-    if isinstance(result, dict):
-        data = result.get("result") if result.get("ok") is True else result.get("data")
-    if not isinstance(data, dict):
-        return TradeCapacity(safe=False, source="activeAssetData.availableToTrade")
-    active = data.get("active_asset_data") or data.get("raw") or data
-    if not isinstance(active, dict):
-        return TradeCapacity(safe=False, source="activeAssetData.availableToTrade")
-    return summarize_trade_capacity(active, side=side)
+    match result:
+        case dict() if result.get("ok") is True:
+            data = result.get("result")
+        case dict():
+            data = result.get("data")
+    match data:
+        case dict():
+            active = data.get("active_asset_data") or data.get("raw") or data
+            match active:
+                case dict():
+                    return summarize_trade_capacity(active, side=side)
+    return unsafe
 
 
 def safe_place_perp_order(
@@ -147,25 +153,25 @@ def safe_place_perp_order(
             raw=raw,
         )
     statuses = ((raw.get("response") or {}).get("data") or {}).get("statuses") or []
-    if any(isinstance(item, dict) and "error" in item for item in statuses):
-        return FillEvent(
-            status="rejected",
-            venue=intent.venue,
-            symbol=intent.symbol,
-            side=intent.side,
-            client_order_id=intent.client_order_id,
-            error="exchange status contains error",
-            raw=raw,
-        )
-    filled = next(
-        (
-            item.get("filled")
-            for item in statuses
-            if isinstance(item, dict) and isinstance(item.get("filled"), dict)
-        ),
-        None,
-    )
-    if not isinstance(filled, dict):
+    for item in statuses:
+        match item:
+            case {"error": _}:
+                return FillEvent(
+                    status="rejected",
+                    venue=intent.venue,
+                    symbol=intent.symbol,
+                    side=intent.side,
+                    client_order_id=intent.client_order_id,
+                    error="exchange status contains error",
+                    raw=raw,
+                )
+    filled = None
+    for item in statuses:
+        match item:
+            case {"filled": dict() as fill}:
+                filled = fill
+                break
+    if filled is None:
         return FillEvent(
             status="resting",
             venue=intent.venue,
@@ -212,10 +218,11 @@ def _candles_to_completed_view(
 
 
 def _float_pair(data: dict[str, Any], key: str) -> tuple[float | None, float | None]:
-    values = data.get(key)
-    if not isinstance(values, list) or len(values) < 2:
-        return None, None
-    return _float_or_none(values[0]), _float_or_none(values[1])
+    match data.get(key):
+        case [first, second, *_]:
+            return _float_or_none(first), _float_or_none(second)
+        case _:
+            return None, None
 
 
 def _float_or_none(value: Any) -> float | None:

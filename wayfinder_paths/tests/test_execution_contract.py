@@ -264,11 +264,13 @@ async def test_hyperliquid_data_client_accepts_lookback_hours(monkeypatch) -> No
     await client.get_candles("SNX", interval="5m", lookback_hours=6)
 
     params = captured["params"]
-    assert isinstance(params, dict)
+    match params:
+        case {"start_ms": int(), "end_ms": int()}:
+            pass
+        case _:
+            pytest.fail(f"unexpected candles params shape: {params!r}")
     assert params["coin"] == "SNX"
     assert params["interval"] == "5m"
-    assert isinstance(params["start_ms"], int)
-    assert isinstance(params["end_ms"], int)
     assert params["end_ms"] > params["start_ms"]
 
 

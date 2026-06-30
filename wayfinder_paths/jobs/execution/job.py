@@ -50,11 +50,7 @@ def backtest_execution_job(
         artifacts = write_backtest_artifacts(result, grid_dir)
         payload = {"type": "grid", "result": result.to_dict(), "artifacts": artifacts}
     else:
-        params = dict(
-            (job_data.get("execution_params") or {})
-            if isinstance(job_data, dict)
-            else {}
-        )
+        params = dict(job_data.get("execution_params") or {})
         result = simulate_execution(script, dataset, spec, params)
         artifacts = write_backtest_artifacts(result, output_dir)
         payload = {"type": "single", "result": result.to_dict(), "artifacts": artifacts}
@@ -73,21 +69,22 @@ def _load_job_yaml(root: Path) -> dict[str, Any]:
     path = root / "job.yaml"
     if not path.exists():
         raise FileNotFoundError(f"job.yaml not found: {path}")
-    loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not isinstance(loaded, dict):
-        raise ValueError(f"Invalid job.yaml: {path}")
-    return loaded
+    match yaml.safe_load(path.read_text(encoding="utf-8")) or {}:
+        case dict() as loaded:
+            return loaded
+        case _:
+            raise ValueError(f"Invalid job.yaml: {path}")
 
 
 def _load_spec(root: Path, job_data: dict[str, Any]) -> dict[str, Any]:
-    embedded = job_data.get("execution_spec")
-    if isinstance(embedded, dict) and embedded:
-        return embedded
+    match job_data.get("execution_spec"):
+        case dict() as embedded if embedded:
+            return embedded
     path = root / "execution_spec.json"
     if path.exists():
-        loaded = _load_json(path)
-        if isinstance(loaded, dict):
-            return loaded
+        match _load_json(path):
+            case dict() as loaded:
+                return loaded
     raise FileNotFoundError(
         f"execution_spec missing for job {job_data.get('id') or root.name}"
     )
@@ -103,27 +100,33 @@ def _load_dataset(
     for path in candidate_paths:
         if path.exists():
             rows = _load_json(path)
-            if isinstance(rows, dict):
-                rows = rows.get("bars")
-            if isinstance(rows, list):
-                return PreparedExecutionDataset.from_rows(rows, {"source": str(path)})
+            match rows:
+                case dict():
+                    rows = rows.get("bars")
+            match rows:
+                case list():
+                    return PreparedExecutionDataset.from_rows(
+                        rows, {"source": str(path)}
+                    )
     scenario_plan = job_data.get("execution_scenario_plan") or spec.validation.get(
         "execution_scenario_plan"
     )
-    scenarios = (
-        scenario_plan.get("scenarios") if isinstance(scenario_plan, dict) else None
-    )
-    if isinstance(scenarios, list) and scenarios:
-        rows = scenarios[0].get("bars")
-        if isinstance(rows, list):
+    scenarios = None
+    match scenario_plan:
+        case dict():
+            scenarios = scenario_plan.get("scenarios")
+    match scenarios:
+        case [first, *_]:
+            match first.get("bars"):
+                case list() as rows:
+                    return PreparedExecutionDataset.from_rows(
+                        rows, {"source": "execution_scenario_plan[0]"}
+                    )
+    match spec.validation.get("fixture_bars"):
+        case list() as fixture_bars:
             return PreparedExecutionDataset.from_rows(
-                rows, {"source": "execution_scenario_plan[0]"}
+                fixture_bars, {"source": "execution_spec.validation.fixture_bars"}
             )
-    fixture_bars = spec.validation.get("fixture_bars")
-    if isinstance(fixture_bars, list):
-        return PreparedExecutionDataset.from_rows(
-            fixture_bars, {"source": "execution_spec.validation.fixture_bars"}
-        )
     raise FileNotFoundError(
         "No backtest bars found. Provide results/backtest/input_bars.json, "
         "workspace/config/backtest_bars.json, execution_scenario_plan bars, or "
