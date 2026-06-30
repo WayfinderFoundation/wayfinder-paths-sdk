@@ -606,9 +606,14 @@ def validate_creation_case(workspace: Path, case: CreationCase) -> dict[str, Any
     path = workspace / ".wayfinder" / "jobs" / case.job_id / "job.yaml"
     checks: list[dict[str, Any]] = []
     data = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else None
+    match data:
+        case dict():
+            is_mapping = True
+        case _:
+            is_mapping = False
     checks.append({"name": "job_yaml_exists", "passed": path.exists()})
-    checks.append({"name": "job_yaml_mapping", "passed": isinstance(data, dict)})
-    if not isinstance(data, dict):
+    checks.append({"name": "job_yaml_mapping", "passed": is_mapping})
+    if not is_mapping:
         return {"status": "failed", "checks": checks, "job_yaml": str(path)}
 
     script_loop = data.get("script_loop") or {}
@@ -1032,15 +1037,16 @@ def validate_worker_case(
         orders_empty = orders in ([], {})
         orders_attempted = False
         orders_successful = False
-        if isinstance(orders, dict):
-            attempted = orders.get("attempted") or []
-            successful = orders.get("successful") or []
-            orders_empty = attempted == [] and successful == []
-            orders_attempted = bool(attempted)
-            orders_successful = bool(successful)
-        elif isinstance(orders, list):
-            orders_attempted = bool(orders)
-            orders_successful = bool(orders)
+        match orders:
+            case dict():
+                attempted = orders.get("attempted") or []
+                successful = orders.get("successful") or []
+                orders_empty = attempted == [] and successful == []
+                orders_attempted = bool(attempted)
+                orders_successful = bool(successful)
+            case list():
+                orders_attempted = bool(orders)
+                orders_successful = bool(orders)
         forbidden_tools = [
             "wayfinder_hyperliquid_place_",
             "wayfinder_polymarket_place_",
@@ -1124,8 +1130,7 @@ def validate_application_case(
     scenario_checks = [
         check
         for check in deterministic_checks
-        if isinstance(check, Mapping)
-        and str(check.get("name") or "").startswith("scenario_")
+        if str(check.get("name") or "").startswith("scenario_")
     ]
     journal = (root / "journal.jsonl").read_text(encoding="utf-8", errors="replace")
     forbidden_tools = [
@@ -1183,8 +1188,7 @@ def validate_application_case(
             "name": "complex_apply_feedback_loop",
             "passed": not case.complex_apply
             or (
-                isinstance(validation_attempts, list)
-                and len(validation_attempts) >= 2
+                len(validation_attempts) >= 2
                 and validation_attempts[0].get("status") == "failed"
                 and validation_attempts[-1].get("status") == "passed"
             ),
@@ -1387,7 +1391,7 @@ def write_valid_application_artifacts(workspace: Path, case: WorkerCase) -> None
                 "failed_checks": [
                     check.get("name")
                     for check in result.get("checks", [])
-                    if isinstance(check, Mapping) and not check.get("passed")
+                    if not check.get("passed")
                 ],
             }
         )
@@ -1682,8 +1686,9 @@ def find_json(text: str) -> dict[str, Any] | None:
             parsed = json.loads(blob)
         except ValueError:
             continue
-        if isinstance(parsed, dict):
-            return parsed
+        match parsed:
+            case dict():
+                return parsed
     return None
 
 

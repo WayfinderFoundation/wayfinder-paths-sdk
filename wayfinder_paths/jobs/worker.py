@@ -48,35 +48,17 @@ def _sha256_text(text: str) -> str:
 
 
 def _drop_volatile_stable_keys(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            str(key): _drop_volatile_stable_keys(item)
-            for key, item in sorted(value.items())
-            if str(key) not in VOLATILE_STABLE_KEYS
-        }
-    if isinstance(value, list):
-        return [_drop_volatile_stable_keys(item) for item in value]
-    return value
-
-
-def _stable_job_payload(
-    job_data: dict[str, Any], memory_json: dict[str, Any]
-) -> dict[str, Any]:
-    return {
-        "job": _drop_volatile_stable_keys(job_data),
-        "memory_json": _drop_volatile_stable_keys(memory_json),
-    }
-
-
-def _dynamic_snapshot_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "scorecard": snapshot.get("scorecard") or {},
-        "forward": snapshot.get("forward") or {},
-        "runner_links": snapshot.get("runner_links") or {},
-        "proposals": snapshot.get("proposals") or [],
-        "proposal_queue": snapshot.get("proposal_queue") or {},
-        "reports": snapshot.get("reports") or {},
-    }
+    match value:
+        case dict():
+            return {
+                str(key): _drop_volatile_stable_keys(item)
+                for key, item in sorted(value.items())
+                if str(key) not in VOLATILE_STABLE_KEYS
+            }
+        case list():
+            return [_drop_volatile_stable_keys(item) for item in value]
+        case _:
+            return value
 
 
 def _build_worker_prompt_sections(
@@ -92,8 +74,18 @@ def _build_worker_prompt_sections(
     memory_md = _read_text(root / "memory.md", max_chars=6000)
     memory_json = store.read_json(job_id, "memory.json", default={}) or {}
     recent_journal = _read_text(root / "journal.jsonl", max_chars=4000)
-    stable_payload = _stable_job_payload(job_data, memory_json)
-    dynamic_payload = _dynamic_snapshot_payload(snapshot)
+    stable_payload = {
+        "job": _drop_volatile_stable_keys(job_data),
+        "memory_json": _drop_volatile_stable_keys(memory_json),
+    }
+    dynamic_payload = {
+        "scorecard": snapshot.get("scorecard") or {},
+        "forward": snapshot.get("forward") or {},
+        "runner_links": snapshot.get("runner_links") or {},
+        "proposals": snapshot.get("proposals") or [],
+        "proposal_queue": snapshot.get("proposal_queue") or {},
+        "reports": snapshot.get("reports") or {},
+    }
 
     stable_prefix = (
         "Run a Wayfinder job worker wakeup.\n\n"
@@ -179,23 +171,6 @@ def _build_worker_prompt_sections(
         "stable_prefix_hash": _sha256_text(stable_prefix),
         "dynamic_context_hash": _sha256_text(dynamic_context),
     }
-
-
-def _build_worker_prompt(
-    *,
-    store: JobStore,
-    job_id: str,
-    mode: str,
-    snapshot: dict[str, Any],
-    apply_proposal_id: str | None = None,
-) -> str:
-    return _build_worker_prompt_sections(
-        store=store,
-        job_id=job_id,
-        mode=mode,
-        snapshot=snapshot,
-        apply_proposal_id=apply_proposal_id,
-    )["prompt"]
 
 
 def prepare_job_worker_prompt(

@@ -53,9 +53,7 @@ class OpenCodeClient:
             response = self.client.post(f"{self.base_url}/session", json=payload)
             if not response.is_success:
                 return None
-            data = response.json()
-            if isinstance(data, dict):
-                return data.get("id")
+            return response.json().get("id")
         except Exception as error:
             logger.debug(f"Failed to create OpenCode session: {error}")
         return None
@@ -71,14 +69,12 @@ class OpenCodeClient:
             ).json()
         except Exception:
             return None
-        if not isinstance(children, list):
-            return None
-        for session in children:
-            if not isinstance(session, dict):
-                continue
-            if title and session.get("title") != title:
-                continue
-            return session.get("id")
+        match children:
+            case list():
+                for session in children:
+                    match session:
+                        case dict() if not title or session.get("title") == title:
+                            return session.get("id")
         return None
 
     def find_runner_session(self) -> str | None:
@@ -127,7 +123,9 @@ class OpenCodeClient:
                 json=payload,
             ).is_success
         except Exception as error:
-            logger.debug(f"Failed to queue async prompt for session {session_id}: {error}")
+            logger.debug(
+                f"Failed to queue async prompt for session {session_id}: {error}"
+            )
             return False
 
 

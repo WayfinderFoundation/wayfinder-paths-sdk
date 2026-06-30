@@ -113,9 +113,11 @@ class JobStore:
         if not path.exists():
             raise FileNotFoundError(f"Wayfinder job not found: {safe_job_id(job_id)}")
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        if not isinstance(data, dict):
-            raise ValueError(f"Invalid job spec: {path}")
-        return WayfinderJob.from_dict(data)
+        match data:
+            case dict():
+                return WayfinderJob.from_dict(data)
+            case _:
+                raise ValueError(f"Invalid job spec: {path}")
 
     def list_jobs(self) -> list[WayfinderJob]:
         if not self.jobs_dir.exists():
@@ -124,8 +126,9 @@ class JobStore:
         for path in sorted(self.jobs_dir.glob("*/job.yaml")):
             try:
                 data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-                if isinstance(data, dict):
-                    jobs.append(WayfinderJob.from_dict(data))
+                match data:
+                    case dict():
+                        jobs.append(WayfinderJob.from_dict(data))
             except Exception:
                 continue
         return jobs
@@ -164,8 +167,9 @@ class JobStore:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            if isinstance(data, dict):
-                proposals.append(self._normalize_proposal(data))
+            match data:
+                case dict():
+                    proposals.append(self._normalize_proposal(data))
         return proposals
 
     def proposal_queue(self, job_id: str) -> dict[str, list[dict[str, Any]]]:
@@ -213,9 +217,11 @@ class JobStore:
         if not path.exists():
             raise FileNotFoundError(f"Proposal not found: {proposal_id}")
         data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError(f"Invalid proposal: {proposal_id}")
-        return self._normalize_proposal(data)
+        match data:
+            case dict():
+                return self._normalize_proposal(data)
+            case _:
+                raise ValueError(f"Invalid proposal: {proposal_id}")
 
     def write_proposal(self, job_id: str, proposal: dict[str, Any]) -> Path:
         proposal = self._normalize_proposal(proposal)
@@ -403,14 +409,15 @@ class JobStore:
         proposal = self.load_proposal(job_id, proposal_id)
         application = proposal.setdefault("application", {})
         attempts = application.setdefault("validation_attempts", [])
-        if not isinstance(attempts, list):
-            attempts = []
-            application["validation_attempts"] = attempts
-        checks = validation.get("checks") if isinstance(validation, dict) else []
+        match attempts:
+            case list():
+                pass
+            case _:
+                attempts = []
+                application["validation_attempts"] = attempts
+        checks = validation.get("checks")
         failed_checks = [
-            str(check.get("name"))
-            for check in checks or []
-            if isinstance(check, dict) and not check.get("passed")
+            str(check.get("name")) for check in checks or [] if not check.get("passed")
         ]
         attempts.append(
             {
@@ -525,15 +532,23 @@ class JobStore:
 
 def _validate_applicable_proposal(proposal: dict[str, Any]) -> None:
     contract = proposal.get("intent_contract")
-    if not isinstance(contract, dict) or not contract:
-        raise ValueError("Proposal requires intent_contract before application")
+    match contract:
+        case dict() if contract:
+            pass
+        case _:
+            raise ValueError("Proposal requires intent_contract before application")
     scenario_plan = proposal.get("scenario_plan")
-    scenarios = (
-        scenario_plan
-        if isinstance(scenario_plan, list)
-        else (scenario_plan or {}).get("scenarios")
-        if isinstance(scenario_plan, dict)
-        else None
-    )
-    if not isinstance(scenarios, list) or not scenarios:
-        raise ValueError("Proposal requires scenario_plan.scenarios before application")
+    match scenario_plan:
+        case list():
+            scenarios = scenario_plan
+        case dict():
+            scenarios = scenario_plan.get("scenarios")
+        case _:
+            scenarios = None
+    match scenarios:
+        case list() if scenarios:
+            pass
+        case _:
+            raise ValueError(
+                "Proposal requires scenario_plan.scenarios before application"
+            )

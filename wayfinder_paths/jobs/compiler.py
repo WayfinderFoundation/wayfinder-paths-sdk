@@ -173,7 +173,5 @@ def compile_job(job_id: str, *, start_daemon: bool = True) -> dict[str, Any]:
 
 
 def _was_linked(previous_links: dict[str, Any], loop: str) -> bool:
-    jobs = previous_links.get("jobs") if isinstance(previous_links, dict) else []
-    return any(
-        isinstance(item, dict) and item.get("loop") == loop for item in jobs or []
-    )
+    jobs = previous_links.get("jobs") or []
+    return any(item.get("loop") == loop for item in jobs)

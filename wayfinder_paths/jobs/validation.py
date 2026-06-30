@@ -63,8 +63,9 @@ def validate_candidate_application(
             loaded = (
                 yaml.safe_load(candidate_job_yaml.read_text(encoding="utf-8")) or {}
             )
-            if isinstance(loaded, dict):
-                job_data = loaded
+            match loaded:
+                case dict():
+                    job_data = loaded
         except Exception as exc:
             checks.append(
                 {
@@ -106,13 +107,19 @@ def validate_candidate_application(
 
 def _intent_contract_checks(proposal: Mapping[str, Any]) -> list[dict[str, Any]]:
     contract = proposal.get("intent_contract")
+    match contract:
+        case Mapping():
+            contract_present = True
+            contract_data = dict(contract)
+        case _:
+            contract_present = False
+            contract_data = {}
     checks = [
         {
             "name": "intent_contract_present",
-            "passed": isinstance(contract, Mapping),
+            "passed": contract_present,
         }
     ]
-    contract_data = dict(contract or {}) if isinstance(contract, Mapping) else {}
     for field in REQUIRED_INTENT_FIELDS:
         value = contract_data.get(field)
         present = field in contract_data
@@ -183,26 +190,35 @@ def _scenario_checks(
     script_path: Path, proposal: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
     scenario_plan = proposal.get("scenario_plan")
-    if isinstance(scenario_plan, list):
-        scenarios = scenario_plan
-        decision_function = "decide_from_snapshot"
-    elif isinstance(scenario_plan, Mapping):
-        scenarios = scenario_plan.get("scenarios") or []
-        decision_function = str(
-            scenario_plan.get("decision_function") or "decide_from_snapshot"
-        )
-    else:
-        return [{"name": "scenario_plan_present", "passed": False}]
+    match scenario_plan:
+        case list():
+            scenarios = scenario_plan
+            decision_function = "decide_from_snapshot"
+        case Mapping():
+            scenarios = scenario_plan.get("scenarios") or []
+            decision_function = str(
+                scenario_plan.get("decision_function") or "decide_from_snapshot"
+            )
+        case _:
+            return [{"name": "scenario_plan_present", "passed": False}]
 
+    match scenarios:
+        case list():
+            scenario_count = len(scenarios)
+        case _:
+            scenario_count = 0
     checks: list[dict[str, Any]] = [
         {
             "name": "scenario_plan_present",
             "passed": bool(scenarios),
-            "scenario_count": len(scenarios) if isinstance(scenarios, list) else 0,
+            "scenario_count": scenario_count,
         }
     ]
-    if not isinstance(scenarios, list) or not scenarios:
-        return checks
+    match scenarios:
+        case list() if scenarios:
+            pass
+        case _:
+            return checks
 
     module = _load_module(script_path)
     fn = getattr(module, decision_function, None) if module is not None else None
@@ -217,7 +233,11 @@ def _scenario_checks(
         return checks
 
     for index, scenario in enumerate(scenarios):
-        scenario_data = dict(scenario or {}) if isinstance(scenario, Mapping) else {}
+        match scenario:
+            case Mapping():
+                scenario_data = dict(scenario)
+            case _:
+                scenario_data = {}
         name = str(scenario_data.get("name") or f"scenario_{index + 1}")
         expected = scenario_data.get("expect") or scenario_data.get("expected") or {}
         try:
@@ -255,9 +275,12 @@ def _candidate_script_path(
     candidate_dir: Path,
     job_data: Mapping[str, Any],
 ) -> Path | None:
-    script_loop = job_data.get("script_loop") if isinstance(job_data, Mapping) else {}
-    if not isinstance(script_loop, Mapping) or not script_loop.get("enabled"):
-        return None
+    script_loop = job_data.get("script_loop")
+    match script_loop:
+        case Mapping() if script_loop.get("enabled"):
+            pass
+        case _:
+            return None
     entrypoint = str(script_loop.get("entrypoint") or "").strip()
     if not entrypoint:
         return None
@@ -320,9 +343,11 @@ def _call_decision_function(fn: Any, *, snapshot: Any, state: Any) -> Any:
 
 
 def _compare_expected(actual: Any, expected: Any) -> tuple[bool, list[str]]:
-    if not isinstance(expected, Mapping):
-        return True, []
-    expected_data = dict(expected)
+    match expected:
+        case Mapping():
+            expected_data = dict(expected)
+        case _:
+            return True, []
     failures: list[str] = []
     if "action" in expected_data:
         action = _extract_action(actual)
@@ -349,64 +374,67 @@ def _compare_expected(actual: Any, expected: Any) -> tuple[bool, list[str]]:
 
 
 def _extract_action(actual: Any) -> Any:
-    if isinstance(actual, str):
-        return actual
-    if not isinstance(actual, Mapping):
-        return None
-    if "action" in actual:
-        return actual.get("action")
-    decision = actual.get("decision")
-    if isinstance(decision, Mapping):
-        return decision.get("action")
-    return decision
+    match actual:
+        case str():
+            return actual
+        case Mapping():
+            if "action" in actual:
+                return actual.get("action")
+            decision = actual.get("decision")
+            match decision:
+                case Mapping():
+                    return decision.get("action")
+                case _:
+                    return decision
+        case _:
+            return None
 
 
 def _extract_reason(actual: Any) -> Any:
-    if not isinstance(actual, Mapping):
-        return ""
-    if "reason" in actual:
-        return actual.get("reason")
-    decision = actual.get("decision")
-    if isinstance(decision, Mapping):
-        return decision.get("reason")
-    return ""
+    match actual:
+        case Mapping():
+            if "reason" in actual:
+                return actual.get("reason")
+            decision = actual.get("decision")
+            match decision:
+                case Mapping():
+                    return decision.get("reason")
+                case _:
+                    return ""
+        case _:
+            return ""
 
 
 def _dotted_get(value: Any, path: str) -> Any:
     current = value
     for part in path.split("."):
-        if isinstance(current, Mapping):
-            current = current.get(part)
-        elif isinstance(current, list) and part.isdigit():
-            current = current[int(part)]
-        else:
-            return None
+        match current:
+            case Mapping():
+                current = current.get(part)
+            case list() if part.isdigit():
+                current = current[int(part)]
+            case _:
+                return None
     return current
 
 
 def _is_non_empty_contract_value(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, (list, tuple, set, dict)):
-        return bool(value)
-    return True
+    match value:
+        case None:
+            return False
+        case str():
+            return bool(value.strip())
+        case list() | tuple() | set() | dict():
+            return bool(value)
+        case _:
+            return True
 
 
 def validation_summary(validation: Mapping[str, Any]) -> dict[str, Any]:
-    checks = validation.get("checks") if isinstance(validation, Mapping) else []
-    if not isinstance(checks, list):
-        checks = []
+    checks = validation["checks"]
     return {
-        "status": validation.get("status")
-        if isinstance(validation, Mapping)
-        else "failed",
-        "failed_checks": [
-            check.get("name")
-            for check in checks
-            if isinstance(check, Mapping) and not check.get("passed")
-        ],
+        "status": validation["status"],
+        "failed_checks": [check["name"] for check in checks if not check["passed"]],
     }
 
 

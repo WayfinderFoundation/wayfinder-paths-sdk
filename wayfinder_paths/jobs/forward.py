@@ -102,16 +102,16 @@ class ForwardRecorder:
         if status is not None:
             row["status"] = status
         if decision is not None:
-            if isinstance(decision, Mapping):
-                decision_payload = dict(decision)
-                if reason and "reason" not in decision_payload:
-                    decision_payload["reason"] = reason
-                row["decision"] = decision_payload
-            else:
-                decision_payload = {"action": str(decision)}
-                if reason:
-                    decision_payload["reason"] = reason
-                row["decision"] = decision_payload
+            match decision:
+                case Mapping():
+                    decision_payload = dict(decision)
+                    if reason and "reason" not in decision_payload:
+                        decision_payload["reason"] = reason
+                case _:
+                    decision_payload = {"action": str(decision)}
+                    if reason:
+                        decision_payload["reason"] = reason
+            row["decision"] = decision_payload
         elif reason:
             row["reason"] = reason
         if state is not None:
@@ -184,8 +184,14 @@ class ForwardRecorder:
             runs = summary.setdefault("runs", {})
             runs["count"] = int(runs.get("count") or 0) + 1
             runs["last_run_at"] = row.get("ts")
-            runs["last_decision"] = _decision_action(row.get("decision"))
-            runs["last_reason"] = _decision_reason(row)
+            decision = row.get("decision")
+            match decision:
+                case dict():
+                    runs["last_decision"] = decision.get("action")
+                    runs["last_reason"] = decision.get("reason")
+                case _:
+                    runs["last_decision"] = decision
+                    runs["last_reason"] = row.get("reason")
             if str(row.get("status") or "ok").lower() not in {"ok", "success"}:
                 runs["error_count"] = int(runs.get("error_count") or 0) + 1
         elif kind == "trade":
@@ -358,32 +364,21 @@ def _tail_jsonl(path: Path, limit: int) -> list[dict[str, Any]]:
             parsed = json.loads(line)
         except ValueError:
             continue
-        if isinstance(parsed, dict):
-            rows.append(parsed)
+        match parsed:
+            case dict():
+                rows.append(parsed)
     return rows
-
-
-def _decision_action(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return value.get("action")
-    return value
-
-
-def _decision_reason(row: Mapping[str, Any]) -> Any:
-    decision = row.get("decision")
-    if isinstance(decision, Mapping):
-        return decision.get("reason")
-    return row.get("reason")
 
 
 def _extract_net_pnl(row: Mapping[str, Any]) -> float | None:
     pnl = row.get("pnl")
-    if isinstance(pnl, Mapping):
-        value = pnl.get("net_usd")
-        if value is None:
-            value = pnl.get("net")
-    else:
-        value = pnl
+    match pnl:
+        case Mapping():
+            value = pnl.get("net_usd")
+            if value is None:
+                value = pnl.get("net")
+        case _:
+            value = pnl
     if value is None:
         value = row.get("net_pnl")
     try:

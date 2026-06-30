@@ -202,11 +202,14 @@ def _session_ids_from_json_events(text: str) -> list[str]:
         except json.JSONDecodeError:
             continue
         session_id = event.get("sessionID")
-        if not session_id and isinstance(event.get("part"), dict):
-            session_id = event["part"].get("sessionID")
-        if isinstance(session_id, str) and session_id not in seen:
-            seen.add(session_id)
-            session_ids.append(session_id)
+        part = event.get("part")
+        match part:
+            case dict() if not session_id:
+                session_id = part.get("sessionID")
+        match session_id:
+            case str() if session_id not in seen:
+                seen.add(session_id)
+                session_ids.append(session_id)
     return session_ids
 
 
