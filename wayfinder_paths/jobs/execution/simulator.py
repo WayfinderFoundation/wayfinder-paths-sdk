@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import itertools
 import json
-import sys
 import uuid
 from collections.abc import Callable, Mapping
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
@@ -24,6 +22,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     StateSnapshot,
     TradeCapacity,
     _float_or_none,
+    _load_module_from_path,
 )
 from wayfinder_paths.jobs.execution.validation import validate_execution_trace
 
@@ -39,7 +38,9 @@ class PreparedExecutionDataset:
     def from_rows(
         cls, rows: list[Mapping[str, Any]], metadata: Mapping[str, Any] | None = None
     ) -> PreparedExecutionDataset:
-        return cls(CompletedBarsView.from_rows(rows), dict(metadata or {}))
+        return cls(
+            CompletedBarsView.from_rows(rows), dict(metadata) if metadata else {}
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {"bars": self.bars.to_rows(), "metadata": self.metadata}
@@ -75,8 +76,8 @@ class ExecutionGridResult:
 
 class BacktestBroker:
     def __init__(self, *, fee_bps: float = 0.0, slippage_bps: float = 0.0) -> None:
-        self.fee_bps = float(fee_bps)
-        self.slippage_bps = float(slippage_bps)
+        self.fee_bps = fee_bps
+        self.slippage_bps = slippage_bps
 
     def execute(
         self, intent: OrderIntent, *, price: float, timestamp: str
@@ -132,12 +133,8 @@ def simulate_execution(
     execution_spec: ExecutionSpec | Mapping[str, Any] | None = None,
     params: Mapping[str, Any] | None = None,
 ) -> ExecutionBacktestResult:
-    match execution_spec:
-        case ExecutionSpec():
-            spec = execution_spec
-        case _:
-            spec = ExecutionSpec.from_dict(execution_spec)
-    params_data = dict(params or {})
+    spec = ExecutionSpec.coerce(execution_spec)
+    params_data = dict(params) if params else {}
     strategy = _load_strategy(script_entrypoint, params_data)
     broker = BacktestBroker(
         fee_bps=float(params_data.get("fee_bps") or 0.0),
@@ -320,11 +317,7 @@ def run_execution_grid(
             )
     elif parallel == "process":
         payload = dataset.to_dict()
-        match execution_spec:
-            case ExecutionSpec():
-                spec_dict = execution_spec.to_dict()
-            case _:
-                spec_dict = dict(execution_spec or {})
+        spec_dict = ExecutionSpec.coerce(execution_spec).to_dict()
         with ProcessPoolExecutor(max_workers=workers) as executor:
             results = list(
                 executor.map(
@@ -400,18 +393,7 @@ def _load_strategy(
 ) -> Any:
     if callable(script_entrypoint):
         return script_entrypoint(params)
-    path = Path(script_entrypoint)
-    module_name = f"_wayfinder_execution_strategy_{abs(hash(str(path.resolve())))}"
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise ValueError(f"Cannot load strategy script: {path}")
-    module = importlib.util.module_from_spec(spec)
-    old_path = list(sys.path)
-    try:
-        sys.path.insert(0, str(path.parent))
-        spec.loader.exec_module(module)
-    finally:
-        sys.path = old_path
+    module = _load_module_from_path(Path(script_entrypoint))
     build_strategy = getattr(module, "build_strategy", None)
     if callable(build_strategy):
         return build_strategy(params)
@@ -508,8 +490,8 @@ def _stats(
 ) -> dict[str, Any]:
     if not equity_curve:
         return {"net_return": 0.0, "trade_count": 0}
-    start = float(equity_curve[0]["equity"])
-    end = float(equity_curve[-1]["equity"])
+    start = equity_curve[0]["equity"]
+    end = equity_curve[-1]["equity"]
     return {
         "net_return": (end / start - 1.0) if start else 0.0,
         "ending_equity": end,
@@ -522,7 +504,7 @@ def _markers(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for trade in trades:
         raw = trade["raw"]
         metadata = raw["intent_metadata"]
-        action = str(raw["intent_action"] or "").upper()
+        action = raw["intent_action"].upper()
         markers.append(
             {
                 "timestamp": trade["timestamp"],

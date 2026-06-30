@@ -46,10 +46,8 @@ def resume_job_loops(store: JobStore, job_id: str) -> list[dict[str, Any]]:
 
 def claim_application(store: JobStore, job_id: str, proposal_id: str) -> dict[str, Any]:
     proposal = store.load_proposal(job_id, proposal_id)
-    application_status = str(
-        (proposal.get("application") or {}).get("status") or "not_requested"
-    )
-    if proposal.get("status") != "approved":
+    application_status = proposal["application"]["status"]
+    if proposal["status"] != "approved":
         raise ValueError(f"Proposal is not approved: {proposal_id}")
     if application_status not in {"queued", "failed"}:
         raise ValueError(
@@ -79,9 +77,7 @@ def validate_application_candidate(
     require_judge: bool | None = None,
 ) -> dict[str, Any]:
     proposal = store.load_proposal(job_id, proposal_id)
-    application_status = str(
-        (proposal.get("application") or {}).get("status") or "not_requested"
-    )
+    application_status = proposal["application"]["status"]
     if application_status != "applying":
         raise ValueError(
             f"Proposal application is not applying: {proposal_id} "
@@ -167,7 +163,7 @@ def complete_application(
             outcome.deterministic_validation
         )
     proposal = store.load_proposal(job_id, proposal_id)
-    validation_attempts = (proposal.get("application") or {}).get("validation_attempts")
+    validation_attempts = proposal["application"].get("validation_attempts")
     if validation_attempts and "validation_attempts" not in validation_payload:
         validation_payload["validation_attempts"] = validation_attempts
     if outcome.promoted_revision:
@@ -348,8 +344,7 @@ def _prepare_candidate_workspace(
 def _candidate_dir_from_proposal(
     store: JobStore, job_id: str, proposal: dict[str, Any]
 ) -> Path:
-    application = proposal.get("application") or {}
-    candidate_dir = application.get("candidate_dir")
+    candidate_dir = proposal["application"].get("candidate_dir")
     if candidate_dir:
         path = store.repo_root / str(candidate_dir)
         if path.exists():

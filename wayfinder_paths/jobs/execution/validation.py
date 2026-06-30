@@ -1,17 +1,18 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import py_compile
 import re
-import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+from wayfinder_paths.jobs.execution.primitives import (
+    ExecutionSpec,
+    _load_module_from_path,
+)
 from wayfinder_paths.jobs.store import JobStore
 
 FORBIDDEN_ORDER_PATTERNS = (
@@ -31,75 +32,44 @@ MANUAL_STATE_CLEAR_PATTERNS = (
 )
 
 
-def _is_mapping(value: Any) -> bool:
-    match value:
-        case Mapping():
-            return True
-        case _:
-            return False
-
-
 def validate_execution_trace(
     trace: Mapping[str, Any],
     execution_spec: ExecutionSpec | Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    match execution_spec:
-        case ExecutionSpec():
-            spec = execution_spec
-        case _:
-            spec = ExecutionSpec.from_dict(
-                execution_spec or trace.get("execution_spec")
-            )
+    spec = ExecutionSpec.coerce(execution_spec or trace["execution_spec"])
     issues: list[str] = []
     warnings: list[str] = []
     critical_failures: list[str] = []
 
-    runs = trace.get("runs") or []
-    visible_counts = [
-        int(item["visible_bar_count"])
-        for item in runs
-        if _is_mapping(item) and item.get("visible_bar_count") is not None
-    ]
+    visible_counts = [item["visible_bar_count"] for item in trace["runs"]]
     no_lookahead = visible_counts == sorted(visible_counts)
     if not no_lookahead:
         critical_failures.append(
             "visible bar count moved backward or leaked future bars"
         )
 
-    bracket_events = trace.get("bracket_events") or []
-    ohlc_correct = all(
-        bool(item.get("used_ohlc"))
-        for item in bracket_events
-        if _is_mapping(item) and item.get("hit")
-    )
+    bracket_events = trace["bracket_events"]
+    ohlc_correct = all(item["used_ohlc"] for item in bracket_events if item["hit"])
     if not ohlc_correct:
         critical_failures.append("bracket event missing OHLC high/low evaluation")
-    if spec.ohlc_rules.get("use_high_low_for_stops") and not bracket_events:
+    if spec.ohlc_rules["use_high_low_for_stops"] and not bracket_events:
         warnings.append(
             "no bracket events recorded; stop/TP behavior was not exercised"
         )
 
-    fills = trace.get("fills") or []
     hidden_success = [
         fill
-        for fill in fills
-        if _is_mapping(fill)
-        and str(fill.get("status")).lower() not in {"filled", "partial"}
-        and not fill.get("error")
+        for fill in trace["fills"]
+        if fill["status"] not in {"filled", "partial"} and not fill["error"]
     ]
     if hidden_success:
         issues.append("non-filled order statuses must not be reported as success")
-
-    ledger_snapshots = trace.get("ledger_snapshots") or []
-    ledger_valid = all(_is_mapping(item) for item in ledger_snapshots)
-    if not ledger_valid:
-        critical_failures.append("ledger snapshots are malformed")
 
     execution_valid = not critical_failures and not issues
     return {
         "execution_valid": execution_valid,
         "data_valid": no_lookahead,
-        "state_valid": ledger_valid,
+        "state_valid": True,
         "capacity_valid": True,
         "issues": issues,
         "warnings": warnings,
@@ -141,7 +111,7 @@ def validate_execution_job(
                 {"name": "job_yaml_parse", "passed": False, "error": str(exc)}
             )
 
-    spec_data, spec_path = _load_execution_spec(root, job_data)
+    spec_data, spec_path = resolve_execution_spec(root, job_data)
     has_spec = bool(spec_data)
     checks.append(
         {
@@ -181,7 +151,7 @@ def validate_execution_job(
         checks.append(
             {
                 "name": "latest_trace_valid",
-                "passed": bool(trace_report.get("execution_valid")),
+                "passed": bool(trace_report["execution_valid"]),
                 "details": trace_report,
             }
         )
@@ -192,21 +162,24 @@ def validate_execution_job(
     return report
 
 
-def _load_execution_spec(
+def resolve_execution_spec(
     root: Path, job_data: Mapping[str, Any]
 ) -> tuple[dict[str, Any], Path | None]:
     match job_data.get("execution_spec"):
-        case Mapping() as embedded:
+        case Mapping() as embedded if embedded:
             return dict(embedded), None
     path = root / "execution_spec.json"
-    if path.exists():
-        try:
-            match json.loads(path.read_text(encoding="utf-8")):
-                case dict() as loaded:
-                    return loaded, path
-        except Exception:
+    if not path.exists():
+        return {}, None
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}, path
+    match loaded:
+        case dict():
+            return loaded, path
+        case _:
             return {}, path
-    return {}, None
 
 
 def _execution_spec_checks(spec: ExecutionSpec) -> list[dict[str, Any]]:
@@ -221,7 +194,7 @@ def _execution_spec_checks(spec: ExecutionSpec) -> list[dict[str, Any]]:
         },
         {
             "name": "ohlc_stops_use_high_low",
-            "passed": bool(spec.ohlc_rules.get("use_high_low_for_stops")),
+            "passed": bool(spec.ohlc_rules["use_high_low_for_stops"]),
         },
         {
             "name": "token_state_not_execution_venue",
@@ -252,7 +225,7 @@ def _script_static_checks(
     checks.append(
         {
             "name": "no_forbidden_external_candles",
-            "passed": not (spec.data_contract.get("no_external_ccxt") and raw_hits),
+            "passed": not (spec.data_contract["no_external_ccxt"] and raw_hits),
             "details": raw_hits,
         }
     )
@@ -278,7 +251,7 @@ def _script_static_checks(
 
 def _strategy_entrypoint_checks(script_path: Path) -> list[dict[str, Any]]:
     try:
-        module = _load_module(script_path)
+        module = _load_module_from_path(script_path)
     except Exception as exc:
         return [{"name": "strategy_module_loads", "passed": False, "error": str(exc)}]
     return [
@@ -301,8 +274,8 @@ def _execution_scenario_checks(
         return [
             {
                 "name": "execution_scenario_plan_present",
-                "passed": not bool(spec.validation.get("require_scenarios")),
-                "blocking": bool(spec.validation.get("require_scenarios")),
+                "passed": not spec.validation["require_scenarios"],
+                "blocking": bool(spec.validation["require_scenarios"]),
             }
         ]
     match scenario_plan:
@@ -326,16 +299,14 @@ def _execution_scenario_checks(
     for index, scenario in enumerate(scenarios):
         name = str(scenario.get("name") or f"scenario_{index + 1}")
         try:
-            dataset = PreparedExecutionDataset.from_rows(
-                list(scenario.get("bars") or [])
-            )
+            dataset = PreparedExecutionDataset.from_rows(scenario.get("bars") or [])
             result = simulate_execution(
                 script_path,
                 dataset,
                 spec,
-                params=dict(scenario.get("params") or {}),
+                params=scenario.get("params") or {},
             )
-            expected = dict(scenario.get("expect") or {})
+            expected = scenario.get("expect") or {}
             passed = _scenario_matches(result.to_dict(), expected)
             checks.append(
                 {
@@ -378,18 +349,13 @@ def _latest_trace_validation(root: Path, spec: ExecutionSpec) -> dict[str, Any] 
         return None
     try:
         data = json.loads(latest.read_text(encoding="utf-8"))
-    except Exception:
+    except json.JSONDecodeError:
         return {
             "execution_valid": False,
             "critical_failures": ["latest backtest JSON is invalid"],
         }
     match data:
-        case Mapping():
-            trace = data.get("trace")
-        case _:
-            trace = None
-    match trace:
-        case Mapping():
+        case {"trace": Mapping() as trace}:
             return validate_execution_trace(trace, spec)
         case _:
             return {
@@ -398,27 +364,10 @@ def _latest_trace_validation(root: Path, spec: ExecutionSpec) -> dict[str, Any] 
             }
 
 
-def _load_module(script_path: Path) -> Any:
-    module_name = (
-        f"_wayfinder_execution_validation_{abs(hash(str(script_path.resolve())))}"
-    )
-    spec = importlib.util.spec_from_file_location(module_name, script_path)
-    if spec is None or spec.loader is None:
-        raise ValueError(f"Cannot load strategy script: {script_path}")
-    module = importlib.util.module_from_spec(spec)
-    old_path = list(sys.path)
-    try:
-        sys.path.insert(0, str(script_path.parent))
-        spec.loader.exec_module(module)
-    finally:
-        sys.path = old_path
-    return module
-
-
 def _report(checks: list[dict[str, Any]], *, strict: bool) -> dict[str, Any]:
     failed = [check for check in checks if not check["passed"]]
     blocking = [
-        check for check in failed if strict or check.get("blocking", True) is not False
+        check for check in failed if strict or check.get("blocking") is not False
     ]
     return {
         "status": "passed" if not blocking else "failed",

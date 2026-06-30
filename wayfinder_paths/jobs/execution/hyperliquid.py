@@ -201,17 +201,17 @@ def _candles_to_completed_view(
     now_ms = int(time.time() * 1000)
     parsed: list[dict[str, Any]] = []
     for row in rows:
-        close_ms = int(row.get("T") or row.get("t") or 0)
+        close_ms = row["T"]
         if close_ms > now_ms:
             continue
         parsed.append(
             {
                 "timestamp": close_ms,
                 "symbol": asset_name,
-                "open": row.get("o"),
-                "high": row.get("h"),
-                "low": row.get("l"),
-                "close": row.get("c"),
+                "open": row["o"],
+                "high": row["h"],
+                "low": row["l"],
+                "close": row["c"],
                 "volume": row.get("v"),
             }
         )

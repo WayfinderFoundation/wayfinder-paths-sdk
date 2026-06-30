@@ -44,10 +44,8 @@ def repo_root() -> Path:
     return REPO_ROOT
 
 
-def _check(
-    name: str, passed: bool, details: dict[str, Any] | None = None
-) -> dict[str, Any]:
-    return {"name": name, "passed": passed, "details": details or {}}
+def _check(name: str, passed: bool) -> dict[str, Any]:
+    return {"name": name, "passed": passed}
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -97,7 +95,7 @@ def run_deterministic_eval(output_dir: Path) -> dict[str, Any]:
         snapshot={"job": job.to_dict(), "scorecard": {"health": "green"}},
     )
 
-    volatile_job = dict(job.to_dict())
+    volatile_job = job.to_dict()
     volatile_job["created_at"] = "2040-01-01T00:00:00+00:00"
     volatile_job["updated_at"] = "2040-01-01T00:00:01+00:00"
     volatile = _build_worker_prompt_sections(

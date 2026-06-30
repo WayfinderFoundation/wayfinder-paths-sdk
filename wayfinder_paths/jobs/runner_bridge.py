@@ -85,9 +85,3 @@ class RunnerBridge:
 
     def delete(self, name: str) -> dict[str, Any]:
         return self.client.call("delete_job", {"name": name})
-
-    def run_once(self, name: str) -> dict[str, Any]:
-        return self.client.call("run_once", {"name": name})
-
-    def status(self) -> dict[str, Any]:
-        return self.client.call("status")

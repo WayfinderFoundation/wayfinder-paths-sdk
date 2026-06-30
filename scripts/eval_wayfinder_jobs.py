@@ -573,21 +573,12 @@ def build_strategy(params: dict) -> Strategy:
 
 
 def script_entrypoint_path(
-    workspace: Path, script_loop: Mapping[str, Any], *, job_id: str | None = None
+    workspace: Path, script_loop: Mapping[str, Any], *, job_id: str
 ) -> Path:
-    if job_id:
-        resolved = JobStore(repo_root=workspace).resolve_script_entrypoint(
-            job_id,
-            {"script_loop": dict(script_loop)},
-        )
-        return resolved or workspace / "__missing_script_entrypoint__"
-    entrypoint = str(script_loop.get("entrypoint") or "")
-    if not entrypoint:
-        return workspace / "__missing_script_entrypoint__"
-    path = Path(entrypoint)
-    if path.is_absolute():
-        return path
-    return workspace / path
+    resolved = JobStore(repo_root=workspace).resolve_script_entrypoint(
+        job_id, {"script_loop": dict(script_loop)}
+    )
+    return resolved or workspace / "__missing_script_entrypoint__"
 
 
 def validate_script_forward_telemetry(

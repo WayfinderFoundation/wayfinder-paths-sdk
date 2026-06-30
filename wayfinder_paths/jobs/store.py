@@ -227,8 +227,8 @@ class JobStore:
             "rejected": [],
         }
         for proposal in self.proposals(job_id):
-            status = proposal.get("status")
-            application_status = (proposal.get("application") or {}).get("status")
+            status = proposal["status"]
+            application_status = proposal["application"]["status"]
             summary = {
                 "proposal_id": proposal.get("proposal_id"),
                 "status": status,
@@ -243,19 +243,6 @@ class JobStore:
             elif application_status in queue:
                 queue[str(application_status)].append(summary)
         return queue
-
-    def set_proposal_status(
-        self, job_id: str, proposal_id: str, status: str
-    ) -> dict[str, Any]:
-        if status not in PROPOSAL_STATUSES:
-            raise ValueError(f"Invalid proposal status: {status}")
-        data = self.load_proposal(job_id, proposal_id)
-        data["status"] = status
-        data.setdefault("approval", {})["status"] = status
-        data["updated_at"] = utc_now_iso()
-        self.write_proposal(job_id, data)
-        self.refresh_scorecard(job_id)
-        return data
 
     def load_proposal(self, job_id: str, proposal_id: str) -> dict[str, Any]:
         path = self._proposal_path(job_id, proposal_id)
@@ -284,16 +271,16 @@ class JobStore:
     def approve_proposal(self, job_id: str, proposal_id: str) -> dict[str, Any]:
         proposal = self.load_proposal(job_id, proposal_id)
         _validate_applicable_proposal(proposal)
-        application = proposal.setdefault("application", {})
-        application_status = str(application.get("status") or "not_requested")
-        if proposal.get("status") == "rejected":
+        application = proposal["application"]
+        application_status = application["status"]
+        if proposal["status"] == "rejected":
             raise ValueError(f"Rejected proposal cannot be approved: {proposal_id}")
         if application_status == "applying":
             raise ValueError(f"Proposal is already applying: {proposal_id}")
         if application_status == "applied":
             return proposal
         proposal["status"] = "approved"
-        proposal.setdefault("approval", {})["status"] = "approved"
+        proposal["approval"]["status"] = "approved"
         self._set_application_status(proposal, "queued")
         application.setdefault("requested_at", utc_now_iso())
         proposal["updated_at"] = utc_now_iso()
@@ -314,10 +301,8 @@ class JobStore:
     ) -> dict[str, Any]:
         proposal = self.load_proposal(job_id, proposal_id)
         _validate_applicable_proposal(proposal)
-        application_status = str(
-            (proposal.get("application") or {}).get("status") or "not_requested"
-        )
-        if proposal.get("status") != "approved":
+        application_status = proposal["application"]["status"]
+        if proposal["status"] != "approved":
             raise ValueError(f"Proposal must be approved before apply: {proposal_id}")
         if application_status == "applied":
             return proposal
@@ -339,15 +324,14 @@ class JobStore:
 
     def reject_proposal(self, job_id: str, proposal_id: str) -> dict[str, Any]:
         proposal = self.load_proposal(job_id, proposal_id)
-        application = proposal.setdefault("application", {})
-        application_status = str(application.get("status") or "not_requested")
+        application_status = proposal["application"]["status"]
         if application_status in {"applying", "applied"}:
             raise ValueError(
                 f"Cannot reject proposal with application status {application_status}: "
                 f"{proposal_id}"
             )
         proposal["status"] = "rejected"
-        proposal.setdefault("approval", {})["status"] = "rejected"
+        proposal["approval"]["status"] = "rejected"
         if application_status == "queued":
             self._set_application_status(proposal, "canceled")
         proposal["updated_at"] = utc_now_iso()
@@ -357,7 +341,7 @@ class JobStore:
             {
                 "type": "proposal_rejected",
                 "proposal_id": proposal_id,
-                "application_status": (proposal.get("application") or {}).get("status"),
+                "application_status": proposal["application"]["status"],
             },
         )
         self.refresh_scorecard(job_id)
@@ -371,17 +355,9 @@ class JobStore:
         paused_runner_jobs: list[dict[str, Any]] | None = None,
         candidate: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        # claimable guard runs in application.claim_application before pause_job_loops
         proposal = self.load_proposal(job_id, proposal_id)
-        application_status = str(
-            (proposal.get("application") or {}).get("status") or "not_requested"
-        )
-        if proposal.get("status") != "approved":
-            raise ValueError(f"Proposal is not approved: {proposal_id}")
-        if application_status not in {"queued", "failed"}:
-            raise ValueError(
-                f"Proposal application is not queued: {proposal_id} ({application_status})"
-            )
-        application = proposal.setdefault("application", {})
+        application = proposal["application"]
         self._set_application_status(proposal, "applying")
         application["started_at"] = utc_now_iso()
         application["paused_runner_jobs"] = paused_runner_jobs or []
@@ -418,8 +394,8 @@ class JobStore:
                 f"Application completion status must be applied or failed: {status}"
             )
         proposal = self.load_proposal(job_id, proposal_id)
-        application = proposal.setdefault("application", {})
-        application_status = str(application.get("status") or "not_requested")
+        application = proposal["application"]
+        application_status = application["status"]
         if application_status != "applying":
             raise ValueError(
                 f"Proposal application is not applying: {proposal_id} "
@@ -452,7 +428,7 @@ class JobStore:
         self, job_id: str, proposal_id: str, validation: dict[str, Any]
     ) -> dict[str, Any]:
         proposal = self.load_proposal(job_id, proposal_id)
-        application = proposal.setdefault("application", {})
+        application = proposal["application"]
         attempts = application.setdefault("validation_attempts", [])
         match attempts:
             case list():
@@ -487,17 +463,17 @@ class JobStore:
             scorecard.update(updates)
         proposals = self.proposals(job_id)
         scorecard["pending_proposals"] = sum(
-            1 for proposal in proposals if proposal.get("status") == "pending"
+            1 for proposal in proposals if proposal["status"] == "pending"
         )
         scorecard["queued_proposal_applications"] = sum(
             1
             for proposal in proposals
-            if (proposal.get("application") or {}).get("status") == "queued"
+            if proposal["application"]["status"] == "queued"
         )
         scorecard["applying_proposal_applications"] = sum(
             1
             for proposal in proposals
-            if (proposal.get("application") or {}).get("status") == "applying"
+            if proposal["application"]["status"] == "applying"
         )
         self.write_json(job_id, "scorecard.json", scorecard)
         return scorecard
@@ -561,13 +537,13 @@ class JobStore:
     def _set_application_status(
         self, proposal: dict[str, Any], status: ApplicationStatus
     ) -> None:
-        application = proposal.setdefault("application", {})
-        previous = application.get("status")
+        application = proposal["application"]
+        previous = application["status"]
         application["status"] = status
         if previous != status:
             application.setdefault("transitions", []).append(
                 {
-                    "from": previous or "not_requested",
+                    "from": previous,
                     "to": status,
                     "ts": utc_now_iso(),
                 }
@@ -575,13 +551,13 @@ class JobStore:
 
 
 def _validate_applicable_proposal(proposal: dict[str, Any]) -> None:
-    contract = proposal.get("intent_contract")
+    contract = proposal["intent_contract"]
     match contract:
         case dict() if contract:
             pass
         case _:
             raise ValueError("Proposal requires intent_contract before application")
-    scenario_plan = proposal.get("scenario_plan")
+    scenario_plan = proposal["scenario_plan"]
     match scenario_plan:
         case list():
             scenarios = scenario_plan

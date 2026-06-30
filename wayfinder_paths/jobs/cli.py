@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 import click
 
@@ -145,8 +145,8 @@ def status_cmd(job_id: str) -> None:
 def validate_cmd(job_id: str, strict: bool) -> None:
     store = JobStore()
     result = validate_job(job_id, strict=strict, store=store)
-    _echo_json({"ok": result.get("status") == "passed", "result": result})
-    if strict and result.get("status") != "passed":
+    _echo_json({"ok": result["status"] == "passed", "result": result})
+    if strict and result["status"] != "passed":
         raise click.ClickException("job validation failed")
 
 
@@ -180,16 +180,16 @@ def report_cmd(job_id: str) -> None:
     store = JobStore()
     snap = snapshot_job(job_id, store=store)
     job = snap["job"]
-    scorecard = snap.get("scorecard") or {}
-    proposals = snap.get("proposals") or []
+    scorecard = snap["scorecard"]
+    proposals = snap["proposals"]
     click.echo(f"{job['name']} — {job['id']}")
     click.echo("")
-    click.echo(f"Goal: {job.get('goal') or 'not recorded'}")
+    click.echo(f"Goal: {job['goal'] or 'not recorded'}")
     click.echo(f"Health: {scorecard.get('health', 'unknown')}")
-    click.echo(f"Script loop: {'on' if job['script_loop'].get('enabled') else 'off'}")
-    click.echo(f"Agent loop: {job['agent_loop'].get('mode', 'off')}")
+    click.echo(f"Script loop: {'on' if job['script_loop']['enabled'] else 'off'}")
+    click.echo(f"Agent loop: {job['agent_loop']['mode']}")
     click.echo(
-        f"Pending proposals: {sum(1 for p in proposals if p.get('status') == 'pending')}"
+        f"Pending proposals: {sum(1 for p in proposals if p['status'] == 'pending')}"
     )
     latest_summary = scorecard.get("last_agent_summary")
     if latest_summary:
@@ -252,19 +252,22 @@ def proposals_cmd(job_id: str) -> None:
     _echo_json({"ok": True, "result": store.proposals(job_id)})
 
 
+def _wakeup_with_proposal(
+    store: JobStore, job_id: str, proposal_id: str, proposal: dict[str, Any]
+) -> None:
+    wakeup = run_job_worker(job_id, mode="intervene", apply_proposal_id=proposal_id)
+    sync_all_jobs(store=store)
+    _echo_json({"ok": True, "result": {"proposal": proposal, "wakeup": wakeup}})
+
+
 @job_cli.command(name="approve", help="Approve a pending proposal.")
 @click.argument("job_id")
 @click.argument("proposal_id")
 def approve_cmd(job_id: str, proposal_id: str) -> None:
     store = JobStore()
-    proposal = store.approve_proposal(job_id, proposal_id)
-    wakeup = run_job_worker(
-        job_id,
-        mode="intervene",
-        apply_proposal_id=proposal_id,
+    _wakeup_with_proposal(
+        store, job_id, proposal_id, store.approve_proposal(job_id, proposal_id)
     )
-    sync_all_jobs(store=store)
-    _echo_json({"ok": True, "result": {"proposal": proposal, "wakeup": wakeup}})
 
 
 @job_cli.command(name="reject", help="Reject a pending proposal.")
@@ -282,14 +285,12 @@ def reject_cmd(job_id: str, proposal_id: str) -> None:
 @click.argument("proposal_id")
 def apply_proposal_cmd(job_id: str, proposal_id: str) -> None:
     store = JobStore()
-    proposal = store.queue_proposal_application(job_id, proposal_id)
-    wakeup = run_job_worker(
+    _wakeup_with_proposal(
+        store,
         job_id,
-        mode="intervene",
-        apply_proposal_id=proposal_id,
+        proposal_id,
+        store.queue_proposal_application(job_id, proposal_id),
     )
-    sync_all_jobs(store=store)
-    _echo_json({"ok": True, "result": {"proposal": proposal, "wakeup": wakeup}})
 
 
 @job_cli.command(
@@ -351,34 +352,30 @@ def complete_application_cmd(
     )
 
 
-@job_cli.command(name="pause", help="Pause a job's runner loops.")
-@click.argument("job_id")
-def pause_cmd(job_id: str) -> None:
+def _pause_resume_loops(job_id: str, action: Literal["pause", "resume"]) -> None:
     store = JobStore()
     job = store.load(job_id)
     bridge = RunnerBridge(repo_root=store.repo_root)
-    responses = []
-    if job.script_loop.enabled:
-        responses.append(bridge.pause(job.script_loop.runner_job_name))
-    if job.agent_loop.enabled:
-        responses.append(bridge.pause(job.agent_loop.runner_job_name))
+    method = bridge.pause if action == "pause" else bridge.resume
+    responses = [
+        method(loop.runner_job_name)
+        for loop in (job.script_loop, job.agent_loop)
+        if loop.enabled
+    ]
     sync_all_jobs(store=store)
     _echo_json({"ok": True, "result": responses})
+
+
+@job_cli.command(name="pause", help="Pause a job's runner loops.")
+@click.argument("job_id")
+def pause_cmd(job_id: str) -> None:
+    _pause_resume_loops(job_id, "pause")
 
 
 @job_cli.command(name="resume", help="Resume a job's runner loops.")
 @click.argument("job_id")
 def resume_cmd(job_id: str) -> None:
-    store = JobStore()
-    job = store.load(job_id)
-    bridge = RunnerBridge(repo_root=store.repo_root)
-    responses = []
-    if job.script_loop.enabled:
-        responses.append(bridge.resume(job.script_loop.runner_job_name))
-    if job.agent_loop.enabled:
-        responses.append(bridge.resume(job.agent_loop.runner_job_name))
-    sync_all_jobs(store=store)
-    _echo_json({"ok": True, "result": responses})
+    _pause_resume_loops(job_id, "resume")
 
 
 @job_cli.command(name="delete", help="Delete runner links for a high-level job.")
@@ -387,11 +384,11 @@ def delete_cmd(job_id: str) -> None:
     store = JobStore()
     job = store.load(job_id)
     bridge = RunnerBridge(repo_root=store.repo_root)
-    responses = []
-    if job.script_loop.runner_job_name:
-        responses.append(bridge.delete(job.script_loop.runner_job_name))
-    if job.agent_loop.runner_job_name:
-        responses.append(bridge.delete(job.agent_loop.runner_job_name))
+    responses = [
+        bridge.delete(loop.runner_job_name)
+        for loop in (job.script_loop, job.agent_loop)
+        if loop.runner_job_name
+    ]
     store.refresh_scorecard(job_id, {"health": "unknown", "deleted": True})
     sync_all_jobs(store=store)
     _echo_json({"ok": True, "result": responses})
@@ -409,17 +406,17 @@ def _auto_limits_from_options(
 ) -> dict[str, Any]:
     limits: dict[str, Any] = {}
     if venues:
-        limits["enabled_venues"] = [str(v) for v in venues]
+        limits["enabled_venues"] = list(venues)
     if symbols:
-        limits["allowed_symbols"] = [str(v) for v in symbols]
+        limits["allowed_symbols"] = list(symbols)
     if markets:
-        limits["allowed_markets"] = [str(v) for v in markets]
+        limits["allowed_markets"] = list(markets)
     if max_notional_per_decision is not None:
-        limits["max_notional_per_decision"] = float(max_notional_per_decision)
+        limits["max_notional_per_decision"] = max_notional_per_decision
     if max_daily_notional is not None:
-        limits["max_daily_notional"] = float(max_daily_notional)
+        limits["max_daily_notional"] = max_daily_notional
     if max_open_positions is not None:
-        limits["max_open_positions"] = int(max_open_positions)
+        limits["max_open_positions"] = max_open_positions
     if max_open_orders is not None:
-        limits["max_open_orders"] = int(max_open_orders)
+        limits["max_open_orders"] = max_open_orders
     return limits

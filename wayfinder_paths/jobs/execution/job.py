@@ -13,7 +13,10 @@ from wayfinder_paths.jobs.execution.simulator import (
     simulate_execution,
     write_backtest_artifacts,
 )
-from wayfinder_paths.jobs.execution.validation import validate_execution_job
+from wayfinder_paths.jobs.execution.validation import (
+    resolve_execution_spec,
+    validate_execution_job,
+)
 from wayfinder_paths.jobs.store import JobStore
 
 
@@ -28,7 +31,12 @@ def backtest_execution_job(
     store = store or JobStore()
     root = store.job_dir(job_id)
     job_data = _load_job_yaml(root)
-    spec = ExecutionSpec.from_dict(_load_spec(root, job_data))
+    spec_data, _ = resolve_execution_spec(root, job_data)
+    if not spec_data:
+        raise FileNotFoundError(
+            f"execution_spec missing for job {job_data.get('id') or root.name}"
+        )
+    spec = ExecutionSpec.from_dict(spec_data)
     script = store.resolve_script_entrypoint(job_id, job_data)
     if script is None or not script.exists():
         raise FileNotFoundError(
@@ -50,7 +58,7 @@ def backtest_execution_job(
         artifacts = write_backtest_artifacts(result, grid_dir)
         payload = {"type": "grid", "result": result.to_dict(), "artifacts": artifacts}
     else:
-        params = dict(job_data.get("execution_params") or {})
+        params = job_data.get("execution_params") or {}
         result = simulate_execution(script, dataset, spec, params)
         artifacts = write_backtest_artifacts(result, output_dir)
         payload = {"type": "single", "result": result.to_dict(), "artifacts": artifacts}
@@ -74,20 +82,6 @@ def _load_job_yaml(root: Path) -> dict[str, Any]:
             return loaded
         case _:
             raise ValueError(f"Invalid job.yaml: {path}")
-
-
-def _load_spec(root: Path, job_data: dict[str, Any]) -> dict[str, Any]:
-    match job_data.get("execution_spec"):
-        case dict() as embedded if embedded:
-            return embedded
-    path = root / "execution_spec.json"
-    if path.exists():
-        match _load_json(path):
-            case dict() as loaded:
-                return loaded
-    raise FileNotFoundError(
-        f"execution_spec missing for job {job_data.get('id') or root.name}"
-    )
 
 
 def _load_dataset(

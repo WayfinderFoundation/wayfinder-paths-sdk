@@ -213,6 +213,20 @@ def prepare_job_worker_prompt(
     }
 
 
+def _emit_job_result(summary: str, job_id: str) -> None:
+    print(
+        JOB_RESULT_MARKER
+        + json.dumps(
+            {
+                "type": "job_result",
+                "severity": "warning",
+                "summary": summary,
+                "job_id": job_id,
+            }
+        )
+    )
+
+
 def run_job_worker(
     job_id: str, mode: str = "monitor", *, apply_proposal_id: str | None = None
 ) -> dict[str, Any]:
@@ -237,17 +251,7 @@ def run_job_worker(
             queued=False,
             error=blocked_reason,
         )
-        print(
-            JOB_RESULT_MARKER
-            + json.dumps(
-                {
-                    "type": "job_result",
-                    "severity": "warning",
-                    "summary": report["summary"],
-                    "job_id": job.id,
-                }
-            )
-        )
+        _emit_job_result(report["summary"], job.id)
         return report
 
     session_id = _ensure_worker_session(job.id, mode_typed)
@@ -322,17 +326,7 @@ def run_job_worker(
     )
 
     if report["status"] != "green":
-        print(
-            JOB_RESULT_MARKER
-            + json.dumps(
-                {
-                    "type": "job_result",
-                    "severity": "warning",
-                    "summary": report["summary"],
-                    "job_id": job.id,
-                }
-            )
-        )
+        _emit_job_result(report["summary"], job.id)
     return report
 
 
@@ -340,10 +334,7 @@ def _ensure_application_claimed(
     store: JobStore, job_id: str, proposal_id: str
 ) -> dict[str, Any]:
     proposal = store.load_proposal(job_id, proposal_id)
-    application_status = str(
-        (proposal.get("application") or {}).get("status") or "not_requested"
-    )
-    if application_status == "applying":
+    if proposal["application"]["status"] == "applying":
         return {"proposal": proposal, "already_claimed": True}
     return claim_application(store, job_id, proposal_id)
 
@@ -438,16 +429,15 @@ def _agent_name_for_mode(mode: str) -> str:
     return JOB_AUTO_WORKER_AGENT_NAME if mode == "auto" else JOB_WORKER_AGENT_NAME
 
 
-def _auto_limits_error(limits: dict[str, Any] | None) -> str | None:
-    data = limits or {}
+def _auto_limits_error(limits: dict[str, Any]) -> str | None:
     venues = [
-        str(v).strip() for v in data.get("enabled_venues") or [] if str(v).strip()
+        str(v).strip() for v in limits.get("enabled_venues") or [] if str(v).strip()
     ]
     symbols = [
-        str(v).strip() for v in data.get("allowed_symbols") or [] if str(v).strip()
+        str(v).strip() for v in limits.get("allowed_symbols") or [] if str(v).strip()
     ]
     markets = [
-        str(v).strip() for v in data.get("allowed_markets") or [] if str(v).strip()
+        str(v).strip() for v in limits.get("allowed_markets") or [] if str(v).strip()
     ]
     if not venues:
         return "enabled_venues must include at least one venue"
@@ -459,6 +449,6 @@ def _auto_limits_error(limits: dict[str, Any] | None) -> str | None:
         "max_open_positions",
         "max_open_orders",
     ):
-        if float(data.get(key) or 0) <= 0:
+        if float(limits.get(key) or 0) <= 0:
             return f"{key} must be greater than 0"
     return None

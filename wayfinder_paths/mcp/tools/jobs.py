@@ -141,7 +141,7 @@ async def core_jobs(
         job.agent_loop.enabled = mode != "off"
         job.job_kind = infer_job_kind(job.script_loop.enabled, mode)
         if agent_wake_seconds is not None:
-            job.agent_loop.wake_interval_seconds = int(agent_wake_seconds)
+            job.agent_loop.wake_interval_seconds = agent_wake_seconds
         store.save(job)
         result = JobCompiler(store=store).compile(job)
         sync_all_jobs(store=store)
@@ -180,12 +180,14 @@ async def core_jobs(
     }:
         if not proposal_id:
             return err("invalid_request", "proposal_id is required")
-        if action == "approve_proposal":
-            proposal = store.approve_proposal(job_id, proposal_id)
+        if action in {"approve_proposal", "apply_proposal"}:
+            proposal = (
+                store.approve_proposal(job_id, proposal_id)
+                if action == "approve_proposal"
+                else store.queue_proposal_application(job_id, proposal_id)
+            )
             wakeup = run_job_worker(
-                job_id,
-                mode="intervene",
-                apply_proposal_id=proposal_id,
+                job_id, mode="intervene", apply_proposal_id=proposal_id
             )
             sync_all_jobs(store=store)
             return ok({"proposal": proposal, "wakeup": wakeup})
@@ -193,15 +195,6 @@ async def core_jobs(
             proposal = store.reject_proposal(job_id, proposal_id)
             sync_all_jobs(store=store)
             return ok(proposal)
-        if action == "apply_proposal":
-            proposal = store.queue_proposal_application(job_id, proposal_id)
-            wakeup = run_job_worker(
-                job_id,
-                mode="intervene",
-                apply_proposal_id=proposal_id,
-            )
-            sync_all_jobs(store=store)
-            return ok({"proposal": proposal, "wakeup": wakeup})
         if action == "claim_application":
             return ok(claim_application(store, job_id, proposal_id))
         if action == "validate_application":
@@ -227,12 +220,12 @@ async def core_jobs(
     if action in {"pause", "resume", "delete"}:
         job = store.load(job_id)
         bridge = RunnerBridge(repo_root=store.repo_root)
-        responses: list[dict[str, Any]] = []
         runner_action = getattr(bridge, action)
-        if job.script_loop.runner_job_name:
-            responses.append(runner_action(job.script_loop.runner_job_name))
-        if job.agent_loop.runner_job_name:
-            responses.append(runner_action(job.agent_loop.runner_job_name))
+        responses = [
+            runner_action(loop.runner_job_name)
+            for loop in (job.script_loop, job.agent_loop)
+            if loop.runner_job_name
+        ]
         sync_all_jobs(store=store)
         return ok(responses)
 

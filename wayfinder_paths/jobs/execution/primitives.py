@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import importlib.util
+import sys
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
+from pathlib import Path
+from types import ModuleType
 from typing import Any, Literal
 
 import pandas as pd
@@ -14,11 +18,8 @@ SnapshotStatus = Literal["valid", "ambiguous", "rate_limited", "stale"]
 
 @dataclass
 class ExecutionSpec:
-    version: str = "1.0"
-    venue: str = "hyperliquid"
     market_kind: str = "perp"
     view_type: str = "completed_bars"
-    timeframe: str = "5m"
     bar_model: str = "completed_only"
     fill_model: str = "next_bar_open"
     ohlc_rules: dict[str, Any] = field(
@@ -36,34 +37,37 @@ class ExecutionSpec:
             "rate_limit_safe": True,
         }
     )
-    state_model: str = "ledger_only"
-    position_reconciliation: str = "required"
     validation: dict[str, Any] = field(
         default_factory=lambda: {"mode": "soft", "require_scenarios": False}
     )
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> ExecutionSpec:
-        payload = dict(data or {})
-        spec = cls()
-        for key in asdict(spec):
-            if key in payload:
-                setattr(spec, key, payload[key])
+        payload = data or {}
         defaults = cls()
-        spec.ohlc_rules = {**defaults.ohlc_rules, **dict(spec.ohlc_rules or {})}
-        spec.data_contract = {
-            **defaults.data_contract,
-            **dict(spec.data_contract or {}),
-        }
-        spec.validation = {**defaults.validation, **dict(spec.validation or {})}
+        spec = cls()
+        for f in fields(cls):
+            if f.name in payload:
+                setattr(spec, f.name, payload[f.name])
+        spec.ohlc_rules = {**defaults.ohlc_rules, **spec.ohlc_rules}
+        spec.data_contract = {**defaults.data_contract, **spec.data_contract}
+        spec.validation = {**defaults.validation, **spec.validation}
         return spec
+
+    @classmethod
+    def coerce(cls, value: ExecutionSpec | Mapping[str, Any] | None) -> ExecutionSpec:
+        match value:
+            case ExecutionSpec():
+                return value
+            case _:
+                return cls.from_dict(value)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @property
     def strict(self) -> bool:
-        return str(self.validation.get("mode") or "").lower() == "strict"
+        return self.validation["mode"] == "strict"
 
 
 @dataclass(frozen=True)
@@ -130,17 +134,6 @@ class CompletedBarsView:
             raise ValueError("No completed bars available")
         return frame.iloc[-1].to_dict()
 
-    def window(self, n: int, symbol: str | None = None) -> CompletedBarsView:
-        if n <= 0:
-            raise ValueError("window size must be positive")
-        frame = self._filter_symbol(symbol)
-        if symbol is None:
-            timestamps = frame["timestamp"].drop_duplicates().tail(n)
-            frame = frame[frame["timestamp"].isin(timestamps)]
-        else:
-            frame = frame.tail(n)
-        return CompletedBarsView(frame)
-
     def through(
         self, index_or_time: int | str | datetime | pd.Timestamp
     ) -> CompletedBarsView:
@@ -188,32 +181,6 @@ class CompletedBarsView:
         return self._bars[self._bars["symbol"] == symbol]
 
 
-@dataclass(frozen=True)
-class EventMarketView:
-    market_id: str
-    outcome_id: str
-    bid: float | None
-    ask: float | None
-    last: float | None
-    liquidity: float | None = None
-    volume_24h: float | None = None
-    status: str = "open"
-    resolution_time: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class TokenState:
-    token_id: str
-    price: float | None = None
-    market_cap: float | None = None
-    volume_24h: float | None = None
-    liquidity_proxy: float | None = None
-    volatility_proxy: float | None = None
-    trend_score: float | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
 @dataclass
 class OrderIntent:
     action: OrderAction
@@ -241,10 +208,10 @@ class OrderIntent:
                     side=str(data.get("side") or ""),
                     size=_float_or_none(data.get("size")),
                     notional=_float_or_none(data.get("notional")),
-                    reduce_only=bool(data.get("reduce_only", False)),
+                    reduce_only=bool(data.get("reduce_only")),
                     client_order_id=data.get("client_order_id"),
-                    bracket=dict(data.get("bracket") or {}) or None,
-                    metadata=dict(data.get("metadata") or {}),
+                    bracket=dict(data["bracket"]) if data.get("bracket") else None,
+                    metadata=dict(data["metadata"]) if data.get("metadata") else {},
                 )
 
     def to_dict(self) -> dict[str, Any]:
@@ -432,7 +399,7 @@ class BracketEngine:
 
 @dataclass
 class ExecutionContext:
-    view: CompletedBarsView | EventMarketView
+    view: CompletedBarsView
     ledger: PositionLedger
     state_snapshot: StateSnapshot
     capacity: TradeCapacity | None
@@ -449,10 +416,24 @@ class ExecutionTrace:
     fills: list[dict[str, Any]] = field(default_factory=list)
     ledger_snapshots: list[dict[str, Any]] = field(default_factory=list)
     bracket_events: list[dict[str, Any]] = field(default_factory=list)
-    issues: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _load_module_from_path(path: Path) -> ModuleType:
+    module_name = f"_wayfinder_execution_module_{abs(hash(str(path.resolve())))}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"Cannot load strategy script: {path}")
+    module = importlib.util.module_from_spec(spec)
+    old_path = list(sys.path)
+    try:
+        sys.path.insert(0, str(path.parent))
+        spec.loader.exec_module(module)
+    finally:
+        sys.path = old_path
+    return module
 
 
 def _normalize_side(side: str) -> str:
