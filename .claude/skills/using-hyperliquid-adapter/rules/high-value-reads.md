@@ -70,10 +70,11 @@ Symbol rules:
 
 ### Account state
 
-`mcp__wayfinder__hyperliquid_get_state(label)` returns all three asset surfaces in one shot:
+`mcp__wayfinder__hyperliquid_get_state(label)` returns all four account surfaces in one shot:
 
 - `perp.state` — perp clearinghouse (margin summary, asset positions, withdrawable).
 - `spot.state.balances` — pure spot balances (USDC / HYPE / USDH / …). `+N` HIP-4 outcome entries are filtered out into the `outcomes` bucket.
+- `open_orders.orders` — every open order across all dexes, from `frontendOpenOrders`: resting limit orders AND untriggered trigger orders (`isTrigger`, `triggerPx`, `orderType`, `isPositionTpsl`, `reduceOnly`). No separate call needed to see stop losses / take profits.
 - `outcomes.positions` — outcome positions only (`+N` entries with non-zero total), parsed `outcome_id` / `side`. See `rules/outcomes.md`.
 
 For selected perp/HIP-3 trade capacity, use `mcp__wayfinder__hyperliquid_get_trade_asset(label, asset_name)`. This reads Hyperliquid `activeAssetData` and returns side-specific available margin, max order notional, max base size, current leverage, max leverage, compatible margin modes, and the live position. Do not derive available-to-open capacity from spot USDC balance, withdrawable, account value, or `crossMarginSummary`.
