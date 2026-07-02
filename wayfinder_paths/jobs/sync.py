@@ -12,6 +12,8 @@ from wayfinder_paths.core.config import (
     is_opencode_instance,
 )
 from wayfinder_paths.jobs.backtest_artifacts import summarize_backtest_artifacts
+from wayfinder_paths.jobs.execution.features import summarize_features
+from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.forward import load_forward_snapshot
 from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.halt import read_halt
@@ -78,6 +80,13 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
     validation = (
         store.read_json(job_id, "reports/validation/latest.json", default={}) or {}
     )
+    try:
+        features = summarize_features(
+            store.job_dir(job_id),
+            ExecutionSpec.from_dict(dict(job.execution_spec or {})),
+        )
+    except Exception:
+        features = None
     return {
         "job": job.to_dict(),
         "scorecard": scorecard,
@@ -112,34 +121,7 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         # Manual kill-switch detail (contract C4): scorecard already reports
         # live_execution_status="halted" while set; this carries reason/ts.
         "halt": read_halt(store.job_dir(job_id)),
-        "features": _feature_summary(store, job_id, job),
-    }
-
-
-def _feature_summary(store: JobStore, job_id: str, job: Any) -> Any:
-    try:
-        from wayfinder_paths.jobs.execution.features import summarize_features
-        from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
-
-        return summarize_features(
-            store.job_dir(job_id),
-            ExecutionSpec.from_dict(dict(job.execution_spec or {})),
-        )
-    except Exception:
-        return None
-
-
-def _bounded_validation(report: dict[str, Any]) -> dict[str, Any]:
-    if not report:
-        return {}
-    return {
-        "status": report.get("status"),
-        "revision": report.get("revision"),
-        "failed_checks": [
-            check.get("name")
-            for check in report.get("checks") or []
-            if not check.get("passed")
-        ],
+        "features": features,
     }
 
 

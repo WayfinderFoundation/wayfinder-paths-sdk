@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from statistics import fmean
 from typing import Any
 
 import pandas as pd
@@ -201,8 +202,12 @@ def _summary(fold_rows: list[dict[str, Any]], rank_by: str) -> dict[str, Any]:
         return {"fold_count": 0}
     is_returns = [float(row["train_stats"]["net_return"]) for row in ok]
     oos_returns = [float(row["test_stats"]["net_return"]) for row in ok]
-    is_rank = [_metric(row["train_stats"], rank_by) for row in ok]
-    oos_rank = [_metric(row["test_stats"], rank_by) for row in ok]
+    is_rank = [
+        v for v in (_metric(row["train_stats"], rank_by) for row in ok) if v is not None
+    ]
+    oos_rank = [
+        v for v in (_metric(row["test_stats"], rank_by) for row in ok) if v is not None
+    ]
     oos_sharpes = [
         float(row["test_stats"]["sharpe"])
         for row in ok
@@ -213,19 +218,19 @@ def _summary(fold_rows: list[dict[str, Any]], rank_by: str) -> dict[str, Any]:
         for row in ok
         if row["test_stats"]["sortino"] is not None
     ]
-    is_mean = _mean(is_returns)
-    oos_mean = _mean(oos_returns)
+    is_mean = fmean(is_returns)
+    oos_mean = fmean(oos_returns)
     return {
         "fold_count": len(ok),
         "is_return_mean": is_mean,
         "oos_return_mean": oos_mean,
-        "is_rank_metric_mean": _mean([v for v in is_rank if v is not None]),
-        "oos_rank_metric_mean": _mean([v for v in oos_rank if v is not None]),
+        "is_rank_metric_mean": fmean(is_rank) if is_rank else None,
+        "oos_rank_metric_mean": fmean(oos_rank) if oos_rank else None,
         # Sign-guarded: a ratio against a negative in-sample base is noise.
-        "decay_ratio": (oos_mean / is_mean) if is_mean and is_mean > 0 else None,
+        "decay_ratio": (oos_mean / is_mean) if is_mean > 0 else None,
         "oos_positive_folds": sum(1 for value in oos_returns if value > 0),
-        "oos_sharpe_mean": _mean(oos_sharpes) if oos_sharpes else None,
-        "oos_sortino_mean": _mean(oos_sortinos) if oos_sortinos else None,
+        "oos_sharpe_mean": fmean(oos_sharpes) if oos_sharpes else None,
+        "oos_sortino_mean": fmean(oos_sortinos) if oos_sortinos else None,
         "oos_max_drawdown_worst": min(
             (float(row["test_stats"]["max_drawdown_pct"]) for row in ok),
             default=None,
@@ -236,10 +241,6 @@ def _summary(fold_rows: list[dict[str, Any]], rank_by: str) -> dict[str, Any]:
 def _metric(stats: Mapping[str, Any], key: str) -> float | None:
     value = stats[key]
     return float(value) if value is not None else None
-
-
-def _mean(values: list[float]) -> float | None:
-    return sum(values) / len(values) if values else None
 
 
 def format_fold_table(report: Mapping[str, Any]) -> str:

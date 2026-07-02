@@ -27,7 +27,7 @@ as drift in the reconciler.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -89,52 +89,40 @@ def parse_feature_specs(spec: ExecutionSpec) -> list[FeatureSpec]:
             case Mapping():
                 specs.append(FeatureSpec.from_dict(item))
     for item in specs:
-        if item.source not in FEATURE_SOURCES:
+        if item.source != "file":
             raise ValueError(
                 f"feature {item.name!r}: unknown source {item.source!r} "
-                f"(registered: {sorted(FEATURE_SOURCES)})"
+                "(only 'file' is supported)"
             )
     return specs
-
-
-def _load_file_rows(roots: list[Path], spec: FeatureSpec) -> list[dict[str, Any]]:
-    """First root that has the file wins (candidate dir before job dir —
-    mirrors the candidate dataset fallback)."""
-    for root in roots:
-        path = Path(root) / spec.path
-        if not path.exists():
-            continue
-        rows: list[dict[str, Any]] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            match row:
-                case dict() if str(row.get("name")) == spec.name:
-                    rows.append(row)
-        return rows
-    return []
-
-
-FEATURE_SOURCES: dict[
-    str, Callable[[list[Path], FeatureSpec], list[dict[str, Any]]]
-] = {
-    "file": _load_file_rows,
-}
 
 
 def load_feature_rows(
     roots: list[Path], specs: list[FeatureSpec]
 ) -> dict[str, pd.DataFrame]:
     """Per-feature frames sorted by timestamp: columns [timestamp, value,
-    symbol]. Empty frame when a feature has no rows yet."""
+    symbol]. Empty frame when a feature has no rows yet. First root that has
+    the file wins (candidate dir before job dir — mirrors the candidate
+    dataset fallback)."""
     frames: dict[str, pd.DataFrame] = {}
     for spec in specs:
-        rows = FEATURE_SOURCES[spec.source](roots, spec)
+        rows: list[dict[str, Any]] = []
+        for root in roots:
+            path = Path(root) / spec.path
+            if not path.exists():
+                continue
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                match row:
+                    case dict() if str(row.get("name")) == spec.name:
+                        rows.append(row)
+            break
         if not rows:
             frames[spec.name] = pd.DataFrame(columns=["timestamp", "value", "symbol"])
             continue

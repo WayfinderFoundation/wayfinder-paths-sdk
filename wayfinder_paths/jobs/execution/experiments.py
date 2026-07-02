@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.jobs.execution.job import backtest_execution_job
+from wayfinder_paths.jobs.execution.preflight import run_preflight
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
@@ -106,8 +107,6 @@ def promote_params(
     # The params change produced a new revision: the backtest above re-stamps
     # results/ and validation, but preflight would stay at the old revision
     # and leave the live gate red until someone re-ran it manually.
-    from wayfinder_paths.jobs.execution.preflight import run_preflight
-
     preflight = run_preflight(job_id, store=store)
     revision = compute_workspace_revision(store.job_dir(job_id))
     _record_params_revision(store, job_id, revision, resolved, grid_id=grid_id)
@@ -119,23 +118,14 @@ def promote_params(
         "validation": backtest["validation"]["status"],
         "preflight": preflight.get("status"),
     }
-    wf_summary = _walk_forward_summary_for_grid(store, job_id, grid_id)
-    if wf_summary is not None:
-        # Report-only: shown so IS/OOS decay is visible at the moment of
-        # promotion; never blocks.
-        outcome["walk_forward_summary"] = wf_summary
+    if grid_id:
+        for row in reversed(list_experiments(job_id, store=store)):
+            if row["grid_id"] == grid_id and row.get("walk_forward"):
+                # Report-only: shown so IS/OOS decay is visible at the moment
+                # of promotion; never blocks.
+                outcome["walk_forward_summary"] = row["walk_forward"]["summary"]
+                break
     return outcome
-
-
-def _walk_forward_summary_for_grid(
-    store: JobStore, job_id: str, grid_id: str | None
-) -> dict[str, Any] | None:
-    if not grid_id:
-        return None
-    for row in reversed(list_experiments(job_id, store=store)):
-        if row["grid_id"] == grid_id and row.get("walk_forward"):
-            return row["walk_forward"]["summary"]
-    return None
 
 
 def _params_from_grid(

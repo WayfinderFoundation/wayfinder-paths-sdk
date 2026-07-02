@@ -10,6 +10,7 @@ from loguru import logger
 
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.jobs.application import claim_application, complete_application
+from wayfinder_paths.jobs.ledger import tail_ledger
 from wayfinder_paths.jobs.models import (
     JOB_AUTO_WORKER_AGENT_NAME,
     JOB_WORKER_AGENT_NAME,
@@ -57,21 +58,6 @@ def _drop_volatile_stable_keys(value: Any) -> Any:
             return value
 
 
-_FORWARD_DETAIL_ROWS = 6
-
-
-def _compact_forward(forward: dict[str, Any]) -> dict[str, Any]:
-    """Full forward summary + only the most recent few detail rows per list.
-    The summary carries the aggregate (win rate, streaks, net pnl); the raw
-    row lists are for spot-checking, not bulk — and they must not evict the
-    ledgers/proposals that the loop protocols depend on."""
-    compact = dict(forward)
-    for key, value in forward.items():
-        if key.startswith("recent_"):
-            compact[key] = value[-_FORWARD_DETAIL_ROWS:]
-    return compact
-
-
 def _build_worker_prompt_sections(
     *,
     store: JobStore,
@@ -88,15 +74,18 @@ def _build_worker_prompt_sections(
         "job": _drop_volatile_stable_keys(snapshot["job"]),
         "memory_json": _drop_volatile_stable_keys(memory_json),
     }
-    from wayfinder_paths.jobs.ledger import tail_ledger
-
     dynamic_payload = {
         "scorecard": snapshot["scorecard"],
-        # Keep the forward SUMMARY (aggregate signal) full but cap the per-row
-        # detail lists: 25 raw trade/run rows can blow the 12k canonical-json
-        # budget and, since keys serialize alphabetically, starve the later
-        # high-signal keys (ledgers, proposals) out of the prompt entirely.
-        "forward": _compact_forward(snapshot["forward"]),
+        # Keep the forward SUMMARY (aggregate signal — win rate, streaks, net
+        # pnl) full but cap each recent_* detail list to its last 6 rows: 25
+        # raw trade/run rows can blow the 12k canonical-json budget and, since
+        # keys serialize alphabetically, starve the later high-signal keys
+        # (ledgers, proposals) out of the prompt entirely. The raw rows are
+        # for spot-checking, not bulk.
+        "forward": {
+            key: value[-6:] if key.startswith("recent_") else value
+            for key, value in snapshot["forward"].items()
+        },
         "runner_links": snapshot["runner_links"],
         "proposals": snapshot["proposals"],
         "proposal_queue": snapshot["proposal_queue"],
@@ -339,7 +328,9 @@ def run_job_worker(
         queued = OPENCODE_CLIENT.prompt_async(
             session_id=session_id,
             text=prompt,
-            agent=_agent_name_for_mode(mode_typed),
+            agent=JOB_AUTO_WORKER_AGENT_NAME
+            if mode_typed == "auto"
+            else JOB_WORKER_AGENT_NAME,
         )
         if not queued:
             error = "OpenCode prompt_async failed"
@@ -389,7 +380,6 @@ def _ensure_worker_session(job_id: str, mode: str) -> str | None:
     controller_session_id = os.environ.get("OPENCODE_SESSION_ID") or os.environ.get(
         "OPENCODE_SESSIONID"
     )
-    agent_name = _agent_name_for_mode(mode)
     try:
         existing = OPENCODE_CLIENT.find_child_session(
             parent_id=controller_session_id,
@@ -400,7 +390,9 @@ def _ensure_worker_session(job_id: str, mode: str) -> str | None:
         return OPENCODE_CLIENT.create_session(
             parent_id=controller_session_id,
             title=f"job/{job_id}/{mode}",
-            agent=agent_name,
+            agent=JOB_AUTO_WORKER_AGENT_NAME
+            if mode == "auto"
+            else JOB_WORKER_AGENT_NAME,
         )
     except Exception:
         logger.opt(exception=True).debug(
@@ -466,10 +458,6 @@ def _write_report(
             "Wayfinder job sync failed after worker wakeup"
         )
     return report
-
-
-def _agent_name_for_mode(mode: str) -> str:
-    return JOB_AUTO_WORKER_AGENT_NAME if mode == "auto" else JOB_WORKER_AGENT_NAME
 
 
 def _auto_limits_error(limits: dict[str, Any]) -> str | None:

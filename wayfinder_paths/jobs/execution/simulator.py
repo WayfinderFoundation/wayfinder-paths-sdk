@@ -373,7 +373,15 @@ def run_execution_grid(
     top_n_artifacts: int = 10,
 ) -> ExecutionGridResult:
     check_rank_key(rank_by)
-    params_list = _expand_grid(param_grid)
+    match param_grid:
+        case list():
+            params_list = [dict(item) for item in param_grid]
+        case _:
+            keys = list(param_grid.keys())
+            params_list = [
+                dict(zip(keys, combo, strict=True))
+                for combo in itertools.product(*(param_grid[key] for key in keys))
+            ]
     grid_id = uuid.uuid4().hex[:12]
     if parallel == "serial" or workers <= 1:
         results = [
@@ -454,6 +462,7 @@ def write_backtest_artifacts(
             return {"latest": str(latest), "visualization": str(visualization)}
 
 
+# module-level: ProcessPool pickling
 def _process_run(
     payload: tuple[str, dict[str, Any], dict[str, Any], dict[str, Any]],
 ) -> ExecutionBacktestResult:
@@ -510,7 +519,14 @@ def _stats(
     price_series: Mapping[str, list[Mapping[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     leverage = max(float((params or {}).get("leverage") or 1.0), 1e-9)
-    peak_notional = _peak_notional(positions)
+    # Entry-price basis (deterministic from ledger snapshots, not marked).
+    peak_notional = 0.0
+    for row in positions or []:
+        total = sum(
+            float(record["size"]) * float(record["avg_price"])
+            for record in row["positions"].values()
+        )
+        peak_notional = max(peak_notional, total)
     margin_used = peak_notional / leverage if peak_notional else 0.0
     exit_pnls = [
         float(trade["realized_pnl_delta"])
@@ -592,7 +608,6 @@ def _stats(
         "profit_factor": (gross_profit / gross_loss) if gross_loss else None,
         "avg_trade_pnl": (sum(exit_pnls) / len(exit_pnls)) if exit_pnls else None,
         "exposure_pct": (exposed / len(positions)) if positions else 0.0,
-        # Entry-price basis (deterministic from ledger snapshots, not marked).
         "peak_notional_usd": peak_notional,
         "margin_used": margin_used,
         "return_on_margin": ((end - start) / margin_used) if margin_used else None,
@@ -793,17 +808,6 @@ def _avg_turnover(
     return sum(ratios) / len(ratios)
 
 
-def _peak_notional(positions: list[dict[str, Any]] | None) -> float:
-    peak = 0.0
-    for row in positions or []:
-        total = sum(
-            float(record["size"]) * float(record["avg_price"])
-            for record in row["positions"].values()
-        )
-        peak = max(peak, total)
-    return peak
-
-
 def _sharpe(
     equity_curve: list[dict[str, Any]], bar_seconds: int | None
 ) -> float | None:
@@ -876,22 +880,9 @@ def _markers(trades: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return markers
 
 
-def _expand_grid(
-    param_grid: Mapping[str, list[Any]] | list[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
-    match param_grid:
-        case list():
-            return [dict(item) for item in param_grid]
-        case _:
-            keys = list(param_grid.keys())
-            values = [param_grid[key] for key in keys]
-            return [
-                dict(zip(keys, combo, strict=True))
-                for combo in itertools.product(*values)
-            ]
-
-
 def _grid_row(result: ExecutionBacktestResult, *, rank_by: str) -> dict[str, Any]:
+    # shared with optimize.py: grid and optuna rows must stay shape-identical
+    # for rank_and_partition and experiments.jsonl
     return {
         "run_id": result.run_id,
         "params": result.params,

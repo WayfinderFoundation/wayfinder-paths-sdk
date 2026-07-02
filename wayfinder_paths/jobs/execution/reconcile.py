@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -22,8 +21,9 @@ from wayfinder_paths.jobs.execution.simulator import (
     _load_strategy,
 )
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
-from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.models import WayfinderJob, utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.triggers import fire_triggers
 
 INTENT_MATCH_YELLOW = 0.98
 INTENT_MATCH_RED = 0.90
@@ -65,7 +65,18 @@ def reconcile_job(
     if entrypoint is None or not entrypoint.exists():
         raise FileNotFoundError(f"execution script not found for job {job_id}")
 
-    rows = _read_ticks(root, limit=limit)
+    rows: list[dict[str, Any]] = []
+    ticks_path = root / "results" / "forward" / "ticks.jsonl"
+    if ticks_path.exists():
+        lines = ticks_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        for line in lines[-limit:]:
+            try:
+                parsed = json.loads(line)
+            except ValueError:
+                continue
+            match parsed:
+                case dict():
+                    rows.append(parsed)
     if history is None:
         try:
             history = _load_dataset(root, spec, job_data).bars
@@ -83,18 +94,25 @@ def reconcile_job(
     )
     report = _build_report(job_id, rows, outcome)
     store.write_json(job_id, "reports/reconcile/latest.json", report)
-    health = _health_from_report(report)
+    match_rate = report["intent_match_rate"]
+    health = None
+    if match_rate is not None:
+        if match_rate < INTENT_MATCH_RED or report["missing_exit_intents"]:
+            health = "red"
+        elif match_rate < INTENT_MATCH_YELLOW:
+            health = "yellow"
+    summary = {
+        "intent_match_rate": match_rate,
+        "ticks_compared": report["ticks_compared"],
+        "data_drift_ticks": report["data_drift_ticks"],
+        "missing_exit_intents": len(report["missing_exit_intents"]),
+    }
     if health:
-        store.refresh_scorecard(
-            job_id, {"health": health, "reconcile": _summary(report)}
-        )
+        store.refresh_scorecard(job_id, {"health": health, "reconcile": summary})
         store.append_journal(
             job_id,
-            {"type": "drift_warning", "source": "reconcile", **_summary(report)},
+            {"type": "drift_warning", "source": "reconcile", **summary},
         )
-        from wayfinder_paths.jobs.models import WayfinderJob
-        from wayfinder_paths.jobs.triggers import fire_triggers
-
         fire_triggers(
             store,
             WayfinderJob.from_dict(job_data),
@@ -102,7 +120,7 @@ def reconcile_job(
             source="reconcile",
         )
     else:
-        store.refresh_scorecard(job_id, {"reconcile": _summary(report)})
+        store.refresh_scorecard(job_id, {"reconcile": summary})
     return report
 
 
@@ -124,7 +142,17 @@ async def _replay_rows(
         if row.get("skipped"):
             continue
         window = row.get("view_window") or {}
-        view = _window_view(history, window)
+        first = window.get("first_ts")
+        last = window.get("last_ts")
+        view = None
+        if history is not None and first and last:
+            frame = history.to_frame()
+            sliced = frame[
+                (frame["timestamp"] >= pd.Timestamp(first))
+                & (frame["timestamp"] <= pd.Timestamp(last))
+            ]
+            if not sliced.empty:
+                view = CompletedBarsView(sliced)
         if view is None:
             data_drift += 1
             continue
@@ -147,8 +175,14 @@ async def _replay_rows(
                 reason=snapshot_data.get("reason"),
             ),
         )
-        recorded = [_intent_key(item) for item in row.get("intents") or []]
-        replayed = [_intent_key(intent.to_dict()) for intent in tick.intents]
+        recorded = [
+            {field: item.get(field) for field in INTENT_FIELDS}
+            for item in row.get("intents") or []
+        ]
+        replayed = [
+            {field: data.get(field) for field in INTENT_FIELDS}
+            for data in (intent.to_dict() for intent in tick.intents)
+        ]
         compared += 1
         if recorded == replayed:
             matched += 1
@@ -194,66 +228,6 @@ def _build_report(
         "fill_slippage_bps_p50": (slippage[len(slippage) // 2] if slippage else None),
         "fill_slippage_samples": len(slippage),
     }
-
-
-def _health_from_report(report: Mapping[str, Any]) -> str | None:
-    match_rate = report["intent_match_rate"]
-    if match_rate is None:
-        return None
-    if match_rate < INTENT_MATCH_RED or report["missing_exit_intents"]:
-        return "red"
-    if match_rate < INTENT_MATCH_YELLOW:
-        return "yellow"
-    return None
-
-
-def _summary(report: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "intent_match_rate": report["intent_match_rate"],
-        "ticks_compared": report["ticks_compared"],
-        "data_drift_ticks": report["data_drift_ticks"],
-        "missing_exit_intents": len(report["missing_exit_intents"]),
-    }
-
-
-def _read_ticks(root: Path, *, limit: int) -> list[dict[str, Any]]:
-    path = root / "results" / "forward" / "ticks.jsonl"
-    if not path.exists():
-        return []
-    rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[
-        -limit:
-    ]:
-        try:
-            parsed = json.loads(line)
-        except ValueError:
-            continue
-        match parsed:
-            case dict():
-                rows.append(parsed)
-    return rows
-
-
-def _window_view(
-    history: CompletedBarsView | None, window: Mapping[str, Any]
-) -> CompletedBarsView | None:
-    if history is None:
-        return None
-    first = window.get("first_ts")
-    last = window.get("last_ts")
-    if not first or not last:
-        return None
-    frame = history.to_frame()
-    first_ts = pd.Timestamp(first)
-    last_ts = pd.Timestamp(last)
-    sliced = frame[(frame["timestamp"] >= first_ts) & (frame["timestamp"] <= last_ts)]
-    if sliced.empty:
-        return None
-    return CompletedBarsView(sliced)
-
-
-def _intent_key(intent: Mapping[str, Any]) -> dict[str, Any]:
-    return {field: intent.get(field) for field in INTENT_FIELDS}
 
 
 def _fill_slippage_bps(row: Mapping[str, Any], view: CompletedBarsView) -> list[float]:

@@ -352,14 +352,32 @@ async def _run_tick_inner(
         # ticks and are captured in engine_state_pre for exact replay.
         strategy_state=state.strategy_state,
     )
-    raw_intents = await _call_decide(
-        strategy,
-        ctx,
-        enforce_purity=enforce_purity,
-        network_policy=str(spec.validation.get("purity") or "warn"),
-        guard_events=result.guard_events,
+    decide = getattr(strategy, "decide", strategy)
+    network_violations: list[str] = []
+    sandbox = (
+        purity_sandbox(
+            network_policy=str(spec.validation.get("purity") or "warn"),
+            violations=network_violations,
+        )
+        if enforce_purity
+        else contextlib.nullcontext()
     )
-    intents = [OrderIntent.from_any(item) for item in raw_intents]
+    with sandbox:
+        decided = decide(ctx)
+        if asyncio.iscoroutine(decided):
+            decided = await decided
+    for violation in network_violations:
+        result.guard_events.append(
+            {"kind": "purity_warning", "reason": violation, "timestamp": bar_iso}
+        )
+    match decided:
+        case None:
+            decided = []
+        case Mapping():
+            decided = [decided]
+        case _:
+            decided = list(decided)
+    intents = [OrderIntent.from_any(item) for item in decided]
 
     for index, intent in enumerate(intents):
         if client_order_prefix and intent.client_order_id is None:
@@ -447,38 +465,6 @@ async def _run_tick_inner(
         }
     )
     return result
-
-
-async def _call_decide(
-    strategy: Any,
-    ctx: ExecutionContext,
-    *,
-    enforce_purity: bool,
-    network_policy: str,
-    guard_events: list[dict[str, Any]],
-) -> list[Any]:
-    decide = getattr(strategy, "decide", strategy)
-    network_violations: list[str] = []
-    sandbox = (
-        purity_sandbox(network_policy=network_policy, violations=network_violations)
-        if enforce_purity
-        else contextlib.nullcontext()
-    )
-    with sandbox:
-        result = decide(ctx)
-        if asyncio.iscoroutine(result):
-            result = await result
-    for violation in network_violations:
-        guard_events.append(
-            {"kind": "purity_warning", "reason": violation, "timestamp": ctx.timestamp}
-        )
-    match result:
-        case None:
-            return []
-        case Mapping():
-            return [result]
-        case _:
-            return list(result)
 
 
 def _record_fill(

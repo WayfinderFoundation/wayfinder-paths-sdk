@@ -84,9 +84,27 @@ def propose_change(
     )
     candidate_dir = store.repo_root / candidate_descriptor["candidate_dir"]
     if candidate_source is not None:
-        _overlay_candidate_source(candidate_dir, Path(candidate_source))
+        source = Path(candidate_source)
+        if not source.exists():
+            raise FileNotFoundError(f"candidate_source not found: {source}")
+        if (source / "workspace").exists():
+            # Full bundle shape: workspace/ (+ optional job.yaml).
+            _replace_tree(source / "workspace", candidate_dir / "workspace")
+            if (source / "job.yaml").exists():
+                shutil.copy2(source / "job.yaml", candidate_dir / "job.yaml")
+        else:
+            # Bare workspace tree.
+            _replace_tree(source, candidate_dir / "workspace")
     if params:
-        _merge_candidate_params(candidate_dir, params)
+        yaml_path = candidate_dir / "job.yaml"
+        job_yaml = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        job_yaml["execution_params"] = {
+            **(job_yaml.get("execution_params") or {}),
+            **params,
+        }
+        yaml_path.write_text(
+            yaml.safe_dump(job_yaml, sort_keys=False), encoding="utf-8"
+        )
     changed_files = _diff_workspaces(root, candidate_dir)
 
     job = store.load(job_id)
@@ -151,7 +169,17 @@ def propose_change(
         "mode": mode,
         "gate": gate_payload,
         "validation_summary": validation_summary(validation),
-        "comparison": _bounded_comparison(comparison),
+        # Stats/deltas only — never point series (sync payload discipline).
+        "comparison": (
+            {
+                "baseline": comparison["baseline"],
+                "candidate": comparison["candidate"],
+                "deltas": comparison["deltas"],
+                "dataset": comparison["dataset"],
+            }
+            if comparison is not None
+            else None
+        ),
         "generated_at": utc_now_iso(),
     }
 
@@ -186,32 +214,10 @@ def propose_change(
     return store.load_proposal(job_id, pid)
 
 
-def _overlay_candidate_source(candidate_dir: Path, source: Path) -> None:
-    if not source.exists():
-        raise FileNotFoundError(f"candidate_source not found: {source}")
-    if (source / "workspace").exists():
-        # Full bundle shape: workspace/ (+ optional job.yaml).
-        _replace_tree(source / "workspace", candidate_dir / "workspace")
-        if (source / "job.yaml").exists():
-            shutil.copy2(source / "job.yaml", candidate_dir / "job.yaml")
-        return
-    # Bare workspace tree.
-    _replace_tree(source, candidate_dir / "workspace")
-
-
 def _replace_tree(source: Path, destination: Path) -> None:
     if destination.exists():
         shutil.rmtree(destination)
     shutil.copytree(source, destination)
-
-
-def _merge_candidate_params(candidate_dir: Path, params: dict[str, Any]) -> None:
-    yaml_path = candidate_dir / "job.yaml"
-    job_yaml = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
-    execution_params = dict(job_yaml.get("execution_params") or {})
-    execution_params.update(params)
-    job_yaml["execution_params"] = execution_params
-    yaml_path.write_text(yaml.safe_dump(job_yaml, sort_keys=False), encoding="utf-8")
 
 
 def _diff_workspaces(root: Path, candidate_dir: Path) -> list[str]:
@@ -301,12 +307,17 @@ def _build_comparison(
         if baseline_latest
         else None
     )
+    baseline_stats = baseline_side["stats"] if baseline_side else {}
+    deltas: dict[str, float] = {}
+    for key, candidate_value in candidate_side["stats"].items():
+        baseline_value = baseline_stats.get(key)
+        match candidate_value, baseline_value:
+            case (int() | float(), int() | float()):
+                deltas[key] = float(candidate_value) - float(baseline_value)
     comparison = {
         "baseline": baseline_side,
         "candidate": candidate_side,
-        "deltas": _stat_deltas(
-            (baseline_side or {}).get("stats") or {}, candidate_side["stats"]
-        ),
+        "deltas": deltas,
         "dataset": candidate_latest.get("dataset") or {},
         "generated_at": utc_now_iso(),
     }
@@ -317,32 +328,6 @@ def _build_comparison(
         encoding="utf-8",
     )
     return comparison
-
-
-def _stat_deltas(
-    baseline: dict[str, Any], candidate: dict[str, Any]
-) -> dict[str, float]:
-    deltas: dict[str, float] = {}
-    for key, candidate_value in candidate.items():
-        baseline_value = baseline.get(key)
-        match candidate_value, baseline_value:
-            case (int() | float(), int() | float()):
-                deltas[key] = float(candidate_value) - float(baseline_value)
-    return deltas
-
-
-def _bounded_comparison(
-    comparison: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    """Stats/deltas only — never point series (sync payload discipline)."""
-    if comparison is None:
-        return None
-    return {
-        "baseline": comparison.get("baseline"),
-        "candidate": comparison.get("candidate"),
-        "deltas": comparison.get("deltas") or {},
-        "dataset": comparison.get("dataset") or {},
-    }
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:

@@ -72,7 +72,7 @@ def run_optuna_search(
     top_n_artifacts: int = 10,
 ) -> ExecutionGridResult:
     try:
-        import optuna
+        import optuna  # lazy: optional --with ml dep; grid path never pays it
     except ImportError as exc:
         raise RuntimeError(
             'optuna is required for optimizer="optuna"; run `poetry install --with ml`'

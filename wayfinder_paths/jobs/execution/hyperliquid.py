@@ -369,18 +369,6 @@ def build_hyperliquid_adapter(
 register_venue("hyperliquid", build_hyperliquid_adapter)
 
 
-def _exchange_result_from_mcp(outcome: Any) -> dict[str, Any] | None:
-    match outcome:
-        case {"ok": True, "result": dict() as result}:
-            for effect in result.get("effects") or []:
-                if effect.get("label") == "place_market_order":
-                    return effect.get("result")
-            for effect in reversed(result.get("effects") or []):
-                if effect.get("type") == "hl":
-                    return effect.get("result")
-    return None
-
-
 def _mcp_error(outcome: Any) -> Any:
     match outcome:
         case {"error": error}:
@@ -429,7 +417,16 @@ async def _submit_market_order(
             error=f"order submission failed: {exc}",
             timestamp=timestamp,
         )
-    raw = _exchange_result_from_mcp(outcome)
+    raw = None
+    match outcome:
+        case {"ok": True, "result": dict() as result}:
+            effects = result.get("effects") or []
+            labeled = [e for e in effects if e.get("label") == "place_market_order"]
+            hl = [e for e in effects if e.get("type") == "hl"]
+            if labeled:
+                raw = labeled[0].get("result")
+            elif hl:
+                raw = hl[-1].get("result")
     if raw is None:
         payload: dict[str, Any] = {}
         match outcome:

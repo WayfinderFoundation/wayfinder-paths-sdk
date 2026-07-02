@@ -10,6 +10,7 @@ import click
 from wayfinder_paths.jobs.application import (
     claim_application,
     complete_application,
+    ensure_jobs_v1_contract,
     validate_application_candidate,
 )
 from wayfinder_paths.jobs.backtest_artifacts import load_backtest_view
@@ -25,13 +26,17 @@ from wayfinder_paths.jobs.execution.preflight import build_live_dataset, run_pre
 from wayfinder_paths.jobs.execution.reconcile import reconcile_job
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.execution.walk_forward import format_fold_table
+from wayfinder_paths.jobs.features import append_feature, list_features
 from wayfinder_paths.jobs.gating import evaluate_live_gate
+from wayfinder_paths.jobs.halt import clear_halt, request_halt
+from wayfinder_paths.jobs.ledger import append_ledger_row, tail_ledger
 from wayfinder_paths.jobs.models import (
     AgentMode,
     WayfinderJob,
     infer_job_kind,
     normalize_agent_mode,
 )
+from wayfinder_paths.jobs.proposals import propose_change
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
@@ -662,8 +667,6 @@ def approve_cmd(
     store = JobStore()
     # The SDK is the authoritative gate even when the backend is bypassed:
     # legacy jobs cannot pass the versioned-change flow.
-    from wayfinder_paths.jobs.application import ensure_jobs_v1_contract
-
     try:
         ensure_jobs_v1_contract(store, job_id, allow_legacy=skip_gate)
     except ValueError as exc:
@@ -727,12 +730,8 @@ def propose_cmd(
     memo: str | None,
     memo_file: str | None,
 ) -> None:
-    from pathlib import Path as _Path
-
-    from wayfinder_paths.jobs.proposals import propose_change
-
     if memo_file:
-        memo = _Path(memo_file).read_text(encoding="utf-8")
+        memo = Path(memo_file).read_text(encoding="utf-8")
     store = JobStore()
     proposal = propose_change(
         store,
@@ -878,8 +877,6 @@ def feature_append_cmd(
     timestamp: str | None,
     symbol: str | None,
 ) -> None:
-    from wayfinder_paths.jobs.features import append_feature
-
     coerced: Any = value
     try:
         coerced = float(value)
@@ -897,8 +894,6 @@ def feature_append_cmd(
 @click.option("--name", default=None)
 @click.option("--limit", type=int, default=50, show_default=True)
 def feature_list_cmd(job_id: str, name: str | None, limit: int) -> None:
-    from wayfinder_paths.jobs.features import list_features
-
     store = JobStore()
     _echo_json(
         {"ok": True, "result": list_features(store, job_id, name=name, limit=limit)}
@@ -918,8 +913,6 @@ def ledger_group() -> None:
 @click.argument("name")
 @click.option("--json", "row_json", required=True, help="Row object as JSON.")
 def ledger_append_cmd(job_id: str, name: str, row_json: str) -> None:
-    from wayfinder_paths.jobs.ledger import append_ledger_row
-
     store = JobStore()
     row = json.loads(row_json)
     result = append_ledger_row(store, job_id, name, row)
@@ -931,8 +924,6 @@ def ledger_append_cmd(job_id: str, name: str, row_json: str) -> None:
 @click.argument("name")
 @click.option("--limit", type=int, default=20, show_default=True)
 def ledger_tail_cmd(job_id: str, name: str, limit: int) -> None:
-    from wayfinder_paths.jobs.ledger import tail_ledger
-
     store = JobStore()
     _echo_json({"ok": True, "result": tail_ledger(store, job_id, name, limit=limit)})
 
@@ -950,8 +941,6 @@ def ledger_tail_cmd(job_id: str, name: str, limit: int) -> None:
     help="Also market-close all open positions on the next tick.",
 )
 def halt_cmd(job_id: str, reason: str | None, flatten: bool) -> None:
-    from wayfinder_paths.jobs.halt import request_halt
-
     store = JobStore()
     payload = request_halt(store, job_id, reason=reason, flatten=flatten)
     sync_all_jobs(store=store)
@@ -961,8 +950,6 @@ def halt_cmd(job_id: str, reason: str | None, flatten: bool) -> None:
 @job_cli.command(name="resume-from-halt", help="Clear a manual halt.")
 @click.argument("job_id")
 def resume_from_halt_cmd(job_id: str) -> None:
-    from wayfinder_paths.jobs.halt import clear_halt
-
     store = JobStore()
     payload = clear_halt(store, job_id)
     sync_all_jobs(store=store)

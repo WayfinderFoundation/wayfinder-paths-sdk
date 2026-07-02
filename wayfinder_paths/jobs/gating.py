@@ -35,25 +35,24 @@ def compute_workspace_revision(root: Path) -> str:
                 digest.update(path.read_bytes())
     job_yaml = root / "job.yaml"
     if job_yaml.exists():
-        digest.update(_canonical_job_yaml_bytes(job_yaml))
+        # Hash job.yaml minus self-referential bookkeeping: `versioning`
+        # stores the revision this hash produces, and `updated_at` changes on
+        # every save — both would make the hash unstable under pure
+        # bookkeeping writes.
+        try:
+            loaded = yaml.safe_load(job_yaml.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:
+            loaded = None
+        match loaded:
+            case dict() as data:
+                data.pop("versioning", None)
+                data.pop("updated_at", None)
+                digest.update(
+                    json.dumps(data, sort_keys=True, default=str).encode("utf-8")
+                )
+            case _:
+                digest.update(job_yaml.read_bytes())
     return digest.hexdigest()[:12]
-
-
-def _canonical_job_yaml_bytes(path: Path) -> bytes:
-    """job.yaml minus self-referential bookkeeping: `versioning` stores the
-    revision this hash produces, and `updated_at` changes on every save — both
-    would make the hash unstable under pure bookkeeping writes."""
-    try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError:
-        return path.read_bytes()
-    match loaded or {}:
-        case dict() as data:
-            data.pop("versioning", None)
-            data.pop("updated_at", None)
-            return json.dumps(data, sort_keys=True, default=str).encode("utf-8")
-        case _:
-            return path.read_bytes()
 
 
 def evaluate_live_gate(

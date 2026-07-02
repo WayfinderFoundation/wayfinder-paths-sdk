@@ -103,22 +103,26 @@ def load_backtest_view(
     start = _parse_ts(from_ts)
     end = _parse_ts(to_ts)
     kinds = VIEW_KINDS.get(view)
-    selected_series = [
-        {
-            **series,
-            "points": _downsample(
-                [
-                    point
-                    for point in series["points"]
-                    if _in_range(_parse_ts(point["timestamp"]), start, end)
-                ],
-                bounded_max,
-            ),
-        }
-        for series in visualization["series"]
-        if (not requested or series["name"] in requested)
-        and (kinds is None or series["kind"] in kinds)
-    ]
+    selected_series = []
+    for series in visualization["series"]:
+        if requested and series["name"] not in requested:
+            continue
+        if kinds is not None and series["kind"] not in kinds:
+            continue
+        points = [
+            point
+            for point in series["points"]
+            if _in_range(_parse_ts(point["timestamp"]), start, end)
+        ]
+        if len(points) > bounded_max:
+            # Even-stride downsample keeping first and last points;
+            # bounded_max >= 100, so no degenerate two-point case.
+            last_index = len(points) - 1
+            points = [
+                points[math.floor(index * last_index / (bounded_max - 1))]
+                for index in range(bounded_max)
+            ]
+        selected_series.append({**series, "points": points})
     symbols = {
         str(series["symbol"])
         for series in selected_series
@@ -169,15 +173,3 @@ def _parse_ts(value: str | None) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
-
-
-def _downsample(points: list[dict[str, Any]], max_points: int) -> list[dict[str, Any]]:
-    if len(points) <= max_points:
-        return points
-    if max_points <= 2:
-        return [points[0], points[-1]]
-    last_index = len(points) - 1
-    return [
-        points[math.floor(index * last_index / (max_points - 1))]
-        for index in range(max_points)
-    ]

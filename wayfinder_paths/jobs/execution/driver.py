@@ -38,6 +38,7 @@ from wayfinder_paths.jobs.forward import ForwardRecorder
 from wayfinder_paths.jobs.halt import read_halt
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.triggers import fire_triggers
 
 ENGINE_STATE_PATH = "state/engine_state.json"
 SIZE_TOLERANCE = 1e-6
@@ -65,8 +66,6 @@ def run_scheduled_tick(job_dir: str | Path | None = None) -> dict[str, Any]:
     if store is not None and job is not None:
         events = _tick_trigger_events(payload)
         if events:
-            from wayfinder_paths.jobs.triggers import fire_triggers
-
             fire_triggers(store, job, events, source="scheduled_tick")
     print(json.dumps(payload, default=str))
     return payload
@@ -443,7 +442,9 @@ def _record(
         intents=intents,
         fills=fills,
         guard_events=tick.guard_events,
-        params_hash=_hash_payload(dict(params)),
+        params_hash=hashlib.sha256(
+            json.dumps(dict(params), sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()[:16],
         ledger=tick.ledger_snapshot,
         engine_state_pre=dict(engine_state_pre or {}),
     )
@@ -472,9 +473,5 @@ def _record(
 
 
 def view_hash(view: CompletedBarsView) -> str:
-    return _hash_payload(view.to_rows())
-
-
-def _hash_payload(payload: Any) -> str:
-    encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    encoded = json.dumps(view.to_rows(), sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:16]

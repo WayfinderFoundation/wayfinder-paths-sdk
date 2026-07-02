@@ -17,9 +17,11 @@ from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.execution.simulator import (
     PreparedExecutionDataset,
     simulate_execution,
+    write_backtest_artifacts,
 )
 from wayfinder_paths.jobs.execution.validation import FORBIDDEN_ORDER_PATTERNS
 from wayfinder_paths.jobs.gating import compute_workspace_revision
+from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
 REQUIRED_INTENT_FIELDS = (
@@ -227,7 +229,22 @@ def _engine_scenario_checks(
                 spec,
                 params=scenario_data.get("params") or {},
             ).to_dict()
-            failures = _scenario_expectation_failures(result, expected)
+            failures: list[str] = []
+            trades = result["trades"]
+            if "min_trades" in expected and len(trades) < int(expected["min_trades"]):
+                failures.append(
+                    f"expected >= {expected['min_trades']} trades, got {len(trades)}"
+                )
+            if "max_trades" in expected and len(trades) > int(expected["max_trades"]):
+                failures.append(
+                    f"expected <= {expected['max_trades']} trades, got {len(trades)}"
+                )
+            if "execution_valid" in expected and bool(
+                result["validation"].get("execution_valid")
+            ) is not bool(expected["execution_valid"]):
+                failures.append(
+                    f"execution_valid expected {expected['execution_valid']}"
+                )
             checks.append(
                 {
                     "name": f"scenario_{name}",
@@ -244,26 +261,6 @@ def _engine_scenario_checks(
     return checks
 
 
-def _scenario_expectation_failures(
-    result: Mapping[str, Any], expected: Mapping[str, Any]
-) -> list[str]:
-    failures: list[str] = []
-    trades = result["trades"]
-    if "min_trades" in expected and len(trades) < int(expected["min_trades"]):
-        failures.append(
-            f"expected >= {expected['min_trades']} trades, got {len(trades)}"
-        )
-    if "max_trades" in expected and len(trades) > int(expected["max_trades"]):
-        failures.append(
-            f"expected <= {expected['max_trades']} trades, got {len(trades)}"
-        )
-    if "execution_valid" in expected:
-        actual = bool(result["validation"].get("execution_valid"))
-        if actual is not bool(expected["execution_valid"]):
-            failures.append(f"execution_valid expected {expected['execution_valid']}")
-    return failures
-
-
 def _candidate_behavior_checks(
     *,
     repo_root: Path,
@@ -275,14 +272,6 @@ def _candidate_behavior_checks(
     """Candidate backtest + preflight: the behavioral half of the promotion
     gate. Both run against the CANDIDATE workspace so the report is tied to
     the candidate revision (which equals the post-promotion revision)."""
-    # circular import: execution.job imports validate_execution_job from here
-    from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
-    from wayfinder_paths.jobs.execution.simulator import (
-        simulate_execution,
-        write_backtest_artifacts,
-    )
-    from wayfinder_paths.jobs.models import utc_now_iso
-
     checks: list[dict[str, Any]] = []
     job_id = str(job_data.get("id") or job_dir.name)
     spec = ExecutionSpec.from_dict(dict(job_data.get("execution_spec") or {}))
@@ -385,13 +374,20 @@ def _intent_contract_checks(proposal: Mapping[str, Any]) -> list[dict[str, Any]]
         }
     ]
     for field in REQUIRED_INTENT_FIELDS:
-        value = contract_data.get(field)
-        present = field in contract_data
-        non_empty = _is_non_empty_contract_value(value) or field == "known_non_goals"
+        match contract_data.get(field):
+            case None:
+                non_empty = False
+            case str() as text:
+                non_empty = bool(text.strip())
+            case list() | tuple() | set() | dict() as collection:
+                non_empty = bool(collection)
+            case _:
+                non_empty = True
         checks.append(
             {
                 "name": f"intent_contract_{field}",
-                "passed": present and non_empty,
+                "passed": field in contract_data
+                and (non_empty or field == "known_non_goals"),
             }
         )
     return checks
@@ -505,12 +501,21 @@ def _scenario_checks(
                 scenario_data = {}
         name = str(scenario_data.get("name") or f"scenario_{index + 1}")
         expected = scenario_data.get("expect") or scenario_data.get("expected") or {}
+        snapshot = scenario_data.get("snapshot") or {}
+        state = scenario_data.get("state") or {}
         try:
-            actual = _call_decision_function(
-                fn,
-                snapshot=scenario_data.get("snapshot") or {},
-                state=scenario_data.get("state") or {},
-            )
+            signature = inspect.signature(fn)
+            if any(
+                p.kind == inspect.Parameter.VAR_KEYWORD
+                for p in signature.parameters.values()
+            ):
+                actual = fn(snapshot=snapshot, state=state)
+            elif len(signature.parameters) >= 2:
+                actual = fn(snapshot, state)
+            else:
+                actual = fn(snapshot)
+            if inspect.isawaitable(actual):
+                actual = asyncio.run(actual)
             passed, failures = _compare_expected(actual, expected)
             checks.append(
                 {
@@ -551,22 +556,6 @@ def _load_module(script_path: Path) -> Any | None:
         sys.path = old_path
 
 
-def _call_decision_function(fn: Any, *, snapshot: Any, state: Any) -> Any:
-    signature = inspect.signature(fn)
-    params = list(signature.parameters)
-    if any(
-        p.kind == inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values()
-    ):
-        result = fn(snapshot=snapshot, state=state)
-    elif len(params) >= 2:
-        result = fn(snapshot, state)
-    else:
-        result = fn(snapshot)
-    if inspect.isawaitable(result):
-        result = asyncio.run(result)
-    return result
-
-
 def _compare_expected(actual: Any, expected: Any) -> tuple[bool, list[str]]:
     match expected:
         case Mapping():
@@ -587,12 +576,32 @@ def _compare_expected(actual: Any, expected: Any) -> tuple[bool, list[str]]:
                 f"decision expected {expected_data['decision']!r}, got {action!r}"
             )
     if "reason_contains" in expected_data:
-        reason = str(_extract_reason(actual)).lower()
+        match actual:
+            case Mapping() if "reason" in actual:
+                raw_reason = actual["reason"]
+            case Mapping():
+                match actual.get("decision"):
+                    case Mapping() as decision:
+                        raw_reason = decision.get("reason")
+                    case _:
+                        raw_reason = ""
+            case _:
+                raw_reason = ""
+        reason = str(raw_reason).lower()
         needle = str(expected_data["reason_contains"]).lower()
         if needle not in reason:
             failures.append(f"reason missing {needle!r}: {reason!r}")
     for path, expected_value in dict(expected_data.get("equals") or {}).items():
-        actual_value = _dotted_get(actual, str(path))
+        actual_value = actual
+        for part in str(path).split("."):
+            match actual_value:
+                case Mapping():
+                    actual_value = actual_value.get(part)
+                case list() if part.isdigit():
+                    actual_value = actual_value[int(part)]
+                case _:
+                    actual_value = None
+                    break
         if actual_value != expected_value:
             failures.append(f"{path} expected {expected_value!r}, got {actual_value!r}")
     return not failures, failures
@@ -613,46 +622,6 @@ def _extract_action(actual: Any) -> Any:
                     return decision
         case _:
             return None
-
-
-def _extract_reason(actual: Any) -> Any:
-    match actual:
-        case Mapping():
-            if "reason" in actual:
-                return actual.get("reason")
-            decision = actual.get("decision")
-            match decision:
-                case Mapping():
-                    return decision.get("reason")
-                case _:
-                    return ""
-        case _:
-            return ""
-
-
-def _dotted_get(value: Any, path: str) -> Any:
-    current = value
-    for part in path.split("."):
-        match current:
-            case Mapping():
-                current = current.get(part)
-            case list() if part.isdigit():
-                current = current[int(part)]
-            case _:
-                return None
-    return current
-
-
-def _is_non_empty_contract_value(value: Any) -> bool:
-    match value:
-        case None:
-            return False
-        case str():
-            return bool(value.strip())
-        case list() | tuple() | set() | dict():
-            return bool(value)
-        case _:
-            return True
 
 
 def validation_summary(validation: Mapping[str, Any]) -> dict[str, Any]:

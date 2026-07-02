@@ -20,6 +20,8 @@ class JobCompiler:
     ) -> dict[str, Any]:
         root = self.store.init_layout(job)
         wrappers = self._write_wrappers(job, root)
+        # runner_links.json always carries "jobs" — init_layout seeds it,
+        # compile rewrites it.
         previous_links = (
             self.store.read_json(job.id, "runner_links.json", default={}) or {}
         )
@@ -49,7 +51,9 @@ class JobCompiler:
                     "response": resp,
                 }
             )
-        elif job.script_loop.runner_job_name and _was_linked(previous_links, "script"):
+        elif job.script_loop.runner_job_name and any(
+            item["loop"] == "script" for item in previous_links["jobs"]
+        ):
             resp = self.bridge.delete(job.script_loop.runner_job_name)
             linked.append(
                 {
@@ -79,7 +83,9 @@ class JobCompiler:
                     "response": resp,
                 }
             )
-        elif job.agent_loop.runner_job_name and _was_linked(previous_links, "agent"):
+        elif job.agent_loop.runner_job_name and any(
+            item["loop"] == "agent" for item in previous_links["jobs"]
+        ):
             resp = self.bridge.delete(job.agent_loop.runner_job_name)
             linked.append(
                 {
@@ -195,9 +201,3 @@ def compile_job(job_id: str, *, start_daemon: bool = True) -> dict[str, Any]:
     job = store.load(job_id)
     result = JobCompiler(store=store).compile(job, start_daemon=start_daemon)
     return json.loads(json.dumps(result, default=str))
-
-
-def _was_linked(previous_links: dict[str, Any], loop: str) -> bool:
-    # runner_links.json always carries "jobs" — init_layout seeds it, compile
-    # rewrites it.
-    return any(item["loop"] == loop for item in previous_links["jobs"])

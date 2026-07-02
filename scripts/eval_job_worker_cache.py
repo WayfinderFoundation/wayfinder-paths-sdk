@@ -199,52 +199,6 @@ def run_deterministic_eval(output_dir: Path) -> dict[str, Any]:
     return report
 
 
-def _session_ids_from_json_events(text: str) -> list[str]:
-    session_ids: list[str] = []
-    seen: set[str] = set()
-    for line in text.splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        session_id = event.get("sessionID")
-        part = event.get("part")
-        match part:
-            case dict() if not session_id:
-                session_id = part.get("sessionID")
-        match session_id:
-            case str() if session_id not in seen:
-                seen.add(session_id)
-                session_ids.append(session_id)
-    return session_ids
-
-
-def _harvest_session_text(db_path: Path, session_ids: list[str]) -> str:
-    if not db_path.exists() or not session_ids:
-        return ""
-    try:
-        con = sqlite3.connect(db_path)
-    except Exception:
-        return ""
-    texts: list[str] = []
-    try:
-        for session_id in session_ids:
-            rows = con.execute(
-                """SELECT json_extract(p.data,'$.text')
-                   FROM part p JOIN message m ON p.message_id = m.id
-                   WHERE m.session_id=?
-                     AND json_extract(p.data,'$.type')='text'
-                   ORDER BY m.time_created""",
-                (session_id,),
-            ).fetchall()
-            texts.extend(str(row[0]) for row in rows if row and row[0])
-    except Exception:
-        return ""
-    finally:
-        con.close()
-    return "\n".join(texts)
-
-
 def run_live_eval(
     *,
     repo_root_path: Path,
@@ -301,8 +255,45 @@ def run_live_eval(
 
     (output_dir / "live_stdout.txt").write_text(stdout, encoding="utf-8")
     (output_dir / "live_stderr.txt").write_text(stderr, encoding="utf-8")
-    session_ids = _session_ids_from_json_events(stdout)
-    harvested = _harvest_session_text(db_path, session_ids)
+
+    session_ids: list[str] = []
+    seen: set[str] = set()
+    for line in stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        session_id = event.get("sessionID")
+        part = event.get("part")
+        match part:
+            case dict() if not session_id:
+                session_id = part.get("sessionID")
+        match session_id:
+            case str() if session_id not in seen:
+                seen.add(session_id)
+                session_ids.append(session_id)
+
+    harvested = ""
+    if db_path.exists() and session_ids:
+        try:
+            con = sqlite3.connect(db_path)
+            try:
+                texts: list[str] = []
+                for session_id in session_ids:
+                    rows = con.execute(
+                        """SELECT json_extract(p.data,'$.text')
+                           FROM part p JOIN message m ON p.message_id = m.id
+                           WHERE m.session_id=?
+                             AND json_extract(p.data,'$.type')='text'
+                           ORDER BY m.time_created""",
+                        (session_id,),
+                    ).fetchall()
+                    texts.extend(str(row[0]) for row in rows if row and row[0])
+                harvested = "\n".join(texts)
+            finally:
+                con.close()
+        except Exception:
+            pass  # harvest from the live opencode.db is best-effort
     (output_dir / "live_harvest.txt").write_text(harvested, encoding="utf-8")
     observed_text = f"{stdout}\n{stderr}\n{harvested}"
     passed = returncode == 0 and LIVE_SENTINEL in observed_text
@@ -312,15 +303,7 @@ def run_live_eval(
         "returncode": returncode,
         "duration_seconds": round(time.monotonic() - started, 3),
         "model": model,
-        "command": [
-            opencode_bin,
-            "run",
-            "--agent",
-            JOB_WORKER_AGENT_NAME,
-            "-m",
-            model,
-            "...",
-        ],
+        "command": [*command[:6], "..."],  # elide the prompt from the report
         "sentinel": LIVE_SENTINEL,
         "session_ids": session_ids,
         "error": error,

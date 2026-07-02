@@ -7,6 +7,11 @@ from typing import Any
 
 import yaml
 
+from wayfinder_paths.jobs.execution.features import (
+    load_feature_rows,
+    merge_features,
+    parse_feature_specs,
+)
 from wayfinder_paths.jobs.execution.optimize import is_search_space, run_optuna_search
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.execution.simulator import (
@@ -148,12 +153,6 @@ def _load_dataset(
     dataset = _resolve_dataset(root, spec, job_data)
     # Same feature merge the live driver applies per tick (as-of, backward):
     # backtest/live parity for exogenous data holds by construction.
-    from wayfinder_paths.jobs.execution.features import (
-        load_feature_rows,
-        merge_features,
-        parse_feature_specs,
-    )
-
     specs = parse_feature_specs(spec)
     if specs:
         frames = load_feature_rows(list(feature_roots or (root,)), specs)

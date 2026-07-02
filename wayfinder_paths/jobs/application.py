@@ -262,7 +262,15 @@ def _complete_applied_application(
             deterministic_validation=deterministic_validation,
         )
 
-    backup_dir = _backup_active_workspace(store, job_id, proposal_id)
+    root = store.job_dir(job_id)
+    backup_dir = root / "applications" / proposal_id / "backup"
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    if (root / "workspace").exists():
+        shutil.copytree(root / "workspace", backup_dir / "workspace")
+    shutil.copy2(root / "job.yaml", backup_dir / "job.yaml")
+
     outcome = _ApplicationOutcome(
         final_status="applied",
         deterministic_validation=deterministic_validation,
@@ -288,7 +296,16 @@ def _complete_applied_application(
         post_apply_gate = evaluate_live_gate(job_id, store=store)
         sync_all_jobs(store=store)
     except Exception as exc:
-        outcome.rollback = _restore_active_workspace(store, job_id, backup_dir)
+        active_workspace = root / "workspace"
+        if active_workspace.exists():
+            shutil.rmtree(active_workspace)
+        if (backup_dir / "workspace").exists():
+            shutil.copytree(backup_dir / "workspace", active_workspace)
+        shutil.copy2(backup_dir / "job.yaml", root / "job.yaml")
+        outcome.rollback = {
+            "restored": True,
+            "backup_dir": str(backup_dir.relative_to(store.repo_root)),
+        }
         outcome.final_status = "failed"
         outcome.final_error = str(exc)
 
@@ -425,18 +442,6 @@ def _candidate_dir_from_proposal(
     )
 
 
-def _backup_active_workspace(store: JobStore, job_id: str, proposal_id: str) -> Path:
-    root = store.job_dir(job_id)
-    backup_dir = root / "applications" / proposal_id / "backup"
-    if backup_dir.exists():
-        shutil.rmtree(backup_dir)
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    if (root / "workspace").exists():
-        shutil.copytree(root / "workspace", backup_dir / "workspace")
-    shutil.copy2(root / "job.yaml", backup_dir / "job.yaml")
-    return backup_dir
-
-
 def _promote_candidate(store: JobStore, job_id: str, candidate_dir: Path) -> None:
     root = store.job_dir(job_id)
     candidate_workspace = candidate_dir / "workspace"
@@ -466,22 +471,6 @@ def _promote_candidate(store: JobStore, job_id: str, candidate_dir: Path) -> Non
             destination = root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
-
-
-def _restore_active_workspace(
-    store: JobStore, job_id: str, backup_dir: Path
-) -> dict[str, Any]:
-    root = store.job_dir(job_id)
-    active_workspace = root / "workspace"
-    if active_workspace.exists():
-        shutil.rmtree(active_workspace)
-    if (backup_dir / "workspace").exists():
-        shutil.copytree(backup_dir / "workspace", active_workspace)
-    shutil.copy2(backup_dir / "job.yaml", root / "job.yaml")
-    return {
-        "restored": True,
-        "backup_dir": str(backup_dir.relative_to(store.repo_root)),
-    }
 
 
 def _record_promoted_revision(

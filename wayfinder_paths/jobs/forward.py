@@ -70,23 +70,33 @@ class ForwardRecorder:
         revision: str | None = None,
         run_id: str | None = None,
     ) -> None:
-        env_job_id = os.environ.get("WAYFINDER_HIGH_LEVEL_JOB_ID")
-        env_job_dir = os.environ.get("WAYFINDER_JOB_DIR")
-        env_forward_dir = os.environ.get("WAYFINDER_FORWARD_DIR")
-        self.forward_dir = _resolve_forward_dir(
-            forward_dir=forward_dir or env_forward_dir,
-            job_dir=job_dir or env_job_dir,
-            job_id=job_id or env_job_id,
-        )
-        self.job_id = (
-            job_id
-            or env_job_id
-            or (
-                self.forward_dir.parent.parent.name
-                if self.forward_dir.name == "forward"
-                and self.forward_dir.parent.name == "results"
-                else None
+        job_id = job_id or os.environ.get("WAYFINDER_HIGH_LEVEL_JOB_ID")
+        job_dir = job_dir or os.environ.get("WAYFINDER_JOB_DIR")
+        forward_dir = forward_dir or os.environ.get("WAYFINDER_FORWARD_DIR")
+        if forward_dir:
+            self.forward_dir = Path(forward_dir)
+        elif job_dir:
+            self.forward_dir = Path(job_dir) / "results" / "forward"
+        elif job_id:
+            self.forward_dir = (
+                Path.cwd()
+                / ".wayfinder"
+                / "jobs"
+                / safe_job_id(job_id)
+                / "results"
+                / "forward"
             )
+        else:
+            raise RuntimeError(
+                "Cannot locate Wayfinder forward directory. Pass forward_dir/job_id or run "
+                "inside a compiled Wayfinder job with WAYFINDER_FORWARD_DIR set."
+            )
+        self.forward_dir.mkdir(parents=True, exist_ok=True)
+        self.job_id = job_id or (
+            self.forward_dir.parent.parent.name
+            if self.forward_dir.name == "forward"
+            and self.forward_dir.parent.name == "results"
+            else None
         )
         self.mode = mode if mode is not None else os.environ.get("WAYFINDER_JOB_MODE")
         self.revision = (
@@ -298,34 +308,6 @@ def load_forward_snapshot(
             forward_dir / Path(DEFAULT_FORWARD_FILLS).name, limit
         ),
     }
-
-
-def _resolve_forward_dir(
-    *,
-    forward_dir: str | Path | None,
-    job_dir: str | Path | None,
-    job_id: str | None,
-) -> Path:
-    if forward_dir:
-        path = Path(forward_dir)
-    elif job_dir:
-        path = Path(job_dir) / "results" / "forward"
-    elif job_id:
-        path = (
-            Path.cwd()
-            / ".wayfinder"
-            / "jobs"
-            / safe_job_id(job_id)
-            / "results"
-            / "forward"
-        )
-    else:
-        raise RuntimeError(
-            "Cannot locate Wayfinder forward directory. Pass forward_dir/job_id or run "
-            "inside a compiled Wayfinder job with WAYFINDER_FORWARD_DIR set."
-        )
-    path.mkdir(parents=True, exist_ok=True)
-    return path
 
 
 def _merge_payload(

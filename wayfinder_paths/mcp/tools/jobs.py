@@ -11,11 +11,13 @@ from wayfinder_paths.jobs.application import (
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.job import backtest_execution_job
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
+from wayfinder_paths.jobs.halt import clear_halt, request_halt
 from wayfinder_paths.jobs.models import (
     WayfinderJob,
     infer_job_kind,
     normalize_agent_mode,
 )
+from wayfinder_paths.jobs.proposals import propose_change
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
@@ -185,8 +187,6 @@ async def core_jobs(
         return ok(store.proposals(job_id))
 
     if action == "propose":
-        from wayfinder_paths.jobs.proposals import propose_change
-
         if not kind or not summary or not intent_contract:
             return err(
                 "invalid_request",
@@ -273,8 +273,6 @@ async def core_jobs(
         return ok(responses)
 
     if action == "halt":
-        from wayfinder_paths.jobs.halt import request_halt
-
         payload = request_halt(
             store, job_id, reason=reason, flatten=bool(flatten), source="mcp"
         )
@@ -282,8 +280,6 @@ async def core_jobs(
         return ok(payload)
 
     if action == "resume_from_halt":
-        from wayfinder_paths.jobs.halt import clear_halt
-
         payload = clear_halt(store, job_id)
         sync_all_jobs(store=store)
         return ok(payload)
