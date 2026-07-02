@@ -99,6 +99,7 @@ from wayfinder_paths.mcp.tools.instance_state import (
     visual_set_active_chart,
     visual_set_active_market,
 )
+from wayfinder_paths.mcp.tools.jobs import core_jobs
 from wayfinder_paths.mcp.tools.notify import notification_send
 from wayfinder_paths.mcp.tools.polymarket import (
     polymarket_cancel_order,
@@ -163,6 +164,7 @@ def build_mcp(
     mcp.tool()(core_web_fetch)
     mcp.tool()(core_run_script)
     mcp.tool()(core_run_strategy)
+    mcp.tool()(core_jobs)
     mcp.tool()(core_runner_status)
     mcp.tool()(core_runner)
 

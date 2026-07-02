@@ -93,6 +93,18 @@ Before any script imports or calls a protocol adapter, load the matching protoco
 
 For backtests or bar-driven strategy work, use the current completed row as signal data and never use the current open/in-progress provider candle. Framework `target_positions.loc[t]` are decision targets formed after completed bar `t`; do not pre-shift targets or code exits as `close[t-1]` just to avoid lookahead. `fill_model="next_bar_open"` handles entry/exit at `t+1`; `fill_model="replay"` is only for live/history reconciliation because it can use same-bar information. If adapting an already-executed exposure vector from an external script, convert it to framework decision targets first, e.g. `target = exposure.shift(-1)`.
 
+For new scheduled trading jobs, use the execution-contract path from
+`/writing-wayfinder-scripts`: one script exposes `build_strategy(params)` or
+`decide(ctx)` and emits `OrderIntent` only; backtest/grid/forward all call that
+same entrypoint. Use `CompletedBarsView` for OHLC/perps, OHLC high/low for
+stops and take profits, ledger/fill-driven state, `TradeCapacity` for
+Hyperliquid sizing, and `wayfinder job validate` before presenting the job as
+ready. `EventMarketView` covers Polymarket-style prediction markets;
+`TokenState`/CoinGecko-style data is enrichment only, not an execution venue.
+Never treat ambiguous or rate-limited exchange state as flat, never clear
+positions manually, and never use CCXT/external candles when an execution spec
+disallows them.
+
 ## Blockchain & Wayfinder Domain Knowledge
 
 Do not assume a market or token exists or does not exist. Always search or read through the relevant tools.
@@ -239,7 +251,47 @@ You may message the Shell's owner to report completed work, surface decisions, o
 
 ### Shells Jobs
 
-You may schedule jobs on the Shell's custom Wayfinder daemon. Use `core_runner` with either `interval_seconds` or a runner-owned `cron_expr`. DO NOT USE system cron, systemd timers, or custom background loops; these will not integrate into Shells properly.
+Use `core_jobs` for high-level Wayfinder Jobs: script-only jobs, script jobs with a
+monitor/intervene agent loop, and agent-only auto jobs with explicit limits. `core_jobs`
+creates the versioned job bundle and compiles to the Shell's custom Wayfinder daemon when
+`compile=true`. Use `compile=false` only for previews/evals or when the user explicitly
+does not want scheduling yet.
+
+Before coding a script for `core_jobs`, load `/writing-wayfinder-scripts`. For script+agent
+jobs, prefer its optional forward recorder helper so the script captures structured
+entry/exit, order, fill, stop-loss, limit-order, and reconciliation telemetry for the
+monitor/intervene worker. Forward telemetry is recommended, not mandatory; raw runner logs
+are fallback/debug context.
+
+Proposal changes are agent-applied, not deterministic patches. A pending proposal
+can sit indefinitely without affecting the live job. `approve_proposal` records
+approval, marks application queued, and wakes the apply worker; it does not pause
+the job. The worker pauses affected runner loops only after it claims the queued
+application, then stages, validates, promotes, recompiles, resumes, and reports.
+Rejected proposals remain in job context as negative feedback.
+
+For script+agent intervention proposals, require enough structure for later
+application correctness: include an `intent_contract` (intent, changed rules,
+unchanged rules, risk constraints, entry/exit conditions, and non-goals) and a
+`scenario_plan` with fixtures the apply worker can run against the candidate.
+Prefer strategy scripts with a reusable `decide_from_snapshot(snapshot, state)`
+path so the scheduled loop and deterministic scenario validation exercise the
+same decision logic.
+
+```text
+core_jobs(action="create", job_id="basis-update", name="Basis Update", script=".wayfinder_runs/basis_update.py", interval_seconds=600, agent_mode="off")
+core_jobs(action="create", job_id="snx-imx-rearm", name="SNX / IMX Re-arm", script=".wayfinder_runs/snx_imx_rearm.py", interval_seconds=300, agent_mode="monitor", agent_wake_seconds=3600)
+core_jobs(action="create", job_id="btc-auto-managed", name="BTC Auto Managed", agent_mode="auto", auto_limits={"enabled_venues":["hyperliquid"],"allowed_symbols":["BTC"],"max_notional_per_decision":25,"max_daily_notional":100,"max_open_positions":1,"max_open_orders":2})
+core_jobs(action="status", job_id="<job_id>")
+core_jobs(action="review_now", job_id="<job_id>", agent_mode="monitor")
+core_jobs(action="approve_proposal", job_id="<job_id>", proposal_id="<proposal_id>")
+core_jobs(action="apply_proposal", job_id="<job_id>", proposal_id="<proposal_id>")
+core_jobs(action="validate_application", job_id="<job_id>", proposal_id="<proposal_id>")
+```
+
+Use `core_runner` as the lower-level/backward-compatible daemon interface for existing
+runner jobs or direct one-off scheduling. DO NOT USE system cron, systemd timers, or custom
+background loops; these will not integrate into Shells properly.
 
 ```text
 core_runner(action="ensure_started")

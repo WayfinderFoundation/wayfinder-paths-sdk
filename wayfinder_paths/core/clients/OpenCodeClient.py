@@ -35,6 +35,48 @@ class OpenCodeClient:
         except Exception:
             return []
 
+    def create_session(
+        self,
+        *,
+        parent_id: str | None = None,
+        title: str | None = None,
+        agent: str | None = None,
+    ) -> str | None:
+        payload: dict[str, Any] = {}
+        if parent_id:
+            payload["parentID"] = parent_id
+        if title:
+            payload["title"] = title
+        if agent:
+            payload["agent"] = agent
+        try:
+            response = self.client.post(f"{self.base_url}/session", json=payload)
+            if not response.is_success:
+                return None
+            return response.json().get("id")
+        except Exception as error:
+            logger.debug(f"Failed to create OpenCode session: {error}")
+        return None
+
+    def find_child_session(
+        self, *, parent_id: str | None, title: str | None
+    ) -> str | None:
+        if not parent_id:
+            return None
+        try:
+            children = self.client.get(
+                f"{self.base_url}/session/{parent_id}/children"
+            ).json()
+        except Exception:
+            return None
+        match children:
+            case list():
+                for session in children:
+                    match session:
+                        case dict() if not title or session.get("title") == title:
+                            return session.get("id")
+        return None
+
     def find_runner_session(self) -> str | None:
         """Find the session that invoked add-job, via either surface.
 
@@ -67,6 +109,23 @@ class OpenCodeClient:
             ).is_success
         except Exception as error:
             logger.debug(f"Failed to send message to session {session_id}: {error}")
+            return False
+
+    def prompt_async(
+        self, session_id: str, text: str, *, agent: str | None = None
+    ) -> bool:
+        payload: dict[str, Any] = {"parts": [{"type": "text", "text": text}]}
+        if agent:
+            payload["agent"] = agent
+        try:
+            return self.client.post(
+                f"{self.base_url}/session/{session_id}/prompt_async",
+                json=payload,
+            ).is_success
+        except Exception as error:
+            logger.debug(
+                f"Failed to queue async prompt for session {session_id}: {error}"
+            )
             return False
 
 
