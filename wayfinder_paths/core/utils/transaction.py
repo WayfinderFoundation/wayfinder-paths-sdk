@@ -15,9 +15,11 @@ from wayfinder_paths.core.constants.base import (
     SUGGESTED_PRIORITY_FEE_MULTIPLIER,
 )
 from wayfinder_paths.core.constants.chains import (
+    GAS_SPONSORED_CHAIN_IDS,
     MIN_PRIORITY_FEE_BY_CHAIN_ID,
     PRE_EIP_1559_CHAIN_IDS,
 )
+from wayfinder_paths.core.utils.wallets import send_sponsored_transaction
 from wayfinder_paths.core.utils.web3 import (
     _is_gorlami_fork_rpc,
     get_transaction_chain_id,
@@ -302,11 +304,23 @@ async def send_transaction(
         confirmations = (
             0 if _is_gorlami_fork_chain(chain_id) else _DEFAULT_CONFIRMATIONS
         )
-    transaction = await gas_limit_transaction(transaction)
-    transaction = await nonce_transaction(transaction)
-    transaction = await gas_price_transaction(transaction)
-    signed_transaction = await sign_callback(transaction)
-    txn_hash = await broadcast_transaction(chain_id, signed_transaction)
+    # Remote wallets on gas-sponsored chains: the backend signs, broadcasts,
+    # and covers gas — nonce/gas/fee resolution and the raw broadcast are its
+    # job, not ours. Fork chains keep the local path so simulations never
+    # leave the fork.
+    sponsored_wallet = getattr(sign_callback, "wallet_address", None)
+    if (
+        sponsored_wallet
+        and chain_id in GAS_SPONSORED_CHAIN_IDS
+        and not _is_gorlami_fork_chain(chain_id)
+    ):
+        txn_hash = await send_sponsored_transaction(sponsored_wallet, transaction)
+    else:
+        transaction = await gas_limit_transaction(transaction)
+        transaction = await nonce_transaction(transaction)
+        transaction = await gas_price_transaction(transaction)
+        signed_transaction = await sign_callback(transaction)
+        txn_hash = await broadcast_transaction(chain_id, signed_transaction)
     if isinstance(txn_hash, str) and not txn_hash.startswith("0x"):
         txn_hash = f"0x{txn_hash}"
     logger.info(f"Transaction broadcasted: {txn_hash}")

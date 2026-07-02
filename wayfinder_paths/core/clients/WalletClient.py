@@ -56,6 +56,33 @@ class WalletClient(WayfinderClient):
             logger.error(f"sign_transaction failed for {wallet_address}: {exc}")
             raise
 
+    async def send_transaction(
+        self, wallet_address: str, transaction: dict
+    ) -> dict[str, Any]:
+        url = f"{get_api_base_url()}/wallets/{wallet_address}/send-evm-transaction/"
+        try:
+            resp = await self._authed_request(
+                "POST", url, json={"transaction": transaction}
+            )
+            return resp.json()
+        except Exception as exc:
+            logger.error(f"send_transaction failed for {wallet_address}: {exc}")
+            raise
+
+    async def get_transaction_status(
+        self, wallet_address: str, transaction_id: str
+    ) -> dict[str, Any]:
+        url = (
+            f"{get_api_base_url()}/wallets/{wallet_address}"
+            f"/transactions/{transaction_id}/"
+        )
+        try:
+            resp = await self._authed_request("GET", url)
+            return resp.json()
+        except Exception as exc:
+            logger.error(f"get_transaction_status failed for {wallet_address}: {exc}")
+            raise
+
     async def sign_typed_data(self, wallet_address: str, typed_data: dict) -> str:
         url = f"{get_api_base_url()}/wallets/{wallet_address}/sign-typed-data/"
         try:
