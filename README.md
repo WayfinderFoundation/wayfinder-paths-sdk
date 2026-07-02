@@ -138,6 +138,7 @@ The SDK includes built-in support for these chain IDs:
 | Avalanche | 43114 | `avalanche` |
 | Plasma   | 9745  | `plasma`   |
 | HyperEVM | 999   | `hyperevm` |
+| Robinhood | 4663 | `robinhood` |
 
 ## Strategies
 

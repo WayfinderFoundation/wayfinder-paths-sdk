@@ -10,6 +10,7 @@ CHAIN_ID_SONIC = 146
 CHAIN_ID_KATANA = 747474
 CHAIN_ID_MONAD = 143
 CHAIN_ID_MEGAETH = 4326
+CHAIN_ID_ROBINHOOD = 4663
 
 CHAIN_CODE_TO_ID = {
     "base": CHAIN_ID_BASE,
@@ -26,6 +27,7 @@ CHAIN_CODE_TO_ID = {
     "katana": CHAIN_ID_KATANA,
     "monad": CHAIN_ID_MONAD,
     "megaeth": CHAIN_ID_MEGAETH,
+    "robinhood": CHAIN_ID_ROBINHOOD,
 }
 
 CHAIN_ID_TO_CODE: dict[int, str] = {
@@ -44,7 +46,22 @@ SUPPORTED_CHAINS = [
     CHAIN_ID_KATANA,
     CHAIN_ID_MONAD,
     CHAIN_ID_MEGAETH,
+    CHAIN_ID_ROBINHOOD,
 ]
+
+# Chains where remote-wallet transactions are gas-sponsored: the backend
+# broadcasts them and gas is covered, so local nonce/gas handling and the
+# raw broadcast are skipped (see send_transaction).
+GAS_SPONSORED_CHAIN_IDS: set[int] = {
+    CHAIN_ID_ETHEREUM,
+    CHAIN_ID_BASE,
+    CHAIN_ID_ARBITRUM,
+    CHAIN_ID_BSC,
+    CHAIN_ID_POLYGON,
+    CHAIN_ID_MONAD,
+    CHAIN_ID_MEGAETH,
+    CHAIN_ID_PLASMA,
+}
 
 POA_MIDDLEWARE_CHAIN_IDS: set[int] = {
     CHAIN_ID_BSC,
@@ -74,6 +91,7 @@ CHAIN_EXPLORER_URLS: dict[int, str] = {
     CHAIN_ID_KATANA: "https://katanascan.com/",
     CHAIN_ID_MONAD: "https://monadscan.com/",
     CHAIN_ID_MEGAETH: "https://mega.etherscan.io/",
+    CHAIN_ID_ROBINHOOD: "https://robinhoodchain.blockscout.com/",
 }
 
 ETHERSCAN_V2_API_URL = "https://api.etherscan.io/v2/api"

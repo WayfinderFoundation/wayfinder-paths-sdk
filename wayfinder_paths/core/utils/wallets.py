@@ -110,6 +110,10 @@ def get_local_sign_callback(private_key: str):
         signed = account.sign_transaction(transaction)
         return signed.raw_transaction
 
+    # Sign-callback contract: `wallet_address` is set on every callback.
+    # None means local key — send_transaction() never routes it through the
+    # sponsored backend broadcast.
+    sign_callback.wallet_address = None
     return sign_callback
 
 
@@ -179,6 +183,9 @@ def get_remote_sign_callback(wallet_address: str):
         )
         return bytes.fromhex(hex_str.removeprefix("0x"))
 
+    # Sign-callback contract: send_transaction() reads this to route
+    # gas-sponsored chains through the backend broadcast.
+    sign_callback.wallet_address = wallet_address
     return sign_callback
 
 
