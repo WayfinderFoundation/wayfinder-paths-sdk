@@ -11,6 +11,7 @@ from wayfinder_paths.core.constants.base import (
 )
 from wayfinder_paths.core.utils.transaction import (
     PRE_EIP_1559_CHAIN_IDS,
+    SponsorshipUnavailableError,
     TransactionRevertedError,
     _get_transaction_from_address,
     gas_limit_transaction,
@@ -488,3 +489,49 @@ class TestSendTransaction:
             wait_for_receipt=True,
         )
         assert txn_hash == "0xabc"
+
+    @patch("wayfinder_paths.core.utils.transaction.wait_for_transaction_receipt")
+    @patch("wayfinder_paths.core.utils.transaction.broadcast_transaction")
+    @patch("wayfinder_paths.core.utils.transaction.gas_price_transaction")
+    @patch("wayfinder_paths.core.utils.transaction.nonce_transaction")
+    @patch("wayfinder_paths.core.utils.transaction.gas_limit_transaction")
+    @patch("wayfinder_paths.core.utils.transaction.send_sponsored_transaction")
+    @patch("wayfinder_paths.core.utils.transaction.sponsorship_enabled")
+    async def test_falls_back_to_local_broadcast_when_sponsorship_unavailable(
+        self,
+        mock_sponsorship_enabled,
+        mock_send_sponsored,
+        mock_gas_limit,
+        mock_nonce,
+        mock_gas_price,
+        mock_broadcast,
+        mock_wait_receipt,
+    ):
+        mock_sponsorship_enabled.return_value = True
+        mock_send_sponsored.side_effect = SponsorshipUnavailableError(
+            "Sponsored send rejected with 402"
+        )
+        tx = {"from": RANDOM_USER_0, "chainId": 1, "gas": 50_000}
+        mock_gas_limit.return_value = tx
+        mock_nonce.return_value = {**tx, "nonce": 1}
+        mock_gas_price.return_value = {
+            **tx,
+            "nonce": 1,
+            "maxFeePerGas": 1,
+            "maxPriorityFeePerGas": 1,
+        }
+        mock_broadcast.return_value = "0xabc"
+        mock_wait_receipt.return_value = {"status": 1, "gasUsed": 40_000}
+
+        async def sign_callback(_tx: dict) -> bytes:
+            return b"\x00"
+
+        sign_callback.wallet_address = RANDOM_USER_0
+        txn_hash = await send_transaction(
+            {"from": RANDOM_USER_0, "chainId": 1},
+            sign_callback,
+            wait_for_receipt=True,
+        )
+        assert txn_hash == "0xabc"
+        mock_send_sponsored.assert_awaited_once()
+        mock_broadcast.assert_awaited_once()
