@@ -49,6 +49,20 @@ SUPPORTED_CHAINS = [
     CHAIN_ID_ROBINHOOD,
 ]
 
+# Chains where remote-wallet transactions are gas-sponsored: the backend
+# broadcasts them and gas is covered, so local nonce/gas handling and the
+# raw broadcast are skipped (see send_transaction).
+GAS_SPONSORED_CHAIN_IDS: set[int] = {
+    CHAIN_ID_ETHEREUM,
+    CHAIN_ID_BASE,
+    CHAIN_ID_ARBITRUM,
+    CHAIN_ID_BSC,
+    CHAIN_ID_POLYGON,
+    CHAIN_ID_MONAD,
+    CHAIN_ID_MEGAETH,
+    CHAIN_ID_PLASMA,
+}
+
 POA_MIDDLEWARE_CHAIN_IDS: set[int] = {
     CHAIN_ID_BSC,
     CHAIN_ID_POLYGON,
