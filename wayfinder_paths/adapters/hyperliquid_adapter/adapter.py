@@ -1609,7 +1609,9 @@ class HyperliquidAdapter(BaseAdapter):
                 {"type": "clearinghouseState", "user": address}
             )
         except Exception as exc:
-            self.logger.error(f"Failed to fetch clearinghouseState for {address}: {exc}")
+            self.logger.error(
+                f"Failed to fetch clearinghouseState for {address}: {exc}"
+            )
             return 0.0
         for summary_key in ("marginSummary", "crossMarginSummary"):
             summary = state.get(summary_key) or {}

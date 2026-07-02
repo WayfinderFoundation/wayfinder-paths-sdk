@@ -369,7 +369,9 @@ class TestHyperliquidAdapter:
         set_mock.assert_awaited_once_with(address, "unifiedAccount")
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("state", ["unifiedAccount", "portfolioMargin", "dexAbstraction"])
+    @pytest.mark.parametrize(
+        "state", ["unifiedAccount", "portfolioMargin", "dexAbstraction"]
+    )
     async def test_unify_if_split_account_leaves_non_default_modes_alone(
         self, adapter, mock_info, _patch_adapter, state
     ):
