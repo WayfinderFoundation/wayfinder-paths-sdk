@@ -17,16 +17,7 @@ class ImxMomentumStrategy(ShortMomentumStrategy):
         "floor_sma": 50,
         "floor_gap_pct": 0.01,
     }
-
-    def min_bars(self) -> int:
-        return (
-            max(
-                self.params["low_period"],
-                self.params["sma_period"],
-                self.params["floor_sma"],
-            )
-            + 2
-        )
+    extra_period_keys = ("floor_sma",)
 
     def compute_indicators(
         self, highs: list[float], lows: list[float], closes: list[float]

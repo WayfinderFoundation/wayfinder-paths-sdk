@@ -60,18 +60,19 @@ def target_weights_to_intents(
     current: dict[str, float] = {}
     closes: dict[str, float] = {}
     for symbol, position in ctx.ledger.positions.items():
-        try:
-            close = float(ctx.view.latest(symbol)["close"])
-        except ValueError:
-            close = float(position.avg_price)  # same fallback as equity mark
+        frame = ctx.view.symbol_frame(symbol)
+        # avg_price fallback when the view has no bars — same as the equity mark
+        close = (
+            float(frame["close"].iloc[-1]) if len(frame) else float(position.avg_price)
+        )
         closes[symbol] = close
         direction = 1 if position.side == "long" else -1
         current[symbol] = direction * position.size * close / equity
 
     intents: list[dict[str, Any]] = []
     for symbol in sorted(set(targets) | set(current)):
-        target = targets.get(symbol, 0.0)
-        held = current.get(symbol, 0.0)
+        target = targets[symbol] if symbol in targets else 0.0
+        held = current[symbol] if symbol in current else 0.0
         delta = target - held
         if abs(delta) < rebalance_threshold:
             continue
@@ -85,8 +86,8 @@ def target_weights_to_intents(
             held = 0.0
         elif position is not None and abs(target) < abs(held):
             # Same-sign shrink: close (|held| - |target|) worth of units.
-            close = closes.get(symbol) or float(position.avg_price)
-            size = (abs(held) - abs(target)) * equity / close
+            # symbol is in closes whenever a position exists (built above).
+            size = (abs(held) - abs(target)) * equity / closes[symbol]
             intents.append(_close(symbol, position, venue, size=size))
             continue
 
@@ -105,9 +106,7 @@ def target_weights_to_intents(
     return intents
 
 
-def _close(
-    symbol: str, position: Any, venue: str, *, size: float
-) -> dict[str, Any]:
+def _close(symbol: str, position: Any, venue: str, *, size: float) -> dict[str, Any]:
     return {
         "action": "CLOSE",
         "venue": venue,

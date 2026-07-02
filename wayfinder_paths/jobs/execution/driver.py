@@ -22,6 +22,7 @@ from wayfinder_paths.jobs.execution.features import (
     merge_features,
     parse_feature_specs,
 )
+from wayfinder_paths.jobs.execution.job import _load_job_yaml
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     ExecutionSpec,
@@ -30,6 +31,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     bar_interval_seconds,
 )
 from wayfinder_paths.jobs.execution.risk import check_risk_halt
+from wayfinder_paths.jobs.execution.simulator import _load_strategy
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.execution.venues import VenueAdapter, build_adapter
 from wayfinder_paths.jobs.forward import ForwardRecorder
@@ -48,7 +50,7 @@ def run_scheduled_tick(job_dir: str | Path | None = None) -> dict[str, Any]:
     loaded from disk here and persisted before exit.
     """
     root = Path(job_dir or os.environ["WAYFINDER_JOB_DIR"])
-    mode = str(os.environ.get("WAYFINDER_JOB_MODE") or "paper")
+    mode = os.environ.get("WAYFINDER_JOB_MODE") or "paper"
     store = None
     job = None
     try:
@@ -128,8 +130,6 @@ async def tick_job(
         entrypoint = store.resolve_script_entrypoint(job.id, job_data)
     if entrypoint is None or not entrypoint.exists():
         raise FileNotFoundError(f"execution script not found for job {job.id}")
-    from wayfinder_paths.jobs.execution.simulator import _load_strategy
-
     strategy = _load_strategy(entrypoint, params)
 
     revision = str(
@@ -318,7 +318,7 @@ async def tick_job(
             job.id,
             {
                 "type": "reconcile_mismatch",
-                "reasons": [note.get("reason") for note in reconcile_notes],
+                "reasons": [note["reason"] for note in reconcile_notes],
                 "mode": mode,
             },
         )
@@ -445,7 +445,7 @@ def _record(
         intents=intents,
         fills=fills,
         guard_events=tick.guard_events,
-        params_hash=_params_hash(params),
+        params_hash=_hash_payload(dict(params)),
         ledger=tick.ledger_snapshot,
         engine_state_pre=dict(engine_state_pre or {}),
     )
@@ -460,35 +460,23 @@ def _record(
         recorder.record_order(intent)
     for row in fills:
         recorder.record_fill(row)
+    # trade_rows are FillEvent.to_dict() + realized_pnl_delta: fixed shape.
     for row in tick.trade_rows:
-        if row.get("reduce_only"):
+        if row["reduce_only"]:
             recorder.record_trade_close(
-                symbol=row.get("symbol"),
-                side=row.get("side"),
-                size=row.get("filled_size"),
-                price=row.get("avg_price"),
-                net_pnl=row.get("realized_pnl_delta"),
-                closed_at=row.get("timestamp"),
+                symbol=row["symbol"],
+                side=row["side"],
+                size=row["filled_size"],
+                price=row["avg_price"],
+                net_pnl=row["realized_pnl_delta"],
+                closed_at=row["timestamp"],
             )
 
 
 def view_hash(view: CompletedBarsView) -> str:
-    payload = json.dumps(view.to_rows(), sort_keys=True, default=str)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return _hash_payload(view.to_rows())
 
 
-def _params_hash(params: Mapping[str, Any]) -> str:
-    payload = json.dumps(dict(params), sort_keys=True, default=str)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
-
-
-def _load_job_yaml(root: Path) -> dict[str, Any]:
-    import yaml
-
-    path = root / "job.yaml"
-    if not path.exists():
-        raise FileNotFoundError(f"job.yaml not found: {path}")
-    loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    if not isinstance(loaded, dict):
-        raise ValueError(f"invalid job.yaml: {path}")
-    return loaded
+def _hash_payload(payload: Any) -> str:
+    encoded = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]

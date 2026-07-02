@@ -9,7 +9,8 @@ from wayfinder_paths.jobs.application import (
     validate_application_candidate,
 )
 from wayfinder_paths.jobs.compiler import JobCompiler
-from wayfinder_paths.jobs.execution.job import backtest_execution_job, validate_job
+from wayfinder_paths.jobs.execution.job import backtest_execution_job
+from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.models import (
     WayfinderJob,
     infer_job_kind,
@@ -167,7 +168,7 @@ async def core_jobs(
         return ok(run_job_worker(job_id, mode=mode, apply_proposal_id=proposal_id))
 
     if action == "validate_job":
-        return ok(validate_job(job_id, strict=strict, store=store))
+        return ok(validate_execution_job(job_id, strict=strict, store=store))
 
     if action == "backtest_job":
         return ok(

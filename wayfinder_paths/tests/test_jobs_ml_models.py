@@ -39,9 +39,7 @@ def _planted_frame(rows: int = 400) -> pd.DataFrame:
     x1 = rng.normal(0, 1, rows)
     x2 = rng.normal(0, 2, rows)
     noise = rng.normal(0, 0.01, rows)
-    return pd.DataFrame(
-        {"x1": x1, "x2": x2, "y": 3.0 * x1 - 1.5 * x2 + 0.25 + noise}
-    )
+    return pd.DataFrame({"x1": x1, "x2": x2, "y": 3.0 * x1 - 1.5 * x2 + 0.25 + noise})
 
 
 def test_fit_linear_recovers_planted_coefficients() -> None:
@@ -58,9 +56,7 @@ def test_standardized_fit_predicts_the_same_values() -> None:
     plain = fit_linear_from_frame(frame, ["x1", "x2"], "y", standardize=False)
     standardized = fit_linear_from_frame(frame, ["x1", "x2"], "y", standardize=True)
     X = frame[["x1", "x2"]].head(20)
-    np.testing.assert_allclose(
-        plain.predict(X), standardized.predict(X), rtol=1e-8
-    )
+    np.testing.assert_allclose(plain.predict(X), standardized.predict(X), rtol=1e-8)
 
 
 def test_json_round_trip(tmp_path: Path) -> None:
@@ -69,7 +65,7 @@ def test_json_round_trip(tmp_path: Path) -> None:
         frame, ["x1", "x2"], "y", out_path=tmp_path / "m.json"
     )
     restored = load_model(tmp_path / "m.json")
-    assert isinstance(restored, LinearModel)
+    assert type(restored) is LinearModel
     assert restored.features == ["x1", "x2"]
     X = frame[["x1", "x2"]].head(10)
     np.testing.assert_allclose(model.predict(X), restored.predict(X))
@@ -80,9 +76,7 @@ def test_logistic_fit_bounds_and_separation() -> None:
     frame["label"] = (frame["y"] > frame["y"].median()).astype(float)
     # The label is near-separable from (x1, x2); l2 keeps IRLS coefficients
     # finite so probabilities stay strictly inside (0, 1).
-    model = fit_linear_from_frame(
-        frame, ["x1", "x2"], "label", kind="logistic", l2=1.0
-    )
+    model = fit_linear_from_frame(frame, ["x1", "x2"], "label", kind="logistic", l2=1.0)
     probs = model.predict(frame[["x1", "x2"]])
     assert np.all((probs > 0) & (probs < 1))
     # Predictions must actually separate the classes.

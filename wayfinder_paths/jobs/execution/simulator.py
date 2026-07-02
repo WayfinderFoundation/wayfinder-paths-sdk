@@ -4,6 +4,7 @@ import asyncio
 import itertools
 import json
 import uuid
+from collections import defaultdict
 from collections.abc import Callable, Mapping
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -15,6 +16,7 @@ import pandas as pd
 from wayfinder_paths.jobs.execution.engine import (
     EngineState,
     LiquidationConfig,
+    _bars_at_timestamp,
     run_tick,
 )
 from wayfinder_paths.jobs.execution.primitives import (
@@ -248,7 +250,9 @@ def simulate_execution(
             if tick.skipped:
                 continue
             trades.extend(tick.trade_rows)
-            positions.append({"timestamp": timestamp.isoformat(), **tick.ledger_snapshot})
+            positions.append(
+                {"timestamp": timestamp.isoformat(), **tick.ledger_snapshot}
+            )
             mark_to_market = _mark_to_market(
                 state.ledger,
                 {symbol: bar.close for symbol, bar in bars_by_symbol.items()},
@@ -264,7 +268,16 @@ def simulate_execution(
                 }
             )
 
-    _run_sync(_run_simulation())
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError(
+            "simulate_execution cannot be called from a running event loop; "
+            "call it from sync code or a worker thread"
+        )
+    asyncio.run(_run_simulation())
 
     validation = validate_execution_trace(trace.to_dict(), spec)
     stats = _stats(
@@ -331,6 +344,23 @@ GRID_RANK_KEYS = frozenset(
 )
 
 
+def check_rank_key(rank_by: str) -> None:
+    if rank_by not in GRID_RANK_KEYS:
+        raise ValueError(
+            f"rank_by must be one of {sorted(GRID_RANK_KEYS)}, got {rank_by!r}"
+        )
+
+
+def rank_and_partition(
+    run_rows: list[dict[str, Any]], *, rank_by: str, top_n: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(ranked top-N valid rows, invalid rows) — the shared grid/optuna tail."""
+    valid = [row for row in run_rows if row["validation"]["execution_valid"]]
+    invalid = [row for row in run_rows if not row["validation"]["execution_valid"]]
+    ranked = sorted(valid, key=lambda row: float(row[rank_by] or 0), reverse=True)
+    return ranked[:top_n], invalid
+
+
 def run_execution_grid(
     script_entrypoint: str | Path,
     dataset: PreparedExecutionDataset,
@@ -342,10 +372,7 @@ def run_execution_grid(
     rank_by: str = "net_return",
     top_n_artifacts: int = 10,
 ) -> ExecutionGridResult:
-    if rank_by not in GRID_RANK_KEYS:
-        raise ValueError(
-            f"rank_by must be one of {sorted(GRID_RANK_KEYS)}, got {rank_by!r}"
-        )
+    check_rank_key(rank_by)
     params_list = _expand_grid(param_grid)
     grid_id = uuid.uuid4().hex[:12]
     if parallel == "serial" or workers <= 1:
@@ -380,16 +407,14 @@ def run_execution_grid(
         raise ValueError("parallel must be serial, thread, or process")
 
     run_rows = [_grid_row(result, rank_by=rank_by) for result in results]
-    valid = [row for row in run_rows if row["validation"]["execution_valid"] is True]
-    invalid = [
-        row for row in run_rows if row["validation"]["execution_valid"] is not True
-    ]
-    ranked = sorted(valid, key=lambda row: float(row[rank_by] or 0), reverse=True)
+    ranked, invalid = rank_and_partition(
+        run_rows, rank_by=rank_by, top_n=top_n_artifacts
+    )
     return ExecutionGridResult(
         grid_id=grid_id,
         rank_by=rank_by,
         runs=run_rows,
-        ranked=ranked[:top_n_artifacts],
+        ranked=ranked,
         invalid=invalid,
     )
 
@@ -408,8 +433,7 @@ def write_backtest_artifacts(
             summary = root / "summary.json"
             runs = root / "runs.jsonl"
             summary.write_text(
-                json.dumps({**result.to_dict(), **stamp}, indent=2, default=str)
-                + "\n",
+                json.dumps({**result.to_dict(), **stamp}, indent=2, default=str) + "\n",
                 encoding="utf-8",
             )
             with runs.open("w", encoding="utf-8") as handle:
@@ -420,8 +444,7 @@ def write_backtest_artifacts(
             latest = root / "latest.json"
             visualization = root / "visualization.json"
             latest.write_text(
-                json.dumps({**result.to_dict(), **stamp}, indent=2, default=str)
-                + "\n",
+                json.dumps({**result.to_dict(), **stamp}, indent=2, default=str) + "\n",
                 encoding="utf-8",
             )
             visualization.write_text(
@@ -436,7 +459,7 @@ def _process_run(
 ) -> ExecutionBacktestResult:
     script_entrypoint, dataset_payload, spec, params = payload
     dataset = PreparedExecutionDataset.from_rows(
-        dataset_payload["bars"], dataset_payload.get("metadata")
+        dataset_payload["bars"], dataset_payload["metadata"]
     )
     return simulate_execution(script_entrypoint, dataset, spec, params)
 
@@ -458,35 +481,17 @@ def _load_strategy(
     )
 
 
-def _run_sync(coro: Any) -> Any:
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    coro.close()
-    raise RuntimeError(
-        "simulate_execution cannot be called from a running event loop; "
-        "call it from sync code or a worker thread"
-    )
-
-
-def _bars_at_timestamp(view: CompletedBarsView, timestamp: Any) -> dict[str, Any]:
-    bars: dict[str, Any] = {}
-    for symbol in view.symbols:
-        try:
-            bars[symbol] = view.row_at(timestamp, symbol=symbol)
-        except ValueError:
-            continue
-    return bars
-
-
 def _mark_to_market(
     ledger: PositionLedger, close_by_symbol: Mapping[str, float]
 ) -> float:
     total = 0.0
     for position in ledger.positions.values():
         direction = 1 if position.side == "long" else -1
-        close = float(close_by_symbol.get(position.symbol, position.avg_price))
+        close = (
+            close_by_symbol[position.symbol]
+            if position.symbol in close_by_symbol
+            else position.avg_price
+        )
         total += direction * (close - position.avg_price) * position.size
     return total
 
@@ -510,32 +515,28 @@ def _stats(
     exit_pnls = [
         float(trade["realized_pnl_delta"])
         for trade in trades
-        if trade.get("realized_pnl_delta") is not None
-        and (trade.get("reduce_only") or trade.get("realized_pnl_delta"))
+        if trade["reduce_only"] or trade["realized_pnl_delta"]
     ]
     trade_stats = _per_trade_stats(exit_pnls)
     durations = _trade_durations(trades)
     total_turnover = sum(
-        abs(float(trade.get("filled_size") or 0.0))
-        * float(trade.get("avg_price") or 0.0)
+        abs(float(trade["filled_size"])) * float(trade["avg_price"] or 0.0)
         for trade in trades
     )
     liquidations = [
-        event
-        for event in guard_events or []
-        if event.get("kind") == "liquidation"
+        event for event in guard_events or [] if event["kind"] == "liquidation"
     ]
     common = {
         "buy_hold_return": _buy_hold_return(price_series),
-        "total_fees": sum(float(trade.get("fee") or 0.0) for trade in trades),
+        "total_fees": sum(float(trade["fee"]) for trade in trades),
         "total_funding": sum(
-            float(event.get("amount") or 0.0)
+            float(event["amount"])
             for event in guard_events or []
-            if event.get("kind") == "funding_applied"
+            if event["kind"] == "funding_applied"
         ),
         "total_turnover_usd": total_turnover,
         "liquidation_count": len(liquidations),
-        "liquidated_at": liquidations[0].get("timestamp") if liquidations else None,
+        "liquidated_at": liquidations[0]["timestamp"] if liquidations else None,
         **trade_stats,
         **durations,
     }
@@ -570,16 +571,12 @@ def _stats(
     wins = [pnl for pnl in exit_pnls if pnl > 0]
     gross_profit = sum(wins)
     gross_loss = abs(sum(pnl for pnl in exit_pnls if pnl < 0))
-    exposed = (
-        sum(1 for row in positions if row.get("positions")) if positions else 0
-    )
+    exposed = sum(1 for row in positions if row["positions"]) if positions else 0
     if bar_seconds is None:
         bar_seconds = _inferred_bar_seconds(equity_curve)
     periods_per_year = SECONDS_PER_YEAR / bar_seconds if bar_seconds else None
     returns = _equity_returns(equity_curve)
-    max_drawdown_pct = min(
-        (point["drawdown_pct"] for point in drawdowns), default=0.0
-    )
+    max_drawdown_pct = min((point["drawdown_pct"] for point in drawdowns), default=0.0)
     cagr = _cagr(start, end, len(returns), periods_per_year)
     dd_durations = _drawdown_durations(drawdowns)
     negative_dds = [
@@ -625,9 +622,7 @@ def _equity_returns(equity_curve: list[dict[str, Any]]) -> list[float]:
     ]
 
 
-def _sortino(
-    returns: list[float], periods_per_year: float | None
-) -> float | None:
+def _sortino(returns: list[float], periods_per_year: float | None) -> float | None:
     if len(returns) < 2 or not periods_per_year:
         return None
     mean = sum(returns) / len(returns)
@@ -695,9 +690,7 @@ def _per_trade_stats(exit_pnls: list[float]) -> dict[str, Any]:
         avg_loss = abs(sum(losses) / len(losses))
         win_loss_ratio = avg_win / avg_loss if avg_loss > 0 else 0.0
         kelly = (
-            win_rate - ((1 - win_rate) / win_loss_ratio)
-            if win_loss_ratio > 0
-            else 0.0
+            win_rate - ((1 - win_rate) / win_loss_ratio) if win_loss_ratio > 0 else 0.0
         )
     else:
         kelly = 0.0
@@ -714,27 +707,26 @@ def _trade_durations(trades: list[dict[str, Any]]) -> dict[str, Any]:
     emits (close_ts − entry_ts) against the entry that opened the current
     position; the entry timestamp clears once the position is fully closed."""
     entry_ts: dict[str, pd.Timestamp] = {}
-    remaining: dict[str, float] = {}
+    remaining: defaultdict[str, float] = defaultdict(float)
     spans: list[float] = []
     for trade in trades:
-        symbol = str(trade.get("symbol") or "")
-        raw_ts = trade.get("timestamp")
+        symbol = trade["symbol"]
+        raw_ts = trade["timestamp"]
         if not symbol or raw_ts is None:
             continue
         ts = pd.Timestamp(raw_ts)
-        size = abs(float(trade.get("filled_size") or 0.0))
-        if trade.get("reduce_only"):
-            opened = entry_ts.get(symbol)
-            if opened is not None:
-                spans.append(float((ts - opened).total_seconds()))
-            remaining[symbol] = remaining.get(symbol, 0.0) - size
-            if remaining.get(symbol, 0.0) <= 1e-12:
+        size = abs(float(trade["filled_size"]))
+        if trade["reduce_only"]:
+            if symbol in entry_ts:
+                spans.append(float((ts - entry_ts[symbol]).total_seconds()))
+            remaining[symbol] -= size
+            if remaining[symbol] <= 1e-12:
                 entry_ts.pop(symbol, None)
                 remaining.pop(symbol, None)
         else:
-            if remaining.get(symbol, 0.0) <= 0.0:
+            if remaining[symbol] <= 0.0:
                 entry_ts[symbol] = ts
-            remaining[symbol] = remaining.get(symbol, 0.0) + size
+            remaining[symbol] += size
     if not spans:
         return {"max_trade_duration_s": None, "avg_trade_duration_s": None}
     return {
@@ -773,11 +765,7 @@ def _buy_hold_return(
         return None
     asset_returns: list[float] = []
     for points in price_series.values():
-        closes = [
-            float(point["close"])
-            for point in points
-            if point.get("close") is not None
-        ]
+        closes = [float(point["close"]) for point in points]
         if len(closes) >= 2 and closes[0]:
             asset_returns.append(closes[-1] / closes[0] - 1.0)
     if not asset_returns:
@@ -791,14 +779,13 @@ def _avg_turnover(
     """Mean per-bar traded notional over equity (0 for tradeless bars)."""
     if not equity_curve:
         return 0.0
-    notional_by_ts: dict[str, float] = {}
+    notional_by_ts: defaultdict[str, float] = defaultdict(float)
     for trade in trades:
-        ts = str(trade.get("timestamp"))
-        notional_by_ts[ts] = notional_by_ts.get(ts, 0.0) + abs(
-            float(trade.get("filled_size") or 0.0)
-        ) * float(trade.get("avg_price") or 0.0)
+        notional_by_ts[str(trade["timestamp"])] += abs(
+            float(trade["filled_size"])
+        ) * float(trade["avg_price"] or 0.0)
     ratios = [
-        (notional_by_ts.get(str(row["timestamp"]), 0.0) / float(row["equity"]))
+        (notional_by_ts[str(row["timestamp"])] / float(row["equity"]))
         if float(row["equity"])
         else 0.0
         for row in equity_curve
@@ -810,8 +797,8 @@ def _peak_notional(positions: list[dict[str, Any]] | None) -> float:
     peak = 0.0
     for row in positions or []:
         total = sum(
-            float(record.get("size") or 0.0) * float(record.get("avg_price") or 0.0)
-            for record in (row.get("positions") or {}).values()
+            float(record["size"]) * float(record["avg_price"])
+            for record in row["positions"].values()
         )
         peak = max(peak, total)
     return peak
@@ -820,13 +807,9 @@ def _peak_notional(positions: list[dict[str, Any]] | None) -> float:
 def _sharpe(
     equity_curve: list[dict[str, Any]], bar_seconds: int | None
 ) -> float | None:
-    values = [float(row["equity"]) for row in equity_curve]
-    if len(values) < 3:
+    if len(equity_curve) < 3:
         return None
-    returns = [
-        (curr / prev - 1.0) if prev else 0.0
-        for prev, curr in zip(values, values[1:], strict=False)
-    ]
+    returns = _equity_returns(equity_curve)
     mean = sum(returns) / len(returns)
     variance = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1)
     std = variance**0.5
@@ -841,9 +824,7 @@ def _sharpe(
 
 
 def _inferred_bar_seconds(equity_curve: list[dict[str, Any]]) -> int | None:
-    timestamps = pd.to_datetime(
-        [row["timestamp"] for row in equity_curve], utc=True
-    )
+    timestamps = pd.to_datetime([row["timestamp"] for row in equity_curve], utc=True)
     if len(timestamps) < 2:
         return None
     deltas = timestamps.to_series().diff().dropna().dt.total_seconds()
@@ -857,13 +838,13 @@ def _drawdown_curve(equity_curve: list[dict[str, Any]]) -> list[dict[str, Any]]:
     peak: float | None = None
     points: list[dict[str, Any]] = []
     for row in equity_curve:
-        equity = float(row.get("equity") or row.get("value") or 0)
+        equity = float(row["equity"])
         peak = equity if peak is None else max(peak, equity)
         drawdown = equity - peak
         drawdown_pct = drawdown / peak if peak else 0.0
         points.append(
             {
-                "timestamp": row.get("timestamp"),
+                "timestamp": row["timestamp"],
                 "value": drawdown_pct,
                 "drawdown": drawdown,
                 "drawdown_pct": drawdown_pct,
@@ -916,5 +897,5 @@ def _grid_row(result: ExecutionBacktestResult, *, rank_by: str) -> dict[str, Any
         "params": result.params,
         "stats": result.stats,
         "validation": result.validation,
-        rank_by: result.stats.get(rank_by),
+        rank_by: result.stats[rank_by],
     }

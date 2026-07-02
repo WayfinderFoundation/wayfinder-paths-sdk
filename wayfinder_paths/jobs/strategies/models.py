@@ -52,12 +52,13 @@ class LinearModel:
     def predict(self, X: Any) -> np.ndarray:
         """Accepts an ndarray of shape (n, len(features)) or a DataFrame
         (columns selected by self.features). Logistic returns probabilities."""
-        if isinstance(X, pd.DataFrame):
-            matrix = X[self.features].to_numpy(dtype=float)
-        else:
-            matrix = np.asarray(X, dtype=float)
-            if matrix.ndim == 1:
-                matrix = matrix.reshape(1, -1)
+        match X:
+            case pd.DataFrame():
+                matrix = X[self.features].to_numpy(dtype=float)
+            case _:
+                matrix = np.asarray(X, dtype=float)
+                if matrix.ndim == 1:
+                    matrix = matrix.reshape(1, -1)
         if matrix.shape[1] != len(self.features):
             raise ValueError(
                 f"expected {len(self.features)} features "
@@ -88,7 +89,7 @@ class LinearModel:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> LinearModel:
-        kind = str(payload.get("kind") or "linear")
+        kind = str(payload["kind"])
         if kind not in {"linear", "logistic"}:
             raise ValueError(f"unsupported LinearModel kind: {kind!r}")
         mean = payload.get("mean")
@@ -116,9 +117,7 @@ class LinearModel:
         return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
-def load_model(
-    path_or_relative: str | Path, *, module_file: str | None = None
-) -> Any:
+def load_model(path_or_relative: str | Path, *, module_file: str | None = None) -> Any:
     """Load a model artifact for use inside decide().
 
     Relative paths resolve against the directory of `module_file` — pass
@@ -136,7 +135,7 @@ def load_model(
         return LinearModel.load(path)
     if suffix in {".joblib", ".pkl"}:
         try:
-            import joblib
+            import joblib  # lazy: optional ml dep (poetry install --with ml)
         except ImportError as exc:  # pragma: no cover - exercised via sys.modules
             raise RuntimeError(
                 f"joblib is required to load {suffix!r} model artifacts; "
@@ -192,9 +191,7 @@ def fit_linear_from_frame(
     if kind == "linear":
         penalty = l2 * np.eye(n_params)
         penalty[-1, -1] = 0.0  # never penalize the intercept
-        theta = np.linalg.solve(
-            design.T @ design + penalty, design.T @ y
-        )
+        theta = np.linalg.solve(design.T @ design + penalty, design.T @ y)
     else:
         theta = np.zeros(n_params)
         for _ in range(max_iter):
@@ -204,9 +201,7 @@ def fit_linear_from_frame(
             gradient = design.T @ (p - y) + l2 * np.r_[theta[:-1], 0.0]
             hessian = (design * W[:, None]).T @ design + l2 * np.eye(n_params)
             hessian[-1, -1] -= l2
-            step = np.linalg.solve(
-                hessian + 1e-9 * np.eye(n_params), gradient
-            )
+            step = np.linalg.solve(hessian + 1e-9 * np.eye(n_params), gradient)
             theta = theta - step
             if float(np.max(np.abs(step))) < 1e-10:
                 break

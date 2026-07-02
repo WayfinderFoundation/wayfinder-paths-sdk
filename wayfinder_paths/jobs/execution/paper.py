@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
 
 from wayfinder_paths.jobs.execution.primitives import (
     FillEvent,
@@ -38,11 +37,9 @@ class PaperBroker:
         timestamp: str,
         price: float | None = None,
     ) -> FillEvent:
-        return self._broker.execute(
-            intent, price=float(price or 0.0), timestamp=timestamp
-        )
+        return self._broker.execute(intent, price=price or 0.0, timestamp=timestamp)
 
-    async def fetch_state(self, symbols: Sequence[str] | Any = ()) -> VenueState:
+    async def fetch_state(self, symbols: Sequence[str] = ()) -> VenueState:
         return VenueState(source="paper")
 
     async def get_capacity(self, symbol: str, side: str) -> TradeCapacity:

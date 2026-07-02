@@ -14,6 +14,7 @@ from wayfinder_paths.core.clients.HyperliquidDataClient import (
     CandleEntry,
     HyperliquidDataClient,
 )
+from wayfinder_paths.jobs.execution.paper import PaperBroker
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     FillEvent,
@@ -232,8 +233,7 @@ class HyperliquidMarketFeed:
         lookback_bars: int,
         as_of: datetime | None = None,
     ) -> CompletedBarsView:
-        bar_seconds = bar_interval_seconds(interval) or 3600
-        lookback_hours = max(1, math.ceil(lookback_bars * bar_seconds / 3600))
+        lookback_hours = _lookback_hours(lookback_bars, interval)
         rows: list[dict[str, Any]] = []
         for symbol in symbols:
             view = await self._safe.get_completed_bars(
@@ -274,10 +274,6 @@ class HyperliquidPerpBroker:
         timestamp: str,
         price: float | None = None,
     ) -> FillEvent:
-        from wayfinder_paths.mcp.tools.hyperliquid import (
-            hyperliquid_place_market_order,
-        )
-
         capacity: TradeCapacity | None = None
         if intent.action == "OPEN":
             try:
@@ -297,59 +293,20 @@ class HyperliquidPerpBroker:
             )
             fill.timestamp = timestamp
             return fill
-        try:
-            outcome = await hyperliquid_place_market_order(
-                wallet_label=self.wallet_label,
-                asset_name=intent.symbol,
-                is_buy=str(intent.side).lower() in {"buy", "long"},
-                size=intent.size,
-                usd_amount=intent.notional if intent.size is None else None,
-                slippage=self.slippage,
-                reduce_only=intent.reduce_only,
-                cloid=intent.client_order_id,
-            )
-        except Exception as exc:
-            return FillEvent(
-                status="ambiguous",
-                venue=intent.venue,
-                symbol=intent.symbol,
-                side=intent.side,
-                client_order_id=intent.client_order_id,
-                error=f"order submission failed: {exc}",
-                timestamp=timestamp,
-            )
-        raw = _exchange_result_from_mcp(outcome)
-        if raw is None:
-            return FillEvent(
-                status="ambiguous",
-                venue=intent.venue,
-                symbol=intent.symbol,
-                side=intent.side,
-                client_order_id=intent.client_order_id,
-                error=str(_mcp_error(outcome) or "no exchange result in MCP response"),
-                raw=outcome if isinstance(outcome, dict) else {},
-                timestamp=timestamp,
-            )
-        fill = safe_place_perp_order(
+        return await _submit_market_order(
             intent,
-            state_snapshot=self.snapshot,
+            snapshot=self.snapshot,
             capacity=capacity,
-            raw_result=raw,
+            timestamp=timestamp,
+            wallet_label=self.wallet_label,
+            is_buy=str(intent.side).lower() in {"buy", "long"},
+            size=intent.size,
+            usd_amount=intent.notional if intent.size is None else None,
+            slippage=self.slippage,
         )
-        fill.timestamp = timestamp
-        return fill
 
     async def fetch_state(self, symbols: Sequence[str] | Any = ()) -> VenueState:
-        from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_get_state
-
-        outcome = await hyperliquid_get_state(self.wallet_label)
-        match outcome:
-            case {"ok": True, "result": dict() as result}:
-                pass
-            case _:
-                raise RuntimeError(
-                    f"hyperliquid_get_state failed: {_mcp_error(outcome)}"
-                )
+        result = await _hl_state_result(self.wallet_label)
         perp = (result.get("perp") or {}).get("state") or {}
         if not (result.get("perp") or {}).get("success"):
             raise RuntimeError("hyperliquid perp state fetch unsuccessful")
@@ -384,14 +341,7 @@ class HyperliquidPerpBroker:
         return await get_trade_capacity(self.wallet_label, symbol, side=side)
 
     async def cancel(self, client_order_id: str) -> FillEvent:
-        return FillEvent(
-            status="rejected",
-            venue="hyperliquid",
-            symbol="",
-            side="",
-            error="cancel by cloid requires asset context; use hyperliquid_cancel_order",
-            client_order_id=client_order_id,
-        )
+        return _cancel_needs_asset_context("hyperliquid", client_order_id)
 
 
 class HyperliquidPerpAdapter:
@@ -407,13 +357,7 @@ class HyperliquidPerpAdapter:
                 slippage=float(params.get("live_slippage") or 0.01),
             )
         else:
-            from wayfinder_paths.jobs.execution.paper import PaperBroker
-
-            self.broker = PaperBroker(
-                capabilities=HYPERLIQUID_CAPABILITIES,
-                fee_bps=float(params.get("fee_bps") or 0.0),
-                slippage_bps=float(params.get("slippage_bps") or 0.0),
-            )
+            self.broker = _paper_broker(HYPERLIQUID_CAPABILITIES, params)
 
 
 def build_hyperliquid_adapter(
@@ -444,6 +388,106 @@ def _mcp_error(outcome: Any) -> Any:
         case dict():
             return outcome.get("message")
     return outcome
+
+
+async def _submit_market_order(
+    intent: OrderIntent,
+    *,
+    snapshot: StateSnapshot,
+    capacity: TradeCapacity | None,
+    timestamp: str,
+    wallet_label: str,
+    is_buy: bool,
+    size: float | None,
+    usd_amount: float | None,
+    slippage: float,
+) -> FillEvent:
+    """Shared MCP submit -> FillEvent normalization for the perp and HIP-4
+    brokers. Transport failures and missing exchange results return
+    `ambiguous`, never raise."""
+    # lazy: keeps execution/ decoupled from the MCP tool stack and patchable in tests
+    from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_place_market_order
+
+    try:
+        outcome = await hyperliquid_place_market_order(
+            wallet_label=wallet_label,
+            asset_name=intent.symbol,
+            is_buy=is_buy,
+            size=size,
+            usd_amount=usd_amount,
+            slippage=slippage,
+            reduce_only=intent.reduce_only,
+            cloid=intent.client_order_id,
+        )
+    except Exception as exc:
+        return FillEvent(
+            status="ambiguous",
+            venue=intent.venue,
+            symbol=intent.symbol,
+            side=intent.side,
+            client_order_id=intent.client_order_id,
+            error=f"order submission failed: {exc}",
+            timestamp=timestamp,
+        )
+    raw = _exchange_result_from_mcp(outcome)
+    if raw is None:
+        payload: dict[str, Any] = {}
+        match outcome:
+            case dict():
+                payload = outcome
+        return FillEvent(
+            status="ambiguous",
+            venue=intent.venue,
+            symbol=intent.symbol,
+            side=intent.side,
+            client_order_id=intent.client_order_id,
+            error=str(_mcp_error(outcome) or "no exchange result in MCP response"),
+            raw=payload,
+            timestamp=timestamp,
+        )
+    fill = safe_place_perp_order(
+        intent, state_snapshot=snapshot, capacity=capacity, raw_result=raw
+    )
+    fill.timestamp = timestamp
+    return fill
+
+
+async def _hl_state_result(wallet_label: str) -> dict[str, Any]:
+    # lazy: keeps execution/ decoupled from the MCP tool stack and patchable in tests
+    from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_get_state
+
+    outcome = await hyperliquid_get_state(wallet_label)
+    match outcome:
+        case {"ok": True, "result": dict() as result}:
+            return result
+        case _:
+            raise RuntimeError(f"hyperliquid_get_state failed: {_mcp_error(outcome)}")
+
+
+def _cancel_needs_asset_context(venue: str, client_order_id: str) -> FillEvent:
+    return FillEvent(
+        status="rejected",
+        venue=venue,
+        symbol="",
+        side="",
+        error="cancel by cloid requires asset context; use hyperliquid_cancel_order",
+        client_order_id=client_order_id,
+    )
+
+
+def _paper_broker(
+    capabilities: VenueCapabilities, params: dict[str, Any]
+) -> PaperBroker:
+    return PaperBroker(
+        capabilities=capabilities,
+        fee_bps=float(params.get("fee_bps") or 0.0),
+        slippage_bps=float(params.get("slippage_bps") or 0.0),
+    )
+
+
+def _lookback_hours(lookback_bars: int, interval: str) -> int:
+    bar_seconds = bar_interval_seconds(interval) or 3600
+    return max(1, math.ceil(lookback_bars * bar_seconds / 3600))
 
 
 def _candles_to_completed_view(

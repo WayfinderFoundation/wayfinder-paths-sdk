@@ -68,11 +68,9 @@ class JobStore:
                 return path
             resolved = path.resolve()
             for workspace in (active_workspace, candidate_workspace):
-                try:
-                    suffix = resolved.relative_to(workspace.resolve())
-                except ValueError:
-                    continue
-                return candidate_workspace / suffix
+                base = workspace.resolve()
+                if resolved.is_relative_to(base):
+                    return candidate_workspace / resolved.relative_to(base)
             return path
 
         parts = path.parts
@@ -102,7 +100,23 @@ class JobStore:
         ]:
             (root / relative).mkdir(parents=True, exist_ok=True)
         self.runs_jobs_dir.mkdir(parents=True, exist_ok=True)
-        self._write_if_missing(root / "memory.md", self._default_memory(job))
+        memory_md = root / "memory.md"
+        if not memory_md.exists():
+            memory_md.write_text(
+                f"# {job.name} Job Memory\n\n"
+                "Goal:\n"
+                f"{job.goal or 'No goal recorded yet.'}\n\n"
+                "Current rule:\n"
+                "- Active revision is the source of truth.\n"
+                "- Script runs should write structured results and emit chat only on meaningful transitions.\n"
+                "- Intervene-mode agent changes require user approval before activation.\n"
+                "- Auto-mode agent decisions must respect the job's configured live limits.\n\n"
+                "Known lessons:\n"
+                "- None yet.\n\n"
+                "Current concern:\n"
+                "- None yet.\n",
+                encoding="utf-8",
+            )
         self._write_json_if_missing(
             root / "memory.json",
             {
@@ -202,12 +216,9 @@ class JobStore:
             json.dumps({"ts": utc_now_iso(), **event}, sort_keys=True) + "\n"
         )
 
-    def proposal_files(self, job_id: str) -> list[Path]:
-        return sorted((self.job_dir(job_id) / "proposals").glob("*.json"))
-
     def proposals(self, job_id: str) -> list[dict[str, Any]]:
         proposals: list[dict[str, Any]] = []
-        for path in self.proposal_files(job_id):
+        for path in sorted((self.job_dir(job_id) / "proposals").glob("*.json")):
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except Exception:
@@ -302,9 +313,7 @@ class JobStore:
             raise ValueError("candidate_report is missing its candidate revision")
         validation_status = (report.get("validation_summary") or {}).get("status")
         if validation_status != "passed":
-            raise ValueError(
-                f"candidate validation is not passed: {validation_status}"
-            )
+            raise ValueError(f"candidate validation is not passed: {validation_status}")
         if report.get("mode") == "validation_only":
             return
         gate = report.get("gate") or {}
@@ -519,9 +528,7 @@ class JobStore:
             1 for proposal in proposals if proposal["status"] == "pending"
         )
         scorecard["queued_proposal_applications"] = sum(
-            1
-            for proposal in proposals
-            if proposal["application"]["status"] == "queued"
+            1 for proposal in proposals if proposal["application"]["status"] == "queued"
         )
         scorecard["applying_proposal_applications"] = sum(
             1

@@ -9,10 +9,12 @@ import httpx
 
 from wayfinder_paths.jobs.execution.hyperliquid import (
     SafeHyperliquidMarketClient,
+    _cancel_needs_asset_context,
     _candles_to_completed_view,
-    _exchange_result_from_mcp,
-    _mcp_error,
-    safe_place_perp_order,
+    _hl_state_result,
+    _lookback_hours,
+    _paper_broker,
+    _submit_market_order,
 )
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
@@ -22,7 +24,6 @@ from wayfinder_paths.jobs.execution.primitives import (
     StateSnapshot,
     TradeCapacity,
     _float_or_none,
-    bar_interval_seconds,
 )
 from wayfinder_paths.jobs.execution.venues import (
     MarketEvent,
@@ -90,8 +91,11 @@ class DirectHyperliquidCandleClient:
                 },
             )
             response.raise_for_status()
-            rows = response.json()
-        return rows if isinstance(rows, list) else []
+        match response.json():
+            case list() as rows:
+                return rows
+            case _:
+                return []
 
 
 class HyperliquidPredictionFeed:
@@ -106,21 +110,10 @@ class HyperliquidPredictionFeed:
         outcome_lister: Any | None = None,
         resolution_epsilon: float = DEFAULT_RESOLUTION_EPSILON,
     ) -> None:
-        self._safe = SafeHyperliquidMarketClient(client) if client is not None else None
-        self._client = client
-        self._fallback = fallback
+        self._safe = SafeHyperliquidMarketClient(client)
+        self._fallback = fallback or DirectHyperliquidCandleClient()
         self._outcome_lister = outcome_lister
         self.resolution_epsilon = resolution_epsilon
-
-    def _gateway(self) -> SafeHyperliquidMarketClient:
-        if self._safe is None:
-            self._safe = SafeHyperliquidMarketClient()
-        return self._safe
-
-    def _direct(self) -> Any:
-        if self._fallback is None:
-            self._fallback = DirectHyperliquidCandleClient()
-        return self._fallback
 
     async def get_completed_bars(
         self,
@@ -130,8 +123,7 @@ class HyperliquidPredictionFeed:
         lookback_bars: int,
         as_of: datetime | None = None,
     ) -> CompletedBarsView:
-        bar_seconds = bar_interval_seconds(interval) or 3600
-        lookback_hours = max(1, (lookback_bars * bar_seconds + 3599) // 3600)
+        lookback_hours = _lookback_hours(lookback_bars, interval)
         rows: list[dict[str, Any]] = []
         for symbol in symbols:
             view = await self._bars_for(symbol, interval, lookback_hours)
@@ -145,14 +137,14 @@ class HyperliquidPredictionFeed:
         self, symbol: str, interval: str, lookback_hours: int
     ) -> CompletedBarsView:
         try:
-            view = await self._gateway().get_completed_bars(
+            view = await self._safe.get_completed_bars(
                 symbol, interval, lookback_hours=lookback_hours
             )
             if len(view.to_frame()):
                 return view
         except Exception:
             pass
-        raw = await self._direct().get_candles(
+        raw = await self._fallback.get_candles(
             symbol, interval=interval, lookback_hours=lookback_hours
         )
         return _candles_to_completed_view(symbol, raw)
@@ -172,7 +164,11 @@ class HyperliquidPredictionFeed:
         for symbol in symbols:
             if symbol in live_assets:
                 continue
-            last_close = await self._last_close(symbol)
+            try:
+                view = await self._bars_for(symbol, "1h", lookback_hours=48)
+                last_close = float(view.latest(symbol)["close"])
+            except Exception:
+                last_close = None
             if last_close is not None and (
                 last_close >= 1 - self.resolution_epsilon
                 or last_close <= self.resolution_epsilon
@@ -207,6 +203,8 @@ class HyperliquidPredictionFeed:
         if self._outcome_lister is not None:
             return set(await self._outcome_lister())
         try:
+            # lazy: HyperliquidAdapter pulls the signing/exchange stack; only the
+            # no-lister live path needs it, and import failure must degrade to None
             from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
                 HyperliquidAdapter,
             )
@@ -219,19 +217,14 @@ class HyperliquidPredictionFeed:
             return None
         assets: set[str] = set()
         for market in markets or []:
-            for outcome in market.get("matched_outcomes") or market.get("outcomes") or []:
+            for outcome in (
+                market.get("matched_outcomes") or market.get("outcomes") or []
+            ):
                 for side in outcome.get("sides") or []:
                     name = side.get("asset_name")
                     if name:
                         assets.add(str(name))
         return assets
-
-    async def _last_close(self, symbol: str) -> float | None:
-        try:
-            view = await self._bars_for(symbol, "1h", lookback_hours=48)
-            return float(view.latest(symbol)["close"])
-        except Exception:
-            return None
 
 
 class HyperliquidPredictionBroker:
@@ -253,10 +246,6 @@ class HyperliquidPredictionBroker:
         timestamp: str,
         price: float | None = None,
     ) -> FillEvent:
-        from wayfinder_paths.mcp.tools.hyperliquid import (
-            hyperliquid_place_market_order,
-        )
-
         size: float | None = None
         usd_amount: float | None = None
         if intent.size is not None:
@@ -266,7 +255,11 @@ class HyperliquidPredictionBroker:
                 )
             size = float(int(float(intent.size)))
             reference = price
-            if reference and size * reference < MIN_ORDER_USD and not intent.reduce_only:
+            if (
+                reference
+                and size * reference < MIN_ORDER_USD
+                and not intent.reduce_only
+            ):
                 return self._reject(
                     intent,
                     timestamp,
@@ -282,62 +275,23 @@ class HyperliquidPredictionBroker:
                 )
         else:
             return self._reject(intent, timestamp, "size or notional is required")
-        try:
-            outcome = await hyperliquid_place_market_order(
-                wallet_label=self.wallet_label,
-                asset_name=intent.symbol,
-                is_buy=str(intent.side).lower() in {"buy", "long"}
-                and not intent.reduce_only,
-                size=size,
-                usd_amount=usd_amount,
-                slippage=self.slippage,
-                reduce_only=intent.reduce_only,
-                cloid=intent.client_order_id,
-            )
-        except Exception as exc:
-            return FillEvent(
-                status="ambiguous",
-                venue=intent.venue,
-                symbol=intent.symbol,
-                side=intent.side,
-                client_order_id=intent.client_order_id,
-                error=f"order submission failed: {exc}",
-                timestamp=timestamp,
-            )
-        raw = _exchange_result_from_mcp(outcome)
-        if raw is None:
-            return FillEvent(
-                status="ambiguous",
-                venue=intent.venue,
-                symbol=intent.symbol,
-                side=intent.side,
-                client_order_id=intent.client_order_id,
-                error=str(_mcp_error(outcome) or "no exchange result in MCP response"),
-                raw=outcome if isinstance(outcome, dict) else {},
-                timestamp=timestamp,
-            )
-        fill = safe_place_perp_order(
+        return await _submit_market_order(
             intent,
-            state_snapshot=self.snapshot,
+            snapshot=self.snapshot,
             # No activeAssetData capacity concept for HIP-4; sizing floors are
             # enforced above ($10 min) and by the exchange.
             capacity=TradeCapacity(safe=True, source="hyperliquid_prediction"),
-            raw_result=raw,
+            timestamp=timestamp,
+            wallet_label=self.wallet_label,
+            is_buy=str(intent.side).lower() in {"buy", "long"}
+            and not intent.reduce_only,
+            size=size,
+            usd_amount=usd_amount,
+            slippage=self.slippage,
         )
-        fill.timestamp = timestamp
-        return fill
 
     async def fetch_state(self, symbols: Sequence[str] | Any = ()) -> VenueState:
-        from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_get_state
-
-        outcome = await hyperliquid_get_state(self.wallet_label)
-        match outcome:
-            case {"ok": True, "result": dict() as result}:
-                pass
-            case _:
-                raise RuntimeError(
-                    f"hyperliquid_get_state failed: {_mcp_error(outcome)}"
-                )
+        result = await _hl_state_result(self.wallet_label)
         positions: dict[str, PositionRecord] = {}
         for row in (result.get("outcomes") or {}).get("positions") or []:
             coin = str(row.get("coin") or "")
@@ -363,14 +317,7 @@ class HyperliquidPredictionBroker:
         return TradeCapacity(safe=True, source="hyperliquid_prediction")
 
     async def cancel(self, client_order_id: str) -> FillEvent:
-        return FillEvent(
-            status="rejected",
-            venue="hyperliquid_prediction",
-            symbol="",
-            side="",
-            error="cancel by cloid requires asset context; use hyperliquid_cancel_order",
-            client_order_id=client_order_id,
-        )
+        return _cancel_needs_asset_context("hyperliquid_prediction", client_order_id)
 
     def _reject(self, intent: OrderIntent, timestamp: str, error: str) -> FillEvent:
         return FillEvent(
@@ -401,13 +348,7 @@ class HyperliquidPredictionAdapter:
                 slippage=float(params.get("live_slippage") or 0.02),
             )
         else:
-            from wayfinder_paths.jobs.execution.paper import PaperBroker
-
-            self.broker = PaperBroker(
-                capabilities=HYPERLIQUID_PREDICTION_CAPABILITIES,
-                fee_bps=float(params.get("fee_bps") or 0.0),
-                slippage_bps=float(params.get("slippage_bps") or 0.0),
-            )
+            self.broker = _paper_broker(HYPERLIQUID_PREDICTION_CAPABILITIES, params)
 
 
 def build_hyperliquid_prediction_adapter(

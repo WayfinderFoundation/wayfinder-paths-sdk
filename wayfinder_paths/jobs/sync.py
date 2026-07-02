@@ -95,7 +95,19 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
             ),
         },
         "execution_contract": job.execution_contract,
-        "validation": _bounded_validation(validation),
+        "validation": (
+            {
+                "status": validation.get("status"),
+                "revision": validation.get("revision"),
+                "failed_checks": [
+                    check.get("name")
+                    for check in validation.get("checks") or []
+                    if not check.get("passed")
+                ],
+            }
+            if validation
+            else {}
+        ),
         "gate": evaluate_live_gate(job_id, store=store),
         # Manual kill-switch detail (contract C4): scorecard already reports
         # live_execution_status="halted" while set; this carries reason/ts.

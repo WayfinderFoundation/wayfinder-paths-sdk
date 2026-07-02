@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -9,12 +10,16 @@ import pandas as pd
 
 from wayfinder_paths.jobs.execution.driver import view_hash
 from wayfinder_paths.jobs.execution.engine import EngineState, run_tick
-from wayfinder_paths.jobs.execution.job import _load_job_yaml
+from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.paper import PaperBroker
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     ExecutionSpec,
     StateSnapshot,
+)
+from wayfinder_paths.jobs.execution.simulator import (
+    REDUCE_ONLY_ACTIONS,
+    _load_strategy,
 )
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.models import utc_now_iso
@@ -59,13 +64,13 @@ def reconcile_job(
     entrypoint = store.resolve_script_entrypoint(job_id, job_data)
     if entrypoint is None or not entrypoint.exists():
         raise FileNotFoundError(f"execution script not found for job {job_id}")
-    from wayfinder_paths.jobs.execution.simulator import _load_strategy
 
     rows = _read_ticks(root, limit=limit)
     if history is None:
-        history = _history_from_dataset(root, spec, job_data)
-
-    import asyncio
+        try:
+            history = _load_dataset(root, spec, job_data).bars
+        except FileNotFoundError:
+            history = None
 
     outcome = asyncio.run(
         _replay_rows(
@@ -80,7 +85,9 @@ def reconcile_job(
     store.write_json(job_id, "reports/reconcile/latest.json", report)
     health = _health_from_report(report)
     if health:
-        store.refresh_scorecard(job_id, {"health": health, "reconcile": _summary(report)})
+        store.refresh_scorecard(
+            job_id, {"health": health, "reconcile": _summary(report)}
+        )
         store.append_journal(
             job_id,
             {"type": "drift_warning", "source": "reconcile", **_summary(report)},
@@ -172,8 +179,7 @@ def _build_report(
     missing_exits = [
         item
         for item in outcome["missing"]
-        if str((item.get("intent") or {}).get("action") or "").upper()
-        in {"CLOSE", "STOP_LOSS", "TAKE_PROFIT"}
+        if str(item["intent"]["action"] or "").upper() in REDUCE_ONLY_ACTIONS
     ]
     return {
         "job_id": job_id,
@@ -185,18 +191,16 @@ def _build_report(
         "extra_intents": outcome["extra"],
         "missing_exit_intents": missing_exits,
         "data_drift_ticks": outcome["data_drift"],
-        "fill_slippage_bps_p50": (
-            slippage[len(slippage) // 2] if slippage else None
-        ),
+        "fill_slippage_bps_p50": (slippage[len(slippage) // 2] if slippage else None),
         "fill_slippage_samples": len(slippage),
     }
 
 
 def _health_from_report(report: Mapping[str, Any]) -> str | None:
-    match_rate = report.get("intent_match_rate")
+    match_rate = report["intent_match_rate"]
     if match_rate is None:
         return None
-    if match_rate < INTENT_MATCH_RED or report.get("missing_exit_intents"):
+    if match_rate < INTENT_MATCH_RED or report["missing_exit_intents"]:
         return "red"
     if match_rate < INTENT_MATCH_YELLOW:
         return "yellow"
@@ -205,10 +209,10 @@ def _health_from_report(report: Mapping[str, Any]) -> str | None:
 
 def _summary(report: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "intent_match_rate": report.get("intent_match_rate"),
-        "ticks_compared": report.get("ticks_compared"),
-        "data_drift_ticks": report.get("data_drift_ticks"),
-        "missing_exit_intents": len(report.get("missing_exit_intents") or []),
+        "intent_match_rate": report["intent_match_rate"],
+        "ticks_compared": report["ticks_compared"],
+        "data_drift_ticks": report["data_drift_ticks"],
+        "missing_exit_intents": len(report["missing_exit_intents"]),
     }
 
 
@@ -224,20 +228,10 @@ def _read_ticks(root: Path, *, limit: int) -> list[dict[str, Any]]:
             parsed = json.loads(line)
         except ValueError:
             continue
-        if isinstance(parsed, dict):
-            rows.append(parsed)
+        match parsed:
+            case dict():
+                rows.append(parsed)
     return rows
-
-
-def _history_from_dataset(
-    root: Path, spec: ExecutionSpec, job_data: dict[str, Any]
-) -> CompletedBarsView | None:
-    from wayfinder_paths.jobs.execution.job import _load_dataset
-
-    try:
-        return _load_dataset(root, spec, job_data).bars
-    except FileNotFoundError:
-        return None
 
 
 def _window_view(
@@ -262,9 +256,7 @@ def _intent_key(intent: Mapping[str, Any]) -> dict[str, Any]:
     return {field: intent.get(field) for field in INTENT_FIELDS}
 
 
-def _fill_slippage_bps(
-    row: Mapping[str, Any], view: CompletedBarsView
-) -> list[float]:
+def _fill_slippage_bps(row: Mapping[str, Any], view: CompletedBarsView) -> list[float]:
     """Recorded fill price vs the bar open the model assumes (next_bar_open):
     the live-vs-model execution cost, in bps."""
     samples: list[float] = []
@@ -272,14 +264,14 @@ def _fill_slippage_bps(
         if fill.get("status") != "filled" or not fill.get("avg_price"):
             continue
         symbol = fill.get("symbol")
+        # Parses recorded external data: junk bar_ts -> TypeError from
+        # pd.Timestamp; absent bar -> ValueError from row_at. Not cast guards.
         try:
             bar = view.row_at(pd.Timestamp(row.get("bar_ts")), symbol=symbol)
         except (ValueError, TypeError):
             continue
-        reference = float(bar.open)
+        reference = bar.open
         if not reference:
             continue
-        samples.append(
-            abs(float(fill["avg_price"]) - reference) / reference * 10_000
-        )
+        samples.append(abs(float(fill["avg_price"]) - reference) / reference * 10_000)
     return samples

@@ -40,12 +40,19 @@ DEFAULT_OPENCODE_DB = str(Path.home() / ".local" / "share" / "opencode" / "openc
 LIVE_SENTINEL = "JOB_CACHE_LIVE_OK"
 
 
-def repo_root() -> Path:
-    return REPO_ROOT
-
-
-def _check(name: str, passed: bool) -> dict[str, Any]:
-    return {"name": name, "passed": passed}
+def _snapshot(job_data: dict[str, Any], **parts: Any) -> dict[str, Any]:
+    """Full snapshot_job() contract shape with empty defaults."""
+    return {
+        "job": job_data,
+        "scorecard": {},
+        "forward": {},
+        "runner_links": {},
+        "proposals": [],
+        "proposal_queue": {},
+        "reports": {},
+        "backtest": {},
+        **parts,
+    }
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -92,7 +99,7 @@ def run_deterministic_eval(output_dir: Path) -> dict[str, Any]:
         store=store,
         job_id=job.id,
         mode="monitor",
-        snapshot={"job": job.to_dict(), "scorecard": {"health": "green"}},
+        snapshot=_snapshot(job.to_dict(), scorecard={"health": "green"}),
     )
 
     volatile_job = job.to_dict()
@@ -102,7 +109,7 @@ def run_deterministic_eval(output_dir: Path) -> dict[str, Any]:
         store=store,
         job_id=job.id,
         mode="monitor",
-        snapshot={"job": volatile_job, "scorecard": {"health": "green"}},
+        snapshot=_snapshot(volatile_job, scorecard={"health": "green"}),
     )
 
     store.append_journal(
@@ -125,11 +132,11 @@ def run_deterministic_eval(output_dir: Path) -> dict[str, Any]:
         store=store,
         job_id=job.id,
         mode="monitor",
-        snapshot={
-            "job": volatile_job,
-            "scorecard": {"health": "yellow"},
-            "reports": {"monitor": {"summary": "latest run changed"}},
-        },
+        snapshot=_snapshot(
+            volatile_job,
+            scorecard={"health": "yellow"},
+            reports={"monitor": {"summary": "latest run changed"}},
+        ),
     )
 
     (store.job_dir(job.id) / "memory.md").write_text(
@@ -145,36 +152,37 @@ def run_deterministic_eval(output_dir: Path) -> dict[str, Any]:
         store=store,
         job_id=job.id,
         mode="monitor",
-        snapshot={"job": volatile_job, "scorecard": {"health": "yellow"}},
+        snapshot=_snapshot(volatile_job, scorecard={"health": "yellow"}),
     )
 
     checks = [
-        _check(
-            "stable_marker_precedes_dynamic_marker",
-            first["prompt"].index(STABLE_PREFIX_END_MARKER)
+        {
+            "name": "stable_marker_precedes_dynamic_marker",
+            "passed": first["prompt"].index(STABLE_PREFIX_END_MARKER)
             < first["prompt"].index(DYNAMIC_CONTEXT_MARKER),
-        ),
-        _check(
-            "volatile_job_timestamps_do_not_change_stable_hash",
-            first["stable_prefix_hash"] == volatile["stable_prefix_hash"],
-        ),
-        _check(
-            "dynamic_state_does_not_change_stable_hash",
-            first["stable_prefix_hash"] == second["stable_prefix_hash"],
-        ),
-        _check(
-            "dynamic_state_changes_dynamic_hash",
-            first["dynamic_context_hash"] != second["dynamic_context_hash"],
-        ),
-        _check(
-            "recent_journal_is_dynamic_only",
-            "dynamic price state changed" not in second["stable_prefix"]
+        },
+        {
+            "name": "volatile_job_timestamps_do_not_change_stable_hash",
+            "passed": first["stable_prefix_hash"] == volatile["stable_prefix_hash"],
+        },
+        {
+            "name": "dynamic_state_does_not_change_stable_hash",
+            "passed": first["stable_prefix_hash"] == second["stable_prefix_hash"],
+        },
+        {
+            "name": "dynamic_state_changes_dynamic_hash",
+            "passed": first["dynamic_context_hash"] != second["dynamic_context_hash"],
+        },
+        {
+            "name": "recent_journal_is_dynamic_only",
+            "passed": "dynamic price state changed" not in second["stable_prefix"]
             and "dynamic price state changed" in second["dynamic_context"],
-        ),
-        _check(
-            "durable_memory_change_changes_stable_hash",
-            second["stable_prefix_hash"] != durable_change["stable_prefix_hash"],
-        ),
+        },
+        {
+            "name": "durable_memory_change_changes_stable_hash",
+            "passed": second["stable_prefix_hash"]
+            != durable_change["stable_prefix_hash"],
+        },
     ]
     report = {
         "status": "passed" if all(check["passed"] for check in checks) else "failed",
@@ -335,7 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=int, default=120)
     args = parser.parse_args(argv)
 
-    output_dir = (repo_root() / args.output_dir).resolve()
+    output_dir = (REPO_ROOT / args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     deterministic = run_deterministic_eval(output_dir)
@@ -343,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
     status = deterministic["status"]
     if args.live:
         live = run_live_eval(
-            repo_root_path=repo_root(),
+            repo_root_path=REPO_ROOT,
             output_dir=output_dir,
             model=args.model,
             opencode_bin=args.opencode_bin,

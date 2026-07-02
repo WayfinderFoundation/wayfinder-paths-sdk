@@ -14,7 +14,7 @@ import pytest
 
 from wayfinder_paths.jobs.execution import ExecutionSpec, VenueCapabilities
 from wayfinder_paths.jobs.execution.driver import tick_job
-from wayfinder_paths.jobs.execution.job import backtest_execution_job, validate_job
+from wayfinder_paths.jobs.execution.job import backtest_execution_job
 from wayfinder_paths.jobs.execution.paper import PaperBroker
 from wayfinder_paths.jobs.execution.preflight import run_preflight
 from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
@@ -22,6 +22,7 @@ from wayfinder_paths.jobs.execution.simulator import (
     PreparedExecutionDataset,
     simulate_execution,
 )
+from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
@@ -104,7 +105,7 @@ def _make_bundle(
     shim.write_text(
         "from wayfinder_paths.jobs.strategies."
         f"{config['module']} import build_strategy\n\n"
-        "__all__ = [\"build_strategy\"]\n",
+        '__all__ = ["build_strategy"]\n',
         encoding="utf-8",
     )
     (root / "results" / "backtest").mkdir(parents=True, exist_ok=True)
@@ -130,7 +131,7 @@ def test_full_pipeline_validates_and_gates(tmp_path: Path, name: str) -> None:
         check for check in preflight["checks"] if not check["passed"]
     ]
 
-    report = validate_job(job.id, store=store)
+    report = validate_execution_job(job.id, store=store)
     assert report["status"] == "passed", [
         check for check in report["checks"] if not check["passed"]
     ]

@@ -47,7 +47,9 @@ class FakeCandleClient:
         self.error = error
         self.calls = 0
 
-    async def get_candles(self, coin, start_ms=None, end_ms=None, interval="1h", *, lookback_hours=None):
+    async def get_candles(
+        self, coin, start_ms=None, end_ms=None, interval="1h", *, lookback_hours=None
+    ):
         self.calls += 1
         if self.error:
             raise RuntimeError("gateway rejected #N coin")
@@ -83,7 +85,9 @@ async def test_feed_uses_gateway_when_it_returns_rows() -> None:
     assert view.symbols == ["#1730"]
 
 
-@pytest.mark.parametrize("gateway", [FakeCandleClient(error=True), FakeCandleClient([])])
+@pytest.mark.parametrize(
+    "gateway", [FakeCandleClient(error=True), FakeCandleClient([])]
+)
 async def test_feed_falls_back_on_error_or_empty(gateway: FakeCandleClient) -> None:
     fallback = FakeCandleClient(_candles(4))
     feed = HyperliquidPredictionFeed(gateway, fallback=fallback)
@@ -142,9 +146,7 @@ async def test_broker_rejects_fractional_contracts_and_small_orders() -> None:
 
     fractional = await broker.place(_intent(size=10.5), timestamp="t0", price=0.5)
     tiny = await broker.place(_intent(size=10), timestamp="t0", price=0.5)
-    tiny_notional = await broker.place(
-        _intent(size=None, notional=5.0), timestamp="t0"
-    )
+    tiny_notional = await broker.place(_intent(size=None, notional=5.0), timestamp="t0")
 
     assert fractional.status == "rejected"
     assert "integer" in fractional.error
@@ -170,7 +172,13 @@ async def test_broker_places_market_order_and_parses_fill(monkeypatch) -> None:
                             "response": {
                                 "data": {
                                     "statuses": [
-                                        {"filled": {"totalSz": "100", "avgPx": "0.155", "oid": 42}}
+                                        {
+                                            "filled": {
+                                                "totalSz": "100",
+                                                "avgPx": "0.155",
+                                                "oid": 42,
+                                            }
+                                        }
                                     ]
                                 }
                             },
@@ -220,7 +228,14 @@ async def test_fetch_state_maps_outcome_balances(monkeypatch) -> None:
             "result": {
                 "outcomes": {
                     "positions": [
-                        {"coin": "+1730", "outcome_id": 173, "side": 0, "total": "200", "hold": "0", "entryNtl": "30"},
+                        {
+                            "coin": "+1730",
+                            "outcome_id": 173,
+                            "side": 0,
+                            "total": "200",
+                            "hold": "0",
+                            "entryNtl": "30",
+                        },
                         {"coin": "+40", "total": "0", "entryNtl": "0"},
                     ]
                 }
@@ -244,10 +259,10 @@ async def test_fetch_state_maps_outcome_balances(monkeypatch) -> None:
 def test_adapter_registration_and_paper_mode() -> None:
     assert "hyperliquid_prediction" in VENUE_REGISTRY
     adapter = HyperliquidPredictionAdapter(mode="paper", params={})
-    assert isinstance(adapter.broker, PaperBroker)
+    assert type(adapter.broker) is PaperBroker
     assert adapter.broker.capabilities == HYPERLIQUID_PREDICTION_CAPABILITIES
     live = HyperliquidPredictionAdapter(mode="live", params={"wallet_label": "x"})
-    assert isinstance(live.broker, HyperliquidPredictionBroker)
+    assert type(live.broker) is HyperliquidPredictionBroker
 
 
 async def test_engine_rejects_brackets_on_prediction_caps() -> None:
@@ -299,6 +314,5 @@ async def test_engine_rejects_brackets_on_prediction_caps() -> None:
 
     assert result.intents == []
     assert any(
-        "does not support brackets" in event["reason"]
-        for event in result.guard_events
+        "does not support brackets" in event["reason"] for event in result.guard_events
     )

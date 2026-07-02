@@ -16,7 +16,6 @@ from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import sync_all_jobs
 from wayfinder_paths.jobs.validation import (
-    compact_json,
     validate_candidate_application,
     validation_summary,
 )
@@ -244,8 +243,8 @@ def _complete_applied_application(
         deterministic_validation,
     )
     if deterministic_validation["status"] != "passed":
-        final_error = "Candidate validation failed: " + compact_json(
-            validation_summary(deterministic_validation)
+        final_error = "Candidate validation failed: " + json.dumps(
+            validation_summary(deterministic_validation), sort_keys=True, default=str
         )
         _write_apply_report(
             store,
@@ -329,22 +328,20 @@ def _apply_runner_action(
     responses: list[dict[str, Any]] = []
     runner_action = getattr(bridge, action)
     for loop_name, loop in (("script", job.script_loop), ("agent", job.agent_loop)):
-        if loop.enabled and loop.runner_job_name:
-            responses.append(
-                {
-                    "loop": loop_name,
-                    "runner_job_name": loop.runner_job_name,
-                    "response": _safe_runner_call(runner_action, loop.runner_job_name),
-                }
-            )
+        if not (loop.enabled and loop.runner_job_name):
+            continue
+        try:
+            response = runner_action(loop.runner_job_name)
+        except Exception as exc:
+            response = {"ok": False, "error": str(exc), "name": loop.runner_job_name}
+        responses.append(
+            {
+                "loop": loop_name,
+                "runner_job_name": loop.runner_job_name,
+                "response": response,
+            }
+        )
     return responses
-
-
-def _safe_runner_call(action: Any, name: str) -> dict[str, Any]:
-    try:
-        return action(name)
-    except Exception as exc:
-        return {"ok": False, "error": str(exc), "name": name}
 
 
 def _prepare_candidate_workspace(
@@ -497,6 +494,7 @@ def _record_promoted_revision(
 ) -> str:
     root = store.job_dir(job_id)
     revision = compute_workspace_revision(root)
+    validation_status = validation["status"] if validation else None
     active = {
         "job_id": job_id,
         "active_revision": revision,
@@ -511,7 +509,7 @@ def _record_promoted_revision(
             "proposal_id": proposal_id,
             "revision": revision,
             "changed_files": changed_files or [],
-            "validation_status": (validation or {}).get("status"),
+            "validation_status": validation_status,
         },
     )
     revisions_path = root / "versions" / "revisions.jsonl"
@@ -523,7 +521,7 @@ def _record_promoted_revision(
                 "revision": revision,
                 "proposal_id": proposal_id,
                 "changed_files": changed_files or [],
-                "validation_status": (validation or {}).get("status"),
+                "validation_status": validation_status,
             },
             sort_keys=True,
         )
@@ -624,23 +622,22 @@ def _with_execution_validation(
     validation_path = candidate_dir / "reports" / "validation" / "latest.json"
     validation_path.parent.mkdir(parents=True, exist_ok=True)
     validation_path.write_text(
-        json.dumps(execution_validation, indent=2, sort_keys=True, default=str)
-        + "\n",
+        json.dumps(execution_validation, indent=2, sort_keys=True, default=str) + "\n",
         encoding="utf-8",
     )
-    checks = list(validation.get("checks") or [])
+    execution_passed = execution_validation["status"] == "passed"
+    checks = list(validation["checks"])
     checks.append(
         {
             "name": "execution_candidate_validation",
-            "passed": execution_validation.get("status") == "passed",
+            "passed": execution_passed,
             "details": execution_validation,
         }
     )
     return {
         **validation,
         "status": "passed"
-        if validation.get("status") == "passed"
-        and execution_validation.get("status") == "passed"
+        if validation["status"] == "passed" and execution_passed
         else "failed",
         "checks": checks,
         "execution_validation": execution_validation,

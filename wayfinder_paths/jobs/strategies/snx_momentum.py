@@ -16,16 +16,7 @@ class SnxMomentumStrategy(ShortMomentumStrategy):
         "st_period": 7,
         "st_mult": 2.5,
     }
-
-    def min_bars(self) -> int:
-        return (
-            max(
-                self.params["low_period"],
-                self.params["sma_period"],
-                self.params["st_period"],
-            )
-            + 2
-        )
+    extra_period_keys = ("st_period",)
 
     def compute_indicators(
         self, highs: list[float], lows: list[float], closes: list[float]
@@ -52,9 +43,8 @@ class SnxMomentumStrategy(ShortMomentumStrategy):
     ) -> str | None:
         # SuperTrend floor needs the Min-2 hold; the SMA20 bounce is ungated
         # (matches prod). The 7% adverse move is the bracket stop_loss.
-        exit_floor = (
-            indicators["supertrend"][-1] == -1
-            and bars_since_entry >= int(self.params["min_hold"])
+        exit_floor = indicators["supertrend"][-1] == -1 and bars_since_entry >= int(
+            self.params["min_hold"]
         )
         exit_sma20 = closes[-1] > sma20[-1]
         if exit_floor:

@@ -21,11 +21,12 @@ from wayfinder_paths.jobs.execution import (
     get_trade_capacity,
     summarize_trade_capacity,
 )
-from wayfinder_paths.jobs.execution.job import backtest_execution_job, validate_job
+from wayfinder_paths.jobs.execution.job import backtest_execution_job
 from wayfinder_paths.jobs.execution.simulator import (
     PreparedExecutionDataset,
     simulate_execution,
 )
+from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
 
@@ -243,7 +244,7 @@ def test_job_backtest_and_validate_write_artifacts(tmp_path: Path) -> None:
     bars_path.write_text(json.dumps(_bars()), encoding="utf-8")
 
     result = backtest_execution_job(job.id, store=store)
-    validation = validate_job(job.id, strict=True, store=store)
+    validation = validate_execution_job(job.id, strict=True, store=store)
 
     assert result["result"]["validation"]["execution_valid"] is True
     assert (root / "results" / "backtest" / "visualization.json").exists()

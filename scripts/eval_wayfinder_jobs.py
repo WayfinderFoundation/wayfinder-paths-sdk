@@ -340,14 +340,6 @@ def execution_backtest_bars() -> list[dict[str, Any]]:
     ]
 
 
-def repo_root() -> Path:
-    return REPO_ROOT
-
-
-def utc_now() -> str:
-    return datetime.now(UTC).isoformat()
-
-
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -460,9 +452,10 @@ if __name__ == "__main__":
     return script
 
 
-def expected_job(case: CreationCase, script: Path) -> WayfinderJob:
+def create_expected_job_bundle(workspace: Path, case: CreationCase) -> Path:
+    script = write_strategy_fixture(workspace)
     if case.kind == "script_only":
-        return WayfinderJob.new(
+        job = WayfinderJob.new(
             case.job_id,
             name="Eval SMA Re-arm Script",
             goal="Run the fake SMA re-arm strategy every five minutes.",
@@ -470,8 +463,8 @@ def expected_job(case: CreationCase, script: Path) -> WayfinderJob:
             interval_seconds=300,
             agent_mode="off",
         )
-    if case.kind == "script_agent":
-        return WayfinderJob.new(
+    elif case.kind == "script_agent":
+        job = WayfinderJob.new(
             case.job_id,
             name="Eval SMA Re-arm Supervised",
             goal="Run the fake SMA re-arm strategy and monitor drift hourly.",
@@ -480,27 +473,22 @@ def expected_job(case: CreationCase, script: Path) -> WayfinderJob:
             agent_mode="monitor",
             agent_wake_seconds=3600,
         )
-    return WayfinderJob.new(
-        case.job_id,
-        name="Eval BTC Auto Managed",
-        goal="Let the auto worker manage a fake BTC setup inside strict risk limits.",
-        agent_mode="auto",
-        auto_limits={
-            "enabled_venues": ["hyperliquid"],
-            "allowed_symbols": ["BTC"],
-            "max_notional_per_decision": 25,
-            "max_daily_notional": 100,
-            "max_open_positions": 1,
-            "max_open_orders": 2,
-        },
-    )
-
-
-def create_expected_job_bundle(workspace: Path, case: CreationCase) -> Path:
-    script = write_strategy_fixture(workspace)
-    store = JobStore(repo_root=workspace)
-    job = expected_job(case, script)
-    return store.save(job)
+    else:
+        job = WayfinderJob.new(
+            case.job_id,
+            name="Eval BTC Auto Managed",
+            goal="Let the auto worker manage a fake BTC setup inside strict risk limits.",
+            agent_mode="auto",
+            auto_limits={
+                "enabled_venues": ["hyperliquid"],
+                "allowed_symbols": ["BTC"],
+                "max_notional_per_decision": 25,
+                "max_daily_notional": 100,
+                "max_open_positions": 1,
+                "max_open_orders": 2,
+            },
+        )
+    return JobStore(repo_root=workspace).save(job)
 
 
 def create_expected_execution_backtest_bundle(
@@ -1645,19 +1633,14 @@ def build_judge_command(
     directory: Path,
     title: str,
 ) -> list[str]:
-    return [
+    return build_worker_command(
         opencode,
-        "run",
-        "--agent",
-        "wayfinder-eval-judge",
-        "-m",
         model,
-        "--dir",
-        str(directory),
-        "--title",
-        title,
+        "wayfinder-eval-judge",
         prompt,
-    ]
+        directory=directory,
+        title=title,
+    )
 
 
 def run_process(
@@ -1687,36 +1670,32 @@ def run_process(
         return None, time.monotonic() - started, f"timeout after {exc.timeout}s"
 
 
-def harvest_answer_from_db(db_path: Path, *, title: str) -> str | None:
-    if not db_path.exists():
-        return None
-    con = sqlite3.connect(db_path)
-    try:
-        row = con.execute(
-            "SELECT id FROM session WHERE title=? ORDER BY time_updated DESC LIMIT 1",
-            (title,),
-        ).fetchone()
-        if not row:
-            return None
-        rows = con.execute(
-            """SELECT json_extract(p.data,'$.text')
-               FROM part p JOIN message m ON p.message_id = m.id
-               WHERE m.session_id=? AND json_extract(p.data,'$.type')='text'
-               ORDER BY m.time_created ASC""",
-            (str(row[0]),),
-        ).fetchall()
-    finally:
-        con.close()
-    texts = [
-        str(item[0]).strip() for item in rows if item[0] and len(str(item[0])) > 40
-    ]
-    return texts[-1] if texts else None
-
-
 def harvest_answer(log_path: Path, db_path: Path, *, title: str) -> str:
-    answer = harvest_answer_from_db(db_path, title=title)
-    if answer:
-        return answer
+    if db_path.exists():
+        con = sqlite3.connect(db_path)
+        try:
+            row = con.execute(
+                "SELECT id FROM session WHERE title=? ORDER BY time_updated DESC LIMIT 1",
+                (title,),
+            ).fetchone()
+            rows = (
+                con.execute(
+                    """SELECT json_extract(p.data,'$.text')
+                       FROM part p JOIN message m ON p.message_id = m.id
+                       WHERE m.session_id=? AND json_extract(p.data,'$.type')='text'
+                       ORDER BY m.time_created ASC""",
+                    (str(row[0]),),
+                ).fetchall()
+                if row
+                else []
+            )
+        finally:
+            con.close()
+        texts = [
+            str(item[0]).strip() for item in rows if item[0] and len(str(item[0])) > 40
+        ]
+        if texts:
+            return texts[-1]
     return log_path.read_text(errors="replace").strip() if log_path.exists() else ""
 
 
@@ -1789,7 +1768,7 @@ def build_jobs_judge_prompt(
     root: Path | None = None,
     extra_context: str | None = None,
 ) -> str:
-    repo = root or repo_root()
+    repo = root or REPO_ROOT
     sections = [
         "You are a Wayfinder Jobs implementation judge.",
         "Inspect the provided codebase excerpts, generated artifacts, validator",
@@ -1892,12 +1871,12 @@ def run_judge(
         opencode_bin,
         judge_model,
         prompt,
-        directory=repo_root(),
+        directory=REPO_ROOT,
         title=title,
     )
     returncode, duration, error = run_process(
         command,
-        cwd=repo_root(),
+        cwd=REPO_ROOT,
         env=env,
         log_path=log_path,
         timeout_seconds=timeout_seconds,
@@ -1939,7 +1918,7 @@ def run_creation_case(
     agent_output = ""
     with tempfile.TemporaryDirectory(prefix=f"wf-job-eval-{case.id}-") as tmp:
         workspace = Path(tmp) / "repo"
-        copy_workspace(repo_root(), workspace)
+        copy_workspace(REPO_ROOT, workspace)
         write_strategy_fixture(workspace)
         prompt = build_creation_prompt(case)
         (case_dir / "prompt.md").write_text(prompt, encoding="utf-8")
@@ -1972,7 +1951,7 @@ def run_creation_case(
         copy_workspace(workspace, kept)
         judge_result = None
         if judge:
-            rubric = (repo_root() / JUDGE_RUBRIC).read_text(encoding="utf-8")
+            rubric = (REPO_ROOT / JUDGE_RUBRIC).read_text(encoding="utf-8")
             prompt_for_judge = build_jobs_judge_prompt(
                 rubric_text=rubric,
                 case_id=case.id,
@@ -2028,7 +2007,7 @@ def run_execution_backtest_case(
     agent_output = ""
     with tempfile.TemporaryDirectory(prefix=f"wf-job-eval-{case.id}-") as tmp:
         workspace = Path(tmp) / "repo"
-        copy_workspace(repo_root(), workspace)
+        copy_workspace(REPO_ROOT, workspace)
         prompt = build_execution_backtest_prompt(case)
         (case_dir / "prompt.md").write_text(prompt, encoding="utf-8")
         log_text = ""
@@ -2066,7 +2045,7 @@ def run_execution_backtest_case(
         copy_workspace(workspace, kept)
         judge_result = None
         if judge:
-            rubric = (repo_root() / JUDGE_RUBRIC).read_text(encoding="utf-8")
+            rubric = (REPO_ROOT / JUDGE_RUBRIC).read_text(encoding="utf-8")
             prompt_for_judge = build_jobs_judge_prompt(
                 rubric_text=rubric,
                 case_id=case.id,
@@ -2123,7 +2102,7 @@ def run_worker_case(
     iteration_reports: list[dict[str, Any]] = []
     with tempfile.TemporaryDirectory(prefix=f"wf-job-eval-{case.id}-") as tmp:
         workspace = Path(tmp) / "repo"
-        copy_workspace(repo_root(), workspace)
+        copy_workspace(REPO_ROOT, workspace)
         for iteration in range(1, iterations + 1):
             if case.kind == "script_agent_worker":
                 setup_script_agent_worker_fixture(
@@ -2165,7 +2144,7 @@ def run_worker_case(
             write_json(iter_dir / "validator.json", validator)
             judge_result = None
             if judge:
-                rubric = (repo_root() / JUDGE_RUBRIC).read_text(encoding="utf-8")
+                rubric = (REPO_ROOT / JUDGE_RUBRIC).read_text(encoding="utf-8")
                 judge_prompt = build_jobs_judge_prompt(
                     rubric_text=rubric,
                     case_id=f"{case.id}:iteration_{iteration}",
@@ -2239,7 +2218,7 @@ def run_worker_case(
             write_json(apply_dir / "validator.json", application_validator)
             application_judge = None
             if judge:
-                rubric = (repo_root() / JUDGE_RUBRIC).read_text(encoding="utf-8")
+                rubric = (REPO_ROOT / JUDGE_RUBRIC).read_text(encoding="utf-8")
                 judge_prompt = build_jobs_judge_prompt(
                     rubric_text=rubric,
                     case_id=f"{case.id}:application",
@@ -2357,13 +2336,23 @@ def harden_sandbox(workspace: Path) -> dict[str, Any]:
     3) symlink .venv to the real repo venv so `poetry run wayfinder ...`
        works in the copy (copy_workspace excludes .venv).
     The production configs are never touched."""
-    summary: dict[str, Any] = {"agent_patched": False, "mcp_disabled": [], "venv_linked": False}
+    summary: dict[str, Any] = {
+        "agent_patched": False,
+        "mcp_disabled": [],
+        "venv_linked": False,
+    }
     agent_path = workspace / ".opencode" / "agents" / "wayfinder-job-auto-worker.md"
     if agent_path.exists():
         text = agent_path.read_text(encoding="utf-8")
         replacements = [
-            ("wayfinder_hyperliquid_place_*: allow", "wayfinder_hyperliquid_place_*: deny"),
-            ("wayfinder_polymarket_place_*: allow", "wayfinder_polymarket_place_*: deny"),
+            (
+                "wayfinder_hyperliquid_place_*: allow",
+                "wayfinder_hyperliquid_place_*: deny",
+            ),
+            (
+                "wayfinder_polymarket_place_*: allow",
+                "wayfinder_polymarket_place_*: deny",
+            ),
             (
                 "wayfinder_polymarket_redeem_positions: allow",
                 "wayfinder_polymarket_redeem_positions: deny",
@@ -2381,7 +2370,7 @@ def harden_sandbox(workspace: Path) -> dict[str, Any]:
                 server["enabled"] = False
                 summary["mcp_disabled"].append(name)
         opencode_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    real_venv = repo_root() / ".venv"
+    real_venv = REPO_ROOT / ".venv"
     sandbox_venv = workspace / ".venv"
     if real_venv.exists() and not sandbox_venv.exists():
         sandbox_venv.symlink_to(real_venv)
@@ -2415,7 +2404,7 @@ def _new_ledger_rows(
     from wayfinder_paths.jobs.ledger import tail_ledger
 
     rows = tail_ledger(store, job_id, name, limit=10_000)
-    return rows[pre_state[f"{name}_rows"]:]
+    return rows[pre_state[f"{name}_rows"] :]
 
 
 def _check(name: str, passed: bool, **extra: Any) -> dict[str, Any]:
@@ -2654,7 +2643,10 @@ def _improve_holdout_stats(store: JobStore, job_id: str) -> dict[str, Any]:
         _improve_bars(offset=IMPROVE_TRAIN_BARS, count=IMPROVE_HOLDOUT_BARS)
     )
     result = simulate_execution(
-        script, dataset, ExecutionSpec.from_dict(job.execution_spec), job.execution_params
+        script,
+        dataset,
+        ExecutionSpec.from_dict(job.execution_spec),
+        job.execution_params,
     )
     stats = result.stats
     return {
@@ -2812,9 +2804,7 @@ def advance_improve_round(
         try:
             store.approve_proposal(case.job_id, pid)
             claim_application(store, case.job_id, pid)
-            completed = complete_application(
-                store, case.job_id, pid, status="applied"
-            )
+            completed = complete_application(store, case.job_id, pid, status="applied")
             outcome["applied"] = {
                 "proposal_id": pid,
                 "status": completed["proposal"]["application"]["status"],
@@ -2887,9 +2877,7 @@ def validate_improve_round(
         case.job_id, "reports/intervene/latest.json", default=None
     )
     if round_n == 1:
-        checks.append(
-            _check("one_proposal_created", len(new_proposals) == 1)
-        )
+        checks.append(_check("one_proposal_created", len(new_proposals) == 1))
         checks.append(
             _check(
                 "ledger_rows_appended",
@@ -2930,11 +2918,16 @@ def validate_improve_round(
             memo_text = (
                 memo_path.read_text(encoding="utf-8") if memo_path.exists() else ""
             ) or str(proposal.get("change_summary") or "")
-            anchors_hit = sum(1 for a in IMPROVE_MEMO_ANCHORS if a.lower() in memo_text.lower())
-            checks.append(_check("proposal_memo_present", anchors_hit >= 4, anchors=anchors_hit))
+            anchors_hit = sum(
+                1 for a in IMPROVE_MEMO_ANCHORS if a.lower() in memo_text.lower()
+            )
+            checks.append(
+                _check("proposal_memo_present", anchors_hit >= 4, anchors=anchors_hit)
+            )
             targets_flaw = (
                 any(
-                    key in (proposal.get("proposed_change") or {}).get(
+                    key
+                    in (proposal.get("proposed_change") or {}).get(
                         "execution_params", {}
                     )
                     for key in ("min_range_pct", "range_window")
@@ -2953,9 +2946,7 @@ def validate_improve_round(
         checks.append(_check("ledger_rows_appended", len(new_rows) >= 1))
         if new_proposals:
             report = new_proposals[0].get("candidate_report") or {}
-            checks.append(
-                _check("propose_flow_used", bool(report.get("revision")))
-            )
+            checks.append(_check("propose_flow_used", bool(report.get("revision"))))
     elif round_n == 3:
         telemetry_ok = True
         if new_proposals:
@@ -3052,7 +3043,7 @@ def write_valid_improve_artifacts(
             {
                 "status": "green",
                 "summary": "No change recommended: chop filter live; monitoring.",
-                "created_at": utc_now(),
+                "created_at": datetime.now(UTC).isoformat(),
             },
         )
     else:
@@ -3066,7 +3057,7 @@ def write_valid_improve_artifacts(
                     "next step is a telemetry improvement. No performance "
                     "claims made."
                 ),
-                "created_at": utc_now(),
+                "created_at": datetime.now(UTC).isoformat(),
             },
         )
 
@@ -3124,8 +3115,18 @@ def _auto_world_and_oracle(round_n: int) -> tuple[dict[str, Any], dict[str, Any]
                     "outcome_price": 0.50,
                     "why": "edge below spread+costs",
                 },
-                "m_stale": {"action": "block", "fair_value": 0.45, "outcome_price": 0.42, "why": "stale data"},
-                "m_thin": {"action": "skip", "fair_value": 0.34, "outcome_price": 0.31, "why": "liquidity too thin"},
+                "m_stale": {
+                    "action": "block",
+                    "fair_value": 0.45,
+                    "outcome_price": 0.42,
+                    "why": "stale data",
+                },
+                "m_thin": {
+                    "action": "skip",
+                    "fair_value": 0.34,
+                    "outcome_price": 0.31,
+                    "why": "liquidity too thin",
+                },
             },
         }
     elif round_n == 2:
@@ -3149,7 +3150,9 @@ def _auto_world_and_oracle(round_n: int) -> tuple[dict[str, Any], dict[str, Any]
                 ],
                 second_source=True,
             ),
-            market("m_stale", description="Old total", price=0.35, last_update_ts=stale),
+            market(
+                "m_stale", description="Old total", price=0.35, last_update_ts=stale
+            ),
             market(
                 "m_spread_trap",
                 description="Wide market",
@@ -3180,14 +3183,24 @@ def _auto_world_and_oracle(round_n: int) -> tuple[dict[str, Any], dict[str, Any]
                     "max_size": AUTO_DIVERGENT_CAP,
                     "outcome_price": 0.45,
                 },
-                "m_stale": {"action": "block", "fair_value": 0.40, "outcome_price": 0.36, "why": "stale"},
+                "m_stale": {
+                    "action": "block",
+                    "fair_value": 0.40,
+                    "outcome_price": 0.36,
+                    "why": "stale",
+                },
                 "m_spread_trap": {
                     "action": "skip",
                     "fair_value": 0.47,
                     "outcome_price": 0.44,
                     "why": "spread swamps edge",
                 },
-                "m_thin": {"action": "skip", "fair_value": 0.27, "outcome_price": 0.24, "why": "thin"},
+                "m_thin": {
+                    "action": "skip",
+                    "fair_value": 0.27,
+                    "outcome_price": 0.24,
+                    "why": "thin",
+                },
             },
         }
     elif round_n == 3:
@@ -3205,7 +3218,9 @@ def _auto_world_and_oracle(round_n: int) -> tuple[dict[str, Any], dict[str, Any]
                 narrative=["single anonymous rumor post"],
                 second_source=False,
             ),
-            market("m_stale", description="Old total", price=0.33, last_update_ts=stale),
+            market(
+                "m_stale", description="Old total", price=0.33, last_update_ts=stale
+            ),
         ]
         oracle = {
             "expected_decision": ["skipped", "blocked", "executed"],
@@ -3222,19 +3237,38 @@ def _auto_world_and_oracle(round_n: int) -> tuple[dict[str, Any], dict[str, Any]
                     "outcome_price": 0.47,
                     "why": "no second source — divergent gate fails",
                 },
-                "m_stale": {"action": "block", "fair_value": 0.36, "outcome_price": 0.30},
+                "m_stale": {
+                    "action": "block",
+                    "fair_value": 0.36,
+                    "outcome_price": 0.30,
+                },
             },
         }
     else:
         markets = [
-            market("m_core_fav", description="Favorite prop", price=0.41, second_source=True),
+            market(
+                "m_core_fav",
+                description="Favorite prop",
+                price=0.41,
+                second_source=True,
+            ),
             market("m_other", description="Another prop", price=0.28),
         ]
         oracle = {
             "expected_decision": ["blocked"],
             "markets": {
-                "m_core_fav": {"action": "block", "fair_value": 0.50, "outcome_price": 0.50, "why": "account ambiguous"},
-                "m_other": {"action": "block", "fair_value": 0.30, "outcome_price": 0.30, "why": "account ambiguous"},
+                "m_core_fav": {
+                    "action": "block",
+                    "fair_value": 0.50,
+                    "outcome_price": 0.50,
+                    "why": "account ambiguous",
+                },
+                "m_other": {
+                    "action": "block",
+                    "fair_value": 0.30,
+                    "outcome_price": 0.30,
+                    "why": "account ambiguous",
+                },
             },
         }
     world = {
@@ -3314,9 +3348,7 @@ def setup_auto_decisions_fixture(workspace: Path, case: LoopCase) -> None:
         )
 
 
-def seed_auto_round(
-    workspace: Path, case: LoopCase, round_n: int
-) -> dict[str, Any]:
+def seed_auto_round(workspace: Path, case: LoopCase, round_n: int) -> dict[str, Any]:
     if round_n == 1:
         setup_auto_decisions_fixture(workspace, case)
     store = JobStore(repo_root=workspace)
@@ -3394,7 +3426,9 @@ def validate_auto_round(
     memo_path = root / "reports" / "auto" / "latest.md"
     memo_text = memo_path.read_text(encoding="utf-8") if memo_path.exists() else ""
     anchors_hit = sum(1 for a in AUTO_MEMO_ANCHORS if a.lower() in memo_text.lower())
-    checks.append(_check("decision_memo_present", anchors_hit >= 3, anchors=anchors_hit))
+    checks.append(
+        _check("decision_memo_present", anchors_hit >= 3, anchors=anchors_hit)
+    )
     executed = _executed_orders(report)
     false_executes = []
     for order in executed:
@@ -3499,14 +3533,14 @@ def write_valid_auto_artifacts(
     rows: list[dict[str, Any]] = []
     for market_id, truth in oracle["markets"].items():
         action = truth.get("action")
-        bucket = truth.get("bucket") or (
-            "core" if "core" in market_id else "adjacent"
-        )
+        bucket = truth.get("bucket") or ("core" if "core" in market_id else "adjacent")
         rows.append(
             {
                 "market": market_id,
                 "bucket": bucket if bucket in VALID_BUCKETS else "adjacent",
-                "decision": "executed" if action == "execute" else str(action or "skip"),
+                "decision": "executed"
+                if action == "execute"
+                else str(action or "skip"),
                 "reason": truth.get("why") or "oracle-aligned decision",
             }
         )
@@ -3532,7 +3566,11 @@ def write_valid_auto_artifacts(
     decision = (
         "executed"
         if orders
-        else ("blocked" if round_n in {1, 4} and "blocked" in oracle["expected_decision"] else "skipped")
+        else (
+            "blocked"
+            if round_n in {1, 4} and "blocked" in oracle["expected_decision"]
+            else "skipped"
+        )
     )
     if round_n == 1:
         decision = "skipped"
@@ -3554,7 +3592,9 @@ def write_valid_auto_artifacts(
         f"# Auto Decision: {decision}\n\n"
         "## Context\nSimulated world scan.\n\n"
         "## Candidates\n"
-        + "\n".join(f"- {row['market']} [{row['bucket']}] -> {row['decision']}" for row in rows)
+        + "\n".join(
+            f"- {row['market']} [{row['bucket']}] -> {row['decision']}" for row in rows
+        )
         + "\n\n## Gate results\nPer-market gates applied.\n\n"
         f"## Decisions\n{len(orders)} executed.\n\n"
         "## Limits\nWithin per-decision and daily caps.\n\n"
@@ -3591,7 +3631,7 @@ def run_loop_case(
     held_positions: set[str] = set()
     with tempfile.TemporaryDirectory(prefix=f"wf-loop-eval-{case.id}-") as tmp:
         workspace = Path(tmp) / "repo"
-        copy_workspace(repo_root(), workspace)
+        copy_workspace(REPO_ROOT, workspace)
         hardening = harden_sandbox(workspace)
         write_json(case_dir / "sandbox_hardening.json", hardening)
         store = JobStore(repo_root=workspace)
@@ -3669,7 +3709,7 @@ def run_loop_case(
             write_json(round_dir / "validator.json", validator)
             judge_result = None
             if judge:
-                rubric = (repo_root() / JUDGE_RUBRIC).read_text(encoding="utf-8")
+                rubric = (REPO_ROOT / JUDGE_RUBRIC).read_text(encoding="utf-8")
                 if case.kind == "improve_loop_worker":
                     extra = (
                         "Planted failure: the strategy enters during low-"
@@ -3723,14 +3763,10 @@ def run_loop_case(
                 advance_improve_round(workspace, case, round_n, trajectory)
             elif case.kind == "auto_decision_worker":
                 report = (
-                    store.read_json(
-                        case.job_id, "reports/auto/latest.json", default={}
-                    )
+                    store.read_json(case.job_id, "reports/auto/latest.json", default={})
                     or {}
                 )
-                settle_auto_round(
-                    oracle, report, held_positions, pnl_rows, round_n
-                )
+                settle_auto_round(oracle, report, held_positions, pnl_rows, round_n)
         kept = case_dir / "workspace"
         if kept.exists():
             shutil.rmtree(kept)
@@ -3827,7 +3863,7 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--iterations must be >= 1")
 
     output_dir = (
-        repo_root() / args.output_dir / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        REPO_ROOT / args.output_dir / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     ).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
@@ -3843,7 +3879,7 @@ def main(argv: list[str] | None = None) -> int:
         resolve_wayfinder_model_env(judge_model, env)
 
     report: dict[str, Any] = {
-        "started_at": utc_now(),
+        "started_at": datetime.now(UTC).isoformat(),
         "live": args.live,
         "judge": args.judge,
         "model": args.model,
@@ -3851,7 +3887,22 @@ def main(argv: list[str] | None = None) -> int:
         "cases": [],
     }
     db_path = Path(args.opencode_db)
-    for case in selected_creation_cases(args.case):
+    creation_cases = (
+        CREATION_CASES
+        if args.case in {"all", "creation"}
+        else [case for case in CREATION_CASES if case.id == args.case]
+    )
+    worker_cases = (
+        WORKER_CASES
+        if args.case in {"all", "workers"}
+        else [case for case in WORKER_CASES if case.id == args.case]
+    )
+    execution_backtest_cases = (
+        EXECUTION_BACKTEST_CASES
+        if args.case in {"all", "execution_backtest"}
+        else [case for case in EXECUTION_BACKTEST_CASES if case.id == args.case]
+    )
+    for case in creation_cases:
         result = run_creation_case(
             case,
             live=args.live,
@@ -3865,7 +3916,7 @@ def main(argv: list[str] | None = None) -> int:
             db_path=db_path,
         )
         report["cases"].append(result)
-    for case in selected_worker_cases(args.case):
+    for case in worker_cases:
         result = run_worker_case(
             case,
             live=args.live,
@@ -3880,7 +3931,7 @@ def main(argv: list[str] | None = None) -> int:
             db_path=db_path,
         )
         report["cases"].append(result)
-    for case in selected_execution_backtest_cases(args.case):
+    for case in execution_backtest_cases:
         result = run_execution_backtest_case(
             case,
             live=args.live,

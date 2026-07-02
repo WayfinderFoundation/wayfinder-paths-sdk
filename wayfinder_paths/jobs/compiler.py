@@ -198,5 +198,6 @@ def compile_job(job_id: str, *, start_daemon: bool = True) -> dict[str, Any]:
 
 
 def _was_linked(previous_links: dict[str, Any], loop: str) -> bool:
-    jobs = previous_links.get("jobs") or []
-    return any(item.get("loop") == loop for item in jobs)
+    # runner_links.json always carries "jobs" — init_layout seeds it, compile
+    # rewrites it.
+    return any(item["loop"] == loop for item in previous_links["jobs"])

@@ -43,10 +43,6 @@ def _canonical_json(data: Any, *, max_chars: int | None = None) -> str:
     return text
 
 
-def _sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 def _drop_volatile_stable_keys(value: Any) -> Any:
     match value:
         case dict():
@@ -87,31 +83,30 @@ def _build_worker_prompt_sections(
     apply_proposal_id: str | None = None,
 ) -> dict[str, str]:
     root = store.job_dir(job_id)
-    job_data = snapshot.get("job") or store.load(job_id).to_dict()
     memory_md = _read_text(root / "memory.md", max_chars=6000)
     memory_json = store.read_json(job_id, "memory.json", default={}) or {}
     recent_journal = _read_text(root / "journal.jsonl", max_chars=4000)
     stable_payload = {
-        "job": _drop_volatile_stable_keys(job_data),
+        "job": _drop_volatile_stable_keys(snapshot["job"]),
         "memory_json": _drop_volatile_stable_keys(memory_json),
     }
     from wayfinder_paths.jobs.ledger import tail_ledger
 
     dynamic_payload = {
-        "scorecard": snapshot.get("scorecard") or {},
+        "scorecard": snapshot["scorecard"],
         # Keep the forward SUMMARY (aggregate signal) full but cap the per-row
         # detail lists: 25 raw trade/run rows can blow the 12k canonical-json
         # budget and, since keys serialize alphabetically, starve the later
         # high-signal keys (ledgers, proposals) out of the prompt entirely.
-        "forward": _compact_forward(snapshot.get("forward") or {}),
-        "runner_links": snapshot.get("runner_links") or {},
-        "proposals": snapshot.get("proposals") or [],
-        "proposal_queue": snapshot.get("proposal_queue") or {},
-        "reports": snapshot.get("reports") or {},
+        "forward": _compact_forward(snapshot["forward"]),
+        "runner_links": snapshot["runner_links"],
+        "proposals": snapshot["proposals"],
+        "proposal_queue": snapshot["proposal_queue"],
+        "reports": snapshot["reports"],
         # Loop-protocol context: the improve loop's baseline + gate state, and
         # the exploration/decision history that keeps wakes non-amnesic (never
         # re-explore a logged no_edge/rejected candidate family unchanged).
-        "backtest": snapshot.get("backtest") or {},
+        "backtest": snapshot["backtest"],
         "gate": snapshot.get("gate") or {},
         "ledgers": {
             "candidates": tail_ledger(store, job_id, "candidates", limit=20),
@@ -151,7 +146,7 @@ def _build_worker_prompt_sections(
         '`core_jobs(action="claim_application", job_id=..., proposal_id=...)`; '
         "if it is applying, do not claim again. Apply edits in the candidate "
         "workspace recorded on the proposal application, not the active workspace. "
-        "Proposals created via `core_jobs(action=\"propose\")` stage their change "
+        'Proposals created via `core_jobs(action="propose")` stage their change '
         "in the candidate at propose time and the claim REUSES that candidate — "
         "verify the change is already present before re-deriving it from the "
         "proposal text, and never recreate the candidate from scratch. "
@@ -196,7 +191,7 @@ def _build_worker_prompt_sections(
         else (
             "- Review the dynamic context against the stable job contract. "
             "When you want to RECOMMEND a strategy/params change, do not "
-            "hand-write proposal JSON: call `core_jobs(action=\"propose\", "
+            'hand-write proposal JSON: call `core_jobs(action="propose", '
             "job_id=..., kind=..., summary=..., intent_contract={...}, "
             "execution_params={...} | candidate_dir=...)` — it stages a "
             "validated candidate, runs the baseline-vs-candidate backtest "
@@ -220,8 +215,8 @@ def _build_worker_prompt_sections(
         "prompt": stable_prefix + "\n" + dynamic_context,
         "stable_prefix": stable_prefix,
         "dynamic_context": dynamic_context,
-        "stable_prefix_hash": _sha256_text(stable_prefix),
-        "dynamic_context_hash": _sha256_text(dynamic_context),
+        "stable_prefix_hash": hashlib.sha256(stable_prefix.encode()).hexdigest(),
+        "dynamic_context_hash": hashlib.sha256(dynamic_context.encode()).hexdigest(),
     }
 
 
@@ -243,10 +238,11 @@ def prepare_job_worker_prompt(
     snapshot = snapshot_job(job.id, store=store)
     application_claim: dict[str, Any] | None = None
     if apply_proposal_id and claim_application_before_prompt:
-        application_claim = _ensure_application_claimed(
-            store,
-            job.id,
-            apply_proposal_id,
+        proposal = store.load_proposal(job.id, apply_proposal_id)
+        application_claim = (
+            {"proposal": proposal, "already_claimed": True}
+            if proposal["application"]["status"] == "applying"
+            else claim_application(store, job.id, apply_proposal_id)
         )
         snapshot = snapshot_job(job.id, store=store)
 
@@ -384,19 +380,8 @@ def run_job_worker(
     )
 
     if report["status"] != "green":
-        _emit_job_result(
-            report["summary"], job.id, proposal_id=apply_proposal_id
-        )
+        _emit_job_result(report["summary"], job.id, proposal_id=apply_proposal_id)
     return report
-
-
-def _ensure_application_claimed(
-    store: JobStore, job_id: str, proposal_id: str
-) -> dict[str, Any]:
-    proposal = store.load_proposal(job_id, proposal_id)
-    if proposal["application"]["status"] == "applying":
-        return {"proposal": proposal, "already_claimed": True}
-    return claim_application(store, job_id, proposal_id)
 
 
 def _ensure_worker_session(job_id: str, mode: str) -> str | None:

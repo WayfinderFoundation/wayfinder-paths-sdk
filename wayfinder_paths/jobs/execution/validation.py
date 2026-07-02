@@ -71,24 +71,20 @@ def validate_execution_trace(
 
     guard_events = trace.get("guard_events") or []
     stale_timestamps = {
-        event.get("timestamp")
-        for event in guard_events
-        if event.get("kind") == "stale_data"
+        event["timestamp"] for event in guard_events if event["kind"] == "stale_data"
     }
     stale_entries = [
         fill
         for fill in trace["fills"]
-        if fill.get("timestamp") in stale_timestamps
+        if fill["timestamp"] in stale_timestamps
         and fill["status"] in {"filled", "partial"}
-        and not fill.get("reduce_only")
+        and not fill["reduce_only"]
     ]
     state_valid = not stale_entries
     if stale_entries:
         issues.append("position-opening fills executed against stale market data")
 
-    rejected = [
-        event for event in guard_events if event.get("kind") == "intent_rejected"
-    ]
+    rejected = [event for event in guard_events if event["kind"] == "intent_rejected"]
     capacity_valid = not rejected
     if rejected:
         warnings.append(
@@ -207,9 +203,7 @@ def _feature_checks(root: Path, spec: ExecutionSpec) -> list[dict[str, Any]]:
         specs = parse_feature_specs(spec)
     except ValueError as exc:
         # A malformed feature schema is a spec error: blocking.
-        return [
-            {"name": "declared_features_valid", "passed": False, "error": str(exc)}
-        ]
+        return [{"name": "declared_features_valid", "passed": False, "error": str(exc)}]
     if not specs:
         return []
     frames = load_feature_rows([root], specs)
@@ -305,6 +299,7 @@ def _timing_checks(
     """
     is_jobs_v1 = str(job_data.get("execution_contract") or "legacy") == "jobs_v1"
     bar_seconds = bar_interval_seconds(spec.data_contract.get("bar_interval"))
+    params = job_data.get("execution_params") or {}
     checks: list[dict[str, Any]] = [
         {
             "name": "bar_interval_declared",
@@ -322,11 +317,8 @@ def _timing_checks(
             # Without an explicit base, equity/return stats and compound
             # sizing silently use the engine default — declare it.
             "name": "initial_capital_declared",
-            "passed": bool(
-                (job_data.get("execution_params") or {}).get("initial_capital")
-            )
-            or not is_jobs_v1,
-            "value": (job_data.get("execution_params") or {}).get("initial_capital"),
+            "passed": bool(params.get("initial_capital")) or not is_jobs_v1,
+            "value": params.get("initial_capital"),
             "blocking": False,
         },
         {
@@ -336,11 +328,8 @@ def _timing_checks(
             # SuperTrend) will diverge. Declaring it aligns both AND bounds
             # per-tick backtest cost.
             "name": "lookback_bars_declared",
-            "passed": bool(
-                (job_data.get("execution_params") or {}).get("lookback_bars")
-            )
-            or not is_jobs_v1,
-            "value": (job_data.get("execution_params") or {}).get("lookback_bars"),
+            "passed": bool(params.get("lookback_bars")) or not is_jobs_v1,
+            "value": params.get("lookback_bars"),
             "blocking": False,
         },
     ]

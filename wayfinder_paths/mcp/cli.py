@@ -19,16 +19,10 @@ from wayfinder_paths.paths.heartbeat import maybe_heartbeat_installed_paths
 from wayfinder_paths.runner.cli import runner_cli
 
 
-def _first_command(argv: list[str]) -> str | None:
-    for arg in argv:
-        if not arg or arg.startswith("-"):
-            continue
-        return arg
-    return None
-
-
 def main():
-    first_command = _first_command(sys.argv[1:])
+    first_command = next(
+        (arg for arg in sys.argv[1:] if arg and not arg.startswith("-")), None
+    )
     if first_command and first_command not in {"job", "path", "runner"}:
         maybe_heartbeat_installed_paths(trigger="mcp-cli")
 

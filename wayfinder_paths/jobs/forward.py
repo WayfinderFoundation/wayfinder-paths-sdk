@@ -78,7 +78,16 @@ class ForwardRecorder:
             job_dir=job_dir or env_job_dir,
             job_id=job_id or env_job_id,
         )
-        self.job_id = job_id or env_job_id or _job_id_from_forward_dir(self.forward_dir)
+        self.job_id = (
+            job_id
+            or env_job_id
+            or (
+                self.forward_dir.parent.parent.name
+                if self.forward_dir.name == "forward"
+                and self.forward_dir.parent.name == "results"
+                else None
+            )
+        )
         self.mode = mode if mode is not None else os.environ.get("WAYFINDER_JOB_MODE")
         self.revision = (
             revision
@@ -207,7 +216,16 @@ class ForwardRecorder:
         elif kind == "trade":
             trades = summary.setdefault("trades", {})
             trades["closed_count"] = int(trades.get("closed_count") or 0) + 1
-            net_pnl = _extract_net_pnl(row)
+            match row.get("pnl"):
+                case Mapping() as pnl:
+                    raw_pnl = pnl.get("net_usd")
+                    if raw_pnl is None:
+                        raw_pnl = pnl.get("net")
+                case other:
+                    raw_pnl = other
+            if raw_pnl is None:
+                raw_pnl = row.get("net_pnl")
+            net_pnl = float(raw_pnl) if raw_pnl is not None else None
             if net_pnl is not None:
                 trades["net_pnl"] = float(trades.get("net_pnl") or 0) + net_pnl
                 if net_pnl >= 0:
@@ -251,30 +269,6 @@ class ForwardRecorder:
 
 def get_forward_recorder(**kwargs: Any) -> ForwardRecorder:
     return ForwardRecorder(**kwargs)
-
-
-def record_run(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    return get_forward_recorder().record_run(*args, **kwargs)
-
-
-def record_trade(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    return get_forward_recorder().record_trade(*args, **kwargs)
-
-
-def record_trade_open(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    return get_forward_recorder().record_trade_open(*args, **kwargs)
-
-
-def record_trade_close(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    return get_forward_recorder().record_trade_close(*args, **kwargs)
-
-
-def record_order(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    return get_forward_recorder().record_order(*args, **kwargs)
-
-
-def record_fill(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    return get_forward_recorder().record_fill(*args, **kwargs)
 
 
 def load_forward_snapshot(
@@ -334,12 +328,6 @@ def _resolve_forward_dir(
     return path
 
 
-def _job_id_from_forward_dir(path: Path) -> str | None:
-    if path.name == "forward" and path.parent.name == "results":
-        return path.parent.parent.name
-    return None
-
-
 def _merge_payload(
     payload: Mapping[str, Any] | None, fields: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -373,29 +361,6 @@ def _write_json(path: Path, data: Any) -> None:
 def _tail_jsonl(path: Path, limit: int) -> list[dict[str, Any]]:
     if not path.exists() or limit <= 0:
         return []
-    rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[
-        -limit:
-    ]:
-        try:
-            parsed = json.loads(line)
-        except ValueError:
-            continue
-        match parsed:
-            case dict():
-                rows.append(parsed)
-    return rows
-
-
-def _extract_net_pnl(row: Mapping[str, Any]) -> float | None:
-    pnl = row.get("pnl")
-    match pnl:
-        case Mapping():
-            value = pnl.get("net_usd")
-            if value is None:
-                value = pnl.get("net")
-        case _:
-            value = pnl
-    if value is None:
-        value = row.get("net_pnl")
-    return float(value) if value is not None else None
+    # _append_jsonl is the only writer: one JSON object per line, always.
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    return [json.loads(line) for line in lines[-limit:] if line.strip()]

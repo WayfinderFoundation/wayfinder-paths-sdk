@@ -61,6 +61,8 @@ class CcxtMarketFeed:
 
     async def _get_exchange(self) -> Any:
         if self._exchange is None:
+            # lazy: CCXTAdapter imports the full ccxt exchange registry (~0.5s);
+            # injected test fakes and non-ccxt paths never pay it
             from wayfinder_paths.adapters.ccxt_adapter.adapter import CCXTAdapter
 
             self._adapter = CCXTAdapter(
@@ -81,13 +83,14 @@ class CcxtMarketFeed:
             [swap_pair, spot_pair] if self.market_type == "swap" else [spot_pair]
         )
         for pair in candidates:
-            market = self._markets.get(pair)
-            if market and market.get("active", True):
-                self.symbol_map[coin] = pair
-                return pair
+            match self._markets.get(pair):
+                case {"active": active} if not active:
+                    continue
+                case dict() as market if market:
+                    self.symbol_map[coin] = pair
+                    return pair
         raise ValueError(
-            f"no active {self.exchange_id} market for {coin!r}; "
-            f"tried {candidates}"
+            f"no active {self.exchange_id} market for {coin!r}; tried {candidates}"
         )
 
     async def get_completed_bars(
@@ -108,7 +111,10 @@ class CcxtMarketFeed:
         for coin in symbols:
             pair = await self.resolve_market_symbol(coin)
             candles = await self._paginated_ohlcv(
-                pair, interval, start_ms=start_ms, end_ms=end_ms,
+                pair,
+                interval,
+                start_ms=start_ms,
+                end_ms=end_ms,
                 interval_ms=interval_ms,
             )
             for open_ms, open_, high, low, close, volume in candles:
@@ -183,9 +189,7 @@ class CcxtMarketFeed:
                 )
             except Exception as exc:
                 last_error = exc
-                retryable = (
-                    type(exc).__name__ in RETRYABLE_ERRORS or "429" in str(exc)
-                )
+                retryable = type(exc).__name__ in RETRYABLE_ERRORS or "429" in str(exc)
                 if not retryable or attempt >= self.retries - 1:
                     break
                 await asyncio.sleep(0.25 * (2**attempt))
