@@ -97,6 +97,24 @@ def _annotate_hl_profile(
     )
 
 
+async def _unify_split_account_effect(
+    adapter: HyperliquidAdapter, address: str
+) -> dict[str, Any]:
+    """Convert a "default" (split) account to unified, as an advisory effect.
+
+    Advisory means callers must exclude the `ensure_unified` label when
+    computing overall status — a conversion hiccup must not fail the
+    fund movement it accompanies.
+    """
+    uni_ok, uni_msg = await adapter.unify_if_split_account(address)
+    return {
+        "type": "hl",
+        "label": "ensure_unified",
+        "ok": uni_ok,
+        "result": {"message": uni_msg},
+    }
+
+
 async def _ensure_builder_fee_approval(
     adapter: HyperliquidAdapter,
     *,
@@ -1180,17 +1198,8 @@ async def hyperliquid_deposit_usdc(
             # Fresh accounts start in "default" (split spot/perp) mode where
             # bridge credits land in perp and withdrawals can't reach them.
             # Convert after the credit — the account is guaranteed to exist
-            # now, and this is advisory: a conversion hiccup must not report
-            # the (already successful) deposit as failed.
-            uni_ok, uni_msg = await adapter.ensure_unified_account(deposit_sender)
-            effects.append(
-                {
-                    "type": "hl",
-                    "label": "ensure_unified",
-                    "ok": uni_ok,
-                    "result": {"message": uni_msg},
-                }
-            )
+            # by then (HL creates it on first deposit).
+            effects.append(await _unify_split_account_effect(adapter, deposit_sender))
 
     if not sent_ok:
         status = "failed"
@@ -1255,17 +1264,8 @@ async def hyperliquid_withdraw_usdc(
     # Split-mode ("default") accounts hold bridge deposits in the perp
     # clearinghouse where withdraw3 can't reach them ("Insufficient balance
     # for withdrawal"). Converting to unified first merges spot + perp into
-    # one withdrawable balance. Advisory: if conversion fails, proceed and
-    # let the withdraw surface its own error.
-    uni_ok, uni_msg = await adapter.ensure_unified_account(sender)
-    effects.append(
-        {
-            "type": "hl",
-            "label": "ensure_unified",
-            "ok": uni_ok,
-            "result": {"message": uni_msg},
-        }
-    )
+    # one withdrawable balance.
+    effects.append(await _unify_split_account_effect(adapter, sender))
 
     ok_wd, res = await adapter.withdraw(amount=amt, address=sender)
     effects.append({"type": "hl", "label": "withdraw", "ok": ok_wd, "result": res})

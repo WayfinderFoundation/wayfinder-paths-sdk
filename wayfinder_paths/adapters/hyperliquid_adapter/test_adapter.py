@@ -348,3 +348,42 @@ class TestHyperliquidAdapter:
 
         assert ok is False
         assert msg.startswith("Failed to enable unified account")
+
+    @pytest.mark.asyncio
+    async def test_unify_if_split_account_converts_default(
+        self, adapter, mock_info, _patch_adapter
+    ):
+        address = "0x" + "88" * 20
+        mock_info.query_user_abstraction_state.return_value = "default"
+
+        with _patch_adapter():
+            with patch.object(
+                adapter,
+                "set_account_abstraction",
+                new=AsyncMock(return_value=(True, {"status": "ok"})),
+            ) as set_mock:
+                ok, msg = await adapter.unify_if_split_account(address)
+
+        assert ok is True
+        assert msg == "Unified account enabled"
+        set_mock.assert_awaited_once_with(address, "unifiedAccount")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", ["unifiedAccount", "portfolioMargin", "dexAbstraction"])
+    async def test_unify_if_split_account_leaves_non_default_modes_alone(
+        self, adapter, mock_info, _patch_adapter, state
+    ):
+        """portfolioMargin/dexAbstraction are deliberate user choices that
+        already share collateral — money movement must not downgrade them."""
+        address = "0x" + "99" * 20
+        mock_info.query_user_abstraction_state.return_value = state
+
+        with _patch_adapter():
+            with patch.object(
+                adapter, "set_account_abstraction", new=AsyncMock()
+            ) as set_mock:
+                ok, msg = await adapter.unify_if_split_account(address)
+
+        assert ok is True
+        assert state in msg
+        set_mock.assert_not_awaited()

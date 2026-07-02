@@ -1510,6 +1510,24 @@ class HyperliquidAdapter(BaseAdapter):
             return True, "Unified account enabled"
         return False, f"Failed to enable unified account: {result}"
 
+    async def unify_if_split_account(self, address: str) -> tuple[bool, str]:
+        """Convert a "default" (split spot/perp) account to unifiedAccount.
+
+        Unlike ensure_unified_account, this leaves portfolioMargin and
+        dexAbstraction users' deliberately chosen modes alone — those modes
+        already share collateral, so deposits and withdrawals reach the
+        funds without conversion. Only "default" traps bridge credits in
+        the perp clearinghouse.
+        """
+        state = get_info().query_user_abstraction_state(address)
+        if state != "default":
+            return True, f"Account abstraction is '{state}'; no conversion needed"
+
+        ok, result = await self.set_account_abstraction(address, "unifiedAccount")
+        if ok:
+            return True, "Unified account enabled"
+        return False, f"Failed to enable unified account: {result}"
+
     async def ensure_builder_fee_approved(
         self,
         address: str,
@@ -1580,7 +1598,7 @@ class HyperliquidAdapter(BaseAdapter):
             )
         return success, result
 
-    async def _core_perp_usdc(self, address: str) -> float:
+    async def _core_perp_account_value(self, address: str) -> float:
         """Core-dex perp account value via a single clearinghouseState POST.
 
         Deliberately not `get_user_state`, which fans out one POST per perp
@@ -1636,7 +1654,7 @@ class HyperliquidAdapter(BaseAdapter):
 
         async def _combined_usdc() -> float:
             spot, perp = await asyncio.gather(
-                _spot_usdc(), self._core_perp_usdc(address)
+                _spot_usdc(), self._core_perp_account_value(address)
             )
             return spot + perp
 

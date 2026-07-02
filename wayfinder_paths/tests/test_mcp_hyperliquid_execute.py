@@ -273,7 +273,7 @@ async def test_hyperliquid_withdraw_usdc(tmp_path: Path, monkeypatch):
         ),
         patch("wayfinder_paths.mcp.tools.hyperliquid.CONFIG", {}),
         patch(
-            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.ensure_unified_account",
+            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.unify_if_split_account",
             new=ensure_mock,
         ),
         patch(
@@ -314,7 +314,7 @@ async def test_hyperliquid_withdraw_usdc_ensure_unified_is_advisory(
         ),
         patch("wayfinder_paths.mcp.tools.hyperliquid.CONFIG", {}),
         patch(
-            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.ensure_unified_account",
+            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.unify_if_split_account",
             new=AsyncMock(return_value=(False, "Failed to enable unified account")),
         ),
         patch(
@@ -352,7 +352,7 @@ def _deposit_patches(wallet, *, wait_result, ensure_mock):
             new=AsyncMock(return_value=wait_result),
         ),
         patch(
-            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.ensure_unified_account",
+            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.unify_if_split_account",
             new=ensure_mock,
         ),
     )

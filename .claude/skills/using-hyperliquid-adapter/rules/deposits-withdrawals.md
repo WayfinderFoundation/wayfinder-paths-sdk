@@ -67,7 +67,7 @@ Claude Code shortcut:
 
 - Call: `HyperliquidAdapter.wait_for_deposit(address, expected_increase, timeout_s=..., poll_interval_s=...)`
 - Mechanism: polls **both** balance surfaces — spot USDC (`spotClearinghouseState`, where credits land for unified-account users) and core-dex perp `marginSummary.accountValue` (`clearinghouseState`, where Bridge2 credits land for accounts still in `"default"` split mode, i.e. every fresh account) — and confirms once their sum rises by ≥ 95% of the expected amount. There is no ledger fast-path.
-- The `mcp__wayfinder__hyperliquid_deposit_usdc` shortcut waits for the credit, then auto-enables **UnifiedAccount mode** (`ensure_unified` effect) so the balance is withdrawable and shared across spot/perps.
+- The `mcp__wayfinder__hyperliquid_deposit_usdc` shortcut waits for the credit, then auto-enables **UnifiedAccount mode** (`ensure_unified` effect) so the balance is withdrawable and shared across spot/perps. Only `"default"` split-mode accounts are converted — deliberate `portfolioMargin`/`dexAbstraction` modes are left alone.
 - Tool statuses: `confirmed` (tx + credit observed), `unconfirmed` (Arbitrum tx succeeded but credit not observed within the wait window — funds are likely still in flight; check `hyperliquid_get_state` before retrying, a retry sends additional funds), `failed` (the bridge tx itself failed).
 - `final_balance_usd` is the post-credit spot+perp USDC sum.
 
