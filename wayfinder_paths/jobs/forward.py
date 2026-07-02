@@ -77,6 +77,34 @@ def is_forward_empty(forward: dict[str, Any] | None) -> bool:
     return True
 
 
+def render_forward_recap(summary: dict[str, Any] | None) -> str:
+    """The single sanctioned source of a forward-performance sentence, computed
+    deterministically from `forward.summary` (which the ForwardRecorder derives
+    from live transactions). The worker cites this verbatim instead of authoring
+    its own numbers — forward performance is system-owned, not LLM-narrated."""
+    summary = summary or {}
+    trades = summary.get("trades") or {}
+    runs = summary.get("runs") or {}
+    closed = int(trades.get("closed_count") or 0)
+    run_count = int(runs.get("count") or 0)
+    if closed <= 0:
+        if run_count > 0:
+            return f"No forward trades yet ({run_count} runs, 0 closed)"
+        return "No forward trades yet"
+    wins = int(trades.get("wins") or 0)
+    losses = int(trades.get("losses") or 0)
+    # Stored win_rate is a fraction (wins/closed); render as a whole percent.
+    win_rate = trades.get("win_rate")
+    win_rate_pct = (float(win_rate) * 100.0) if win_rate is not None else (
+        wins / closed * 100.0
+    )
+    net_pnl = float(trades.get("net_pnl") or 0.0)
+    return (
+        f"Forward: {closed} closed · {wins}W/{losses}L · "
+        f"{win_rate_pct:.0f}% WR · {net_pnl:+g} net"
+    )
+
+
 class ForwardRecorder:
     """Optional structured forward telemetry writer for high-level jobs.
 
@@ -313,8 +341,12 @@ def load_forward_snapshot(
         root = Path.cwd() / ".wayfinder" / "jobs" / safe_job_id(job_id)
     forward_dir = root / "results" / "forward"
     summary_path = forward_dir / Path(DEFAULT_FORWARD_SUMMARY).name
+    summary = _read_json(summary_path, default_forward_summary(job_id))
     return {
-        "summary": _read_json(summary_path, default_forward_summary(job_id)),
+        "summary": summary,
+        # System-owned forward-performance line (from live transactions) that the
+        # worker cites verbatim instead of authoring its own numbers.
+        "recap": render_forward_recap(summary),
         "recent_runs": _tail_jsonl(
             forward_dir / Path(DEFAULT_FORWARD_RUNS).name, limit
         ),

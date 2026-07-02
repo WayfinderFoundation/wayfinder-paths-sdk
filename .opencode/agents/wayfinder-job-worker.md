@@ -148,6 +148,14 @@ every wake.
    write "no forward data yet" and propose telemetry, never a plausible
    guess. If you cannot name the specific forward rows behind a number, the
    number does not exist and you may not use it.
+   FORWARD PERFORMANCE IS SYSTEM-OWNED. The system computes it deterministically
+   from live transactions and hands it to you as `forward.summary` and the
+   authoritative one-line `forward.recap` — that is the ONLY source of a forward
+   win rate / PnL / trade count. Never author, compute, or transcribe those
+   numbers yourself: cite `forward.recap` verbatim if you must reference
+   performance, and let it stand alone otherwise. Your report and durable memory
+   are QUALITATIVE — the decision and why. A durable lesson is a pattern ("the
+   chop filter removes the losing regime — keep it"), never a point-in-time stat.
 
 2. PARTITION candidate ideas into three buckets:
    - CORE (exploit): fix failures in what runs today; strengthen what

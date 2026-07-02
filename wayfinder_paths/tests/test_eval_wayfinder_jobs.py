@@ -526,6 +526,9 @@ def test_improve_loop_protocol_is_pinned_in_worker_config() -> None:
     assert "PROPOSE IS TERMINAL" in text
     # Efficiency must not cost the deliverables (memo/report/ledger).
     assert "Acting fast means skipping ORIENTATION" in text
+    # Forward performance is system-owned; the agent cites, never authors.
+    assert "FORWARD PERFORMANCE IS SYSTEM-OWNED" in text
+    assert "cite `forward.recap`" in text
 
 
 def test_auto_loop_protocol_is_pinned_in_auto_worker_config() -> None:

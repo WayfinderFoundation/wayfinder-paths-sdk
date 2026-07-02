@@ -10,6 +10,7 @@ from wayfinder_paths.jobs.forward import (
     get_forward_recorder,
     is_forward_empty,
     load_forward_snapshot,
+    render_forward_recap,
 )
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
@@ -27,6 +28,48 @@ def _empty_forward() -> dict:
         "recent_orders": [],
         "recent_fills": [],
     }
+
+
+def test_render_forward_recap_is_deterministic_and_never_prints_none() -> None:
+    # Empty / no closed trades.
+    assert render_forward_recap(default_forward_summary("j")) == "No forward trades yet"
+    assert render_forward_recap(None) == "No forward trades yet"
+    runs_only = default_forward_summary("j")
+    runs_only["runs"]["count"] = 3
+    assert render_forward_recap(runs_only) == "No forward trades yet (3 runs, 0 closed)"
+
+    # Full case: stored win_rate is a fraction (0.6) -> rendered as 60%.
+    full = default_forward_summary("j")
+    full["trades"].update(
+        {"closed_count": 5, "wins": 3, "losses": 2, "win_rate": 0.6, "net_pnl": 12.5}
+    )
+    assert render_forward_recap(full) == "Forward: 5 closed · 3W/2L · 60% WR · +12.5 net"
+
+    # win_rate=None is derived from wins/closed, never printed as "None".
+    derived = default_forward_summary("j")
+    derived["trades"].update(
+        {"closed_count": 4, "wins": 1, "losses": 3, "win_rate": None, "net_pnl": -8}
+    )
+    recap = render_forward_recap(derived)
+    assert recap == "Forward: 4 closed · 1W/3L · 25% WR · -8 net"
+    assert "None" not in recap
+
+
+def test_load_forward_snapshot_includes_system_recap(
+    tmp_path: Path, monkeypatch
+) -> None:
+    job_dir = tmp_path / ".wayfinder" / "jobs" / "recap-job"
+    forward_dir = job_dir / "results" / "forward"
+    monkeypatch.setenv("WAYFINDER_HIGH_LEVEL_JOB_ID", "recap-job")
+    monkeypatch.setenv("WAYFINDER_JOB_DIR", str(job_dir))
+    monkeypatch.setenv("WAYFINDER_FORWARD_DIR", str(forward_dir))
+
+    fresh = load_forward_snapshot("recap-job", job_dir=job_dir)
+    assert fresh["recap"] == "No forward trades yet"
+
+    get_forward_recorder().record_trade({"pnl": {"net_usd": 4.0}, "reason": "tp"})
+    after = load_forward_snapshot("recap-job", job_dir=job_dir)
+    assert after["recap"].startswith("Forward: 1 closed")
 
 
 def test_is_forward_empty_detects_zero_state() -> None:
