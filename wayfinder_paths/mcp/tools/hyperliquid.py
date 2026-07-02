@@ -97,6 +97,24 @@ def _annotate_hl_profile(
     )
 
 
+async def _unify_split_account_effect(
+    adapter: HyperliquidAdapter, address: str
+) -> dict[str, Any]:
+    """Convert a "default" (split) account to unified, as an advisory effect.
+
+    Advisory means callers must exclude the `ensure_unified` label when
+    computing overall status — a conversion hiccup must not fail the
+    fund movement it accompanies.
+    """
+    uni_ok, uni_msg = await adapter.unify_if_split_account(address)
+    return {
+        "type": "hl",
+        "label": "ensure_unified",
+        "ok": uni_ok,
+        "result": {"message": uni_msg},
+    }
+
+
 async def _ensure_builder_fee_approval(
     adapter: HyperliquidAdapter,
     *,
@@ -1125,7 +1143,10 @@ async def hyperliquid_deposit_usdc(
     """Bridge USDC from Arbitrum into the Hyperliquid clearinghouse.
 
     Deposits below 5 USDC are **permanently lost** by the bridge. Auto-waits for
-    the credit on Hyperliquid before returning.
+    the credit on Hyperliquid before returning, then enables unified-account
+    mode so the balance is withdrawable and shared across spot/perps. Status
+    `unconfirmed` means the bridge tx succeeded but the credit wasn't observed
+    yet — check hyperliquid_get_state before retrying.
 
     Args:
         wallet_label: Wallet to send Arbitrum USDC from.
@@ -1159,21 +1180,33 @@ async def hyperliquid_deposit_usdc(
         {"type": "hl", "label": "deposit", "ok": sent_ok, "result": sent_result}
     )
 
+    landed = False
     if sent_ok:
-        ok_landed, final_balance = await adapter.wait_for_deposit(deposit_sender, amt)
+        landed, final_balance = await adapter.wait_for_deposit(deposit_sender, amt)
         effects.append(
             {
                 "type": "hl",
                 "label": "wait_for_credit",
-                "ok": ok_landed,
+                "ok": landed,
                 "result": {
-                    "confirmed": bool(ok_landed),
+                    "confirmed": bool(landed),
                     "final_balance_usd": float(final_balance),
                 },
             }
         )
+        if landed:
+            # Fresh accounts start in "default" (split spot/perp) mode where
+            # bridge credits land in perp and withdrawals can't reach them.
+            # Convert after the credit — the account is guaranteed to exist
+            # by then (HL creates it on first deposit).
+            effects.append(await _unify_split_account_effect(adapter, deposit_sender))
 
-    status = "confirmed" if all(e["ok"] for e in effects) else "failed"
+    if not sent_ok:
+        status = "failed"
+    elif landed:
+        status = "confirmed"
+    else:
+        status = "unconfirmed"
     _annotate_hl_profile(
         address=deposit_sender,
         label=wallet_label,
@@ -1181,15 +1214,21 @@ async def hyperliquid_deposit_usdc(
         status=status,
         details={"amount_usdc": amt, "chain_id": 42161},
     )
-    return ok(
-        {
-            "status": status,
-            "wallet_label": wallet_label,
-            "address": deposit_sender,
-            "amount_usdc": amt,
-            "effects": effects,
-        }
-    )
+    payload: dict[str, Any] = {
+        "status": status,
+        "wallet_label": wallet_label,
+        "address": deposit_sender,
+        "amount_usdc": amt,
+        "effects": effects,
+    }
+    if status == "unconfirmed":
+        payload["note"] = (
+            "The Arbitrum bridge transaction succeeded but the Hyperliquid "
+            "credit was not observed within the wait window. Funds are likely "
+            "still in flight — re-check with hyperliquid_get_state before "
+            "retrying (a retry sends additional funds)."
+        )
+    return ok(payload)
 
 
 @catch_errors
@@ -1203,7 +1242,8 @@ async def hyperliquid_withdraw_usdc(
     `amount_usdc` is the **gross amount debited from the unified balance**.
     Bridge2 takes a $1 USDC fee out of it, so the wallet receives
     `amount_usdc - 1` USDC on Arbitrum. Minimum `amount_usdc` is `$2`
-    (anything smaller leaves nothing after the fee).
+    (anything smaller leaves nothing after the fee). Unified-account mode is
+    auto-enabled first so split-mode perp balances become withdrawable.
 
     Args:
         wallet_label: Wallet receiving the withdrawal on Arbitrum.
@@ -1221,6 +1261,12 @@ async def hyperliquid_withdraw_usdc(
     adapter, sender = await _make_hl_adapter(wallet_label)
 
     effects: list[dict[str, Any]] = []
+    # Split-mode ("default") accounts hold bridge deposits in the perp
+    # clearinghouse where withdraw3 can't reach them ("Insufficient balance
+    # for withdrawal"). Converting to unified first merges spot + perp into
+    # one withdrawable balance.
+    effects.append(await _unify_split_account_effect(adapter, sender))
+
     ok_wd, res = await adapter.withdraw(amount=amt, address=sender)
     effects.append({"type": "hl", "label": "withdraw", "ok": ok_wd, "result": res})
 
@@ -1235,7 +1281,12 @@ async def hyperliquid_withdraw_usdc(
             }
         )
 
-    status = "confirmed" if all(e["ok"] for e in effects) else "failed"
+    # ensure_unified is advisory — status reflects only the withdraw itself.
+    status = (
+        "confirmed"
+        if all(e["ok"] for e in effects if e["label"] != "ensure_unified")
+        else "failed"
+    )
     _annotate_hl_profile(
         address=sender,
         label=wallet_label,

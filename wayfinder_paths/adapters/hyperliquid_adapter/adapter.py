@@ -1510,6 +1510,24 @@ class HyperliquidAdapter(BaseAdapter):
             return True, "Unified account enabled"
         return False, f"Failed to enable unified account: {result}"
 
+    async def unify_if_split_account(self, address: str) -> tuple[bool, str]:
+        """Convert a "default" (split spot/perp) account to unifiedAccount.
+
+        Unlike ensure_unified_account, this leaves portfolioMargin and
+        dexAbstraction users' deliberately chosen modes alone — those modes
+        already share collateral, so deposits and withdrawals reach the
+        funds without conversion. Only "default" traps bridge credits in
+        the perp clearinghouse.
+        """
+        state = get_info().query_user_abstraction_state(address)
+        if state != "default":
+            return True, f"Account abstraction is '{state}'; no conversion needed"
+
+        ok, result = await self.set_account_abstraction(address, "unifiedAccount")
+        if ok:
+            return True, "Unified account enabled"
+        return False, f"Failed to enable unified account: {result}"
+
     async def ensure_builder_fee_approved(
         self,
         address: str,
@@ -1580,6 +1598,28 @@ class HyperliquidAdapter(BaseAdapter):
             )
         return success, result
 
+    async def _core_perp_account_value(self, address: str) -> float:
+        """Core-dex perp account value via a single clearinghouseState POST.
+
+        Deliberately not `get_user_state`, which fans out one POST per perp
+        dex — Bridge2 credits only ever land on the core dex.
+        """
+        try:
+            state = await HYPERLIQUID_QUICKNODE_INFO_CLIENT.post(
+                {"type": "clearinghouseState", "user": address}
+            )
+        except Exception as exc:
+            self.logger.error(
+                f"Failed to fetch clearinghouseState for {address}: {exc}"
+            )
+            return 0.0
+        for summary_key in ("marginSummary", "crossMarginSummary"):
+            summary = state.get(summary_key) or {}
+            value = summary.get("accountValue")
+            if value is not None:
+                return float(value)
+        return 0.0
+
     async def wait_for_deposit(
         self,
         address: str,
@@ -1588,15 +1628,19 @@ class HyperliquidAdapter(BaseAdapter):
         timeout_s: int = 120,
         poll_interval_s: int = 5,
     ) -> tuple[bool, float]:
-        """Wait until unified USDC reflects a fresh Bridge2 deposit.
+        """Wait until a fresh Bridge2 deposit is credited on Hyperliquid.
 
-        Returns `(True, post-credit_balance)` once spot USDC crosses
-        `initial + 0.95 * expected_increase`, or `(False, latest)` on timeout.
+        Returns `(True, post-credit_balance)` once combined USDC (spot + core
+        perp account value) crosses `initial + 0.95 * expected_increase`, or
+        `(False, latest)` on timeout.
 
-        Polls the spot balance directly. We intentionally do NOT short-circuit
-        on `user_non_funding_ledger_updates` (the deposit ledger event) — HL
-        writes that record a few seconds before the unified balance reflects
-        the credit, so the returned balance would understate available funds.
+        Bridge2 credits land in the unified/spot balance for unifiedAccount
+        users but in the PERP clearinghouse for accounts still in "default"
+        (split) mode — fresh accounts start there — so both surfaces are
+        polled. We intentionally do NOT short-circuit on
+        `user_non_funding_ledger_updates` (the deposit ledger event) — HL
+        writes that record a few seconds before the balance reflects the
+        credit, so the returned balance would understate available funds.
         """
         timeout_s = max(0, int(timeout_s))
         poll_interval_s = max(1, int(poll_interval_s))
@@ -1610,26 +1654,33 @@ class HyperliquidAdapter(BaseAdapter):
                     return float(bal["total"])
             return 0.0
 
-        initial = await _spot_usdc()
+        async def _combined_usdc() -> float:
+            spot, perp = await asyncio.gather(
+                _spot_usdc(), self._core_perp_account_value(address)
+            )
+            return spot + perp
+
+        initial = await _combined_usdc()
         target = initial + float(expected_increase) * 0.95
         self.logger.info(
-            f"Waiting for Hyperliquid deposit. Initial USDC: ${initial:.2f}, "
-            f"target ≥ ${target:.2f} (expecting +${expected_increase:.2f})."
+            f"Waiting for Hyperliquid deposit. Initial USDC (spot+perp): "
+            f"${initial:.2f}, target ≥ ${target:.2f} "
+            f"(expecting +${expected_increase:.2f})."
         )
 
         deadline = time.monotonic() + timeout_s
         while True:
-            current = await _spot_usdc()
+            current = await _combined_usdc()
             if current >= target:
                 self.logger.info(
-                    f"Hyperliquid deposit confirmed: spot USDC ${current:.2f} "
+                    f"Hyperliquid deposit confirmed: USDC ${current:.2f} "
                     f"(+${current - initial:.2f}, expected +${expected_increase:.2f})"
                 )
                 return True, current
             if time.monotonic() >= deadline:
                 self.logger.warning(
                     f"Hyperliquid deposit not confirmed after {timeout_s}s "
-                    f"(spot USDC ${current:.2f}, target ${target:.2f}). "
+                    f"(spot+perp USDC ${current:.2f}, target ${target:.2f}). "
                     "Deposits typically credit in < 1 minute but can take longer."
                 )
                 return False, current

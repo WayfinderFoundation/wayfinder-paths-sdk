@@ -251,6 +251,15 @@ async def broadcast_transaction(chain_id, signed_transaction: bytes) -> str:
         return tx_hash.hex()
 
 
+async def sponsorship_enabled() -> bool:
+    # Fetch failure falls back to the local sign-and-broadcast path.
+    try:
+        features = await WALLET_CLIENT.get_features()
+        return "privy_gas_sponsorship_enabled" in features["enabledSwitches"]
+    except Exception:
+        return False
+
+
 async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> str:
     """Submit via the backend's sponsored broadcast and return the tx hash.
 
@@ -348,6 +357,7 @@ async def send_transaction(
         sign_callback.wallet_address
         and chain_id in GAS_SPONSORED_CHAIN_IDS
         and not _is_gorlami_fork_chain(chain_id)
+        and await sponsorship_enabled()
     ):
         txn_hash = await send_sponsored_transaction(
             sign_callback.wallet_address, transaction
