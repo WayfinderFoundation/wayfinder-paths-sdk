@@ -78,9 +78,16 @@ class FeatureSpec:
 
 def parse_feature_specs(spec: ExecutionSpec) -> list[FeatureSpec]:
     raw = spec.data_contract.get("features") or []
-    if not isinstance(raw, list):
-        raise ValueError("execution_spec.data_contract.features must be a list")
-    specs = [FeatureSpec.from_dict(item) for item in raw if isinstance(item, Mapping)]
+    match raw:
+        case list():
+            pass
+        case _:
+            raise ValueError("execution_spec.data_contract.features must be a list")
+    specs = []
+    for item in raw:
+        match item:
+            case Mapping():
+                specs.append(FeatureSpec.from_dict(item))
     for item in specs:
         if item.source not in FEATURE_SOURCES:
             raise ValueError(
@@ -106,8 +113,9 @@ def _load_file_rows(roots: list[Path], spec: FeatureSpec) -> list[dict[str, Any]
                 row = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(row, dict) and str(row.get("name")) == spec.name:
-                rows.append(row)
+            match row:
+                case dict() if str(row.get("name")) == spec.name:
+                    rows.append(row)
         return rows
     return []
 
@@ -128,9 +136,7 @@ def load_feature_rows(
     for spec in specs:
         rows = FEATURE_SOURCES[spec.source](roots, spec)
         if not rows:
-            frames[spec.name] = pd.DataFrame(
-                columns=["timestamp", "value", "symbol"]
-            )
+            frames[spec.name] = pd.DataFrame(columns=["timestamp", "value", "symbol"])
             continue
         frame = pd.DataFrame(
             [
@@ -170,9 +176,7 @@ def merge_features(
             continue
         per_symbol = feature["symbol"].notna().any()
         if per_symbol:
-            sub = feature.dropna(subset=["symbol"]).rename(
-                columns={"value": column}
-            )
+            sub = feature.dropna(subset=["symbol"]).rename(columns={"value": column})
             sub["symbol"] = sub["symbol"].astype(str)
             merged = pd.merge_asof(
                 bars.sort_values("timestamp"),
@@ -193,9 +197,7 @@ def merge_features(
     for spec in specs:
         column = spec.column_name
         if column in bars.columns:
-            bars[column] = bars[column].astype(object).where(
-                bars[column].notna(), None
-            )
+            bars[column] = bars[column].astype(object).where(bars[column].notna(), None)
     return CompletedBarsView(bars)
 
 
@@ -257,9 +259,7 @@ def summarize_features(
                 "available": True,
                 "latest_value": latest["value"],
                 "latest_timestamp": latest["timestamp"].isoformat(),
-                "age_seconds": float(
-                    (now - latest["timestamp"]).total_seconds()
-                ),
+                "age_seconds": float((now - latest["timestamp"]).total_seconds()),
                 "row_count": int(len(frame)),
             }
         )

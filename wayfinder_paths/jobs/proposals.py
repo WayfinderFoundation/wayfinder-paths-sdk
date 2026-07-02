@@ -38,6 +38,7 @@ from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import sync_all_jobs
 from wayfinder_paths.jobs.validation import validation_summary
+from wayfinder_paths.jobs.worker import JOB_RESULT_MARKER
 
 PROPOSAL_KINDS = {"code_change", "params_update", "model_update"}
 
@@ -170,8 +171,6 @@ def propose_change(
     sync_all_jobs(store=store)
     # Surface a chat affordance (contract C5): the opencode harness turns this
     # marker into a job_result part; the FE renders a review deep-link chip.
-    from wayfinder_paths.jobs.worker import JOB_RESULT_MARKER
-
     print(
         JOB_RESULT_MARKER
         + json.dumps(
@@ -326,10 +325,9 @@ def _stat_deltas(
     deltas: dict[str, float] = {}
     for key, candidate_value in candidate.items():
         baseline_value = baseline.get(key)
-        if isinstance(candidate_value, (int, float)) and isinstance(
-            baseline_value, (int, float)
-        ):
-            deltas[key] = float(candidate_value) - float(baseline_value)
+        match candidate_value, baseline_value:
+            case (int() | float(), int() | float()):
+                deltas[key] = float(candidate_value) - float(baseline_value)
     return deltas
 
 
@@ -354,4 +352,8 @@ def _read_json(path: Path) -> dict[str, Any] | None:
         loaded = json.loads(path.read_text(encoding="utf-8"))
     except ValueError:
         return None
-    return loaded if isinstance(loaded, dict) else None
+    match loaded:
+        case dict():
+            return loaded
+        case _:
+            return None

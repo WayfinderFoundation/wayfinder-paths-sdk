@@ -2366,9 +2366,10 @@ def harden_sandbox(workspace: Path) -> dict[str, Any]:
     if opencode_json.exists():
         data = json.loads(opencode_json.read_text(encoding="utf-8"))
         for name, server in (data.get("mcp") or {}).items():
-            if isinstance(server, dict) and server.get("enabled"):
-                server["enabled"] = False
-                summary["mcp_disabled"].append(name)
+            match server:
+                case dict() if server.get("enabled"):
+                    server["enabled"] = False
+                    summary["mcp_disabled"].append(name)
         opencode_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     real_venv = REPO_ROOT / ".venv"
     sandbox_venv = workspace / ".venv"
@@ -3360,12 +3361,16 @@ def seed_auto_round(workspace: Path, case: LoopCase, round_n: int) -> dict[str, 
 
 def _executed_orders(report: dict[str, Any]) -> list[dict[str, Any]]:
     orders = report.get("orders") or []
-    if isinstance(orders, dict):
-        orders = orders.get("successful") or orders.get("attempted") or []
+    match orders:
+        case dict():
+            orders = orders.get("successful") or orders.get("attempted") or []
     result = []
     for order in orders:
-        if not isinstance(order, dict):
-            continue
+        match order:
+            case dict():
+                pass
+            case _:
+                continue
         status = str(order.get("status") or "filled").lower()
         if status in {"filled", "executed", "placed", "success", "successful", "ok"}:
             result.append(order)
@@ -3381,8 +3386,9 @@ def _order_market(order: dict[str, Any]) -> str:
 def _order_notional(order: dict[str, Any]) -> float:
     for key in ("notional", "notional_usd", "size_usd", "amount", "size"):
         value = order.get(key)
-        if isinstance(value, (int, float)):
-            return float(value)
+        match value:
+            case int() | float():
+                return float(value)
     return 0.0
 
 

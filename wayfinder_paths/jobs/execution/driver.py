@@ -80,9 +80,7 @@ def _tick_trigger_events(payload: dict[str, Any]) -> list[str]:
     if snapshot.get("status") == "ambiguous":
         events.append("reconcile_mismatch")
     guard_kinds = {
-        str(event.get("kind"))
-        for event in payload.get("guard_events") or []
-        if isinstance(event, dict)
+        str(event.get("kind")) for event in payload.get("guard_events") or []
     }
     if guard_kinds & {"risk_halt", "manual_halt"}:
         events.append("risk_halt")

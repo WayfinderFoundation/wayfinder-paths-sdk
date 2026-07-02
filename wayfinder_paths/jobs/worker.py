@@ -65,11 +65,9 @@ def _compact_forward(forward: dict[str, Any]) -> dict[str, Any]:
     The summary carries the aggregate (win rate, streaks, net pnl); the raw
     row lists are for spot-checking, not bulk — and they must not evict the
     ledgers/proposals that the loop protocols depend on."""
-    if not isinstance(forward, dict):
-        return {}
     compact = dict(forward)
     for key, value in forward.items():
-        if key.startswith("recent_") and isinstance(value, list):
+        if key.startswith("recent_"):
             compact[key] = value[-_FORWARD_DETAIL_ROWS:]
     return compact
 
