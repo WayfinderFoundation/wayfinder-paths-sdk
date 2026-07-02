@@ -17,6 +17,7 @@ from wayfinder_paths.jobs.models import (
     normalize_agent_mode,
     utc_now_iso,
 )
+from wayfinder_paths.jobs.forward import is_forward_empty
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
 
@@ -97,13 +98,34 @@ def _build_worker_prompt_sections(
     }
     from wayfinder_paths.jobs.ledger import tail_ledger
 
+    forward_block = _compact_forward(snapshot.get("forward") or {})
+    backtest_block = dict(snapshot.get("backtest") or {})
+    # When no forward telemetry has executed, fence the two blocks that an agent
+    # otherwise confuses: label the empty forward state and mark the historical
+    # backtest as NOT a forward result — co-located with the numbers, so the
+    # disambiguation leads the data (the `_`-prefixed key sorts first inside its
+    # block under canonical alphabetical serialization). The backtest stats stay
+    # intact; the agent still needs them to diagnose on the first wake.
+    if is_forward_empty(forward_block):
+        forward_block["_status"] = (
+            "NO_FORWARD_DATA: 0 runs/trades/orders/fills have executed — you "
+            "have ZERO forward evidence this wake. Do not report any win rate, "
+            "PnL, or trade count as a forward result."
+        )
+        if backtest_block:
+            backtest_block["_basis"] = (
+                "HISTORICAL_BACKTEST: pre-launch simulation, NOT forward/live "
+                "performance. Never restate these figures as forward results "
+                "or write them to memory as performance."
+            )
+
     dynamic_payload = {
         "scorecard": snapshot.get("scorecard") or {},
         # Keep the forward SUMMARY (aggregate signal) full but cap the per-row
         # detail lists: 25 raw trade/run rows can blow the 12k canonical-json
         # budget and, since keys serialize alphabetically, starve the later
         # high-signal keys (ledgers, proposals) out of the prompt entirely.
-        "forward": _compact_forward(snapshot.get("forward") or {}),
+        "forward": forward_block,
         "runner_links": snapshot.get("runner_links") or {},
         "proposals": snapshot.get("proposals") or [],
         "proposal_queue": snapshot.get("proposal_queue") or {},
@@ -111,7 +133,7 @@ def _build_worker_prompt_sections(
         # Loop-protocol context: the improve loop's baseline + gate state, and
         # the exploration/decision history that keeps wakes non-amnesic (never
         # re-explore a logged no_edge/rejected candidate family unchanged).
-        "backtest": snapshot.get("backtest") or {},
+        "backtest": backtest_block,
         "gate": snapshot.get("gate") or {},
         "ledgers": {
             "candidates": tail_ledger(store, job_id, "candidates", limit=20),

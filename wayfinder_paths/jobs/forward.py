@@ -53,6 +53,30 @@ def default_forward_summary(job_id: str | None = None) -> dict[str, Any]:
     }
 
 
+def is_forward_empty(forward: dict[str, Any] | None) -> bool:
+    """True when no forward telemetry has executed yet — no runs, closed
+    trades, orders, or fills, and no recent detail rows. Used to fence the
+    prompt's historical backtest block so an agent cannot restate backtest
+    numbers as forward performance when there is no forward evidence. The
+    `summary` sub-dict is always present (seeded by `default_forward_summary`),
+    so the `.get` chains are safe on a partial or missing snapshot."""
+    if not isinstance(forward, dict):
+        return True
+    summary = forward.get("summary") or {}
+    counts = (
+        (summary.get("runs") or {}).get("count"),
+        (summary.get("trades") or {}).get("closed_count"),
+        (summary.get("orders") or {}).get("count"),
+        (summary.get("fills") or {}).get("count"),
+    )
+    if any(count for count in counts):
+        return False
+    for key in ("recent_runs", "recent_trades", "recent_orders", "recent_fills"):
+        if forward.get(key):
+            return False
+    return True
+
+
 class ForwardRecorder:
     """Optional structured forward telemetry writer for high-level jobs.
 

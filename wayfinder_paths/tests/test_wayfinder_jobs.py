@@ -773,6 +773,45 @@ def test_worker_prompt_ledgers_and_backtest_are_dynamic_only(
     assert "chop-filter-variant" not in second["stable_prefix"]
 
 
+def test_worker_prompt_fences_backtest_when_forward_empty(tmp_path: Path) -> None:
+    """With no forward telemetry, the prompt fences the historical backtest and
+    marks the empty forward state — co-located with the numbers — so the agent
+    cannot restate backtest stats as forward performance. The stats stay so the
+    agent can still diagnose."""
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("fence-empty", agent_mode="intervene")
+    store.save(job)
+
+    empty_snapshot = {  # no forward key -> forward is empty
+        "job": job.to_dict(),
+        "backtest": {
+            "available": True,
+            "stats": {"win_rate": 1.0, "net_pnl": 588.44},
+        },
+    }
+    dyn = _build_worker_prompt_sections(
+        store=store, job_id=job.id, mode="intervene", snapshot=empty_snapshot
+    )["dynamic_context"]
+    assert "NO_FORWARD_DATA" in dyn
+    assert "HISTORICAL_BACKTEST" in dyn
+    assert '"backtest"' in dyn  # stats retained, just fenced
+    assert '"win_rate"' in dyn
+
+    live_snapshot = {  # a populated forward must NOT carry the empty marker
+        "job": job.to_dict(),
+        "backtest": {"available": True, "stats": {"win_rate": 1.0}},
+        "forward": {
+            "summary": {"runs": {"count": 3}, "trades": {"closed_count": 2}},
+            "recent_trades": [{"pnl": 1.0}],
+        },
+    }
+    dyn_live = _build_worker_prompt_sections(
+        store=store, job_id=job.id, mode="intervene", snapshot=live_snapshot
+    )["dynamic_context"]
+    assert "NO_FORWARD_DATA" not in dyn_live
+    assert "HISTORICAL_BACKTEST" not in dyn_live
+
+
 def test_forward_detail_capped_so_ledgers_survive_prompt(tmp_path: Path) -> None:
     """Regression: bulky forward telemetry must not truncate the ledgers/
     proposals out of the 12k dynamic prompt (keys serialize alphabetically,
