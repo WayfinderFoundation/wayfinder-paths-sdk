@@ -4,6 +4,7 @@ import time
 from collections.abc import Callable
 from typing import Any, cast
 
+import httpx
 from eth_account import Account
 from loguru import logger
 from web3 import AsyncWeb3
@@ -38,6 +39,10 @@ def _is_gorlami_fork_chain(chain_id: int) -> bool:
     if isinstance(rpcs, str):
         rpcs = [rpcs]
     return any(_is_gorlami_fork_rpc(rpc) for rpc in rpcs if isinstance(rpc, str))
+
+
+class SponsorshipUnavailableError(RuntimeError):
+    """Sponsored submission was rejected before anything reached the chain."""
 
 
 class TransactionRevertedError(RuntimeError):
@@ -268,9 +273,21 @@ async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> 
     """
     tx = dict(transaction)
     tx["from"] = wallet_address
-    result = await WALLET_CLIENT.send_privy_transaction_sponsored(
-        wallet_address, _prepare_tx_for_privy(tx)
-    )
+    try:
+        result = await WALLET_CLIENT.send_privy_transaction_sponsored(
+            wallet_address, _prepare_tx_for_privy(tx)
+        )
+    except httpx.HTTPStatusError as exc:
+        # A 4xx means the broadcaster refused the submission (sponsorship
+        # disabled, credits depleted, chain not covered) and nothing reached
+        # the chain — safe to retry unsponsored. 5xx/timeouts are ambiguous:
+        # the transaction may have been accepted, so retrying risks a
+        # double-send and they stay fatal.
+        if exc.response.status_code in (400, 402, 403):
+            raise SponsorshipUnavailableError(
+                f"Sponsored send rejected with {exc.response.status_code}"
+            ) from exc
+        raise
     txn_hash = result["hash"]
     deadline = time.monotonic() + 120
     while not txn_hash:
@@ -286,7 +303,7 @@ async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> 
         # "failed" is pre-broadcast (no hash will ever land); an on-chain
         # revert still yields a hash and is caught by the receipt wait.
         if status["status"] == "failed":
-            raise RuntimeError(
+            raise SponsorshipUnavailableError(
                 f"Sponsored transaction {result['transaction_id']} failed before broadcast"
             )
         txn_hash = status["hash"]
@@ -353,16 +370,22 @@ async def send_transaction(
     # job, not ours. Fork chains keep the local path so simulations never
     # leave the fork. Every sign callback carries `wallet_address` (None for
     # local keys) — see the factories in core/utils/wallets.py.
+    txn_hash = None
     if (
         sign_callback.wallet_address
         and chain_id in GAS_SPONSORED_CHAIN_IDS
         and not _is_gorlami_fork_chain(chain_id)
         and await sponsorship_enabled()
     ):
-        txn_hash = await send_sponsored_transaction(
-            sign_callback.wallet_address, transaction
-        )
-    else:
+        try:
+            txn_hash = await send_sponsored_transaction(
+                sign_callback.wallet_address, transaction
+            )
+        except SponsorshipUnavailableError as exc:
+            logger.warning(
+                f"Sponsored send unavailable, falling back to local broadcast: {exc}"
+            )
+    if txn_hash is None:
         transaction = await gas_limit_transaction(transaction)
         transaction = await nonce_transaction(transaction)
         transaction = await gas_price_transaction(transaction)
