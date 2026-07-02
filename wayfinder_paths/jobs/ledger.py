@@ -32,16 +32,14 @@ _NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 
 def _ledger_path(store: JobStore, job_id: str, name: str):
     if not _NAME_RE.match(name or ""):
-        raise ValueError(
-            f"ledger name must match [a-z0-9_-]+: {name!r}"
-        )
+        raise ValueError(f"ledger name must match [a-z0-9_-]+: {name!r}")
     return store.job_dir(job_id) / LEDGER_DIR / f"{name}.jsonl"
 
 
 def append_ledger_row(
     store: JobStore, job_id: str, name: str, row: dict[str, Any]
 ) -> dict[str, Any]:
-    if not isinstance(row, dict) or not row:
+    if not row:
         raise ValueError("ledger row must be a non-empty object")
     payload = {"ts": utc_now_iso(), **row}
     target = _ledger_path(store, job_id, name)
@@ -66,6 +64,7 @@ def tail_ledger(
             row = json.loads(line)
         except ValueError:
             continue  # a corrupt line never breaks the tail
-        if isinstance(row, dict):
-            rows.append(row)
-    return rows[-max(int(limit), 1):]
+        match row:
+            case dict():
+                rows.append(row)
+    return rows[-max(int(limit), 1) :]

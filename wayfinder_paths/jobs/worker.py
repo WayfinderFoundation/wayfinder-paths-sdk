@@ -10,6 +10,7 @@ from loguru import logger
 
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.jobs.application import claim_application, complete_application
+from wayfinder_paths.jobs.ledger import tail_ledger
 from wayfinder_paths.jobs.models import (
     JOB_AUTO_WORKER_AGENT_NAME,
     JOB_WORKER_AGENT_NAME,
@@ -45,10 +46,6 @@ def _canonical_json(data: Any, *, max_chars: int | None = None) -> str:
     return text
 
 
-def _sha256_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 def _drop_volatile_stable_keys(value: Any) -> Any:
     match value:
         case dict():
@@ -63,23 +60,6 @@ def _drop_volatile_stable_keys(value: Any) -> Any:
             return value
 
 
-_FORWARD_DETAIL_ROWS = 6
-
-
-def _compact_forward(forward: dict[str, Any]) -> dict[str, Any]:
-    """Full forward summary + only the most recent few detail rows per list.
-    The summary carries the aggregate (win rate, streaks, net pnl); the raw
-    row lists are for spot-checking, not bulk — and they must not evict the
-    ledgers/proposals that the loop protocols depend on."""
-    if not isinstance(forward, dict):
-        return {}
-    compact = dict(forward)
-    for key, value in forward.items():
-        if key.startswith("recent_") and isinstance(value, list):
-            compact[key] = value[-_FORWARD_DETAIL_ROWS:]
-    return compact
-
-
 def _build_worker_prompt_sections(
     *,
     store: JobStore,
@@ -89,17 +69,20 @@ def _build_worker_prompt_sections(
     apply_proposal_id: str | None = None,
 ) -> dict[str, str]:
     root = store.job_dir(job_id)
-    job_data = snapshot.get("job") or store.load(job_id).to_dict()
     memory_md = _read_text(root / "memory.md", max_chars=6000)
     memory_json = store.read_json(job_id, "memory.json", default={}) or {}
     recent_journal = _read_text(root / "journal.jsonl", max_chars=4000)
     stable_payload = {
-        "job": _drop_volatile_stable_keys(job_data),
+        "job": _drop_volatile_stable_keys(snapshot["job"]),
         "memory_json": _drop_volatile_stable_keys(memory_json),
     }
-    from wayfinder_paths.jobs.ledger import tail_ledger
-
-    forward_block = _compact_forward(snapshot.get("forward") or {})
+    # Compact each recent_* detail list to its last 6 rows (25 raw trade/run
+    # rows can blow the 12k canonical-json budget and, since keys serialize
+    # alphabetically, starve the later high-signal keys out of the prompt).
+    forward_block = {
+        key: value[-6:] if key.startswith("recent_") else value
+        for key, value in (snapshot.get("forward") or {}).items()
+    }
     backtest_block = dict(snapshot.get("backtest") or {})
     # Fence the two blocks the agent confuses, co-located with the numbers so the
     # disambiguation leads the data (the `_`-prefixed key sorts first inside its
@@ -125,10 +108,6 @@ def _build_worker_prompt_sections(
 
     dynamic_payload = {
         "scorecard": snapshot.get("scorecard") or {},
-        # Keep the forward SUMMARY (aggregate signal) full but cap the per-row
-        # detail lists: 25 raw trade/run rows can blow the 12k canonical-json
-        # budget and, since keys serialize alphabetically, starve the later
-        # high-signal keys (ledgers, proposals) out of the prompt entirely.
         "forward": forward_block,
         "runner_links": snapshot.get("runner_links") or {},
         "proposals": snapshot.get("proposals") or [],
@@ -177,7 +156,7 @@ def _build_worker_prompt_sections(
         '`core_jobs(action="claim_application", job_id=..., proposal_id=...)`; '
         "if it is applying, do not claim again. Apply edits in the candidate "
         "workspace recorded on the proposal application, not the active workspace. "
-        "Proposals created via `core_jobs(action=\"propose\")` stage their change "
+        'Proposals created via `core_jobs(action="propose")` stage their change '
         "in the candidate at propose time and the claim REUSES that candidate — "
         "verify the change is already present before re-deriving it from the "
         "proposal text, and never recreate the candidate from scratch. "
@@ -222,7 +201,7 @@ def _build_worker_prompt_sections(
         else (
             "- Review the dynamic context against the stable job contract. "
             "When you want to RECOMMEND a strategy/params change, do not "
-            "hand-write proposal JSON: call `core_jobs(action=\"propose\", "
+            'hand-write proposal JSON: call `core_jobs(action="propose", '
             "job_id=..., kind=..., summary=..., intent_contract={...}, "
             "execution_params={...} | candidate_dir=...)` — it stages a "
             "validated candidate, runs the baseline-vs-candidate backtest "
@@ -246,8 +225,8 @@ def _build_worker_prompt_sections(
         "prompt": stable_prefix + "\n" + dynamic_context,
         "stable_prefix": stable_prefix,
         "dynamic_context": dynamic_context,
-        "stable_prefix_hash": _sha256_text(stable_prefix),
-        "dynamic_context_hash": _sha256_text(dynamic_context),
+        "stable_prefix_hash": hashlib.sha256(stable_prefix.encode()).hexdigest(),
+        "dynamic_context_hash": hashlib.sha256(dynamic_context.encode()).hexdigest(),
     }
 
 
@@ -269,10 +248,11 @@ def prepare_job_worker_prompt(
     snapshot = snapshot_job(job.id, store=store)
     application_claim: dict[str, Any] | None = None
     if apply_proposal_id and claim_application_before_prompt:
-        application_claim = _ensure_application_claimed(
-            store,
-            job.id,
-            apply_proposal_id,
+        proposal = store.load_proposal(job.id, apply_proposal_id)
+        application_claim = (
+            {"proposal": proposal, "already_claimed": True}
+            if proposal["application"]["status"] == "applying"
+            else claim_application(store, job.id, apply_proposal_id)
         )
         snapshot = snapshot_job(job.id, store=store)
 
@@ -376,7 +356,9 @@ def run_job_worker(
         queued = OPENCODE_CLIENT.prompt_async(
             session_id=session_id,
             text=prompt,
-            agent=_agent_name_for_mode(mode_typed),
+            agent=JOB_AUTO_WORKER_AGENT_NAME
+            if mode_typed == "auto"
+            else JOB_WORKER_AGENT_NAME,
         )
         if not queued:
             error = "OpenCode prompt_async failed"
@@ -415,19 +397,8 @@ def run_job_worker(
     )
 
     if report["status"] != "green":
-        _emit_job_result(
-            report["summary"], job.id, proposal_id=apply_proposal_id
-        )
+        _emit_job_result(report["summary"], job.id, proposal_id=apply_proposal_id)
     return report
-
-
-def _ensure_application_claimed(
-    store: JobStore, job_id: str, proposal_id: str
-) -> dict[str, Any]:
-    proposal = store.load_proposal(job_id, proposal_id)
-    if proposal["application"]["status"] == "applying":
-        return {"proposal": proposal, "already_claimed": True}
-    return claim_application(store, job_id, proposal_id)
 
 
 def _ensure_worker_session(job_id: str, mode: str) -> str | None:
@@ -437,7 +408,6 @@ def _ensure_worker_session(job_id: str, mode: str) -> str | None:
     controller_session_id = os.environ.get("OPENCODE_SESSION_ID") or os.environ.get(
         "OPENCODE_SESSIONID"
     )
-    agent_name = _agent_name_for_mode(mode)
     try:
         existing = OPENCODE_CLIENT.find_child_session(
             parent_id=controller_session_id,
@@ -448,7 +418,9 @@ def _ensure_worker_session(job_id: str, mode: str) -> str | None:
         return OPENCODE_CLIENT.create_session(
             parent_id=controller_session_id,
             title=f"job/{job_id}/{mode}",
-            agent=agent_name,
+            agent=JOB_AUTO_WORKER_AGENT_NAME
+            if mode == "auto"
+            else JOB_WORKER_AGENT_NAME,
         )
     except Exception:
         logger.opt(exception=True).debug(
@@ -514,10 +486,6 @@ def _write_report(
             "Wayfinder job sync failed after worker wakeup"
         )
     return report
-
-
-def _agent_name_for_mode(mode: str) -> str:
-    return JOB_AUTO_WORKER_AGENT_NAME if mode == "auto" else JOB_WORKER_AGENT_NAME
 
 
 def _auto_limits_error(limits: dict[str, Any]) -> str | None:

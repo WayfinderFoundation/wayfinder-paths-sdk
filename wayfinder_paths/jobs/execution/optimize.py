@@ -32,24 +32,30 @@ from typing import Any
 
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.execution.simulator import (
-    GRID_RANK_KEYS,
     ExecutionGridResult,
     PreparedExecutionDataset,
     _grid_row,
+    check_rank_key,
+    rank_and_partition,
     simulate_execution,
 )
 
-_SUGGEST_TYPES = {"float", "int", "categorical"}
+
+def _is_typed_dimension(value: Any) -> bool:
+    match value:
+        case {"type": "float" | "int" | "categorical"}:
+            return True
+        case _:
+            return False
 
 
 def is_search_space(payload: Any) -> bool:
     """True when the payload contains at least one typed search dimension."""
-    if not isinstance(payload, Mapping):
-        return False
-    return any(
-        isinstance(value, Mapping) and value.get("type") in _SUGGEST_TYPES
-        for value in payload.values()
-    )
+    match payload:
+        case Mapping():
+            return any(_is_typed_dimension(value) for value in payload.values())
+        case _:
+            return False
 
 
 def run_optuna_search(
@@ -66,21 +72,17 @@ def run_optuna_search(
     top_n_artifacts: int = 10,
 ) -> ExecutionGridResult:
     try:
-        import optuna
+        import optuna  # lazy: optional --with ml dep; grid path never pays it
     except ImportError as exc:
         raise RuntimeError(
-            'optuna is required for optimizer="optuna"; '
-            "run `poetry install --with ml`"
+            'optuna is required for optimizer="optuna"; run `poetry install --with ml`'
         ) from exc
 
-    if rank_by not in GRID_RANK_KEYS:
-        raise ValueError(
-            f"rank_by must be one of {sorted(GRID_RANK_KEYS)}, got {rank_by!r}"
-        )
+    check_rank_key(rank_by)
     dimensions = {
         name: dict(value)
         for name, value in search_space.items()
-        if isinstance(value, Mapping) and value.get("type") in _SUGGEST_TYPES
+        if _is_typed_dimension(value)
     }
     if not dimensions:
         raise ValueError(
@@ -98,13 +100,11 @@ def run_optuna_search(
         params = dict(constants)
         for name, dim in dimensions.items():
             params[name] = _suggest(trial, name, dim)
-        result = simulate_execution(
-            script_entrypoint, dataset, execution_spec, params
-        )
+        result = simulate_execution(script_entrypoint, dataset, execution_spec, params)
         row = _grid_row(result, rank_by=rank_by)
         row["trial"] = trial.number
         run_rows.append(row)
-        if row["validation"]["execution_valid"] is not True:
+        if not row["validation"]["execution_valid"]:
             raise optuna.TrialPruned("execution trace invalid for these params")
         return float(row[rank_by] or 0)  # same coercion as grid ranking
 
@@ -120,25 +120,21 @@ def run_optuna_search(
     # n_jobs=1 is REQUIRED (see module docstring), not a performance choice.
     study.optimize(objective, n_trials=n_trials, timeout=timeout, n_jobs=1)
 
-    valid = [row for row in run_rows if row["validation"]["execution_valid"] is True]
-    invalid = [
-        row for row in run_rows if row["validation"]["execution_valid"] is not True
-    ]
-    ranked = sorted(valid, key=lambda row: float(row[rank_by] or 0), reverse=True)
+    ranked, invalid = rank_and_partition(
+        run_rows, rank_by=rank_by, top_n=top_n_artifacts
+    )
     best_trial = None
-    try:
+    if ranked:  # study.best_trial raises when every trial was pruned/invalid
         best_trial = {
             "number": study.best_trial.number,
             "value": study.best_trial.value,
             "params": dict(study.best_trial.params),
         }
-    except ValueError:
-        pass  # every trial pruned/invalid
     return ExecutionGridResult(
         grid_id=uuid.uuid4().hex[:12],
         rank_by=rank_by,
         runs=run_rows,
-        ranked=ranked[:top_n_artifacts],
+        ranked=ranked,
         invalid=invalid,
         optimizer="optuna",
         search={
@@ -151,23 +147,24 @@ def run_optuna_search(
 
 
 def _suggest(trial: Any, name: str, dim: Mapping[str, Any]) -> Any:
-    kind = dim.get("type")
-    if kind == "float":
-        return trial.suggest_float(
-            name,
-            float(dim["low"]),
-            float(dim["high"]),
-            step=dim.get("step"),
-            log=bool(dim.get("log") or False),
-        )
-    if kind == "int":
-        return trial.suggest_int(
-            name,
-            int(dim["low"]),
-            int(dim["high"]),
-            step=int(dim.get("step") or 1),
-            log=bool(dim.get("log") or False),
-        )
-    if kind == "categorical":
-        return trial.suggest_categorical(name, list(dim["choices"]))
-    raise ValueError(f"unsupported search dimension type {kind!r} for {name!r}")
+    match dim["type"]:
+        case "float":
+            return trial.suggest_float(
+                name,
+                float(dim["low"]),
+                float(dim["high"]),
+                step=dim.get("step"),
+                log=bool(dim.get("log")),
+            )
+        case "int":
+            return trial.suggest_int(
+                name,
+                int(dim["low"]),
+                int(dim["high"]),
+                step=int(dim.get("step") or 1),
+                log=bool(dim.get("log")),
+            )
+        case "categorical":
+            return trial.suggest_categorical(name, list(dim["choices"]))
+        case kind:
+            raise ValueError(f"unsupported search dimension type {kind!r} for {name!r}")

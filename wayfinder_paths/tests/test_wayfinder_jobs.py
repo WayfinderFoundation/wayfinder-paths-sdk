@@ -314,6 +314,22 @@ def test_auto_worker_blocks_missing_limits(tmp_path: Path, monkeypatch) -> None:
     assert latest["summary"].startswith("Auto agent blocked")
 
 
+def _worker_snapshot(job: WayfinderJob, **overrides: object) -> dict:
+    """Minimal snapshot with the full snapshot_job shape."""
+    snapshot: dict = {
+        "job": job.to_dict(),
+        "scorecard": {},
+        "forward": {},
+        "runner_links": {},
+        "proposals": [],
+        "proposal_queue": {},
+        "reports": {},
+        "backtest": {},
+    }
+    snapshot.update(overrides)
+    return snapshot
+
+
 def test_worker_prompt_keeps_dynamic_context_after_stable_prefix(
     tmp_path: Path,
 ) -> None:
@@ -329,7 +345,7 @@ def test_worker_prompt_keeps_dynamic_context_after_stable_prefix(
         store=store,
         job_id=job.id,
         mode="monitor",
-        snapshot={"job": job.to_dict(), "scorecard": {"health": "green"}},
+        snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
     )
 
     store.append_journal(job.id, {"type": "script_run", "summary": "new run"})
@@ -342,11 +358,11 @@ def test_worker_prompt_keeps_dynamic_context_after_stable_prefix(
         store=store,
         job_id=job.id,
         mode="monitor",
-        snapshot={
-            "job": job.to_dict(),
-            "scorecard": {"health": "yellow"},
-            "reports": {"monitor": {"summary": "changed"}},
-        },
+        snapshot=_worker_snapshot(
+            job,
+            scorecard={"health": "yellow"},
+            reports={"monitor": {"summary": "changed"}},
+        ),
     )
 
     assert first["stable_prefix"] == second["stable_prefix"]
@@ -363,7 +379,7 @@ def test_worker_prompt_stable_hash_changes_when_memory_changes(tmp_path: Path) -
     store = JobStore(repo_root=tmp_path)
     job = WayfinderJob.new("cache-memory", agent_mode="monitor")
     store.save(job)
-    snapshot = {"job": job.to_dict()}
+    snapshot = _worker_snapshot(job)
     first = _build_worker_prompt_sections(
         store=store,
         job_id=job.id,
@@ -394,7 +410,7 @@ def test_worker_prompt_includes_apply_lifecycle(tmp_path: Path) -> None:
         store=store,
         job_id=job.id,
         mode="intervene",
-        snapshot={"job": job.to_dict()},
+        snapshot=_worker_snapshot(job),
         apply_proposal_id="prop_001",
     )["prompt"]
 
@@ -744,11 +760,11 @@ def test_worker_prompt_ledgers_and_backtest_are_dynamic_only(
     store = JobStore(repo_root=tmp_path)
     job = WayfinderJob.new("loop-context", agent_mode="intervene")
     store.save(job)
-    snapshot = {
-        "job": job.to_dict(),
-        "backtest": {"available": True, "stats": {"sharpe": 1.23}},
-        "gate": {"live_ready": True, "reasons": []},
-    }
+    snapshot = _worker_snapshot(
+        job,
+        backtest={"available": True, "stats": {"sharpe": 1.23}},
+        gate={"live_ready": True, "reasons": []},
+    )
     first = _build_worker_prompt_sections(
         store=store, job_id=job.id, mode="intervene", snapshot=snapshot
     )
@@ -821,7 +837,9 @@ def test_forward_detail_capped_so_ledgers_survive_prompt(tmp_path: Path) -> None
     job = WayfinderJob.new("forward-heavy", agent_mode="intervene")
     store.save(job)
     append_ledger_row(
-        store, job.id, "candidates",
+        store,
+        job.id,
+        "candidates",
         {"name": "seeded-trap-family", "bucket": "adjacent", "status": "no_edge"},
     )
     bulky_trades = [
@@ -833,14 +851,14 @@ def test_forward_detail_capped_so_ledgers_survive_prompt(tmp_path: Path) -> None
         }
         for i in range(25)
     ]
-    snapshot = {
-        "job": job.to_dict(),
-        "forward": {
+    snapshot = _worker_snapshot(
+        job,
+        forward={
             "summary": {"win_rate": 0.3, "current_loss_streak": 4},
             "recent_trades": bulky_trades,
             "recent_runs": bulky_trades,
         },
-    }
+    )
     sections = _build_worker_prompt_sections(
         store=store, job_id=job.id, mode="intervene", snapshot=snapshot
     )

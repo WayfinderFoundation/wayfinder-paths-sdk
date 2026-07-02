@@ -36,7 +36,11 @@ def read_halt(root: Path) -> dict[str, Any] | None:
         # An unparseable halt file still means "someone tried to stop this
         # job" — fail safe by treating it as an active halt.
         return {"reason": "unreadable halt file", "flatten": False}
-    return loaded if isinstance(loaded, dict) else None
+    match loaded:
+        case dict():
+            return loaded
+        case _:
+            return None
 
 
 def request_halt(
@@ -80,9 +84,7 @@ def request_halt(
         store.append_journal(
             job_id, {"type": "halt_flatten_requested", "source": source}
         )
-    store.refresh_scorecard(
-        job_id, {"live_execution_status": HALTED_EXECUTION_STATUS}
-    )
+    store.refresh_scorecard(job_id, {"live_execution_status": HALTED_EXECUTION_STATUS})
     return payload
 
 
@@ -96,10 +98,6 @@ def clear_halt(store: JobStore, job_id: str) -> dict[str, Any]:
         store.append_journal(job_id, {"type": "halt_cleared"})
         store.refresh_scorecard(
             job_id,
-            {
-                "live_execution_status": existing.get(
-                    "prior_live_execution_status"
-                )
-            },
+            {"live_execution_status": existing.get("prior_live_execution_status")},
         )
     return {"cleared": existing is not None, "previous": existing}

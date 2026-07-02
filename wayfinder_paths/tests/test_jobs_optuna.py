@@ -81,9 +81,7 @@ def _spec() -> ExecutionSpec:
 
 
 def _dataset() -> PreparedExecutionDataset:
-    return PreparedExecutionDataset.from_rows(
-        bars_from_closes(PEAKED, symbol="SNX")
-    )
+    return PreparedExecutionDataset.from_rows(bars_from_closes(PEAKED, symbol="SNX"))
 
 
 def _search(**kwargs: Any):
@@ -203,9 +201,7 @@ def test_run_experiment_and_promote_from_optuna_summary(tmp_path: Path) -> None:
     assert experiment["search"]["n_trials"] == 5
     assert experiment["best"]["params"]["threshold"] is not None
     grid_id = experiment["grid_id"]
-    summary_path = (
-        root / "results" / "backtest" / "grids" / grid_id / "summary.json"
-    )
+    summary_path = root / "results" / "backtest" / "grids" / grid_id / "summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["optimizer"] == "optuna"
 
@@ -213,8 +209,7 @@ def test_run_experiment_and_promote_from_optuna_summary(tmp_path: Path) -> None:
     assert promoted["mode"] == "direct"
     job = store.load(job_id)
     assert (
-        job.execution_params["threshold"]
-        == experiment["best"]["params"]["threshold"]
+        job.execution_params["threshold"] == experiment["best"]["params"]["threshold"]
     )
 
 
@@ -246,7 +241,9 @@ def test_walk_forward_with_optuna_selects_per_fold(tmp_path: Path) -> None:
     assert all(row["test_stats"]["net_return"] > 0 for row in ok)
 
 
-def test_cli_passes_optimizer_flags(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_cli_passes_optimizer_flags(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from click.testing import CliRunner
 
     from wayfinder_paths.jobs import cli as cli_module
@@ -259,12 +256,12 @@ def test_cli_passes_optimizer_flags(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         captured.update(kwargs)
         return {"experiment": {"grid_id": "x"}, "backtest": {}}
 
+    # Patch both the defining module and the CLI's module-top binding.
     monkeypatch.setattr(experiments_module, "run_experiment", fake_run_experiment)
+    monkeypatch.setattr(cli_module, "run_experiment", fake_run_experiment)
     monkeypatch.setattr(cli_module, "JobStore", lambda: None)
     space = tmp_path / "space.json"
-    space.write_text(
-        json.dumps({"threshold": {"type": "float", "low": 1, "high": 2}})
-    )
+    space.write_text(json.dumps({"threshold": {"type": "float", "low": 1, "high": 2}}))
 
     result = CliRunner().invoke(
         cli_module.job_cli,

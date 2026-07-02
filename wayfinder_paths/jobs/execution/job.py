@@ -7,6 +7,12 @@ from typing import Any
 
 import yaml
 
+from wayfinder_paths.jobs.execution.features import (
+    load_feature_rows,
+    merge_features,
+    parse_feature_specs,
+)
+from wayfinder_paths.jobs.execution.optimize import is_search_space, run_optuna_search
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.execution.simulator import (
     PreparedExecutionDataset,
@@ -18,6 +24,7 @@ from wayfinder_paths.jobs.execution.validation import (
     resolve_execution_spec,
     validate_execution_job,
 )
+from wayfinder_paths.jobs.execution.walk_forward import run_walk_forward
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
@@ -63,12 +70,7 @@ def backtest_execution_job(
     if optimizer == "optuna" and not grid_path:
         raise ValueError("optimizer=optuna requires a search space (pass grid_path)")
     if grid_path:
-        from wayfinder_paths.jobs.execution.optimize import (
-            is_search_space,
-            run_optuna_search,
-        )
-
-        param_grid = _load_json(Path(grid_path))
+        param_grid = json.loads(Path(grid_path).read_text(encoding="utf-8"))
         if optimizer == "grid" and is_search_space(param_grid):
             raise ValueError(
                 "the grid file looks like an optuna search space (typed "
@@ -103,8 +105,6 @@ def backtest_execution_job(
             **stamp,
         }
         if walk_forward is not None:
-            from wayfinder_paths.jobs.execution.walk_forward import run_walk_forward
-
             payload["walk_forward"] = run_walk_forward(
                 script,
                 dataset,
@@ -132,12 +132,6 @@ def backtest_execution_job(
     return payload
 
 
-def validate_job(
-    job_id: str, *, strict: bool = False, store: JobStore | None = None
-) -> dict[str, Any]:
-    return validate_execution_job(job_id, strict=strict, store=store)
-
-
 def _load_job_yaml(root: Path) -> dict[str, Any]:
     path = root / "job.yaml"
     if not path.exists():
@@ -159,12 +153,6 @@ def _load_dataset(
     dataset = _resolve_dataset(root, spec, job_data)
     # Same feature merge the live driver applies per tick (as-of, backward):
     # backtest/live parity for exogenous data holds by construction.
-    from wayfinder_paths.jobs.execution.features import (
-        load_feature_rows,
-        merge_features,
-        parse_feature_specs,
-    )
-
     specs = parse_feature_specs(spec)
     if specs:
         frames = load_feature_rows(list(feature_roots or (root,)), specs)
@@ -184,29 +172,20 @@ def _resolve_dataset(
     ]
     for path in candidate_paths:
         if path.exists():
-            rows = _load_json(path)
-            match rows:
-                case dict():
-                    rows = rows.get("bars")
-            match rows:
-                case list():
+            # Agent-written files: accept a bare row list or {"bars": [...]}.
+            match json.loads(path.read_text(encoding="utf-8")):
+                case {"bars": list() as rows} | [*rows]:
                     return PreparedExecutionDataset.from_rows(
                         rows, {"source": str(path)}
                     )
     scenario_plan = job_data.get("execution_scenario_plan") or spec.validation.get(
         "execution_scenario_plan"
     )
-    scenarios = None
     match scenario_plan:
-        case dict():
-            scenarios = scenario_plan.get("scenarios")
-    match scenarios:
-        case [first, *_]:
-            match first.get("bars"):
-                case list() as rows:
-                    return PreparedExecutionDataset.from_rows(
-                        rows, {"source": "execution_scenario_plan[0]"}
-                    )
+        case {"scenarios": [{"bars": list() as rows}, *_]}:
+            return PreparedExecutionDataset.from_rows(
+                rows, {"source": "execution_scenario_plan[0]"}
+            )
     match spec.validation.get("fixture_bars"):
         case list() as fixture_bars:
             return PreparedExecutionDataset.from_rows(
@@ -251,7 +230,3 @@ def synthesize_scenario_plan(
             }
         ]
     }
-
-
-def _load_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))

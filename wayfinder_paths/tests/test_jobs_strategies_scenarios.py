@@ -28,9 +28,7 @@ def bars_from_closes(
         hour = index
         rows.append(
             {
-                "timestamp": (
-                    f"2026-01-{hour // 24 + 1:02}T{hour % 24:02}:00:00Z"
-                ),
+                "timestamp": (f"2026-01-{hour // 24 + 1:02}T{hour % 24:02}:00:00Z"),
                 "symbol": symbol,
                 "open": close,
                 "high": highs[index] if highs else close * 1.002,
@@ -169,7 +167,9 @@ def test_bracket_stop_fires_and_rearms_until_sma20_recovery() -> None:
     post_stop_lows = [9.4, 9.3, 9.2]  # fresh NewLow5s: must NOT re-enter (rearm)
     recovery = [10.6, 10.7]  # close > SMA20 lifts rearm
     re_entry = [9.0]  # NewLow5 after lift -> re-enter
-    closes = base + entry_bar + fill_bar + stop_bar + post_stop_lows + recovery + re_entry
+    closes = (
+        base + entry_bar + fill_bar + stop_bar + post_stop_lows + recovery + re_entry
+    )
     highs = [c * 1.002 for c in closes]
     highs[len(base) + 2] = 10.30  # the stop bar's high
 
@@ -178,7 +178,8 @@ def test_bracket_stop_fires_and_rearms_until_sma20_recovery() -> None:
     stops = [
         fill
         for fill in result.trace["fills"]
-        if fill["raw"].get("intent_action") == "STOP_LOSS" and fill["status"] == "filled"
+        if fill["raw"].get("intent_action") == "STOP_LOSS"
+        and fill["status"] == "filled"
     ]
     assert len(stops) == 1, "the 7% bracket stop must fire on the spike bar"
     opens = _intents(result, "OPEN")

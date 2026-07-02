@@ -60,6 +60,7 @@ def purity_sandbox(
     np.random.random = _violation("np.random.random")  # type: ignore[assignment]
     np.random.rand = _violation("np.random.rand")  # type: ignore[assignment]
 
+    # named def: installed as socket.socket.connect, needs self + closure state
     def _guarded_connect(self: socket.socket, *args: Any, **kwargs: Any) -> Any:
         if network_policy == "strict":
             raise PurityViolation(

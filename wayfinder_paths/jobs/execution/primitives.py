@@ -196,6 +196,11 @@ class CompletedBarsView:
             raise ValueError("No completed bars available")
         return frame.iloc[-1].to_dict()
 
+    def _filter_symbol(self, symbol: str | None) -> pd.DataFrame:
+        if symbol is None:
+            return self._bars
+        return self._bars[self._bars["symbol"] == symbol]
+
     def feature(self, name: str, symbol: str | None = None) -> Any:
         """Latest non-null value of an exogenous feature column (merged by
         the driver/dataset loader per execution_spec.data_contract.features).
@@ -245,7 +250,9 @@ class CompletedBarsView:
         timestamps = self._ensure_timestamps()
         column = self._bars["timestamp"]
         start_pos = (
-            0 if start == 0 else int(column.searchsorted(timestamps[start], side="left"))
+            0
+            if start == 0
+            else int(column.searchsorted(timestamps[start], side="left"))
         )
         end_pos = int(column.searchsorted(timestamps[end], side="right"))
         return CompletedBarsView._from_trusted(
@@ -285,11 +292,6 @@ class CompletedBarsView:
     def to_rows(self) -> list[dict[str, Any]]:
         return self._bars.to_dict(orient="records")
 
-    def _filter_symbol(self, symbol: str | None) -> pd.DataFrame:
-        if symbol is None:
-            return self._bars
-        return self._bars[self._bars["symbol"] == symbol]
-
 
 @dataclass
 class OrderIntent:
@@ -303,7 +305,6 @@ class OrderIntent:
     client_order_id: str | None = None
     bracket: dict[str, Any] | None = None
     limit_price: float | None = None
-    expires_at: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -324,7 +325,6 @@ class OrderIntent:
                     client_order_id=data.get("client_order_id"),
                     bracket=dict(data["bracket"]) if data.get("bracket") else None,
                     limit_price=_float_or_none(data.get("limit_price")),
-                    expires_at=data.get("expires_at"),
                     metadata=dict(data["metadata"]) if data.get("metadata") else {},
                 )
 
@@ -461,20 +461,22 @@ class PositionLedger:
 
     @classmethod
     def restore(cls, data: Mapping[str, Any] | None) -> PositionLedger:
+        """Rebuild from a prior `snapshot()` payload (None = fresh ledger)."""
         ledger = cls()
-        payload = data or {}
-        for symbol, record in (payload.get("positions") or {}).items():
+        if not data:
+            return ledger
+        for symbol, record in data["positions"].items():
             ledger.positions[str(symbol)] = PositionRecord(
-                symbol=str(record.get("symbol") or symbol),
-                side=str(record.get("side") or "long"),
-                size=float(record.get("size") or 0.0),
-                avg_price=float(record.get("avg_price") or 0.0),
-                bars_held=int(record.get("bars_held") or 0),
-                opened_at=record.get("opened_at"),
-                metadata=dict(record.get("metadata") or {}),
+                symbol=record["symbol"],
+                side=record["side"],
+                size=float(record["size"]),
+                avg_price=float(record["avg_price"]),
+                bars_held=int(record["bars_held"]),
+                opened_at=record["opened_at"],
+                metadata=dict(record["metadata"]),
             )
-        ledger.realized_pnl = float(payload.get("realized_pnl") or 0.0)
-        ledger._last_bar_time = payload.get("last_bar_time")
+        ledger.realized_pnl = float(data["realized_pnl"])
+        ledger._last_bar_time = data["last_bar_time"]
         return ledger
 
 
@@ -556,10 +558,10 @@ def mark_to_market_equity(ctx: ExecutionContext) -> float:
         + ctx.ledger.realized_pnl
     )
     for position in ctx.ledger.positions.values():
-        try:
-            close = float(ctx.view.latest(position.symbol)["close"])
-        except ValueError:
-            close = position.avg_price
+        frame = ctx.view.symbol_frame(position.symbol)
+        close = (
+            float(frame["close"].iloc[-1]) if not frame.empty else position.avg_price
+        )
         direction = 1 if position.side == "long" else -1
         equity += direction * (close - position.avg_price) * position.size
     return equity

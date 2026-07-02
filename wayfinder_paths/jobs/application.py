@@ -16,7 +16,6 @@ from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import sync_all_jobs
 from wayfinder_paths.jobs.validation import (
-    compact_json,
     validate_candidate_application,
     validation_summary,
 )
@@ -244,8 +243,8 @@ def _complete_applied_application(
         deterministic_validation,
     )
     if deterministic_validation["status"] != "passed":
-        final_error = "Candidate validation failed: " + compact_json(
-            validation_summary(deterministic_validation)
+        final_error = "Candidate validation failed: " + json.dumps(
+            validation_summary(deterministic_validation), sort_keys=True, default=str
         )
         _write_apply_report(
             store,
@@ -263,7 +262,15 @@ def _complete_applied_application(
             deterministic_validation=deterministic_validation,
         )
 
-    backup_dir = _backup_active_workspace(store, job_id, proposal_id)
+    root = store.job_dir(job_id)
+    backup_dir = root / "applications" / proposal_id / "backup"
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    if (root / "workspace").exists():
+        shutil.copytree(root / "workspace", backup_dir / "workspace")
+    shutil.copy2(root / "job.yaml", backup_dir / "job.yaml")
+
     outcome = _ApplicationOutcome(
         final_status="applied",
         deterministic_validation=deterministic_validation,
@@ -289,7 +296,16 @@ def _complete_applied_application(
         post_apply_gate = evaluate_live_gate(job_id, store=store)
         sync_all_jobs(store=store)
     except Exception as exc:
-        outcome.rollback = _restore_active_workspace(store, job_id, backup_dir)
+        active_workspace = root / "workspace"
+        if active_workspace.exists():
+            shutil.rmtree(active_workspace)
+        if (backup_dir / "workspace").exists():
+            shutil.copytree(backup_dir / "workspace", active_workspace)
+        shutil.copy2(backup_dir / "job.yaml", root / "job.yaml")
+        outcome.rollback = {
+            "restored": True,
+            "backup_dir": str(backup_dir.relative_to(store.repo_root)),
+        }
         outcome.final_status = "failed"
         outcome.final_error = str(exc)
 
@@ -329,22 +345,20 @@ def _apply_runner_action(
     responses: list[dict[str, Any]] = []
     runner_action = getattr(bridge, action)
     for loop_name, loop in (("script", job.script_loop), ("agent", job.agent_loop)):
-        if loop.enabled and loop.runner_job_name:
-            responses.append(
-                {
-                    "loop": loop_name,
-                    "runner_job_name": loop.runner_job_name,
-                    "response": _safe_runner_call(runner_action, loop.runner_job_name),
-                }
-            )
+        if not (loop.enabled and loop.runner_job_name):
+            continue
+        try:
+            response = runner_action(loop.runner_job_name)
+        except Exception as exc:
+            response = {"ok": False, "error": str(exc), "name": loop.runner_job_name}
+        responses.append(
+            {
+                "loop": loop_name,
+                "runner_job_name": loop.runner_job_name,
+                "response": response,
+            }
+        )
     return responses
-
-
-def _safe_runner_call(action: Any, name: str) -> dict[str, Any]:
-    try:
-        return action(name)
-    except Exception as exc:
-        return {"ok": False, "error": str(exc), "name": name}
 
 
 def _prepare_candidate_workspace(
@@ -446,18 +460,6 @@ def _candidate_dir_from_proposal(
     )
 
 
-def _backup_active_workspace(store: JobStore, job_id: str, proposal_id: str) -> Path:
-    root = store.job_dir(job_id)
-    backup_dir = root / "applications" / proposal_id / "backup"
-    if backup_dir.exists():
-        shutil.rmtree(backup_dir)
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    if (root / "workspace").exists():
-        shutil.copytree(root / "workspace", backup_dir / "workspace")
-    shutil.copy2(root / "job.yaml", backup_dir / "job.yaml")
-    return backup_dir
-
-
 def _promote_candidate(store: JobStore, job_id: str, candidate_dir: Path) -> None:
     root = store.job_dir(job_id)
     candidate_workspace = candidate_dir / "workspace"
@@ -489,22 +491,6 @@ def _promote_candidate(store: JobStore, job_id: str, candidate_dir: Path) -> Non
             shutil.copy2(source, destination)
 
 
-def _restore_active_workspace(
-    store: JobStore, job_id: str, backup_dir: Path
-) -> dict[str, Any]:
-    root = store.job_dir(job_id)
-    active_workspace = root / "workspace"
-    if active_workspace.exists():
-        shutil.rmtree(active_workspace)
-    if (backup_dir / "workspace").exists():
-        shutil.copytree(backup_dir / "workspace", active_workspace)
-    shutil.copy2(backup_dir / "job.yaml", root / "job.yaml")
-    return {
-        "restored": True,
-        "backup_dir": str(backup_dir.relative_to(store.repo_root)),
-    }
-
-
 def _record_promoted_revision(
     store: JobStore,
     job_id: str,
@@ -515,6 +501,7 @@ def _record_promoted_revision(
 ) -> str:
     root = store.job_dir(job_id)
     revision = compute_workspace_revision(root)
+    validation_status = validation["status"] if validation else None
     active = {
         "job_id": job_id,
         "active_revision": revision,
@@ -529,7 +516,7 @@ def _record_promoted_revision(
             "proposal_id": proposal_id,
             "revision": revision,
             "changed_files": changed_files or [],
-            "validation_status": (validation or {}).get("status"),
+            "validation_status": validation_status,
         },
     )
     revisions_path = root / "versions" / "revisions.jsonl"
@@ -541,7 +528,7 @@ def _record_promoted_revision(
                 "revision": revision,
                 "proposal_id": proposal_id,
                 "changed_files": changed_files or [],
-                "validation_status": (validation or {}).get("status"),
+                "validation_status": validation_status,
             },
             sort_keys=True,
         )
@@ -642,23 +629,22 @@ def _with_execution_validation(
     validation_path = candidate_dir / "reports" / "validation" / "latest.json"
     validation_path.parent.mkdir(parents=True, exist_ok=True)
     validation_path.write_text(
-        json.dumps(execution_validation, indent=2, sort_keys=True, default=str)
-        + "\n",
+        json.dumps(execution_validation, indent=2, sort_keys=True, default=str) + "\n",
         encoding="utf-8",
     )
-    checks = list(validation.get("checks") or [])
+    execution_passed = execution_validation["status"] == "passed"
+    checks = list(validation["checks"])
     checks.append(
         {
             "name": "execution_candidate_validation",
-            "passed": execution_validation.get("status") == "passed",
+            "passed": execution_passed,
             "details": execution_validation,
         }
     )
     return {
         **validation,
         "status": "passed"
-        if validation.get("status") == "passed"
-        and execution_validation.get("status") == "passed"
+        if validation["status"] == "passed" and execution_passed
         else "failed",
         "checks": checks,
         "execution_validation": execution_validation,

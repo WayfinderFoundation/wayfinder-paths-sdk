@@ -10,6 +10,10 @@ from typing import Any
 import yaml
 from croniter import croniter
 
+from wayfinder_paths.jobs.execution.features import (
+    load_feature_rows,
+    parse_feature_specs,
+)
 from wayfinder_paths.jobs.execution.primitives import (
     ExecutionSpec,
     _load_module_from_path,
@@ -17,7 +21,7 @@ from wayfinder_paths.jobs.execution.primitives import (
 )
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.store import JobStore
-from wayfinder_paths.runner.schedule import ScheduleSpec, normalize_schedule
+from wayfinder_paths.runner.schedule import normalize_schedule
 
 FORBIDDEN_ORDER_PATTERNS = (
     "hyperliquid_place_",
@@ -71,24 +75,20 @@ def validate_execution_trace(
 
     guard_events = trace.get("guard_events") or []
     stale_timestamps = {
-        event.get("timestamp")
-        for event in guard_events
-        if event.get("kind") == "stale_data"
+        event["timestamp"] for event in guard_events if event["kind"] == "stale_data"
     }
     stale_entries = [
         fill
         for fill in trace["fills"]
-        if fill.get("timestamp") in stale_timestamps
+        if fill["timestamp"] in stale_timestamps
         and fill["status"] in {"filled", "partial"}
-        and not fill.get("reduce_only")
+        and not fill["reduce_only"]
     ]
     state_valid = not stale_entries
     if stale_entries:
         issues.append("position-opening fills executed against stale market data")
 
-    rejected = [
-        event for event in guard_events if event.get("kind") == "intent_rejected"
-    ]
+    rejected = [event for event in guard_events if event["kind"] == "intent_rejected"]
     capacity_valid = not rejected
     if rejected:
         warnings.append(
@@ -175,7 +175,20 @@ def validate_execution_job(
     )
     if script_path and script_path.exists():
         checks.extend(_script_static_checks(script_path, spec))
-        checks.extend(_strategy_entrypoint_checks(script_path))
+        try:
+            module = _load_module_from_path(script_path)
+            checks.append({"name": "strategy_module_loads", "passed": True})
+            checks.append(
+                {
+                    "name": "strategy_entrypoint_present",
+                    "passed": callable(getattr(module, "build_strategy", None))
+                    or callable(getattr(module, "decide", None)),
+                }
+            )
+        except Exception as exc:
+            checks.append(
+                {"name": "strategy_module_loads", "passed": False, "error": str(exc)}
+            )
         checks.extend(_execution_scenario_checks(script_path, job_data, spec))
 
     trace_report = _latest_trace_validation(root, spec)
@@ -198,18 +211,11 @@ def validate_execution_job(
 
 
 def _feature_checks(root: Path, spec: ExecutionSpec) -> list[dict[str, Any]]:
-    from wayfinder_paths.jobs.execution.features import (
-        load_feature_rows,
-        parse_feature_specs,
-    )
-
     try:
         specs = parse_feature_specs(spec)
     except ValueError as exc:
         # A malformed feature schema is a spec error: blocking.
-        return [
-            {"name": "declared_features_valid", "passed": False, "error": str(exc)}
-        ]
+        return [{"name": "declared_features_valid", "passed": False, "error": str(exc)}]
     if not specs:
         return []
     frames = load_feature_rows([root], specs)
@@ -305,6 +311,7 @@ def _timing_checks(
     """
     is_jobs_v1 = str(job_data.get("execution_contract") or "legacy") == "jobs_v1"
     bar_seconds = bar_interval_seconds(spec.data_contract.get("bar_interval"))
+    params = job_data.get("execution_params") or {}
     checks: list[dict[str, Any]] = [
         {
             "name": "bar_interval_declared",
@@ -322,11 +329,8 @@ def _timing_checks(
             # Without an explicit base, equity/return stats and compound
             # sizing silently use the engine default — declare it.
             "name": "initial_capital_declared",
-            "passed": bool(
-                (job_data.get("execution_params") or {}).get("initial_capital")
-            )
-            or not is_jobs_v1,
-            "value": (job_data.get("execution_params") or {}).get("initial_capital"),
+            "passed": bool(params.get("initial_capital")) or not is_jobs_v1,
+            "value": params.get("initial_capital"),
             "blocking": False,
         },
         {
@@ -336,11 +340,8 @@ def _timing_checks(
             # SuperTrend) will diverge. Declaring it aligns both AND bounds
             # per-tick backtest cost.
             "name": "lookback_bars_declared",
-            "passed": bool(
-                (job_data.get("execution_params") or {}).get("lookback_bars")
-            )
-            or not is_jobs_v1,
-            "value": (job_data.get("execution_params") or {}).get("lookback_bars"),
+            "passed": bool(params.get("lookback_bars")) or not is_jobs_v1,
+            "value": params.get("lookback_bars"),
             "blocking": False,
         },
     ]
@@ -364,7 +365,15 @@ def _timing_checks(
         )
         return checks
 
-    period = _schedule_period_seconds(schedule)
+    if schedule.kind == "interval":
+        period = schedule.interval_seconds
+    elif schedule.cron_expr:
+        iterator = croniter(schedule.cron_expr, 0)
+        fires = [iterator.get_next(float) for _ in range(4)]
+        gaps = sorted(b - a for a, b in zip(fires, fires[1:], strict=False))
+        period = int(gaps[len(gaps) // 2])  # median gap
+    else:
+        period = None
     if bar_seconds is not None and period is not None:
         checks.append(
             {
@@ -385,17 +394,6 @@ def _timing_checks(
             }
         )
     return checks
-
-
-def _schedule_period_seconds(schedule: ScheduleSpec) -> int | None:
-    if schedule.kind == "interval":
-        return schedule.interval_seconds
-    if not schedule.cron_expr:
-        return None
-    iterator = croniter(schedule.cron_expr, 0)
-    fires = [iterator.get_next(float) for _ in range(4)]
-    gaps = sorted(b - a for a, b in zip(fires, fires[1:], strict=False))
-    return int(gaps[len(gaps) // 2]) if gaps else None
 
 
 def _execution_spec_checks(spec: ExecutionSpec) -> list[dict[str, Any]]:
@@ -465,21 +463,6 @@ def _script_static_checks(
     return checks
 
 
-def _strategy_entrypoint_checks(script_path: Path) -> list[dict[str, Any]]:
-    try:
-        module = _load_module_from_path(script_path)
-    except Exception as exc:
-        return [{"name": "strategy_module_loads", "passed": False, "error": str(exc)}]
-    return [
-        {"name": "strategy_module_loads", "passed": True},
-        {
-            "name": "strategy_entrypoint_present",
-            "passed": callable(getattr(module, "build_strategy", None))
-            or callable(getattr(module, "decide", None)),
-        },
-    ]
-
-
 def _execution_scenario_checks(
     script_path: Path, job_data: Mapping[str, Any], spec: ExecutionSpec
 ) -> list[dict[str, Any]]:
@@ -523,7 +506,22 @@ def _execution_scenario_checks(
                 params=scenario.get("params") or {},
             )
             expected = scenario.get("expect") or {}
-            passed = _scenario_matches(result.to_dict(), expected)
+            trades = result.trades
+            passed = (
+                (
+                    "min_trades" not in expected
+                    or len(trades) >= int(expected["min_trades"])
+                )
+                and (
+                    "max_trades" not in expected
+                    or len(trades) <= int(expected["max_trades"])
+                )
+                and (
+                    "execution_valid" not in expected
+                    or bool(result.validation["execution_valid"])
+                    is bool(expected["execution_valid"])
+                )
+            )
             checks.append(
                 {
                     "name": f"execution_scenario_{name}",
@@ -542,21 +540,6 @@ def _execution_scenario_checks(
                 }
             )
     return checks
-
-
-def _scenario_matches(result: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
-    if not expected:
-        return True
-    trades = result["trades"]
-    if "min_trades" in expected and len(trades) < int(expected["min_trades"]):
-        return False
-    if "max_trades" in expected and len(trades) > int(expected["max_trades"]):
-        return False
-    if "execution_valid" in expected:
-        actual = result["validation"]["execution_valid"]
-        if bool(actual) is not bool(expected["execution_valid"]):
-            return False
-    return True
 
 
 def _latest_trace_validation(root: Path, spec: ExecutionSpec) -> dict[str, Any] | None:

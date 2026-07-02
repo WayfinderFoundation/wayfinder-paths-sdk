@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -27,7 +29,6 @@ from wayfinder_paths.jobs.execution.primitives import (
 from wayfinder_paths.jobs.execution.purity import purity_sandbox
 from wayfinder_paths.jobs.execution.venues import Broker, MarketEvent
 
-REDUCE_ONLY_ACTIONS = frozenset({"CLOSE", "STOP_LOSS", "TAKE_PROFIT"})
 OPEN_SIDES_SHORT = frozenset({"short", "sell"})
 
 # Ported from core/backtesting/constants.py (DEFAULT_MAINTENANCE_MARGINS);
@@ -62,9 +63,7 @@ class LiquidationConfig:
             return None
         by_symbol = dict(DEFAULT_MAINTENANCE_MARGIN_BY_SYMBOL)
         overrides = params.get("maintenance_margin_by_symbol") or {}
-        by_symbol.update(
-            {str(key): float(value) for key, value in overrides.items()}
-        )
+        by_symbol.update({str(key): float(value) for key, value in overrides.items()})
         # Explicit None checks: 0.0 is a legitimate rate/buffer, not "unset".
         raw_rate = params.get("maintenance_margin_rate")
         raw_buffer = params.get("liquidation_buffer")
@@ -79,10 +78,10 @@ class LiquidationConfig:
 
     def rate_for(self, symbol: str) -> float:
         if symbol in self.maintenance_margin_by_symbol:
-            return float(self.maintenance_margin_by_symbol[symbol])
+            return self.maintenance_margin_by_symbol[symbol]
         base = symbol.split("/")[0]
         if base in self.maintenance_margin_by_symbol:
-            return float(self.maintenance_margin_by_symbol[base])
+            return self.maintenance_margin_by_symbol[base]
         return self.maintenance_margin_rate
 
 
@@ -353,22 +352,40 @@ async def _run_tick_inner(
         # ticks and are captured in engine_state_pre for exact replay.
         strategy_state=state.strategy_state,
     )
-    raw_intents = await _call_decide(
-        strategy,
-        ctx,
-        enforce_purity=enforce_purity,
-        network_policy=str(spec.validation.get("purity") or "warn"),
-        guard_events=result.guard_events,
+    decide = getattr(strategy, "decide", strategy)
+    network_violations: list[str] = []
+    sandbox = (
+        purity_sandbox(
+            network_policy=str(spec.validation.get("purity") or "warn"),
+            violations=network_violations,
+        )
+        if enforce_purity
+        else contextlib.nullcontext()
     )
-    intents = [OrderIntent.from_any(item) for item in raw_intents]
+    with sandbox:
+        decided = decide(ctx)
+        if asyncio.iscoroutine(decided):
+            decided = await decided
+    for violation in network_violations:
+        result.guard_events.append(
+            {"kind": "purity_warning", "reason": violation, "timestamp": bar_iso}
+        )
+    match decided:
+        case None:
+            decided = []
+        case Mapping():
+            decided = [decided]
+        case _:
+            decided = list(decided)
+    intents = [OrderIntent.from_any(item) for item in decided]
 
     for index, intent in enumerate(intents):
         if client_order_prefix and intent.client_order_id is None:
             # Deterministic per (job, bar, slot): an order submitted just before
             # a SIGKILL is recognized as ours on the next tick's fetch_state.
-            intent.client_order_id = _deterministic_cloid(
-                client_order_prefix, bar_iso, index
-            )
+            seed = f"{client_order_prefix}|{bar_iso}|{index}"
+            digest = hashlib.sha256(seed.encode()).hexdigest()
+            intent.client_order_id = f"0x{digest[:32]}"
         trace.intents.append({"timestamp": bar_iso, **intent.to_dict()})
         if snapshot.status != "valid" and not intent.reduce_only:
             # Reduce-only mode: never add risk against stale/ambiguous state.
@@ -384,12 +401,13 @@ async def _run_tick_inner(
                 }
             )
             continue
+        ref_price = bars_by_symbol.get(intent.symbol, default_bar).close
         rejection = _validate_intent(
             intent,
             brokers=brokers,
             auto_limits=auto_limits,
             state=state,
-            ref_price=_ref_price(bars_by_symbol, default_bar, intent),
+            ref_price=ref_price,
             bar_iso=bar_iso,
         )
         if rejection:
@@ -408,13 +426,26 @@ async def _run_tick_inner(
                 **dict(intent.bracket),
                 "venue": intent.venue,
             }
-        _track_notional(intent, state=state, ref_price=_ref_price(bars_by_symbol, default_bar, intent), bar_iso=bar_iso)
+        if not intent.reduce_only:
+            notional = _intent_notional(intent, ref_price)
+            if notional is not None:
+                day = bar_iso[:10]
+                state.daily_notional[day] = (
+                    state.daily_notional.get(day, 0.0) + notional
+                )
         if spec.fill_model == "next_bar_open":
             state.pending_intents.append(intent)
         else:
-            price = _replay_price(intent) if spec.fill_model == "replay" else None
+            price = (
+                (
+                    _float_or_none(intent.metadata.get("replay_price"))
+                    or intent.limit_price
+                )
+                if spec.fill_model == "replay"
+                else None
+            )
             if price is None:
-                price = bars_by_symbol.get(intent.symbol, default_bar).close
+                price = ref_price
             fill = await _place(
                 brokers, intent, price=price, timestamp=bar_iso, result=result
             )
@@ -434,40 +465,6 @@ async def _run_tick_inner(
         }
     )
     return result
-
-
-async def _call_decide(
-    strategy: Any,
-    ctx: ExecutionContext,
-    *,
-    enforce_purity: bool,
-    network_policy: str,
-    guard_events: list[dict[str, Any]],
-) -> list[Any]:
-    decide = getattr(strategy, "decide", strategy)
-    network_violations: list[str] = []
-    if enforce_purity:
-        with purity_sandbox(
-            network_policy=network_policy, violations=network_violations
-        ):
-            result = decide(ctx)
-            if asyncio.iscoroutine(result):
-                result = await result
-    else:
-        result = decide(ctx)
-        if asyncio.iscoroutine(result):
-            result = await result
-    for violation in network_violations:
-        guard_events.append(
-            {"kind": "purity_warning", "reason": violation, "timestamp": ctx.timestamp}
-        )
-    match result:
-        case None:
-            return []
-        case Mapping():
-            return [result]
-        case _:
-            return list(result)
 
 
 def _record_fill(
@@ -621,7 +618,7 @@ async def _check_liquidation(
     maintenance_requirement = 0.0
     for symbol, position in state.ledger.positions.items():
         bar = bars_by_symbol.get(symbol)
-        close = float(bar.close) if bar is not None else float(position.avg_price)
+        close = bar.close if bar is not None else position.avg_price
         direction = 1 if position.side == "long" else -1
         equity += direction * (close - position.avg_price) * position.size
         if close > 0:
@@ -637,7 +634,7 @@ async def _check_liquidation(
         return False
     for symbol, position in list(state.ledger.positions.items()):
         bar = bars_by_symbol.get(symbol)
-        price = float(bar.close) if bar is not None else float(position.avg_price)
+        price = bar.close if bar is not None else position.avg_price
         intent = OrderIntent(
             action="CLOSE",
             venue=str((state.brackets.get(symbol) or {}).get("venue") or "backtest"),
@@ -701,10 +698,11 @@ async def flatten_positions(
             reduce_only=True,
             metadata={"stale_policy": "flat", "position_side": position.side},
         )
-        try:
-            price = float(view.latest(symbol)["close"])
-        except ValueError:
-            price = position.avg_price
+        price = (
+            float(view.latest(symbol)["close"])
+            if symbol in view.symbols
+            else position.avg_price
+        )
         fill = await _place(
             brokers, intent, price=price, timestamp=timestamp, result=result
         )
@@ -719,7 +717,7 @@ def _validate_intent(
     brokers: Mapping[str, Broker],
     auto_limits: Mapping[str, Any] | None,
     state: EngineState,
-    ref_price: float | None,
+    ref_price: float,
     bar_iso: str,
 ) -> str | None:
     if not intent.symbol:
@@ -746,15 +744,14 @@ def _validate_intent(
 
     if not auto_limits:
         return None
-    limits = dict(auto_limits)
-    enabled_venues = limits.get("enabled_venues")
+    enabled_venues = auto_limits.get("enabled_venues")
     if enabled_venues and intent.venue not in enabled_venues:
         return f"venue {intent.venue!r} not in enabled_venues"
-    allowed_symbols = limits.get("allowed_symbols")
+    allowed_symbols = auto_limits.get("allowed_symbols")
     if allowed_symbols and intent.symbol not in allowed_symbols:
         return f"symbol {intent.symbol!r} not in allowed_symbols"
     notional = _intent_notional(intent, ref_price)
-    max_per_decision = _float_or_none(limits.get("max_notional_per_decision"))
+    max_per_decision = _float_or_none(auto_limits.get("max_notional_per_decision"))
     if (
         max_per_decision is not None
         and notional is not None
@@ -762,12 +759,12 @@ def _validate_intent(
         and notional > max_per_decision
     ):
         return f"notional {notional:.2f} exceeds max_notional_per_decision"
-    max_daily = _float_or_none(limits.get("max_daily_notional"))
+    max_daily = _float_or_none(auto_limits.get("max_daily_notional"))
     if max_daily is not None and notional is not None and not intent.reduce_only:
         day = bar_iso[:10]
         if state.daily_notional.get(day, 0.0) + notional > max_daily:
             return f"daily notional cap {max_daily:.2f} reached"
-    max_positions = limits.get("max_open_positions")
+    max_positions = auto_limits.get("max_open_positions")
     if (
         max_positions is not None
         and intent.action == "OPEN"
@@ -778,46 +775,12 @@ def _validate_intent(
     return None
 
 
-def _track_notional(
-    intent: OrderIntent,
-    *,
-    state: EngineState,
-    ref_price: float | None,
-    bar_iso: str,
-) -> None:
-    if intent.reduce_only:
-        return
-    notional = _intent_notional(intent, ref_price)
-    if notional is None:
-        return
-    day = bar_iso[:10]
-    state.daily_notional[day] = state.daily_notional.get(day, 0.0) + notional
-
-
-def _intent_notional(intent: OrderIntent, ref_price: float | None) -> float | None:
+def _intent_notional(intent: OrderIntent, ref_price: float) -> float | None:
     if intent.notional is not None:
         return abs(float(intent.notional))
     if intent.size is not None and ref_price:
-        return abs(float(intent.size)) * float(ref_price)
+        return abs(float(intent.size)) * ref_price
     return None
-
-
-def _ref_price(
-    bars_by_symbol: Mapping[str, Any], default_bar: Any, intent: OrderIntent
-) -> float | None:
-    bar = bars_by_symbol.get(intent.symbol, default_bar)
-    return float(bar.close) if bar is not None else None
-
-
-def _deterministic_cloid(prefix: str, bar_iso: str, index: int) -> str:
-    import hashlib
-
-    digest = hashlib.sha256(f"{prefix}|{bar_iso}|{index}".encode()).hexdigest()
-    return f"0x{digest[:32]}"
-
-
-def _replay_price(intent: OrderIntent) -> float | None:
-    return _float_or_none(intent.metadata.get("replay_price")) or intent.limit_price
 
 
 def _is_stale(
@@ -839,6 +802,8 @@ def _is_stale(
 def _bars_at_timestamp(view: CompletedBarsView, timestamp: Any) -> dict[str, Any]:
     bars: dict[str, Any] = {}
     for symbol in view.symbols:
+        # row_at signals absence via ValueError (ragged multi-symbol views have
+        # no membership test); this is lookup control flow, not a cast guard.
         try:
             bars[symbol] = view.row_at(timestamp, symbol=symbol)
         except ValueError:

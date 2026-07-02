@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from pathlib import Path
 from typing import Any, Literal
 
 import click
@@ -8,17 +10,33 @@ import click
 from wayfinder_paths.jobs.application import (
     claim_application,
     complete_application,
+    ensure_jobs_v1_contract,
     validate_application_candidate,
 )
 from wayfinder_paths.jobs.backtest_artifacts import load_backtest_view
 from wayfinder_paths.jobs.compiler import JobCompiler
-from wayfinder_paths.jobs.execution.job import backtest_execution_job, validate_job
+from wayfinder_paths.jobs.execution.driver import tick_job
+from wayfinder_paths.jobs.execution.experiments import (
+    list_experiments,
+    promote_params,
+    run_experiment,
+)
+from wayfinder_paths.jobs.execution.job import backtest_execution_job
+from wayfinder_paths.jobs.execution.preflight import build_live_dataset, run_preflight
+from wayfinder_paths.jobs.execution.reconcile import reconcile_job
+from wayfinder_paths.jobs.execution.validation import validate_execution_job
+from wayfinder_paths.jobs.execution.walk_forward import format_fold_table
+from wayfinder_paths.jobs.features import append_feature, list_features
+from wayfinder_paths.jobs.gating import evaluate_live_gate
+from wayfinder_paths.jobs.halt import clear_halt, request_halt
+from wayfinder_paths.jobs.ledger import append_ledger_row, tail_ledger
 from wayfinder_paths.jobs.models import (
     AgentMode,
     WayfinderJob,
     infer_job_kind,
     normalize_agent_mode,
 )
+from wayfinder_paths.jobs.proposals import propose_change
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
@@ -113,6 +131,22 @@ def create_cmd(
     if script and not interval_seconds and not cron_expr:
         raise click.UsageError("Script jobs require --interval or --cron")
 
+    auto_limits: dict[str, Any] = {}
+    if auto_venues:
+        auto_limits["enabled_venues"] = list(auto_venues)
+    if auto_symbols:
+        auto_limits["allowed_symbols"] = list(auto_symbols)
+    if auto_markets:
+        auto_limits["allowed_markets"] = list(auto_markets)
+    if max_notional_per_decision is not None:
+        auto_limits["max_notional_per_decision"] = max_notional_per_decision
+    if max_daily_notional is not None:
+        auto_limits["max_daily_notional"] = max_daily_notional
+    if max_open_positions is not None:
+        auto_limits["max_open_positions"] = max_open_positions
+    if max_open_orders is not None:
+        auto_limits["max_open_orders"] = max_open_orders
+
     store = JobStore()
     job = WayfinderJob.new(
         job_id,
@@ -128,15 +162,7 @@ def create_cmd(
         timeout_seconds=timeout_seconds,
         agent_mode=normalized_mode,
         agent_wake_seconds=agent_wake_seconds,
-        auto_limits=_auto_limits_from_options(
-            venues=auto_venues,
-            symbols=auto_symbols,
-            markets=auto_markets,
-            max_notional_per_decision=max_notional_per_decision,
-            max_daily_notional=max_daily_notional,
-            max_open_positions=max_open_positions,
-            max_open_orders=max_open_orders,
-        ),
+        auto_limits=auto_limits,
     )
     if initial_capital is not None:
         job.execution_params["initial_capital"] = float(initial_capital)
@@ -173,7 +199,7 @@ def status_cmd(job_id: str) -> None:
 @click.option("--strict", is_flag=True, default=False)
 def validate_cmd(job_id: str, strict: bool) -> None:
     store = JobStore()
-    result = validate_job(job_id, strict=strict, store=store)
+    result = validate_execution_job(job_id, strict=strict, store=store)
     _echo_json({"ok": result["status"] == "passed", "result": result})
     if strict and result["status"] != "passed":
         raise click.ClickException("job validation failed")
@@ -222,7 +248,7 @@ def migrate_contract_cmd(job_id: str, force: bool) -> None:
         return
     job.execution_contract = "jobs_v1"
     store.save(job)
-    report = validate_job(job_id, store=store)
+    report = validate_execution_job(job_id, store=store)
     if report["status"] != "passed" and not force:
         job.execution_contract = "legacy"
         store.save(job)
@@ -259,11 +285,6 @@ def migrate_contract_cmd(job_id: str, force: bool) -> None:
     help="Force paper brokers regardless of the job's configured mode.",
 )
 def tick_cmd(job_id: str, mode: str | None, dry_run: bool) -> None:
-    import asyncio as _asyncio
-    from pathlib import Path as _Path
-
-    from wayfinder_paths.jobs.execution.driver import tick_job
-
     store = JobStore()
     job = store.load(job_id)
     if job.execution_contract != "jobs_v1":
@@ -271,8 +292,8 @@ def tick_cmd(job_id: str, mode: str | None, dry_run: bool) -> None:
             "tick requires a jobs_v1 job; run migrate-contract first"
         )
     effective_mode = "paper" if dry_run else (mode or job.script_loop.mode or "paper")
-    root = _Path(store.job_dir(job_id))
-    payload = _asyncio.run(tick_job(job, root, effective_mode, store=store))
+    root = Path(store.job_dir(job_id))
+    payload = asyncio.run(tick_job(job, root, effective_mode, store=store))
     _echo_json(payload)
 
 
@@ -344,11 +365,6 @@ def experiments_cmd(
     n_trials: int,
     seed: int,
 ) -> None:
-    from wayfinder_paths.jobs.execution.experiments import (
-        list_experiments,
-        run_experiment,
-    )
-
     store = JobStore()
     if list_only or not grid_path:
         _echo_json({"ok": True, "result": list_experiments(job_id, store=store)})
@@ -378,8 +394,6 @@ def experiments_cmd(
     )
     wf_report = (result.get("backtest") or {}).get("walk_forward")
     if wf_report:
-        from wayfinder_paths.jobs.execution.walk_forward import format_fold_table
-
         click.echo(format_fold_table(wf_report), err=True)
     _echo_json({"ok": True, "result": result})
 
@@ -390,8 +404,12 @@ def experiments_cmd(
     "as a proposal for live jobs).",
 )
 @click.argument("job_id")
-@click.option("--grid", "grid_id", default=None, help="Grid id under results/backtest/grids/.")
-@click.option("--run", "run_id", default=None, help="Specific run id (default: best ranked).")
+@click.option(
+    "--grid", "grid_id", default=None, help="Grid id under results/backtest/grids/."
+)
+@click.option(
+    "--run", "run_id", default=None, help="Specific run id (default: best ranked)."
+)
 @click.option("--params", "params_json", default=None, help="Explicit params JSON.")
 @click.option("--via-proposal", is_flag=True, default=False)
 def promote_params_cmd(
@@ -401,8 +419,6 @@ def promote_params_cmd(
     params_json: str | None,
     via_proposal: bool,
 ) -> None:
-    from wayfinder_paths.jobs.execution.experiments import promote_params
-
     store = JobStore()
     result = promote_params(
         job_id,
@@ -423,8 +439,6 @@ def promote_params_cmd(
 @click.argument("job_id")
 @click.option("--limit", type=int, default=200, show_default=True)
 def reconcile_cmd(job_id: str, limit: int) -> None:
-    from wayfinder_paths.jobs.execution.reconcile import reconcile_job
-
     store = JobStore()
     report = reconcile_job(job_id, store=store, limit=limit)
     _echo_json({"ok": True, "result": report})
@@ -460,8 +474,6 @@ def fetch_dataset_cmd(
     market_type: str,
     quote: str,
 ) -> None:
-    from wayfinder_paths.jobs.execution.preflight import build_live_dataset
-
     store = JobStore()
     result = build_live_dataset(
         job_id,
@@ -483,8 +495,6 @@ def fetch_dataset_cmd(
 @click.argument("job_id")
 @click.option("--max-ticks", type=int, default=50, show_default=True)
 def preflight_cmd(job_id: str, max_ticks: int) -> None:
-    from wayfinder_paths.jobs.execution.preflight import run_preflight
-
     store = JobStore()
     report = run_preflight(job_id, store=store, max_ticks=max_ticks)
     _echo_json({"ok": report["status"] == "passed", "result": report})
@@ -499,8 +509,6 @@ def preflight_cmd(job_id: str, max_ticks: int) -> None:
 )
 @click.argument("job_id")
 def gate_cmd(job_id: str) -> None:
-    from wayfinder_paths.jobs.gating import evaluate_live_gate
-
     store = JobStore()
     gate = evaluate_live_gate(job_id, store=store)
     _echo_json({"ok": gate["live_ready"], "result": gate})
@@ -560,7 +568,7 @@ def report_cmd(job_id: str) -> None:
     click.echo(f"{job['name']} — {job['id']}")
     click.echo("")
     click.echo(f"Goal: {job['goal'] or 'not recorded'}")
-    click.echo(f"Health: {scorecard.get('health', 'unknown')}")
+    click.echo(f"Health: {scorecard['health']}")
     click.echo(f"Script loop: {'on' if job['script_loop']['enabled'] else 'off'}")
     click.echo(f"Agent loop: {job['agent_loop']['mode']}")
     click.echo(
@@ -659,8 +667,6 @@ def approve_cmd(
     store = JobStore()
     # The SDK is the authoritative gate even when the backend is bypassed:
     # legacy jobs cannot pass the versioned-change flow.
-    from wayfinder_paths.jobs.application import ensure_jobs_v1_contract
-
     try:
         ensure_jobs_v1_contract(store, job_id, allow_legacy=skip_gate)
     except ValueError as exc:
@@ -724,12 +730,8 @@ def propose_cmd(
     memo: str | None,
     memo_file: str | None,
 ) -> None:
-    from pathlib import Path as _Path
-
-    from wayfinder_paths.jobs.proposals import propose_change
-
     if memo_file:
-        memo = _Path(memo_file).read_text(encoding="utf-8")
+        memo = Path(memo_file).read_text(encoding="utf-8")
     store = JobStore()
     proposal = propose_change(
         store,
@@ -875,8 +877,6 @@ def feature_append_cmd(
     timestamp: str | None,
     symbol: str | None,
 ) -> None:
-    from wayfinder_paths.jobs.features import append_feature
-
     coerced: Any = value
     try:
         coerced = float(value)
@@ -894,8 +894,6 @@ def feature_append_cmd(
 @click.option("--name", default=None)
 @click.option("--limit", type=int, default=50, show_default=True)
 def feature_list_cmd(job_id: str, name: str | None, limit: int) -> None:
-    from wayfinder_paths.jobs.features import list_features
-
     store = JobStore()
     _echo_json(
         {"ok": True, "result": list_features(store, job_id, name=name, limit=limit)}
@@ -915,8 +913,6 @@ def ledger_group() -> None:
 @click.argument("name")
 @click.option("--json", "row_json", required=True, help="Row object as JSON.")
 def ledger_append_cmd(job_id: str, name: str, row_json: str) -> None:
-    from wayfinder_paths.jobs.ledger import append_ledger_row
-
     store = JobStore()
     row = json.loads(row_json)
     result = append_ledger_row(store, job_id, name, row)
@@ -928,12 +924,8 @@ def ledger_append_cmd(job_id: str, name: str, row_json: str) -> None:
 @click.argument("name")
 @click.option("--limit", type=int, default=20, show_default=True)
 def ledger_tail_cmd(job_id: str, name: str, limit: int) -> None:
-    from wayfinder_paths.jobs.ledger import tail_ledger
-
     store = JobStore()
-    _echo_json(
-        {"ok": True, "result": tail_ledger(store, job_id, name, limit=limit)}
-    )
+    _echo_json({"ok": True, "result": tail_ledger(store, job_id, name, limit=limit)})
 
 
 @job_cli.command(
@@ -949,8 +941,6 @@ def ledger_tail_cmd(job_id: str, name: str, limit: int) -> None:
     help="Also market-close all open positions on the next tick.",
 )
 def halt_cmd(job_id: str, reason: str | None, flatten: bool) -> None:
-    from wayfinder_paths.jobs.halt import request_halt
-
     store = JobStore()
     payload = request_halt(store, job_id, reason=reason, flatten=flatten)
     sync_all_jobs(store=store)
@@ -960,8 +950,6 @@ def halt_cmd(job_id: str, reason: str | None, flatten: bool) -> None:
 @job_cli.command(name="resume-from-halt", help="Clear a manual halt.")
 @click.argument("job_id")
 def resume_from_halt_cmd(job_id: str) -> None:
-    from wayfinder_paths.jobs.halt import clear_halt
-
     store = JobStore()
     payload = clear_halt(store, job_id)
     sync_all_jobs(store=store)
@@ -982,31 +970,3 @@ def delete_cmd(job_id: str) -> None:
     store.refresh_scorecard(job_id, {"health": "unknown", "deleted": True})
     sync_all_jobs(store=store)
     _echo_json({"ok": True, "result": responses})
-
-
-def _auto_limits_from_options(
-    *,
-    venues: tuple[str, ...],
-    symbols: tuple[str, ...],
-    markets: tuple[str, ...],
-    max_notional_per_decision: float | None,
-    max_daily_notional: float | None,
-    max_open_positions: int | None,
-    max_open_orders: int | None,
-) -> dict[str, Any]:
-    limits: dict[str, Any] = {}
-    if venues:
-        limits["enabled_venues"] = list(venues)
-    if symbols:
-        limits["allowed_symbols"] = list(symbols)
-    if markets:
-        limits["allowed_markets"] = list(markets)
-    if max_notional_per_decision is not None:
-        limits["max_notional_per_decision"] = max_notional_per_decision
-    if max_daily_notional is not None:
-        limits["max_daily_notional"] = max_daily_notional
-    if max_open_positions is not None:
-        limits["max_open_positions"] = max_open_positions
-    if max_open_orders is not None:
-        limits["max_open_orders"] = max_open_orders
-    return limits

@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import Any
 
 from wayfinder_paths.jobs.execution import ExecutionSpec
-from wayfinder_paths.jobs.execution.job import backtest_execution_job, validate_job
+from wayfinder_paths.jobs.execution.job import backtest_execution_job
 from wayfinder_paths.jobs.execution.preflight import run_preflight
+from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.gating import compute_workspace_revision, evaluate_live_gate
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
@@ -44,7 +44,7 @@ def _make_job(
 def _run_full_gate_pipeline(store: JobStore, job_id: str) -> None:
     backtest_execution_job(job_id, store=store)
     run_preflight(job_id, store=store)
-    validate_job(job_id, store=store)
+    validate_execution_job(job_id, store=store)
 
 
 def test_gate_passes_after_full_pipeline(tmp_path: Path) -> None:
@@ -139,10 +139,6 @@ def test_validation_report_is_revision_stamped(tmp_path: Path) -> None:
     backtest_execution_job(job_id, store=store)
     run_preflight(job_id, store=store)
 
-    report = validate_job(job_id, store=store)
+    report = validate_execution_job(job_id, store=store)
 
     assert report["revision"] == compute_workspace_revision(root)
-
-
-def _noop(value: Any) -> Any:
-    return value

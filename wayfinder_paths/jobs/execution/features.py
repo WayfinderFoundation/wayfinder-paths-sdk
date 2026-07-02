@@ -27,7 +27,7 @@ as drift in the reconciler.
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -78,59 +78,53 @@ class FeatureSpec:
 
 def parse_feature_specs(spec: ExecutionSpec) -> list[FeatureSpec]:
     raw = spec.data_contract.get("features") or []
-    if not isinstance(raw, list):
-        raise ValueError("execution_spec.data_contract.features must be a list")
-    specs = [FeatureSpec.from_dict(item) for item in raw if isinstance(item, Mapping)]
+    match raw:
+        case list():
+            pass
+        case _:
+            raise ValueError("execution_spec.data_contract.features must be a list")
+    specs = []
+    for item in raw:
+        match item:
+            case Mapping():
+                specs.append(FeatureSpec.from_dict(item))
     for item in specs:
-        if item.source not in FEATURE_SOURCES:
+        if item.source != "file":
             raise ValueError(
                 f"feature {item.name!r}: unknown source {item.source!r} "
-                f"(registered: {sorted(FEATURE_SOURCES)})"
+                "(only 'file' is supported)"
             )
     return specs
-
-
-def _load_file_rows(roots: list[Path], spec: FeatureSpec) -> list[dict[str, Any]]:
-    """First root that has the file wins (candidate dir before job dir —
-    mirrors the candidate dataset fallback)."""
-    for root in roots:
-        path = Path(root) / spec.path
-        if not path.exists():
-            continue
-        rows: list[dict[str, Any]] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(row, dict) and str(row.get("name")) == spec.name:
-                rows.append(row)
-        return rows
-    return []
-
-
-FEATURE_SOURCES: dict[
-    str, Callable[[list[Path], FeatureSpec], list[dict[str, Any]]]
-] = {
-    "file": _load_file_rows,
-}
 
 
 def load_feature_rows(
     roots: list[Path], specs: list[FeatureSpec]
 ) -> dict[str, pd.DataFrame]:
     """Per-feature frames sorted by timestamp: columns [timestamp, value,
-    symbol]. Empty frame when a feature has no rows yet."""
+    symbol]. Empty frame when a feature has no rows yet. First root that has
+    the file wins (candidate dir before job dir — mirrors the candidate
+    dataset fallback)."""
     frames: dict[str, pd.DataFrame] = {}
     for spec in specs:
-        rows = FEATURE_SOURCES[spec.source](roots, spec)
+        rows: list[dict[str, Any]] = []
+        for root in roots:
+            path = Path(root) / spec.path
+            if not path.exists():
+                continue
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                match row:
+                    case dict() if str(row.get("name")) == spec.name:
+                        rows.append(row)
+            break
         if not rows:
-            frames[spec.name] = pd.DataFrame(
-                columns=["timestamp", "value", "symbol"]
-            )
+            frames[spec.name] = pd.DataFrame(columns=["timestamp", "value", "symbol"])
             continue
         frame = pd.DataFrame(
             [
@@ -170,9 +164,7 @@ def merge_features(
             continue
         per_symbol = feature["symbol"].notna().any()
         if per_symbol:
-            sub = feature.dropna(subset=["symbol"]).rename(
-                columns={"value": column}
-            )
+            sub = feature.dropna(subset=["symbol"]).rename(columns={"value": column})
             sub["symbol"] = sub["symbol"].astype(str)
             merged = pd.merge_asof(
                 bars.sort_values("timestamp"),
@@ -193,9 +185,7 @@ def merge_features(
     for spec in specs:
         column = spec.column_name
         if column in bars.columns:
-            bars[column] = bars[column].astype(object).where(
-                bars[column].notna(), None
-            )
+            bars[column] = bars[column].astype(object).where(bars[column].notna(), None)
     return CompletedBarsView(bars)
 
 
@@ -257,9 +247,7 @@ def summarize_features(
                 "available": True,
                 "latest_value": latest["value"],
                 "latest_timestamp": latest["timestamp"].isoformat(),
-                "age_seconds": float(
-                    (now - latest["timestamp"]).total_seconds()
-                ),
+                "age_seconds": float((now - latest["timestamp"]).total_seconds()),
                 "row_count": int(len(frame)),
             }
         )

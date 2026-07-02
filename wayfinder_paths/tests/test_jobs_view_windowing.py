@@ -21,9 +21,7 @@ from wayfinder_paths.tests.test_jobs_strategies_scenarios import bars_from_close
 def _view(count: int = 10, symbols: tuple[str, ...] = ("SNX",)) -> CompletedBarsView:
     rows: list[dict[str, Any]] = []
     for symbol in symbols:
-        rows.extend(
-            bars_from_closes([10.0 + i for i in range(count)], symbol=symbol)
-        )
+        rows.extend(bars_from_closes([10.0 + i for i in range(count)], symbol=symbol))
     return CompletedBarsView.from_rows(rows)
 
 
@@ -125,9 +123,7 @@ def test_simulator_honors_lookback_bars() -> None:
         bars_from_closes([10.0 + i * 0.1 for i in range(30)], symbol="SNX")
     )
     bounded = WindowProbe()
-    simulate_execution(
-        lambda params: bounded, dataset, _spec(), {"lookback_bars": 5}
-    )
+    simulate_execution(lambda params: bounded, dataset, _spec(), {"lookback_bars": 5})
     assert max(bounded.seen) == 5
     assert bounded.seen[:5] == [1, 2, 3, 4, 5]
 
@@ -143,9 +139,7 @@ def test_lookback_wider_than_history_is_bit_identical_to_full() -> None:
     def run(params: dict[str, Any]):
         return simulate_execution(
             build_snx_momentum,
-            PreparedExecutionDataset.from_rows(
-                bars_from_closes(closes, symbol="SNX")
-            ),
+            PreparedExecutionDataset.from_rows(bars_from_closes(closes, symbol="SNX")),
             _spec(),
             {"symbol": "SNX", "notional_usd": 500.0, **params},
         )

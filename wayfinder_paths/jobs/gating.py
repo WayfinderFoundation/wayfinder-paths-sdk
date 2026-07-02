@@ -35,23 +35,24 @@ def compute_workspace_revision(root: Path) -> str:
                 digest.update(path.read_bytes())
     job_yaml = root / "job.yaml"
     if job_yaml.exists():
-        digest.update(_canonical_job_yaml_bytes(job_yaml))
+        # Hash job.yaml minus self-referential bookkeeping: `versioning`
+        # stores the revision this hash produces, and `updated_at` changes on
+        # every save — both would make the hash unstable under pure
+        # bookkeeping writes.
+        try:
+            loaded = yaml.safe_load(job_yaml.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:
+            loaded = None
+        match loaded:
+            case dict() as data:
+                data.pop("versioning", None)
+                data.pop("updated_at", None)
+                digest.update(
+                    json.dumps(data, sort_keys=True, default=str).encode("utf-8")
+                )
+            case _:
+                digest.update(job_yaml.read_bytes())
     return digest.hexdigest()[:12]
-
-
-def _canonical_job_yaml_bytes(path: Path) -> bytes:
-    """job.yaml minus self-referential bookkeeping: `versioning` stores the
-    revision this hash produces, and `updated_at` changes on every save — both
-    would make the hash unstable under pure bookkeeping writes."""
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError:
-        return path.read_bytes()
-    if not isinstance(data, dict):
-        return path.read_bytes()
-    data.pop("versioning", None)
-    data.pop("updated_at", None)
-    return json.dumps(data, sort_keys=True, default=str).encode("utf-8")
 
 
 def evaluate_live_gate(
@@ -74,9 +75,13 @@ def evaluate_live_gate(
     reasons: list[str] = []
     revision = compute_workspace_revision(root)
 
-    job_data = _read_yaml(root / "job.yaml")
-    contract = str(job_data.get("execution_contract") or "legacy")
-    if contract != "jobs_v1":
+    job_yaml = root / "job.yaml"
+    job_data = (
+        yaml.safe_load(job_yaml.read_text(encoding="utf-8")) or {}
+        if job_yaml.exists()
+        else {}
+    )
+    if str(job_data.get("execution_contract") or "legacy") != "jobs_v1":
         reasons.append(
             "job is on the legacy execution contract; run "
             "`wayfinder job migrate-contract` first"
@@ -88,14 +93,13 @@ def evaluate_live_gate(
         reasons.append("no validation report (run `wayfinder job validate`)")
     else:
         validation_summary = {
-            "status": validation.get("status"),
+            "status": validation["status"],
+            # A no-spec early-return report carries no revision stamp.
             "revision": validation.get("revision"),
         }
-        if validation.get("status") != "passed":
+        if validation["status"] != "passed":
             failed = [
-                check.get("name")
-                for check in validation.get("checks") or []
-                if not check.get("passed")
+                check["name"] for check in validation["checks"] if not check["passed"]
             ]
             reasons.append(f"validation failed: {failed}")
         elif validation.get("revision") and validation["revision"] != revision:
@@ -109,10 +113,12 @@ def evaluate_live_gate(
     if not backtest:
         reasons.append("no backtest artifact (run `wayfinder job backtest`)")
     else:
+        # revision/generated_at/dataset are stamp keys — absent when latest.json
+        # was written without the job-level stamp, which is itself a gate reason.
         backtest_summary = {
             "revision": backtest.get("revision"),
             "generated_at": backtest.get("generated_at"),
-            "stats": backtest.get("stats"),
+            "stats": backtest["stats"],
             "dataset": backtest.get("dataset"),
         }
         if backtest.get("revision") != revision:
@@ -120,15 +126,18 @@ def evaluate_live_gate(
                 f"backtest is for revision {backtest.get('revision')}, "
                 f"workspace is {revision} (re-run `wayfinder job backtest`)"
             )
-        age_days = _age_days(backtest.get("generated_at"))
-        if age_days is None:
+        generated_at = backtest.get("generated_at")
+        if not generated_at:
             reasons.append("backtest has no generated_at stamp")
-        elif age_days > max_backtest_age_days:
-            reasons.append(
-                f"backtest is {age_days:.0f} days old "
-                f"(max {max_backtest_age_days})"
-            )
-        if not ((backtest.get("validation") or {}).get("execution_valid")):
+        else:
+            age_days = (
+                datetime.now(UTC) - datetime.fromisoformat(str(generated_at))
+            ).total_seconds() / 86_400
+            if age_days > max_backtest_age_days:
+                reasons.append(
+                    f"backtest is {age_days:.0f} days old (max {max_backtest_age_days})"
+                )
+        if not backtest["validation"]["execution_valid"]:
             reasons.append("latest backtest trace failed execution validation")
 
     preflight = _read_json(root / "reports" / "preflight" / "latest.json")
@@ -137,17 +146,17 @@ def evaluate_live_gate(
         reasons.append("no preflight report (run `wayfinder job preflight`)")
     else:
         preflight_summary = {
-            "status": preflight.get("status"),
-            "revision": preflight.get("revision"),
+            "status": preflight["status"],
+            "revision": preflight["revision"],
         }
-        if preflight.get("status") != "passed":
+        if preflight["status"] != "passed":
             failed = [
-                check.get("name")
-                for check in preflight.get("checks") or []
-                if not check.get("passed") and check.get("blocking") is not False
+                check["name"]
+                for check in preflight["checks"]
+                if not check["passed"] and check.get("blocking") is not False
             ]
             reasons.append(f"preflight failed: {failed}")
-        elif preflight.get("revision") and preflight["revision"] != revision:
+        elif preflight["revision"] != revision:
             reasons.append(
                 f"preflight is for revision {preflight['revision']}, "
                 f"workspace is {revision} (re-run `wayfinder job preflight`)"
@@ -168,26 +177,7 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
+        # A torn write reads as a missing artifact, not a crashed gate.
         return None
-    return loaded if isinstance(loaded, dict) else None
-
-
-def _read_yaml(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    return loaded if isinstance(loaded, dict) else {}
-
-
-def _age_days(generated_at: Any) -> float | None:
-    if not generated_at:
-        return None
-    try:
-        stamp = datetime.fromisoformat(str(generated_at))
-    except ValueError:
-        return None
-    if stamp.tzinfo is None:
-        stamp = stamp.replace(tzinfo=UTC)
-    return (datetime.now(UTC) - stamp).total_seconds() / 86_400

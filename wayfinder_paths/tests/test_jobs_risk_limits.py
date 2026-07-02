@@ -77,7 +77,9 @@ async def _tick(job, root, store, *, view_count: int = 2):
         root,
         "paper",
         store=store,
-        adapters={"hyperliquid": FakeAdapter(view, PaperBroker(capabilities=PERP_CAPS))},
+        adapters={
+            "hyperliquid": FakeAdapter(view, PaperBroker(capabilities=PERP_CAPS))
+        },
         now=_now(view),
     )
 
@@ -152,9 +154,10 @@ async def test_peak_equity_persists_across_ticks(tmp_path: Path) -> None:
 
     first = await _tick(job, root, store, view_count=1)
     assert first["snapshot"]["status"] == "valid"
-    assert json.loads((root / "state" / "risk_state.json").read_text())[
-        "peak_equity"
-    ] == 10_000.0
+    assert (
+        json.loads((root / "state" / "risk_state.json").read_text())["peak_equity"]
+        == 10_000.0
+    )
 
     _write_summary(root, {"net_pnl": -500.0})  # dd -0.05 vs persisted peak
     second = await _tick(job, root, store, view_count=2)

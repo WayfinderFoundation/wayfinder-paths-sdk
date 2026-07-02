@@ -23,23 +23,12 @@ class ImxAtrTargetStrategy(ShortMomentumStrategy):
         "atr_period": 14,
         "atr_mult": 2.0,
     }
-
-    def min_bars(self) -> int:
-        return (
-            max(
-                self.params["low_period"],
-                self.params["sma_period"],
-                self.params["atr_period"],
-            )
-            + 2
-        )
+    extra_period_keys = ("atr_period",)
 
     def compute_indicators(
         self, highs: list[float], lows: list[float], closes: list[float]
     ) -> dict[str, Any]:
-        return {
-            "atr": simple_atr(highs, lows, closes, int(self.params["atr_period"]))
-        }
+        return {"atr": simple_atr(highs, lows, closes, int(self.params["atr_period"]))}
 
     def on_entry(
         self,

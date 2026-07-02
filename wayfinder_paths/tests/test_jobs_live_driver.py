@@ -215,8 +215,12 @@ async def test_duplicate_bar_tick_is_skipped_and_idempotent(tmp_path: Path) -> N
     view = _view(2)
     adapters = {"hyperliquid": FakeAdapter(view, broker)}
 
-    first = await tick_job(job, root, "paper", store=store, adapters=adapters, now=_now(view))
-    second = await tick_job(job, root, "paper", store=store, adapters=adapters, now=_now(view))
+    first = await tick_job(
+        job, root, "paper", store=store, adapters=adapters, now=_now(view)
+    )
+    second = await tick_job(
+        job, root, "paper", store=store, adapters=adapters, now=_now(view)
+    )
 
     assert first["skipped"] is False
     assert second["skipped"] is True
@@ -247,9 +251,7 @@ async def test_restart_adopts_venue_positions_when_state_missing(
     tmp_path: Path,
 ) -> None:
     store, job, root = _make_job(tmp_path, mode="live")
-    venue_position = PositionRecord(
-        symbol="SNX", side="long", size=2.0, avg_price=9.5
-    )
+    venue_position = PositionRecord(symbol="SNX", side="long", size=2.0, avg_price=9.5)
     broker = FakeLiveBroker(venue_positions={"SNX": venue_position})
     view = _view(2)
 
@@ -300,14 +302,17 @@ async def test_ledger_venue_divergence_goes_reduce_only(tmp_path: Path) -> None:
     assert result["snapshot"]["status"] == "ambiguous"
     assert result["intents"] == []  # strategy's OPEN blocked in reduce-only mode
     assert any(
-        event["kind"] == "intent_rejected"
-        and "reduce-only" in event["reason"]
+        event["kind"] == "intent_rejected" and "reduce-only" in event["reason"]
         for event in result["guard_events"]
     )
     # local state must never be cleared on a mismatch
     restored = EngineState.load(root / "state" / "engine_state.json")
     assert "IMX" in restored.ledger.positions
-    journal = (root / "journal.jsonl").read_text() if (root / "journal.jsonl").exists() else ""
+    journal = (
+        (root / "journal.jsonl").read_text()
+        if (root / "journal.jsonl").exists()
+        else ""
+    )
     assert "reconcile_mismatch" in journal
 
 

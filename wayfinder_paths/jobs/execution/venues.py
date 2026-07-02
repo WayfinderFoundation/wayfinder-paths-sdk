@@ -61,8 +61,7 @@ class VenueState:
     def to_dict(self) -> dict[str, Any]:
         return {
             "positions": {
-                symbol: record.to_dict()
-                for symbol, record in self.positions.items()
+                symbol: record.to_dict() for symbol, record in self.positions.items()
             },
             "open_orders": list(self.open_orders),
             "balances": dict(self.balances),

@@ -44,6 +44,9 @@ class ShortMomentumStrategy:
     equity has an explicit base."""
 
     default_params: dict[str, Any] = {}
+    # Extra self.params keys (beyond low_period/sma_period) whose periods
+    # extend the min_bars warmup — e.g. ("atr_period",).
+    extra_period_keys: tuple[str, ...] = ()
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         merged = {
@@ -63,9 +66,9 @@ class ShortMomentumStrategy:
         self.params = merged
 
     def entry_notional(self, ctx: ExecutionContext) -> float:
-        if str(self.params.get("sizing") or "fixed_notional") != "compound":
+        if self.params["sizing"] != "compound":
             return float(self.params["notional_usd"])
-        raw = self.params.get("leverage")
+        raw = self.params["leverage"]
         leverage = 1.0 if raw is None else float(raw)  # 0 must NOT default to 1
         if not 0 < leverage <= MAX_LEVERAGE:
             raise ValueError(
@@ -75,7 +78,12 @@ class ShortMomentumStrategy:
 
     # ── hooks ────────────────────────────────────────────────────────────
     def min_bars(self) -> int:
-        return max(self.params["low_period"], self.params["sma_period"]) + 2
+        periods = (
+            self.params["low_period"],
+            self.params["sma_period"],
+            *(self.params[key] for key in self.extra_period_keys),
+        )
+        return max(periods) + 2
 
     def compute_indicators(
         self,
@@ -143,7 +151,11 @@ class ShortMomentumStrategy:
             # per-bar isoformat strings, and they cost O(bars) to build.
             times = [ts.isoformat() for ts in frame["timestamp"]]
             for index in range(len(closes)):
-                if times[index] > since and sma20[index] and closes[index] > sma20[index]:
+                if (
+                    times[index] > since
+                    and sma20[index]
+                    and closes[index] > sma20[index]
+                ):
                     state["rearm"] = False
                     state["rearm_since"] = None
                     break
@@ -192,9 +204,8 @@ class ShortMomentumStrategy:
         if not self.entry_allowed(closes=closes, sma20=sma20, indicators=indicators):
             return []
         notional = self.entry_notional(ctx)
-        if (
-            str(self.params.get("sizing") or "fixed_notional") == "compound"
-            and notional < float(self.params["min_notional_usd"])
+        if self.params["sizing"] == "compound" and notional < float(
+            self.params["min_notional_usd"]
         ):
             return []
         size = round(notional / current_close, 1)

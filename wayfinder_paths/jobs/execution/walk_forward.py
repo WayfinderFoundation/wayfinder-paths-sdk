@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from statistics import fmean
 from typing import Any
 
 import pandas as pd
 
+from wayfinder_paths.jobs.execution.optimize import run_optuna_search
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     ExecutionSpec,
@@ -65,13 +67,11 @@ def run_walk_forward(
     for index in range(folds):
         test_end = total - (folds - 1 - index) * test_bars
         test_start = test_end - test_bars
-        train_start = 0 if anchored or train_bars is None else max(
-            0, test_start - train_bars
+        train_start = (
+            0 if anchored or train_bars is None else max(0, test_start - train_bars)
         )
         train_slice = _slice(dataset, timestamps, train_start, test_start)
         if optimizer == "optuna":
-            from wayfinder_paths.jobs.execution.optimize import run_optuna_search
-
             # Per-fold seed offset: reproducible, but each fold explores its
             # own sampling path instead of replaying fold 0's suggestions.
             options = dict(optuna_options or {})
@@ -112,20 +112,18 @@ def run_walk_forward(
             fold_rows.append({**base_row, "status": "no_valid_runs"})
             continue
         best = grid.ranked[0]
-        params = dict(best.get("params") or {})
+        params = dict(best["params"])
         eval_start = max(0, test_start - warmup_bars)
         eval_slice = _slice(dataset, timestamps, eval_start, test_end)
         result = simulate_execution(script_entrypoint, eval_slice, spec, params)
-        test_stats = _test_window_stats(
-            result, timestamps[test_start], spec, params
-        )
+        test_stats = _test_window_stats(result, timestamps[test_start], spec, params)
         fold_rows.append(
             {
                 **base_row,
                 "status": "ok",
                 "params": params,
-                "train_run_id": best.get("run_id"),
-                "train_stats": best.get("stats"),
+                "train_run_id": best["run_id"],
+                "train_stats": best["stats"],
                 "test_stats": test_stats,
             }
         )
@@ -158,7 +156,10 @@ def _slice(
     ]
     return PreparedExecutionDataset(
         CompletedBarsView(window),
-        {**dataset.metadata, "wf_window": [str(timestamps[start]), str(timestamps[end - 1])]},
+        {
+            **dataset.metadata,
+            "wf_window": [str(timestamps[start]), str(timestamps[end - 1])],
+        },
     )
 
 
@@ -178,17 +179,11 @@ def _test_window_stats(
     equity = [row for row in result.equity_curve if in_window(row)]
     trades = [row for row in result.trades if in_window(row)]
     positions = [row for row in result.positions if in_window(row)]
-    guard_events = [
-        row
-        for row in (result.trace.get("guard_events") or [])
-        if row.get("timestamp") is not None and in_window(row)
-    ]
+    guard_events = [row for row in result.trace["guard_events"] if in_window(row)]
     price_series = {
-        series["symbol"]: [
-            point for point in series.get("points") or [] if in_window(point)
-        ]
-        for series in (result.visualization.get("series") or [])
-        if series.get("kind") == "market_price" and series.get("symbol")
+        series["symbol"]: [point for point in series["points"] if in_window(point)]
+        for series in result.visualization["series"]
+        if series["kind"] == "market_price"
     }
     return _stats(
         equity,
@@ -202,75 +197,75 @@ def _test_window_stats(
 
 
 def _summary(fold_rows: list[dict[str, Any]], rank_by: str) -> dict[str, Any]:
-    ok = [row for row in fold_rows if row.get("status") == "ok"]
+    ok = [row for row in fold_rows if row["status"] == "ok"]
     if not ok:
         return {"fold_count": 0}
-    is_returns = [float(row["train_stats"].get("net_return") or 0.0) for row in ok]
-    oos_returns = [float(row["test_stats"].get("net_return") or 0.0) for row in ok]
-    is_rank = [_metric(row["train_stats"], rank_by) for row in ok]
-    oos_rank = [_metric(row["test_stats"], rank_by) for row in ok]
+    is_returns = [float(row["train_stats"]["net_return"]) for row in ok]
+    oos_returns = [float(row["test_stats"]["net_return"]) for row in ok]
+    is_rank = [
+        v for v in (_metric(row["train_stats"], rank_by) for row in ok) if v is not None
+    ]
+    oos_rank = [
+        v for v in (_metric(row["test_stats"], rank_by) for row in ok) if v is not None
+    ]
     oos_sharpes = [
         float(row["test_stats"]["sharpe"])
         for row in ok
-        if row["test_stats"].get("sharpe") is not None
+        if row["test_stats"]["sharpe"] is not None
     ]
     oos_sortinos = [
         float(row["test_stats"]["sortino"])
         for row in ok
-        if row["test_stats"].get("sortino") is not None
+        if row["test_stats"]["sortino"] is not None
     ]
-    is_mean = _mean(is_returns)
-    oos_mean = _mean(oos_returns)
+    is_mean = fmean(is_returns)
+    oos_mean = fmean(oos_returns)
     return {
         "fold_count": len(ok),
         "is_return_mean": is_mean,
         "oos_return_mean": oos_mean,
-        "is_rank_metric_mean": _mean([v for v in is_rank if v is not None]),
-        "oos_rank_metric_mean": _mean([v for v in oos_rank if v is not None]),
+        "is_rank_metric_mean": fmean(is_rank) if is_rank else None,
+        "oos_rank_metric_mean": fmean(oos_rank) if oos_rank else None,
         # Sign-guarded: a ratio against a negative in-sample base is noise.
-        "decay_ratio": (oos_mean / is_mean) if is_mean and is_mean > 0 else None,
+        "decay_ratio": (oos_mean / is_mean) if is_mean > 0 else None,
         "oos_positive_folds": sum(1 for value in oos_returns if value > 0),
-        "oos_sharpe_mean": _mean(oos_sharpes) if oos_sharpes else None,
-        "oos_sortino_mean": _mean(oos_sortinos) if oos_sortinos else None,
+        "oos_sharpe_mean": fmean(oos_sharpes) if oos_sharpes else None,
+        "oos_sortino_mean": fmean(oos_sortinos) if oos_sortinos else None,
         "oos_max_drawdown_worst": min(
-            (float(row["test_stats"].get("max_drawdown_pct") or 0.0) for row in ok),
+            (float(row["test_stats"]["max_drawdown_pct"]) for row in ok),
             default=None,
         ),
     }
 
 
 def _metric(stats: Mapping[str, Any], key: str) -> float | None:
-    value = stats.get(key)
+    value = stats[key]
     return float(value) if value is not None else None
-
-
-def _mean(values: list[float]) -> float | None:
-    return sum(values) / len(values) if values else None
 
 
 def format_fold_table(report: Mapping[str, Any]) -> str:
     """Compact human-readable fold table for CLI stderr output."""
     lines = ["walk-forward: fold | train window | IS ret | OOS ret | params"]
-    for row in report.get("folds") or []:
-        if row.get("status") != "ok":
-            lines.append(f"  {row.get('fold')} | {row.get('status')}")
+    for row in report["folds"]:
+        if row["status"] != "ok":
+            lines.append(f"  {row['fold']} | {row['status']}")
             continue
-        is_ret = float(row["train_stats"].get("net_return") or 0.0) * 100
-        oos_ret = float(row["test_stats"].get("net_return") or 0.0) * 100
+        is_ret = float(row["train_stats"]["net_return"]) * 100
+        oos_ret = float(row["test_stats"]["net_return"]) * 100
         lines.append(
             f"  {row['fold']} | {row['train']['start'][:10]}→"
             f"{row['test']['end'][:10]} | {is_ret:+.2f}% | {oos_ret:+.2f}% | "
-            f"{row.get('params')}"
+            f"{row['params']}"
         )
-    summary = report.get("summary") or {}
-    if summary.get("fold_count"):
-        decay = summary.get("decay_ratio")
+    summary = report["summary"]
+    if summary["fold_count"]:
+        decay = summary["decay_ratio"]
         lines.append(
             "  summary: IS mean "
-            f"{(summary.get('is_return_mean') or 0) * 100:+.2f}% | OOS mean "
-            f"{(summary.get('oos_return_mean') or 0) * 100:+.2f}% | "
-            f"OOS-positive folds {summary.get('oos_positive_folds')}/"
-            f"{summary.get('fold_count')} | decay "
+            f"{summary['is_return_mean'] * 100:+.2f}% | OOS mean "
+            f"{summary['oos_return_mean'] * 100:+.2f}% | "
+            f"OOS-positive folds {summary['oos_positive_folds']}/"
+            f"{summary['fold_count']} | decay "
             f"{f'{decay:.2f}' if decay is not None else 'n/a'}"
         )
     return "\n".join(lines)

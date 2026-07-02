@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any, Literal
 
 SCHEMA_VERSION = "0.2"
@@ -91,7 +90,7 @@ class ScriptLoop:
     def from_dict(cls, data: dict[str, Any] | None) -> ScriptLoop:
         data = data or {}
         return cls(
-            enabled=bool(data.get("enabled", False)),
+            enabled=bool(data.get("enabled")),
             runner_job_name=str(data.get("runner_job_name") or ""),
             entrypoint=data.get("entrypoint"),
             interval_seconds=data.get("interval_seconds"),
@@ -140,7 +139,7 @@ class AgentLoop:
         data = data or {}
         mode = normalize_agent_mode(data.get("mode"))
         return cls(
-            enabled=bool(data.get("enabled", mode != "off")),
+            enabled=bool(data["enabled"]) if "enabled" in data else mode != "off",
             mode=mode,
             runner_job_name=str(data.get("runner_job_name") or ""),
             wake_interval_seconds=data.get("wake_interval_seconds"),
@@ -343,6 +342,3 @@ class WayfinderJob:
 
     def touch(self) -> None:
         self.updated_at = utc_now_iso()
-
-    def workspace_path(self, root: Path) -> Path:
-        return root / "workspace"

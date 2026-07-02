@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.jobs.execution.job import backtest_execution_job
+from wayfinder_paths.jobs.execution.preflight import run_preflight
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
@@ -22,31 +24,31 @@ def record_experiment(
     """Append one experiment row per grid run so parameter searches leave a
     durable, comparable trail instead of evaporating into a grids/ folder."""
     store = store or JobStore()
-    result = grid_payload.get("result") or grid_payload
-    ranked = result.get("ranked") or []
+    result = grid_payload["result"]
+    ranked = result["ranked"]
     best = ranked[0] if ranked else None
     row = {
         "ts": utc_now_iso(),
-        "grid_id": result.get("grid_id"),
-        "revision": grid_payload.get("revision"),
-        "dataset": grid_payload.get("dataset"),
-        "rank_by": result.get("rank_by"),
-        "run_count": len(result.get("runs") or []),
-        "invalid_count": len(result.get("invalid") or []),
+        "grid_id": result["grid_id"],
+        "revision": grid_payload["revision"],
+        "dataset": grid_payload["dataset"],
+        "rank_by": result["rank_by"],
+        "run_count": len(result["runs"]),
+        "invalid_count": len(result["invalid"]),
         "best": (
             {
-                "run_id": best.get("run_id"),
-                "params": best.get("params"),
-                "stats": best.get("stats"),
+                "run_id": best["run_id"],
+                "params": best["params"],
+                "stats": best["stats"],
             }
             if best
             else None
         ),
     }
-    if result.get("optimizer") and result.get("optimizer") != "grid":
+    if result["optimizer"] != "grid":
         row["optimizer"] = result["optimizer"]
-        row["search"] = result.get("search")
-    if grid_payload.get("walk_forward") is not None:
+        row["search"] = result["search"]
+    if "walk_forward" in grid_payload:
         row["walk_forward"] = grid_payload["walk_forward"]
     path = store.job_dir(job_id) / EXPERIMENTS_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -62,17 +64,10 @@ def list_experiments(
     path = store.job_dir(job_id) / EXPERIMENTS_FILE
     if not path.exists():
         return []
-    rows: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[
-        -limit:
-    ]:
-        try:
-            parsed = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(parsed, dict):
-            rows.append(parsed)
-    return rows
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()[-limit:]
+    ]
 
 
 def promote_params(
@@ -93,8 +88,10 @@ def promote_params(
     so it cannot skip the gate.
     """
     store = store or JobStore()
-    resolved = dict(params) if params else _params_from_grid(
-        store, job_id, grid_id=grid_id, run_id=run_id
+    resolved = (
+        dict(params)
+        if params
+        else _params_from_grid(store, job_id, grid_id=grid_id, run_id=run_id)
     )
     if not resolved:
         raise ValueError("no params resolved; pass params or grid_id/run_id")
@@ -110,8 +107,6 @@ def promote_params(
     # The params change produced a new revision: the backtest above re-stamps
     # results/ and validation, but preflight would stay at the old revision
     # and leave the live gate red until someone re-ran it manually.
-    from wayfinder_paths.jobs.execution.preflight import run_preflight
-
     preflight = run_preflight(job_id, store=store)
     revision = compute_workspace_revision(store.job_dir(job_id))
     _record_params_revision(store, job_id, revision, resolved, grid_id=grid_id)
@@ -119,27 +114,18 @@ def promote_params(
         "mode": "direct",
         "params": resolved,
         "revision": revision,
-        "backtest_stats": ((backtest.get("result") or {}).get("stats")),
-        "validation": (backtest.get("validation") or {}).get("status"),
+        "backtest_stats": backtest["result"]["stats"],
+        "validation": backtest["validation"]["status"],
         "preflight": preflight.get("status"),
     }
-    wf_summary = _walk_forward_summary_for_grid(store, job_id, grid_id)
-    if wf_summary is not None:
-        # Report-only: shown so IS/OOS decay is visible at the moment of
-        # promotion; never blocks.
-        outcome["walk_forward_summary"] = wf_summary
+    if grid_id:
+        for row in reversed(list_experiments(job_id, store=store)):
+            if row["grid_id"] == grid_id and row.get("walk_forward"):
+                # Report-only: shown so IS/OOS decay is visible at the moment
+                # of promotion; never blocks.
+                outcome["walk_forward_summary"] = row["walk_forward"]["summary"]
+                break
     return outcome
-
-
-def _walk_forward_summary_for_grid(
-    store: JobStore, job_id: str, grid_id: str | None
-) -> dict[str, Any] | None:
-    if not grid_id:
-        return None
-    for row in reversed(list_experiments(job_id, store=store)):
-        if row.get("grid_id") == grid_id and row.get("walk_forward"):
-            return row["walk_forward"].get("summary")
-    return None
 
 
 def _params_from_grid(
@@ -152,20 +138,24 @@ def _params_from_grid(
     if not grid_id:
         raise ValueError("grid_id is required when params are not passed explicitly")
     summary_path = (
-        store.job_dir(job_id) / "results" / "backtest" / "grids" / grid_id
+        store.job_dir(job_id)
+        / "results"
+        / "backtest"
+        / "grids"
+        / grid_id
         / "summary.json"
     )
     if not summary_path.exists():
         raise FileNotFoundError(f"grid summary not found: {summary_path}")
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    rows = summary.get("ranked") or []
+    rows = summary["ranked"]
     if run_id:
-        rows = [row for row in summary.get("runs") or [] if row.get("run_id") == run_id]
+        rows = [row for row in summary["runs"] if row["run_id"] == run_id]
     if not rows:
         raise ValueError(
             f"no {'run ' + run_id if run_id else 'ranked runs'} in grid {grid_id}"
         )
-    return dict(rows[0].get("params") or {})
+    return dict(rows[0]["params"])
 
 
 def _record_params_revision(
@@ -225,6 +215,7 @@ def _promote_via_proposal(
     # Route through the structured propose flow: the proposal gets a
     # pre-approval candidate, full validation, a baseline-vs-candidate
     # comparison, and the candidate_report the approve gates require.
+    # circular import: proposals imports experiments helpers
     from wayfinder_paths.jobs.proposals import propose_change
 
     changed = sorted(params)
@@ -274,18 +265,17 @@ def run_experiment(
     `grid` doubles as the optuna search space when optimizer="optuna" — the
     two file formats are self-distinguishing (dict-of-lists vs typed dims).
     """
-    import tempfile
-
     store = store or JobStore()
-    if isinstance(grid, (str, Path)):
-        grid_path = Path(grid)
-    else:
-        handle = tempfile.NamedTemporaryFile(
-            "w", suffix=".json", delete=False, encoding="utf-8"
-        )
-        json.dump(grid, handle)
-        handle.close()
-        grid_path = Path(handle.name)
+    match grid:
+        case str() | Path():
+            grid_path = Path(grid)
+        case _:
+            handle = tempfile.NamedTemporaryFile(
+                "w", suffix=".json", delete=False, encoding="utf-8"
+            )
+            json.dump(grid, handle)
+            handle.close()
+            grid_path = Path(handle.name)
     payload = backtest_execution_job(
         job_id,
         grid_path=grid_path,

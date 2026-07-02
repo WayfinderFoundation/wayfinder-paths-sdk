@@ -62,7 +62,9 @@ def _candles(count: int, *, start_ms: int = BASE_MS) -> list[list[float]]:
     for index in range(count):
         open_ms = start_ms + index * HOUR_MS
         price = 10.0 + index * 0.1
-        rows.append([open_ms, price, price + 0.5, price - 0.5, price + 0.2, 100 + index])
+        rows.append(
+            [open_ms, price, price + 0.5, price - 0.5, price + 0.2, 100 + index]
+        )
     return rows
 
 
@@ -89,9 +91,7 @@ async def test_pagination_stitches_and_dedupes() -> None:
     feed = CcxtMarketFeed(exchange=exchange)
     as_of = pd.Timestamp(BASE_MS + 2500 * HOUR_MS, unit="ms", tz="UTC")
 
-    view = await feed.get_completed_bars(
-        ["SNX"], "1h", lookback_bars=2500, as_of=as_of
-    )
+    view = await feed.get_completed_bars(["SNX"], "1h", lookback_bars=2500, as_of=as_of)
 
     frame = view.to_frame()
     assert len(frame) == 2500
@@ -112,9 +112,7 @@ async def test_close_time_labeling_and_drops_in_progress_bar() -> None:
     assert len(frame) == 4  # in-progress bar dropped
     for index, row in frame.iterrows():
         open_ms = candles[int(index)][0]
-        assert row["timestamp"] == pd.Timestamp(
-            open_ms + HOUR_MS, unit="ms", tz="UTC"
-        )
+        assert row["timestamp"] == pd.Timestamp(open_ms + HOUR_MS, unit="ms", tz="UTC")
     assert str(frame["timestamp"].dt.tz) == "UTC"
 
 
@@ -188,7 +186,9 @@ def test_build_live_dataset_ccxt_source_writes_metadata(tmp_path: Path) -> None:
 
         symbol_map = feed.symbol_map
 
-        async def get_completed_bars(self, symbols, interval, *, lookback_bars, as_of=None):
+        async def get_completed_bars(
+            self, symbols, interval, *, lookback_bars, as_of=None
+        ):
             return await feed.get_completed_bars(
                 symbols,
                 interval,
@@ -221,9 +221,11 @@ def test_cli_fetch_dataset_source_option(monkeypatch) -> None:
         captured.update({"job_id": job_id, **kwargs})
         return {"path": "x", "bars": 1, "metadata": {"source": kwargs["source"]}}
 
+    # Patch both the defining module and the CLI's module-top binding.
     monkeypatch.setattr(
         "wayfinder_paths.jobs.execution.preflight.build_live_dataset", fake_build
     )
+    monkeypatch.setattr(cli_module, "build_live_dataset", fake_build)
     runner = CliRunner()
 
     result = runner.invoke(

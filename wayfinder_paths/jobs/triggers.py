@@ -98,6 +98,8 @@ def _fire_triggers(
             "mode": loop.mode,
         },
     )
+    # circular import: worker → application → validation → execution.preflight
+    # → execution.driver → triggers
     from wayfinder_paths.jobs.worker import run_job_worker
 
     wakeup = run_job_worker(job.id, mode=loop.mode)

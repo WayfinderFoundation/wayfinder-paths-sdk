@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from collections.abc import Sequence
@@ -8,6 +9,7 @@ from typing import Any
 
 import pandas as pd
 
+from wayfinder_paths.jobs.execution.ccxt_feed import fetch_ccxt_dataset_rows
 from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.paper import PaperBroker
@@ -79,11 +81,7 @@ def build_live_dataset(
     if not symbols:
         raise ValueError("no symbols configured for dataset fetch")
 
-    import asyncio
-
     if source == "ccxt":
-        from wayfinder_paths.jobs.execution.ccxt_feed import fetch_ccxt_dataset_rows
-
         if feed is not None:
             lookback_bars = max(2, int(days * 86_400 / bar_seconds))
             view = asyncio.run(
@@ -96,7 +94,7 @@ def build_live_dataset(
                 "exchange": exchange,
                 "market_type": market_type,
                 "quote": quote,
-                "symbol_map": dict(getattr(feed, "symbol_map", {})),
+                "symbol_map": dict(feed.symbol_map),
                 "label_convention": "close_time",
             }
         else:
@@ -205,7 +203,7 @@ class ReplayBroker:
         self._paper = PaperBroker(capabilities=PREFLIGHT_CAPS)
         self.reject_fills = reject_fills
         self.ambiguous_fill_at = ambiguous_fill_at
-        self.venue_positions = venue_positions if venue_positions is not None else None
+        self.venue_positions = venue_positions
         self.place_calls = 0
 
     async def place(
@@ -313,8 +311,6 @@ def run_preflight(
 
     bars = dataset.bars.to_rows()
     tick_count = min(len(dataset.bars.timestamps), max_ticks)
-
-    import asyncio
 
     outcome = asyncio.run(
         _run_scenarios(
@@ -466,9 +462,7 @@ async def _run_scenarios(
         broker=ReplayBroker(reject_fills=True),
         ticks=tick_count,
     )
-    final_positions = (
-        rejected_results[-1].get("positions") if rejected_results else {}
-    )
+    final_positions = rejected_results[-1].get("positions") if rejected_results else {}
     checks.append(
         {
             "name": "rejected_fill_no_state_clear",
@@ -489,9 +483,9 @@ async def _run_scenarios(
     saw_ambiguous = False
     for result in ambiguous_results:
         for fill in result.get("fills") or []:
-            if fill.get("status") == "ambiguous":
+            if fill["status"] == "ambiguous":
                 saw_ambiguous = True
-                if fill.get("filled_size"):
+                if fill["filled_size"]:
                     ambiguous_ok = False
     checks.append(
         {
@@ -516,9 +510,9 @@ async def _run_scenarios(
     venue_positions = {
         symbol: PositionRecord(
             symbol=symbol,
-            side=str(record.get("side") or "long"),
-            size=float(record.get("size") or 0.0),
-            avg_price=float(record.get("avg_price") or 0.0),
+            side=record["side"],
+            size=float(record["size"]),
+            avg_price=float(record["avg_price"]),
         )
         for symbol, record in held.items()
     }
@@ -586,7 +580,5 @@ def _write_report(
     }
     path = root / "reports" / "preflight" / "latest.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8"
-    )
+    path.write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")
     return report

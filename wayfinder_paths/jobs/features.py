@@ -66,6 +66,7 @@ def list_features(
             row = json.loads(line)
         except ValueError:
             continue
-        if isinstance(row, dict) and (name is None or row.get("name") == name):
-            rows.append(row)
-    return rows[-max(int(limit), 1):]
+        match row:
+            case dict() if name is None or row.get("name") == name:
+                rows.append(row)
+    return rows[-max(int(limit), 1) :]

@@ -58,7 +58,9 @@ class FakePolymarketAdapter:
         self.market_fetches += 1
         return True, dict(self.market)
 
-    async def get_market_by_condition_id(self, *, condition_id: str) -> tuple[bool, Any]:
+    async def get_market_by_condition_id(
+        self, *, condition_id: str
+    ) -> tuple[bool, Any]:
         self.market_fetches += 1
         return True, dict(self.market)
 
@@ -218,7 +220,9 @@ async def test_broker_close_sells_shares() -> None:
     broker = PolymarketBroker(adapter)
 
     fill = await broker.place(
-        _intent(action="CLOSE", side="sell", notional=None, size=50.0, reduce_only=True),
+        _intent(
+            action="CLOSE", side="sell", notional=None, size=50.0, reduce_only=True
+        ),
         timestamp="t0",
     )
 
@@ -273,7 +277,12 @@ async def test_broker_error_dict_rejected_and_transport_ambiguous() -> None:
 async def test_broker_fetch_state_maps_tokens_to_symbols() -> None:
     adapter = FakePolymarketAdapter(
         positions=[
-            {"asset": "tok_yes", "size": "120", "avgPrice": "0.35", "redeemable": False},
+            {
+                "asset": "tok_yes",
+                "size": "120",
+                "avgPrice": "0.35",
+                "redeemable": False,
+            },
             {"asset": "tok_other", "size": "50", "avgPrice": "0.5"},
         ]
     )

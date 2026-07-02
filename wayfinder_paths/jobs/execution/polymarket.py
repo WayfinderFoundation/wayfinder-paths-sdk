@@ -6,6 +6,7 @@ from typing import Any
 
 import pandas as pd
 
+from wayfinder_paths.jobs.execution.hyperliquid import _paper_broker
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     FillEvent,
@@ -47,6 +48,7 @@ def parse_prediction_symbol(symbol: str) -> tuple[str, str]:
 
 
 def _adapter() -> Any:
+    # lazy: PolymarketAdapter pulls the py_clob_client/BRAP stack; tests inject fakes
     from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
 
     return PolymarketAdapter()
@@ -98,9 +100,7 @@ class PolymarketResolver:
 
     async def _fetch_market(self, market_id: str) -> tuple[bool, Any]:
         if market_id.startswith("0x"):
-            return await self.adapter.get_market_by_condition_id(
-                condition_id=market_id
-            )
+            return await self.adapter.get_market_by_condition_id(condition_id=market_id)
         return await self.adapter.get_market_by_slug(market_id)
 
 
@@ -135,7 +135,11 @@ class PolymarketMarketFeed:
             raise ValueError(
                 f"polymarket bars need a whole-minute interval, got {interval!r}"
             )
-        end_ts = int(as_of.timestamp()) if as_of else int(pd.Timestamp.now(tz="UTC").timestamp())
+        end_ts = (
+            int(as_of.timestamp())
+            if as_of
+            else int(pd.Timestamp.now(tz="UTC").timestamp())
+        )
         start_ts = end_ts - lookback_bars * bar_seconds
         rows: list[dict[str, Any]] = []
         for symbol in symbols:
@@ -253,9 +257,24 @@ class PolymarketBroker:
                     size=float(intent.size),
                 )
             else:
-                amount = await self._market_amount(
-                    intent, side, token_id, ref_price=price
-                )
+                if side == "SELL":
+                    amount = float(intent.size) if intent.size is not None else None
+                elif intent.notional is not None:
+                    amount = abs(float(intent.notional))
+                elif intent.size is None:
+                    amount = None
+                else:
+                    buy_price = price
+                    if not buy_price:
+                        ok_price, quote = await self.adapter.get_price(
+                            token_id=token_id, side="BUY"
+                        )
+                        buy_price = (
+                            _float_or_none(quote.get("price")) if ok_price else None
+                        )
+                    amount = (
+                        float(intent.size) * float(buy_price) if buy_price else None
+                    )
                 if amount is None:
                     return self._fill(
                         intent,
@@ -272,15 +291,17 @@ class PolymarketBroker:
         except Exception as exc:
             return self._fill(intent, "ambiguous", timestamp, error=str(exc))
         if not ok:
-            if isinstance(resp, dict):
-                return self._fill(
-                    intent,
-                    "rejected",
-                    timestamp,
-                    error=str(resp.get("error") or resp),
-                    raw=resp,
-                )
-            return self._fill(intent, "ambiguous", timestamp, error=str(resp))
+            match resp:
+                case dict():
+                    return self._fill(
+                        intent,
+                        "rejected",
+                        timestamp,
+                        error=str(resp.get("error") or resp),
+                        raw=resp,
+                    )
+                case _:
+                    return self._fill(intent, "ambiguous", timestamp, error=str(resp))
         return self._fill_from_clob_response(intent, side, resp, timestamp)
 
     async def fetch_state(self, symbols: Sequence[str] | Any = ()) -> VenueState:
@@ -321,18 +342,20 @@ class PolymarketBroker:
             ok, book = await self.adapter.get_order_book(token_id=entry["token_id"])
         except Exception:
             return TradeCapacity(safe=False, source="polymarket_book")
-        if not ok or not isinstance(book, dict):
-            return TradeCapacity(safe=False, source="polymarket_book")
-        levels = book.get("asks") if str(side).lower() in {"buy", "long"} else book.get("bids")
-        depth = 0.0
-        for level in levels or []:
-            price = _float_or_none(level.get("price"))
-            size = _float_or_none(level.get("size"))
-            if price and size:
-                depth += price * size
-        return TradeCapacity(
-            max_notional=depth, safe=depth > 0, source="polymarket_book"
-        )
+        match book:
+            case dict() if ok:
+                side_key = "asks" if str(side).lower() in {"buy", "long"} else "bids"
+                depth = 0.0
+                for level in book.get(side_key) or []:
+                    price = _float_or_none(level.get("price"))
+                    size = _float_or_none(level.get("size"))
+                    if price and size:
+                        depth += price * size
+                return TradeCapacity(
+                    max_notional=depth, safe=depth > 0, source="polymarket_book"
+                )
+            case _:
+                return TradeCapacity(safe=False, source="polymarket_book")
 
     async def cancel(self, client_order_id: str) -> FillEvent:
         order_id = self._order_ids.get(client_order_id)
@@ -366,26 +389,6 @@ class PolymarketBroker:
             error=None if ok else str(resp),
         )
 
-    async def _market_amount(
-        self,
-        intent: OrderIntent,
-        side: str,
-        token_id: str,
-        *,
-        ref_price: float | None,
-    ) -> float | None:
-        if side == "SELL":
-            return float(intent.size) if intent.size is not None else None
-        if intent.notional is not None:
-            return abs(float(intent.notional))
-        if intent.size is None:
-            return None
-        price = ref_price
-        if not price:
-            ok, quote = await self.adapter.get_price(token_id=token_id, side="BUY")
-            price = _float_or_none(quote.get("price")) if ok else None
-        return float(intent.size) * float(price) if price else None
-
     def _fill_from_clob_response(
         self, intent: OrderIntent, side: str, resp: dict[str, Any], timestamp: str
     ) -> FillEvent:
@@ -406,9 +409,7 @@ class PolymarketBroker:
                 symbol=intent.symbol,
                 side=intent.side,
                 filled_size=float(shares),
-                avg_price=(
-                    float(collateral) / float(shares) if collateral else None
-                ),
+                avg_price=(float(collateral) / float(shares) if collateral else None),
                 order_id=order_id,
                 client_order_id=intent.client_order_id,
                 reduce_only=intent.reduce_only,
@@ -416,9 +417,7 @@ class PolymarketBroker:
                 timestamp=timestamp,
             )
         if status in {"live", "delayed"}:
-            return self._fill(
-                intent, "resting", timestamp, order_id=order_id, raw=resp
-            )
+            return self._fill(intent, "resting", timestamp, order_id=order_id, raw=resp)
         if resp.get("errorMsg") or status == "unmatched":
             return self._fill(
                 intent,
@@ -475,13 +474,7 @@ class PolymarketVenueAdapter:
                 slippage_pct=float(params.get("slippage_pct") or 2.0),
             )
         else:
-            from wayfinder_paths.jobs.execution.paper import PaperBroker
-
-            self.broker = PaperBroker(
-                capabilities=POLYMARKET_CAPABILITIES,
-                fee_bps=float(params.get("fee_bps") or 0.0),
-                slippage_bps=float(params.get("slippage_bps") or 0.0),
-            )
+            self.broker = _paper_broker(POLYMARKET_CAPABILITIES, params)
 
 
 def build_polymarket_adapter(

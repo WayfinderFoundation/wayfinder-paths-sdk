@@ -71,9 +71,7 @@ def test_default_off_is_bit_identical() -> None:
     def _snx(params: dict[str, Any]):
         return simulate_execution(
             build_snx_momentum,
-            PreparedExecutionDataset.from_rows(
-                bars_from_closes(fixture, symbol="SNX")
-            ),
+            PreparedExecutionDataset.from_rows(bars_from_closes(fixture, symbol="SNX")),
             _spec(),
             {"symbol": "SNX", "notional_usd": 500.0, **params},
         )
