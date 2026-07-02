@@ -116,6 +116,30 @@ def sanitize_memory_json(obj: Any) -> tuple[Any, list[str]]:
     return result, quarantined
 
 
+# The prompt-fed ledgers are another durable surface the agent poisons — it
+# writes a fabricated "forward: N trades, X% win rate" into a decisions/candidates
+# row `note`, which then rides the ledger tail into later prompts and corrupts the
+# calibration history the ledger exists to provide.
+_LEDGER_NAMES = ("candidates", "decisions")
+
+
+def sanitize_ledger_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    """Drop ledger rows whose text fields state an unsupported performance figure
+    (e.g. a fabricated forward prove-out in a row `note`). Returns (kept, removed)."""
+    kept: list[dict[str, Any]] = []
+    quarantined: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            kept.append(row)
+            continue
+        text = " ".join(str(v) for v in row.values() if isinstance(v, str))
+        if text and scan_unsupported_perf_claims(text):
+            quarantined.append(json.dumps(row, sort_keys=True))
+        else:
+            kept.append(row)
+    return kept, quarantined
+
+
 def sanitize_job_memory(
     store: JobStore, job_id: str, *, forward: dict[str, Any] | None
 ) -> dict[str, Any]:
@@ -128,7 +152,7 @@ def sanitize_job_memory(
     and a `memory_quarantined` journal event is emitted; nothing is deleted. The
     operation is idempotent — a second clean wake finds nothing to remove.
     """
-    summary = {"active": False, "md": 0, "json": 0}
+    summary = {"active": False, "md": 0, "json": 0, "ledger": 0}
     if not is_forward_empty(forward):
         return summary
     summary["active"] = True
@@ -153,6 +177,28 @@ def sanitize_job_memory(
             removed.extend({"source": "memory.json", "text": t} for t in quarantined)
             summary["json"] = len(quarantined)
 
+    for name in _LEDGER_NAMES:
+        path = root / "ledgers" / f"{name}.jsonl"
+        if not path.exists():
+            continue
+        rows = [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        kept, quarantined = sanitize_ledger_rows(rows)
+        if quarantined:
+            path.write_text(
+                "".join(
+                    json.dumps(r, sort_keys=True, default=str) + "\n" for r in kept
+                ),
+                encoding="utf-8",
+            )
+            removed.extend(
+                {"source": f"ledger:{name}", "text": t} for t in quarantined
+            )
+            summary["ledger"] += len(quarantined)
+
     if removed:
         stamp = utc_now_iso()
         with (root / "memory_quarantine.jsonl").open("a", encoding="utf-8") as fh:
@@ -170,6 +216,7 @@ def sanitize_job_memory(
                 "count": len(removed),
                 "md": summary["md"],
                 "json": summary["json"],
+                "ledger": summary["ledger"],
             },
         )
     return summary

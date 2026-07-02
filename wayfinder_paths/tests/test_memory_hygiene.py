@@ -92,7 +92,7 @@ def test_sanitize_job_memory_cleans_when_forward_empty(tmp_path: Path) -> None:
     _poison_memory(store, job.id)
 
     summary = sanitize_job_memory(store, job.id, forward={})  # empty -> active
-    assert summary == {"active": True, "md": 1, "json": 1}
+    assert summary == {"active": True, "md": 1, "json": 1, "ledger": 0}
 
     root = store.job_dir(job.id)
     md = (root / "memory.md").read_text(encoding="utf-8")
@@ -111,7 +111,34 @@ def test_sanitize_job_memory_cleans_when_forward_empty(tmp_path: Path) -> None:
 
     # Idempotent: a second clean wake finds nothing to remove.
     again = sanitize_job_memory(store, job.id, forward={})
-    assert again == {"active": True, "md": 0, "json": 0}
+    assert again == {"active": True, "md": 0, "json": 0, "ledger": 0}
+
+
+def test_sanitize_job_memory_cleans_poisoned_ledger_rows(tmp_path: Path) -> None:
+    from wayfinder_paths.jobs.ledger import append_ledger_row
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("hygiene-ledger", agent_mode="intervene")
+    store.save(job)
+    # A clean exploration row and a poisoned "forward prove-out" row.
+    append_ledger_row(
+        store, job.id, "decisions",
+        {"market": "n/a", "decision": "skipped", "reason": "thin edge"},
+    )
+    append_ledger_row(
+        store, job.id, "decisions",
+        {"decision": "note", "note": "Forward: 5 trend trades, 100% win rate, +$560.55"},
+    )
+
+    summary = sanitize_job_memory(store, job.id, forward={})
+    assert summary["ledger"] == 1
+
+    from wayfinder_paths.jobs.ledger import tail_ledger
+
+    rows = tail_ledger(store, job.id, "decisions")
+    assert len(rows) == 1
+    assert rows[0]["reason"] == "thin edge"  # clean row kept
+    assert all("Forward prove-out" not in str(r) for r in rows)
 
 
 def test_sanitize_job_memory_noop_when_forward_present(tmp_path: Path) -> None:
@@ -122,7 +149,7 @@ def test_sanitize_job_memory_noop_when_forward_present(tmp_path: Path) -> None:
 
     forward = {"summary": {"runs": {"count": 3}}, "recent_trades": [{"pnl": 1.0}]}
     summary = sanitize_job_memory(store, job.id, forward=forward)
-    assert summary == {"active": False, "md": 0, "json": 0}
+    assert summary == {"active": False, "md": 0, "json": 0, "ledger": 0}
     # Memory untouched while forward telemetry exists (claims may be supported).
     md = (store.job_dir(job.id) / "memory.md").read_text(encoding="utf-8")
     assert "Forward prove-out" in md
