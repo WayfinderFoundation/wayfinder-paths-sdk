@@ -91,4 +91,9 @@ MORPHO_BY_CHAIN: dict[int, dict[str, str]] = {
             "0x39EB6Da5e88194C82B13491Df2e8B3E213eD2412"
         ),
     },
+    # No public allocator deployed on Robinhood Chain yet (API returns none).
+    4663: {
+        "network": "Robinhood Chain",
+        "morpho": to_checksum_address("0x9D53d5E3bd5E8d4Cbfa6DB1ca238AEA02E651010"),
+    },
 }

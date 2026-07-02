@@ -1,10 +1,14 @@
 from wayfinder_paths.core.constants.contracts import (
     LIFI_GENERIC,
     LIFI_ROUTER_HYPEREVM,
+    LIFI_ROUTER_ROBINHOOD,
 )
 from wayfinder_paths.policies.util import allow_functions
 
-LIFI_ROUTERS: dict[int:str] = {999: LIFI_ROUTER_HYPEREVM}
+LIFI_ROUTERS: dict[int, str] = {
+    999: LIFI_ROUTER_HYPEREVM,
+    4663: LIFI_ROUTER_ROBINHOOD,
+}
 
 
 async def lifi_swap(chain_id):
