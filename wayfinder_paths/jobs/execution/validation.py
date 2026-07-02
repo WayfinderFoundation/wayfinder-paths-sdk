@@ -160,6 +160,7 @@ def validate_execution_job(
     spec = ExecutionSpec.from_dict(spec_data)
     checks.extend(_execution_spec_checks(spec))
     checks.extend(_timing_checks(job_data, spec))
+    checks.extend(_feature_checks(root, spec))
     script_path = store.resolve_script_entrypoint(
         job_id,
         job_data,
@@ -194,6 +195,40 @@ def validate_execution_job(
     if not candidate_dir:
         store.write_json(job_id, "reports/validation/latest.json", report)
     return report
+
+
+def _feature_checks(root: Path, spec: ExecutionSpec) -> list[dict[str, Any]]:
+    from wayfinder_paths.jobs.execution.features import (
+        load_feature_rows,
+        parse_feature_specs,
+    )
+
+    try:
+        specs = parse_feature_specs(spec)
+    except ValueError as exc:
+        # A malformed feature schema is a spec error: blocking.
+        return [
+            {"name": "declared_features_valid", "passed": False, "error": str(exc)}
+        ]
+    if not specs:
+        return []
+    frames = load_feature_rows([root], specs)
+    missing = [
+        item.name
+        for item in specs
+        if frames.get(item.name) is None or frames[item.name].empty
+    ]
+    return [
+        {"name": "declared_features_valid", "passed": True, "count": len(specs)},
+        {
+            # Non-blocking: pre-live jobs may declare features before the
+            # agent has published any rows.
+            "name": "declared_features_available",
+            "passed": not missing,
+            "missing": missing,
+            "blocking": False,
+        },
+    ]
 
 
 def _preflight_checks(

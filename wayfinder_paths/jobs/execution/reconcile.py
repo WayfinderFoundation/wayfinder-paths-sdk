@@ -85,6 +85,15 @@ def reconcile_job(
             job_id,
             {"type": "drift_warning", "source": "reconcile", **_summary(report)},
         )
+        from wayfinder_paths.jobs.models import WayfinderJob
+        from wayfinder_paths.jobs.triggers import fire_triggers
+
+        fire_triggers(
+            store,
+            WayfinderJob.from_dict(job_data),
+            ["drift_warning"] + (["health_red"] if health == "red" else []),
+            source="reconcile",
+        )
     else:
         store.refresh_scorecard(job_id, {"reconcile": _summary(report)})
     return report

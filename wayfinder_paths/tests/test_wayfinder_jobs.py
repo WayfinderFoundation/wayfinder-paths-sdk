@@ -734,3 +734,81 @@ def test_sync_all_jobs_noops_outside_opencode(tmp_path: Path, monkeypatch) -> No
     store.save(WayfinderJob.new("local-script", script="workspace/src/loop.py"))
 
     sync_all_jobs(store=store)
+
+
+def test_worker_prompt_ledgers_and_backtest_are_dynamic_only(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.ledger import append_ledger_row
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("loop-context", agent_mode="intervene")
+    store.save(job)
+    snapshot = {
+        "job": job.to_dict(),
+        "backtest": {"available": True, "stats": {"sharpe": 1.23}},
+        "gate": {"live_ready": True, "reasons": []},
+    }
+    first = _build_worker_prompt_sections(
+        store=store, job_id=job.id, mode="intervene", snapshot=snapshot
+    )
+    assert '"backtest"' in first["dynamic_context"]
+    assert '"ledgers"' in first["dynamic_context"]
+    assert '"backtest"' not in first["stable_prefix"]
+
+    # Appending a ledger row is DYNAMIC history: dynamic hash moves, the
+    # stable cache prefix must not.
+    append_ledger_row(
+        store,
+        job.id,
+        "candidates",
+        {"name": "chop-filter-variant", "bucket": "adjacent", "status": "no_edge"},
+    )
+    second = _build_worker_prompt_sections(
+        store=store, job_id=job.id, mode="intervene", snapshot=snapshot
+    )
+    assert first["stable_prefix_hash"] == second["stable_prefix_hash"]
+    assert first["dynamic_context_hash"] != second["dynamic_context_hash"]
+    assert "chop-filter-variant" in second["dynamic_context"]
+    assert "chop-filter-variant" not in second["stable_prefix"]
+
+
+def test_forward_detail_capped_so_ledgers_survive_prompt(tmp_path: Path) -> None:
+    """Regression: bulky forward telemetry must not truncate the ledgers/
+    proposals out of the 12k dynamic prompt (keys serialize alphabetically,
+    so an un-capped `forward` starves the later high-signal keys)."""
+    from wayfinder_paths.jobs.ledger import append_ledger_row
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("forward-heavy", agent_mode="intervene")
+    store.save(job)
+    append_ledger_row(
+        store, job.id, "candidates",
+        {"name": "seeded-trap-family", "bucket": "adjacent", "status": "no_edge"},
+    )
+    bulky_trades = [
+        {
+            "trade": i,
+            "pnl": -0.1 * i,
+            "reason": "verbose reconciliation note " * 8,
+            "symbol": "EVAL",
+        }
+        for i in range(25)
+    ]
+    snapshot = {
+        "job": job.to_dict(),
+        "forward": {
+            "summary": {"win_rate": 0.3, "current_loss_streak": 4},
+            "recent_trades": bulky_trades,
+            "recent_runs": bulky_trades,
+        },
+    }
+    sections = _build_worker_prompt_sections(
+        store=store, job_id=job.id, mode="intervene", snapshot=snapshot
+    )
+    dyn = sections["dynamic_context"]
+    assert '"ledgers"' in dyn
+    assert "seeded-trap-family" in dyn
+    assert '"win_rate"' in dyn  # summary survives
+    # Detail rows are capped, not all 25 present.
+    assert dyn.count('"reason"') <= 12

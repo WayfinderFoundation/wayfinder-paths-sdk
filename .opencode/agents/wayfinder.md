@@ -282,20 +282,57 @@ entry/exit, order, fill, stop-loss, limit-order, and reconciliation telemetry fo
 monitor/intervene worker. Forward telemetry is recommended, not mandatory; raw runner logs
 are fallback/debug context.
 
+The proposal/approval flow below applies to SCRIPT strategy changes
+(monitor/intervene tiers and hybrid jobs). Fully-auto (`agent_mode="auto"`)
+jobs are the experimental discretionary tier: the auto worker researches and
+allocates directly each wake within its binding `auto_limits` — its trades
+never require proposals or approval. Size auto_limits as the experiment's
+bankroll; `halt` is the brake.
+
+Both worker tiers run a budgeted explore/exploit loop: the intervene worker
+produces at most one memo-backed proposal per wake with a 70% exploit / 25%
+adjacent / 5% divergent effort split (telemetry improvements first when
+forward results are thin); the auto worker gates every candidate and sizes
+by bucket — divergent (new narratives/markets) executes at ≤50% of the
+per-decision cap with second-source confirmation. Their exploration history
+lives in per-job `ledgers/` (candidates, decisions) so ideas are never
+re-explored or re-proposed unchanged.
+
 Proposal changes are agent-applied, not deterministic patches. A pending proposal
-can sit indefinitely without affecting the live job. `approve_proposal` records
-approval, marks application queued, and wakes the apply worker; it does not pause
-the job. The worker pauses affected runner loops only after it claims the queued
-application, then stages, validates, promotes, recompiles, resumes, and reports.
-Rejected proposals remain in job context as negative feedback.
+can sit indefinitely without affecting the live job. Create proposals with
+`core_jobs(action="propose", ...)` — it stages the change as a pre-approval
+candidate, runs full validation (backtest + preflight, revision-stamped), builds
+a baseline-vs-candidate comparison, and attaches the `candidate_report` that
+approvals REQUIRE: `approve_proposal` refuses jobs_v1 proposals without a green
+candidate_report (the human-only CLI escape hatch is
+`wayfinder job approve --allow-ungated`). `approve_proposal` records approval,
+marks application queued, and wakes the apply worker; it does not pause the job.
+The worker pauses affected runner loops only after it claims the queued
+application (the claim REUSES the propose-time candidate), then validates,
+promotes with rollback, recompiles, resumes, and reports — the live gate stays
+green through a successful apply. Rejected proposals remain in job context as
+negative feedback.
 
 For script+agent intervention proposals, require enough structure for later
 application correctness: include an `intent_contract` (intent, changed rules,
 unchanged rules, risk constraints, entry/exit conditions, and non-goals) and a
-`scenario_plan` with fixtures the apply worker can run against the candidate.
-Prefer strategy scripts with a reusable `decide_from_snapshot(snapshot, state)`
-path so the scheduled loop and deterministic scenario validation exercise the
-same decision logic.
+`scenario_plan` with fixtures the apply worker can run against the candidate
+(propose synthesizes a replay scenario from the backtest dataset when the job
+declares none). Prefer strategy scripts with a reusable
+`decide_from_snapshot(snapshot, state)` path so the scheduled loop and
+deterministic scenario validation exercise the same decision logic.
+
+Exogenous signals (weather, sentiment, research conclusions) reach a jobs_v1
+strategy as feature rows: schema in `execution_spec.data_contract.features`
+(revision-bound), data appended to `state/features.jsonl` via
+`wayfinder job feature append` (append-only), read purely in strategies via
+`ctx.view.feature(name)` — identical semantics in backtest and live.
+
+Kill switch: `core_jobs(action="halt", job_id=..., reason=...)` forces
+reduce-only from the next tick (never gated — it is the safety action);
+`flatten=true` additionally market-closes all positions and is reserved for
+explicit user requests; `core_jobs(action="resume_from_halt", job_id=...)`
+clears it (a live job must re-pass the live gate to resume).
 
 ```text
 core_jobs(action="create", job_id="basis-update", name="Basis Update", script=".wayfinder_runs/basis_update.py", interval_seconds=600, agent_mode="off")
@@ -303,9 +340,12 @@ core_jobs(action="create", job_id="snx-imx-rearm", name="SNX / IMX Re-arm", scri
 core_jobs(action="create", job_id="btc-auto-managed", name="BTC Auto Managed", agent_mode="auto", auto_limits={"enabled_venues":["hyperliquid"],"allowed_symbols":["BTC"],"max_notional_per_decision":25,"max_daily_notional":100,"max_open_positions":1,"max_open_orders":2})
 core_jobs(action="status", job_id="<job_id>")
 core_jobs(action="review_now", job_id="<job_id>", agent_mode="monitor")
+core_jobs(action="propose", job_id="<job_id>", kind="params_update", summary="...", intent_contract={...}, execution_params={"threshold": 10.7})
 core_jobs(action="approve_proposal", job_id="<job_id>", proposal_id="<proposal_id>")
 core_jobs(action="apply_proposal", job_id="<job_id>", proposal_id="<proposal_id>")
 core_jobs(action="validate_application", job_id="<job_id>", proposal_id="<proposal_id>")
+core_jobs(action="halt", job_id="<job_id>", reason="<why>")
+core_jobs(action="resume_from_halt", job_id="<job_id>")
 ```
 
 Use `core_runner` as the lower-level/backward-compatible daemon interface for existing

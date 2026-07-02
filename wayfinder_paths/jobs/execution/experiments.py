@@ -107,6 +107,12 @@ def promote_params(
     job.touch()
     store.save(job)
     backtest = backtest_execution_job(job_id, store=store)
+    # The params change produced a new revision: the backtest above re-stamps
+    # results/ and validation, but preflight would stay at the old revision
+    # and leave the live gate red until someone re-ran it manually.
+    from wayfinder_paths.jobs.execution.preflight import run_preflight
+
+    preflight = run_preflight(job_id, store=store)
     revision = compute_workspace_revision(store.job_dir(job_id))
     _record_params_revision(store, job_id, revision, resolved, grid_id=grid_id)
     outcome = {
@@ -115,6 +121,7 @@ def promote_params(
         "revision": revision,
         "backtest_stats": ((backtest.get("result") or {}).get("stats")),
         "validation": (backtest.get("validation") or {}).get("status"),
+        "preflight": preflight.get("status"),
     }
     wf_summary = _walk_forward_summary_for_grid(store, job_id, grid_id)
     if wf_summary is not None:
@@ -215,18 +222,19 @@ def _promote_via_proposal(
     *,
     grid_id: str | None,
 ) -> dict[str, Any]:
-    job_data = json.loads(json.dumps(store.load(job_id).to_dict(), default=str))
-    scenario_plan = job_data.get("execution_scenario_plan") or (
-        (job_data.get("execution_spec") or {}).get("validation") or {}
-    ).get("execution_scenario_plan")
-    proposal_id = f"params-{(grid_id or 'manual')[:12]}-{utc_now_iso()[:10]}"
+    # Route through the structured propose flow: the proposal gets a
+    # pre-approval candidate, full validation, a baseline-vs-candidate
+    # comparison, and the candidate_report the approve gates require.
+    from wayfinder_paths.jobs.proposals import propose_change
+
     changed = sorted(params)
-    proposal = {
-        "proposal_id": proposal_id,
-        "job_id": job_id,
-        "status": "pending",
-        "kind": "params_update",
-        "intent_contract": {
+    proposal_id = f"params-{(grid_id or 'manual')[:12]}-{utc_now_iso()[:10]}"
+    proposal = propose_change(
+        store,
+        job_id,
+        kind="params_update",
+        summary=f"Update execution_params from experiment {grid_id or 'manual'}",
+        intent_contract={
             "intent": (
                 "Promote experiment-selected parameters "
                 f"({', '.join(changed)}) into execution_params."
@@ -236,21 +244,16 @@ def _promote_via_proposal(
             "risk_constraints": "unchanged; auto_limits still enforced per intent",
             "entry_conditions": "unchanged",
             "exit_conditions": "unchanged",
-            "known_non_goals": [],
+            "known_non_goals": ["No strategy-logic or schedule changes."],
         },
-        "proposed_change": {
-            "summary": f"Update execution_params from experiment {grid_id or 'manual'}",
-            "execution_params": params,
-        },
-        "scenario_plan": scenario_plan,
-        "application": {"status": "none"},
-    }
-    path = store.write_proposal(job_id, proposal)
+        params=dict(params),
+        proposal_id=proposal_id,
+    )
     return {
         "mode": "proposal",
         "proposal_id": proposal_id,
         "params": params,
-        "proposal_path": str(path),
+        "candidate_report": proposal.get("candidate_report"),
     }
 
 

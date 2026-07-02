@@ -5,6 +5,7 @@ from typing import Any, Literal
 from wayfinder_paths.jobs.application import (
     claim_application,
     complete_application,
+    ensure_jobs_v1_contract,
     validate_application_candidate,
 )
 from wayfinder_paths.jobs.compiler import JobCompiler
@@ -30,6 +31,7 @@ JobAction = Literal[
     "validate_job",
     "backtest_job",
     "proposals",
+    "propose",
     "approve_proposal",
     "reject_proposal",
     "apply_proposal",
@@ -38,6 +40,8 @@ JobAction = Literal[
     "complete_application",
     "pause",
     "resume",
+    "halt",
+    "resume_from_halt",
     "delete",
     "sync",
 ]
@@ -64,6 +68,15 @@ async def core_jobs(
     changed_files: list[str] | None = None,
     validation: dict[str, Any] | None = None,
     error: str | None = None,
+    reason: str | None = None,
+    flatten: bool = False,
+    kind: str | None = None,
+    summary: str | None = None,
+    intent_contract: dict[str, Any] | None = None,
+    execution_params: dict[str, Any] | None = None,
+    candidate_dir: str | None = None,
+    scenario_plan: dict[str, Any] | None = None,
+    memo: str | None = None,
     strict: bool = False,
     grid_path: str | None = None,
     workers: int = 1,
@@ -170,6 +183,29 @@ async def core_jobs(
     if action == "proposals":
         return ok(store.proposals(job_id))
 
+    if action == "propose":
+        from wayfinder_paths.jobs.proposals import propose_change
+
+        if not kind or not summary or not intent_contract:
+            return err(
+                "invalid_request",
+                "propose requires kind, summary, and intent_contract",
+            )
+        return ok(
+            propose_change(
+                store,
+                job_id,
+                kind=kind,
+                summary=summary,
+                intent_contract=intent_contract,
+                params=execution_params,
+                candidate_source=candidate_dir,
+                scenario_plan=scenario_plan,
+                proposal_id=proposal_id,
+                memo=memo,
+            )
+        )
+
     if action in {
         "approve_proposal",
         "reject_proposal",
@@ -181,6 +217,12 @@ async def core_jobs(
         if not proposal_id:
             return err("invalid_request", "proposal_id is required")
         if action in {"approve_proposal", "apply_proposal"}:
+            # Same gate as the CLI. MCP deliberately exposes no override, so
+            # an agent cannot route a legacy job around the contract check.
+            try:
+                ensure_jobs_v1_contract(store, job_id)
+            except ValueError as exc:
+                return err("legacy_contract", str(exc))
             proposal = (
                 store.approve_proposal(job_id, proposal_id)
                 if action == "approve_proposal"
@@ -228,5 +270,21 @@ async def core_jobs(
         ]
         sync_all_jobs(store=store)
         return ok(responses)
+
+    if action == "halt":
+        from wayfinder_paths.jobs.halt import request_halt
+
+        payload = request_halt(
+            store, job_id, reason=reason, flatten=bool(flatten), source="mcp"
+        )
+        sync_all_jobs(store=store)
+        return ok(payload)
+
+    if action == "resume_from_halt":
+        from wayfinder_paths.jobs.halt import clear_halt
+
+        payload = clear_halt(store, job_id)
+        sync_all_jobs(store=store)
+        return ok(payload)
 
     return err("invalid_request", f"unknown action: {action}")

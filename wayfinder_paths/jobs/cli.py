@@ -520,6 +520,12 @@ def gate_cmd(job_id: str) -> None:
 @click.option("--from", "from_ts", default=None)
 @click.option("--to", "to_ts", default=None)
 @click.option("--max-points", type=int, default=1500, show_default=True)
+@click.option(
+    "--proposal",
+    "proposal_id",
+    default=None,
+    help="Read the proposal's CANDIDATE backtest run instead of the active one.",
+)
 def backtest_view_cmd(
     job_id: str,
     view: str,
@@ -527,6 +533,7 @@ def backtest_view_cmd(
     from_ts: str | None,
     to_ts: str | None,
     max_points: int,
+    proposal_id: str | None,
 ) -> None:
     store = JobStore()
     result = load_backtest_view(
@@ -537,6 +544,7 @@ def backtest_view_cmd(
         from_ts=from_ts,
         to_ts=to_ts,
         max_points=max_points,
+        proposal_id=proposal_id,
     )
     _echo_json({"ok": True, "result": result})
 
@@ -636,25 +644,106 @@ def _wakeup_with_proposal(
     default=False,
     help="Skip the legacy-contract gate check (not recommended).",
 )
-def approve_cmd(job_id: str, proposal_id: str, skip_gate: bool) -> None:
+@click.option(
+    "--allow-ungated",
+    is_flag=True,
+    default=False,
+    help=(
+        "Approve a jobs_v1 proposal without a green candidate_report "
+        "(human escape hatch for hand-written proposals)."
+    ),
+)
+def approve_cmd(
+    job_id: str, proposal_id: str, skip_gate: bool, allow_ungated: bool
+) -> None:
     store = JobStore()
     # The SDK is the authoritative gate even when the backend is bypassed:
     # legacy jobs cannot pass the versioned-change flow.
-    job = store.load(job_id)
-    if job.execution_contract != "jobs_v1" and not skip_gate:
-        _echo_json(
-            {
-                "ok": False,
-                "error": (
-                    "job is on the legacy execution contract; run "
-                    "`wayfinder job migrate-contract` before approving proposals"
-                ),
-            }
-        )
-        raise click.ClickException("legacy jobs cannot enter the versioned-change flow")
+    from wayfinder_paths.jobs.application import ensure_jobs_v1_contract
+
+    try:
+        ensure_jobs_v1_contract(store, job_id, allow_legacy=skip_gate)
+    except ValueError as exc:
+        _echo_json({"ok": False, "error": str(exc)})
+        raise click.ClickException(
+            "legacy jobs cannot enter the versioned-change flow"
+        ) from exc
     _wakeup_with_proposal(
-        store, job_id, proposal_id, store.approve_proposal(job_id, proposal_id)
+        store,
+        job_id,
+        proposal_id,
+        store.approve_proposal(job_id, proposal_id, allow_ungated=allow_ungated),
     )
+
+
+@job_cli.command(
+    name="propose",
+    help="Create a proposal with a validated pre-approval candidate "
+    "(candidate_report + baseline-vs-candidate comparison).",
+)
+@click.argument("job_id")
+@click.option(
+    "--kind",
+    type=click.Choice(["code_change", "params_update", "model_update"]),
+    required=True,
+)
+@click.option("--summary", required=True, help="One-line change summary.")
+@click.option(
+    "--intent-json",
+    required=True,
+    help="Intent contract JSON (all seven required fields).",
+)
+@click.option(
+    "--params-json",
+    default=None,
+    help="Execution params to merge into the candidate job.yaml.",
+)
+@click.option(
+    "--candidate-dir",
+    default=None,
+    help="Pre-edited candidate (bundle with workspace/ or bare workspace).",
+)
+@click.option("--scenario-json", default=None, help="Explicit scenario plan JSON.")
+@click.option("--proposal-id", default=None)
+@click.option("--memo", default=None, help="Markdown proposal memo (inline).")
+@click.option(
+    "--memo-file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help="Markdown proposal memo (file path).",
+)
+def propose_cmd(
+    job_id: str,
+    kind: str,
+    summary: str,
+    intent_json: str,
+    params_json: str | None,
+    candidate_dir: str | None,
+    scenario_json: str | None,
+    proposal_id: str | None,
+    memo: str | None,
+    memo_file: str | None,
+) -> None:
+    from pathlib import Path as _Path
+
+    from wayfinder_paths.jobs.proposals import propose_change
+
+    if memo_file:
+        memo = _Path(memo_file).read_text(encoding="utf-8")
+    store = JobStore()
+    proposal = propose_change(
+        store,
+        job_id,
+        kind=kind,
+        summary=summary,
+        intent_contract=json.loads(intent_json),
+        params=json.loads(params_json) if params_json else None,
+        candidate_source=candidate_dir,
+        scenario_plan=json.loads(scenario_json) if scenario_json else None,
+        proposal_id=proposal_id,
+        memo=memo,
+    )
+    _echo_json({"ok": True, "result": proposal})
 
 
 @job_cli.command(name="reject", help="Reject a pending proposal.")
@@ -763,6 +852,120 @@ def pause_cmd(job_id: str) -> None:
 @click.argument("job_id")
 def resume_cmd(job_id: str) -> None:
     _pause_resume_loops(job_id, "resume")
+
+
+@job_cli.group(
+    name="feature",
+    help="Exogenous feature rows consumed by decide() via ctx.view.feature().",
+)
+def feature_group() -> None:
+    pass
+
+
+@feature_group.command(name="append", help="Append a feature row.")
+@click.argument("job_id")
+@click.option("--name", required=True)
+@click.option("--value", required=True)
+@click.option("--timestamp", default=None, help="ISO8601; defaults to now.")
+@click.option("--symbol", default=None, help="Per-symbol feature rows.")
+def feature_append_cmd(
+    job_id: str,
+    name: str,
+    value: str,
+    timestamp: str | None,
+    symbol: str | None,
+) -> None:
+    from wayfinder_paths.jobs.features import append_feature
+
+    coerced: Any = value
+    try:
+        coerced = float(value)
+    except ValueError:
+        pass
+    store = JobStore()
+    row = append_feature(
+        store, job_id, name=name, value=coerced, timestamp=timestamp, symbol=symbol
+    )
+    _echo_json({"ok": True, "result": row})
+
+
+@feature_group.command(name="list", help="List recent feature rows.")
+@click.argument("job_id")
+@click.option("--name", default=None)
+@click.option("--limit", type=int, default=50, show_default=True)
+def feature_list_cmd(job_id: str, name: str | None, limit: int) -> None:
+    from wayfinder_paths.jobs.features import list_features
+
+    store = JobStore()
+    _echo_json(
+        {"ok": True, "result": list_features(store, job_id, name=name, limit=limit)}
+    )
+
+
+@job_cli.group(
+    name="ledger",
+    help="Append-only job ledgers (candidates, decisions) for agent loops.",
+)
+def ledger_group() -> None:
+    pass
+
+
+@ledger_group.command(name="append", help="Append a row to a job ledger.")
+@click.argument("job_id")
+@click.argument("name")
+@click.option("--json", "row_json", required=True, help="Row object as JSON.")
+def ledger_append_cmd(job_id: str, name: str, row_json: str) -> None:
+    from wayfinder_paths.jobs.ledger import append_ledger_row
+
+    store = JobStore()
+    row = json.loads(row_json)
+    result = append_ledger_row(store, job_id, name, row)
+    _echo_json({"ok": True, "result": result})
+
+
+@ledger_group.command(name="tail", help="Read the most recent ledger rows.")
+@click.argument("job_id")
+@click.argument("name")
+@click.option("--limit", type=int, default=20, show_default=True)
+def ledger_tail_cmd(job_id: str, name: str, limit: int) -> None:
+    from wayfinder_paths.jobs.ledger import tail_ledger
+
+    store = JobStore()
+    _echo_json(
+        {"ok": True, "result": tail_ledger(store, job_id, name, limit=limit)}
+    )
+
+
+@job_cli.command(
+    name="halt",
+    help="Kill switch: force reduce-only immediately (optionally flatten).",
+)
+@click.argument("job_id")
+@click.option("--reason", default=None, help="Why the job is being halted.")
+@click.option(
+    "--flatten",
+    is_flag=True,
+    default=False,
+    help="Also market-close all open positions on the next tick.",
+)
+def halt_cmd(job_id: str, reason: str | None, flatten: bool) -> None:
+    from wayfinder_paths.jobs.halt import request_halt
+
+    store = JobStore()
+    payload = request_halt(store, job_id, reason=reason, flatten=flatten)
+    sync_all_jobs(store=store)
+    _echo_json({"ok": True, "result": payload})
+
+
+@job_cli.command(name="resume-from-halt", help="Clear a manual halt.")
+@click.argument("job_id")
+def resume_from_halt_cmd(job_id: str) -> None:
+    from wayfinder_paths.jobs.halt import clear_halt
+
+    store = JobStore()
+    payload = clear_halt(store, job_id)
+    sync_all_jobs(store=store)
+    _echo_json({"ok": True, "result": payload})
 
 
 @job_cli.command(name="delete", help="Delete runner links for a high-level job.")

@@ -268,7 +268,7 @@ async def _run_tick_inner(
             result.skip_reason = "stale_data"
             return result
         if policy == "flat":
-            await _flatten_positions(
+            await flatten_positions(
                 brokers=brokers,
                 state=state,
                 view=view,
@@ -672,7 +672,7 @@ async def _check_liquidation(
     return True
 
 
-async def _flatten_positions(
+async def flatten_positions(
     *,
     brokers: Mapping[str, Broker],
     state: EngineState,
@@ -681,11 +681,20 @@ async def _flatten_positions(
     trace: ExecutionTrace,
     result: TickResult,
 ) -> None:
+    """Reduce-only CLOSE for every open position at the latest close. Used by
+    the stale-data "flat" policy and by the manual kill switch (--flatten)."""
     for symbol, position in list(state.ledger.positions.items()):
         bracket = state.brackets.get(symbol) or {}
+        # Venue resolution: bracket venue if routable; else the single
+        # registered broker (the live driver keys brokers by real venue
+        # names, and positions don't record theirs); else the "*" fallback
+        # _place already honors.
+        venue = str(bracket.get("venue") or "")
+        if venue not in brokers:
+            venue = next(iter(brokers)) if len(brokers) == 1 else "backtest"
         intent = OrderIntent(
             action="CLOSE",
-            venue=str(bracket.get("venue") or "backtest"),
+            venue=venue,
             symbol=symbol,
             side="sell" if position.side == "long" else "buy",
             size=position.size,

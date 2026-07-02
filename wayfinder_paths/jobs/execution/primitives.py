@@ -196,6 +196,18 @@ class CompletedBarsView:
             raise ValueError("No completed bars available")
         return frame.iloc[-1].to_dict()
 
+    def feature(self, name: str, symbol: str | None = None) -> Any:
+        """Latest non-null value of an exogenous feature column (merged by
+        the driver/dataset loader per execution_spec.data_contract.features).
+        Pure — reads only view data, purity-sandbox safe."""
+        frame = self._filter_symbol(symbol)
+        if name not in frame.columns:
+            raise ValueError(f"No feature column {name!r} in view")
+        series = frame[name].dropna()
+        if series.empty:
+            raise ValueError(f"No values yet for feature {name!r}")
+        return series.iloc[-1]
+
     def through(
         self, index_or_time: int | str | datetime | pd.Timestamp
     ) -> CompletedBarsView:

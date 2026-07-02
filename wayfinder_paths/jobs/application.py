@@ -10,7 +10,7 @@ import yaml
 
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
-from wayfinder_paths.jobs.gating import compute_workspace_revision
+from wayfinder_paths.jobs.gating import compute_workspace_revision, evaluate_live_gate
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
@@ -30,6 +30,22 @@ class _ApplicationOutcome:
     promoted_revision: str | None = None
     compile_result: dict[str, Any] | None = None
     rollback: dict[str, Any] | None = None
+
+
+def ensure_jobs_v1_contract(
+    store: JobStore, job_id: str, *, allow_legacy: bool = False
+) -> None:
+    """Guard for the versioned-change flow (approve/apply/propose): legacy
+    jobs cannot enter it. Shared by CLI and MCP so both surfaces refuse
+    identically instead of failing later at candidate validation."""
+    if allow_legacy:
+        return
+    job = store.load(job_id)
+    if job.execution_contract != "jobs_v1":
+        raise ValueError(
+            "job is on the legacy execution contract; run "
+            "`wayfinder job migrate-contract` before approving proposals"
+        )
 
 
 def pause_job_loops(store: JobStore, job_id: str) -> list[dict[str, Any]]:
@@ -55,7 +71,9 @@ def claim_application(store: JobStore, job_id: str, proposal_id: str) -> dict[st
         )
     paused = pause_job_loops(store, job_id)
     try:
-        candidate = _prepare_candidate_workspace(store, job_id, proposal_id)
+        candidate = _prepare_candidate_workspace(
+            store, job_id, proposal_id, proposal=proposal
+        )
         proposal = store.claim_proposal_application(
             job_id,
             proposal_id,
@@ -250,6 +268,7 @@ def _complete_applied_application(
         final_status="applied",
         deterministic_validation=deterministic_validation,
     )
+    post_apply_gate: dict[str, Any] | None = None
     try:
         _promote_candidate(store, job_id, candidate_dir)
         job = store.load(job_id)
@@ -264,6 +283,10 @@ def _complete_applied_application(
         store.save(job)
         job = store.load(job_id)
         outcome.compile_result = JobCompiler(store=store).compile(job)
+        # Observability check, not a rollback path: the candidate just passed
+        # backtest+preflight+validation at this exact revision, so a red gate
+        # here means artifact stamping broke — surface it in the apply report.
+        post_apply_gate = evaluate_live_gate(job_id, store=store)
         sync_all_jobs(store=store)
     except Exception as exc:
         outcome.rollback = _restore_active_workspace(store, job_id, backup_dir)
@@ -281,6 +304,7 @@ def _complete_applied_application(
             validation=deterministic_validation,
             promoted_revision=outcome.promoted_revision,
             compile_result=outcome.compile_result,
+            live_gate=post_apply_gate,
         )
     else:
         _write_apply_report(
@@ -324,27 +348,68 @@ def _safe_runner_call(action: Any, name: str) -> dict[str, Any]:
 
 
 def _prepare_candidate_workspace(
-    store: JobStore, job_id: str, proposal_id: str
+    store: JobStore,
+    job_id: str,
+    proposal_id: str,
+    *,
+    proposal: dict[str, Any] | None = None,
+    force_fresh: bool = False,
 ) -> dict[str, Any]:
     root = store.job_dir(job_id)
     candidate_dir = root / "applications" / proposal_id / "candidate"
-    if candidate_dir.exists():
-        shutil.rmtree(candidate_dir)
-    candidate_dir.mkdir(parents=True, exist_ok=True)
-    workspace_src = root / "workspace"
     workspace_dst = candidate_dir / "workspace"
-    if workspace_src.exists():
-        shutil.copytree(workspace_src, workspace_dst)
-    else:
-        workspace_dst.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(root / "job.yaml", candidate_dir / "job.yaml")
-    return {
+    descriptor = {
         "candidate_workspace": str(workspace_dst.relative_to(store.repo_root)),
         "candidate_job_yaml": str(
             (candidate_dir / "job.yaml").relative_to(store.repo_root)
         ),
         "candidate_dir": str(candidate_dir.relative_to(store.repo_root)),
     }
+    if candidate_dir.exists():
+        if not force_fresh:
+            # Reuse a propose-time candidate: it carries the actual proposed
+            # change, and recopying the active workspace over it would destroy
+            # that change. Reuse only when the candidate still hashes to the
+            # revision its candidate_report recorded (hand-edits/corruption
+            # fall back to a fresh copy — the legacy prose-driven apply path).
+            report = (proposal or {}).get("candidate_report") or {}
+            recorded = str(report.get("revision") or "")
+            if recorded and recorded == compute_workspace_revision(candidate_dir):
+                store.append_journal(
+                    job_id,
+                    {
+                        "type": "candidate_reused",
+                        "proposal_id": proposal_id,
+                        "revision": recorded,
+                    },
+                )
+                base_revision = str((proposal or {}).get("base_revision") or "")
+                active_revision = compute_workspace_revision(root)
+                if base_revision and base_revision != active_revision:
+                    # Active workspace moved since propose. The candidate is
+                    # self-contained and complete_application re-validates it
+                    # authoritatively, so reuse is safe — but record the drift
+                    # so a reviewer can decide to re-propose.
+                    store.append_journal(
+                        job_id,
+                        {
+                            "type": "candidate_baseline_drift",
+                            "proposal_id": proposal_id,
+                            "base_revision": base_revision,
+                            "active_revision": active_revision,
+                        },
+                    )
+                    descriptor["stale_baseline"] = True
+                return descriptor
+        shutil.rmtree(candidate_dir)
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    workspace_src = root / "workspace"
+    if workspace_src.exists():
+        shutil.copytree(workspace_src, workspace_dst)
+    else:
+        workspace_dst.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(root / "job.yaml", candidate_dir / "job.yaml")
+    return descriptor
 
 
 def _candidate_dir_from_proposal(
@@ -388,6 +453,22 @@ def _promote_candidate(store: JobStore, job_id: str, candidate_dir: Path) -> Non
         shutil.rmtree(active_workspace)
     shutil.copytree(candidate_workspace, active_workspace)
     shutil.copy2(candidate_job_yaml, root / "job.yaml")
+    # Carry the candidate's revision-stamped gate artifacts (written during
+    # candidate validation) into the job dirs: candidate revision equals the
+    # post-promotion revision, so these keep evaluate_live_gate green after
+    # the apply instead of leaving stale-revision reports behind. The
+    # candidate's grids/experiments/sandboxes are deliberately NOT copied.
+    for relative in (
+        Path("results") / "backtest" / "latest.json",
+        Path("results") / "backtest" / "visualization.json",
+        Path("reports") / "preflight" / "latest.json",
+        Path("reports") / "validation" / "latest.json",
+    ):
+        source = candidate_dir / relative
+        if source.exists():
+            destination = root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
 
 
 def _restore_active_workspace(
@@ -464,6 +545,7 @@ def _write_apply_report(
     compile_result: dict[str, Any] | None = None,
     error: str | None = None,
     rollback: dict[str, Any] | None = None,
+    live_gate: dict[str, Any] | None = None,
 ) -> None:
     payload = {
         "job_id": job_id,
@@ -477,8 +559,34 @@ def _write_apply_report(
         "compile": compile_result,
         "error": error,
         "rollback": rollback,
+        "live_gate": live_gate,
     }
     store.write_json(job_id, "reports/apply/latest.json", payload)
+
+
+def validate_candidate_bundle(
+    store: JobStore,
+    job_id: str,
+    proposal: dict[str, Any],
+    candidate_dir: Path,
+    *,
+    require_judge: bool = False,
+    allow_legacy: bool = False,
+) -> dict[str, Any]:
+    """The full candidate validation (deterministic checks + execution
+    validation + revision-stamped artifact persistence), independent of
+    application status — shared by the apply flow and the propose flow."""
+    validation = validate_candidate_application(
+        repo_root=store.repo_root,
+        job_dir=store.job_dir(job_id),
+        proposal=proposal,
+        candidate_dir=candidate_dir,
+        require_judge=require_judge,
+        allow_legacy=allow_legacy,
+    )
+    return _with_execution_validation(
+        store, job_id, proposal, validation, candidate_dir=candidate_dir
+    )
 
 
 def _with_execution_validation(
@@ -486,8 +594,11 @@ def _with_execution_validation(
     job_id: str,
     proposal: dict[str, Any],
     validation: dict[str, Any],
+    *,
+    candidate_dir: Path | None = None,
 ) -> dict[str, Any]:
-    candidate_dir = _candidate_dir_from_proposal(store, job_id, proposal)
+    if candidate_dir is None:
+        candidate_dir = _candidate_dir_from_proposal(store, job_id, proposal)
     has_spec = (candidate_dir / "execution_spec.json").exists()
     candidate_job_yaml = candidate_dir / "job.yaml"
     if candidate_job_yaml.exists():
@@ -506,6 +617,16 @@ def _with_execution_validation(
         job_id,
         candidate_dir=candidate_dir,
         store=store,
+    )
+    # Persist inside the candidate bundle: promotion copies it to the job's
+    # reports/ so the live gate sees a validation report stamped at the
+    # promoted (== candidate) revision.
+    validation_path = candidate_dir / "reports" / "validation" / "latest.json"
+    validation_path.parent.mkdir(parents=True, exist_ok=True)
+    validation_path.write_text(
+        json.dumps(execution_validation, indent=2, sort_keys=True, default=str)
+        + "\n",
+        encoding="utf-8",
     )
     checks = list(validation.get("checks") or [])
     checks.append(

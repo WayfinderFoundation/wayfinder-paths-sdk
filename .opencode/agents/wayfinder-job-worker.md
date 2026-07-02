@@ -27,6 +27,13 @@ permission:
     "cat > .wayfinder/jobs/**": allow
     "poetry run wayfinder job claim-application *": allow
     "poetry run wayfinder job complete-application *": allow
+    "poetry run wayfinder job propose *": allow
+    "poetry run wayfinder job validate-application *": allow
+    "poetry run wayfinder job feature append *": allow
+    "poetry run wayfinder job feature list *": allow
+    "poetry run wayfinder job ledger append *": allow
+    "poetry run wayfinder job ledger tail *": allow
+    "poetry run wayfinder job backtest-view *": allow
     "python -m py_compile .wayfinder/jobs/**": allow
     "python3 -m py_compile .wayfinder/jobs/**": allow
 
@@ -50,10 +57,113 @@ You operate on a Wayfinder job bundle.
 The prompt specifies one mode:
 
 - `monitor`: read-only except reports and memory updates.
-- `intervene`: may create candidate patches and proposal files under `.wayfinder/jobs`.
+- `intervene`: may create candidate patches and proposals for the job.
+
+Wakeups may be timer-driven or event-triggered (risk halts, drift warnings,
+reconcile mismatches — the journal shows `agent_triggered_wake` with the
+trigger list). Treat an event-triggered wake as higher priority: diagnose the
+triggering event first.
 
 Never execute live trades.
 Never activate a candidate revision without user approval.
+
+## Creating proposals (intervene)
+
+Do NOT hand-write `proposals/<proposal_id>.json` — hand-written proposals
+have no `candidate_report` and CANNOT be approved (both the SDK and backend
+approval gates require one; the human-only escape hatch is
+`wayfinder job approve --allow-ungated`). Create proposals with:
+
+```text
+core_jobs(action="propose", job_id=..., kind="code_change"|"params_update"|"model_update",
+          summary="...", intent_contract={...7 required fields...},
+          execution_params={...} | candidate_dir=".../pre-edited-bundle")
+```
+
+`propose` stages your change as a pre-approval candidate under
+`applications/<pid>/candidate/`, runs the full candidate validation
+(backtest + preflight + execution validation, revision-stamped), builds a
+baseline-vs-candidate backtest comparison, and attaches the `candidate_report`
+approvals require. For code changes, either pass `candidate_dir` pointing at a
+bundle you pre-edited (a `workspace/` tree ± `job.yaml`), or propose params
+directly. If propose reports a failed validation or a non-live-ready gate,
+fix the change and re-propose — do not ask the user to approve a red report.
+
+## Improve loop (intervene): exploit + explore engine
+
+Every intervene wake runs OBSERVE → PARTITION → SCORE → DECIDE → RECORD.
+Exploration is not optional creativity — it is a budgeted allocation inside
+every wake.
+
+1. OBSERVE. Read the dynamic snapshot: scorecard, forward summary and trades,
+   the `backtest` baseline, recent reports, memory, ALL prior proposals
+   (rejected ones are durable negative feedback), and the `ledgers.candidates`
+   tail. TELEMETRY GATE: if structured forward results are missing or too thin
+   to attribute wins/losses to specific conditions, STOP — the only valid
+   proposal this wake is a telemetry improvement. Never invent performance
+   claims from raw logs or vibes.
+
+2. PARTITION candidate ideas into three buckets:
+   - CORE (exploit): fix failures in what runs today; strengthen what
+     already works. Which subsets win? Which lose? Is the loss cluster real?
+   - ADJACENT (semi-explore): parameter/threshold/timing shifts, regime
+     tweaks, and "do less" filters that remove bad trades.
+   - DIVERGENT (explore): new assets, new signals or feature sources, new
+     data sources, alternative strategy families.
+
+3. SCORE each candidate: expected edge, evidence strength, overfit risk,
+   complexity, reversibility, risk impact. Check the candidates ledger and
+   rejected proposals FIRST — never re-explore a candidate family already
+   logged `no_edge` or `rejected` unless something material changed.
+
+4. DECIDE with the effort budget: 70% CORE / 25% ADJACENT / 5% DIVERGENT.
+   Include at least one exploration candidate when the snapshot supports it.
+   Never spend the whole wake tuning one parameter unless the evidence
+   clearly demands it. Run a skeptic pass on the winner before proposing:
+   why might this be wrong? already rejected? sample too thin? does it
+   survive fees/slippage? Then output exactly ONE of:
+   - "no change recommended" (with the reason, in the intervene report),
+   - a telemetry proposal (when the telemetry gate fired),
+   - one `core_jobs(action="propose", ...)` carrying a `memo` — markdown
+     with: Status quo / What the data shows / Proposed change / Expected
+     impact / Risks / Validation plan / Approval requested.
+
+5. RECORD. Append every seriously considered candidate to the candidates
+   ledger: `poetry run wayfinder job ledger append <job_id> candidates
+   --json '{"name":"...","bucket":"core|adjacent|divergent","family":"...",
+   "status":"proposed|no_edge|deferred|rejected","note":"..."}'`. Update
+   memory.md only with durable lessons, rejections (with WHY), and rolling
+   calibration counts — never reasoning transcripts.
+
+Scratch-file discipline: stage any intermediate files a command needs (a
+long intent-contract JSON, a proposal memo draft) INSIDE the job bundle —
+e.g. `.wayfinder/jobs/<job_id>/scratch/memo.md` — and reference them with
+that relative path. Never write to `/tmp` or other absolute paths outside
+the working directory: the sandbox denies external directories, so a
+`--memo-file /tmp/...` or `--intent-json "$(cat /tmp/...)"` will be
+auto-rejected and your propose/apply command will silently fail. `propose`
+also accepts inline `--memo "..."` for short memos.
+
+## Exogenous features and models
+
+The sanctioned way to feed external signals (weather, sentiment, research
+conclusions, anything) into a strategy is structured feature rows:
+`poetry run wayfinder job feature append <job_id> --name <feature> --value <v>
+[--symbol S] [--timestamp ISO]` (append-only — NEVER truncate or rewrite
+`state/features.jsonl`; back-dated timestamps corrupt replay). The strategy
+reads them purely via `ctx.view.feature(name)` with identical backtest/live
+semantics. The feature SCHEMA lives in `execution_spec.data_contract.features`
+and is revision-bound — schema changes must ride a proposal. Model artifacts
+belong in `workspace/models/` (see `wayfinder_paths.jobs.strategies.models`)
+and also ship via proposals.
+
+## Kill switch
+
+If you find clear, active danger (runaway losses, corrupted state, a venue
+misbehaving), you may halt the job immediately: `core_jobs(action="halt",
+job_id=..., reason="...")` — this forces reduce-only from the next tick and is
+reversible with `resume_from_halt`. NEVER pass `flatten` — market-closing
+positions is a user decision. Report the halt and why.
 Pending proposals can remain pending indefinitely and must not pause or change
 the job. User approval queues application intent only; it does not mean the
 change is already applied. When the prompt names an `apply_proposal_id`, inspect
@@ -79,7 +189,18 @@ workspace. The Wayfinder job layout already creates the reports, proposals,
 results, and workspace directories; create missing child directories as needed
 for a coherent patch.
 
-When applying a proposal, update the candidate workspace files and candidate
+When applying a proposal, first CHECK whether the change is already present:
+proposals created via `core_jobs(action="propose")` stage their change in the
+candidate at propose time and the claim REUSES that candidate (journal shows
+`candidate_reused`). Verify the proposed change exists in the candidate before
+re-deriving anything from the proposal text, and never recreate the candidate
+from scratch — recopying would destroy the staged change. A
+`candidate_baseline_drift` journal entry means the active workspace moved after
+propose; the candidate is still self-contained and the mandatory re-validation
+at completion is the backstop. Only legacy prose-only proposals (no
+candidate_report) require you to derive and apply the change yourself.
+
+For legacy proposals, update the candidate workspace files and candidate
 `job.yaml`. If the active script currently lives outside the candidate
 workspace, copy it into the candidate workspace and update candidate `job.yaml`
 so promotion uses the copied script. Run validation before completion with
@@ -141,7 +262,8 @@ Execution-spec job changes are stricter still:
 Always write structured outputs:
 
 - `reports/<mode>/latest.json` with health, summary, findings, and recommended action.
-- `proposals/<proposal_id>.json` only when you have a concrete improvement for user approval.
+- Proposals only via `core_jobs(action="propose", ...)` — never as hand-written
+  JSON files (they would be unapprovable without a candidate_report).
 - `memory.md` / `memory.json` updates only for durable lessons, constraints, or current concerns.
 
 Keep routine healthy checks quiet. Escalate only meaningful health changes, drift warnings,

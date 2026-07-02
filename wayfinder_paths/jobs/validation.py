@@ -101,11 +101,16 @@ def validate_candidate_application(
         job_data=job_data,
         proposal=proposal,
     )
+    script_required = bool((job_data.get("script_loop") or {}).get("enabled"))
     checks.append(
         {
             "name": "candidate_script_exists",
-            "passed": bool(script_path and script_path.exists()),
+            # Research-only jobs (no enabled script loop) have no script to
+            # validate; the check must not block their proposals.
+            "passed": bool(script_path and script_path.exists())
+            or not script_required,
             "path": str(script_path) if script_path else None,
+            "script_required": script_required,
         }
     )
     if script_path and script_path.exists():
@@ -274,18 +279,29 @@ def _candidate_behavior_checks(
     from wayfinder_paths.jobs.execution.job import _load_dataset
     from wayfinder_paths.jobs.execution.preflight import run_preflight
     from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
-    from wayfinder_paths.jobs.execution.simulator import simulate_execution
+    from wayfinder_paths.jobs.execution.simulator import (
+        simulate_execution,
+        write_backtest_artifacts,
+    )
     from wayfinder_paths.jobs.gating import compute_workspace_revision
+    from wayfinder_paths.jobs.models import utc_now_iso
 
     checks: list[dict[str, Any]] = []
     job_id = str(job_data.get("id") or job_dir.name)
     spec = ExecutionSpec.from_dict(dict(job_data.get("execution_spec") or {}))
     candidate_revision = compute_workspace_revision(candidate_dir)
     try:
-        dataset = _load_dataset(candidate_dir, spec, dict(job_data))
+        dataset = _load_dataset(
+            candidate_dir,
+            spec,
+            dict(job_data),
+            feature_roots=(candidate_dir, job_dir),
+        )
     except FileNotFoundError:
         try:
-            dataset = _load_dataset(job_dir, spec, dict(job_data))
+            dataset = _load_dataset(
+                job_dir, spec, dict(job_data), feature_roots=(candidate_dir, job_dir)
+            )
         except FileNotFoundError as exc:
             checks.append(
                 {
@@ -301,6 +317,20 @@ def _candidate_behavior_checks(
             dataset,
             spec,
             params=dict(job_data.get("execution_params") or {}),
+        )
+        # Persist the candidate backtest as a revision-stamped artifact inside
+        # the candidate bundle (outside workspace/, so the candidate revision
+        # is unchanged). Promotion copies it into the job's results/ — the
+        # candidate revision equals the post-promotion revision, so the live
+        # gate stays green through an apply instead of going stale.
+        write_backtest_artifacts(
+            result,
+            candidate_dir / "results" / "backtest",
+            extra={
+                "revision": candidate_revision,
+                "generated_at": utc_now_iso(),
+                "dataset": dict(dataset.metadata),
+            },
         )
         checks.append(
             {

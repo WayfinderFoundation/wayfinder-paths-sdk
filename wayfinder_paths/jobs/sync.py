@@ -14,6 +14,7 @@ from wayfinder_paths.core.config import (
 from wayfinder_paths.jobs.backtest_artifacts import summarize_backtest_artifacts
 from wayfinder_paths.jobs.forward import load_forward_snapshot
 from wayfinder_paths.jobs.gating import evaluate_live_gate
+from wayfinder_paths.jobs.halt import read_halt
 from wayfinder_paths.jobs.store import JobStore
 
 
@@ -96,7 +97,24 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         "execution_contract": job.execution_contract,
         "validation": _bounded_validation(validation),
         "gate": evaluate_live_gate(job_id, store=store),
+        # Manual kill-switch detail (contract C4): scorecard already reports
+        # live_execution_status="halted" while set; this carries reason/ts.
+        "halt": read_halt(store.job_dir(job_id)),
+        "features": _feature_summary(store, job_id, job),
     }
+
+
+def _feature_summary(store: JobStore, job_id: str, job: Any) -> Any:
+    try:
+        from wayfinder_paths.jobs.execution.features import summarize_features
+        from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+
+        return summarize_features(
+            store.job_dir(job_id),
+            ExecutionSpec.from_dict(dict(job.execution_spec or {})),
+        )
+    except Exception:
+        return None
 
 
 def _bounded_validation(report: dict[str, Any]) -> dict[str, Any]:

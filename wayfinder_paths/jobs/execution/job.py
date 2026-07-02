@@ -150,6 +150,32 @@ def _load_job_yaml(root: Path) -> dict[str, Any]:
 
 
 def _load_dataset(
+    root: Path,
+    spec: ExecutionSpec,
+    job_data: dict[str, Any],
+    *,
+    feature_roots: tuple[Path, ...] | None = None,
+) -> PreparedExecutionDataset:
+    dataset = _resolve_dataset(root, spec, job_data)
+    # Same feature merge the live driver applies per tick (as-of, backward):
+    # backtest/live parity for exogenous data holds by construction.
+    from wayfinder_paths.jobs.execution.features import (
+        load_feature_rows,
+        merge_features,
+        parse_feature_specs,
+    )
+
+    specs = parse_feature_specs(spec)
+    if specs:
+        frames = load_feature_rows(list(feature_roots or (root,)), specs)
+        dataset = PreparedExecutionDataset(
+            merge_features(dataset.bars, frames, specs),
+            {**dataset.metadata, "features": [item.name for item in specs]},
+        )
+    return dataset
+
+
+def _resolve_dataset(
     root: Path, spec: ExecutionSpec, job_data: dict[str, Any]
 ) -> PreparedExecutionDataset:
     candidate_paths = [
@@ -191,6 +217,40 @@ def _load_dataset(
         "workspace/config/backtest_bars.json, execution_scenario_plan bars, or "
         "execution_spec.validation.fixture_bars."
     )
+
+
+def synthesize_scenario_plan(
+    root: Path,
+    spec: ExecutionSpec,
+    job_data: dict[str, Any],
+    *,
+    max_bars: int = 120,
+) -> dict[str, Any] | None:
+    """Minimal replay scenario plan from the job's backtest dataset: the last
+    `max_bars` bars with the expectation that the trace validates. Used when a
+    proposal (e.g. promote-params) must be applicable but the job declares no
+    execution_scenario_plan — every applicable proposal carries executable
+    scenarios, so candidate validation always exercises the real engine.
+    Returns None when no dataset exists (raise-free by design)."""
+    try:
+        dataset = _load_dataset(root, spec, job_data)
+    except FileNotFoundError:
+        return None
+    rows = dataset.bars.to_rows()
+    if not rows:
+        return None
+    # Proposals are plain JSON files: coerce pd.Timestamp/NaN into JSON-safe
+    # values so store.write_proposal can serialize the plan verbatim.
+    bars = json.loads(json.dumps(rows[-max_bars:], default=str))
+    return {
+        "scenarios": [
+            {
+                "name": "baseline_replay",
+                "bars": bars,
+                "expect": {"execution_valid": True},
+            }
+        ]
+    }
 
 
 def _load_json(path: Path) -> Any:

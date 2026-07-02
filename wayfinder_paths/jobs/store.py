@@ -268,9 +268,60 @@ class JobStore:
         )
         return path
 
-    def approve_proposal(self, job_id: str, proposal_id: str) -> dict[str, Any]:
+    def _require_scenarios(self, job_id: str) -> bool:
+        """Scenario plans are mandatory only for jobs with an enabled script
+        loop — research-only (agent_only) jobs cannot execute scenarios."""
+        try:
+            job = self.load(job_id)
+        except Exception:
+            return True
+        return bool(job.script_loop.enabled)
+
+    def _ensure_candidate_report_gate(
+        self, job_id: str, proposal: dict[str, Any], *, allow_ungated: bool
+    ) -> None:
+        """jobs_v1 approvals require evidence: a candidate_report whose gate
+        is live-ready (or, for research-only proposals, passed validation).
+        This mirrors the backend approve gate SDK-side so on-machine approvals
+        (including auto mode, which has no override) can't skip it."""
+        if allow_ungated:
+            return
+        try:
+            contract = self.load(job_id).execution_contract
+        except Exception:
+            return
+        if contract != "jobs_v1":
+            return  # legacy jobs are blocked upstream by the contract guard
+        report = proposal.get("candidate_report") or {}
+        if not report:
+            raise ValueError(
+                "proposal has no candidate_report; create proposals with "
+                "`wayfinder job propose` (or approve with --allow-ungated)"
+            )
+        if not report.get("revision"):
+            raise ValueError("candidate_report is missing its candidate revision")
+        validation_status = (report.get("validation_summary") or {}).get("status")
+        if validation_status != "passed":
+            raise ValueError(
+                f"candidate validation is not passed: {validation_status}"
+            )
+        if report.get("mode") == "validation_only":
+            return
+        gate = report.get("gate") or {}
+        if gate.get("live_ready") is not True:
+            reasons = "; ".join(gate.get("reasons") or ["unknown"])
+            raise ValueError(f"candidate gate is not live-ready: {reasons}")
+
+    def approve_proposal(
+        self, job_id: str, proposal_id: str, *, allow_ungated: bool = False
+    ) -> dict[str, Any]:
         proposal = self.load_proposal(job_id, proposal_id)
-        _validate_applicable_proposal(proposal)
+        _validate_applicable_proposal(
+            proposal, require_scenarios=self._require_scenarios(job_id)
+        )
+        self._ensure_candidate_report_gate(
+            job_id, proposal, allow_ungated=allow_ungated
+        )
         application = proposal["application"]
         application_status = application["status"]
         if proposal["status"] == "rejected":
@@ -300,7 +351,9 @@ class JobStore:
         self, job_id: str, proposal_id: str
     ) -> dict[str, Any]:
         proposal = self.load_proposal(job_id, proposal_id)
-        _validate_applicable_proposal(proposal)
+        _validate_applicable_proposal(
+            proposal, require_scenarios=self._require_scenarios(job_id)
+        )
         application_status = proposal["application"]["status"]
         if proposal["status"] != "approved":
             raise ValueError(f"Proposal must be approved before apply: {proposal_id}")
@@ -479,6 +532,10 @@ class JobStore:
         return scorecard
 
     def _default_memory(self, job: WayfinderJob) -> str:
+        # Reflexion-style compact memory: short durable lessons, rejected
+        # ideas with WHY, and rolling calibration counts — never reasoning
+        # transcripts. The whole file is tailed into the worker's stable
+        # cache prefix (6k chars), so brevity is load-bearing.
         return (
             f"# {job.name} Job Memory\n\n"
             "Goal:\n"
@@ -488,8 +545,12 @@ class JobStore:
             "- Script runs should write structured results and emit chat only on meaningful transitions.\n"
             "- Intervene-mode agent changes require user approval before activation.\n"
             "- Auto-mode agent decisions must respect the job's configured live limits.\n\n"
-            "Known lessons:\n"
+            "Durable lessons:\n"
             "- None yet.\n\n"
+            "Rejected ideas (what was tried or rejected, and WHY — never re-propose unchanged):\n"
+            "- None yet.\n\n"
+            "Calibration (rolling counts, e.g. 'last 10 decisions: 2 executed / 5 skipped / 3 blocked'):\n"
+            "- No decisions recorded yet.\n\n"
             "Current concern:\n"
             "- None yet.\n"
         )
@@ -550,13 +611,20 @@ class JobStore:
             )
 
 
-def _validate_applicable_proposal(proposal: dict[str, Any]) -> None:
+def _validate_applicable_proposal(
+    proposal: dict[str, Any], *, require_scenarios: bool = True
+) -> None:
     contract = proposal["intent_contract"]
     match contract:
         case dict() if contract:
             pass
         case _:
             raise ValueError("Proposal requires intent_contract before application")
+    if not require_scenarios:
+        # Research-only jobs (no enabled script loop) have nothing to replay
+        # scenarios through; demanding them would make their proposals
+        # permanently unapprovable.
+        return
     scenario_plan = proposal["scenario_plan"]
     match scenario_plan:
         case list():

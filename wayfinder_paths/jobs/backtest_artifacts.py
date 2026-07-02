@@ -27,12 +27,17 @@ PERFORMANCE_SERIES_KINDS = {
 
 
 def summarize_backtest_artifacts(
-    job_id: str, *, store: JobStore | None = None
+    job_id: str, *, store: JobStore | None = None, proposal_id: str | None = None
 ) -> dict[str, Any]:
     store = store or JobStore()
     root = _backtest_dir(store, job_id)
-    visualization = store.read_json(job_id, "results/backtest/visualization.json")
-    latest = store.read_json(job_id, "results/backtest/latest.json", default={}) or {}
+    prefix = (
+        f"applications/{proposal_id}/candidate/results/backtest"
+        if proposal_id
+        else "results/backtest"
+    )
+    visualization = store.read_json(job_id, f"{prefix}/visualization.json")
+    latest = store.read_json(job_id, f"{prefix}/latest.json", default={}) or {}
     if not isinstance(visualization, dict):
         return {"available": False}
 
@@ -66,10 +71,18 @@ def load_backtest_view(
     from_ts: str | None = None,
     to_ts: str | None = None,
     max_points: int = 1500,
+    proposal_id: str | None = None,
 ) -> dict[str, Any]:
     store = store or JobStore()
-    visualization = store.read_json(job_id, "results/backtest/visualization.json")
-    latest = store.read_json(job_id, "results/backtest/latest.json", default={}) or {}
+    # Proposal-scoped view (contract C2): read the CANDIDATE run written by
+    # candidate validation so the FE can overlay it against the active run.
+    prefix = (
+        f"applications/{proposal_id}/candidate/results/backtest"
+        if proposal_id
+        else "results/backtest"
+    )
+    visualization = store.read_json(job_id, f"{prefix}/visualization.json")
+    latest = store.read_json(job_id, f"{prefix}/latest.json", default={}) or {}
     if not isinstance(visualization, dict):
         return {"available": False}
 
@@ -99,7 +112,9 @@ def load_backtest_view(
         "available": True,
         "view": view,
         "run_id": latest.get("run_id"),
-        "summary": summarize_backtest_artifacts(job_id, store=store),
+        "summary": summarize_backtest_artifacts(
+            job_id, store=store, proposal_id=proposal_id
+        ),
         "visualization": {
             key: value
             for key, value in visualization.items()

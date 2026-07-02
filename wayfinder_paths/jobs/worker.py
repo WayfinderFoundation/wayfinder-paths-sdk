@@ -61,6 +61,23 @@ def _drop_volatile_stable_keys(value: Any) -> Any:
             return value
 
 
+_FORWARD_DETAIL_ROWS = 6
+
+
+def _compact_forward(forward: dict[str, Any]) -> dict[str, Any]:
+    """Full forward summary + only the most recent few detail rows per list.
+    The summary carries the aggregate (win rate, streaks, net pnl); the raw
+    row lists are for spot-checking, not bulk — and they must not evict the
+    ledgers/proposals that the loop protocols depend on."""
+    if not isinstance(forward, dict):
+        return {}
+    compact = dict(forward)
+    for key, value in forward.items():
+        if key.startswith("recent_") and isinstance(value, list):
+            compact[key] = value[-_FORWARD_DETAIL_ROWS:]
+    return compact
+
+
 def _build_worker_prompt_sections(
     *,
     store: JobStore,
@@ -78,13 +95,28 @@ def _build_worker_prompt_sections(
         "job": _drop_volatile_stable_keys(job_data),
         "memory_json": _drop_volatile_stable_keys(memory_json),
     }
+    from wayfinder_paths.jobs.ledger import tail_ledger
+
     dynamic_payload = {
         "scorecard": snapshot.get("scorecard") or {},
-        "forward": snapshot.get("forward") or {},
+        # Keep the forward SUMMARY (aggregate signal) full but cap the per-row
+        # detail lists: 25 raw trade/run rows can blow the 12k canonical-json
+        # budget and, since keys serialize alphabetically, starve the later
+        # high-signal keys (ledgers, proposals) out of the prompt entirely.
+        "forward": _compact_forward(snapshot.get("forward") or {}),
         "runner_links": snapshot.get("runner_links") or {},
         "proposals": snapshot.get("proposals") or [],
         "proposal_queue": snapshot.get("proposal_queue") or {},
         "reports": snapshot.get("reports") or {},
+        # Loop-protocol context: the improve loop's baseline + gate state, and
+        # the exploration/decision history that keeps wakes non-amnesic (never
+        # re-explore a logged no_edge/rejected candidate family unchanged).
+        "backtest": snapshot.get("backtest") or {},
+        "gate": snapshot.get("gate") or {},
+        "ledgers": {
+            "candidates": tail_ledger(store, job_id, "candidates", limit=20),
+            "decisions": tail_ledger(store, job_id, "decisions", limit=20),
+        },
     }
 
     stable_prefix = (
@@ -119,6 +151,10 @@ def _build_worker_prompt_sections(
         '`core_jobs(action="claim_application", job_id=..., proposal_id=...)`; '
         "if it is applying, do not claim again. Apply edits in the candidate "
         "workspace recorded on the proposal application, not the active workspace. "
+        "Proposals created via `core_jobs(action=\"propose\")` stage their change "
+        "in the candidate at propose time and the claim REUSES that candidate — "
+        "verify the change is already present before re-deriving it from the "
+        "proposal text, and never recreate the candidate from scratch. "
         "If the current script entrypoint lives outside the candidate workspace, "
         "copy the active script into the candidate workspace and update the "
         "candidate `job.yaml` so promotion will use the copied script. "
@@ -157,7 +193,16 @@ def _build_worker_prompt_sections(
         "immediately instead of running open-ended exploratory tests. If validation "
         "fails, complete the application as failed so runner loops resume cleanly.\n"
         if apply_proposal_id
-        else "- Review the dynamic context against the stable job contract.\n"
+        else (
+            "- Review the dynamic context against the stable job contract. "
+            "When you want to RECOMMEND a strategy/params change, do not "
+            "hand-write proposal JSON: call `core_jobs(action=\"propose\", "
+            "job_id=..., kind=..., summary=..., intent_contract={...}, "
+            "execution_params={...} | candidate_dir=...)` — it stages a "
+            "validated candidate, runs the baseline-vs-candidate backtest "
+            "comparison, and attaches the candidate_report approvals "
+            "require.\n"
+        )
     )
     dynamic_context = (
         f"{DYNAMIC_CONTEXT_MARKER}\n"
@@ -220,18 +265,24 @@ def prepare_job_worker_prompt(
     }
 
 
-def _emit_job_result(summary: str, job_id: str) -> None:
-    print(
-        JOB_RESULT_MARKER
-        + json.dumps(
-            {
-                "type": "job_result",
-                "severity": "warning",
-                "summary": summary,
-                "job_id": job_id,
-            }
-        )
-    )
+def _emit_job_result(
+    summary: str,
+    job_id: str,
+    *,
+    proposal_id: str | None = None,
+    severity: str = "warning",
+) -> None:
+    payload: dict[str, Any] = {
+        "type": "job_result",
+        "severity": severity,
+        "summary": summary,
+        "job_id": job_id,
+    }
+    if proposal_id:
+        # Contract C5: the FE renders a "Review proposal" deep-link chip when
+        # both job_id and proposal_id are present.
+        payload["proposal_id"] = proposal_id
+    print(JOB_RESULT_MARKER + json.dumps(payload))
 
 
 def run_job_worker(
@@ -333,7 +384,9 @@ def run_job_worker(
     )
 
     if report["status"] != "green":
-        _emit_job_result(report["summary"], job.id)
+        _emit_job_result(
+            report["summary"], job.id, proposal_id=apply_proposal_id
+        )
     return report
 
 

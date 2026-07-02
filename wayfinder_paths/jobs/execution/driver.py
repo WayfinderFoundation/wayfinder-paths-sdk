@@ -10,10 +10,22 @@ from typing import Any
 
 import pandas as pd
 
-from wayfinder_paths.jobs.execution.engine import EngineState, TickResult, run_tick
+from wayfinder_paths.jobs.execution.engine import (
+    EngineState,
+    TickResult,
+    flatten_positions,
+    run_tick,
+)
+from wayfinder_paths.jobs.execution.features import (
+    feature_staleness,
+    load_feature_rows,
+    merge_features,
+    parse_feature_specs,
+)
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     ExecutionSpec,
+    ExecutionTrace,
     StateSnapshot,
     bar_interval_seconds,
 )
@@ -21,6 +33,7 @@ from wayfinder_paths.jobs.execution.risk import check_risk_halt
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.execution.venues import VenueAdapter, build_adapter
 from wayfinder_paths.jobs.forward import ForwardRecorder
+from wayfinder_paths.jobs.halt import read_halt
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
 
@@ -36,14 +49,42 @@ def run_scheduled_tick(job_dir: str | Path | None = None) -> dict[str, Any]:
     """
     root = Path(job_dir or os.environ["WAYFINDER_JOB_DIR"])
     mode = str(os.environ.get("WAYFINDER_JOB_MODE") or "paper")
+    store = None
+    job = None
     try:
         store = JobStore()
         job = WayfinderJob.from_dict(_load_job_yaml(root))
         payload = asyncio.run(tick_job(job, root, mode, store=store))
     except Exception as exc:
         payload = {"ok": False, "error": str(exc)}
+    # Event-driven agent wakes fire ONLY from the scheduled entrypoint —
+    # never from tick_job itself, so preflight sandbox ticks and manual
+    # `wayfinder job tick` runs cannot wake the advisor.
+    if store is not None and job is not None:
+        events = _tick_trigger_events(payload)
+        if events:
+            from wayfinder_paths.jobs.triggers import fire_triggers
+
+            fire_triggers(store, job, events, source="scheduled_tick")
     print(json.dumps(payload, default=str))
     return payload
+
+
+def _tick_trigger_events(payload: dict[str, Any]) -> list[str]:
+    events: list[str] = []
+    if payload.get("ok") is not True:
+        events.append("script_failure")
+    snapshot = payload.get("snapshot") or {}
+    if snapshot.get("status") == "ambiguous":
+        events.append("reconcile_mismatch")
+    guard_kinds = {
+        str(event.get("kind"))
+        for event in payload.get("guard_events") or []
+        if isinstance(event, dict)
+    }
+    if guard_kinds & {"risk_halt", "manual_halt"}:
+        events.append("risk_halt")
+    return events
 
 
 async def tick_job(
@@ -146,30 +187,119 @@ async def tick_job(
         if snapshot.status == "valid":
             snapshot = StateSnapshot(status="risk_halt", reason=halt_reason)
 
+    # Manual kill switch: outranks every other status (including ambiguous)
+    # — reduce-only regardless, and cancel queued OPENs before they can
+    # settle at the next bar open inside run_tick.
+    manual_halt = read_halt(root)
+    if manual_halt is not None:
+        halt_note = f"manual halt: {manual_halt.get('reason') or 'unspecified'}"
+        risk_notes.append({"kind": "manual_halt", "reason": halt_note})
+        snapshot = StateSnapshot(status="risk_halt", reason=halt_note)
+        kept_intents = []
+        for intent in state.pending_intents:
+            if intent.reduce_only:
+                kept_intents.append(intent)
+                continue
+            risk_notes.append(
+                {
+                    "kind": "pending_intent_canceled_by_halt",
+                    "intent": intent.to_dict(),
+                }
+            )
+        state.pending_intents = kept_intents
+
     for broker in brokers.values():
         if hasattr(broker, "snapshot"):
             broker.snapshot = snapshot
+
+    # Exogenous features (execution_spec.data_contract.features): the DRIVER
+    # owns this I/O so decide() stays pure. The merged columns land in the
+    # view (and therefore in view_hash + recorded rows), giving the backtest
+    # loader identical as-of semantics and the reconciler exact replays.
+    feature_specs = parse_feature_specs(spec)
+    feature_guards: list[dict[str, Any]] = []
+    feature_skip = False
+    if feature_specs:
+        feature_frames = load_feature_rows([root], feature_specs)
+        feature_guards, feature_skip = feature_staleness(
+            feature_specs, feature_frames, now
+        )
+        if not feature_skip:
+            view = merge_features(view, feature_frames, feature_specs)
 
     # Captured before run_tick mutates state: the reconciler replays each tick
     # from exactly this state.
     engine_state_pre = state.to_dict()
 
-    tick = await run_tick(
-        strategy,
-        view=view,
-        brokers=brokers,
-        state=state,
-        spec=spec,
-        params=params,
-        timestamp=now,
-        snapshot=snapshot,
-        capacity=None,
-        events=events,
-        auto_limits=dict(job.agent_loop.auto_limits or {}) or None,
-        client_order_prefix=job.id,
-    )
+    if feature_skip:
+        # Mirrors bar staleness with policy "skip": never decide against
+        # stale exogenous data when the spec says it must be fresh.
+        tick = TickResult(
+            skipped=True,
+            skip_reason="stale_feature",
+            bar_timestamp=(
+                view.timestamps[-1].isoformat() if view.timestamps else None
+            ),
+            snapshot=snapshot,
+        )
+    else:
+        tick = await run_tick(
+            strategy,
+            view=view,
+            brokers=brokers,
+            state=state,
+            spec=spec,
+            params=params,
+            timestamp=now,
+            snapshot=snapshot,
+            capacity=None,
+            events=events,
+            auto_limits=dict(job.agent_loop.auto_limits or {}) or None,
+            client_order_prefix=job.id,
+        )
     tick.guard_events.extend(reconcile_notes)
     tick.guard_events.extend(risk_notes)
+    tick.guard_events.extend(feature_guards)
+
+    if (
+        manual_halt is not None
+        and manual_halt.get("flatten")
+        and state.ledger.positions
+    ):
+        # Market-close everything at the latest completed close. Runs even on
+        # skipped ticks (no_new_bar): a flatten request must not wait for a
+        # fresh bar. Fills land in tick.fills/trade_rows for the recorder.
+        fills_before_flatten = len(tick.fills)
+        await flatten_positions(
+            brokers=brokers,
+            state=state,
+            view=view,
+            timestamp=tick.bar_timestamp or now.isoformat(),
+            trace=ExecutionTrace(execution_spec=spec.to_dict()),
+            result=tick,
+        )
+        flatten_fills = [
+            fill.to_dict()
+            for fill in tick.fills[fills_before_flatten:]
+            if fill.successful
+        ]
+        if flatten_fills:
+            store.append_journal(
+                job.id,
+                {
+                    "type": "halt_flattened",
+                    "mode": mode,
+                    "fills": [
+                        {
+                            "symbol": row.get("symbol"),
+                            "side": row.get("side"),
+                            "filled_size": row.get("filled_size"),
+                            "avg_price": row.get("avg_price"),
+                        }
+                        for row in flatten_fills
+                    ],
+                },
+            )
 
     state.save(state_path)
     _record(

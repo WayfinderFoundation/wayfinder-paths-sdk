@@ -128,6 +128,9 @@ class AgentLoop:
     agent_name: str = JOB_WORKER_AGENT_NAME
     opencode_session_policy: str = "child_of_controller"
     triggers: list[str] = field(default_factory=list)
+    # Minimum spacing between event-triggered wakes (jobs/triggers.py);
+    # None = module default. Timer wakes are unaffected.
+    trigger_debounce_seconds: int | None = None
     auto_limits: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -147,6 +150,7 @@ class AgentLoop:
                 data.get("opencode_session_policy") or "child_of_controller"
             ),
             triggers=[str(v) for v in data.get("triggers") or []],
+            trigger_debounce_seconds=data.get("trigger_debounce_seconds"),
             auto_limits=dict(data.get("auto_limits") or {}),
         )
 
@@ -162,6 +166,7 @@ class AgentLoop:
             "agent_name": self.agent_name,
             "opencode_session_policy": self.opencode_session_policy,
             "triggers": list(self.triggers),
+            "trigger_debounce_seconds": self.trigger_debounce_seconds,
             "auto_limits": dict(self.auto_limits),
         }
 
@@ -234,6 +239,7 @@ class WayfinderJob:
                 "health_red",
                 "proposal_created",
                 "reconcile_mismatch",
+                "risk_halt",
             ],
             auto_limits=auto_limits_payload if normalized_mode == "auto" else {},
         )
