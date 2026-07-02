@@ -251,10 +251,6 @@ async def broadcast_transaction(chain_id, signed_transaction: bytes) -> str:
         return tx_hash.hex()
 
 
-_SPONSORED_HASH_TIMEOUT_SECONDS = 120
-_SPONSORED_HASH_POLL_SECONDS = 2
-
-
 async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> str:
     """Submit via the backend's sponsored broadcast and return the tx hash.
 
@@ -263,19 +259,19 @@ async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> 
     """
     tx = dict(transaction)
     tx["from"] = wallet_address
-    result = await WALLET_CLIENT.send_transaction_sponsored(
+    result = await WALLET_CLIENT.send_privy_transaction_sponsored(
         wallet_address, _prepare_tx_for_privy(tx)
     )
     txn_hash = result["hash"]
-    deadline = time.monotonic() + _SPONSORED_HASH_TIMEOUT_SECONDS
+    deadline = time.monotonic() + 120
     while not txn_hash:
         if time.monotonic() > deadline:
             raise TimeoutError(
                 f"Sponsored transaction {result['transaction_id']} has no hash "
-                f"after {_SPONSORED_HASH_TIMEOUT_SECONDS}s"
+                f"after 120s"
             )
-        await asyncio.sleep(_SPONSORED_HASH_POLL_SECONDS)
-        status = await WALLET_CLIENT.get_transaction_status(
+        await asyncio.sleep(2)
+        status = await WALLET_CLIENT.get_privy_transaction_status(
             wallet_address, result["transaction_id"]
         )
         # "failed" is pre-broadcast (no hash will ever land); an on-chain

@@ -56,7 +56,7 @@ class WalletClient(WayfinderClient):
             logger.error(f"sign_transaction failed for {wallet_address}: {exc}")
             raise
 
-    async def send_transaction_sponsored(
+    async def send_privy_transaction_sponsored(
         self, wallet_address: str, transaction: dict
     ) -> dict[str, Any]:
         url = (
@@ -69,11 +69,11 @@ class WalletClient(WayfinderClient):
             return resp.json()
         except Exception as exc:
             logger.error(
-                f"send_transaction_sponsored failed for {wallet_address}: {exc}"
+                f"send_privy_transaction_sponsored failed for {wallet_address}: {exc}"
             )
             raise
 
-    async def get_transaction_status(
+    async def get_privy_transaction_status(
         self, wallet_address: str, transaction_id: str
     ) -> dict[str, Any]:
         url = (
@@ -84,7 +84,9 @@ class WalletClient(WayfinderClient):
             resp = await self._authed_request("GET", url)
             return resp.json()
         except Exception as exc:
-            logger.error(f"get_transaction_status failed for {wallet_address}: {exc}")
+            logger.error(
+                f"get_privy_transaction_status failed for {wallet_address}: {exc}"
+            )
             raise
 
     async def sign_typed_data(self, wallet_address: str, typed_data: dict) -> str:
