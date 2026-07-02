@@ -36,13 +36,11 @@ def test_run_experiment_records_and_ranks(tmp_path: Path) -> None:
 
 def test_promote_params_direct_updates_job_and_revision(tmp_path: Path) -> None:
     store, job_id, root = _make_job(tmp_path)
-    experiment = run_experiment(
-        job_id, {"threshold": [10.0, 100.0]}, store=store
-    )["experiment"]
+    experiment = run_experiment(job_id, {"threshold": [10.0, 100.0]}, store=store)[
+        "experiment"
+    ]
 
-    result = promote_params(
-        job_id, grid_id=experiment["grid_id"], store=store
-    )
+    result = promote_params(job_id, grid_id=experiment["grid_id"], store=store)
 
     assert result["mode"] == "direct"
     job = store.load(job_id)
@@ -60,9 +58,9 @@ def test_promote_params_direct_updates_job_and_revision(tmp_path: Path) -> None:
 
 def test_promote_params_via_proposal_enters_change_flow(tmp_path: Path) -> None:
     store, job_id, _ = _make_job(tmp_path)
-    experiment = run_experiment(
-        job_id, {"threshold": [10.0, 100.0]}, store=store
-    )["experiment"]
+    experiment = run_experiment(job_id, {"threshold": [10.0, 100.0]}, store=store)[
+        "experiment"
+    ]
 
     result = promote_params(
         job_id, grid_id=experiment["grid_id"], via_proposal=True, store=store
@@ -78,9 +76,10 @@ def test_promote_params_via_proposal_enters_change_flow(tmp_path: Path) -> None:
     )
     # params NOT applied directly — the change must ride the approve flow
     job = store.load(job_id)
-    assert "threshold" not in job.execution_params or job.execution_params[
-        "threshold"
-    ] != result["params"]["threshold"]
+    assert (
+        "threshold" not in job.execution_params
+        or job.execution_params["threshold"] != result["params"]["threshold"]
+    )
 
 
 def test_promote_params_requires_grid_or_params(tmp_path: Path) -> None:

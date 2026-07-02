@@ -121,9 +121,7 @@ def test_invalid_leverage_raises(leverage: float) -> None:
 
 
 def test_compound_entry_skipped_below_min_notional() -> None:
-    result = _run(
-        {"sizing": "compound", "leverage": 1.0, "initial_capital": 5.0}
-    )
+    result = _run({"sizing": "compound", "leverage": 1.0, "initial_capital": 5.0})
 
     assert _opens(result) == [], "equity below min_notional_usd must not enter"
 

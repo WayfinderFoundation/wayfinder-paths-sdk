@@ -41,9 +41,7 @@ def test_append_and_tail_round_trip(tmp_path: Path) -> None:
 
     rows = tail_ledger(store, job_id, "candidates")
     assert [row["name"] for row in rows] == ["chop filter", "OP rotation"]
-    assert (
-        store.job_dir(job_id) / "ledgers" / "candidates.jsonl"
-    ).exists()
+    assert (store.job_dir(job_id) / "ledgers" / "candidates.jsonl").exists()
 
 
 def test_tail_limit_returns_most_recent(tmp_path: Path) -> None:

@@ -177,9 +177,7 @@ def test_drawdown_durations() -> None:
 
 
 def test_unrecovered_drawdown_runs_to_last_bar() -> None:
-    stats = _stats(
-        _equity_curve([100.0, 110.0, 99.0, 95.0]), [], None, HOUR, params={}
-    )
+    stats = _stats(_equity_curve([100.0, 110.0, 99.0, 95.0]), [], None, HOUR, params={})
     # dd<0 from t2 through the end: last_ts(t3) - start(t2) = 1h
     assert stats["max_drawdown_duration_s"] == pytest.approx(HOUR)
 

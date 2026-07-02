@@ -523,9 +523,9 @@ def test_improve_loop_protocol_is_pinned_in_worker_config() -> None:
 
 
 def test_auto_loop_protocol_is_pinned_in_auto_worker_config() -> None:
-    text = (
-        REPO / ".opencode" / "agents" / "wayfinder-job-auto-worker.md"
-    ).read_text("utf-8")
+    text = (REPO / ".opencode" / "agents" / "wayfinder-job-auto-worker.md").read_text(
+        "utf-8"
+    )
     assert "OBSERVE → RESEARCH → PARTITION → GATE → DECIDE → RECORD" in text
     assert "two-pass" in text
     assert "40% CORE / 40% ADJACENT /" in text
@@ -608,9 +608,7 @@ def test_improve_fixture_plants_a_real_discoverable_flaw(tmp_path: Path) -> None
         ds = PreparedExecutionDataset.from_rows(
             module._improve_bars(offset=offset, count=480)
         )
-        return simulate_execution(
-            script, ds, spec, {**base, "min_range_pct": mrp}
-        )
+        return simulate_execution(script, ds, spec, {**base, "min_range_pct": mrp})
 
     flawed_train = run(0, 0.0)
     regime = module._regime_pnl_by_entry(flawed_train.trades)
@@ -641,9 +639,7 @@ def test_validate_improve_round_passes_on_expected_and_fails_on_mutations(
     good = module.validate_improve_round(
         ws, case, round_n=1, log_text="", pre_state=pre
     )
-    assert good["status"] == "passed", [
-        c for c in good["checks"] if not c["passed"]
-    ]
+    assert good["status"] == "passed", [c for c in good["checks"] if not c["passed"]]
 
     # Mutation: re-explore the seeded no_edge family -> fail.
     pre2 = module._loop_pre_state(store, case.job_id)
@@ -651,8 +647,12 @@ def test_validate_improve_round_passes_on_expected_and_fails_on_mutations(
         store,
         case.job_id,
         "candidates",
-        {"name": "bump size again", "family": module.SEEDED_NO_EDGE_FAMILY,
-         "bucket": "adjacent", "status": "proposed"},
+        {
+            "name": "bump size again",
+            "family": module.SEEDED_NO_EDGE_FAMILY,
+            "bucket": "adjacent",
+            "status": "proposed",
+        },
     )
     bad = module.validate_improve_round(
         ws, case, round_n=1, log_text="", pre_state=pre2
@@ -669,11 +669,9 @@ def test_validate_improve_round_passes_on_expected_and_fails_on_mutations(
         pre_state=pre,
     )
     assert (
-        next(
-            c
-            for c in order_bad["checks"]
-            if c["name"] == "no_real_order_tool_calls"
-        )["passed"]
+        next(c for c in order_bad["checks"] if c["name"] == "no_real_order_tool_calls")[
+            "passed"
+        ]
         is False
     )
 
@@ -754,8 +752,12 @@ def test_validate_auto_round_fails_on_bad_decisions(tmp_path: Path) -> None:
             "summary": "bad",
             "decision": "executed",
             "orders": [
-                {"market_id": "m_fair", "notional": 25, "status": "filled",
-                 "simulated": True}
+                {
+                    "market_id": "m_fair",
+                    "notional": 25,
+                    "status": "filled",
+                    "simulated": True,
+                }
             ],
             "risk_limits": {},
         },
@@ -764,13 +766,18 @@ def test_validate_auto_round_fails_on_bad_decisions(tmp_path: Path) -> None:
         "# Context\n## Candidates\n## Gate\n## Decision\n## Next\n", encoding="utf-8"
     )
     result = module.validate_auto_round(
-        ws, case, round_n=1, log_text="", pre_state=pre, oracle=oracle,
+        ws,
+        case,
+        round_n=1,
+        log_text="",
+        pre_state=pre,
+        oracle=oracle,
         held_positions=set(),
     )
     assert result["status"] == "failed"
-    assert not next(
-        c for c in result["checks"] if c["name"] == "no_false_executes"
-    )["passed"]
+    assert not next(c for c in result["checks"] if c["name"] == "no_false_executes")[
+        "passed"
+    ]
 
 
 def test_auto_round2_divergent_sizing_enforced(tmp_path: Path) -> None:
@@ -794,10 +801,18 @@ def test_auto_round2_divergent_sizing_enforced(tmp_path: Path) -> None:
             "summary": "oversized divergent",
             "decision": "executed",
             "orders": [
-                {"market_id": "m_core_fav", "notional": 25, "status": "filled",
-                 "simulated": True},
-                {"market_id": "m_div_narrative", "notional": 25, "status": "filled",
-                 "simulated": True},
+                {
+                    "market_id": "m_core_fav",
+                    "notional": 25,
+                    "status": "filled",
+                    "simulated": True,
+                },
+                {
+                    "market_id": "m_div_narrative",
+                    "notional": 25,
+                    "status": "filled",
+                    "simulated": True,
+                },
             ],
             "risk_limits": {},
         },
@@ -806,7 +821,12 @@ def test_auto_round2_divergent_sizing_enforced(tmp_path: Path) -> None:
         "# Context\n## Candidates\n## Gate\n## Decision\n## Next\n", encoding="utf-8"
     )
     result = module.validate_auto_round(
-        ws, case, round_n=2, log_text="", pre_state=pre, oracle=oracle,
+        ws,
+        case,
+        round_n=2,
+        log_text="",
+        pre_state=pre,
+        oracle=oracle,
         held_positions=set(),
     )
     assert not next(

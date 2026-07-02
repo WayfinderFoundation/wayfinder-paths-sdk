@@ -150,9 +150,7 @@ def test_merge_is_as_of_never_lookahead() -> None:
 
 
 def test_per_symbol_features_do_not_leak_across_symbols() -> None:
-    rows = _bars(2) + [
-        {**row, "symbol": "IMX"} for row in _bars(2)
-    ]
+    rows = _bars(2) + [{**row, "symbol": "IMX"} for row in _bars(2)]
     view = CompletedBarsView.from_rows(rows)
     frames = {
         "flow": pd.DataFrame(
@@ -175,7 +173,8 @@ def test_feature_accessor_raises_when_absent() -> None:
     with pytest.raises(ValueError, match="No feature column"):
         view.feature("sentiment")
     merged = merge_features(
-        view, {"sentiment": pd.DataFrame(columns=["timestamp", "value", "symbol"])},
+        view,
+        {"sentiment": pd.DataFrame(columns=["timestamp", "value", "symbol"])},
         [FeatureSpec(name="sentiment")],
     )
     with pytest.raises(ValueError, match="No values yet"):
@@ -198,7 +197,9 @@ async def test_stale_feature_skip_policy_skips_tick(tmp_path: Path) -> None:
         root,
         "paper",
         store=store,
-        adapters={"hyperliquid": FakeAdapter(view, PaperBroker(capabilities=PERP_CAPS))},
+        adapters={
+            "hyperliquid": FakeAdapter(view, PaperBroker(capabilities=PERP_CAPS))
+        },
         now=late,
     )
     assert result["skipped"] is True
@@ -223,7 +224,9 @@ async def test_stale_feature_decide_anyway_proceeds(tmp_path: Path) -> None:
         root,
         "paper",
         store=store,
-        adapters={"hyperliquid": FakeAdapter(view, PaperBroker(capabilities=PERP_CAPS))},
+        adapters={
+            "hyperliquid": FakeAdapter(view, PaperBroker(capabilities=PERP_CAPS))
+        },
         now=late,
     )
     assert result["skip_reason"] != "stale_feature"
@@ -251,7 +254,12 @@ def test_writer_and_reader_round_trip(tmp_path: Path) -> None:
     store, job, root = _make_job(tmp_path)
     append_feature(store, job.id, name="sentiment", value=0.7)
     append_feature(
-        store, job.id, name="temp_f", value=91.5, symbol="KXHIGHNY", timestamp="2026-01-01T00:00:00Z"
+        store,
+        job.id,
+        name="temp_f",
+        value=91.5,
+        symbol="KXHIGHNY",
+        timestamp="2026-01-01T00:00:00Z",
     )
 
     rows = list_features(store, job.id)
@@ -267,9 +275,7 @@ def test_writer_and_reader_round_trip(tmp_path: Path) -> None:
 
 
 def test_staleness_helper_missing_rows_counts_as_stale() -> None:
-    specs = [
-        FeatureSpec(name="sentiment", max_age_seconds=60, stale_policy="skip")
-    ]
+    specs = [FeatureSpec(name="sentiment", max_age_seconds=60, stale_policy="skip")]
     guards, skip = feature_staleness(
         specs,
         {"sentiment": pd.DataFrame(columns=["timestamp", "value", "symbol"])},
@@ -285,9 +291,7 @@ def test_validation_flags_feature_schema_and_availability(tmp_path: Path) -> Non
     spec = ExecutionSpec()
     spec.data_contract["features"] = [{"name": "sentiment"}]
     checks = _feature_checks(tmp_path, spec)
-    availability = next(
-        c for c in checks if c["name"] == "declared_features_available"
-    )
+    availability = next(c for c in checks if c["name"] == "declared_features_available")
     assert availability["passed"] is False
     assert availability["blocking"] is False
     assert availability["missing"] == ["sentiment"]

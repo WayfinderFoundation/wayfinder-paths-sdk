@@ -118,13 +118,9 @@ def test_gross_normalization_on_and_off() -> None:
 def test_threshold_and_min_notional_suppression() -> None:
     ctx = _ctx({"AAA": 10.0}, _ledger(("AAA", "long", 50.0, 10.0)))
     # drift 0.02 below the 0.05 threshold -> hold
-    assert (
-        target_weights_to_intents(ctx, {"AAA": 0.52}, rebalance_threshold=0.05) == []
-    )
+    assert target_weights_to_intents(ctx, {"AAA": 0.52}, rebalance_threshold=0.05) == []
     # delta notional 20 below min_trade_notional 50 -> hold
-    assert (
-        target_weights_to_intents(ctx, {"AAA": 0.52}, min_trade_notional=50.0) == []
-    )
+    assert target_weights_to_intents(ctx, {"AAA": 0.52}, min_trade_notional=50.0) == []
 
 
 def test_zero_or_negative_equity_emits_nothing() -> None:
@@ -136,7 +132,9 @@ def test_zero_or_negative_equity_emits_nothing() -> None:
 def test_sizing_equity_override_scales_notional() -> None:
     ctx = _ctx({"AAA": 10.0})
     intents = target_weights_to_intents(
-        ctx, {"AAA": 0.5}, sizing_equity=CAPITAL * 2  # e.g. equity * leverage
+        ctx,
+        {"AAA": 0.5},
+        sizing_equity=CAPITAL * 2,  # e.g. equity * leverage
     )
     assert intents[0]["notional"] == pytest.approx(1000.0)
 

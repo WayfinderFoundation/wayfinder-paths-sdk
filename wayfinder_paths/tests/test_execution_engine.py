@@ -164,16 +164,16 @@ async def test_daily_notional_cap_accumulates_across_ticks() -> None:
     )
     limits = {"max_daily_notional": 100}
 
-    first = await _tick(_strategy([intent]), _view([10.0, 10.5]), state=state, auto_limits=limits)
+    first = await _tick(
+        _strategy([intent]), _view([10.0, 10.5]), state=state, auto_limits=limits
+    )
     second = await _tick(
         _strategy([intent]), _view([10.0, 10.5, 11.0]), state=state, auto_limits=limits
     )
 
     assert len(first.intents) == 1
     assert second.intents == []
-    assert any(
-        "daily notional cap" in event["reason"] for event in second.guard_events
-    )
+    assert any("daily notional cap" in event["reason"] for event in second.guard_events)
 
 
 async def test_bracket_rejected_on_venue_without_bracket_support() -> None:
@@ -196,8 +196,7 @@ async def test_bracket_rejected_on_venue_without_bracket_support() -> None:
     assert result.intents == []
     assert broker.placed == []
     assert any(
-        "does not support brackets" in event["reason"]
-        for event in result.guard_events
+        "does not support brackets" in event["reason"] for event in result.guard_events
     )
 
 
@@ -228,7 +227,9 @@ async def test_stale_data_skips_tick() -> None:
     late = view.timestamps[-1] + pd.Timedelta(minutes=30)
 
     result = await _tick(
-        _strategy([OrderIntent(action="OPEN", venue="x", symbol="SNX", side="long", size=1)]),
+        _strategy(
+            [OrderIntent(action="OPEN", venue="x", symbol="SNX", side="long", size=1)]
+        ),
         view,
         spec=_spec(bar_interval="5m", max_bar_age_intervals=2),
         timestamp=late,
@@ -267,7 +268,15 @@ async def test_stale_flat_policy_closes_positions() -> None:
     view = _view([10.0, 10.5])
     opener = await _tick(
         _strategy(
-            [OrderIntent(action="OPEN", venue="hyperliquid", symbol="SNX", side="long", size=2)]
+            [
+                OrderIntent(
+                    action="OPEN",
+                    venue="hyperliquid",
+                    symbol="SNX",
+                    side="long",
+                    size=2,
+                )
+            ]
         ),
         view,
         state=state,
@@ -296,7 +305,15 @@ async def test_resolution_event_settles_outcome_token_position() -> None:
     symbol = "polymarket:m1:YES"
     opened = await _tick(
         _strategy(
-            [OrderIntent(action="OPEN", venue="polymarket", symbol=symbol, side="long", size=10)]
+            [
+                OrderIntent(
+                    action="OPEN",
+                    venue="polymarket",
+                    symbol=symbol,
+                    side="long",
+                    size=10,
+                )
+            ]
         ),
         _view([0.40, 0.42], symbol=symbol),
         state=state,
@@ -322,22 +339,34 @@ async def test_resolution_event_settles_outcome_token_position() -> None:
 
     assert symbol not in state.ledger.positions
     assert state.ledger.realized_pnl == pytest.approx((1.0 - entry_price) * 10)
-    assert any(
-        row.get("raw", {}).get("market_event") for row in result.trade_rows
-    )
+    assert any(row.get("raw", {}).get("market_event") for row in result.trade_rows)
 
 
 async def test_multi_venue_routing() -> None:
     perp_broker = FakeBroker()
     prediction_broker = FakeBroker(capabilities=PREDICTION_CAPS)
-    rows = _view([10.0, 10.5]).to_rows() + _view([0.4, 0.45], symbol="pm:m1:YES").to_rows()
+    rows = (
+        _view([10.0, 10.5]).to_rows() + _view([0.4, 0.45], symbol="pm:m1:YES").to_rows()
+    )
     view = CompletedBarsView.from_rows(rows)
 
     result = await _tick(
         _strategy(
             [
-                OrderIntent(action="OPEN", venue="hyperliquid", symbol="SNX", side="long", size=1),
-                OrderIntent(action="OPEN", venue="polymarket", symbol="pm:m1:YES", side="long", size=5),
+                OrderIntent(
+                    action="OPEN",
+                    venue="hyperliquid",
+                    symbol="SNX",
+                    side="long",
+                    size=1,
+                ),
+                OrderIntent(
+                    action="OPEN",
+                    venue="polymarket",
+                    symbol="pm:m1:YES",
+                    side="long",
+                    size=5,
+                ),
             ]
         ),
         view,
@@ -353,7 +382,9 @@ async def test_duplicate_bar_is_idempotent() -> None:
     state = EngineState()
     broker = FakeBroker()
     view = _view([10.0, 10.5])
-    intent = OrderIntent(action="OPEN", venue="hyperliquid", symbol="SNX", side="long", size=1)
+    intent = OrderIntent(
+        action="OPEN", venue="hyperliquid", symbol="SNX", side="long", size=1
+    )
 
     first = await _tick(_strategy([intent]), view, state=state, brokers={"*": broker})
     second = await _tick(_strategy([intent]), view, state=state, brokers={"*": broker})
@@ -367,15 +398,17 @@ async def test_duplicate_bar_is_idempotent() -> None:
 async def test_missing_broker_records_guard_event() -> None:
     result = await _tick(
         _strategy(
-            [OrderIntent(action="OPEN", venue="unknown", symbol="SNX", side="long", size=1)]
+            [
+                OrderIntent(
+                    action="OPEN", venue="unknown", symbol="SNX", side="long", size=1
+                )
+            ]
         ),
         _view([10.0, 10.5]),
         brokers={"hyperliquid": FakeBroker()},
     )
 
-    assert any(
-        event["kind"] == "no_broker_for_venue" for event in result.guard_events
-    )
+    assert any(event["kind"] == "no_broker_for_venue" for event in result.guard_events)
 
 
 async def test_strategy_state_persists_across_ticks() -> None:
@@ -417,7 +450,9 @@ def test_engine_state_round_trip(tmp_path) -> None:
     )
     state.brackets["SNX"] = {"stop_loss": 9.0, "venue": "hyperliquid"}
     state.pending_intents.append(
-        OrderIntent(action="OPEN", venue="hyperliquid", symbol="IMX", side="short", size=1)
+        OrderIntent(
+            action="OPEN", venue="hyperliquid", symbol="IMX", side="short", size=1
+        )
     )
     state.last_processed_bar_ts = "2026-01-01T00:00:00+00:00"
     state.daily_notional["2026-01-01"] = 20.0

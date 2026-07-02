@@ -81,8 +81,7 @@ async def test_halt_outranks_ambiguous_and_cancels_pending_opens(
     assert second["snapshot"]["status"] == "risk_halt"
     assert second["fills"] == [], "queued OPEN must not settle under halt"
     assert any(
-        e["kind"] == "pending_intent_canceled_by_halt"
-        for e in second["guard_events"]
+        e["kind"] == "pending_intent_canceled_by_halt" for e in second["guard_events"]
     )
 
 

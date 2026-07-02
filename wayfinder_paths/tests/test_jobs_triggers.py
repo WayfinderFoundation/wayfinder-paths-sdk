@@ -23,9 +23,7 @@ def wakes(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
         calls.append({"job_id": job_id, "mode": mode, **kwargs})
         return {"status": "queued"}
 
-    monkeypatch.setattr(
-        "wayfinder_paths.jobs.worker.run_job_worker", fake_worker
-    )
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.run_job_worker", fake_worker)
     return calls
 
 
@@ -86,9 +84,7 @@ def test_non_matching_and_disabled_agents_never_fire(
     assert fire_triggers(store, job, ["unknown_event"], source="test") is None
 
     off_store, off_job = _make_job(tmp_path / "off", mode="off")
-    assert (
-        fire_triggers(off_store, off_job, ["risk_halt"], source="test") is None
-    )
+    assert fire_triggers(off_store, off_job, ["risk_halt"], source="test") is None
     assert wakes == []
 
 
@@ -120,15 +116,17 @@ def test_worker_failure_is_journaled_not_raised(
 
 
 def test_default_triggers_include_risk_halt() -> None:
-    job = WayfinderJob.new("d", script="x.py", interval_seconds=60, agent_mode="monitor")
+    job = WayfinderJob.new(
+        "d", script="x.py", interval_seconds=60, agent_mode="monitor"
+    )
     assert "risk_halt" in job.agent_loop.triggers
 
 
 def test_tick_trigger_event_derivation() -> None:
     assert _tick_trigger_events({"ok": False}) == ["script_failure"]
-    assert _tick_trigger_events(
-        {"ok": True, "snapshot": {"status": "ambiguous"}}
-    ) == ["reconcile_mismatch"]
+    assert _tick_trigger_events({"ok": True, "snapshot": {"status": "ambiguous"}}) == [
+        "reconcile_mismatch"
+    ]
     assert _tick_trigger_events(
         {"ok": True, "guard_events": [{"kind": "manual_halt"}]}
     ) == ["risk_halt"]
