@@ -214,6 +214,12 @@ async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> 
         status = await WALLET_CLIENT.get_transaction_status(
             wallet_address, result["transaction_id"]
         )
+        # "failed" is pre-broadcast (no hash will ever land); an on-chain
+        # revert still yields a hash and is caught by the receipt wait.
+        if status["status"] == "failed":
+            raise RuntimeError(
+                f"Sponsored transaction {result['transaction_id']} failed before broadcast"
+            )
         txn_hash = status["hash"]
     return txn_hash
 
