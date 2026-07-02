@@ -119,6 +119,24 @@ def test_stale_baseline_is_recorded_but_reused(
     assert candidate_yaml["execution_params"]["threshold"] == 10.7
 
 
+def test_tampered_candidate_is_rejected_at_approve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D2 apply-drift guard: a candidate edited after its report was generated
+    no longer hashes to the validated revision, so approval must reject it
+    (rather than promote a bundle that was never validated)."""
+    _patch_runner(monkeypatch)
+    store, job_id, root = _make_job(tmp_path)
+    proposal = _propose_params(store, job_id)
+    pid = proposal["proposal_id"]
+
+    tampered = root / "applications" / pid / "candidate" / "workspace" / "x.py"
+    tampered.write_text("tampered = True\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="candidate changed since its report"):
+        store.approve_proposal(job_id, pid)
+
+
 def test_tampered_candidate_falls_back_to_fresh_copy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -128,11 +146,13 @@ def test_tampered_candidate_falls_back_to_fresh_copy(
     pid = proposal["proposal_id"]
 
     # Hand-edit the candidate AFTER propose: recorded revision no longer
-    # matches, so claim must rebuild from the active workspace.
+    # matches, so claim must rebuild from the active workspace. Use the ungated
+    # escape hatch to bypass the approve-time freshness guard and reach the
+    # claim fallback path (which now records why the change vanished).
     tampered = root / "applications" / pid / "candidate" / "workspace" / "x.py"
     tampered.write_text("tampered = True\n", encoding="utf-8")
 
-    store.approve_proposal(job_id, pid)
+    store.approve_proposal(job_id, pid, allow_ungated=True)
     claim_application(store, job_id, pid)
 
     candidate_yaml = yaml.safe_load(
@@ -143,6 +163,7 @@ def test_tampered_candidate_falls_back_to_fresh_copy(
     )
     journal = (root / "journal.jsonl").read_text(encoding="utf-8")
     assert "candidate_reused" not in journal
+    assert "candidate_report_stale" in journal
 
 
 def test_ungated_jobs_v1_approval_requires_escape_hatch(tmp_path: Path) -> None:

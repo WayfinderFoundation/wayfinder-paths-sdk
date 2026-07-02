@@ -401,6 +401,24 @@ def _prepare_candidate_workspace(
                     )
                     descriptor["stale_baseline"] = True
                 return descriptor
+            if recorded:
+                # Candidate on disk no longer matches its report revision — it
+                # was hand-edited or corrupted after propose (the D2 apply-drift
+                # failure). Falling back to a fresh copy of the active workspace
+                # DROPS the candidate's change, so record why it vanished rather
+                # than recopying silently. (approve_proposal now rejects this
+                # case up front; this journal is defensive for other callers.)
+                store.append_journal(
+                    job_id,
+                    {
+                        "type": "candidate_report_stale",
+                        "proposal_id": proposal_id,
+                        "recorded_revision": recorded,
+                        "candidate_revision": compute_workspace_revision(
+                            candidate_dir
+                        ),
+                    },
+                )
         shutil.rmtree(candidate_dir)
     candidate_dir.mkdir(parents=True, exist_ok=True)
     workspace_src = root / "workspace"

@@ -124,7 +124,9 @@ class AgentLoop:
     wake_interval_seconds: int | None = None
     cron_expr: str | None = None
     timezone: str = "UTC"
-    timeout_seconds: int = 600
+    # 900s (was 600): complex intervene wakes — verbose cold start, OBSERVE
+    # across the full snapshot, then propose — can run long on slower models.
+    timeout_seconds: int = 900
     agent_name: str = JOB_WORKER_AGENT_NAME
     opencode_session_policy: str = "child_of_controller"
     triggers: list[str] = field(default_factory=list)
@@ -144,7 +146,7 @@ class AgentLoop:
             wake_interval_seconds=data.get("wake_interval_seconds"),
             cron_expr=data.get("cron_expr"),
             timezone=str(data.get("timezone") or "UTC"),
-            timeout_seconds=int(data.get("timeout_seconds") or 600),
+            timeout_seconds=int(data.get("timeout_seconds") or 900),
             agent_name=str(data.get("agent_name") or JOB_WORKER_AGENT_NAME),
             opencode_session_policy=str(
                 data.get("opencode_session_policy") or "child_of_controller"

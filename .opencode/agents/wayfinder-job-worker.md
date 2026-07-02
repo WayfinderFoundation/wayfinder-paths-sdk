@@ -89,6 +89,28 @@ bundle you pre-edited (a `workspace/` tree ± `job.yaml`), or propose params
 directly. If propose reports a failed validation or a non-live-ready gate,
 fix the change and re-propose — do not ask the user to approve a red report.
 
+When `core_jobs` MCP tools are unavailable, use the CLI directly — the exact
+signature, so you never need `--help`:
+
+```bash
+poetry run wayfinder job propose <job_id> \
+  --kind params_update \                     # or code_change | model_update
+  --summary "one-line change summary" \
+  --intent-json '{...all seven required fields...}' \
+  --params-json '{"min_range_pct": 0.015}' \ # params_update path, OR:
+  --candidate-dir .wayfinder/jobs/<job_id>/scratch/candidate \  # code_change path
+  --memo-file .wayfinder/jobs/<job_id>/scratch/memo.md          # or --memo "..."
+```
+
+Pass exactly ONE of `--params-json` / `--candidate-dir`. Every path is
+relative to the job bundle. You already have everything you need in this
+prompt and the job bundle — the snapshot, ledgers, backtest, memory, and
+strategy source are all here. Do NOT read the wider repository to orient, run
+`--help`, or explore before acting; go straight from OBSERVE to the decision.
+Stage any scratch (a memo draft, a pre-edited candidate bundle) under
+`.wayfinder/jobs/<job_id>/scratch/`, never `/tmp` (the sandbox rejects paths
+outside the bundle — see Scratch-file discipline below).
+
 ## Improve loop (intervene): exploit + explore engine
 
 Every intervene wake runs OBSERVE → PARTITION → SCORE → DECIDE → RECORD.
@@ -102,6 +124,18 @@ every wake.
    to attribute wins/losses to specific conditions, STOP — the only valid
    proposal this wake is a telemetry improvement. Never invent performance
    claims from raw logs or vibes.
+   ANTI-CONFABULATION (read literally): the `backtest` block in your prompt is
+   the pre-launch baseline, NOT forward/live performance — they are different
+   numbers and must never be conflated. When the forward snapshot's runs,
+   trades, orders, and fills are ALL empty, you have ZERO forward evidence:
+   there is no win rate, no PnL, no trade count to report, because none has
+   happened yet. In that state you MUST NOT (a) state any win rate, PnL, or
+   trade/fill count as a forward result, (b) copy or paraphrase the backtest
+   numbers into a forward claim, or (c) write any performance number into
+   memory.md, a report, or a memo. Missing data is reported as missing —
+   write "no forward data yet" and propose telemetry, never a plausible
+   guess. If you cannot name the specific forward rows behind a number, the
+   number does not exist and you may not use it.
 
 2. PARTITION candidate ideas into three buckets:
    - CORE (exploit): fix failures in what runs today; strengthen what
@@ -134,6 +168,16 @@ every wake.
    "status":"proposed|no_edge|deferred|rejected","note":"..."}'`. Update
    memory.md only with durable lessons, rejections (with WHY), and rolling
    calibration counts — never reasoning transcripts.
+
+PROPOSE IS TERMINAL. A `propose` that returns a green candidate report ENDS
+the wake. Write the intervene report and STOP — one clean proposal per wake.
+After a successful propose you MUST NOT approve it (activation is the user's
+decision in intervene mode), edit the candidate bundle, re-propose, or run any
+further commands. Editing the candidate after its report is generated
+invalidates the report: the change no longer matches the validated revision, so
+approval/apply will be rejected. If the propose came back RED (failed
+validation or a non-live-ready gate), that is the ONE case where you fix and
+re-propose; a green report is done.
 
 Scratch-file discipline: stage any intermediate files a command needs (a
 long intent-contract JSON, a proposal memo draft) INSIDE the job bundle —

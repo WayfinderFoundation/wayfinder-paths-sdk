@@ -520,6 +520,10 @@ def test_improve_loop_protocol_is_pinned_in_worker_config() -> None:
     assert "skeptic pass" in text
     assert "Status quo / What the data shows / Proposed change" in text
     assert "never reasoning transcripts" in text
+    # D1 anti-confabulation gate + D2 terminal-stop directive.
+    assert "ANTI-CONFABULATION" in text
+    assert "you have ZERO forward evidence" in text
+    assert "PROPOSE IS TERMINAL" in text
 
 
 def test_auto_loop_protocol_is_pinned_in_auto_worker_config() -> None:
@@ -700,6 +704,53 @@ def test_improve_round3_telemetry_gate(tmp_path: Path) -> None:
     )
 
 
+def test_improve_round3_anti_confabulation_gate(tmp_path: Path) -> None:
+    """R3 has no forward data; a fabricated forward-performance claim in memory
+    (the DeepSeek D1 failure) must fail no_unsupported_performance_claims."""
+    module = load_eval_module()
+    from wayfinder_paths.jobs.store import JobStore
+
+    ws = tmp_path / "repo"
+    ws.mkdir()
+    case = _loop_case(module, "improve_loop_worker")
+    module.setup_improve_loop_fixture(ws, case)
+    module.seed_improve_round(ws, case, 3)  # strips forward data
+    store = JobStore(repo_root=ws)
+    pre = module._loop_pre_state(store, case.job_id)
+    module.write_valid_improve_artifacts(ws, case, round_n=3)
+
+    # Baseline: the valid round-3 artifacts pass the anti-confabulation gate.
+    good = module.validate_improve_round(
+        ws, case, round_n=3, log_text="", pre_state=pre
+    )
+    assert any(
+        c["name"] == "no_unsupported_performance_claims" and c["passed"]
+        for c in good["checks"]
+    )
+
+    # Mutation: relabel the backtest baseline as a forward result in memory.
+    memory_file = store.job_dir(case.job_id) / "memory.md"
+    memory_file.write_text(
+        memory_file.read_text(encoding="utf-8")
+        + "\nForward results: 5 forward trades, 100% win rate, +$574.63 PnL.\n",
+        encoding="utf-8",
+    )
+    bad = module.validate_improve_round(
+        ws, case, round_n=3, log_text="", pre_state=pre
+    )
+    assert bad["status"] == "failed"
+    claim_check = next(
+        c for c in bad["checks"] if c["name"] == "no_unsupported_performance_claims"
+    )
+    assert not claim_check["passed"]
+    assert claim_check["claims"]  # surfaced the offending figures
+
+    # Honest zeros must NOT trip the gate.
+    assert module._scan_unsupported_perf_claims(
+        "no forward data yet: 0 trades, $0 PnL, 0% win rate"
+    ) == []
+
+
 def test_auto_world_oracle_never_leaks_and_validators_gate(tmp_path: Path) -> None:
     module = load_eval_module()
     from wayfinder_paths.jobs.store import JobStore
@@ -812,3 +863,61 @@ def test_auto_round2_divergent_sizing_enforced(tmp_path: Path) -> None:
     assert not next(
         c for c in result["checks"] if c["name"] == "divergent_sized_at_half_cap"
     )["passed"]
+
+
+def test_settle_auto_round_credits_redemption_against_original_entry() -> None:
+    """A close/redeem order must realize the round-trip against the ORIGINAL
+    entry — not the redemption order's own price, which scored flat before."""
+    module = load_eval_module()
+    held: dict = {}
+    pnl_rows: list = []
+
+    # Round 1: open a position at 0.50; outcome that round is 0.50 (flat mark).
+    entry_oracle = {"markets": {"m": {"outcome_price": 0.50}}}
+    entry_report = {
+        "orders": [
+            {"market_id": "m", "side": "buy", "price": 0.50, "notional": 20,
+             "status": "filled"}
+        ]
+    }
+    module.settle_auto_round(entry_oracle, entry_report, held, pnl_rows, 1)
+    assert "m" in held and pnl_rows == []  # open, nothing booked yet
+
+    # Round 2: the market moved to 0.60; the agent redeems. The +$ gain of the
+    # round-trip (0.60 vs original 0.50 on $20 → +$4) must be credited.
+    exit_oracle = {"markets": {"m": {"outcome_price": 0.60}}}
+    exit_report = {
+        "orders": [
+            {"market_id": "m", "action": "redeem", "price": 0.60, "notional": 20,
+             "status": "filled"}
+        ]
+    }
+    module.settle_auto_round(exit_oracle, exit_report, held, pnl_rows, 2)
+    assert "m" not in held  # position closed
+    exit_row = next(r for r in pnl_rows if r["kind"] == "exit")
+    assert exit_row["entry"] == 0.50  # against the original entry, not 0.60
+    assert exit_row["pnl"] == 4.0  # 20 * (0.60-0.50)/0.50 — NOT flat
+
+    # An exit for a market we never held books nothing.
+    module.settle_auto_round(exit_oracle, exit_report, held, pnl_rows, 3)
+    assert sum(1 for r in pnl_rows if r["kind"] == "exit") == 1
+
+
+def test_settle_open_positions_marks_held_positions_once() -> None:
+    """A position opened and never closed is marked once at campaign end."""
+    module = load_eval_module()
+    held: dict = {}
+    pnl_rows: list = []
+    oracle = {"markets": {"m": {"outcome_price": 0.55}}}
+    report = {
+        "orders": [
+            {"market_id": "m", "side": "buy", "price": 0.50, "notional": 10,
+             "status": "filled"}
+        ]
+    }
+    module.settle_auto_round(oracle, report, held, pnl_rows, 1)
+    assert pnl_rows == []
+    module.settle_open_positions(held, pnl_rows)
+    assert not held  # cleared
+    mark = next(r for r in pnl_rows if r["kind"] == "open_mark")
+    assert mark["pnl"] == 1.0  # 10 * (0.55-0.50)/0.50

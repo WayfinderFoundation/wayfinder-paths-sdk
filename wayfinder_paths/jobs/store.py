@@ -306,11 +306,41 @@ class JobStore:
                 f"candidate validation is not passed: {validation_status}"
             )
         if report.get("mode") == "validation_only":
+            self._ensure_candidate_matches_report(job_id, proposal, report)
             return
         gate = report.get("gate") or {}
         if gate.get("live_ready") is not True:
             reasons = "; ".join(gate.get("reasons") or ["unknown"])
             raise ValueError(f"candidate gate is not live-ready: {reasons}")
+        self._ensure_candidate_matches_report(job_id, proposal, report)
+
+    def _ensure_candidate_matches_report(
+        self, job_id: str, proposal: dict[str, Any], report: dict[str, Any]
+    ) -> None:
+        """Freshness guard: a candidate bundle edited after its report was
+        generated no longer hashes to the validated revision. Reject at approve
+        time so a corrupted candidate can never be promoted — the worker must
+        re-propose. Mirrors the reuse check in `_prepare_candidate_workspace`
+        (which otherwise silently recopies the active workspace, dropping the
+        change). Only enforced when the candidate bundle is present on disk."""
+        # Lazy imports: gating/application both import JobStore, so a
+        # module-level import here would be circular.
+        from wayfinder_paths.jobs.application import _candidate_dir_from_proposal
+        from wayfinder_paths.jobs.gating import compute_workspace_revision
+
+        recorded = str(report.get("revision") or "")
+        if not recorded:
+            return
+        candidate_dir = _candidate_dir_from_proposal(self, job_id, proposal)
+        if not candidate_dir.exists():
+            return
+        current = compute_workspace_revision(candidate_dir)
+        if current != recorded:
+            raise ValueError(
+                "candidate changed since its report was generated "
+                f"(report revision {recorded[:12]}, candidate now "
+                f"{current[:12]}); re-propose to regenerate the report"
+            )
 
     def approve_proposal(
         self, job_id: str, proposal_id: str, *, allow_ungated: bool = False
