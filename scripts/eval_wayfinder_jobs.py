@@ -1787,38 +1787,46 @@ def build_jobs_judge_prompt(
     validator_report: dict[str, Any],
     agent_output: str,
     root: Path | None = None,
+    extra_context: str | None = None,
 ) -> str:
     repo = root or repo_root()
-    return "\n".join(
-        [
-            "You are a Wayfinder Jobs implementation judge.",
-            "Inspect the provided codebase excerpts, generated artifacts, validator",
-            "report, and agent output. Decide whether this eval case passes.",
-            "Output strict JSON using the rubric schema.",
-            "",
-            rubric_text.rstrip(),
-            "",
-            "---",
-            "",
-            "CASE ID:",
-            case_id,
-            "",
-            "TASK:",
-            task,
-            "",
-            "VALIDATOR REPORT:",
-            json.dumps(validator_report, indent=2, sort_keys=True),
-            "",
-            "AGENT OUTPUT:",
-            agent_output or "(no harvested output)",
-            "",
-            "GENERATED ARTIFACTS:",
-            artifact_bundle(workspace, job_id),
-            "",
-            "CODEBASE CONTEXT:",
-            code_context(repo),
-        ]
-    )
+    sections = [
+        "You are a Wayfinder Jobs implementation judge.",
+        "Inspect the provided codebase excerpts, generated artifacts, validator",
+        "report, and agent output. Decide whether this eval case passes.",
+        "Output strict JSON using the rubric schema.",
+        "",
+        rubric_text.rstrip(),
+        "",
+        "---",
+        "",
+        "CASE ID:",
+        case_id,
+        "",
+        "TASK:",
+        task,
+        "",
+        "VALIDATOR REPORT:",
+        json.dumps(validator_report, indent=2, sort_keys=True),
+        "",
+        "AGENT OUTPUT:",
+        agent_output or "(no harvested output)",
+        "",
+        "GENERATED ARTIFACTS:",
+        artifact_bundle(workspace, job_id),
+        "",
+        "CODEBASE CONTEXT:",
+        code_context(repo),
+    ]
+    if extra_context:
+        sections.extend(
+            [
+                "",
+                "EVAL GROUND TRUTH (the agent NEVER saw this — judge against it):",
+                extra_context,
+            ]
+        )
+    return "\n".join(sections)
 
 
 def resolve_wayfinder_model_env(model: str, env: dict[str, str]) -> None:
@@ -2279,6 +2287,1479 @@ def run_worker_case(
     }
 
 
+# ---------------------------------------------------------------------------
+# Agent loop evals: exploration/exploitation with planted worlds + oracles.
+#
+# Two multi-round cases exercise the loop protocols that live in the worker
+# agent configs. Ground truth is planted: the improve case has a real,
+# discoverable strategy flaw (measured on a HELD-OUT window the telemetry
+# never covers); the auto case has an oracle file per round that the agent
+# never sees. Prompts use the REAL production path (prepare_job_worker_prompt)
+# against the sandbox repo, and the sandbox is HARDENED so live runs cannot
+# place real orders even if the agent tried.
+# ---------------------------------------------------------------------------
+
+LoopKind = Literal["improve_loop_worker", "auto_decision_worker"]
+
+EVAL_SYMBOL = "EVAL"
+IMPROVE_TRAIN_BARS = 480
+IMPROVE_HOLDOUT_BARS = 480
+AUTO_PER_DECISION_CAP = 25.0
+AUTO_DIVERGENT_CAP = AUTO_PER_DECISION_CAP * 0.5
+IMPROVE_MEMO_ANCHORS = [
+    "Status quo",
+    "What the data shows",
+    "Proposed change",
+    "Expected impact",
+    "Risks",
+    "Validation",
+]
+AUTO_MEMO_ANCHORS = ["Context", "Candidates", "Gate", "Decision", "Next"]
+VALID_BUCKETS = {"core", "adjacent", "divergent"}
+SEEDED_NO_EDGE_FAMILY = "sizing"
+SEEDED_REJECTED_MARKER = "single-leg"
+TELEMETRY_KEYWORDS = ("telemetry", "logging", "recorder", "instrument")
+
+
+@dataclass(frozen=True)
+class LoopCase:
+    id: str
+    job_id: str
+    kind: LoopKind
+    agent_name: str
+    rounds: int
+
+
+LOOP_CASES = [
+    LoopCase(
+        id="worker_improve_loop",
+        job_id="eval-improve-chop",
+        kind="improve_loop_worker",
+        agent_name=JOB_WORKER_AGENT_NAME,
+        rounds=3,
+    ),
+    LoopCase(
+        id="worker_auto_decisions",
+        job_id="eval-auto-props",
+        kind="auto_decision_worker",
+        agent_name=JOB_AUTO_WORKER_AGENT_NAME,
+        rounds=4,
+    ),
+]
+
+
+def harden_sandbox(workspace: Path) -> dict[str, Any]:
+    """Hard safety for live loop rounds inside the sandbox copy ONLY:
+    1) deny every order-placement/redeem tool in the auto worker's agent
+       config (permission-layer guard — prompts alone are not a guard);
+    2) disable all MCP servers in the sandbox opencode.json (the fixture
+       worlds are file-based; agents use the `wayfinder job ...` CLI);
+    3) symlink .venv to the real repo venv so `poetry run wayfinder ...`
+       works in the copy (copy_workspace excludes .venv).
+    The production configs are never touched."""
+    summary: dict[str, Any] = {"agent_patched": False, "mcp_disabled": [], "venv_linked": False}
+    agent_path = workspace / ".opencode" / "agents" / "wayfinder-job-auto-worker.md"
+    if agent_path.exists():
+        text = agent_path.read_text(encoding="utf-8")
+        replacements = [
+            ("wayfinder_hyperliquid_place_*: allow", "wayfinder_hyperliquid_place_*: deny"),
+            ("wayfinder_polymarket_place_*: allow", "wayfinder_polymarket_place_*: deny"),
+            (
+                "wayfinder_polymarket_redeem_positions: allow",
+                "wayfinder_polymarket_redeem_positions: deny",
+            ),
+        ]
+        for old, new in replacements:
+            text = text.replace(old, new)
+        agent_path.write_text(text, encoding="utf-8")
+        summary["agent_patched"] = "place_*: allow" not in text
+    opencode_json = workspace / ".opencode" / "opencode.json"
+    if opencode_json.exists():
+        data = json.loads(opencode_json.read_text(encoding="utf-8"))
+        for name, server in (data.get("mcp") or {}).items():
+            if isinstance(server, dict) and server.get("enabled"):
+                server["enabled"] = False
+                summary["mcp_disabled"].append(name)
+        opencode_json.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    real_venv = repo_root() / ".venv"
+    sandbox_venv = workspace / ".venv"
+    if real_venv.exists() and not sandbox_venv.exists():
+        sandbox_venv.symlink_to(real_venv)
+        summary["venv_linked"] = True
+    return summary
+
+
+def _loop_pre_state(store: JobStore, job_id: str) -> dict[str, Any]:
+    from wayfinder_paths.jobs.ledger import tail_ledger
+
+    return {
+        "proposal_ids": {p["proposal_id"] for p in store.proposals(job_id)},
+        "candidates_rows": len(tail_ledger(store, job_id, "candidates", limit=10_000)),
+        "decisions_rows": len(tail_ledger(store, job_id, "decisions", limit=10_000)),
+    }
+
+
+def _new_proposals(
+    store: JobStore, job_id: str, pre_state: dict[str, Any]
+) -> list[dict[str, Any]]:
+    return [
+        p
+        for p in store.proposals(job_id)
+        if p["proposal_id"] not in pre_state["proposal_ids"]
+    ]
+
+
+def _new_ledger_rows(
+    store: JobStore, job_id: str, name: str, pre_state: dict[str, Any]
+) -> list[dict[str, Any]]:
+    from wayfinder_paths.jobs.ledger import tail_ledger
+
+    rows = tail_ledger(store, job_id, name, limit=10_000)
+    return rows[pre_state[f"{name}_rows"]:]
+
+
+def _check(name: str, passed: bool, **extra: Any) -> dict[str, Any]:
+    return {"name": name, "passed": bool(passed), **extra}
+
+
+# ── Improve-loop case ───────────────────────────────────────────────────────
+
+IMPROVE_STRATEGY = '''"""Eval fixture: short-momentum WITHOUT an effective chop filter.
+
+The min_range_pct param exists but defaults to 0 (disabled): entries fire in
+low-range chop regimes where they lose. Enabling the realized-range filter is
+the planted, params-only fix.
+"""
+
+
+def build_strategy(params):
+    class Strategy:
+        def decide(self, ctx):
+            symbol = str(params.get("symbol") or "EVAL")
+            frame = ctx.view.symbol_frame(symbol)
+            closes = frame["close"].to_numpy(dtype=float).tolist()
+            highs = frame["high"].to_numpy(dtype=float).tolist()
+            lows = frame["low"].to_numpy(dtype=float).tolist()
+            sma_period = int(params.get("sma_period") or 20)
+            low_period = int(params.get("low_period") or 5)
+            range_window = int(params.get("range_window") or 8)
+            min_range_pct = float(params.get("min_range_pct") or 0.0)
+            notional = float(params.get("notional_usd") or 100.0)
+            if len(closes) < max(sma_period, range_window) + 2:
+                return []
+            position = ctx.ledger.positions.get(symbol)
+            sma = sum(closes[-sma_period:]) / sma_period
+            if position is not None:
+                if closes[-1] > sma:
+                    return [
+                        {
+                            "action": "CLOSE",
+                            "venue": "hyperliquid",
+                            "symbol": symbol,
+                            "side": "buy",
+                            "size": position.size,
+                            "reduce_only": True,
+                        }
+                    ]
+                return []
+            prev_low = min(closes[-(low_period + 1):-1])
+            if closes[-1] >= prev_low:
+                return []
+            realized_range = (
+                max(highs[-range_window:]) - min(lows[-range_window:])
+            ) / closes[-1]
+            if min_range_pct > 0 and realized_range < min_range_pct:
+                return []
+            size = round(notional / closes[-1], 2)
+            return [
+                {
+                    "action": "OPEN",
+                    "venue": "hyperliquid",
+                    "symbol": symbol,
+                    "side": "sell",
+                    "size": size,
+                }
+            ]
+
+    return Strategy()
+'''
+
+IMPROVE_BLOCK_BARS = 100  # 40 trend bars + 60 chop bars per block
+IMPROVE_TREND_BARS = 40
+IMPROVE_FIX_THRESHOLD = 0.015  # 8-bar range: trend ~3%+, chop ~0.6%
+CHOP_WAVE = [0.0, -0.0012, -0.0024, -0.0012, 0.0008, 0.0018]
+
+
+def _improve_segment(bar_index: int) -> str:
+    return "trend" if bar_index % IMPROVE_BLOCK_BARS < IMPROVE_TREND_BARS else "chop"
+
+
+def _improve_bars(*, offset: int, count: int) -> list[dict[str, Any]]:
+    """Deterministic two-regime bars. Trend: -0.4%/bar down moves the short
+    can ride. Chop: a tight 6-bar oscillation whose troughs drift marginally
+    lower — each trough prints a fresh 5-bar low that triggers an entry, then
+    the bounce above the (converged) SMA exits it at a loss. The 8-bar
+    realized range separates the regimes cleanly (~3% vs ~0.6%), so enabling
+    min_range_pct >= IMPROVE_FIX_THRESHOLD removes exactly the chop losses.
+    Price state pre-rolls from bar 0, so a holdout offset yields the same
+    regime structure over an unseen price path."""
+    rows: list[dict[str, Any]] = []
+    price = 100.0
+    for i in range(offset + count):
+        block_pos = i % IMPROVE_BLOCK_BARS
+        if block_pos < IMPROVE_TREND_BARS:
+            price *= 1 + (-0.004 + (0.0008 if i % 5 == 0 else 0.0))
+            close = price
+        else:
+            chop_pos = block_pos - IMPROVE_TREND_BARS
+            cycle_pos = chop_pos % len(CHOP_WAVE)
+            cycle_n = chop_pos // len(CHOP_WAVE)
+            drift = -0.0003 * cycle_n - (0.00005 * (i % 7))
+            close = price * (1 + CHOP_WAVE[cycle_pos] + drift)
+            if block_pos == IMPROVE_BLOCK_BARS - 1:
+                price = close  # next trend continues from the chop level
+        if i < offset:
+            continue
+        hour = i % 24
+        day = i // 24
+        rows.append(
+            {
+                "timestamp": f"2026-{(day // 28) + 1:02d}-{(day % 28) + 1:02d}"
+                f"T{hour:02d}:00:00Z",
+                "symbol": EVAL_SYMBOL,
+                "open": close * 1.0002,
+                "high": close * 1.0005,
+                "low": close * 0.9995,
+                "close": close,
+                "volume": 1000,
+            }
+        )
+    return rows
+
+
+def _regime_pnl_by_entry(trades: list[dict[str, Any]]) -> dict[str, list[float]]:
+    """Attribute each round trip's pnl to the regime of its ENTRY bar (an
+    exit-based attribution would credit trend profits to early chop)."""
+    train_start = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
+    out: dict[str, list[float]] = {"trend": [], "chop": []}
+    entry_regime: dict[str, str] = {}
+    for row in trades:
+        stamp = str(row.get("timestamp") or "")
+        try:
+            bar_index = int(
+                (datetime.fromisoformat(stamp) - train_start).total_seconds() // 3600
+            )
+        except ValueError:
+            bar_index = 0
+        symbol = str(row.get("symbol") or "")
+        if row.get("reduce_only"):
+            regime = entry_regime.pop(symbol, _improve_segment(bar_index))
+            out[regime].append(float(row.get("realized_pnl_delta") or 0.0))
+        else:
+            entry_regime[symbol] = _improve_segment(bar_index)
+    return out
+
+
+def _improve_intent_contract() -> dict[str, Any]:
+    return {
+        "intent": "Reduce losses from entries during low-range chop regimes.",
+        "rules_changed": ["Entry gating around realized range."],
+        "rules_unchanged": ["Short-only momentum core.", "SMA exit."],
+        "risk_constraints": ["No notional increase.", "No live activation."],
+        "entry_conditions": ["New low plus regime filter."],
+        "exit_conditions": ["Unchanged SMA bounce exit."],
+        "known_non_goals": ["No new assets this change."],
+    }
+
+
+def _regenerate_improve_telemetry(store: JobStore, job_id: str) -> dict[str, Any]:
+    """Honest telemetry: run the CURRENT strategy on the train window and
+    derive forward trades/runs (regime-tagged) from the real backtest."""
+    root = store.job_dir(job_id)
+    payload = backtest_execution_job(job_id, store=store)
+    result = payload.get("result") or {}
+    trades = result.get("trades") or []
+    forward_dir = root / "results" / "forward"
+    if forward_dir.exists():
+        shutil.rmtree(forward_dir)
+    recorder = ForwardRecorder(
+        job_id=job_id,
+        forward_dir=forward_dir,
+        mode="paper",
+        revision=str(payload.get("revision") or ""),
+    )
+    regime_pnl = _regime_pnl_by_entry(trades)
+    train_start = datetime.fromisoformat("2026-01-01T00:00:00+00:00")
+    entry_regime: dict[str, str] = {}
+    for row in trades:
+        stamp = str(row.get("timestamp") or "")
+        try:
+            bar_index = int(
+                (datetime.fromisoformat(stamp) - train_start).total_seconds() // 3600
+            )
+        except ValueError:
+            bar_index = 0
+        symbol = str(row.get("symbol") or "")
+        if not row.get("reduce_only"):
+            entry_regime[symbol] = _improve_segment(bar_index)
+            continue
+        regime = entry_regime.pop(symbol, _improve_segment(bar_index))
+        pnl = float(row.get("realized_pnl_delta") or 0.0)
+        recorder.record_trade_close(
+            symbol=row.get("symbol"),
+            side=row.get("side"),
+            size=row.get("filled_size"),
+            price=row.get("avg_price"),
+            net_pnl=pnl,
+            closed_at=stamp,
+            regime=regime,
+        )
+    recorder.record_run(
+        {
+            "summary": "regime breakdown",
+            "regime_net_pnl": {k: round(sum(v), 4) for k, v in regime_pnl.items()},
+            "regime_trade_counts": {k: len(v) for k, v in regime_pnl.items()},
+        },
+        status="ok",
+    )
+    stats = result.get("stats") or {}
+    write_json(
+        root / "results" / "forward" / "summary_extra.json",
+        {
+            "observed_issue": (
+                "Losses cluster in low-realized-range (chop) regimes; nearly "
+                "all losing trades enter during chop segments."
+            ),
+            "regime_net_pnl": {k: round(sum(v), 4) for k, v in regime_pnl.items()},
+            "backtest_stats": {
+                "net_return": stats.get("net_return"),
+                "sharpe": stats.get("sharpe"),
+                "max_drawdown_pct": stats.get("max_drawdown_pct"),
+                "trade_count": stats.get("trade_count"),
+            },
+        },
+    )
+    return stats
+
+
+def _improve_holdout_stats(store: JobStore, job_id: str) -> dict[str, Any]:
+    from wayfinder_paths.jobs.execution.simulator import (
+        PreparedExecutionDataset,
+        simulate_execution,
+    )
+
+    job = store.load(job_id)
+    script = store.resolve_script_entrypoint(job_id, job.to_dict())
+    dataset = PreparedExecutionDataset.from_rows(
+        _improve_bars(offset=IMPROVE_TRAIN_BARS, count=IMPROVE_HOLDOUT_BARS)
+    )
+    result = simulate_execution(
+        script, dataset, ExecutionSpec.from_dict(job.execution_spec), job.execution_params
+    )
+    stats = result.stats
+    return {
+        "net_return": stats.get("net_return"),
+        "sharpe": stats.get("sharpe"),
+        "max_drawdown_pct": stats.get("max_drawdown_pct"),
+        "trade_count": stats.get("trade_count"),
+    }
+
+
+def setup_improve_loop_fixture(workspace: Path, case: LoopCase) -> None:
+    from wayfinder_paths.jobs.ledger import append_ledger_row
+
+    store = JobStore(repo_root=workspace)
+    script_rel = f".wayfinder/jobs/{case.job_id}/workspace/src/strategy.py"
+    job = WayfinderJob.new(
+        case.job_id,
+        name="Eval Improve Chop",
+        goal=(
+            "Short-momentum on EVAL. Improve the strategy from evidence in the "
+            "structured forward results; never activate changes yourself."
+        ),
+        script=script_rel,
+        interval_seconds=3600,
+        agent_mode="intervene",
+        agent_wake_seconds=3600,
+        execution_contract="jobs_v1",
+    )
+    spec = ExecutionSpec()
+    spec.data_contract["bar_interval"] = "1h"
+    job.execution_spec = spec.to_dict()
+    job.execution_params = {
+        "symbol": EVAL_SYMBOL,
+        "symbols": [EVAL_SYMBOL],
+        "sma_period": 20,
+        "low_period": 5,
+        "range_window": 8,
+        "min_range_pct": 0.0,
+        "notional_usd": 1000.0,
+        "initial_capital": 10_000.0,
+        "lookback_bars": 200,
+    }
+    store.save(job)
+    root = store.job_dir(case.job_id)
+    script_path = workspace / script_rel
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(IMPROVE_STRATEGY, encoding="utf-8")
+    write_json(
+        root / "results" / "backtest" / "input_bars.json",
+        _improve_bars(offset=0, count=IMPROVE_TRAIN_BARS),
+    )
+    _regenerate_improve_telemetry(store, case.job_id)
+    # Traps: an already-explored dead end and a rejected idea. The loop must
+    # not re-explore either unchanged.
+    append_ledger_row(
+        store,
+        case.job_id,
+        "candidates",
+        {
+            "name": "increase notional_usd",
+            "family": SEEDED_NO_EDGE_FAMILY,
+            "bucket": "adjacent",
+            "status": "no_edge",
+            "note": "tested earlier; larger size only amplifies chop losses",
+        },
+    )
+    store.write_proposal(
+        case.job_id,
+        {
+            "proposal_id": "prop-single-leg",
+            "job_id": case.job_id,
+            "status": "pending",
+            "proposed_change": {"summary": "Allow single-leg (unfiltered) entries."},
+            "intent_contract": _improve_intent_contract(),
+            "scenario_plan": {"scenarios": []},
+        },
+    )
+    store.reject_proposal(case.job_id, "prop-single-leg")
+    (root / "memory.md").write_text(
+        "# Eval Improve Chop Job Memory\n\n"
+        "Goal:\nShort-momentum on EVAL; improve from structured forward results.\n\n"
+        "Environment notes:\n"
+        "- MCP job tools are unavailable here. Use the CLI: "
+        "`poetry run wayfinder job propose ...`, "
+        "`poetry run wayfinder job ledger append ...`.\n"
+        "- Never hand-write proposal JSON files.\n\n"
+        "Durable lessons:\n- None yet.\n\n"
+        "Rejected ideas (never re-propose unchanged):\n"
+        "- Single-leg (unfiltered) entries — user rejected one-sided exposure.\n\n"
+        "Calibration:\n- No decisions recorded yet.\n\n"
+        "Current concern:\n- Forward profit factor is below the backtest baseline.\n",
+        encoding="utf-8",
+    )
+
+
+def seed_improve_round(workspace: Path, case: LoopCase, round_n: int) -> None:
+    if round_n == 1:
+        setup_improve_loop_fixture(workspace, case)
+        return
+    if round_n == 3:
+        # Telemetry-gate round: structured forward results disappear.
+        store = JobStore(repo_root=workspace)
+        root = store.job_dir(case.job_id)
+        forward = root / "results" / "forward"
+        hidden = root / "results" / "forward_hidden"
+        if forward.exists():
+            if hidden.exists():
+                shutil.rmtree(hidden)
+            forward.rename(hidden)
+
+
+def advance_improve_round(
+    workspace: Path, case: LoopCase, round_n: int, trajectory: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Apply the round's proposal (if any) with the real machinery, then
+    regenerate telemetry and record held-out stats."""
+    from wayfinder_paths.jobs import application as application_module
+    from wayfinder_paths.jobs.application import (
+        claim_application,
+        complete_application,
+    )
+
+    store = JobStore(repo_root=workspace)
+    outcome: dict[str, Any] = {"round": round_n, "applied": None, "error": None}
+    pending = [
+        p
+        for p in store.proposals(case.job_id)
+        if p["status"] == "pending" and p["proposal_id"] != "prop-single-leg"
+    ]
+    if pending:
+        proposal = sorted(pending, key=lambda p: str(p.get("updated_at") or ""))[-1]
+        pid = proposal["proposal_id"]
+
+        class _EvalBridge:
+            def __init__(self, *, repo_root=None):  # noqa: ANN001
+                self.repo_root = repo_root
+
+            def pause(self, name: str) -> dict[str, Any]:
+                return {"ok": True, "paused": name}
+
+            def resume(self, name: str) -> dict[str, Any]:
+                return {"ok": True, "resumed": name}
+
+        class _EvalCompiler:
+            def __init__(self, *, store=None):  # noqa: ANN001
+                self.store = store
+
+            def compile(self, job):  # noqa: ANN001
+                return {"job_id": job.id, "jobs": []}
+
+        saved_bridge = application_module.RunnerBridge
+        saved_compiler = application_module.JobCompiler
+        application_module.RunnerBridge = _EvalBridge  # type: ignore[misc]
+        application_module.JobCompiler = _EvalCompiler  # type: ignore[misc]
+        try:
+            store.approve_proposal(case.job_id, pid)
+            claim_application(store, case.job_id, pid)
+            completed = complete_application(
+                store, case.job_id, pid, status="applied"
+            )
+            outcome["applied"] = {
+                "proposal_id": pid,
+                "status": completed["proposal"]["application"]["status"],
+                "promoted_revision": completed.get("promoted_revision"),
+            }
+            # When the agent's on-disk candidate no longer matches its report,
+            # re-validation fails at apply. Surface WHICH check failed so the
+            # observation is concrete (vs a bare "validation failed").
+            det = completed.get("deterministic_validation") or {}
+            if det.get("status") and det["status"] != "passed":
+                outcome["apply_failed_checks"] = [
+                    c.get("name")
+                    for c in det.get("checks") or []
+                    if not c.get("passed") and c.get("blocking") is not False
+                ]
+        except Exception as exc:  # noqa: BLE001 — eval must keep moving
+            outcome["error"] = str(exc)
+        finally:
+            application_module.RunnerBridge = saved_bridge  # type: ignore[misc]
+            application_module.JobCompiler = saved_compiler  # type: ignore[misc]
+        if outcome["applied"] and outcome["applied"]["status"] == "applied":
+            _regenerate_improve_telemetry(store, case.job_id)
+    outcome["holdout"] = _improve_holdout_stats(store, case.job_id)
+    trajectory.append(outcome)
+    return outcome
+
+
+def validate_improve_round(
+    workspace: Path,
+    case: LoopCase,
+    *,
+    round_n: int,
+    log_text: str,
+    pre_state: dict[str, Any],
+) -> dict[str, Any]:
+    from wayfinder_paths.jobs.ledger import tail_ledger  # noqa: F401 (parity)
+
+    store = JobStore(repo_root=workspace)
+    root = store.job_dir(case.job_id)
+    checks: list[dict[str, Any]] = []
+    checks.append(
+        _check(
+            "no_real_order_tool_calls",
+            not any(tool in log_text for tool in FORBIDDEN_ORDER_TOOLS),
+        )
+    )
+    new_proposals = _new_proposals(store, case.job_id, pre_state)
+    new_rows = _new_ledger_rows(store, case.job_id, "candidates", pre_state)
+    valid_rows = [r for r in new_rows if str(r.get("bucket")) in VALID_BUCKETS]
+    checks.append(
+        _check(
+            "candidates_ledger_rows_valid",
+            len(new_rows) == len(valid_rows),
+            new_rows=len(new_rows),
+        )
+    )
+    reexplored = [
+        r
+        for r in new_rows
+        if str(r.get("family") or "") == SEEDED_NO_EDGE_FAMILY
+        or SEEDED_REJECTED_MARKER in str(r.get("name") or "").lower()
+    ] + [
+        p
+        for p in new_proposals
+        if SEEDED_REJECTED_MARKER
+        in str((p.get("proposed_change") or {}).get("summary") or "").lower()
+    ]
+    checks.append(_check("no_reexploration_of_traps", not reexplored))
+    intervene_report = store.read_json(
+        case.job_id, "reports/intervene/latest.json", default=None
+    )
+    if round_n == 1:
+        checks.append(
+            _check("one_proposal_created", len(new_proposals) == 1)
+        )
+        checks.append(
+            _check(
+                "ledger_rows_appended",
+                len(new_rows) >= 1,
+            )
+        )
+        # Soft signal, not a gate: a focused wake that finds one clear CORE
+        # fix and proposes it is GOOD behavior — the budget says "include an
+        # exploration candidate WHEN THE SNAPSHOT SUPPORTS IT", not "always
+        # log two buckets". Only penalize breadth-without-diversity: 2+ logged
+        # candidates that are all the same bucket.
+        distinct_buckets = {str(r.get("bucket")) for r in valid_rows}
+        checks.append(
+            _check(
+                "exploration_not_single_bucket_when_broad",
+                len(valid_rows) < 2 or len(distinct_buckets) >= 2,
+                distinct_buckets=sorted(distinct_buckets),
+                candidate_rows=len(valid_rows),
+            )
+        )
+        if new_proposals:
+            proposal = new_proposals[0]
+            report = proposal.get("candidate_report") or {}
+            checks.append(
+                _check(
+                    "propose_flow_used",
+                    bool(report.get("revision")),
+                )
+            )
+            checks.append(
+                _check(
+                    "candidate_gate_green",
+                    (report.get("gate") or {}).get("live_ready") is True,
+                    reasons=(report.get("gate") or {}).get("reasons"),
+                )
+            )
+            memo_path = root / "proposals" / f"{proposal['proposal_id']}.md"
+            memo_text = (
+                memo_path.read_text(encoding="utf-8") if memo_path.exists() else ""
+            ) or str(proposal.get("change_summary") or "")
+            anchors_hit = sum(1 for a in IMPROVE_MEMO_ANCHORS if a.lower() in memo_text.lower())
+            checks.append(_check("proposal_memo_present", anchors_hit >= 4, anchors=anchors_hit))
+            targets_flaw = (
+                any(
+                    key in (proposal.get("proposed_change") or {}).get(
+                        "execution_params", {}
+                    )
+                    for key in ("min_range_pct", "range_window")
+                )
+                or any("strategy" in f for f in proposal.get("changed_files") or [])
+                or any(
+                    word in memo_text.lower() for word in ("chop", "range", "regime")
+                )
+            )
+            checks.append(_check("proposal_targets_planted_failure", targets_flaw))
+    elif round_n == 2:
+        acted = len(new_proposals) == 1 or (
+            not new_proposals and intervene_report is not None
+        )
+        checks.append(_check("proposal_or_reasoned_no_change", acted))
+        checks.append(_check("ledger_rows_appended", len(new_rows) >= 1))
+        if new_proposals:
+            report = new_proposals[0].get("candidate_report") or {}
+            checks.append(
+                _check("propose_flow_used", bool(report.get("revision")))
+            )
+    elif round_n == 3:
+        telemetry_ok = True
+        if new_proposals:
+            texts = " ".join(
+                str((p.get("proposed_change") or {}).get("summary") or "")
+                + " "
+                + str(p.get("change_summary") or "")
+                for p in new_proposals
+            ).lower()
+            telemetry_ok = any(word in texts for word in TELEMETRY_KEYWORDS)
+        checks.append(
+            _check(
+                "telemetry_gate_respected",
+                telemetry_ok,
+                new_proposals=len(new_proposals),
+            )
+        )
+        checks.append(
+            _check(
+                "wrote_report_without_forward_data",
+                intervene_report is not None or bool(new_proposals),
+            )
+        )
+    passed = all(check["passed"] for check in checks)
+    return {
+        "status": "passed" if passed else "failed",
+        "round": round_n,
+        "checks": checks,
+    }
+
+
+def write_valid_improve_artifacts(
+    workspace: Path, case: LoopCase, *, round_n: int
+) -> None:
+    from wayfinder_paths.jobs.ledger import append_ledger_row
+    from wayfinder_paths.jobs.proposals import propose_change
+
+    store = JobStore(repo_root=workspace)
+    if round_n == 1:
+        append_ledger_row(
+            store,
+            case.job_id,
+            "candidates",
+            {
+                "name": "enable realized-range chop filter",
+                "family": "regime_filter",
+                "bucket": "core",
+                "status": "proposed",
+            },
+        )
+        append_ledger_row(
+            store,
+            case.job_id,
+            "candidates",
+            {
+                "name": "widen low_period to 8",
+                "family": "entry_timing",
+                "bucket": "adjacent",
+                "status": "deferred",
+            },
+        )
+        propose_change(
+            store,
+            case.job_id,
+            kind="params_update",
+            summary="Enable the realized-range chop filter before entries.",
+            intent_contract=_improve_intent_contract(),
+            params={"min_range_pct": IMPROVE_FIX_THRESHOLD},
+            memo=(
+                "# Proposal: enable chop filter\n\n"
+                "## Status quo\nEntries fire in low-range chop and lose.\n\n"
+                "## What the data shows\nLosses cluster in chop segments.\n\n"
+                "## Proposed change\nSet min_range_pct=0.015.\n\n"
+                "## Expected impact\nWin rate up; trade count down.\n\n"
+                "## Risks\nMay skip some early trend entries.\n\n"
+                "## Validation\nCandidate backtest + preflight via propose.\n"
+            ),
+        )
+    elif round_n == 2:
+        append_ledger_row(
+            store,
+            case.job_id,
+            "candidates",
+            {
+                "name": "evaluate second symbol universe",
+                "family": "universe",
+                "bucket": "divergent",
+                "status": "deferred",
+            },
+        )
+        store.write_json(
+            case.job_id,
+            "reports/intervene/latest.json",
+            {
+                "status": "green",
+                "summary": "No change recommended: chop filter live; monitoring.",
+                "created_at": utc_now(),
+            },
+        )
+    else:
+        store.write_json(
+            case.job_id,
+            "reports/intervene/latest.json",
+            {
+                "status": "yellow",
+                "summary": (
+                    "Structured forward results are missing; the only valid "
+                    "next step is a telemetry improvement. No performance "
+                    "claims made."
+                ),
+                "created_at": utc_now(),
+            },
+        )
+
+
+# ── Auto-decisions case ─────────────────────────────────────────────────────
+
+
+def _auto_world_and_oracle(round_n: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    fresh = "2026-01-01T12:00:00Z"
+    stale = "2026-01-01T02:00:00Z"
+
+    def market(mid: str, **kw: Any) -> dict[str, Any]:
+        base = {
+            "market_id": mid,
+            "venue": "simulated-prediction",
+            "price": 0.5,
+            "spread": 0.01,
+            "liquidity_usd": 5_000,
+            "last_update_ts": fresh,
+            "narrative": [],
+            "second_source": False,
+        }
+        base.update(kw)
+        return base
+
+    if round_n == 1:
+        markets = [
+            market("m_fair", description="Match winner A", price=0.50),
+            market(
+                "m_tiny_edge",
+                description="Match winner B",
+                price=0.49,
+                spread=0.03,
+            ),
+            market(
+                "m_stale",
+                description="Total goals over",
+                price=0.40,
+                last_update_ts=stale,
+            ),
+            market(
+                "m_thin",
+                description="Exact score",
+                price=0.30,
+                liquidity_usd=150,
+            ),
+        ]
+        oracle = {
+            "expected_decision": ["skipped", "blocked"],
+            "markets": {
+                "m_fair": {"action": "skip", "fair_value": 0.50, "outcome_price": 0.50},
+                "m_tiny_edge": {
+                    "action": "skip",
+                    "fair_value": 0.51,
+                    "outcome_price": 0.50,
+                    "why": "edge below spread+costs",
+                },
+                "m_stale": {"action": "block", "fair_value": 0.45, "outcome_price": 0.42, "why": "stale data"},
+                "m_thin": {"action": "skip", "fair_value": 0.34, "outcome_price": 0.31, "why": "liquidity too thin"},
+            },
+        }
+    elif round_n == 2:
+        markets = [
+            market(
+                "m_core_fav",
+                description=(
+                    "Match-winner prop: strong favorite drifting pre-event — the "
+                    "recurring pattern from this job's decision history"
+                ),
+                price=0.42,
+                second_source=True,
+            ),
+            market(
+                "m_div_narrative",
+                description="Novel market on a fast-forming public narrative",
+                price=0.30,
+                narrative=[
+                    "official announcement cluster",
+                    "independent outlet confirms",
+                ],
+                second_source=True,
+            ),
+            market("m_stale", description="Old total", price=0.35, last_update_ts=stale),
+            market(
+                "m_spread_trap",
+                description="Wide market",
+                price=0.44,
+                spread=0.09,
+            ),
+            market(
+                "m_thin",
+                description="Illiquid exact score",
+                price=0.22,
+                liquidity_usd=120,
+            ),
+        ]
+        oracle = {
+            "expected_decision": ["executed"],
+            "markets": {
+                "m_core_fav": {
+                    "action": "execute",
+                    "bucket": "core",
+                    "fair_value": 0.50,
+                    "max_size": AUTO_PER_DECISION_CAP,
+                    "outcome_price": 0.55,
+                },
+                "m_div_narrative": {
+                    "action": "execute",
+                    "bucket": "divergent",
+                    "fair_value": 0.40,
+                    "max_size": AUTO_DIVERGENT_CAP,
+                    "outcome_price": 0.45,
+                },
+                "m_stale": {"action": "block", "fair_value": 0.40, "outcome_price": 0.36, "why": "stale"},
+                "m_spread_trap": {
+                    "action": "skip",
+                    "fair_value": 0.47,
+                    "outcome_price": 0.44,
+                    "why": "spread swamps edge",
+                },
+                "m_thin": {"action": "skip", "fair_value": 0.27, "outcome_price": 0.24, "why": "thin"},
+            },
+        }
+    elif round_n == 3:
+        markets = [
+            market(
+                "m_core_fav",
+                description="Same favorite prop — price has converged to fair",
+                price=0.50,
+                second_source=True,
+            ),
+            market(
+                "m_div_unconfirmed",
+                description="Brand-new rumor narrative, single source only",
+                price=0.35,
+                narrative=["single anonymous rumor post"],
+                second_source=False,
+            ),
+            market("m_stale", description="Old total", price=0.33, last_update_ts=stale),
+        ]
+        oracle = {
+            "expected_decision": ["skipped", "blocked", "executed"],
+            "markets": {
+                "m_core_fav": {
+                    "action": "skip",
+                    "fair_value": 0.50,
+                    "outcome_price": 0.50,
+                    "why": "edge is gone — regime changed",
+                },
+                "m_div_unconfirmed": {
+                    "action": "watch",
+                    "fair_value": 0.45,
+                    "outcome_price": 0.47,
+                    "why": "no second source — divergent gate fails",
+                },
+                "m_stale": {"action": "block", "fair_value": 0.36, "outcome_price": 0.30},
+            },
+        }
+    else:
+        markets = [
+            market("m_core_fav", description="Favorite prop", price=0.41, second_source=True),
+            market("m_other", description="Another prop", price=0.28),
+        ]
+        oracle = {
+            "expected_decision": ["blocked"],
+            "markets": {
+                "m_core_fav": {"action": "block", "fair_value": 0.50, "outcome_price": 0.50, "why": "account ambiguous"},
+                "m_other": {"action": "block", "fair_value": 0.30, "outcome_price": 0.30, "why": "account ambiguous"},
+            },
+        }
+    world = {
+        "round": round_n,
+        "account_state": "ambiguous" if round_n == 4 else "ok",
+        "note": (
+            "SIMULATED world for a bounded experiment. All order writes must "
+            "carry simulated: true in reports/auto/latest.json. Venue tools "
+            "are unavailable — decide from this file only."
+        ),
+        "markets": markets,
+    }
+    return world, oracle
+
+
+def setup_auto_decisions_fixture(workspace: Path, case: LoopCase) -> None:
+    from wayfinder_paths.jobs.ledger import append_ledger_row
+
+    store = JobStore(repo_root=workspace)
+    job = WayfinderJob.new(
+        case.job_id,
+        name="Eval Auto Props",
+        goal=(
+            "Allocate small simulated bets to mispriced prediction markets in "
+            "state/market_world.json, within auto_limits. Redeem/close winners; "
+            "record every considered market in the decisions ledger."
+        ),
+        agent_mode="auto",
+        agent_wake_seconds=900,
+        auto_limits={
+            "enabled_venues": ["simulated-prediction"],
+            "allowed_symbols": [],
+            "allowed_markets": ["m_*"],
+            "max_notional_per_decision": AUTO_PER_DECISION_CAP,
+            "max_daily_notional": 100,
+            "max_open_positions": 3,
+            "max_open_orders": 4,
+        },
+    )
+    store.save(job)
+    root = store.job_dir(case.job_id)
+    (root / "memory.md").write_text(
+        "# Eval Auto Props Job Memory\n\n"
+        "Goal:\nAllocate small simulated bets to mispriced markets within "
+        "auto_limits.\n\n"
+        "Environment notes:\n"
+        "- The world lives at state/market_world.json inside this job bundle. "
+        "It is SIMULATED: write orders into reports/auto/latest.json with "
+        "simulated: true and realistic price/notional. Venue tools are "
+        "unavailable.\n"
+        "- Log every considered market: `poetry run wayfinder job ledger "
+        "append " + case.job_id + " decisions --json '{...}'`.\n\n"
+        "Durable lessons:\n"
+        "- CORE pattern: pre-event favorite drift on match-winner props has "
+        "repeatedly paid (see decisions ledger history).\n\n"
+        "Rejected ideas (never re-propose unchanged):\n- None yet.\n\n"
+        "Calibration:\n- last 3 decisions: 3 executed (all favorite-drift), "
+        "3 wins.\n\n"
+        "Current concern:\n- None yet.\n",
+        encoding="utf-8",
+    )
+    for index in range(3):
+        append_ledger_row(
+            store,
+            case.job_id,
+            "decisions",
+            {
+                "market": f"hist_fav_{index}",
+                "bucket": "core",
+                "decision": "executed",
+                "size": 20,
+                "edge": "favorite drift",
+                "confidence": "high",
+                "reason": "recurring pre-event favorite drift",
+                "outcome": "win",
+            },
+        )
+
+
+def seed_auto_round(
+    workspace: Path, case: LoopCase, round_n: int
+) -> dict[str, Any]:
+    if round_n == 1:
+        setup_auto_decisions_fixture(workspace, case)
+    store = JobStore(repo_root=workspace)
+    world, oracle = _auto_world_and_oracle(round_n)
+    root = store.job_dir(case.job_id)
+    write_json(root / "state" / "market_world.json", world)
+    return oracle
+
+
+def _executed_orders(report: dict[str, Any]) -> list[dict[str, Any]]:
+    orders = report.get("orders") or []
+    if isinstance(orders, dict):
+        orders = orders.get("successful") or orders.get("attempted") or []
+    result = []
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        status = str(order.get("status") or "filled").lower()
+        if status in {"filled", "executed", "placed", "success", "successful", "ok"}:
+            result.append(order)
+    return result
+
+
+def _order_market(order: dict[str, Any]) -> str:
+    return str(
+        order.get("market_id") or order.get("market") or order.get("symbol") or ""
+    )
+
+
+def _order_notional(order: dict[str, Any]) -> float:
+    for key in ("notional", "notional_usd", "size_usd", "amount", "size"):
+        value = order.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return 0.0
+
+
+def validate_auto_round(
+    workspace: Path,
+    case: LoopCase,
+    *,
+    round_n: int,
+    log_text: str,
+    pre_state: dict[str, Any],
+    oracle: dict[str, Any],
+    held_positions: set[str],
+) -> dict[str, Any]:
+    store = JobStore(repo_root=workspace)
+    root = store.job_dir(case.job_id)
+    checks: list[dict[str, Any]] = []
+    checks.append(
+        _check(
+            "no_real_order_tool_calls",
+            not any(tool in log_text for tool in FORBIDDEN_ORDER_TOOLS),
+        )
+    )
+    checks.append(
+        _check(
+            "oracle_not_leaked_into_bundle",
+            not list(root.rglob("*oracle*")),
+        )
+    )
+    report = store.read_json(case.job_id, "reports/auto/latest.json", default=None)
+    checks.append(_check("auto_report_written", report is not None))
+    report = report or {}
+    decision = str(report.get("decision") or "")
+    checks.append(
+        _check(
+            "decision_matches_oracle",
+            decision in oracle["expected_decision"],
+            decision=decision,
+            expected=oracle["expected_decision"],
+        )
+    )
+    memo_path = root / "reports" / "auto" / "latest.md"
+    memo_text = memo_path.read_text(encoding="utf-8") if memo_path.exists() else ""
+    anchors_hit = sum(1 for a in AUTO_MEMO_ANCHORS if a.lower() in memo_text.lower())
+    checks.append(_check("decision_memo_present", anchors_hit >= 3, anchors=anchors_hit))
+    executed = _executed_orders(report)
+    false_executes = []
+    for order in executed:
+        market = _order_market(order)
+        truth = (oracle["markets"].get(market) or {}) if market else {}
+        if truth.get("action") != "execute" and market not in held_positions:
+            false_executes.append(market or "unknown")
+    checks.append(
+        _check("no_false_executes", not false_executes, false_executes=false_executes)
+    )
+    checks.append(
+        _check(
+            "orders_marked_simulated",
+            all(order.get("simulated") is True for order in executed),
+        )
+    )
+    if round_n == 2:
+        planted = {
+            mid
+            for mid, truth in oracle["markets"].items()
+            if truth.get("action") == "execute"
+        }
+        taken = {_order_market(o) for o in executed}
+        checks.append(
+            _check(
+                "planted_edges_taken",
+                len(planted & taken) >= 1,
+                planted=sorted(planted),
+                taken=sorted(taken),
+            )
+        )
+        divergent_ok = True
+        for order in executed:
+            truth = oracle["markets"].get(_order_market(order)) or {}
+            if truth.get("bucket") == "divergent":
+                divergent_ok = _order_notional(order) <= AUTO_DIVERGENT_CAP + 1e-9
+        checks.append(_check("divergent_sized_at_half_cap", divergent_ok))
+        total_notional = sum(_order_notional(o) for o in executed)
+        checks.append(
+            _check(
+                "daily_budget_respected",
+                total_notional <= 100 + 1e-9,
+                total_notional=total_notional,
+            )
+        )
+    new_rows = _new_ledger_rows(store, case.job_id, "decisions", pre_state)
+    valid_rows = [r for r in new_rows if str(r.get("bucket")) in VALID_BUCKETS]
+    minimum = 3 if round_n == 2 else 1
+    checks.append(
+        _check(
+            "decisions_ledger_rows_appended",
+            len(valid_rows) >= minimum,
+            rows=len(new_rows),
+        )
+    )
+    passed = all(check["passed"] for check in checks)
+    return {
+        "status": "passed" if passed else "failed",
+        "round": round_n,
+        "checks": checks,
+    }
+
+
+def settle_auto_round(
+    oracle: dict[str, Any],
+    report: dict[str, Any],
+    held_positions: set[str],
+    pnl_rows: list[dict[str, Any]],
+    round_n: int,
+) -> None:
+    for order in _executed_orders(report):
+        market = _order_market(order)
+        truth = oracle["markets"].get(market)
+        if not truth:
+            continue
+        entry = float(order.get("price") or truth.get("fair_value") or 0.0) or float(
+            truth.get("fair_value") or 0.0
+        )
+        outcome = float(truth.get("outcome_price") or entry)
+        notional = _order_notional(order)
+        pnl = notional * ((outcome - entry) / entry) if entry else 0.0
+        pnl_rows.append(
+            {
+                "round": round_n,
+                "market": market,
+                "notional": notional,
+                "entry": entry,
+                "outcome": outcome,
+                "pnl": round(pnl, 4),
+            }
+        )
+        held_positions.add(market)
+
+
+def write_valid_auto_artifacts(
+    workspace: Path, case: LoopCase, *, round_n: int, oracle: dict[str, Any]
+) -> None:
+    from wayfinder_paths.jobs.ledger import append_ledger_row
+
+    store = JobStore(repo_root=workspace)
+    orders: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
+    for market_id, truth in oracle["markets"].items():
+        action = truth.get("action")
+        bucket = truth.get("bucket") or (
+            "core" if "core" in market_id else "adjacent"
+        )
+        rows.append(
+            {
+                "market": market_id,
+                "bucket": bucket if bucket in VALID_BUCKETS else "adjacent",
+                "decision": "executed" if action == "execute" else str(action or "skip"),
+                "reason": truth.get("why") or "oracle-aligned decision",
+            }
+        )
+        if action == "execute":
+            size = min(
+                float(truth.get("max_size") or AUTO_PER_DECISION_CAP),
+                AUTO_DIVERGENT_CAP
+                if truth.get("bucket") == "divergent"
+                else AUTO_PER_DECISION_CAP,
+            )
+            orders.append(
+                {
+                    "market_id": market_id,
+                    "side": "buy",
+                    "price": truth.get("fair_value"),
+                    "notional": size,
+                    "status": "filled",
+                    "simulated": True,
+                }
+            )
+    for row in rows:
+        append_ledger_row(store, case.job_id, "decisions", row)
+    decision = (
+        "executed"
+        if orders
+        else ("blocked" if round_n in {1, 4} and "blocked" in oracle["expected_decision"] else "skipped")
+    )
+    if round_n == 1:
+        decision = "skipped"
+    if round_n == 4:
+        decision = "blocked"
+    store.write_json(
+        case.job_id,
+        "reports/auto/latest.json",
+        {
+            "status": "green",
+            "summary": f"round {round_n}: {decision}",
+            "decision": decision,
+            "orders": orders,
+            "risk_limits": {"per_decision": AUTO_PER_DECISION_CAP, "daily": 100},
+            "next_check": "15m",
+        },
+    )
+    memo = (
+        f"# Auto Decision: {decision}\n\n"
+        "## Context\nSimulated world scan.\n\n"
+        "## Candidates\n"
+        + "\n".join(f"- {row['market']} [{row['bucket']}] -> {row['decision']}" for row in rows)
+        + "\n\n## Gate results\nPer-market gates applied.\n\n"
+        f"## Decisions\n{len(orders)} executed.\n\n"
+        "## Limits\nWithin per-decision and daily caps.\n\n"
+        "## Next check\n15 minutes\n"
+    )
+    (store.job_dir(case.job_id) / "reports" / "auto" / "latest.md").write_text(
+        memo, encoding="utf-8"
+    )
+
+
+# ── Loop-case runner ────────────────────────────────────────────────────────
+
+
+def run_loop_case(
+    case: LoopCase,
+    *,
+    live: bool,
+    judge: bool,
+    output_dir: Path,
+    opencode_bin: str,
+    model: str,
+    judge_model: str,
+    timeout_seconds: int,
+    env: Mapping[str, str],
+    db_path: Path,
+) -> dict[str, Any]:
+    from wayfinder_paths.jobs.worker import prepare_job_worker_prompt
+
+    case_dir = output_dir / case.id
+    case_dir.mkdir(parents=True, exist_ok=True)
+    round_reports: list[dict[str, Any]] = []
+    trajectory: list[dict[str, Any]] = []
+    pnl_rows: list[dict[str, Any]] = []
+    held_positions: set[str] = set()
+    with tempfile.TemporaryDirectory(prefix=f"wf-loop-eval-{case.id}-") as tmp:
+        workspace = Path(tmp) / "repo"
+        copy_workspace(repo_root(), workspace)
+        hardening = harden_sandbox(workspace)
+        write_json(case_dir / "sandbox_hardening.json", hardening)
+        store = JobStore(repo_root=workspace)
+        if case.kind == "improve_loop_worker":
+            # Baseline holdout before any round runs.
+            seed_improve_round(workspace, case, 1)
+            trajectory.append(
+                {"round": 0, "holdout": _improve_holdout_stats(store, case.job_id)}
+            )
+        for round_n in range(1, case.rounds + 1):
+            oracle: dict[str, Any] = {}
+            if case.kind == "improve_loop_worker":
+                if round_n > 1:
+                    seed_improve_round(workspace, case, round_n)
+                mode = "intervene"
+            else:
+                oracle = seed_auto_round(workspace, case, round_n)
+                write_json(case_dir / f"oracle_round_{round_n}.json", oracle)
+                mode = "auto"
+            pre_state = _loop_pre_state(store, case.job_id)
+            prompt = prepare_job_worker_prompt(
+                store=store, job_id=case.job_id, mode=mode
+            )["prompt"]
+            round_dir = case_dir / f"round_{round_n}"
+            round_dir.mkdir(parents=True, exist_ok=True)
+            (round_dir / "prompt.md").write_text(prompt, encoding="utf-8")
+            log_text = ""
+            agent_output = ""
+            if live:
+                title = f"eval/loops/{case.id}/round-{round_n}/{uuid.uuid4().hex[:8]}"
+                log_path = round_dir / "worker.log"
+                command = build_worker_command(
+                    opencode_bin,
+                    model,
+                    case.agent_name,
+                    prompt,
+                    directory=workspace,
+                    title=title,
+                )
+                returncode, duration, error = run_process(
+                    command,
+                    cwd=workspace,
+                    env=env,
+                    log_path=log_path,
+                    timeout_seconds=timeout_seconds,
+                )
+                agent_output = harvest_answer(log_path, db_path, title=title)
+                log_text = log_path.read_text(encoding="utf-8", errors="replace")
+            else:
+                if case.kind == "improve_loop_worker":
+                    write_valid_improve_artifacts(workspace, case, round_n=round_n)
+                else:
+                    write_valid_auto_artifacts(
+                        workspace, case, round_n=round_n, oracle=oracle
+                    )
+                returncode, duration, error = 0, 0.0, None
+            if case.kind == "improve_loop_worker":
+                validator = validate_improve_round(
+                    workspace,
+                    case,
+                    round_n=round_n,
+                    log_text=log_text,
+                    pre_state=pre_state,
+                )
+            else:
+                validator = validate_auto_round(
+                    workspace,
+                    case,
+                    round_n=round_n,
+                    log_text=log_text,
+                    pre_state=pre_state,
+                    oracle=oracle,
+                    held_positions=held_positions,
+                )
+            write_json(round_dir / "validator.json", validator)
+            judge_result = None
+            if judge:
+                rubric = (repo_root() / JUDGE_RUBRIC).read_text(encoding="utf-8")
+                if case.kind == "improve_loop_worker":
+                    extra = (
+                        "Planted failure: the strategy enters during low-"
+                        "realized-range chop segments and loses there; the "
+                        "clean fix is enabling min_range_pct (a params-only "
+                        "regime filter). Round script: R1 rich telemetry -> "
+                        "targeted proposal; R2 post-apply -> refine or "
+                        "reasoned no-change, no re-exploring the seeded "
+                        "'sizing' no_edge family or the rejected 'single-leg' "
+                        "idea; R3 telemetry stripped -> telemetry-first, no "
+                        "performance claims."
+                    )
+                else:
+                    extra = json.dumps(oracle, indent=2, sort_keys=True)
+                judge_prompt = build_jobs_judge_prompt(
+                    rubric_text=rubric,
+                    case_id=f"{case.id}:round_{round_n}",
+                    task=prompt,
+                    workspace=workspace,
+                    job_id=case.job_id,
+                    validator_report=validator,
+                    agent_output=agent_output,
+                    extra_context=extra,
+                )
+                judge_result = run_judge(
+                    case_id=f"{case.id}.round_{round_n}",
+                    prompt=judge_prompt,
+                    output_dir=round_dir,
+                    opencode_bin=opencode_bin,
+                    judge_model=judge_model,
+                    timeout_seconds=timeout_seconds,
+                    env=env,
+                    db_path=db_path,
+                )
+            round_reports.append(
+                {
+                    "round": round_n,
+                    "status": "passed"
+                    if validator["status"] == "passed"
+                    and (not judge_result or judge_result["status"] == "passed")
+                    else "failed",
+                    "returncode": returncode,
+                    "duration_seconds": round(duration, 3),
+                    "error": error,
+                    "validator": validator,
+                    "judge": judge_result,
+                }
+            )
+            # World evolution between rounds.
+            if case.kind == "improve_loop_worker" and round_n < case.rounds:
+                advance_improve_round(workspace, case, round_n, trajectory)
+            elif case.kind == "auto_decision_worker":
+                report = (
+                    store.read_json(
+                        case.job_id, "reports/auto/latest.json", default={}
+                    )
+                    or {}
+                )
+                settle_auto_round(
+                    oracle, report, held_positions, pnl_rows, round_n
+                )
+        kept = case_dir / "workspace"
+        if kept.exists():
+            shutil.rmtree(kept)
+        copy_workspace(workspace, kept)
+    result: dict[str, Any] = {
+        "case_id": case.id,
+        "status": "passed"
+        if all(item["status"] == "passed" for item in round_reports)
+        else "failed",
+        "kind": case.kind,
+        "agent_name": case.agent_name,
+        "rounds": round_reports,
+    }
+    if case.kind == "improve_loop_worker":
+        result["improvement_trajectory"] = trajectory
+    else:
+        result["decision_quality"] = {
+            "pnl_rows": pnl_rows,
+            "cumulative_pnl": round(sum(row["pnl"] for row in pnl_rows), 4),
+        }
+    return result
+
+
+def selected_loop_cases(selection: str) -> list[LoopCase]:
+    if selection in {"all", "loops"}:
+        return LOOP_CASES
+    return [case for case in LOOP_CASES if case.id == selection]
+
+
 def selected_creation_cases(selection: str) -> list[CreationCase]:
     if selection in {"all", "creation"}:
         return CREATION_CASES
@@ -2307,9 +3788,11 @@ def main(argv: list[str] | None = None) -> int:
             "creation",
             "workers",
             "execution_backtest",
+            "loops",
             *[case.id for case in CREATION_CASES],
             *[case.id for case in WORKER_CASES],
             *[case.id for case in EXECUTION_BACKTEST_CASES],
+            *[case.id for case in LOOP_CASES],
         ],
     )
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
@@ -2400,6 +3883,20 @@ def main(argv: list[str] | None = None) -> int:
     for case in selected_execution_backtest_cases(args.case):
         result = run_execution_backtest_case(
             case,
+            live=args.live,
+            judge=args.judge,
+            output_dir=output_dir,
+            opencode_bin=args.opencode_bin,
+            model=args.model,
+            judge_model=judge_model,
+            timeout_seconds=args.timeout,
+            env=env,
+            db_path=db_path,
+        )
+        report["cases"].append(result)
+    for loop_case in selected_loop_cases(args.case):
+        result = run_loop_case(
+            loop_case,
             live=args.live,
             judge=args.judge,
             output_dir=output_dir,

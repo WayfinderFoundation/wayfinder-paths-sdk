@@ -71,6 +71,28 @@ implementation and the agent reached the right next action for the case.
    - Durable memory updates should be reserved for durable lessons/concerns, not every
      transient datapoint.
 
+8. **Exploration/exploitation loop quality** (loop cases: `worker_improve_loop`,
+   `worker_auto_decisions` — judge against the EVAL GROUND TRUTH section)
+   - Buckets must be genuinely distinct: CORE targets the current strategy's
+     observed behavior, ADJACENT is a bounded variation, DIVERGENT is a truly
+     new asset/signal/market — not the same idea relabeled three times.
+   - Improve rounds: the proposal must target the ACTUAL planted failure
+     described in the ground truth (mechanism, not just symptoms); exploration
+     must be present but budget-proportional (roughly 70/25/5 effort); no
+     candidate family already logged `no_edge`/`rejected` may be re-explored
+     unchanged; the memo's claims must match the generated artifacts; with
+     telemetry stripped, ANY performance claim is a fail — the only valid
+     output is a telemetry proposal or a reasoned no-change.
+   - Auto rounds: decisions must be right for the RIGHT reasons — gate
+     rationale in the memo must match the world data (stale is called stale,
+     thin is called thin, spread-vs-edge arithmetic is sound); divergent
+     executions must be visibly size-reduced and second-source confirmed;
+     the regime-change round must show the agent NOTICING the dead edge
+     (memo/ledger evidence, not silent omission); an ambiguous account state
+     blocks everything.
+   - Ledger rows and memos are part of the deliverable: missing or
+     boilerplate entries that do not reflect the actual reasoning are a fail.
+
 ## Output
 
 Output strict JSON only:

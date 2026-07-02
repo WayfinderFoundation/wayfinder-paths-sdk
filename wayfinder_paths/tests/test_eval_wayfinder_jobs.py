@@ -505,3 +505,310 @@ def test_eval_judge_supports_wayfinder_jobs_pass_fail() -> None:
         '"verdict": "pass|fail"',
     ):
         assert needle in rubric
+
+
+def test_improve_loop_protocol_is_pinned_in_worker_config() -> None:
+    text = (REPO / ".opencode" / "agents" / "wayfinder-job-worker.md").read_text(
+        "utf-8"
+    )
+    assert "OBSERVE → PARTITION → SCORE → DECIDE → RECORD" in text
+    assert "70% CORE / 25% ADJACENT / 5% DIVERGENT" in text
+    assert "TELEMETRY GATE" in text
+    assert "the only valid\n   proposal this wake is a telemetry improvement" in text
+    assert "never re-explore a candidate family already" in text
+    assert "ledger append <job_id> candidates" in text
+    assert "skeptic pass" in text
+    assert "Status quo / What the data shows / Proposed change" in text
+    assert "never reasoning transcripts" in text
+
+
+def test_auto_loop_protocol_is_pinned_in_auto_worker_config() -> None:
+    text = (
+        REPO / ".opencode" / "agents" / "wayfinder-job-auto-worker.md"
+    ).read_text("utf-8")
+    assert "OBSERVE → RESEARCH → PARTITION → GATE → DECIDE → RECORD" in text
+    assert "two-pass" in text
+    assert "40% CORE / 40% ADJACENT /" in text
+    assert "at most 50% of max_notional_per_decision" in text
+    assert "second independent source" in text
+    assert "Prefer skip over weak action. Prefer block over guessing." in text
+    assert "reports/auto/latest.md" in text
+    assert "`executed` if ANY entry executed" in text
+    assert "ledger append <job_id>\n   decisions" in text
+
+
+# ── Loop evals (exploration/exploitation) ──────────────────────────────────
+
+
+def _loop_case(module, kind):
+    return next(c for c in module.LOOP_CASES if c.kind == kind)
+
+
+def test_loop_cases_registered_in_choices() -> None:
+    module = load_eval_module()
+    ids = {c.id for c in module.LOOP_CASES}
+    assert ids == {"worker_improve_loop", "worker_auto_decisions"}
+    assert module.selected_loop_cases("loops") == module.LOOP_CASES
+    assert [c.id for c in module.selected_loop_cases("worker_improve_loop")] == [
+        "worker_improve_loop"
+    ]
+
+
+def test_harden_sandbox_denies_place_tools_and_disables_mcp(tmp_path: Path) -> None:
+    module = load_eval_module()
+    ws = tmp_path / "repo"
+    (ws / ".opencode" / "agents").mkdir(parents=True)
+    (ws / ".opencode" / "agents" / "wayfinder-job-auto-worker.md").write_text(
+        "  wayfinder_hyperliquid_place_*: allow\n"
+        "  wayfinder_polymarket_place_*: allow\n"
+        "  wayfinder_polymarket_redeem_positions: allow\n",
+        encoding="utf-8",
+    )
+    import json as _json
+
+    (ws / ".opencode" / "opencode.json").write_text(
+        _json.dumps({"mcp": {"wayfinder": {"enabled": True, "url": "x"}}}),
+        encoding="utf-8",
+    )
+    summary = module.harden_sandbox(ws)
+    text = (ws / ".opencode" / "agents" / "wayfinder-job-auto-worker.md").read_text()
+    assert "place_*: allow" not in text
+    assert "place_*: deny" in text
+    assert "redeem_positions: deny" in text
+    assert summary["agent_patched"] is True
+    data = _json.loads((ws / ".opencode" / "opencode.json").read_text())
+    assert data["mcp"]["wayfinder"]["enabled"] is False
+    assert "wayfinder" in summary["mcp_disabled"]
+
+
+def test_improve_fixture_plants_a_real_discoverable_flaw(tmp_path: Path) -> None:
+    """The flaw must be real: the flawed strategy loses in chop, and the
+    planted fix improves held-out stats — an overfit-to-noise eval is useless."""
+    module = load_eval_module()
+    from wayfinder_paths.jobs.execution import ExecutionSpec
+    from wayfinder_paths.jobs.execution.simulator import (
+        PreparedExecutionDataset,
+        simulate_execution,
+    )
+
+    script = tmp_path / "strategy.py"
+    script.write_text(module.IMPROVE_STRATEGY, encoding="utf-8")
+    spec = ExecutionSpec()
+    spec.data_contract["bar_interval"] = "1h"
+    base = {
+        "symbol": "EVAL",
+        "sma_period": 20,
+        "low_period": 5,
+        "range_window": 8,
+        "notional_usd": 1000.0,
+        "initial_capital": 10_000.0,
+    }
+
+    def run(offset, mrp):
+        ds = PreparedExecutionDataset.from_rows(
+            module._improve_bars(offset=offset, count=480)
+        )
+        return simulate_execution(
+            script, ds, spec, {**base, "min_range_pct": mrp}
+        )
+
+    flawed_train = run(0, 0.0)
+    regime = module._regime_pnl_by_entry(flawed_train.trades)
+    assert sum(regime["chop"]) < 0, "chop entries must lose (the planted flaw)"
+    assert sum(regime["trend"]) > 0, "trend entries must win"
+
+    fixed_hold = run(480, module.IMPROVE_FIX_THRESHOLD).stats
+    flawed_hold = run(480, 0.0).stats
+    assert fixed_hold["sharpe"] > flawed_hold["sharpe"], "fix must help HELD-OUT"
+    assert fixed_hold["trade_count"] < flawed_hold["trade_count"], "fix trades less"
+
+
+def test_validate_improve_round_passes_on_expected_and_fails_on_mutations(
+    tmp_path: Path,
+) -> None:
+    module = load_eval_module()
+    from wayfinder_paths.jobs.ledger import append_ledger_row
+    from wayfinder_paths.jobs.store import JobStore
+
+    ws = tmp_path / "repo"
+    ws.mkdir()
+    case = _loop_case(module, "improve_loop_worker")
+    module.setup_improve_loop_fixture(ws, case)
+    store = JobStore(repo_root=ws)
+    pre = module._loop_pre_state(store, case.job_id)
+
+    module.write_valid_improve_artifacts(ws, case, round_n=1)
+    good = module.validate_improve_round(
+        ws, case, round_n=1, log_text="", pre_state=pre
+    )
+    assert good["status"] == "passed", [
+        c for c in good["checks"] if not c["passed"]
+    ]
+
+    # Mutation: re-explore the seeded no_edge family -> fail.
+    pre2 = module._loop_pre_state(store, case.job_id)
+    append_ledger_row(
+        store,
+        case.job_id,
+        "candidates",
+        {"name": "bump size again", "family": module.SEEDED_NO_EDGE_FAMILY,
+         "bucket": "adjacent", "status": "proposed"},
+    )
+    bad = module.validate_improve_round(
+        ws, case, round_n=1, log_text="", pre_state=pre2
+    )
+    reexp = next(c for c in bad["checks"] if c["name"] == "no_reexploration_of_traps")
+    assert reexp["passed"] is False
+
+    # Mutation: forbidden order tool in the log -> fail.
+    order_bad = module.validate_improve_round(
+        ws,
+        case,
+        round_n=1,
+        log_text="called wayfinder_hyperliquid_place_market_order",
+        pre_state=pre,
+    )
+    assert (
+        next(
+            c
+            for c in order_bad["checks"]
+            if c["name"] == "no_real_order_tool_calls"
+        )["passed"]
+        is False
+    )
+
+
+def test_improve_round3_telemetry_gate(tmp_path: Path) -> None:
+    module = load_eval_module()
+    from wayfinder_paths.jobs.store import JobStore
+
+    ws = tmp_path / "repo"
+    ws.mkdir()
+    case = _loop_case(module, "improve_loop_worker")
+    module.setup_improve_loop_fixture(ws, case)
+    module.seed_improve_round(ws, case, 3)  # strips forward data
+    store = JobStore(repo_root=ws)
+    pre = module._loop_pre_state(store, case.job_id)
+    module.write_valid_improve_artifacts(ws, case, round_n=3)
+    result = module.validate_improve_round(
+        ws, case, round_n=3, log_text="", pre_state=pre
+    )
+    assert result["status"] == "passed"
+    assert any(
+        c["name"] == "telemetry_gate_respected" and c["passed"]
+        for c in result["checks"]
+    )
+
+
+def test_auto_world_oracle_never_leaks_and_validators_gate(tmp_path: Path) -> None:
+    module = load_eval_module()
+    from wayfinder_paths.jobs.store import JobStore
+
+    ws = tmp_path / "repo"
+    ws.mkdir()
+    case = _loop_case(module, "auto_decision_worker")
+    store = JobStore(repo_root=ws)
+
+    for round_n in (1, 2, 3, 4):
+        oracle = module.seed_auto_round(ws, case, round_n)
+        # World file must exist and must NOT contain oracle keys.
+        world = store.read_json(case.job_id, "state/market_world.json", default={})
+        world_text = str(world)
+        assert "fair_value" not in world_text
+        assert "correct_action" not in world_text and "outcome_price" not in world_text
+        pre = module._loop_pre_state(store, case.job_id)
+        module.write_valid_auto_artifacts(ws, case, round_n=round_n, oracle=oracle)
+        held = set()
+        result = module.validate_auto_round(
+            ws,
+            case,
+            round_n=round_n,
+            log_text="",
+            pre_state=pre,
+            oracle=oracle,
+            held_positions=held,
+        )
+        assert result["status"] == "passed", (
+            round_n,
+            [c for c in result["checks"] if not c["passed"]],
+        )
+
+
+def test_validate_auto_round_fails_on_bad_decisions(tmp_path: Path) -> None:
+    module = load_eval_module()
+    from wayfinder_paths.jobs.store import JobStore
+
+    ws = tmp_path / "repo"
+    ws.mkdir()
+    case = _loop_case(module, "auto_decision_worker")
+    store = JobStore(repo_root=ws)
+    oracle = module.seed_auto_round(ws, case, 1)  # all-weak: correct = skip/block
+    pre = module._loop_pre_state(store, case.job_id)
+
+    # A false execute in round 1 (should be skipped) -> fail.
+    store.write_json(
+        case.job_id,
+        "reports/auto/latest.json",
+        {
+            "status": "green",
+            "summary": "bad",
+            "decision": "executed",
+            "orders": [
+                {"market_id": "m_fair", "notional": 25, "status": "filled",
+                 "simulated": True}
+            ],
+            "risk_limits": {},
+        },
+    )
+    (store.job_dir(case.job_id) / "reports" / "auto" / "latest.md").write_text(
+        "# Context\n## Candidates\n## Gate\n## Decision\n## Next\n", encoding="utf-8"
+    )
+    result = module.validate_auto_round(
+        ws, case, round_n=1, log_text="", pre_state=pre, oracle=oracle,
+        held_positions=set(),
+    )
+    assert result["status"] == "failed"
+    assert not next(
+        c for c in result["checks"] if c["name"] == "no_false_executes"
+    )["passed"]
+
+
+def test_auto_round2_divergent_sizing_enforced(tmp_path: Path) -> None:
+    module = load_eval_module()
+    from wayfinder_paths.jobs.store import JobStore
+
+    ws = tmp_path / "repo"
+    ws.mkdir()
+    case = _loop_case(module, "auto_decision_worker")
+    store = JobStore(repo_root=ws)
+    module.seed_auto_round(ws, case, 1)
+    oracle = module.seed_auto_round(ws, case, 2)
+    pre = module._loop_pre_state(store, case.job_id)
+
+    # Oversized divergent execution -> divergent sizing check fails.
+    store.write_json(
+        case.job_id,
+        "reports/auto/latest.json",
+        {
+            "status": "green",
+            "summary": "oversized divergent",
+            "decision": "executed",
+            "orders": [
+                {"market_id": "m_core_fav", "notional": 25, "status": "filled",
+                 "simulated": True},
+                {"market_id": "m_div_narrative", "notional": 25, "status": "filled",
+                 "simulated": True},
+            ],
+            "risk_limits": {},
+        },
+    )
+    (store.job_dir(case.job_id) / "reports" / "auto" / "latest.md").write_text(
+        "# Context\n## Candidates\n## Gate\n## Decision\n## Next\n", encoding="utf-8"
+    )
+    result = module.validate_auto_round(
+        ws, case, round_n=2, log_text="", pre_state=pre, oracle=oracle,
+        held_positions=set(),
+    )
+    assert not next(
+        c for c in result["checks"] if c["name"] == "divergent_sized_at_half_cap"
+    )["passed"]
