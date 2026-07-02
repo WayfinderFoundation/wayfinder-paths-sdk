@@ -13,11 +13,11 @@ Constants available in `wayfinder_paths.core.constants.hyperliquid`:
 - `MIN_DEPOSIT_USD = 5.0`
 - `MIN_ORDER_USD_NOTIONAL = 10.0`
 
-## UnifiedAccount mode is the default
+## UnifiedAccount mode is auto-enabled (but fresh accounts start split)
 
-All accounts touched by this adapter run in **UnifiedAccount mode**, where spot tokens and perp margin share collateral. The adapter auto-enables this before any order (`place_market_order`, `place_limit_order`, `place_tp_sl_order`, `place_outcome_order`) via `ensure_unified_account(address)` — one-time on-chain action per account, stays enabled afterward. As a consequence:
+Brand-new Hyperliquid accounts start in `"default"` **split** mode, where Bridge2 deposits credit the **perp** clearinghouse and withdrawals can't reach perp-held funds. The adapter converts accounts to **UnifiedAccount mode** (spot tokens and perp margin share collateral) via `ensure_unified_account(address)` — a one-time on-chain action, stays enabled afterward — at these points: before any order (`place_market_order`, `place_limit_order`, `place_tp_sl_order`, `place_outcome_order`), after a confirmed `hyperliquid_deposit_usdc`, and before `hyperliquid_withdraw_usdc`. As a consequence:
 
-- Deposits land in the unified balance; no spot ↔ perp transfers needed.
+- Once unified, deposits land in the unified balance; no spot ↔ perp transfers needed. (An account that has only been deposited to via a raw strategy bridge path and never ordered may still be split — `wait_for_deposit` handles both modes by polling spot + perp.)
 - HIP-3 dexes (xyz, flx, vntl, hyna, km, …) are unlocked. HIP-3 asset IDs use offsets (first builder dex starts at 110000, then 120000, 130000, …) and coin names are prefixed (`xyz:NVDA`, `vntl:SPACEX`, `hyna:BTC`, …).
 
 ## Asset ID conventions
