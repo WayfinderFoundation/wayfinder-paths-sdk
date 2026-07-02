@@ -66,14 +66,10 @@ Claude Code shortcut:
 ### Deposit monitoring (recommended)
 
 - Call: `HyperliquidAdapter.wait_for_deposit(address, expected_increase, timeout_s=..., poll_interval_s=...)`
-- Mechanism: confirms via the user's non-funding ledger updates (`get_user_deposits`) first; falls back to polling `get_user_state(address)` perp `marginSummary.accountValue`.
-- The `mcp__wayfinder__hyperliquid_deposit_usdc` shortcut already waits for the credit before returning.
-
-**Under UnifiedAccount mode (the repo default — see [gotchas.md](gotchas.md)):**
-
-- Funds land in the **unified balance**, surfaced via `spotClearinghouseState` as the `USDC` coin (token=0). Perp `marginSummary.accountValue` stays `0` and is not meaningful — per HL docs, individual perp dex user states are not meaningful for unified-account users.
-- Confirmation still works correctly because the ledger fast-path runs first.
-- The `final_balance_usd` returned by `mcp__wayfinder__hyperliquid_deposit_usdc` reads perp margin, so it will report `0` even on a successful deposit. To read the actual credited balance, use `hyperliquid_get_state` and look at `spot.balances[coin="USDC"].total`.
+- Mechanism: polls **both** balance surfaces — spot USDC (`spotClearinghouseState`, where credits land for unified-account users) and core-dex perp `marginSummary.accountValue` (`clearinghouseState`, where Bridge2 credits land for accounts still in `"default"` split mode, i.e. every fresh account) — and confirms once their sum rises by ≥ 95% of the expected amount. There is no ledger fast-path.
+- The `mcp__wayfinder__hyperliquid_deposit_usdc` shortcut waits for the credit, then auto-enables **UnifiedAccount mode** (`ensure_unified` effect) so the balance is withdrawable and shared across spot/perps. Only `"default"` split-mode accounts are converted — deliberate `portfolioMargin`/`dexAbstraction` modes are left alone.
+- Tool statuses: `confirmed` (tx + credit observed), `unconfirmed` (Arbitrum tx succeeded but credit not observed within the wait window — funds are likely still in flight; check `hyperliquid_get_state` before retrying, a retry sends additional funds), `failed` (the bridge tx itself failed).
+- `final_balance_usd` is the post-credit spot+perp USDC sum.
 
 ### Withdrawal monitoring (best-effort)
 

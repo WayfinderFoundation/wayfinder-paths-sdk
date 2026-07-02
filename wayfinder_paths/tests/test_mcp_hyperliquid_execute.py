@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -9,6 +10,7 @@ from hyperliquid.utils.types import OUTCOME_ASSET_OFFSET
 
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
 from wayfinder_paths.mcp.tools.hyperliquid import (
+    hyperliquid_deposit_usdc,
     hyperliquid_get_state,
     hyperliquid_get_trade_asset,
     hyperliquid_place_limit_order,
@@ -263,12 +265,17 @@ async def test_hyperliquid_withdraw_usdc(tmp_path: Path, monkeypatch):
         "private_key_hex": "0x" + "11" * 32,
     }
 
+    ensure_mock = AsyncMock(return_value=(True, "Unified account already enabled"))
     with (
         patch(
             "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
             return_value=wallet,
         ),
         patch("wayfinder_paths.mcp.tools.hyperliquid.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.unify_if_split_account",
+            new=ensure_mock,
+        ),
         patch(
             "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.withdraw",
             new=AsyncMock(return_value=(True, {"status": "ok"})),
@@ -280,6 +287,156 @@ async def test_hyperliquid_withdraw_usdc(tmp_path: Path, monkeypatch):
     ):
         out1 = await hyperliquid_withdraw_usdc(wallet_label="main", amount_usdc=10)
         assert out1["ok"] is True
+        assert out1["result"]["status"] == "confirmed"
+        labels = [e["label"] for e in out1["result"]["effects"]]
+        # Unified conversion must run before the withdraw so split-mode
+        # perp balances become withdrawable.
+        assert labels == ["ensure_unified", "withdraw", "wait_for_withdrawal"]
+        ensure_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_hyperliquid_withdraw_usdc_ensure_unified_is_advisory(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("WAYFINDER_MCP_STATE_PATH", str(tmp_path / "mcp.sqlite3"))
+    monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
+
+    wallet = {
+        "address": "0x000000000000000000000000000000000000dEaD",
+        "private_key_hex": "0x" + "11" * 32,
+    }
+
+    with (
+        patch(
+            "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
+            return_value=wallet,
+        ),
+        patch("wayfinder_paths.mcp.tools.hyperliquid.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.unify_if_split_account",
+            new=AsyncMock(return_value=(False, "Failed to enable unified account")),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.withdraw",
+            new=AsyncMock(return_value=(True, {"status": "ok"})),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.wait_for_withdrawal",
+            new=AsyncMock(return_value=(True, {"status": "ok"})),
+        ),
+    ):
+        out = await hyperliquid_withdraw_usdc(wallet_label="main", amount_usdc=10)
+
+    # A conversion hiccup must not report a successful withdraw as failed.
+    assert out["result"]["status"] == "confirmed"
+
+
+def _deposit_patches(wallet, *, wait_result, ensure_mock):
+    return (
+        patch(
+            "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
+            return_value=wallet,
+        ),
+        patch("wayfinder_paths.mcp.tools.hyperliquid.CONFIG", {}),
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.build_send_transaction",
+            new=AsyncMock(return_value={"to": "0xbridge"}),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.send_transaction",
+            new=AsyncMock(return_value="0x" + "ab" * 32),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.wait_for_deposit",
+            new=AsyncMock(return_value=wait_result),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter.unify_if_split_account",
+            new=ensure_mock,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_hyperliquid_deposit_usdc_confirms_and_unifies(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("WAYFINDER_MCP_STATE_PATH", str(tmp_path / "mcp.sqlite3"))
+    monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
+
+    wallet = {
+        "address": "0x000000000000000000000000000000000000dEaD",
+        "private_key_hex": "0x" + "11" * 32,
+    }
+    ensure_mock = AsyncMock(return_value=(True, "Unified account enabled"))
+
+    with ExitStack() as stack:
+        for p in _deposit_patches(
+            wallet, wait_result=(True, 60.0), ensure_mock=ensure_mock
+        ):
+            stack.enter_context(p)
+        out = await hyperliquid_deposit_usdc(wallet_label="main", amount_usdc=60)
+
+    assert out["ok"] is True
+    assert out["result"]["status"] == "confirmed"
+    labels = [e["label"] for e in out["result"]["effects"]]
+    assert labels == ["deposit", "wait_for_credit", "ensure_unified"]
+    ensure_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_hyperliquid_deposit_usdc_unconfirmed_when_credit_not_observed(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("WAYFINDER_MCP_STATE_PATH", str(tmp_path / "mcp.sqlite3"))
+    monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
+
+    wallet = {
+        "address": "0x000000000000000000000000000000000000dEaD",
+        "private_key_hex": "0x" + "11" * 32,
+    }
+    ensure_mock = AsyncMock()
+
+    with ExitStack() as stack:
+        for p in _deposit_patches(
+            wallet, wait_result=(False, 0.0), ensure_mock=ensure_mock
+        ):
+            stack.enter_context(p)
+        out = await hyperliquid_deposit_usdc(wallet_label="main", amount_usdc=60)
+
+    assert out["ok"] is True
+    # Bridge tx succeeded but the credit wasn't observed: NOT a failure.
+    assert out["result"]["status"] == "unconfirmed"
+    assert "still in flight" in out["result"]["note"]
+    ensure_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hyperliquid_deposit_usdc_ensure_unified_is_advisory(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("WAYFINDER_MCP_STATE_PATH", str(tmp_path / "mcp.sqlite3"))
+    monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
+
+    wallet = {
+        "address": "0x000000000000000000000000000000000000dEaD",
+        "private_key_hex": "0x" + "11" * 32,
+    }
+
+    with ExitStack() as stack:
+        for p in _deposit_patches(
+            wallet,
+            wait_result=(True, 60.0),
+            ensure_mock=AsyncMock(
+                return_value=(False, "Failed to enable unified account")
+            ),
+        ):
+            stack.enter_context(p)
+        out = await hyperliquid_deposit_usdc(wallet_label="main", amount_usdc=60)
+
+    # The deposit itself succeeded; a conversion hiccup must not flip status.
+    assert out["result"]["status"] == "confirmed"
 
 
 @pytest.mark.asyncio
