@@ -16,9 +16,14 @@ from wayfinder_paths.jobs.store import JobStore
 def test_scan_matches_the_confabulation_triad_only() -> None:
     assert scan_unsupported_perf_claims("100% win rate, +$560.55, 5 forward trades")
     assert scan_unsupported_perf_claims("win rate 13.89%")
+    # Evasive phrasings the agent actually used must still be caught.
+    assert scan_unsupported_perf_claims("Forward: 5 trend wins, 0 chop losses")
+    assert scan_unsupported_perf_claims("100% WR over the run")
     # Honest zeros and bare metrics (sharpe, plain % not near "win") do not match.
     assert scan_unsupported_perf_claims("0 trades, $0 PnL, 0% win rate") == []
     assert scan_unsupported_perf_claims("Sharpe 60.97, min_range_pct=0.015") == []
+    # Closed descriptor set: an unrelated word between number and noun is safe.
+    assert scan_unsupported_perf_claims("5 of the trades were flat") == []
 
 
 def test_sanitize_markdown_pulls_only_offending_lines() -> None:

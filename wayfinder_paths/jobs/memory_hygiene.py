@@ -33,12 +33,19 @@ if TYPE_CHECKING:
 # ("0 trades", "$0") are ignored. Bare metrics (sharpe, a plain net-return %) are
 # NOT matched, so a backtest metric cited by name survives.
 _PERF_CLAIM_PATTERNS = (
+    # Win rate as a percentage. The `win|wr` alternative catches the "100% WR"
+    # abbreviation the agent uses to evade a plain "win" match.
     re.compile(r"win[\s_-]*rate[^.\n%]{0,24}?(\d{1,3}(?:\.\d+)?)\s*%", re.I),
-    re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%\s*win", re.I),
+    re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%\s*(?:win|wr)\b", re.I),
+    # Dollar PnL.
     re.compile(r"[+\-]?\$\s?(\d[\d,]*(?:\.\d+)?)", re.I),
+    # Trade/fill/win/loss counts, allowing one trading-descriptor word between
+    # the number and the noun ("5 trend wins", "5 closed trades") — the phrasing
+    # the agent uses to slip past a strictly-adjacent match. The descriptor set
+    # is closed to keep false positives (e.g. "5 of the trades") out.
     re.compile(
-        r"(\d+)\s+(?:forward\s+|winning\s+|losing\s+)?"
-        r"(?:trades|fills|wins|losses)\b",
+        r"(\d+)\s+(?:(?:forward|winning|losing|trend|chop|closed|profitable|"
+        r"consecutive)\s+)?(?:trades|fills|wins|losses)\b",
         re.I,
     ),
 )
