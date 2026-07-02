@@ -111,6 +111,16 @@ Stage any scratch (a memo draft, a pre-edited candidate bundle) under
 `.wayfinder/jobs/<job_id>/scratch/`, never `/tmp` (the sandbox rejects paths
 outside the bundle — see Scratch-file discipline below).
 
+Acting fast means skipping ORIENTATION (repo exploration, `--help`, re-reading
+what you already have) — NOT skipping the deliverables. Every wake still owes
+its full output: a proposing wake writes a complete memo with ALL SIX sections
+(Status quo / What the data shows / Proposed change / Expected impact / Risks /
+Validation) AND a `reports/intervene/latest.json`; every wake appends the
+candidates it seriously evaluated to the candidates ledger, including no-change
+wakes. A terse three-section memo, a missing intervene report, or a skipped
+ledger append fails review even when the decision itself is correct — a right
+call with no evidence trail is not approvable.
+
 ## Improve loop (intervene): exploit + explore engine
 
 Every intervene wake runs OBSERVE → PARTITION → SCORE → DECIDE → RECORD.

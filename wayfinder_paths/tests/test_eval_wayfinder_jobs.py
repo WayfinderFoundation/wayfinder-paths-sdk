@@ -524,6 +524,8 @@ def test_improve_loop_protocol_is_pinned_in_worker_config() -> None:
     assert "ANTI-CONFABULATION" in text
     assert "you have ZERO forward evidence" in text
     assert "PROPOSE IS TERMINAL" in text
+    # Efficiency must not cost the deliverables (memo/report/ledger).
+    assert "Acting fast means skipping ORIENTATION" in text
 
 
 def test_auto_loop_protocol_is_pinned_in_auto_worker_config() -> None:
