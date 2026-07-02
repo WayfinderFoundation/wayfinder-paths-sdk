@@ -100,24 +100,27 @@ def _build_worker_prompt_sections(
 
     forward_block = _compact_forward(snapshot.get("forward") or {})
     backtest_block = dict(snapshot.get("backtest") or {})
-    # When no forward telemetry has executed, fence the two blocks that an agent
-    # otherwise confuses: label the empty forward state and mark the historical
-    # backtest as NOT a forward result — co-located with the numbers, so the
+    # Fence the two blocks the agent confuses, co-located with the numbers so the
     # disambiguation leads the data (the `_`-prefixed key sorts first inside its
-    # block under canonical alphabetical serialization). The backtest stats stay
-    # intact; the agent still needs them to diagnose on the first wake.
+    # block under canonical alphabetical serialization). The backtest label is
+    # UNCONDITIONAL: a backtest is always historical, and the agent conflates it
+    # with forward even on non-empty wakes — it wrote a candidate-backtest result
+    # into durable memory as a "forward prove-out" post-apply, which then poisons
+    # every later wake. Stats stay intact; the agent needs them to diagnose.
+    if backtest_block:
+        backtest_block["_basis"] = (
+            "HISTORICAL_BACKTEST: pre-launch/candidate simulation, NOT "
+            "forward/live performance. Never restate these figures as a forward "
+            "result or 'forward prove-out', and never write them to memory as "
+            "forward performance."
+        )
+    # The zero-evidence marker only makes sense when forward is actually empty.
     if is_forward_empty(forward_block):
         forward_block["_status"] = (
             "NO_FORWARD_DATA: 0 runs/trades/orders/fills have executed — you "
             "have ZERO forward evidence this wake. Do not report any win rate, "
             "PnL, or trade count as a forward result."
         )
-        if backtest_block:
-            backtest_block["_basis"] = (
-                "HISTORICAL_BACKTEST: pre-launch simulation, NOT forward/live "
-                "performance. Never restate these figures as forward results "
-                "or write them to memory as performance."
-            )
 
     dynamic_payload = {
         "scorecard": snapshot.get("scorecard") or {},

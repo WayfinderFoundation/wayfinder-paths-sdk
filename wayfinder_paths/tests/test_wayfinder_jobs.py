@@ -774,10 +774,9 @@ def test_worker_prompt_ledgers_and_backtest_are_dynamic_only(
 
 
 def test_worker_prompt_fences_backtest_when_forward_empty(tmp_path: Path) -> None:
-    """With no forward telemetry, the prompt fences the historical backtest and
-    marks the empty forward state — co-located with the numbers — so the agent
-    cannot restate backtest stats as forward performance. The stats stay so the
-    agent can still diagnose."""
+    """The backtest is labeled historical on EVERY wake (the agent conflates it
+    with forward even on non-empty wakes); the zero-evidence marker appears only
+    when forward is actually empty. Stats stay so the agent can still diagnose."""
     store = JobStore(repo_root=tmp_path)
     job = WayfinderJob.new("fence-empty", agent_mode="intervene")
     store.save(job)
@@ -797,7 +796,7 @@ def test_worker_prompt_fences_backtest_when_forward_empty(tmp_path: Path) -> Non
     assert '"backtest"' in dyn  # stats retained, just fenced
     assert '"win_rate"' in dyn
 
-    live_snapshot = {  # a populated forward must NOT carry the empty marker
+    live_snapshot = {  # populated forward: backtest still labeled, no empty marker
         "job": job.to_dict(),
         "backtest": {"available": True, "stats": {"win_rate": 1.0}},
         "forward": {
@@ -809,7 +808,7 @@ def test_worker_prompt_fences_backtest_when_forward_empty(tmp_path: Path) -> Non
         store=store, job_id=job.id, mode="intervene", snapshot=live_snapshot
     )["dynamic_context"]
     assert "NO_FORWARD_DATA" not in dyn_live
-    assert "HISTORICAL_BACKTEST" not in dyn_live
+    assert "HISTORICAL_BACKTEST" in dyn_live  # always-on: backtest is historical
 
 
 def test_forward_detail_capped_so_ledgers_survive_prompt(tmp_path: Path) -> None:
