@@ -18,6 +18,7 @@ from wayfinder_paths.jobs.models import (
     utc_now_iso,
 )
 from wayfinder_paths.jobs.forward import is_forward_empty
+from wayfinder_paths.jobs.memory_hygiene import sanitize_job_memory
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
 
@@ -274,6 +275,11 @@ def prepare_job_worker_prompt(
             apply_proposal_id,
         )
         snapshot = snapshot_job(job.id, store=store)
+
+    # Deterministic memory hygiene: on a wake with no forward telemetry, strip
+    # unsupported performance claims from durable memory before the agent reads
+    # it, so a prior wake's confabulation cannot propagate. No-op otherwise.
+    sanitize_job_memory(store, job.id, forward=snapshot.get("forward"))
 
     prompt_sections = _build_worker_prompt_sections(
         store=store,

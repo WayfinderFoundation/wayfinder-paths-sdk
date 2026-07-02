@@ -40,6 +40,7 @@ from wayfinder_paths.core.config import (
 from wayfinder_paths.jobs.execution.job import backtest_execution_job
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.forward import ForwardRecorder
+from wayfinder_paths.jobs.memory_hygiene import scan_unsupported_perf_claims
 from wayfinder_paths.jobs.models import (
     JOB_AUTO_WORKER_AGENT_NAME,
     JOB_WORKER_AGENT_NAME,
@@ -2320,37 +2321,10 @@ SEEDED_NO_EDGE_FAMILY = "sizing"
 SEEDED_REJECTED_MARKER = "single-leg"
 TELEMETRY_KEYWORDS = ("telemetry", "logging", "recorder", "instrument")
 
-# Performance-claim patterns for the anti-confabulation gate. When the forward
-# snapshot is empty (no runs/trades/fills), a report or memory that states a
-# win rate, a dollar PnL, or a trade/fill count is fabricating forward evidence
-# — the exact DeepSeek failure the judge caught but the validator missed. Each
-# pattern captures a numeric group so we can ignore honest zeros ("0 trades",
-# "$0", "no forward data"). Bare metrics like sharpe/net-return% are NOT matched
-# so a telemetry proposal can still cite the backtest baseline by name.
-_PERF_CLAIM_PATTERNS = (
-    re.compile(r"win[\s_-]*rate[^.\n%]{0,24}?(\d{1,3}(?:\.\d+)?)\s*%", re.I),
-    re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%\s*win", re.I),
-    re.compile(r"[+\-]?\$\s?(\d[\d,]*(?:\.\d+)?)", re.I),
-    re.compile(
-        r"(\d+)\s+(?:forward\s+|winning\s+|losing\s+)?"
-        r"(?:trades|fills|wins|losses)\b",
-        re.I,
-    ),
-)
-
-
-def _scan_unsupported_perf_claims(text: str) -> list[str]:
-    """Return the surface forms of any NONZERO performance figures in `text`."""
-    hits: list[str] = []
-    for pattern in _PERF_CLAIM_PATTERNS:
-        for match in pattern.finditer(text or ""):
-            raw = match.group(1).replace(",", "")
-            try:
-                if float(raw) != 0.0:
-                    hits.append(match.group(0).strip())
-            except ValueError:
-                continue
-    return hits
+# The anti-confabulation detector is shared with production memory hygiene
+# (single source of truth): when forward telemetry is empty, a report or memory
+# stating a win rate, dollar PnL, or trade count is fabricating forward evidence.
+_scan_unsupported_perf_claims = scan_unsupported_perf_claims
 
 
 @dataclass(frozen=True)
