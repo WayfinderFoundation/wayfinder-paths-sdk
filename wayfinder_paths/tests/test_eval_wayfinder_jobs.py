@@ -311,7 +311,8 @@ def test_wayfinder_jobs_eval_command_shapes() -> None:
     execution_prompt = module.build_execution_backtest_prompt(
         module.EXECUTION_BACKTEST_CASES[0]
     )
-    assert "one unified strategy script" in execution_prompt
+    assert "jobs_v1 execution contract" in execution_prompt
+    assert "build_strategy(params)/decide(ctx)" in execution_prompt
     assert "run the local execution backtest and grid validation" in execution_prompt
 
 

@@ -10,6 +10,7 @@ from wayfinder_paths.jobs.application import (
     complete_application,
     validate_application_candidate,
 )
+from wayfinder_paths.jobs.backtest_artifacts import load_backtest_view
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.job import backtest_execution_job, validate_job
 from wayfinder_paths.jobs.models import (
@@ -42,8 +43,29 @@ def job_cli() -> None:
 @click.option(
     "--script", default=None, help="Script entrypoint for the deterministic loop."
 )
+@click.option(
+    "--execution-contract",
+    "execution_contract",
+    type=click.Choice(["jobs_v1", "legacy"]),
+    default="jobs_v1",
+    show_default=True,
+    help=(
+        "jobs_v1: SDK driver runs the strategy's decide() on schedule (script "
+        "must expose build_strategy/decide, no trading main()). legacy: runpy "
+        "the script's __main__ (existing free-form jobs only)."
+    ),
+)
 @click.option("--interval", "interval_seconds", type=int, default=None)
 @click.option("--cron", "cron_expr", default=None)
+@click.option(
+    "--initial-capital",
+    "initial_capital",
+    type=float,
+    default=None,
+    help="Starting capital in USD (execution_params.initial_capital) — the "
+    "base for equity/return stats and compound sizing. Explicit beats the "
+    "engine's hidden default.",
+)
 @click.option("--timezone", default="UTC", show_default=True)
 @click.option("--timeout", "timeout_seconds", type=int, default=120, show_default=True)
 @click.option(
@@ -66,8 +88,10 @@ def create_cmd(
     name: str | None,
     goal: str,
     script: str | None,
+    execution_contract: str,
     interval_seconds: int | None,
     cron_expr: str | None,
+    initial_capital: float | None,
     timezone: str,
     timeout_seconds: int,
     agent_mode: AgentMode,
@@ -95,6 +119,9 @@ def create_cmd(
         name=name,
         goal=goal,
         script=script,
+        execution_contract=(
+            "jobs_v1" if script and execution_contract == "jobs_v1" else "legacy"
+        ),
         interval_seconds=interval_seconds,
         cron_expr=cron_expr,
         timezone=timezone,
@@ -111,6 +138,8 @@ def create_cmd(
             max_open_orders=max_open_orders,
         ),
     )
+    if initial_capital is not None:
+        job.execution_params["initial_capital"] = float(initial_capital)
     path = store.save(job)
     result: dict[str, Any] = {"job": job.to_dict(), "job_yaml": str(path)}
     if not no_compile:
@@ -170,6 +199,344 @@ def backtest_cmd(
         workers=workers,
         parallel=parallel,
         store=store,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="migrate-contract",
+    help="Flip a legacy job onto the jobs_v1 driver after validation passes.",
+)
+@click.argument("job_id")
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Skip the validation gate (not recommended).",
+)
+def migrate_contract_cmd(job_id: str, force: bool) -> None:
+    store = JobStore()
+    job = store.load(job_id)
+    if job.execution_contract == "jobs_v1":
+        _echo_json({"ok": True, "result": {"already": "jobs_v1"}})
+        return
+    job.execution_contract = "jobs_v1"
+    store.save(job)
+    report = validate_job(job_id, store=store)
+    if report["status"] != "passed" and not force:
+        job.execution_contract = "legacy"
+        store.save(job)
+        _echo_json({"ok": False, "result": report})
+        raise click.ClickException(
+            "validation failed under jobs_v1; job left on legacy contract "
+            "(fix the failures or use --force)"
+        )
+    compile_result = JobCompiler(store=store).compile(job)
+    sync_all_jobs(store=store)
+    _echo_json(
+        {
+            "ok": True,
+            "result": {"validation": report, "compile": compile_result},
+        }
+    )
+
+
+@job_cli.command(
+    name="tick",
+    help="Run one driver tick for a jobs_v1 job (debugging / manual runs).",
+)
+@click.argument("job_id")
+@click.option(
+    "--mode",
+    type=click.Choice(["paper", "live"]),
+    default=None,
+    help="Override script_loop.mode for this tick.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Force paper brokers regardless of the job's configured mode.",
+)
+def tick_cmd(job_id: str, mode: str | None, dry_run: bool) -> None:
+    import asyncio as _asyncio
+    from pathlib import Path as _Path
+
+    from wayfinder_paths.jobs.execution.driver import tick_job
+
+    store = JobStore()
+    job = store.load(job_id)
+    if job.execution_contract != "jobs_v1":
+        raise click.ClickException(
+            "tick requires a jobs_v1 job; run migrate-contract first"
+        )
+    effective_mode = "paper" if dry_run else (mode or job.script_loop.mode or "paper")
+    root = _Path(store.job_dir(job_id))
+    payload = _asyncio.run(tick_job(job, root, effective_mode, store=store))
+    _echo_json(payload)
+
+
+@job_cli.command(
+    name="experiments",
+    help="Run a parameter-grid experiment (or list recorded experiments).",
+)
+@click.argument("job_id")
+@click.option("--grid", "grid_path", default=None, help="Path to a grid JSON file.")
+@click.option("--rank-by", default="net_return", show_default=True)
+@click.option("--workers", type=int, default=1, show_default=True)
+@click.option(
+    "--parallel",
+    type=click.Choice(["serial", "thread", "process"]),
+    default="serial",
+    show_default=True,
+)
+@click.option("--list", "list_only", is_flag=True, default=False)
+@click.option(
+    "--wf-test-bars",
+    "wf_test_bars",
+    type=int,
+    default=None,
+    help="Enable walk-forward: held-out test window size in bars per fold.",
+)
+@click.option("--wf-train-bars", "wf_train_bars", type=int, default=None)
+@click.option("--wf-folds", "wf_folds", type=int, default=3, show_default=True)
+@click.option(
+    "--wf-warmup-bars", "wf_warmup_bars", type=int, default=60, show_default=True
+)
+@click.option("--wf-anchored", "wf_anchored", is_flag=True, default=False)
+@click.option(
+    "--optimizer",
+    type=click.Choice(["grid", "optuna"]),
+    default="grid",
+    show_default=True,
+    help="grid: exhaustive dict-of-lists. optuna: TPE search over a typed "
+    "space (the --grid file doubles as the space; needs `poetry install "
+    "--with ml`).",
+)
+@click.option(
+    "--n-trials",
+    "n_trials",
+    type=int,
+    default=50,
+    show_default=True,
+    help="Optuna trial count (ignored for --optimizer grid).",
+)
+@click.option(
+    "--seed",
+    type=int,
+    default=42,
+    show_default=True,
+    help="Optuna sampler seed for reproducible searches.",
+)
+def experiments_cmd(
+    job_id: str,
+    grid_path: str | None,
+    rank_by: str,
+    workers: int,
+    parallel: str,
+    list_only: bool,
+    wf_test_bars: int | None,
+    wf_train_bars: int | None,
+    wf_folds: int,
+    wf_warmup_bars: int,
+    wf_anchored: bool,
+    optimizer: str,
+    n_trials: int,
+    seed: int,
+) -> None:
+    from wayfinder_paths.jobs.execution.experiments import (
+        list_experiments,
+        run_experiment,
+    )
+
+    store = JobStore()
+    if list_only or not grid_path:
+        _echo_json({"ok": True, "result": list_experiments(job_id, store=store)})
+        return
+    walk_forward = None
+    if wf_test_bars is not None:
+        walk_forward = {
+            "test_bars": wf_test_bars,
+            "train_bars": wf_train_bars,
+            "folds": wf_folds,
+            "warmup_bars": wf_warmup_bars,
+            "anchored": wf_anchored or wf_train_bars is None,
+        }
+    optuna_options = (
+        {"n_trials": n_trials, "seed": seed} if optimizer == "optuna" else None
+    )
+    result = run_experiment(
+        job_id,
+        grid_path,
+        rank_by=rank_by,
+        workers=workers,
+        parallel=parallel,
+        walk_forward=walk_forward,
+        optimizer=optimizer,
+        optuna_options=optuna_options,
+        store=store,
+    )
+    wf_report = (result.get("backtest") or {}).get("walk_forward")
+    if wf_report:
+        from wayfinder_paths.jobs.execution.walk_forward import format_fold_table
+
+        click.echo(format_fold_table(wf_report), err=True)
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="promote-params",
+    help="Promote winning experiment params into the job (direct pre-live, or "
+    "as a proposal for live jobs).",
+)
+@click.argument("job_id")
+@click.option("--grid", "grid_id", default=None, help="Grid id under results/backtest/grids/.")
+@click.option("--run", "run_id", default=None, help="Specific run id (default: best ranked).")
+@click.option("--params", "params_json", default=None, help="Explicit params JSON.")
+@click.option("--via-proposal", is_flag=True, default=False)
+def promote_params_cmd(
+    job_id: str,
+    grid_id: str | None,
+    run_id: str | None,
+    params_json: str | None,
+    via_proposal: bool,
+) -> None:
+    from wayfinder_paths.jobs.execution.experiments import promote_params
+
+    store = JobStore()
+    result = promote_params(
+        job_id,
+        grid_id=grid_id,
+        run_id=run_id,
+        params=json.loads(params_json) if params_json else None,
+        via_proposal=via_proposal,
+        store=store,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="reconcile",
+    help="Replay recorded ticks through the engine and diff decisions "
+    "(live/backtest drift detection).",
+)
+@click.argument("job_id")
+@click.option("--limit", type=int, default=200, show_default=True)
+def reconcile_cmd(job_id: str, limit: int) -> None:
+    from wayfinder_paths.jobs.execution.reconcile import reconcile_job
+
+    store = JobStore()
+    report = reconcile_job(job_id, store=store, limit=limit)
+    _echo_json({"ok": True, "result": report})
+
+
+@job_cli.command(
+    name="fetch-dataset",
+    help="Fetch real candles into input_bars.json — through the live venue "
+    "feeds (default) or long-history CCXT data (backtests only).",
+)
+@click.argument("job_id")
+@click.option("--days", type=int, default=14, show_default=True)
+@click.option(
+    "--source",
+    type=click.Choice(["venues", "ccxt"]),
+    default="venues",
+    show_default=True,
+)
+@click.option("--exchange", default="binance", show_default=True)
+@click.option(
+    "--market-type",
+    "market_type",
+    type=click.Choice(["swap", "spot"]),
+    default="swap",
+    show_default=True,
+)
+@click.option("--quote", default="USDT", show_default=True)
+def fetch_dataset_cmd(
+    job_id: str,
+    days: int,
+    source: str,
+    exchange: str,
+    market_type: str,
+    quote: str,
+) -> None:
+    from wayfinder_paths.jobs.execution.preflight import build_live_dataset
+
+    store = JobStore()
+    result = build_live_dataset(
+        job_id,
+        days=days,
+        store=store,
+        source=source,
+        exchange=exchange,
+        market_type=market_type,
+        quote=quote,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="preflight",
+    help="Behavioral pre-live gate: drive the real driver over replayed data "
+    "plus fault scenarios (stale feed, rejects, ambiguity, restart).",
+)
+@click.argument("job_id")
+@click.option("--max-ticks", type=int, default=50, show_default=True)
+def preflight_cmd(job_id: str, max_ticks: int) -> None:
+    from wayfinder_paths.jobs.execution.preflight import run_preflight
+
+    store = JobStore()
+    report = run_preflight(job_id, store=store, max_ticks=max_ticks)
+    _echo_json({"ok": report["status"] == "passed", "result": report})
+    if report["status"] != "passed":
+        raise click.ClickException("preflight failed")
+
+
+@job_cli.command(
+    name="gate",
+    help="Evaluate the live gate (validation + backtest + preflight tied to "
+    "the current revision).",
+)
+@click.argument("job_id")
+def gate_cmd(job_id: str) -> None:
+    from wayfinder_paths.jobs.gating import evaluate_live_gate
+
+    store = JobStore()
+    gate = evaluate_live_gate(job_id, store=store)
+    _echo_json({"ok": gate["live_ready"], "result": gate})
+
+
+@job_cli.command(
+    name="backtest-view", help="Read a bounded backtest visualization payload."
+)
+@click.argument("job_id")
+@click.option(
+    "--view",
+    type=click.Choice(["all", "legs", "spread", "equity", "drawdown", "performance"]),
+    default="all",
+    show_default=True,
+)
+@click.option("--series", "series_names", multiple=True)
+@click.option("--from", "from_ts", default=None)
+@click.option("--to", "to_ts", default=None)
+@click.option("--max-points", type=int, default=1500, show_default=True)
+def backtest_view_cmd(
+    job_id: str,
+    view: str,
+    series_names: tuple[str, ...],
+    from_ts: str | None,
+    to_ts: str | None,
+    max_points: int,
+) -> None:
+    store = JobStore()
+    result = load_backtest_view(
+        job_id,
+        store=store,
+        view=view,
+        series_names=list(series_names),
+        from_ts=from_ts,
+        to_ts=to_ts,
+        max_points=max_points,
     )
     _echo_json({"ok": True, "result": result})
 
@@ -263,8 +630,28 @@ def _wakeup_with_proposal(
 @job_cli.command(name="approve", help="Approve a pending proposal.")
 @click.argument("job_id")
 @click.argument("proposal_id")
-def approve_cmd(job_id: str, proposal_id: str) -> None:
+@click.option(
+    "--skip-gate",
+    is_flag=True,
+    default=False,
+    help="Skip the legacy-contract gate check (not recommended).",
+)
+def approve_cmd(job_id: str, proposal_id: str, skip_gate: bool) -> None:
     store = JobStore()
+    # The SDK is the authoritative gate even when the backend is bypassed:
+    # legacy jobs cannot pass the versioned-change flow.
+    job = store.load(job_id)
+    if job.execution_contract != "jobs_v1" and not skip_gate:
+        _echo_json(
+            {
+                "ok": False,
+                "error": (
+                    "job is on the legacy execution contract; run "
+                    "`wayfinder job migrate-contract` before approving proposals"
+                ),
+            }
+        )
+        raise click.ClickException("legacy jobs cannot enter the versioned-change flow")
     _wakeup_with_proposal(
         store, job_id, proposal_id, store.approve_proposal(job_id, proposal_id)
     )

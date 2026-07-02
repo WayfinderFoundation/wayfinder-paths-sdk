@@ -12,9 +12,11 @@ DEFAULT_FORWARD_RUNS = "results/forward/runs.jsonl"
 DEFAULT_FORWARD_TRADES = "results/forward/trades.jsonl"
 DEFAULT_FORWARD_ORDERS = "results/forward/orders.jsonl"
 DEFAULT_FORWARD_FILLS = "results/forward/fills.jsonl"
+DEFAULT_FORWARD_TICKS = "results/forward/ticks.jsonl"
 DEFAULT_FORWARD_SUMMARY = "results/forward/summary.json"
 
 AgentMode = Literal["off", "monitor", "intervene", "auto"]
+ExecutionContract = Literal["legacy", "jobs_v1"]
 JobKind = Literal["script_only", "script_agent", "agent_only"]
 JobHealth = Literal["green", "yellow", "red", "unknown"]
 ProposalStatus = Literal["pending", "approved", "rejected"]
@@ -180,6 +182,10 @@ class WayfinderJob:
     performance: dict[str, Any] = field(default_factory=dict)
     reporting: dict[str, Any] = field(default_factory=dict)
     execution_spec: dict[str, Any] = field(default_factory=dict)
+    execution_params: dict[str, Any] = field(default_factory=dict)
+    # Explicit, never inferred: existing free-form jobs carry execution_specs
+    # too, so presence of a spec must not switch a job onto the driver wrapper.
+    execution_contract: ExecutionContract = "legacy"
 
     @classmethod
     def new(
@@ -196,6 +202,7 @@ class WayfinderJob:
         agent_mode: AgentMode = "off",
         agent_wake_seconds: int | None = None,
         auto_limits: dict[str, Any] | None = None,
+        execution_contract: ExecutionContract = "legacy",
     ) -> WayfinderJob:
         jid = safe_job_id(job_id)
         normalized_mode = normalize_agent_mode(agent_mode)
@@ -226,6 +233,7 @@ class WayfinderJob:
                 "drift_warning",
                 "health_red",
                 "proposal_created",
+                "reconcile_mismatch",
             ],
             auto_limits=auto_limits_payload if normalized_mode == "auto" else {},
         )
@@ -233,6 +241,7 @@ class WayfinderJob:
             id=jid,
             name=name or jid.replace("-", " ").title(),
             job_kind=infer_job_kind(script_enabled, normalized_mode),
+            execution_contract=execution_contract,
             goal=goal,
             versioning={
                 "active_revision": None,
@@ -297,6 +306,10 @@ class WayfinderJob:
             performance=dict(data.get("performance") or {}),
             reporting=dict(data.get("reporting") or {}),
             execution_spec=dict(data.get("execution_spec") or {}),
+            execution_params=dict(data.get("execution_params") or {}),
+            execution_contract=(
+                "jobs_v1" if data.get("execution_contract") == "jobs_v1" else "legacy"
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -314,6 +327,8 @@ class WayfinderJob:
             "script_loop": self.script_loop.to_dict(),
             "agent_loop": self.agent_loop.to_dict(),
             "execution_spec": dict(self.execution_spec),
+            "execution_params": dict(self.execution_params),
+            "execution_contract": self.execution_contract,
             "performance": dict(self.performance),
             "reporting": dict(self.reporting),
         }

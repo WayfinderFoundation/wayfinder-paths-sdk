@@ -8,12 +8,16 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from croniter import croniter
 
 from wayfinder_paths.jobs.execution.primitives import (
     ExecutionSpec,
     _load_module_from_path,
+    bar_interval_seconds,
 )
+from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.runner.schedule import ScheduleSpec, normalize_schedule
 
 FORBIDDEN_ORDER_PATTERNS = (
     "hyperliquid_place_",
@@ -65,12 +69,38 @@ def validate_execution_trace(
     if hidden_success:
         issues.append("non-filled order statuses must not be reported as success")
 
+    guard_events = trace.get("guard_events") or []
+    stale_timestamps = {
+        event.get("timestamp")
+        for event in guard_events
+        if event.get("kind") == "stale_data"
+    }
+    stale_entries = [
+        fill
+        for fill in trace["fills"]
+        if fill.get("timestamp") in stale_timestamps
+        and fill["status"] in {"filled", "partial"}
+        and not fill.get("reduce_only")
+    ]
+    state_valid = not stale_entries
+    if stale_entries:
+        issues.append("position-opening fills executed against stale market data")
+
+    rejected = [
+        event for event in guard_events if event.get("kind") == "intent_rejected"
+    ]
+    capacity_valid = not rejected
+    if rejected:
+        warnings.append(
+            f"{len(rejected)} intent(s) rejected by capability/limit guards"
+        )
+
     execution_valid = not critical_failures and not issues
     return {
         "execution_valid": execution_valid,
         "data_valid": no_lookahead,
-        "state_valid": True,
-        "capacity_valid": True,
+        "state_valid": state_valid,
+        "capacity_valid": capacity_valid,
         "issues": issues,
         "warnings": warnings,
         "critical_failures": critical_failures,
@@ -129,6 +159,7 @@ def validate_execution_job(
 
     spec = ExecutionSpec.from_dict(spec_data)
     checks.extend(_execution_spec_checks(spec))
+    checks.extend(_timing_checks(job_data, spec))
     script_path = store.resolve_script_entrypoint(
         job_id,
         job_data,
@@ -156,10 +187,52 @@ def validate_execution_job(
             }
         )
 
+    checks.extend(_preflight_checks(root, job_data, spec))
+
     report = _report(checks, strict=strict or spec.strict)
+    report["revision"] = compute_workspace_revision(root)
     if not candidate_dir:
         store.write_json(job_id, "reports/validation/latest.json", report)
     return report
+
+
+def _preflight_checks(
+    root: Path, job_data: Mapping[str, Any], spec: ExecutionSpec
+) -> list[dict[str, Any]]:
+    """A passing preflight (the behavioral gate that drives the real driver
+    over replayed data + fault scenarios) is mandatory before live mode."""
+    is_jobs_v1 = str(job_data.get("execution_contract") or "legacy") == "jobs_v1"
+    if not is_jobs_v1:
+        return []
+    script_loop = job_data.get("script_loop") or {}
+    live = str(script_loop.get("mode") or "paper") == "live"
+    blocking = live or spec.strict
+    path = root / "reports" / "preflight" / "latest.json"
+    if not path.exists():
+        return [
+            {
+                "name": "preflight_report_present",
+                "passed": False,
+                "blocking": blocking,
+                "hint": "run `wayfinder job preflight`",
+            }
+        ]
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        report = {}
+    return [
+        {"name": "preflight_report_present", "passed": True, "blocking": blocking},
+        {
+            "name": "preflight_passed",
+            "passed": report.get("status") == "passed",
+            "blocking": blocking,
+            "details": {
+                "status": report.get("status"),
+                "revision": report.get("revision"),
+            },
+        },
+    ]
 
 
 def resolve_execution_spec(
@@ -180,6 +253,114 @@ def resolve_execution_spec(
             return loaded, path
         case _:
             return {}, path
+
+
+STALE_POLICIES = frozenset({"skip", "flat", "decide_anyway"})
+
+
+def _timing_checks(
+    job_data: Mapping[str, Any], spec: ExecutionSpec
+) -> list[dict[str, Any]]:
+    """Structural timing checks: schedule vs bar interval, timeout, staleness.
+
+    A strategy that consumes 1h bars but wakes every 4h silently skips bars; a
+    timeout longer than the schedule period means the runner (which skips
+    in-flight ticks and SIGKILLs on timeout) can starve the schedule. Both are
+    unobservable in a fixture backtest, so they are validated structurally here.
+    """
+    is_jobs_v1 = str(job_data.get("execution_contract") or "legacy") == "jobs_v1"
+    bar_seconds = bar_interval_seconds(spec.data_contract.get("bar_interval"))
+    checks: list[dict[str, Any]] = [
+        {
+            "name": "bar_interval_declared",
+            "passed": bar_seconds is not None or not is_jobs_v1,
+            "value": spec.data_contract.get("bar_interval"),
+            "blocking": is_jobs_v1,
+        },
+        {
+            "name": "staleness_policy_valid",
+            "passed": spec.data_contract.get("stale_policy") in STALE_POLICIES,
+            "value": spec.data_contract.get("stale_policy"),
+            "blocking": False,
+        },
+        {
+            # Without an explicit base, equity/return stats and compound
+            # sizing silently use the engine default — declare it.
+            "name": "initial_capital_declared",
+            "passed": bool(
+                (job_data.get("execution_params") or {}).get("initial_capital")
+            )
+            or not is_jobs_v1,
+            "value": (job_data.get("execution_params") or {}).get("initial_capital"),
+            "blocking": False,
+        },
+        {
+            # The live driver always fetches a bounded window (default 200
+            # bars); an undeclared lookback means backtests see full history
+            # while live sees 200 — path-dependent indicators (Wilder ATR,
+            # SuperTrend) will diverge. Declaring it aligns both AND bounds
+            # per-tick backtest cost.
+            "name": "lookback_bars_declared",
+            "passed": bool(
+                (job_data.get("execution_params") or {}).get("lookback_bars")
+            )
+            or not is_jobs_v1,
+            "value": (job_data.get("execution_params") or {}).get("lookback_bars"),
+            "blocking": False,
+        },
+    ]
+
+    script_loop = job_data.get("script_loop") or {}
+    if not script_loop.get("enabled"):
+        return checks
+
+    try:
+        schedule = normalize_schedule(
+            interval_seconds=script_loop.get("interval_seconds"),
+            cron_expr=script_loop.get("cron_expr"),
+            timezone=script_loop.get("timezone"),
+        )
+        checks.append(
+            {"name": "schedule_declared_valid", "passed": True, "kind": schedule.kind}
+        )
+    except (ValueError, TypeError) as exc:
+        checks.append(
+            {"name": "schedule_declared_valid", "passed": False, "error": str(exc)}
+        )
+        return checks
+
+    period = _schedule_period_seconds(schedule)
+    if bar_seconds is not None and period is not None:
+        checks.append(
+            {
+                "name": "schedule_matches_bar_interval",
+                "passed": period <= bar_seconds,
+                "schedule_period_seconds": period,
+                "bar_interval_seconds": bar_seconds,
+            }
+        )
+    if period is not None:
+        timeout = int(script_loop.get("timeout_seconds") or 120)
+        checks.append(
+            {
+                "name": "timeout_vs_interval",
+                "passed": timeout < period,
+                "timeout_seconds": timeout,
+                "schedule_period_seconds": period,
+            }
+        )
+    return checks
+
+
+def _schedule_period_seconds(schedule: ScheduleSpec) -> int | None:
+    if schedule.kind == "interval":
+        return schedule.interval_seconds
+    if not schedule.cron_expr:
+        return None
+    iterator = croniter(schedule.cron_expr, 0)
+    fires = [iterator.get_next(float) for _ in range(4)]
+    gaps = sorted(b - a for a, b in zip(fires, fires[1:], strict=False))
+    return int(gaps[len(gaps) // 2]) if gaps else None
 
 
 def _execution_spec_checks(spec: ExecutionSpec) -> list[dict[str, Any]]:

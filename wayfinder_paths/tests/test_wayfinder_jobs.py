@@ -535,7 +535,9 @@ def test_claim_application_pauses_loops_then_complete_resumes(
         "prop_apply",
         rearm_reason="rearm_guard: SNX still below SMA50.",
     )
-    candidate_validation = validate_application_candidate(store, job.id, "prop_apply")
+    candidate_validation = validate_application_candidate(
+        store, job.id, "prop_apply", allow_legacy=True
+    )
     assert candidate_validation["status"] == "passed"
 
     completed = complete_application(
@@ -545,6 +547,7 @@ def test_claim_application_pauses_loops_then_complete_resumes(
         status="applied",
         changed_files=[".wayfinder/jobs/apply-demo/workspace/src/fast_loop.py"],
         validation={"syntax": "ok"},
+        allow_legacy=True,
     )
 
     assert completed["proposal"]["application"]["status"] == "applied"

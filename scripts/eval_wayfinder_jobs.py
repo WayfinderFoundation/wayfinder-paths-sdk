@@ -203,20 +203,23 @@ EXECUTION_BACKTEST_CASES = [
         job_id="eval-hard-execution-backtest",
         prompt=(
             "Create a Wayfinder execution-spec trading job named Eval Hard Execution "
-            "Backtest. Use one unified strategy script under the job workspace. The "
-            "same script must expose build_strategy(params) and be usable for "
-            "backtest, grid search, and forward execution. Use only local fake OHLC "
-            "fixtures supplied in this eval; do not fetch live market data and do "
-            "not call any real order-placement or fund-moving tools. The job must "
-            "include execution_spec.json or job.yaml execution_spec for Hyperliquid "
-            "perps with completed_only bars, next_bar_open fills, no_external_ccxt, "
-            "ledger_only state, and OHLC high/low stop/TP rules. Write fixture bars "
-            "to results/backtest/input_bars.json, run a single execution backtest, "
-            "run a grid search with at least two parameter sets, run job validation, "
-            "and leave results/backtest/visualization.json plus reports/validation/"
-            "latest.json. The strategy must use OrderIntent and protective bracket "
-            "metadata, not direct live order calls or legacy quick_backtest as final "
-            "validation."
+            "Backtest on the jobs_v1 execution contract (`wayfinder job create "
+            "--execution-contract jobs_v1`). The strategy script under the job "
+            "workspace must expose ONLY build_strategy(params)/decide(ctx) — the "
+            "SDK driver runs the same decide() for backtest, paper, and live; do "
+            "NOT write a trading main() or any free-form live loop. Use only local "
+            "fake OHLC fixtures supplied in this eval; do not fetch live market "
+            "data and do not call any real order-placement or fund-moving tools. "
+            "The job must include execution_spec.json or job.yaml execution_spec "
+            "for Hyperliquid perps with completed_only bars, next_bar_open fills, "
+            "no_external_ccxt, a data_contract.bar_interval matching the schedule "
+            "(e.g. 5m bars with a 300s interval), and OHLC high/low stop/TP rules. "
+            "Write fixture bars to results/backtest/input_bars.json, run a single "
+            "execution backtest, run a grid search with at least two parameter "
+            "sets, run job validation, and leave results/backtest/"
+            "visualization.json plus reports/validation/latest.json. The strategy "
+            "must use OrderIntent and protective bracket metadata, not direct live "
+            "order calls or legacy quick_backtest as final validation."
         ),
     )
 ]
@@ -511,8 +514,10 @@ def create_expected_execution_backtest_bundle(
         script=f".wayfinder/jobs/{case.job_id}/workspace/src/strategy.py",
         interval_seconds=300,
         agent_mode="off",
+        execution_contract="jobs_v1",
     )
     spec = ExecutionSpec().to_dict()
+    spec["data_contract"]["bar_interval"] = "5m"
     spec["validation"]["require_scenarios"] = True
     spec["validation"]["execution_scenario_plan"] = {
         "scenarios": [
@@ -809,6 +814,23 @@ def validate_execution_backtest_case(
             "name": "strategy_unified_entrypoint",
             "passed": "def build_strategy" in script_text
             or "def decide" in script_text,
+        },
+        {
+            "name": "execution_contract_jobs_v1",
+            "passed": (
+                job_is_mapping and job_data.get("execution_contract") == "jobs_v1"
+            ),
+        },
+        {
+            "name": "timing_fields_present",
+            "passed": bool(
+                (execution_spec.get("data_contract") or {}).get("bar_interval")
+            ),
+        },
+        {
+            "name": "no_main_trading_logic",
+            "passed": 'if __name__ == "__main__"' not in script_text
+            and "while True" not in script_text,
         },
         {
             "name": "strategy_uses_order_intent",
@@ -1403,6 +1425,7 @@ def write_valid_application_artifacts(workspace: Path, case: WorkerCase) -> None
             job_dir=root,
             proposal=proposal,
             candidate_dir=candidate_dir,
+            allow_legacy=True,
         )
         validation_attempts.append(
             {

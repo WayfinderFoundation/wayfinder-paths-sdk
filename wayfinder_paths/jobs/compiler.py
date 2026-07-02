@@ -103,26 +103,51 @@ class JobCompiler:
             if entrypoint is None:
                 raise ValueError("script loop is enabled but entrypoint is missing")
             script_wrapper = self.store.runs_jobs_dir / f"{safe_module_name}_script.py"
-            script_wrapper.write_text(
-                dedent(
-                    f"""
-                    from __future__ import annotations
+            if job.execution_contract == "jobs_v1":
+                # SDK-owned tick driver: the strategy module only exposes
+                # decide()/build_strategy(); the driver does data fetch,
+                # reconcile, order routing, and telemetry.
+                script_wrapper.write_text(
+                    dedent(
+                        f"""
+                        from __future__ import annotations
 
-                    import runpy
-                    import sys
-                    from pathlib import Path
+                        import sys
+                        from pathlib import Path
 
-                    ENTRYPOINT = Path({str(entrypoint)!r})
-                    JOB_DIR = Path({str(root)!r})
+                        from wayfinder_paths.jobs.execution.driver import run_scheduled_tick
 
-                    if __name__ == "__main__":
-                        sys.path.insert(0, str(JOB_DIR / "workspace"))
-                        sys.argv = [str(ENTRYPOINT), *sys.argv[1:]]
-                        runpy.run_path(str(ENTRYPOINT), run_name="__main__")
-                    """
-                ).lstrip(),
-                encoding="utf-8",
-            )
+                        JOB_DIR = Path({str(root)!r})
+
+                        if __name__ == "__main__":
+                            sys.path.insert(0, str(JOB_DIR / "workspace"))
+                            payload = run_scheduled_tick(JOB_DIR)
+                            raise SystemExit(0 if payload.get("ok") else 1)
+                        """
+                    ).lstrip(),
+                    encoding="utf-8",
+                )
+            else:
+                script_wrapper.write_text(
+                    dedent(
+                        f"""
+                        from __future__ import annotations
+
+                        import runpy
+                        import sys
+                        from pathlib import Path
+
+                        ENTRYPOINT = Path({str(entrypoint)!r})
+                        JOB_DIR = Path({str(root)!r})
+
+                        if __name__ == "__main__":
+                            sys.path.insert(0, str(JOB_DIR / "workspace"))
+                            sys.argv = [str(ENTRYPOINT), *sys.argv[1:]]
+                            runpy.run_path(str(ENTRYPOINT), run_name="__main__")
+                        """
+                    ).lstrip(),
+                    encoding="utf-8",
+                )
             wrapper_paths["script"] = str(
                 script_wrapper.relative_to(self.store.repo_root)
             )

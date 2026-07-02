@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import importlib.util
 import sys
 from collections.abc import Mapping
@@ -13,7 +14,9 @@ import pandas as pd
 
 OrderAction = Literal["OPEN", "CLOSE", "STOP_LOSS", "TAKE_PROFIT", "CANCEL"]
 FillStatus = Literal["filled", "partial", "resting", "rejected", "ambiguous"]
-SnapshotStatus = Literal["valid", "ambiguous", "rate_limited", "stale"]
+SnapshotStatus = Literal["valid", "ambiguous", "rate_limited", "stale", "risk_halt"]
+
+DEFAULT_INITIAL_CAPITAL = 10_000.0
 
 
 @dataclass
@@ -35,11 +38,15 @@ class ExecutionSpec:
             "candles_source": "sdk_only",
             "no_external_ccxt": True,
             "rate_limit_safe": True,
+            "bar_interval": None,
+            "max_bar_age_intervals": 2,
+            "stale_policy": "skip",
         }
     )
     validation: dict[str, Any] = field(
         default_factory=lambda: {"mode": "soft", "require_scenarios": False}
     )
+    venues: list[str] = field(default_factory=lambda: ["hyperliquid"])
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> ExecutionSpec:
@@ -115,18 +122,73 @@ class CompletedBarsView:
         else:
             frame["volume"] = None
         self._bars = frame.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
+        self._timestamps_cache: list[pd.Timestamp] | None = None
+        self._symbols_cache: list[str] | None = None
+        # {(ts, symbol): MarketBar} + {ts: first MarketBar at ts}; shared with
+        # truncated child views (they guard lookups against their own bounds).
+        self._row_index: dict[Any, MarketBar] | None = None
 
     @classmethod
     def from_rows(cls, rows: list[Mapping[str, Any]]) -> CompletedBarsView:
         return cls(pd.DataFrame([dict(row) for row in rows]))
 
+    @classmethod
+    def _from_trusted(
+        cls,
+        frame: pd.DataFrame,
+        *,
+        timestamps: list[pd.Timestamp] | None = None,
+        row_index: dict[Any, MarketBar] | None = None,
+    ) -> CompletedBarsView:
+        """Fast path for frames already coerced+sorted by a prior __init__
+        (e.g. per-tick truncation). Skipping re-coercion turns the simulator's
+        per-bar view construction from O(n) coercions into a plain slice.
+        Passing the parent's timestamp slice and row index makes per-tick
+        views O(1) instead of recomputing uniques/masks each bar."""
+        view = object.__new__(cls)
+        view._bars = frame
+        view._timestamps_cache = timestamps
+        view._symbols_cache = None
+        view._row_index = row_index
+        return view
+
     @property
     def symbols(self) -> list[str]:
-        return sorted(str(value) for value in self._bars["symbol"].unique())
+        if self._symbols_cache is None:
+            self._symbols_cache = sorted(
+                str(value) for value in self._bars["symbol"].unique()
+            )
+        return list(self._symbols_cache)
 
     @property
     def timestamps(self) -> list[pd.Timestamp]:
-        return list(pd.Index(self._bars["timestamp"].drop_duplicates()))
+        return list(self._ensure_timestamps())
+
+    def _ensure_timestamps(self) -> list[pd.Timestamp]:
+        if self._timestamps_cache is None:
+            self._timestamps_cache = list(
+                pd.Index(self._bars["timestamp"].drop_duplicates())
+            )
+        return self._timestamps_cache
+
+    def _ensure_row_index(self) -> dict[Any, MarketBar]:
+        if self._row_index is None:
+            index: dict[Any, MarketBar] = {}
+            for row in self._bars.itertuples(index=False):
+                bar = MarketBar(
+                    timestamp=pd.Timestamp(row.timestamp),
+                    symbol=str(row.symbol),
+                    open=float(row.open),
+                    high=float(row.high),
+                    low=float(row.low),
+                    close=float(row.close),
+                    volume=None if pd.isna(row.volume) else float(row.volume),
+                )
+                index[(bar.timestamp, bar.symbol)] = bar
+                # First row at each timestamp (frame sorted by ts, symbol).
+                index.setdefault(bar.timestamp, bar)
+            self._row_index = index
+        return self._row_index
 
     def latest(self, symbol: str | None = None) -> dict[str, Any]:
         frame = self._filter_symbol(symbol)
@@ -137,40 +199,76 @@ class CompletedBarsView:
     def through(
         self, index_or_time: int | str | datetime | pd.Timestamp
     ) -> CompletedBarsView:
+        timestamps = self._ensure_timestamps()
         match index_or_time:
             case int():
-                timestamps = self.timestamps
                 if not timestamps:
-                    return CompletedBarsView(self._bars.iloc[0:0])
+                    return CompletedBarsView._from_trusted(self._bars.iloc[0:0])
                 index = min(max(index_or_time, 0), len(timestamps) - 1)
-                cutoff = timestamps[index]
             case _:
                 cutoff = pd.Timestamp(index_or_time)
                 if cutoff.tzinfo is None:
                     cutoff = cutoff.tz_localize("UTC")
                 else:
                     cutoff = cutoff.tz_convert("UTC")
-        return CompletedBarsView(self._bars[self._bars["timestamp"] <= cutoff])
+                index = bisect.bisect_right(timestamps, cutoff) - 1
+                if index < 0:
+                    return CompletedBarsView._from_trusted(self._bars.iloc[0:0])
+        return self._slice(0, index)
+
+    def window(self, index: int, lookback_bars: int) -> CompletedBarsView:
+        """Trailing window ending at timestamp `index`, at most `lookback_bars`
+        timestamps deep — the same bounded history the live driver fetches."""
+        timestamps = self._ensure_timestamps()
+        if not timestamps:
+            return CompletedBarsView._from_trusted(self._bars.iloc[0:0])
+        index = min(max(index, 0), len(timestamps) - 1)
+        start = max(0, index - max(int(lookback_bars), 1) + 1)
+        return self._slice(start, index)
+
+    def _slice(self, start: int, end: int) -> CompletedBarsView:
+        """View over timestamps[start..end] inclusive. The sorted frame makes
+        this a contiguous positional slice; children inherit the timestamp
+        slice and the shared row index (bounds-guarded in row_at)."""
+        timestamps = self._ensure_timestamps()
+        column = self._bars["timestamp"]
+        start_pos = (
+            0 if start == 0 else int(column.searchsorted(timestamps[start], side="left"))
+        )
+        end_pos = int(column.searchsorted(timestamps[end], side="right"))
+        return CompletedBarsView._from_trusted(
+            self._bars.iloc[start_pos:end_pos],
+            timestamps=timestamps[start : end + 1],
+            row_index=self._ensure_row_index(),
+        )
 
     def row_at(self, timestamp: pd.Timestamp, symbol: str | None = None) -> MarketBar:
-        frame = self._bars[self._bars["timestamp"] == timestamp]
-        if symbol is not None:
-            frame = frame[frame["symbol"] == symbol]
-        if frame.empty:
-            raise ValueError(f"No bar at {timestamp} for {symbol or 'any symbol'}")
-        row = frame.iloc[0]
-        return MarketBar(
-            timestamp=pd.Timestamp(row["timestamp"]),
-            symbol=str(row["symbol"]),
-            open=float(row["open"]),
-            high=float(row["high"]),
-            low=float(row["low"]),
-            close=float(row["close"]),
-            volume=None if pd.isna(row["volume"]) else float(row["volume"]),
-        )
+        timestamps = self._ensure_timestamps()
+        try:
+            in_bounds = bool(
+                timestamps and timestamps[0] <= timestamp <= timestamps[-1]
+            )
+        except TypeError:  # uncomparable input (naive ts, junk) == no bar
+            in_bounds = False
+        if in_bounds:
+            key = (timestamp, symbol) if symbol is not None else timestamp
+            bar = self._ensure_row_index().get(key)
+            if bar is not None:
+                # MarketBar is frozen, so sharing index instances across
+                # callers is safe — no defensive copy needed.
+                return bar
+        raise ValueError(f"No bar at {timestamp} for {symbol or 'any symbol'}")
+
+    def __len__(self) -> int:
+        return len(self._bars)
 
     def to_frame(self) -> pd.DataFrame:
         return self._bars.copy()
+
+    def symbol_frame(self, symbol: str) -> pd.DataFrame:
+        """Rows for one symbol WITHOUT the defensive whole-frame copy of
+        to_frame(). Callers must treat the result as read-only."""
+        return self._bars[self._bars["symbol"] == symbol]
 
     def to_rows(self) -> list[dict[str, Any]]:
         return self._bars.to_dict(orient="records")
@@ -192,6 +290,8 @@ class OrderIntent:
     reduce_only: bool = False
     client_order_id: str | None = None
     bracket: dict[str, Any] | None = None
+    limit_price: float | None = None
+    expires_at: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -211,6 +311,8 @@ class OrderIntent:
                     reduce_only=bool(data.get("reduce_only")),
                     client_order_id=data.get("client_order_id"),
                     bracket=dict(data["bracket"]) if data.get("bracket") else None,
+                    limit_price=_float_or_none(data.get("limit_price")),
+                    expires_at=data.get("expires_at"),
                     metadata=dict(data["metadata"]) if data.get("metadata") else {},
                 )
 
@@ -345,6 +447,24 @@ class PositionLedger:
             "last_bar_time": self._last_bar_time,
         }
 
+    @classmethod
+    def restore(cls, data: Mapping[str, Any] | None) -> PositionLedger:
+        ledger = cls()
+        payload = data or {}
+        for symbol, record in (payload.get("positions") or {}).items():
+            ledger.positions[str(symbol)] = PositionRecord(
+                symbol=str(record.get("symbol") or symbol),
+                side=str(record.get("side") or "long"),
+                size=float(record.get("size") or 0.0),
+                avg_price=float(record.get("avg_price") or 0.0),
+                bars_held=int(record.get("bars_held") or 0),
+                opened_at=record.get("opened_at"),
+                metadata=dict(record.get("metadata") or {}),
+            )
+        ledger.realized_pnl = float(payload.get("realized_pnl") or 0.0)
+        ledger._last_bar_time = payload.get("last_bar_time")
+        return ledger
+
 
 class BracketEngine:
     @staticmethod
@@ -399,6 +519,11 @@ class BracketEngine:
 
 @dataclass
 class ExecutionContext:
+    """Everything decide() may read. `strategy_state` is the strategy's own
+    scratch store — the engine persists it across ticks (and replays it in
+    reconciliation), so values must be JSON-serializable; decide() mutates it
+    in place."""
+
     view: CompletedBarsView
     ledger: PositionLedger
     state_snapshot: StateSnapshot
@@ -406,6 +531,26 @@ class ExecutionContext:
     params: dict[str, Any]
     timestamp: str
     execution_spec: ExecutionSpec
+    strategy_state: dict[str, Any] = field(default_factory=dict)
+
+
+def mark_to_market_equity(ctx: ExecutionContext) -> float:
+    """Current equity as decide() can see it: initial capital + realized PnL +
+    unrealized mark-to-market at the latest completed close. Pure (ctx data
+    only — purity-sandbox safe) and bar-identical to the simulator's equity
+    curve, so compound sizing in backtest and live use the same number."""
+    equity = (
+        float(ctx.params.get("initial_capital") or DEFAULT_INITIAL_CAPITAL)
+        + ctx.ledger.realized_pnl
+    )
+    for position in ctx.ledger.positions.values():
+        try:
+            close = float(ctx.view.latest(position.symbol)["close"])
+        except ValueError:
+            close = position.avg_price
+        direction = 1 if position.side == "long" else -1
+        equity += direction * (close - position.avg_price) * position.size
+    return equity
 
 
 @dataclass
@@ -416,6 +561,7 @@ class ExecutionTrace:
     fills: list[dict[str, Any]] = field(default_factory=list)
     ledger_snapshots: list[dict[str, Any]] = field(default_factory=list)
     bracket_events: list[dict[str, Any]] = field(default_factory=list)
+    guard_events: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -453,3 +599,23 @@ def _bar_value(bar: Mapping[str, Any] | MarketBar, key: str) -> float:
 
 def _float_or_none(value: Any) -> float | None:
     return float(value) if value is not None else None
+
+
+_BAR_INTERVAL_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def bar_interval_seconds(value: Any) -> int | None:
+    """Parse a bar interval like "5m", "1h", or plain seconds into seconds."""
+    match value:
+        case None:
+            return None
+        case int() | float():
+            return int(value) if value > 0 else None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    unit = text[-1]
+    if unit in _BAR_INTERVAL_UNITS and text[:-1].isdigit():
+        count = int(text[:-1])
+        return count * _BAR_INTERVAL_UNITS[unit] if count > 0 else None
+    return int(text) if text.isdigit() and int(text) > 0 else None

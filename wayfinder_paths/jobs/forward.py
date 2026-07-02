@@ -11,6 +11,7 @@ from wayfinder_paths.jobs.models import (
     DEFAULT_FORWARD_ORDERS,
     DEFAULT_FORWARD_RUNS,
     DEFAULT_FORWARD_SUMMARY,
+    DEFAULT_FORWARD_TICKS,
     DEFAULT_FORWARD_TRADES,
     safe_job_id,
     utc_now_iso,
@@ -22,6 +23,7 @@ FORWARD_FILES = {
     "trade": DEFAULT_FORWARD_TRADES,
     "order": DEFAULT_FORWARD_ORDERS,
     "fill": DEFAULT_FORWARD_FILLS,
+    "tick": DEFAULT_FORWARD_TICKS,
 }
 
 
@@ -151,6 +153,14 @@ class ForwardRecorder:
     ) -> dict[str, Any]:
         return self.append("fill", _merge_payload(payload, fields))
 
+    def record_tick(
+        self, payload: Mapping[str, Any] | None = None, **fields: Any
+    ) -> dict[str, Any]:
+        """One row per engine tick with everything the reconciler needs to
+        replay the decision: bar timestamp, view hash, snapshot, intents,
+        fills, and guard events."""
+        return self.append("tick", _merge_payload(payload, fields))
+
     def append(self, kind: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         if kind not in FORWARD_FILES:
             raise ValueError(f"Unsupported forward record kind: {kind}")
@@ -226,6 +236,16 @@ class ForwardRecorder:
             fills = summary.setdefault("fills", {})
             fills["count"] = int(fills.get("count") or 0) + 1
             fills["last_fill_at"] = row.get("ts")
+        elif kind == "tick":
+            ticks = summary.setdefault("ticks", {})
+            ticks["count"] = int(ticks.get("count") or 0) + 1
+            ticks["last_tick_at"] = row.get("ts")
+            if row.get("skipped"):
+                ticks["skipped_count"] = int(ticks.get("skipped_count") or 0) + 1
+            if row.get("guard_events"):
+                ticks["guard_event_count"] = int(
+                    ticks.get("guard_event_count") or 0
+                ) + len(row["guard_events"])
         _write_json(path, summary)
 
 

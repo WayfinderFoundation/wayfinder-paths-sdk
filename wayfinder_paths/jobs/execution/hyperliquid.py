@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
+from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
+
+import pandas as pd
 
 from wayfinder_paths.core.clients.HyperliquidDataClient import (
     HYPERLIQUID_DATA_CLIENT,
@@ -13,9 +18,25 @@ from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     FillEvent,
     OrderIntent,
+    PositionRecord,
     StateSnapshot,
     TradeCapacity,
     _float_or_none,
+    bar_interval_seconds,
+)
+from wayfinder_paths.jobs.execution.venues import (
+    MarketEvent,
+    VenueCapabilities,
+    VenueState,
+    register_venue,
+)
+
+HYPERLIQUID_CAPABILITIES = VenueCapabilities(
+    market_kind="perp",
+    supports_brackets=True,
+    supports_shorts=True,
+    supports_notional_sizing=True,
+    supports_limit_orders=True,
 )
 
 
@@ -195,6 +216,236 @@ def safe_place_perp_order(
     )
 
 
+class HyperliquidMarketFeed:
+    """MarketDataFeed over the SDK Hyperliquid data client — the same candle
+    path validation and backtest dataset building use, so live never fetches
+    differently than what was validated."""
+
+    def __init__(self, client: HyperliquidDataClient | None = None) -> None:
+        self._safe = SafeHyperliquidMarketClient(client)
+
+    async def get_completed_bars(
+        self,
+        symbols: Sequence[str],
+        interval: str,
+        *,
+        lookback_bars: int,
+        as_of: datetime | None = None,
+    ) -> CompletedBarsView:
+        bar_seconds = bar_interval_seconds(interval) or 3600
+        lookback_hours = max(1, math.ceil(lookback_bars * bar_seconds / 3600))
+        rows: list[dict[str, Any]] = []
+        for symbol in symbols:
+            view = await self._safe.get_completed_bars(
+                symbol, interval, lookback_hours=lookback_hours
+            )
+            rows.extend(view.to_rows())
+        merged = CompletedBarsView.from_rows(rows)
+        if as_of is not None:
+            merged = merged.through(as_of)
+        return merged
+
+    async def get_events(
+        self, symbols: Sequence[str], *, since: datetime | None = None
+    ) -> list[MarketEvent]:
+        return []
+
+
+class HyperliquidPerpBroker:
+    """Live Broker over the MCP Hyperliquid order tools.
+
+    All exchange responses are parsed through safe_place_perp_order, so
+    resting/rejected/ambiguous outcomes surface as explicit fill statuses that
+    the ledger refuses to treat as success. Transport failures return
+    `ambiguous`, never raise — an ambiguous fill must not clear state.
+    """
+
+    capabilities = HYPERLIQUID_CAPABILITIES
+
+    def __init__(self, *, wallet_label: str = "main", slippage: float = 0.01) -> None:
+        self.wallet_label = wallet_label
+        self.slippage = slippage
+        self.snapshot = StateSnapshot(status="valid")
+
+    async def place(
+        self,
+        intent: OrderIntent,
+        *,
+        timestamp: str,
+        price: float | None = None,
+    ) -> FillEvent:
+        from wayfinder_paths.mcp.tools.hyperliquid import (
+            hyperliquid_place_market_order,
+        )
+
+        capacity: TradeCapacity | None = None
+        if intent.action == "OPEN":
+            try:
+                capacity = await get_trade_capacity(
+                    self.wallet_label, intent.symbol, side=intent.side
+                )
+            except Exception:
+                capacity = None
+        if self.snapshot.status != "valid" or (
+            intent.action == "OPEN" and (capacity is None or not capacity.safe)
+        ):
+            fill = safe_place_perp_order(
+                intent,
+                state_snapshot=self.snapshot,
+                capacity=capacity,
+                raw_result=None,
+            )
+            fill.timestamp = timestamp
+            return fill
+        try:
+            outcome = await hyperliquid_place_market_order(
+                wallet_label=self.wallet_label,
+                asset_name=intent.symbol,
+                is_buy=str(intent.side).lower() in {"buy", "long"},
+                size=intent.size,
+                usd_amount=intent.notional if intent.size is None else None,
+                slippage=self.slippage,
+                reduce_only=intent.reduce_only,
+                cloid=intent.client_order_id,
+            )
+        except Exception as exc:
+            return FillEvent(
+                status="ambiguous",
+                venue=intent.venue,
+                symbol=intent.symbol,
+                side=intent.side,
+                client_order_id=intent.client_order_id,
+                error=f"order submission failed: {exc}",
+                timestamp=timestamp,
+            )
+        raw = _exchange_result_from_mcp(outcome)
+        if raw is None:
+            return FillEvent(
+                status="ambiguous",
+                venue=intent.venue,
+                symbol=intent.symbol,
+                side=intent.side,
+                client_order_id=intent.client_order_id,
+                error=str(_mcp_error(outcome) or "no exchange result in MCP response"),
+                raw=outcome if isinstance(outcome, dict) else {},
+                timestamp=timestamp,
+            )
+        fill = safe_place_perp_order(
+            intent,
+            state_snapshot=self.snapshot,
+            capacity=capacity,
+            raw_result=raw,
+        )
+        fill.timestamp = timestamp
+        return fill
+
+    async def fetch_state(self, symbols: Sequence[str] | Any = ()) -> VenueState:
+        from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_get_state
+
+        outcome = await hyperliquid_get_state(self.wallet_label)
+        match outcome:
+            case {"ok": True, "result": dict() as result}:
+                pass
+            case _:
+                raise RuntimeError(
+                    f"hyperliquid_get_state failed: {_mcp_error(outcome)}"
+                )
+        perp = (result.get("perp") or {}).get("state") or {}
+        if not (result.get("perp") or {}).get("success"):
+            raise RuntimeError("hyperliquid perp state fetch unsuccessful")
+        positions: dict[str, PositionRecord] = {}
+        for item in perp.get("assetPositions") or []:
+            position = item.get("position") or {}
+            szi = _float_or_none(position.get("szi"))
+            coin = str(position.get("coin") or "")
+            if not coin or not szi:
+                continue
+            positions[coin] = PositionRecord(
+                symbol=coin,
+                side="long" if szi > 0 else "short",
+                size=abs(szi),
+                avg_price=_float_or_none(position.get("entryPx")) or 0.0,
+                metadata={"source": "hyperliquid"},
+            )
+        balances: dict[str, float] = {}
+        margin = perp.get("crossMarginSummary") or {}
+        account_value = _float_or_none(margin.get("accountValue"))
+        if account_value is not None:
+            balances["accountValue"] = account_value
+        return VenueState(
+            positions=positions,
+            open_orders=[],
+            balances=balances,
+            source="hyperliquid_get_state",
+            fetched_at=None,
+        )
+
+    async def get_capacity(self, symbol: str, side: str) -> TradeCapacity:
+        return await get_trade_capacity(self.wallet_label, symbol, side=side)
+
+    async def cancel(self, client_order_id: str) -> FillEvent:
+        return FillEvent(
+            status="rejected",
+            venue="hyperliquid",
+            symbol="",
+            side="",
+            error="cancel by cloid requires asset context; use hyperliquid_cancel_order",
+            client_order_id=client_order_id,
+        )
+
+
+class HyperliquidPerpAdapter:
+    name = "hyperliquid"
+    capabilities = HYPERLIQUID_CAPABILITIES
+
+    def __init__(self, *, mode: str, params: dict[str, Any] | None = None) -> None:
+        params = params or {}
+        self.feed = HyperliquidMarketFeed()
+        if mode == "live":
+            self.broker: Any = HyperliquidPerpBroker(
+                wallet_label=str(params.get("wallet_label") or "main"),
+                slippage=float(params.get("live_slippage") or 0.01),
+            )
+        else:
+            from wayfinder_paths.jobs.execution.paper import PaperBroker
+
+            self.broker = PaperBroker(
+                capabilities=HYPERLIQUID_CAPABILITIES,
+                fee_bps=float(params.get("fee_bps") or 0.0),
+                slippage_bps=float(params.get("slippage_bps") or 0.0),
+            )
+
+
+def build_hyperliquid_adapter(
+    *, mode: str, spec: Any = None, params: dict[str, Any] | None = None
+) -> HyperliquidPerpAdapter:
+    return HyperliquidPerpAdapter(mode=mode, params=params)
+
+
+register_venue("hyperliquid", build_hyperliquid_adapter)
+
+
+def _exchange_result_from_mcp(outcome: Any) -> dict[str, Any] | None:
+    match outcome:
+        case {"ok": True, "result": dict() as result}:
+            for effect in result.get("effects") or []:
+                if effect.get("label") == "place_market_order":
+                    return effect.get("result")
+            for effect in reversed(result.get("effects") or []):
+                if effect.get("type") == "hl":
+                    return effect.get("result")
+    return None
+
+
+def _mcp_error(outcome: Any) -> Any:
+    match outcome:
+        case {"error": error}:
+            return error
+        case dict():
+            return outcome.get("message")
+    return outcome
+
+
 def _candles_to_completed_view(
     asset_name: str, rows: list[CandleEntry]
 ) -> CompletedBarsView:
@@ -206,7 +457,10 @@ def _candles_to_completed_view(
             continue
         parsed.append(
             {
-                "timestamp": close_ms,
+                # Explicit ms conversion: CompletedBarsView's pd.to_datetime
+                # has no unit=, so a raw ms int would parse as NANOSECONDS
+                # (1970 epoch) and every live bar would read as stale.
+                "timestamp": pd.Timestamp(int(close_ms), unit="ms", tz="UTC"),
                 "symbol": asset_name,
                 "open": row["o"],
                 "high": row["h"],

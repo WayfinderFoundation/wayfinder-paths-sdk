@@ -11,7 +11,9 @@ from wayfinder_paths.core.config import (
     get_opencode_instance_id,
     is_opencode_instance,
 )
+from wayfinder_paths.jobs.backtest_artifacts import summarize_backtest_artifacts
 from wayfinder_paths.jobs.forward import load_forward_snapshot
+from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.store import JobStore
 
 
@@ -72,9 +74,13 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         "reports/auto/latest.json",
         default=store.read_json(job_id, "reports/decide/latest.json", default=None),
     )
+    validation = (
+        store.read_json(job_id, "reports/validation/latest.json", default={}) or {}
+    )
     return {
         "job": job.to_dict(),
         "scorecard": scorecard,
+        "backtest": summarize_backtest_artifacts(job_id, store=store),
         "forward": load_forward_snapshot(job_id, store=store, limit=25),
         "runner_links": runner_links,
         "proposals": store.proposals(job_id),
@@ -83,7 +89,27 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
             "monitor": latest_monitor,
             "intervene": latest_intervene,
             "auto": latest_auto,
+            "reconcile": store.read_json(
+                job_id, "reports/reconcile/latest.json", default=None
+            ),
         },
+        "execution_contract": job.execution_contract,
+        "validation": _bounded_validation(validation),
+        "gate": evaluate_live_gate(job_id, store=store),
+    }
+
+
+def _bounded_validation(report: dict[str, Any]) -> dict[str, Any]:
+    if not report:
+        return {}
+    return {
+        "status": report.get("status"),
+        "revision": report.get("revision"),
+        "failed_checks": [
+            check.get("name")
+            for check in report.get("checks") or []
+            if not check.get("passed")
+        ],
     }
 
 

@@ -7,6 +7,10 @@ import pytest
 
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
 from wayfinder_paths.core.clients.HyperliquidDataClient import HyperliquidDataClient
+from wayfinder_paths.jobs.backtest_artifacts import (
+    load_backtest_view,
+    summarize_backtest_artifacts,
+)
 from wayfinder_paths.jobs.execution import (
     BracketEngine,
     CompletedBarsView,
@@ -215,6 +219,10 @@ def decide(ctx):
         for series in result.visualization["series"]
     )
     assert any(
+        series.get("kind") == "drawdown_curve"
+        for series in result.visualization["series"]
+    )
+    assert any(
         marker.get("label") == "TAKE_PROFIT"
         for marker in result.visualization["markers"]
     )
@@ -241,6 +249,66 @@ def test_job_backtest_and_validate_write_artifacts(tmp_path: Path) -> None:
     assert (root / "results" / "backtest" / "visualization.json").exists()
     assert validation["status"] == "passed"
     assert (root / "reports" / "validation" / "latest.json").exists()
+
+
+def test_backtest_artifact_summary_and_view_are_bounded(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "exec-view-demo",
+        script=".wayfinder/jobs/exec-view-demo/workspace/src/strategy.py",
+        interval_seconds=300,
+    )
+    job.execution_spec = ExecutionSpec().to_dict()
+    store.save(job)
+    root = store.job_dir(job.id)
+    _write_strategy(root / "workspace" / "src" / "strategy.py")
+    rows = []
+    for index in range(150):
+        minute_index = index * 5
+        timestamp = f"2026-01-01T{minute_index // 60:02}:{minute_index % 60:02}:00Z"
+        rows.append(
+            {
+                "timestamp": timestamp,
+                "symbol": "SNX",
+                "open": 10 + index * 0.01,
+                "high": 11 + index * 0.01,
+                "low": 9 + index * 0.01,
+                "close": 10.5 + index * 0.01,
+                "volume": 100,
+            }
+        )
+        rows.append(
+            {
+                "timestamp": timestamp,
+                "symbol": "IMX",
+                "open": 100,
+                "high": 110,
+                "low": 90,
+                "close": 105,
+                "volume": 100,
+            }
+        )
+    (root / "results" / "backtest" / "input_bars.json").write_text(
+        json.dumps(rows), encoding="utf-8"
+    )
+
+    backtest_execution_job(job.id, store=store)
+
+    summary = summarize_backtest_artifacts(job.id, store=store)
+    assert summary["available"] is True
+    assert "SNX" in summary["symbols"]
+    assert any(item["kind"] == "equity_curve" for item in summary["series"])
+    assert any(item["kind"] == "drawdown_curve" for item in summary["series"])
+
+    view = load_backtest_view(job.id, store=store, view="legs", max_points=100)
+    series = view["visualization"]["series"]
+    assert series
+    assert all(item["kind"] == "market_price" for item in series)
+    assert all(len(item["points"]) <= 100 for item in series)
+    snx_points = next(item["points"] for item in series if item["symbol"] == "SNX")
+    assert len(snx_points) == 100
+    assert snx_points[0]["timestamp"] == "2026-01-01T00:00:00+00:00"
+    assert snx_points[-1]["timestamp"] == "2026-01-01T12:25:00+00:00"
 
 
 @pytest.mark.asyncio

@@ -32,6 +32,7 @@ def validate_candidate_application(
     proposal: Mapping[str, Any],
     candidate_dir: Path,
     require_judge: bool = False,
+    allow_legacy: bool = False,
 ) -> dict[str, Any]:
     """Validate an approved job application candidate before promotion.
 
@@ -80,6 +81,19 @@ def validate_candidate_application(
     checks.extend(_intent_contract_checks(proposal))
     checks.extend(_judge_checks(proposal, require_judge=require_judge))
 
+    contract = str(job_data.get("execution_contract") or "legacy")
+    checks.append(
+        {
+            "name": "execution_contract_jobs_v1",
+            "passed": contract == "jobs_v1" or allow_legacy,
+            "legacy_allowed": allow_legacy if contract != "jobs_v1" else None,
+            "hint": (
+                "the versioned-change flow requires the jobs_v1 driver "
+                "contract; run `wayfinder job migrate-contract` first"
+            ),
+        }
+    )
+
     script_path = _candidate_script_path(
         repo_root=repo_root,
         job_dir=job_dir,
@@ -95,8 +109,23 @@ def validate_candidate_application(
         }
     )
     if script_path and script_path.exists():
-        checks.extend(_script_static_checks(script_path))
-        checks.extend(_scenario_checks(script_path, proposal))
+        if contract == "jobs_v1":
+            checks.extend(_jobs_v1_script_checks(script_path))
+            checks.extend(
+                _engine_scenario_checks(script_path, proposal, job_data)
+            )
+            checks.extend(
+                _candidate_behavior_checks(
+                    repo_root=repo_root,
+                    job_dir=job_dir,
+                    candidate_dir=candidate_dir,
+                    job_data=job_data,
+                    script_path=script_path,
+                )
+            )
+        else:
+            checks.extend(_script_static_checks(script_path))
+            checks.extend(_scenario_checks(script_path, proposal))
 
     passed = all(check.get("passed") for check in checks)
     return {
@@ -106,6 +135,211 @@ def validate_candidate_application(
         "candidate_job_yaml": str(candidate_job_yaml),
         "candidate_script": str(script_path) if script_path else None,
     }
+
+
+def _jobs_v1_script_checks(script_path: Path) -> list[dict[str, Any]]:
+    """jobs_v1 strategies are decide()-only modules: the driver owns telemetry
+    and order routing, so forward-recorder greps and free-form main() checks
+    are replaced by entrypoint + no-direct-order checks."""
+    from wayfinder_paths.jobs.execution.validation import FORBIDDEN_ORDER_PATTERNS
+
+    checks: list[dict[str, Any]] = []
+    try:
+        py_compile.compile(str(script_path), doraise=True)
+        checks.append({"name": "py_compile", "passed": True})
+    except Exception as exc:
+        checks.append({"name": "py_compile", "passed": False, "error": str(exc)})
+    text = script_path.read_text(encoding="utf-8", errors="replace")
+    checks.append(
+        {
+            "name": "no_direct_order_placement",
+            "passed": not any(pattern in text for pattern in FORBIDDEN_ORDER_PATTERNS),
+        }
+    )
+    module = _load_module(script_path)
+    checks.append(
+        {
+            "name": "strategy_entrypoint_present",
+            "passed": module is not None
+            and (
+                callable(getattr(module, "build_strategy", None))
+                or callable(getattr(module, "decide", None))
+            ),
+        }
+    )
+    return checks
+
+
+def _engine_scenario_checks(
+    script_path: Path, proposal: Mapping[str, Any], job_data: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Run proposal scenarios through the real engine (simulate_execution)
+    instead of the legacy decide_from_snapshot fixture convention."""
+    from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+    from wayfinder_paths.jobs.execution.simulator import (
+        PreparedExecutionDataset,
+        simulate_execution,
+    )
+
+    scenario_plan = proposal.get("scenario_plan")
+    match scenario_plan:
+        case list():
+            scenarios = scenario_plan
+        case Mapping():
+            scenarios = scenario_plan.get("scenarios") or []
+        case _:
+            scenarios = []
+    checks: list[dict[str, Any]] = [
+        {
+            "name": "scenario_plan_present",
+            "passed": bool(scenarios),
+            "scenario_count": len(scenarios),
+        }
+    ]
+    if not scenarios:
+        return checks
+    spec = ExecutionSpec.from_dict(dict(job_data.get("execution_spec") or {}))
+    for index, scenario in enumerate(scenarios):
+        match scenario:
+            case Mapping():
+                scenario_data = dict(scenario)
+            case _:
+                scenario_data = {}
+        name = str(scenario_data.get("name") or f"scenario_{index + 1}")
+        bars = scenario_data.get("bars")
+        if not bars:
+            checks.append(
+                {
+                    "name": f"scenario_{name}",
+                    "passed": False,
+                    "error": (
+                        "jobs_v1 scenarios must supply bars; snapshot-style "
+                        "decide_from_snapshot fixtures are legacy-only"
+                    ),
+                }
+            )
+            continue
+        expected = scenario_data.get("expect") or scenario_data.get("expected") or {}
+        try:
+            result = simulate_execution(
+                script_path,
+                PreparedExecutionDataset.from_rows(bars),
+                spec,
+                params=scenario_data.get("params") or {},
+            ).to_dict()
+            failures = _scenario_expectation_failures(result, expected)
+            checks.append(
+                {
+                    "name": f"scenario_{name}",
+                    "passed": not failures,
+                    "expected": expected,
+                    "failures": failures,
+                    "stats": result["stats"],
+                }
+            )
+        except Exception as exc:
+            checks.append(
+                {"name": f"scenario_{name}", "passed": False, "error": str(exc)}
+            )
+    return checks
+
+
+def _scenario_expectation_failures(
+    result: Mapping[str, Any], expected: Mapping[str, Any]
+) -> list[str]:
+    failures: list[str] = []
+    trades = result.get("trades") or []
+    if "min_trades" in expected and len(trades) < int(expected["min_trades"]):
+        failures.append(f"expected >= {expected['min_trades']} trades, got {len(trades)}")
+    if "max_trades" in expected and len(trades) > int(expected["max_trades"]):
+        failures.append(f"expected <= {expected['max_trades']} trades, got {len(trades)}")
+    if "execution_valid" in expected:
+        actual = bool((result.get("validation") or {}).get("execution_valid"))
+        if actual is not bool(expected["execution_valid"]):
+            failures.append(f"execution_valid expected {expected['execution_valid']}")
+    return failures
+
+
+def _candidate_behavior_checks(
+    *,
+    repo_root: Path,
+    job_dir: Path,
+    candidate_dir: Path,
+    job_data: Mapping[str, Any],
+    script_path: Path,
+) -> list[dict[str, Any]]:
+    """Candidate backtest + preflight: the behavioral half of the promotion
+    gate. Both run against the CANDIDATE workspace so the report is tied to
+    the candidate revision (which equals the post-promotion revision)."""
+    from wayfinder_paths.jobs.execution.job import _load_dataset
+    from wayfinder_paths.jobs.execution.preflight import run_preflight
+    from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+    from wayfinder_paths.jobs.execution.simulator import simulate_execution
+    from wayfinder_paths.jobs.gating import compute_workspace_revision
+
+    checks: list[dict[str, Any]] = []
+    job_id = str(job_data.get("id") or job_dir.name)
+    spec = ExecutionSpec.from_dict(dict(job_data.get("execution_spec") or {}))
+    candidate_revision = compute_workspace_revision(candidate_dir)
+    try:
+        dataset = _load_dataset(candidate_dir, spec, dict(job_data))
+    except FileNotFoundError:
+        try:
+            dataset = _load_dataset(job_dir, spec, dict(job_data))
+        except FileNotFoundError as exc:
+            checks.append(
+                {
+                    "name": "candidate_backtest_valid",
+                    "passed": False,
+                    "error": f"no dataset for candidate backtest: {exc}",
+                }
+            )
+            return checks
+    try:
+        result = simulate_execution(
+            script_path,
+            dataset,
+            spec,
+            params=dict(job_data.get("execution_params") or {}),
+        )
+        checks.append(
+            {
+                "name": "candidate_backtest_valid",
+                "passed": bool(result.validation.get("execution_valid")),
+                "revision": candidate_revision,
+                "stats": result.stats,
+                "validation": result.validation,
+            }
+        )
+    except Exception as exc:
+        checks.append(
+            {"name": "candidate_backtest_valid", "passed": False, "error": str(exc)}
+        )
+        return checks
+
+    try:
+        preflight = run_preflight(
+            job_id,
+            store=JobStore(repo_root=repo_root),
+            candidate_dir=candidate_dir,
+        )
+        checks.append(
+            {
+                "name": "candidate_preflight_passed",
+                "passed": preflight.get("status") == "passed",
+                "revision": preflight.get("revision"),
+                "failed_checks": [
+                    check.get("name")
+                    for check in preflight.get("checks") or []
+                    if not check.get("passed") and check.get("blocking") is not False
+                ],
+            }
+        )
+    except Exception as exc:
+        checks.append(
+            {"name": "candidate_preflight_passed", "passed": False, "error": str(exc)}
+        )
+    return checks
 
 
 def _intent_contract_checks(proposal: Mapping[str, Any]) -> list[dict[str, Any]]:

@@ -1,0 +1,276 @@
+from __future__ import annotations
+
+import json
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from wayfinder_paths.jobs.execution.driver import view_hash
+from wayfinder_paths.jobs.execution.engine import EngineState, run_tick
+from wayfinder_paths.jobs.execution.job import _load_job_yaml
+from wayfinder_paths.jobs.execution.paper import PaperBroker
+from wayfinder_paths.jobs.execution.primitives import (
+    CompletedBarsView,
+    ExecutionSpec,
+    StateSnapshot,
+)
+from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.store import JobStore
+
+INTENT_MATCH_YELLOW = 0.98
+INTENT_MATCH_RED = 0.90
+INTENT_FIELDS = (
+    "action",
+    "venue",
+    "symbol",
+    "side",
+    "size",
+    "notional",
+    "reduce_only",
+    "bracket",
+)
+
+
+def reconcile_job(
+    job_id: str,
+    *,
+    store: JobStore | None = None,
+    history: CompletedBarsView | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Replay recorded live/paper ticks through the SAME engine and diff the
+    decisions — the ongoing answer to 'is live still doing what the backtest
+    said'. Each tick row carries its pre-tick engine state and view window, so
+    the replay is exact: same state, same bars, same decide().
+
+    `history` supplies the bar history to reconstruct views from (tests inject
+    it; callers can pass a freshly fetched view to detect upstream data drift
+    via the recorded view_hash).
+    """
+    store = store or JobStore()
+    root = store.job_dir(job_id)
+    job_data = _load_job_yaml(root)
+    spec_data, _ = resolve_execution_spec(root, job_data)
+    spec = ExecutionSpec.from_dict(spec_data)
+    params = dict(job_data.get("execution_params") or {})
+    entrypoint = store.resolve_script_entrypoint(job_id, job_data)
+    if entrypoint is None or not entrypoint.exists():
+        raise FileNotFoundError(f"execution script not found for job {job_id}")
+    from wayfinder_paths.jobs.execution.simulator import _load_strategy
+
+    rows = _read_ticks(root, limit=limit)
+    if history is None:
+        history = _history_from_dataset(root, spec, job_data)
+
+    import asyncio
+
+    outcome = asyncio.run(
+        _replay_rows(
+            rows,
+            strategy_loader=lambda: _load_strategy(entrypoint, params),
+            history=history,
+            spec=spec,
+            params=params,
+        )
+    )
+    report = _build_report(job_id, rows, outcome)
+    store.write_json(job_id, "reports/reconcile/latest.json", report)
+    health = _health_from_report(report)
+    if health:
+        store.refresh_scorecard(job_id, {"health": health, "reconcile": _summary(report)})
+        store.append_journal(
+            job_id,
+            {"type": "drift_warning", "source": "reconcile", **_summary(report)},
+        )
+    else:
+        store.refresh_scorecard(job_id, {"reconcile": _summary(report)})
+    return report
+
+
+async def _replay_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    strategy_loader: Any,
+    history: CompletedBarsView | None,
+    spec: ExecutionSpec,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    matched = 0
+    compared = 0
+    data_drift = 0
+    missing: list[dict[str, Any]] = []
+    extra: list[dict[str, Any]] = []
+    slippage_bps: list[float] = []
+    for row in rows:
+        if row.get("skipped"):
+            continue
+        window = row.get("view_window") or {}
+        view = _window_view(history, window)
+        if view is None:
+            data_drift += 1
+            continue
+        if row.get("view_hash") and view_hash(view) != row["view_hash"]:
+            data_drift += 1
+            continue
+        state = EngineState.from_dict(row.get("engine_state_pre") or {})
+        snapshot_data = row.get("snapshot") or {}
+        strategy = strategy_loader()
+        tick = await run_tick(
+            strategy,
+            view=view,
+            brokers={"*": PaperBroker()},
+            state=state,
+            spec=spec,
+            params=params,
+            timestamp=pd.Timestamp(row.get("bar_ts") or view.timestamps[-1]),
+            snapshot=StateSnapshot(
+                status=str(snapshot_data.get("status") or "valid"),
+                reason=snapshot_data.get("reason"),
+            ),
+        )
+        recorded = [_intent_key(item) for item in row.get("intents") or []]
+        replayed = [_intent_key(intent.to_dict()) for intent in tick.intents]
+        compared += 1
+        if recorded == replayed:
+            matched += 1
+        else:
+            recorded_set = {json.dumps(k, sort_keys=True) for k in recorded}
+            replayed_set = {json.dumps(k, sort_keys=True) for k in replayed}
+            for key in recorded_set - replayed_set:
+                missing.append({"bar_ts": row.get("bar_ts"), "intent": json.loads(key)})
+            for key in replayed_set - recorded_set:
+                extra.append({"bar_ts": row.get("bar_ts"), "intent": json.loads(key)})
+        slippage_bps.extend(_fill_slippage_bps(row, view))
+    return {
+        "compared": compared,
+        "matched": matched,
+        "data_drift": data_drift,
+        "missing": missing,
+        "extra": extra,
+        "slippage_bps": slippage_bps,
+    }
+
+
+def _build_report(
+    job_id: str, rows: Sequence[Mapping[str, Any]], outcome: dict[str, Any]
+) -> dict[str, Any]:
+    compared = outcome["compared"]
+    match_rate = (outcome["matched"] / compared) if compared else None
+    slippage = sorted(outcome["slippage_bps"])
+    missing_exits = [
+        item
+        for item in outcome["missing"]
+        if str((item.get("intent") or {}).get("action") or "").upper()
+        in {"CLOSE", "STOP_LOSS", "TAKE_PROFIT"}
+    ]
+    return {
+        "job_id": job_id,
+        "generated_at": utc_now_iso(),
+        "ticks_total": len(rows),
+        "ticks_compared": compared,
+        "intent_match_rate": match_rate,
+        "missing_intents": outcome["missing"],
+        "extra_intents": outcome["extra"],
+        "missing_exit_intents": missing_exits,
+        "data_drift_ticks": outcome["data_drift"],
+        "fill_slippage_bps_p50": (
+            slippage[len(slippage) // 2] if slippage else None
+        ),
+        "fill_slippage_samples": len(slippage),
+    }
+
+
+def _health_from_report(report: Mapping[str, Any]) -> str | None:
+    match_rate = report.get("intent_match_rate")
+    if match_rate is None:
+        return None
+    if match_rate < INTENT_MATCH_RED or report.get("missing_exit_intents"):
+        return "red"
+    if match_rate < INTENT_MATCH_YELLOW:
+        return "yellow"
+    return None
+
+
+def _summary(report: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "intent_match_rate": report.get("intent_match_rate"),
+        "ticks_compared": report.get("ticks_compared"),
+        "data_drift_ticks": report.get("data_drift_ticks"),
+        "missing_exit_intents": len(report.get("missing_exit_intents") or []),
+    }
+
+
+def _read_ticks(root: Path, *, limit: int) -> list[dict[str, Any]]:
+    path = root / "results" / "forward" / "ticks.jsonl"
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[
+        -limit:
+    ]:
+        try:
+            parsed = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            rows.append(parsed)
+    return rows
+
+
+def _history_from_dataset(
+    root: Path, spec: ExecutionSpec, job_data: dict[str, Any]
+) -> CompletedBarsView | None:
+    from wayfinder_paths.jobs.execution.job import _load_dataset
+
+    try:
+        return _load_dataset(root, spec, job_data).bars
+    except FileNotFoundError:
+        return None
+
+
+def _window_view(
+    history: CompletedBarsView | None, window: Mapping[str, Any]
+) -> CompletedBarsView | None:
+    if history is None:
+        return None
+    first = window.get("first_ts")
+    last = window.get("last_ts")
+    if not first or not last:
+        return None
+    frame = history.to_frame()
+    first_ts = pd.Timestamp(first)
+    last_ts = pd.Timestamp(last)
+    sliced = frame[(frame["timestamp"] >= first_ts) & (frame["timestamp"] <= last_ts)]
+    if sliced.empty:
+        return None
+    return CompletedBarsView(sliced)
+
+
+def _intent_key(intent: Mapping[str, Any]) -> dict[str, Any]:
+    return {field: intent.get(field) for field in INTENT_FIELDS}
+
+
+def _fill_slippage_bps(
+    row: Mapping[str, Any], view: CompletedBarsView
+) -> list[float]:
+    """Recorded fill price vs the bar open the model assumes (next_bar_open):
+    the live-vs-model execution cost, in bps."""
+    samples: list[float] = []
+    for fill in row.get("fills") or []:
+        if fill.get("status") != "filled" or not fill.get("avg_price"):
+            continue
+        symbol = fill.get("symbol")
+        try:
+            bar = view.row_at(pd.Timestamp(row.get("bar_ts")), symbol=symbol)
+        except (ValueError, TypeError):
+            continue
+        reference = float(bar.open)
+        if not reference:
+            continue
+        samples.append(
+            abs(float(fill["avg_price"]) - reference) / reference * 10_000
+        )
+    return samples

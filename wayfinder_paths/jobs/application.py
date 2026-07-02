@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ import yaml
 
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
+from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
@@ -75,6 +75,7 @@ def validate_application_candidate(
     proposal_id: str,
     *,
     require_judge: bool | None = None,
+    allow_legacy: bool = False,
 ) -> dict[str, Any]:
     proposal = store.load_proposal(job_id, proposal_id)
     application_status = proposal["application"]["status"]
@@ -91,6 +92,7 @@ def validate_application_candidate(
         require_judge=bool(proposal.get("judge_required"))
         if require_judge is None
         else require_judge,
+        allow_legacy=allow_legacy,
     )
     validation = _with_execution_validation(
         store,
@@ -111,6 +113,7 @@ def complete_application(
     changed_files: list[str] | None = None,
     validation: dict[str, Any] | None = None,
     error: str | None = None,
+    allow_legacy: bool = False,
 ) -> dict[str, Any]:
     outcome = _ApplicationOutcome(final_status=status, final_error=error)
     try:
@@ -120,6 +123,7 @@ def complete_application(
                 job_id,
                 proposal_id,
                 changed_files=changed_files,
+                allow_legacy=allow_legacy,
             )
         elif status == "failed":
             _write_apply_report(
@@ -198,6 +202,7 @@ def _complete_applied_application(
     proposal_id: str,
     *,
     changed_files: list[str] | None,
+    allow_legacy: bool = False,
 ) -> _ApplicationOutcome:
     proposal = store.load_proposal(job_id, proposal_id)
     candidate_dir = _candidate_dir_from_proposal(store, job_id, proposal)
@@ -207,6 +212,7 @@ def _complete_applied_application(
         proposal=proposal,
         candidate_dir=candidate_dir,
         require_judge=bool(proposal.get("judge_required")),
+        allow_legacy=allow_legacy,
     )
     deterministic_validation = _with_execution_validation(
         store,
@@ -409,13 +415,7 @@ def _record_promoted_revision(
     validation: dict[str, Any] | None,
 ) -> str:
     root = store.job_dir(job_id)
-    digest = hashlib.sha256()
-    for path in sorted((root / "workspace").rglob("*")):
-        if path.is_file():
-            digest.update(str(path.relative_to(root)).encode("utf-8"))
-            digest.update(path.read_bytes())
-    digest.update((root / "job.yaml").read_bytes())
-    revision = digest.hexdigest()[:12]
+    revision = compute_workspace_revision(root)
     active = {
         "job_id": job_id,
         "active_revision": revision,
