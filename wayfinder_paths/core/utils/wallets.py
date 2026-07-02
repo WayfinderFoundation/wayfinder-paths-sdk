@@ -1,6 +1,4 @@
-import asyncio
 import json
-import time
 from pathlib import Path
 from typing import Any
 
@@ -112,6 +110,10 @@ def get_local_sign_callback(private_key: str):
         signed = account.sign_transaction(transaction)
         return signed.raw_transaction
 
+    # Sign-callback contract: `wallet_address` is set on every callback.
+    # None means local key — send_transaction() never routes it through the
+    # sponsored backend broadcast.
+    sign_callback.wallet_address = None
     return sign_callback
 
 
@@ -181,47 +183,10 @@ def get_remote_sign_callback(wallet_address: str):
         )
         return bytes.fromhex(hex_str.removeprefix("0x"))
 
-    # send_transaction() reads this to route gas-sponsored chains through the
-    # backend broadcast; local-key callbacks never carry it.
+    # Sign-callback contract: send_transaction() reads this to route
+    # gas-sponsored chains through the backend broadcast.
     sign_callback.wallet_address = wallet_address
     return sign_callback
-
-
-_SPONSORED_HASH_TIMEOUT_SECONDS = 120
-_SPONSORED_HASH_POLL_SECONDS = 2
-
-
-async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> str:
-    """Submit via the backend's sponsored broadcast and return the tx hash.
-
-    Nonce, gas, and fees are resolved by the broadcaster, and the hash can lag
-    the submit (sponsored sends confirm asynchronously) — poll until it lands.
-    """
-    tx = dict(transaction)
-    tx["from"] = wallet_address
-    result = await WALLET_CLIENT.send_transaction(
-        wallet_address, _prepare_tx_for_privy(tx)
-    )
-    txn_hash = result["hash"]
-    deadline = time.monotonic() + _SPONSORED_HASH_TIMEOUT_SECONDS
-    while not txn_hash:
-        if time.monotonic() > deadline:
-            raise TimeoutError(
-                f"Sponsored transaction {result['transaction_id']} has no hash "
-                f"after {_SPONSORED_HASH_TIMEOUT_SECONDS}s"
-            )
-        await asyncio.sleep(_SPONSORED_HASH_POLL_SECONDS)
-        status = await WALLET_CLIENT.get_transaction_status(
-            wallet_address, result["transaction_id"]
-        )
-        # "failed" is pre-broadcast (no hash will ever land); an on-chain
-        # revert still yields a hash and is caught by the receipt wait.
-        if status["status"] == "failed":
-            raise RuntimeError(
-                f"Sponsored transaction {result['transaction_id']} failed before broadcast"
-            )
-        txn_hash = status["hash"]
-    return txn_hash
 
 
 def _sanitize_typed_data(obj: Any) -> Any:

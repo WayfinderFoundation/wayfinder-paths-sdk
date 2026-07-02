@@ -1,5 +1,6 @@
 import asyncio
 import math
+import time
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -7,6 +8,7 @@ from eth_account import Account
 from loguru import logger
 from web3 import AsyncWeb3
 
+from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.config import get_rpc_urls
 from wayfinder_paths.core.constants.base import (
     GAS_BUFFER_MULTIPLIER,
@@ -19,7 +21,7 @@ from wayfinder_paths.core.constants.chains import (
     MIN_PRIORITY_FEE_BY_CHAIN_ID,
     PRE_EIP_1559_CHAIN_IDS,
 )
-from wayfinder_paths.core.utils.wallets import send_sponsored_transaction
+from wayfinder_paths.core.utils.wallets import _prepare_tx_for_privy
 from wayfinder_paths.core.utils.web3 import (
     _is_gorlami_fork_rpc,
     get_transaction_chain_id,
@@ -249,6 +251,43 @@ async def broadcast_transaction(chain_id, signed_transaction: bytes) -> str:
         return tx_hash.hex()
 
 
+_SPONSORED_HASH_TIMEOUT_SECONDS = 120
+_SPONSORED_HASH_POLL_SECONDS = 2
+
+
+async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> str:
+    """Submit via the backend's sponsored broadcast and return the tx hash.
+
+    Nonce, gas, and fees are resolved by the broadcaster, and the hash can lag
+    the submit (sponsored sends confirm asynchronously) — poll until it lands.
+    """
+    tx = dict(transaction)
+    tx["from"] = wallet_address
+    result = await WALLET_CLIENT.send_transaction_sponsored(
+        wallet_address, _prepare_tx_for_privy(tx)
+    )
+    txn_hash = result["hash"]
+    deadline = time.monotonic() + _SPONSORED_HASH_TIMEOUT_SECONDS
+    while not txn_hash:
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"Sponsored transaction {result['transaction_id']} has no hash "
+                f"after {_SPONSORED_HASH_TIMEOUT_SECONDS}s"
+            )
+        await asyncio.sleep(_SPONSORED_HASH_POLL_SECONDS)
+        status = await WALLET_CLIENT.get_transaction_status(
+            wallet_address, result["transaction_id"]
+        )
+        # "failed" is pre-broadcast (no hash will ever land); an on-chain
+        # revert still yields a hash and is caught by the receipt wait.
+        if status["status"] == "failed":
+            raise RuntimeError(
+                f"Sponsored transaction {result['transaction_id']} failed before broadcast"
+            )
+        txn_hash = status["hash"]
+    return txn_hash
+
+
 async def wait_for_transaction_receipt(
     chain_id: int,
     txn_hash: str,
@@ -307,14 +346,16 @@ async def send_transaction(
     # Remote wallets on gas-sponsored chains: the backend signs, broadcasts,
     # and covers gas — nonce/gas/fee resolution and the raw broadcast are its
     # job, not ours. Fork chains keep the local path so simulations never
-    # leave the fork.
-    sponsored_wallet = getattr(sign_callback, "wallet_address", None)
+    # leave the fork. Every sign callback carries `wallet_address` (None for
+    # local keys) — see the factories in core/utils/wallets.py.
     if (
-        sponsored_wallet
+        sign_callback.wallet_address
         and chain_id in GAS_SPONSORED_CHAIN_IDS
         and not _is_gorlami_fork_chain(chain_id)
     ):
-        txn_hash = await send_sponsored_transaction(sponsored_wallet, transaction)
+        txn_hash = await send_sponsored_transaction(
+            sign_callback.wallet_address, transaction
+        )
     else:
         transaction = await gas_limit_transaction(transaction)
         transaction = await nonce_transaction(transaction)
@@ -350,6 +391,7 @@ async def sign_and_send_transaction(
         signed = account.sign_transaction(tx)
         return signed.raw_transaction
 
+    sign_callback.wallet_address = None
     return await send_transaction(
         transaction,
         sign_callback,

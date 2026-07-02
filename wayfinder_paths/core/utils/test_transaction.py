@@ -435,6 +435,7 @@ class TestSendTransaction:
         async def sign_callback(_tx: dict) -> bytes:
             return b"\x00"
 
+        sign_callback.wallet_address = None
         with pytest.raises(TransactionRevertedError, match="Transaction reverted"):
             await send_transaction(
                 {"from": RANDOM_USER_0, "chainId": 1},
@@ -480,6 +481,7 @@ class TestSendTransaction:
         async def sign_callback(_tx: dict) -> bytes:
             return b"\x00"
 
+        sign_callback.wallet_address = None
         txn_hash = await send_transaction(
             {"from": RANDOM_USER_0, "chainId": 1},
             sign_callback,
