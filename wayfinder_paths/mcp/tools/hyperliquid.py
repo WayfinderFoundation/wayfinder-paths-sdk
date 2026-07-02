@@ -1921,15 +1921,24 @@ async def hyperliquid_place_limit_order(
 
 @catch_errors
 async def hyperliquid_get_state(label: str) -> dict[str, Any]:
-    """Return perp + spot + outcome state for a Hyperliquid wallet in one shot."""
+    """Return perp + spot + outcome state and all open orders (including
+    untriggered TP/SL trigger orders) for a Hyperliquid wallet in one shot."""
     addr, _ = await resolve_wallet_address(wallet_label=label)
     if not addr:
         return err("not_found", f"Wallet not found: {label}")
 
     adapter = HyperliquidAdapter()
-    perp_ok, perp = await adapter.get_user_state(addr)
-    spot_ok, spot = await adapter.get_spot_user_state(addr)
-    abstraction_ok, abstraction = await adapter.get_user_abstraction(addr)
+    (
+        (perp_ok, perp),
+        (spot_ok, spot),
+        (abstraction_ok, abstraction),
+        (orders_ok, orders),
+    ) = await asyncio.gather(
+        adapter.get_user_state(addr),
+        adapter.get_spot_user_state(addr),
+        adapter.get_user_abstraction(addr),
+        adapter.get_frontend_open_orders(addr),
+    )
 
     spot_balances: list[dict[str, Any]] = []
     outcome_positions: list[dict[str, Any]] = []
@@ -1960,6 +1969,9 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
             "address": addr,
             "perp": {"success": perp_ok, "state": perp},
             "spot": {"success": spot_ok, "state": spot},
+            # frontendOpenOrders rows: resting limit orders plus untriggered
+            # trigger orders (isTrigger/triggerPx/orderType/isPositionTpsl).
+            "open_orders": {"success": orders_ok, "orders": orders},
             "account_abstraction": {
                 "success": abstraction_ok,
                 "state": abstraction,

@@ -206,7 +206,16 @@ class HyperliquidAdapter(BaseAdapter):
             return None
 
         results = await asyncio.gather(*[_post_one(dex) for dex in get_perp_dexes()])
-        return aggregator([r for r in results if r is not None])
+        successes = [r for r in results if r is not None]
+        # Partial failures degrade to the dexes that answered, but if EVERY
+        # dex failed, aggregating would fabricate an empty-but-successful
+        # result (e.g. "no open orders" while stop losses exist). Fail loudly
+        # so callers surface an error instead.
+        if results and not successes:
+            raise RuntimeError(
+                f"All perp-dex requests failed for {payload.get('type')!r}"
+            )
+        return aggregator(successes)
 
     def get_price_decimals(self, asset_id: int) -> int:
         is_spot = asset_id >= 10_000

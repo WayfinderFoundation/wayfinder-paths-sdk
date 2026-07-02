@@ -48,7 +48,9 @@ class _FakeExecutionAdapter:
         filled_size: str = "2.09",
         fill_price: str = "100",
         spot_state: dict[str, Any] | None = None,
+        frontend_open_orders: list[dict[str, Any]] | None = None,
     ) -> None:
+        self.frontend_open_orders = frontend_open_orders or []
         self.user_state = user_state or {
             "assetPositions": [],
             "marginSummary": {"accountValue": "20.56"},
@@ -157,6 +159,9 @@ class _FakeExecutionAdapter:
 
     async def get_user_abstraction(self, _address: str):
         return True, "unifiedAccount"
+
+    async def get_frontend_open_orders(self, _address: str):
+        return True, self.frontend_open_orders
 
     async def get_dex_collateral_mapping(self) -> dict[str, str]:
         return {"": "USDC", "xyz": "USDC"}
@@ -441,6 +446,28 @@ async def test_hyperliquid_deposit_usdc_ensure_unified_is_advisory(
 
 @pytest.mark.asyncio
 async def test_hyperliquid_get_state_returns_compact_account_state():
+    stop_loss = {
+        "coin": "HYPE",
+        "oid": 42,
+        "side": "A",
+        "sz": "196.28",
+        "limitPx": "58.0",
+        "triggerPx": "60.0",
+        "isTrigger": True,
+        "orderType": "Stop Market",
+        "isPositionTpsl": True,
+        "reduceOnly": True,
+    }
+    resting_limit = {
+        "coin": "BTC",
+        "oid": 43,
+        "side": "B",
+        "sz": "0.001",
+        "limitPx": "55000",
+        "isTrigger": False,
+        "orderType": "Limit",
+        "reduceOnly": False,
+    }
     fake = _FakeExecutionAdapter(
         user_state={
             "assetPositions": [
@@ -455,7 +482,8 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
                     }
                 }
             ]
-        }
+        },
+        frontend_open_orders=[stop_loss, resting_limit],
     )
 
     with (
@@ -477,6 +505,10 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
     assert result["account_abstraction"]["state"] == "unifiedAccount"
     assert result["perp"]["state"]["assetPositions"][0]["position"]["coin"] == "BTC"
     assert [bal["coin"] for bal in result["spot"]["state"]["balances"]] == ["USDC"]
+    # Trigger (TP/SL) orders and resting limits surface directly in state —
+    # agents must not need a second call to discover them.
+    assert result["open_orders"]["success"] is True
+    assert result["open_orders"]["orders"] == [stop_loss, resting_limit]
     assert result["outcomes"]["positions"] == [
         {
             "coin": "+41",

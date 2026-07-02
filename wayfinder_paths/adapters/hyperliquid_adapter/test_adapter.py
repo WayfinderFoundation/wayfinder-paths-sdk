@@ -184,6 +184,28 @@ class TestHyperliquidAdapter:
             assert state["openOrders"] == [{"oid": 1}]
 
     @pytest.mark.asyncio
+    async def test_get_frontend_open_orders_fails_when_all_dexes_fail(
+        self, adapter, mock_info, _patch_adapter
+    ):
+        """A total fetch failure must NOT masquerade as "no open orders" —
+        an agent would wrongly conclude no stop losses exist."""
+        with _patch_adapter():
+            with (
+                patch(
+                    "wayfinder_paths.adapters.hyperliquid_adapter.adapter.HYPERLIQUID_QUICKNODE_INFO_CLIENT.post",
+                    new=AsyncMock(side_effect=RuntimeError("proxy down")),
+                ),
+                patch(
+                    "wayfinder_paths.adapters.hyperliquid_adapter.adapter.asyncio.sleep",
+                    new=AsyncMock(),
+                ),
+            ):
+                ok, result = await adapter.get_frontend_open_orders("0x1234")
+
+        assert ok is False
+        assert "All perp-dex requests failed" in result
+
+    @pytest.mark.asyncio
     async def test_wait_for_deposit_confirms_on_balance_increase(
         self, adapter, mock_info, _patch_adapter
     ):
