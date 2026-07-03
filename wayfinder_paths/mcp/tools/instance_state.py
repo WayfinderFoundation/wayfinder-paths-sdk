@@ -314,8 +314,12 @@ async def visual_create_chart(
       {"type": "scale", "factor": 100, "unit": "%", "label_suffix": "(%)"}.
       Annualize hourly funding directly to percent with {"type": "scale",
       "factor": 876000, "unit": "%", "label_suffix": "(annualized %)"}.
-      Use chart-level transforms only when all series should be transformed
-      together.
+      Chart-level transforms apply to every series unless scoped with
+      `series_ids: ["..."]`. To display a tiny ratio readably, put `scale`
+      on the ratio transform itself — {"type": "ratio", "left": "a",
+      "right": "b", "scale": 1000000, "label_suffix": "(×10⁶)"} — which
+      scales only the derived series; a chart-level scale would corrupt the
+      source series and cancel out of the ratio.
 
     Series can include optional `axis` ("left" or "right") and `color`.
     Keep comparable units on the same axis; use a right axis for unrelated
