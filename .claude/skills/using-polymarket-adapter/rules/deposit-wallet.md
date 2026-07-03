@@ -66,9 +66,29 @@ A full first-time flow looks like:
 ## Adapter methods
 
 - `adapter.deposit_wallet_address()` — **sync**; the first call per wallet does one on-chain resolution (RPC round-trip) then caches for the process. Do not `await` it. Raises if Polygon RPC is unreachable — there is deliberately no local-derivation fallback (a stale local scheme is how funds get stranded).
-- `await adapter.fund_deposit_wallet(amount_raw=int)` — **async** pUSD owner → deposit wallet. **`amount_raw` is in base units (6 decimals).** Returns `(ok, {"deposit_wallet", "amount_raw", "tx_hash"})`.
+- `await adapter.fund_deposit_wallet(amount_raw=int)` — **async** pUSD owner → deposit wallet. **Deploy-first**: the wallet is deployed via the relayer and code-verified on-chain BEFORE the transfer (never funds a codeless address; relayer down ⇒ the call fails instead of stranding funds). **`amount_raw` is in base units (6 decimals).** Returns `(ok, {"deposit_wallet", "amount_raw", "tx_hash"})`.
 - `await adapter.withdraw_deposit_wallet(amount_raw=int | None)` — **async** pUSD deposit wallet → owner. `None` drains the full balance. Returns `(ok, {"deposit_wallet", "tx_hash", "amount_raw", "recipient"})`.
 - `adapter.ensure_trading_setup(token_id=...)` — idempotent (cached); deploy + approvals + CLOB creds + balance allowance. Order placement calls this automatically.
+
+## Wallet states (`deposit_wallet_status`)
+
+`get_full_user_state(...)` (and `polymarket_get_state`) returns a `deposit_wallet_status` block — read it before advising the user about deposits:
+
+```json
+{"resolved_address": "0x…", "legacy_address": "0x…", "scheme": "legacy" | "beacon",
+ "deployed": true, "stranded_legacy_funds": null | {"legacy_address", "pusd_raw", "usdc_e_raw", "message"},
+ "guidance": "…"}
+```
+
+Polymarket's factory changed derivation schemes on 2026-06-29, which puts every user in exactly one of three states:
+
+| State | Block shape | What to do |
+| --- | --- | --- |
+| Legacy wallet (deployed pre-2026-06-29) | `scheme: "legacy"`, `deployed: true` | Nothing — fully operational. |
+| Current scheme (new/normal) | `scheme: "beacon"`, `stranded_legacy_funds: null` | Nothing — deposits deploy-first automatically. |
+| **Stranded** (deposited to the retired address post-upgrade) | `scheme: "beacon"`, `stranded_legacy_funds` set | Tell the user their funds at the legacy address need recovery via the Wayfinder Discord (https://discord.gg/aiwayfinder). **Never send funds to the legacy address.** New deposits to `resolved_address` are safe. |
+
+Follow the `guidance` string — it is written to be relayed to the user.
 
 ## Common pitfalls
 

@@ -51,6 +51,40 @@ class TestPolymarketAdapter:
     def test_adapter_type(self, adapter):
         assert adapter.adapter_type == "POLYMARKET"
 
+    @pytest.mark.asyncio
+    async def test_fund_deposit_wallet_deploys_before_transfer(
+        self, adapter, monkeypatch
+    ):
+        """Deploy-first funding: the wallet must be deployed and code-verified
+        BEFORE any pUSD transfer — transferring to a codeless counterfactual
+        address is how the 2026-06-29 factory upgrade stranded funds."""
+        adapter.wallet_address = "0x000000000000000000000000000000000000dEaD"
+        adapter.sign_callback = AsyncMock()
+        order: list[str] = []
+
+        async def fake_ensure(deposit_wallet: str):
+            order.append("deploy")
+            return None
+
+        async def fake_build(**_kwargs):
+            order.append("build")
+            return {"tx": 1}
+
+        async def fake_send(_tx, _cb, confirmations=1):
+            order.append("send")
+            return "0xhash"
+
+        monkeypatch.setattr(adapter, "_ensure_deposit_wallet_deployed", fake_ensure)
+        monkeypatch.setattr(
+            polymarket_adapter_module, "build_send_transaction", fake_build
+        )
+        monkeypatch.setattr(polymarket_adapter_module, "send_transaction", fake_send)
+
+        ok, out = await adapter.fund_deposit_wallet(amount_raw=1_000_000)
+        assert ok is True
+        assert order == ["deploy", "build", "send"]
+        assert out["tx_hash"] == "0xhash"
+
     def test_clob_client_python_v2_constructor_signature(self):
         params = inspect.signature(
             polymarket_adapter_module.ClobClient.__init__

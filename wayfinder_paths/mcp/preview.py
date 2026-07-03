@@ -11,7 +11,7 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYGON_CHAIN_ID,
     POLYGON_P_USDC_PROXY_ADDRESS,
 )
-from wayfinder_paths.core.utils.polymarket_wallet import check_stranded_legacy_funds
+from wayfinder_paths.core.utils.polymarket_wallet import get_deposit_wallet_status
 from wayfinder_paths.core.utils.tokens import get_token_balance
 from wayfinder_paths.mcp.polymarket_order import (
     as_float,
@@ -297,15 +297,16 @@ async def _pm_market_order_quote_preview(
         lines.append(f"deposit wallet: {deposit_wallet}")
         lines.append(await _pm_deposit_wallet_balance_line(deposit_wallet))
         try:
-            stranded = await check_stranded_legacy_funds(sender)
+            wallet_status = await get_deposit_wallet_status(sender)
         except Exception:  # noqa: BLE001
-            stranded = None
+            wallet_status = None
+        stranded = (wallet_status or {}).get("stranded_legacy_funds")
         if stranded:
             total = (stranded["pusd_raw"] + stranded["usdc_e_raw"]) / 1_000_000
             lines.append(
                 f"WARNING: {total} pUSD/USDC.e stranded at retired legacy address "
-                f"{stranded['legacy_address']} — recovery requires Polymarket "
-                "support; do NOT send funds there"
+                f"{stranded['legacy_address']} — recovery help at "
+                "https://discord.gg/aiwayfinder; do NOT send funds there"
             )
 
         market_slug = str(tool_input.get("market_slug") or "").strip()

@@ -91,28 +91,49 @@ def test_zero_address_prediction_rejected():
             polymarket_wallet.resolve_deposit_wallet_sync(INCIDENT_OWNER)
 
 
-def test_stranded_check_reports_undeployed_legacy_balance():
+def test_status_reports_stranded_funds_with_discord_guidance():
     polymarket_wallet._RESOLVED[INCIDENT_OWNER] = INCIDENT_PREDICTED
 
     def fake(batch):
-        assert all(item["method"] == "eth_call" for item in batch)
-        return [hex(49_000_000), "0x0"]
+        # eth_getCode(resolved) + two balanceOf(legacy) calls
+        assert batch[0]["method"] == "eth_getCode"
+        assert all(item["method"] == "eth_call" for item in batch[1:])
+        return ["0x", hex(49_000_000), "0x0"]
 
     with patch.object(polymarket_wallet, "_rpc_batch", fake):
-        stranded = polymarket_wallet._check_stranded_legacy_funds_sync(INCIDENT_OWNER)
+        status = polymarket_wallet._get_deposit_wallet_status_sync(INCIDENT_OWNER)
+    assert status["scheme"] == "beacon"
+    assert status["deployed"] is False
+    assert status["resolved_address"] == INCIDENT_PREDICTED
+    stranded = status["stranded_legacy_funds"]
     assert stranded is not None
     assert stranded["legacy_address"] == INCIDENT_LEGACY
     assert stranded["pusd_raw"] == 49_000_000
-    assert "Polymarket support" in stranded["message"]
+    assert polymarket_wallet.POLYMARKET_RECOVERY_DISCORD_URL in stranded["message"]
+    assert polymarket_wallet.POLYMARKET_RECOVERY_DISCORD_URL in status["guidance"]
 
 
-def test_stranded_check_short_circuits_for_legacy_canonical_wallet():
+def test_status_clean_beacon_wallet_has_no_banner_state():
+    polymarket_wallet._RESOLVED[INCIDENT_OWNER] = INCIDENT_PREDICTED
+
+    def fake(batch):
+        return ["0x363d3d373d", "0x0", "0x0"]
+
+    with patch.object(polymarket_wallet, "_rpc_batch", fake):
+        status = polymarket_wallet._get_deposit_wallet_status_sync(INCIDENT_OWNER)
+    assert status["scheme"] == "beacon"
+    assert status["deployed"] is True
+    assert status["stranded_legacy_funds"] is None
+
+
+def test_status_short_circuits_for_legacy_canonical_wallet():
     polymarket_wallet._RESOLVED[COHORT2_OWNER] = COHORT2_LEGACY
 
     def must_not_call(_batch):
         raise AssertionError("no RPC expected when resolved == legacy")
 
     with patch.object(polymarket_wallet, "_rpc_batch", must_not_call):
-        assert (
-            polymarket_wallet._check_stranded_legacy_funds_sync(COHORT2_OWNER) is None
-        )
+        status = polymarket_wallet._get_deposit_wallet_status_sync(COHORT2_OWNER)
+    assert status["scheme"] == "legacy"
+    assert status["deployed"] is True
+    assert status["stranded_legacy_funds"] is None

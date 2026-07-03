@@ -124,42 +124,97 @@ async def resolve_deposit_wallet(owner: str) -> str:
     return await asyncio.to_thread(resolve_deposit_wallet_sync, owner)
 
 
-def _check_stranded_legacy_funds_sync(owner: str) -> dict[str, Any] | None:
+POLYMARKET_RECOVERY_DISCORD_URL = "https://discord.gg/aiwayfinder"
+
+
+def _get_deposit_wallet_status_sync(owner: str) -> dict[str, Any]:
+    """Full deposit-wallet state for `owner` — the agent-facing source of
+    truth for the three user cohorts:
+
+      - "legacy":  wallet deployed before the 2026-06-29 factory upgrade,
+        canonical and fully operational — nothing to do;
+      - "beacon" + no stranded funds: current scheme (deployed or deployed-on-
+        first-use) — nothing to do;
+      - "beacon" + stranded_legacy_funds: the user deposited to the retired
+        legacy derivation after the upgrade; recovery goes through the
+        Wayfinder Discord, and no funds must ever be sent there again.
+    """
     owner = to_checksum_address(owner)
     resolved = resolve_deposit_wallet_sync(owner)
     legacy = derive_legacy_deposit_wallet(owner)
+
     if resolved == legacy:
-        return None
+        return {
+            "resolved_address": resolved,
+            "legacy_address": legacy,
+            "scheme": "legacy",
+            "deployed": True,
+            "stranded_legacy_funds": None,
+            "guidance": (
+                "Pre-2026-06-29 deposit wallet, deployed and fully "
+                "operational. No action needed."
+            ),
+        }
 
     balance_call = abi_encode(["address"], [legacy]).hex()
-    pusd_raw, usdc_e_raw = _rpc_batch(
+    code_result, pusd_raw, usdc_e_raw = _rpc_batch(
         [
-            {
-                "method": "eth_call",
-                "params": [
-                    {"to": token, "data": _BALANCE_OF_SELECTOR + balance_call},
-                    "latest",
-                ],
-            }
-            for token in (POLYGON_P_USDC_PROXY_ADDRESS, POLYGON_USDC_E_ADDRESS)
+            {"method": "eth_getCode", "params": [resolved, "latest"]},
+            *(
+                {
+                    "method": "eth_call",
+                    "params": [
+                        {"to": token, "data": _BALANCE_OF_SELECTOR + balance_call},
+                        "latest",
+                    ],
+                }
+                for token in (POLYGON_P_USDC_PROXY_ADDRESS, POLYGON_USDC_E_ADDRESS)
+            ),
         ]
     )
+    deployed = code_result not in (None, "0x", "0x0")
     pusd = int(pusd_raw, 16) if pusd_raw not in (None, "0x") else 0
     usdc_e = int(usdc_e_raw, 16) if usdc_e_raw not in (None, "0x") else 0
-    if pusd == 0 and usdc_e == 0:
-        return None
+
+    stranded: dict[str, Any] | None = None
+    if pusd or usdc_e:
+        stranded = {
+            "legacy_address": legacy,
+            "pusd_raw": pusd,
+            "usdc_e_raw": usdc_e,
+            "message": (
+                f"Funds are stranded at the retired pre-2026-06-29 deposit "
+                f"address {legacy}, which can no longer be deployed. Do NOT "
+                f"send more funds there. Recovery help: "
+                f"{POLYMARKET_RECOVERY_DISCORD_URL}"
+            ),
+        }
+
+    if stranded:
+        guidance = (
+            f"URGENT: {(pusd + usdc_e) / 1_000_000} pUSD/USDC.e is stranded at "
+            f"the retired legacy address {legacy}. Point the user to "
+            f"{POLYMARKET_RECOVERY_DISCORD_URL} for recovery. New deposits go "
+            f"to {resolved} and are safe — the wallet is deployed and "
+            "verified before any transfer."
+        )
+    elif deployed:
+        guidance = "Current-scheme deposit wallet, deployed and operational."
+    else:
+        guidance = (
+            "Deposit wallet not yet deployed; it is deployed and verified "
+            "automatically before the first deposit or trade."
+        )
+
     return {
+        "resolved_address": resolved,
         "legacy_address": legacy,
-        "pusd_raw": pusd,
-        "usdc_e_raw": usdc_e,
-        "message": (
-            f"Funds detected at the retired pre-2026-06-29 deposit address {legacy} "
-            "which can no longer be deployed. Recovery requires contacting "
-            "Polymarket support; do NOT send additional funds there."
-        ),
+        "scheme": "beacon",
+        "deployed": deployed,
+        "stranded_legacy_funds": stranded,
+        "guidance": guidance,
     }
 
 
-async def check_stranded_legacy_funds(owner: str) -> dict[str, Any] | None:
-    """Detect funds stuck at the retired legacy derivation (undeployed only)."""
-    return await asyncio.to_thread(_check_stranded_legacy_funds_sync, owner)
+async def get_deposit_wallet_status(owner: str) -> dict[str, Any]:
+    return await asyncio.to_thread(_get_deposit_wallet_status_sync, owner)
