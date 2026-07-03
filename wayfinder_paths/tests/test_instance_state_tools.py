@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import httpx
 import pytest
 
 from wayfinder_paths.mcp.tools import instance_state
@@ -206,6 +207,79 @@ async def test_visual_import_chart_spec_imports_safe_spec(
         "chart_workspace": {"activeChartId": "virtual-yield", "version": 4},
         "chart_validation": {"series": [{"id": "moonwell-virtual"}]},
     }
+
+
+@pytest.mark.asyncio
+async def test_visual_import_chart_spec_accepts_symlinked_wayfinder_runs(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    """Shells mounts .wayfinder_runs as a symlink out of the repo root
+    (/wf/user_vault/scripts). The resolved spec path escapes the root but is
+    still under the resolved visual_specs dir — validation must accept it."""
+    repo = tmp_path / "sdk"
+    repo.mkdir()
+    real_runs = tmp_path / "user_vault" / "scripts"
+    (real_runs / "visual_specs").mkdir(parents=True)
+    (repo / ".wayfinder_runs").symlink_to(real_runs, target_is_directory=True)
+
+    monkeypatch.setattr(instance_state, "is_opencode_instance", lambda: True)
+    monkeypatch.setattr(instance_state, "repo_root", lambda: repo)
+
+    spec_path = real_runs / "visual_specs" / "chart.json"
+    spec_path.write_text(
+        json.dumps({"id": "c1", "title": "C1", "kind": "line", "series": []})
+    )
+
+    async def fake_upsert(chart: dict[str, object]) -> dict[str, object]:
+        return {"chart_workspace": {"activeChartId": chart["id"], "version": 1}}
+
+    monkeypatch.setattr(
+        instance_state.INSTANCE_STATE_CLIENT,
+        "upsert_workspace_chart",
+        fake_upsert,
+    )
+
+    result = await instance_state.visual_import_chart_spec(
+        ".wayfinder_runs/visual_specs/chart.json"
+    )
+
+    assert result["ok"] is True, result
+    assert result["result"]["chart"]["id"] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_visual_add_workspace_chart_series_surfaces_error_body(
+    monkeypatch,
+) -> None:
+    """Backend 400s must carry their body through — 'HTTP 400' with no details
+    left the visual agent guessing at validation failures."""
+    monkeypatch.setattr(instance_state, "is_opencode_instance", lambda: True)
+
+    request = httpx.Request("POST", "http://backend/chart-series")
+    response = httpx.Response(
+        400,
+        json={"error": "series id already exists on chart"},
+        request=request,
+    )
+
+    async def fake_add(chart_id: str, series: dict[str, object]):
+        raise httpx.HTTPStatusError("400", request=request, response=response)
+
+    monkeypatch.setattr(
+        instance_state.INSTANCE_STATE_CLIENT,
+        "add_workspace_chart_series",
+        fake_add,
+    )
+
+    result = await instance_state.visual_add_workspace_chart_series(
+        "chart-1", {"id": "s1"}
+    )
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "chart_workspace_http_error"
+    assert "series id already exists on chart" in result["error"]["message"]
+    assert result["error"]["details"] == {"error": "series id already exists on chart"}
 
 
 @pytest.mark.asyncio

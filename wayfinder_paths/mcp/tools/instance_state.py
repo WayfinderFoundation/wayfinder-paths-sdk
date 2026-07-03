@@ -109,7 +109,6 @@ def _resolve_visual_spec_path(path_raw: str) -> tuple[Path, str] | dict[str, Any
     resolved = path.resolve(strict=False)
 
     try:
-        display_path = str(resolved.relative_to(root))
         resolved.relative_to(allowed_dir)
     except ValueError:
         return err(
@@ -117,6 +116,14 @@ def _resolve_visual_spec_path(path_raw: str) -> tuple[Path, str] | dict[str, Any
             "path must be under .wayfinder_runs/visual_specs",
             {"path": str(resolved), "allowed_dir": str(allowed_dir)},
         )
+
+    # Display path only. On Shells, .wayfinder_runs is a symlink out of the
+    # repo (/wf/user_vault/scripts), so the resolved path legitimately escapes
+    # the repo root — that must not fail validation.
+    try:
+        display_path = str(resolved.relative_to(root))
+    except ValueError:
+        display_path = str(resolved)
 
     if resolved.suffix.lower() != ".json":
         return err(
@@ -414,7 +421,8 @@ async def visual_set_active_chart(chart_id: str) -> dict[str, Any]:
         workspace["version"] = int(workspace.get("version") or 1) + 1
         return ok(await INSTANCE_STATE_CLIENT.patch_chart_workspace(workspace))
     except httpx.HTTPStatusError as exc:
-        return err("chart_workspace_http_error", f"HTTP {exc.response.status_code}")
+        message, details = _http_error_message(exc)
+        return err("chart_workspace_http_error", message, details)
     except Exception as exc:  # noqa: BLE001
         return err("chart_workspace_error", str(exc))
 
@@ -437,7 +445,8 @@ async def visual_add_workspace_chart_series(
             await INSTANCE_STATE_CLIENT.add_workspace_chart_series(chart_id, series)
         )
     except httpx.HTTPStatusError as exc:
-        return err("chart_workspace_http_error", f"HTTP {exc.response.status_code}")
+        message, details = _http_error_message(exc)
+        return err("chart_workspace_http_error", message, details)
     except Exception as exc:  # noqa: BLE001
         return err("chart_workspace_error", str(exc))
 
