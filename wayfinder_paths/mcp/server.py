@@ -95,9 +95,11 @@ from wayfinder_paths.mcp.tools.instance_state import (
     visual_create_chart,
     visual_get_frontend_context,
     visual_import_chart_spec,
+    visual_preview_series,
     visual_search_chart_series,
     visual_set_active_chart,
     visual_set_active_market,
+    visual_set_chart_indicators,
 )
 from wayfinder_paths.mcp.tools.notify import notification_send
 from wayfinder_paths.mcp.tools.polymarket import (
@@ -238,12 +240,14 @@ def build_mcp(
         mcp.tool()(visual_get_frontend_context)
         mcp.tool()(visual_search_chart_series)
         mcp.tool()(visual_set_active_market)
+        mcp.tool()(visual_preview_series)
         mcp.tool()(visual_create_chart)
         mcp.tool()(visual_import_chart_spec)
         mcp.tool()(visual_set_active_chart)
         mcp.tool()(visual_add_workspace_chart_series)
         mcp.tool()(visual_add_workspace_chart_annotation)
         mcp.tool()(visual_add_workspace_chart_overlay)
+        mcp.tool()(visual_set_chart_indicators)
         mcp.tool()(visual_clear_chart_workspace)
         mcp.tool()(notification_send)
 
