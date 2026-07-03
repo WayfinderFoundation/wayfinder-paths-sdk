@@ -1,6 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from web3 import AsyncWeb3
 
@@ -17,6 +18,7 @@ from wayfinder_paths.core.utils.transaction import (
     gas_limit_transaction,
     gas_price_transaction,
     nonce_transaction,
+    send_sponsored_transaction,
     send_transaction,
 )
 from wayfinder_paths.core.utils.web3 import get_transaction_chain_id
@@ -535,3 +537,34 @@ class TestSendTransaction:
         assert txn_hash == "0xabc"
         mock_send_sponsored.assert_awaited_once()
         mock_broadcast.assert_awaited_once()
+
+
+def _http_status_error(status: int) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "https://backend/send-transaction-sponsored/")
+    return httpx.HTTPStatusError(
+        "rejected", request=request, response=httpx.Response(status, request=request)
+    )
+
+
+@pytest.mark.asyncio
+class TestSendSponsoredTransaction:
+    @pytest.mark.parametrize("status", [400, 402, 403, 429])
+    @patch("wayfinder_paths.core.utils.transaction.WALLET_CLIENT")
+    async def test_rejection_maps_to_fallback(self, mock_client, status):
+        mock_client.send_privy_transaction_sponsored = AsyncMock(
+            side_effect=_http_status_error(status)
+        )
+        with pytest.raises(SponsorshipUnavailableError):
+            await send_sponsored_transaction(
+                RANDOM_USER_0, {"chainId": 1, "to": RANDOM_USER_0}
+            )
+
+    @patch("wayfinder_paths.core.utils.transaction.WALLET_CLIENT")
+    async def test_server_error_stays_fatal(self, mock_client):
+        mock_client.send_privy_transaction_sponsored = AsyncMock(
+            side_effect=_http_status_error(502)
+        )
+        with pytest.raises(httpx.HTTPStatusError):
+            await send_sponsored_transaction(
+                RANDOM_USER_0, {"chainId": 1, "to": RANDOM_USER_0}
+            )

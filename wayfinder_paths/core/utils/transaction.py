@@ -279,11 +279,11 @@ async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> 
         )
     except httpx.HTTPStatusError as exc:
         # A 4xx means the broadcaster refused the submission (sponsorship
-        # disabled, credits depleted, chain not covered) and nothing reached
-        # the chain — safe to retry unsponsored. 5xx/timeouts are ambiguous:
-        # the transaction may have been accepted, so retrying risks a
-        # double-send and they stay fatal.
-        if exc.response.status_code in (400, 402, 403):
+        # disabled, credits depleted, chain not covered, or the daily quota is
+        # spent — 429) and nothing reached the chain, so it's safe to retry
+        # unsponsored. 5xx/timeouts are ambiguous: the transaction may have
+        # been accepted, so retrying risks a double-send and they stay fatal.
+        if exc.response.status_code in (400, 402, 403, 429):
             raise SponsorshipUnavailableError(
                 f"Sponsored send rejected with {exc.response.status_code}"
             ) from exc
