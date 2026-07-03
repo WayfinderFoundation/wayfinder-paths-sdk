@@ -60,6 +60,28 @@ class InstanceStateClient(WayfinderClient):
         )
         return resp.json()
 
+    async def resolve_chart_data(self, payload: dict[str, Any]) -> dict[str, Any]:
+        resp = await self._authed_request(
+            "POST",
+            f"{self._base_url()}/chart_data/",
+            json=payload,
+        )
+        return resp.json()
+
+    async def set_chart_indicators(
+        self, chart_id: str, indicators: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        state = await self.get_state()
+        workspace = self._workspace_from_state(state)
+        if self._find_workspace_chart(workspace, chart_id) is None:
+            chart_id = self._resolve_default_chart_id(state, chart_id)
+        indicator_map = workspace.setdefault("defaultIndicators", {})
+        if indicators:
+            indicator_map[chart_id] = indicators
+        else:
+            indicator_map.pop(chart_id, None)
+        return await self.patch_chart_workspace(self._bump_workspace(workspace))
+
     async def upsert_workspace_chart(self, chart: dict[str, Any]) -> dict[str, Any]:
         resp = await self._authed_request(
             "POST",
@@ -158,9 +180,11 @@ class InstanceStateClient(WayfinderClient):
                 "activeChartId": None,
                 "charts": [],
                 "defaultAnnotations": {},
+                "defaultIndicators": {},
             }
         workspace.setdefault("charts", [])
         workspace.setdefault("defaultAnnotations", {})
+        workspace.setdefault("defaultIndicators", {})
         return workspace
 
     @classmethod
