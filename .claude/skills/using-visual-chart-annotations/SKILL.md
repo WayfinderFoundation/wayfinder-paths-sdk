@@ -67,11 +67,13 @@ Read the current Shells chart id, then write chart changes through the chart wor
 | `visual_get_frontend_context` | none | Read current default chart context and workspace |
 | `visual_search_chart_series` | `query`, `kind?`, `venue?`, `market_type?`, `limit?` | Discover supported chart datasets and their column shapes |
 | `visual_set_active_market` | `query?`, `market_id?`, `market_type?`, `chain_id?`, `clear_workspace?` | Switch the default chart/trading context to one tradable market |
-| `visual_create_chart` | `chart_id`, `title`, `kind`, `series`, `transforms?`, `overlays?`, `lookback_days?`, `limit?`, `layout?`, `context_market_id?` | Validate, create, or replace a visual pane |
+| `visual_preview_series` | `series`, `kind?`, `transforms?`, `lookback_days?`, `limit?` | Dry-run resolve series before charting: y-range, unit, counts, sample points |
+| `visual_create_chart` | `chart_id`, `title`, `kind`, `series`, `transforms?`, `overlays?`, `lookback_days?`, `limit?`, `layout?`, `context_market_id?`, `indicators?` | Validate, create, or replace a visual pane |
 | `visual_set_active_chart` | `chart_id` | Focus an existing workspace chart |
 | `visual_add_workspace_chart_annotation` | `chart_id`, `type`, `config`, `annotation_id?` | Add one TradingView annotation to a default or workspace chart |
 | `visual_add_workspace_chart_overlay` | `chart_id`, `overlay` | Add a raw overlay, usually bulk `event_markers` |
 | `visual_add_workspace_chart_series` | `chart_id`, `series` | Add or replace a data series on an existing workspace chart |
+| `visual_set_chart_indicators` | `chart_id`, `indicators` | Replace the TradingView studies on a live or workspace chart (`[]` clears) |
 | `visual_clear_chart_workspace` | none | Clear agent-created charts and default-chart annotations |
 
 All gate on `is_opencode_instance()` and return `{"ok": false, "error": {"code": "not_opencode_instance"}}` when run outside Shells.
@@ -208,6 +210,60 @@ overlay:
 
 Use `data` as the canonical event array. Legacy `markers` is accepted, but new
 calls should not use it.
+
+## TradingView indicators
+
+`visual_set_chart_indicators(chart_id, indicators)` applies native TradingView
+studies to the live/default chart or a workspace chart. **Replace semantics**:
+the list you pass becomes the chart's full indicator set; `[]` clears. Current
+indicators are readable at `chart_workspace.defaultIndicators[chart_id]`.
+
+```json
+[
+  {"name": "ema", "inputs": {"length": 21}},
+  {"name": "bollinger", "inputs": {"length": 20, "mult": 2}},
+  {"name": "rsi"}
+]
+```
+
+| Alias | TradingView study | Pane | Params (defaults) |
+|-------|-------------------|------|-------------------|
+| `sma` | Moving Average | price overlay | `length` (9), `source` ("close") |
+| `ema` | Moving Average Exponential | price overlay | `length` (9), `source` ("close") |
+| `bollinger` | Bollinger Bands | price overlay | `length` (20), `mult` (2) |
+| `supertrend` | SuperTrend | price overlay | `length` (10, ATR period), `factor` (3) |
+| `vwap` | VWAP | price overlay | `anchor` ("Session"/"Week"/"Month"/"Quarter"/"Year"), `source` ("hlc3") |
+| `rsi` | Relative Strength Index | own sub-pane | `length` (14) |
+| `macd` | MACD | own sub-pane | `fast` (12), `slow` (26), `signal` (9) |
+| `atr` | Average True Range | own sub-pane | `length` (14) |
+| `stochastic` | Stochastic | own sub-pane | `k_length` (14), `k_smoothing` (1), `d_smoothing` (3) |
+| `volume` | Volume | own sub-pane | `ma_length` (20), `show_ma` (false) |
+
+Names are case-insensitive; the canonical study names are also accepted. Unknown
+names return a 400 listing the supported set. Use the friendly param names from
+the table — the backend translates them to the study's actual TradingView input
+ids (several built-ins use positional `in_0`/`in_1` ids). Unrecognized input
+keys pass through untouched, so exact TV input ids and advanced inputs
+(`smoothingLine`, `maType`, …) also work. Omit `inputs` entirely for
+TradingView defaults — prefer that unless the user asked for specific
+parameters. Optional `forceOverlay` overrides the pane default; optional `id`
+makes an entry stable across replaces. `visual_create_chart` accepts the same
+list via `indicators`.
+
+Indicators render only on TradingView-backed charts: the live market chart,
+`price_candle` charts, and single-series time-series line charts. Bar, table,
+and multi-series recharts panels ignore them.
+
+## Previewing data before charting
+
+`visual_preview_series(series, kind?, transforms?, lookback_days?, limit?)`
+dry-run resolves the exact series/transforms payload you would pass to
+`visual_create_chart` — nothing is saved. The compact response carries, per
+series: `points`, `first_x`/`last_x`, `unit`, `y_first`/`y_last`/`y_min`/`y_max`,
+and `sample_head`/`sample_tail` point arrays. Use it to catch unit and scaling
+mistakes (decimal APYs, unreadably tiny ratios) before the chart exists. The
+same automatic percent-scaling of known rate fields applied by
+`visual_create_chart` is applied here, so the preview matches the render.
 
 ## Gotchas
 

@@ -52,6 +52,7 @@ permission:
   wayfinder_visual_add_workspace_chart_series: allow
   wayfinder_visual_add_workspace_chart_annotation: allow
   wayfinder_visual_add_workspace_chart_overlay: allow
+  wayfinder_visual_set_chart_indicators: allow
   wayfinder_visual_clear_chart_workspace: allow
   # notification_send — main agent owns user-facing notifications
   wayfinder_notification_send: allow
@@ -419,6 +420,7 @@ Use direct visual tools for cheap chart orchestration before involving subagents
 - Use `wayfinder_visual_search_chart_series` only to look up backend-supported series/source references for a chart request. A search result is not a rendered chart.
 - Use `wayfinder_visual_add_workspace_chart_series` directly only for a one-series repair on an existing workspace chart when `wayfinder_visual_get_frontend_context(include_health=true)` or `wayfinder_visual_search_chart_series` identifies a provider-confirmed replacement. Verify the returned `chart_validation` before saying it was fixed.
 - Use `wayfinder_visual_add_workspace_chart_annotation` or `wayfinder_visual_add_workspace_chart_overlay` directly for simple live/current chart annotations after reading `wayfinder_visual_get_frontend_context`; pass the exact `frontend_context.chart.id`, use ISO timestamps, use `event_markers.data` for bulk events, and verify `chart_workspace.defaultAnnotations[chart_id]` contains the expected annotations before claiming completion.
+- Use `wayfinder_visual_set_chart_indicators` directly when the user asks to add TradingView indicators (Supertrend, Bollinger Bands, SMA, EMA, RSI, MACD, VWAP, ATR, Stochastic, Volume) to the live/current chart; read `frontend_context.chart.id` first, and pass the **full** desired indicator list — the call replaces the chart's existing indicators, and `[]` clears them. Omit `inputs` for TradingView defaults unless the user asked for specific parameters.
 - Use `wayfinder_visual_clear_chart_workspace` when the user asks to clear the chart, remove the markers/lines/annotations, or reset the chart. It is the only tool that removes annotations — it deletes every agent-drawn annotation and any agent-created workspace charts in one call. `wayfinder_visual_set_active_market` only switches markets and never removes annotations, so do not use it to clear. After clearing, confirm `chart_workspace.defaultAnnotations` is empty before claiming completion.
 - Delegate workspace chart creation and multi-series mutations to `wayfinder-visual`: comparisons, relative performance, APY/funding/lending/basis charts, and derived/multi-series panes.
 - Do not call `wayfinder-quant` for simple iteration, single-token chart routing, or source-backed chart comparisons the visual tools can render.

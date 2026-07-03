@@ -137,27 +137,29 @@ def _resolve_visual_spec_path(path_raw: str) -> tuple[Path, str] | dict[str, Any
     return resolved, display_path
 
 
-def _compact_chart_import_result(
+def _compact_chart_result(
     *,
-    path: str,
     chart: dict[str, Any],
     response: dict[str, Any],
+    path: str | None = None,
 ) -> dict[str, Any]:
     workspace = response.get("chart_workspace") if isinstance(response, dict) else {}
     if not isinstance(workspace, dict):
         workspace = {}
 
     series = chart.get("series")
+    chart_summary: dict[str, Any] = {
+        "id": chart.get("id"),
+        "title": chart.get("title"),
+        "kind": chart.get("kind"),
+        "series_count": len(series) if isinstance(series, list) else 0,
+        "lookback_days": chart.get("lookback_days"),
+        "limit": chart.get("limit"),
+    }
+    if path is not None:
+        chart_summary["path"] = path
     return {
-        "chart": {
-            "id": chart.get("id"),
-            "title": chart.get("title"),
-            "kind": chart.get("kind"),
-            "path": path,
-            "series_count": len(series) if isinstance(series, list) else 0,
-            "lookback_days": chart.get("lookback_days"),
-            "limit": chart.get("limit"),
-        },
+        "chart": chart_summary,
         "chart_workspace": {
             "activeChartId": workspace.get("activeChartId"),
             "version": workspace.get("version"),
@@ -166,6 +168,44 @@ def _compact_chart_import_result(
         if isinstance(response, dict)
         else None,
     }
+
+
+_PREVIEW_SAMPLE_POINTS = 3
+
+
+def _compact_preview_summary(resolved: dict[str, Any]) -> dict[str, Any]:
+    resolved_series = resolved.get("series") if isinstance(resolved, dict) else []
+    summaries: list[dict[str, Any]] = []
+    for item in resolved_series if isinstance(resolved_series, list) else []:
+        if not isinstance(item, dict):
+            continue
+        points = item.get("points") if isinstance(item.get("points"), list) else []
+        y_values = [
+            point["y"]
+            for point in points
+            if isinstance(point, dict)
+            and isinstance(point.get("y"), (int, float))
+            and not isinstance(point.get("y"), bool)
+        ]
+        summaries.append(
+            {
+                "id": item.get("id"),
+                "label": item.get("label"),
+                "unit": item.get("unit"),
+                "points": len(points),
+                "first_x": points[0].get("x") if points else None,
+                "last_x": points[-1].get("x") if points else None,
+                "y_first": y_values[0] if y_values else None,
+                "y_last": y_values[-1] if y_values else None,
+                "y_min": min(y_values) if y_values else None,
+                "y_max": max(y_values) if y_values else None,
+                "sample_head": points[:_PREVIEW_SAMPLE_POINTS],
+                "sample_tail": points[
+                    max(len(points) - _PREVIEW_SAMPLE_POINTS, _PREVIEW_SAMPLE_POINTS) :
+                ],
+            }
+        )
+    return {"series": summaries}
 
 
 @catch_errors
@@ -266,6 +306,116 @@ async def visual_set_active_market(
 
 
 @catch_errors
+async def visual_preview_series(
+    series: list[dict[str, Any]],
+    kind: str = "line",
+    transforms: list[dict[str, Any]] | None = None,
+    lookback_days: int | None = None,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    """Dry-run resolve chart series and inspect the actual data before charting.
+
+    Takes the same series/transforms shape as `visual_create_chart`, resolves
+    it server-side without saving anything, and returns a compact per-series
+    summary: point count, first/last timestamps, y_min/y_max/y_first/y_last,
+    unit, and a few head/tail sample points.
+
+    Use this before creating a chart when working with an unfamiliar dataset
+    or derived math (ratios, spreads, rebasing) to confirm the values are in
+    the range and unit you expect — e.g. that an APY series is percent not
+    decimal, or that a ratio needs a scale to be readable. The same display
+    normalization applied by `visual_create_chart` (auto percent-scaling of
+    known rate fields) is applied here, so the preview matches what the chart
+    would render.
+    """
+    if not is_opencode_instance():
+        return err(*_NOT_OPENCODE_ERR)
+    payload: dict[str, Any] = {
+        "kind": kind,
+        "series": _normalize_chart_series_for_display(series),
+        "transforms": transforms or [],
+    }
+    if lookback_days:
+        payload["lookback_days"] = lookback_days
+    if limit:
+        payload["limit"] = limit
+    try:
+        resolved = await INSTANCE_STATE_CLIENT.resolve_chart_data(payload)
+        return ok(_compact_preview_summary(resolved))
+    except httpx.HTTPStatusError as exc:
+        message, details = _http_error_message(exc)
+        return err("chart_data_http_error", message, details)
+    except Exception as exc:  # noqa: BLE001
+        return err("chart_data_error", str(exc))
+
+
+@catch_errors
+async def visual_set_chart_indicators(
+    chart_id: str,
+    indicators: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Set the TradingView indicators rendered on a chart (replace semantics).
+
+    Applies native TradingView studies to the live market chart or an
+    agent-created workspace chart. Use `visual_get_frontend_context()` to read
+    the current live chart id, or pass a workspace chart id. The full list
+    replaces whatever indicators the chart had; pass `[]` to clear.
+
+    Each indicator: {"name": "...", "inputs"?: {...}, "id"?: "...",
+    "forceOverlay"?: bool}.
+
+    Supported names (aliases, case-insensitive) and params (defaults):
+      - sma (price overlay): length (9), source ("close")
+      - ema (price overlay): length (9), source ("close")
+      - bollinger (price overlay): length (20), mult (2)
+      - supertrend (price overlay): length (10, ATR period), factor (3)
+      - vwap (price overlay): anchor ("Session"|"Week"|"Month"|"Quarter"|
+        "Year"), source ("hlc3")
+      - rsi (sub-pane): length (14)
+      - macd (sub-pane): fast (12), slow (26), signal (9)
+      - atr (sub-pane): length (14)
+      - stochastic (sub-pane): k_length (14), k_smoothing (1), d_smoothing (3)
+      - volume (sub-pane): ma_length (20), show_ma (false)
+
+    Use these friendly param names — the backend translates them to the
+    study's actual TradingView input ids. Omit `inputs` to use TradingView
+    defaults; prefer that unless the user asked for specific parameters.
+    Unknown indicator names are rejected with the supported list. Indicators
+    only render on TradingView-backed charts (the live market chart,
+    price_candle charts, and single-series time-series line charts);
+    bar/table/multi-series recharts panels do not support them.
+    """
+    if not is_opencode_instance():
+        return err(*_NOT_OPENCODE_ERR)
+    try:
+        response = await INSTANCE_STATE_CLIENT.set_chart_indicators(
+            chart_id, indicators
+        )
+        workspace = (
+            response.get("chart_workspace") if isinstance(response, dict) else {}
+        )
+        if not isinstance(workspace, dict):
+            workspace = {}
+        return ok(
+            {
+                "chart_id": chart_id,
+                "indicators": (workspace.get("defaultIndicators") or {}).get(
+                    chart_id, []
+                ),
+                "chart_workspace": {
+                    "activeChartId": workspace.get("activeChartId"),
+                    "version": workspace.get("version"),
+                },
+            }
+        )
+    except httpx.HTTPStatusError as exc:
+        message, details = _http_error_message(exc)
+        return err("chart_workspace_http_error", message, details)
+    except Exception as exc:  # noqa: BLE001
+        return err("chart_workspace_error", str(exc))
+
+
+@catch_errors
 async def visual_create_chart(
     chart_id: str,
     title: str,
@@ -277,6 +427,7 @@ async def visual_create_chart(
     limit: int | None = None,
     layout: dict[str, Any] | None = None,
     context_market_id: str | None = None,
+    indicators: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Create or replace a chart in the user's shell chart workspace.
 
@@ -331,6 +482,16 @@ async def visual_create_chart(
 
     Use lookback_days for requested windows. Examples: 30 for one month,
     90 for three months, 365 for one year.
+
+    Optional `indicators` applies TradingView studies to the chart after it
+    saves (same shape as `visual_set_chart_indicators`). Only TradingView-
+    backed charts render them (price_candle, single-series time lines).
+
+    The response is compact: the saved chart identity plus `chart_validation`
+    with per-series row/point counts, first/last timestamps, unit, and
+    y_first/y_last/y_min/y_max. Check those stats against the values you
+    expect — a ratio at 1e-6 or an APY at 0.05 instead of 5 means the scaling
+    is wrong; fix the transforms instead of reporting success.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
@@ -351,12 +512,24 @@ async def visual_create_chart(
     if context_market_id:
         chart["context_market_id"] = context_market_id
     try:
-        return ok(await INSTANCE_STATE_CLIENT.upsert_workspace_chart(chart))
+        response = await INSTANCE_STATE_CLIENT.upsert_workspace_chart(chart)
     except httpx.HTTPStatusError as exc:
         message, details = _http_error_message(exc)
         return err("chart_workspace_http_error", message, details)
     except Exception as exc:  # noqa: BLE001
         return err("chart_workspace_error", str(exc))
+
+    result = _compact_chart_result(chart=chart, response=response)
+    if indicators:
+        try:
+            await INSTANCE_STATE_CLIENT.set_chart_indicators(chart_id, indicators)
+            result["indicators"] = indicators
+        except httpx.HTTPStatusError as exc:
+            message, details = _http_error_message(exc)
+            result["indicators_error"] = {"message": message, "details": details}
+        except Exception as exc:  # noqa: BLE001
+            result["indicators_error"] = {"message": str(exc)}
+    return ok(result)
 
 
 @catch_errors
@@ -400,7 +573,7 @@ async def visual_import_chart_spec(path: str) -> dict[str, Any]:
     try:
         response = await INSTANCE_STATE_CLIENT.upsert_workspace_chart(chart)
         return ok(
-            _compact_chart_import_result(
+            _compact_chart_result(
                 path=display_path,
                 chart=chart,
                 response=response,

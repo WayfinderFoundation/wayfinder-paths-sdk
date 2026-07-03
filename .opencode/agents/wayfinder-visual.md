@@ -95,6 +95,8 @@ For Delta Lab, APY, funding, lending, Pendle, borrow-route, basis, and time-seri
   - Do not label raw `0.12` as `0.12%`; it is `12%` after scaling.
 - Chart-level transforms apply to **every** series unless scoped with `"series_ids": ["..."]`. Prefer series-level transforms or scoped chart-level ones; an unscoped chart-level `scale` on a mixed chart corrupts the series you didn't mean to touch.
 
+Preview before you chart: for an unfamiliar dataset or any derived math (ratio, spread, rebase, custom scaling), call `visual_preview_series` with the same series/transforms you plan to use. It dry-run resolves the data without saving and returns per-series `y_min`/`y_max`/`y_first`/`y_last`, `unit`, point counts, and head/tail sample points. Check the values are in the expected range and unit (an APY of `0.05` instead of `5` means a missing percent scale; a ratio at `2e-4` needs a readability scale) and fix the transforms **before** creating the chart. Skip the preview for sources you have already charted successfully in this session.
+
 ### Common Chart Patterns
 
 Relative performance:
@@ -135,9 +137,17 @@ Live/default chart annotations:
 - For bulk catalyst markers, use `visual_add_workspace_chart_overlay` with `overlay={"type":"event_markers","id":"...","data":[...]}`. Each event needs `time` plus `label` or `text`, with optional `price`, `color`, and `shape`. Do not use a top-level `markers` key unless you are repairing legacy state.
 - After adding annotations, inspect the returned `chart_workspace.defaultAnnotations[chart_id]` and verify the expected annotation ids or count are present. If they are missing, report the failure instead of saying the chart is annotated.
 
+TradingView indicators (Supertrend, Bollinger Bands, SMA, EMA, RSI, MACD, VWAP, ATR, Stochastic, Volume):
+
+- Use `visual_set_chart_indicators(chart_id, indicators)` to apply native TradingView studies to the live chart or a workspace chart. It has **replace semantics** — pass the full desired list every time; pass `[]` to clear. Read the current list from `chart_workspace.defaultIndicators[chart_id]` first when adding to existing indicators.
+- Each indicator is `{"name": "ema", "inputs"?: {"length": 21}}`. Aliases are case-insensitive; omit `inputs` for TradingView defaults unless the user asked for specific parameters. Price-pane overlays: sma, ema, bollinger, supertrend, vwap. Own sub-pane: rsi, macd, atr, stochastic, volume.
+- Params per study (defaults): sma/ema `length` (9); bollinger `length` (20), `mult` (2); supertrend `length` (10), `factor` (3); vwap `anchor` ("Session"/"Week"/"Month"); rsi `length` (14); macd `fast` (12), `slow` (26), `signal` (9); atr `length` (14); stochastic `k_length` (14), `k_smoothing` (1), `d_smoothing` (3); volume `ma_length` (20), `show_ma`. Use these names exactly — the backend maps them to TradingView's internal input ids. The full reference lives in `/using-visual-chart-annotations`.
+- For the live chart, use the exact `frontend_context.chart.id` as `chart_id` (same rule as annotations). `visual_create_chart` also accepts an `indicators` list to apply them at creation time.
+- Indicators render only on TradingView-backed charts: the live market chart, `price_candle` charts, and single-series time-series line charts. Bar/table/multi-series recharts panels do not support them — say so instead of claiming they were applied.
+
 Use `visual_create_chart` for a new visual pane, `visual_set_active_chart` before modifying a specific existing pane, `visual_add_workspace_chart_series` for additional series, and annotation/overlay tools only after the target chart is known.
 
-After creating or importing a workspace chart, verify the returned workspace state includes the expected chart id as `activeChartId` before claiming success. If the saved workspace state is missing the expected chart, return the failure in `failedSeries` or `needsClarification` instead of saying the chart is visible.
+After creating or importing a workspace chart, verify the returned workspace state includes the expected chart id as `activeChartId` before claiming success. If the saved workspace state is missing the expected chart, return the failure in `failedSeries` or `needsClarification` instead of saying the chart is visible. The response's `chart_validation` now includes per-series `unit` and `y_first`/`y_last`/`y_min`/`y_max` — compare them against the values you expect. A y-range wildly off the expected magnitude means broken scaling; fix the transforms instead of reporting success.
 
 Describe workspace navigation accurately: workspace charts render as chart cards in the main chart area, not inside the command/search palette. When at least one workspace chart exists, the chart header shows a small chart-mode icon toggle; from the live market it opens the saved workspace charts, and from workspace mode it returns to the live market. If no workspace charts exist, there is no toggle.
 

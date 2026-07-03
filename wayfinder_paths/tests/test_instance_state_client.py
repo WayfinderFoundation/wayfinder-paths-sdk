@@ -151,3 +151,74 @@ async def test_event_markers_overlay_accepts_legacy_markers_key(monkeypatch) -> 
             ],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_set_chart_indicators_resolves_live_chart_alias(monkeypatch) -> None:
+    client = InstanceStateClient()
+    captured: dict[str, object] = {}
+
+    async def fake_get_state() -> dict:
+        return {
+            "frontend_context": {
+                "chart": {
+                    "id": "hl-perp-zec",
+                    "market_id": "hl-perp-zec",
+                    "symbol": "ZEC-USDC",
+                    "feed_id": "ZEC",
+                }
+            },
+            "chart_workspace": {
+                "version": 3,
+                "activeChartId": None,
+                "charts": [],
+                "defaultAnnotations": {},
+            },
+        }
+
+    async def fake_patch_chart_workspace(workspace: dict) -> dict:
+        captured["workspace"] = workspace
+        return {"chart_workspace": workspace}
+
+    monkeypatch.setattr(client, "get_state", fake_get_state)
+    monkeypatch.setattr(client, "patch_chart_workspace", fake_patch_chart_workspace)
+
+    indicators = [{"name": "ema", "inputs": {"length": 21}}, {"name": "rsi"}]
+    await client.set_chart_indicators("ZEC", indicators)
+
+    workspace = captured["workspace"]
+    assert workspace["version"] == 4
+    assert workspace["defaultIndicators"] == {"hl-perp-zec": indicators}
+
+
+@pytest.mark.asyncio
+async def test_set_chart_indicators_replaces_and_clears(monkeypatch) -> None:
+    client = InstanceStateClient()
+    captured: dict[str, object] = {}
+
+    async def fake_get_state() -> dict:
+        return {
+            "frontend_context": {"chart": {"id": "hl-perp-btc"}},
+            "chart_workspace": {
+                "version": 5,
+                "activeChartId": "aero-eth",
+                "charts": [{"id": "aero-eth", "series": []}],
+                "defaultAnnotations": {},
+                "defaultIndicators": {"aero-eth": [{"name": "sma"}]},
+            },
+        }
+
+    async def fake_patch_chart_workspace(workspace: dict) -> dict:
+        captured["workspace"] = workspace
+        return {"chart_workspace": workspace}
+
+    monkeypatch.setattr(client, "get_state", fake_get_state)
+    monkeypatch.setattr(client, "patch_chart_workspace", fake_patch_chart_workspace)
+
+    await client.set_chart_indicators("aero-eth", [{"name": "bollinger"}])
+    assert captured["workspace"]["defaultIndicators"] == {  # type: ignore[index]
+        "aero-eth": [{"name": "bollinger"}]
+    }
+
+    await client.set_chart_indicators("aero-eth", [])
+    assert captured["workspace"]["defaultIndicators"] == {}  # type: ignore[index]
