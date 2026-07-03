@@ -102,6 +102,25 @@ async def test_price_ts_returns_indexed_dataframe(
 
 
 @pytest.mark.asyncio
+async def test_price_ts_sizes_limit_to_lookback_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without an explicit limit, size it to hourly cadence — a fixed 500
+    default silently truncated lookback_days=90 to ~21 days of data."""
+    c, mock = _make_client(monkeypatch, [{"items": _PRICE_ROWS, "count": 2}])
+    await c.get_asset_price_ts(asset_id=2, lookback_days=90)
+    assert mock.await_args.kwargs["params"]["limit"] == 90 * 24 + 24
+
+    c, mock = _make_client(monkeypatch, [{"items": _PRICE_ROWS, "count": 2}])
+    await c.get_asset_price_ts(asset_id=2, lookback_days=3)
+    assert mock.await_args.kwargs["params"]["limit"] == 500
+
+    c, mock = _make_client(monkeypatch, [{"items": _PRICE_ROWS, "count": 2}])
+    await c.get_asset_price_ts(asset_id=2, lookback_days=90, limit=100)
+    assert mock.await_args.kwargs["params"]["limit"] == 100
+
+
+@pytest.mark.asyncio
 async def test_price_latest_returns_typed(monkeypatch: pytest.MonkeyPatch) -> None:
     c, _ = _make_client(
         monkeypatch,

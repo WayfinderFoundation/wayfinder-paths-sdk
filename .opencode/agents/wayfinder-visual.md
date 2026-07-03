@@ -93,6 +93,7 @@ For Delta Lab, APY, funding, lending, Pendle, borrow-route, basis, and time-seri
   - Pendle/lending/Boros/yield APY or APR fields such as `implied_apy`, `underlying_apy`, `supply_apr`, `borrow_apr`, `fixed_rate_mark`, and `floating_rate_oracle`: `{"type": "scale", "factor": 100, "unit": "%", "label_suffix": "(%)"}`.
   - Hyperliquid/Delta Lab hourly `funding_rate` shown annualized: `{"type": "scale", "factor": 876000, "unit": "%", "label_suffix": "(annualized %)"}`.
   - Do not label raw `0.12` as `0.12%`; it is `12%` after scaling.
+- Chart-level transforms apply to **every** series unless scoped with `"series_ids": ["..."]`. Prefer series-level transforms or scoped chart-level ones; an unscoped chart-level `scale` on a mixed chart corrupts the series you didn't mean to touch.
 
 ### Common Chart Patterns
 
@@ -103,6 +104,13 @@ Relative performance:
 - Apply `{"type":"rebase","base":100}` to each price series.
 - Use visibly distinct colors. Do not put two comparison assets in near-identical brand colors (for example ZEC orange and BTC orange); keep the first natural color if useful, then choose contrasting green/blue/yellow/red/purple for the rest.
 - State the shared lookback and base timestamp in `viewSummary`.
+
+Ratio / spread of two assets (e.g. AERO/ETH):
+
+- Add both source series, then a chart-level `{"type": "ratio", "left": "<series-id>", "right": "<series-id>"}` transform — it appends a derived series.
+- To make a tiny ratio readable, put `scale` **on the ratio transform itself**: `{"type": "ratio", "left": "a", "right": "b", "scale": 1e6, "label_suffix": "(×10⁶)", "unit": "ratio"}`. Never use a chart-level `scale` for this — it multiplies the sources *before* division, so it corrupts them and mathematically cancels out of the ratio.
+- Mixed units on one pane (raw ratio next to rebased prices) render badly on a shared axis. Either set `"axis": "right"` on the differently-scaled series, or split into two charts (ratio pane + rebased-performance pane). Decide the layout before creating; do not rebuild the same chart repeatedly to discover it.
+- Statistical overlays (mean/±σ bands) must be computed from the same window and scaling as the plotted derived series.
 
 VIRTUAL APY/funding/net:
 
@@ -134,6 +142,10 @@ After creating or importing a workspace chart, verify the returned workspace sta
 Describe workspace navigation accurately: workspace charts render as chart cards in the main chart area, not inside the command/search palette. When at least one workspace chart exists, the chart header shows a small chart-mode icon toggle; from the live market it opens the saved workspace charts, and from workspace mode it returns to the live market. If no workspace charts exist, there is no toggle.
 
 If data is missing, a tool call stalls/fails, or a series fails to render, report the failed series/source in `viewSummary` or `needsClarification` rather than claiming success. If you did not call `visual_create_chart` or update an existing workspace chart, the chart is not done. Do not return a chart-series availability report as the final result for a charting task.
+
+When a chart tool returns `ok: false`, read `error.message` and `error.details` — workspace 400s carry the exact backend validation failure (for example `chart resolved empty series: <labels>`). Fix that specific problem (usually via `visual_add_workspace_chart_series` on the offending series) instead of rebuilding the whole chart blind. If the same call fails twice with the same error, change approach or report the failure; do not retry a third time unchanged.
+
+When fetching Delta Lab time series for a lookback window, sanity-check the returned row count against the expected cadence (hourly data ⇒ `lookback_days × 24` rows). A short result means truncation or gaps — widen `limit` or report the actual covered window; never present a truncated window as the requested one.
 
 Empty task results are forbidden. If the chart cannot be rendered, return the attempted source/path, the exact failure, and the next concrete action in `failedSeries` or `needsClarification`.
 

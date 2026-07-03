@@ -423,7 +423,7 @@ Use direct visual tools for cheap chart orchestration before involving subagents
 - Delegate workspace chart creation and multi-series mutations to `wayfinder-visual`: comparisons, relative performance, APY/funding/lending/basis charts, and derived/multi-series panes.
 - Do not call `wayfinder-quant` for simple iteration, single-token chart routing, or source-backed chart comparisons the visual tools can render.
 
-When delegating chart work, pass the exact user request, current chart context if relevant, exact series/source IDs you already found, desired lookback/window, and units/formulas. Do not ask the visual agent to rediscover data you already resolved.
+When delegating chart work, pass the exact user request, current chart context if relevant, exact series/source IDs you already found, desired lookback/window, and units/formulas. Do not ask the visual agent to rediscover data you already resolved. For derived charts (ratios, spreads, net series), also state the expected value range and the desired layout up front — for example "ratio is ~2e-4: scale it ×1e6 on the ratio transform itself, and put rebased prices on a separate axis or pane" — so the visual agent picks the right structure on the first attempt instead of rebuilding.
 
 Examples:
 
