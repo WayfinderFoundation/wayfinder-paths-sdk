@@ -1611,15 +1611,20 @@ class PolymarketAdapter(BaseAdapter):
             deploy_tx_hash = deploy_tx["transactionHash"]
             # The relayer must have deployed at the address the factory
             # predicted — if not, the derivation scheme changed again and
-            # nothing may proceed against this address.
-            deployed_code = await web3.eth.get_code(deposit_wallet)
-            if not deployed_code:
-                raise ValueError(
-                    "Relayer WALLET-CREATE mined but no code exists at the "
-                    f"resolved deposit wallet {deposit_wallet}; the factory "
-                    "derivation may have changed — do not send funds."
-                )
-            return deploy_tx_hash
+            # nothing may proceed against this address. Poll briefly because
+            # our read node can lag the relayer's by a block or two.
+            deadline = asyncio.get_running_loop().time() + 10
+            while True:
+                deployed_code = await web3.eth.get_code(deposit_wallet)
+                if deployed_code:
+                    return deploy_tx_hash
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise ValueError(
+                        "Relayer WALLET-CREATE mined but no code exists at the "
+                        f"resolved deposit wallet {deposit_wallet}; the factory "
+                        "derivation may have changed — do not send funds."
+                    )
+                await asyncio.sleep(0.25)
 
     async def _setup_deposit_wallet(self) -> tuple[str | None, str | None]:
         owner = self._require_wallet_address()
