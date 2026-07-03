@@ -364,17 +364,26 @@ async def visual_set_chart_indicators(
     Each indicator: {"name": "...", "inputs"?: {...}, "id"?: "...",
     "forceOverlay"?: bool}.
 
-    Supported names (aliases, case-insensitive):
-      - Price-pane overlays: sma, ema, bollinger, supertrend, vwap
-      - Own sub-pane: rsi, macd, atr, stochastic, volume
+    Supported names (aliases, case-insensitive) and params (defaults):
+      - sma (price overlay): length (9), source ("close")
+      - ema (price overlay): length (9), source ("close")
+      - bollinger (price overlay): length (20), mult (2)
+      - supertrend (price overlay): length (10, ATR period), factor (3)
+      - vwap (price overlay): anchor ("Session"|"Week"|"Month"|"Quarter"|
+        "Year"), source ("hlc3")
+      - rsi (sub-pane): length (14)
+      - macd (sub-pane): fast (12), slow (26), signal (9)
+      - atr (sub-pane): length (14)
+      - stochastic (sub-pane): k_length (14), k_smoothing (1), d_smoothing (3)
+      - volume (sub-pane): ma_length (20), show_ma (false)
 
-    `inputs` are named TradingView study inputs, e.g. {"length": 20} for
-    sma/ema/rsi/atr/bollinger. Omit `inputs` to use TradingView defaults —
-    prefer that unless the user asked for specific parameters. Unknown names
-    are rejected with the supported list. Indicators only render on
-    TradingView-backed charts (the live market chart, price_candle charts,
-    and single-series time-series line charts); bar/table/multi-series
-    recharts panels do not support them.
+    Use these friendly param names — the backend translates them to the
+    study's actual TradingView input ids. Omit `inputs` to use TradingView
+    defaults; prefer that unless the user asked for specific parameters.
+    Unknown indicator names are rejected with the supported list. Indicators
+    only render on TradingView-backed charts (the live market chart,
+    price_candle charts, and single-series time-series line charts);
+    bar/table/multi-series recharts panels do not support them.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
