@@ -221,29 +221,34 @@ indicators are readable at `chart_workspace.defaultIndicators[chart_id]`.
 ```json
 [
   {"name": "ema", "inputs": {"length": 21}},
-  {"name": "bollinger"},
+  {"name": "bollinger", "inputs": {"length": 20, "mult": 2}},
   {"name": "rsi"}
 ]
 ```
 
-| Alias | TradingView study | Pane |
-|-------|-------------------|------|
-| `sma` | Moving Average | price overlay |
-| `ema` | Moving Average Exponential | price overlay |
-| `bollinger` | Bollinger Bands | price overlay |
-| `supertrend` | Supertrend | price overlay |
-| `vwap` | VWAP | price overlay |
-| `rsi` | Relative Strength Index | own sub-pane |
-| `macd` | MACD | own sub-pane |
-| `atr` | Average True Range | own sub-pane |
-| `stochastic` | Stochastic | own sub-pane |
-| `volume` | Volume | own sub-pane |
+| Alias | TradingView study | Pane | Params (defaults) |
+|-------|-------------------|------|-------------------|
+| `sma` | Moving Average | price overlay | `length` (9), `source` ("close") |
+| `ema` | Moving Average Exponential | price overlay | `length` (9), `source` ("close") |
+| `bollinger` | Bollinger Bands | price overlay | `length` (20), `mult` (2) |
+| `supertrend` | SuperTrend | price overlay | `length` (10, ATR period), `factor` (3) |
+| `vwap` | VWAP | price overlay | `anchor` ("Session"/"Week"/"Month"/"Quarter"/"Year"), `source` ("hlc3") |
+| `rsi` | Relative Strength Index | own sub-pane | `length` (14) |
+| `macd` | MACD | own sub-pane | `fast` (12), `slow` (26), `signal` (9) |
+| `atr` | Average True Range | own sub-pane | `length` (14) |
+| `stochastic` | Stochastic | own sub-pane | `k_length` (14), `k_smoothing` (1), `d_smoothing` (3) |
+| `volume` | Volume | own sub-pane | `ma_length` (20), `show_ma` (false) |
 
 Names are case-insensitive; the canonical study names are also accepted. Unknown
-names return a 400 listing the supported set. `inputs` are named TradingView
-study inputs (e.g. `{"length": 20}`); omit for TradingView defaults. Optional
-`forceOverlay` overrides the pane default; optional `id` makes an entry stable
-across replaces. `visual_create_chart` accepts the same list via `indicators`.
+names return a 400 listing the supported set. Use the friendly param names from
+the table — the backend translates them to the study's actual TradingView input
+ids (several built-ins use positional `in_0`/`in_1` ids). Unrecognized input
+keys pass through untouched, so exact TV input ids and advanced inputs
+(`smoothingLine`, `maType`, …) also work. Omit `inputs` entirely for
+TradingView defaults — prefer that unless the user asked for specific
+parameters. Optional `forceOverlay` overrides the pane default; optional `id`
+makes an entry stable across replaces. `visual_create_chart` accepts the same
+list via `indicators`.
 
 Indicators render only on TradingView-backed charts: the live market chart,
 `price_candle` charts, and single-series time-series line charts. Bar, table,
