@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from eth_utils.address import to_checksum_address
 
 import wayfinder_paths.adapters.polymarket_adapter.adapter as polymarket_adapter_module
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
@@ -11,7 +12,23 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYGON_P_USDC_PROXY_ADDRESS,
     POLYGON_USDC_ADDRESS,
     POLYGON_USDC_E_ADDRESS,
+    derive_legacy_deposit_wallet,
 )
+from wayfinder_paths.core.utils import polymarket_wallet
+
+
+@pytest.fixture(autouse=True)
+def _seed_deposit_wallet_cache():
+    """deposit_wallet_address() resolves on-chain since the 2026-06-29 factory
+    upgrade; seed the cache so unit tests never hit RPC. Seeding the legacy
+    derivation keeps the historical expected values meaningful."""
+    owners = ["0x000000000000000000000000000000000000dEaD", "0x" + "11" * 20]
+    for owner in owners:
+        polymarket_wallet._RESOLVED[to_checksum_address(owner)] = (
+            derive_legacy_deposit_wallet(owner)
+        )
+    yield
+    polymarket_wallet._RESOLVED.clear()
 
 
 def _gamma_response(status_code: int, endpoint: str, text: str = "") -> httpx.Response:
@@ -79,7 +96,7 @@ class TestPolymarketAdapter:
             kwargs["signature_type"]
             == polymarket_adapter_module.SignatureTypeV2.POLY_1271
         )
-        assert kwargs["funder"] == polymarket_adapter_module.derive_deposit_wallet(
+        assert kwargs["funder"] == derive_legacy_deposit_wallet(
             "0x000000000000000000000000000000000000dEaD"
         )
         assert (

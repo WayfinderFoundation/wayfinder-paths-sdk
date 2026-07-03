@@ -4,8 +4,10 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from eth_utils.address import to_checksum_address
 
-from wayfinder_paths.core.constants.polymarket import derive_deposit_wallet
+from wayfinder_paths.core.constants.polymarket import derive_legacy_deposit_wallet
+from wayfinder_paths.core.utils import polymarket_wallet
 from wayfinder_paths.mcp.preview import build_polymarket_place_market_order_preview
 from wayfinder_paths.mcp.tools.polymarket import (
     polymarket_get_state,
@@ -23,6 +25,20 @@ _GET_TYPED_CB = (
 )
 
 _ADDR = "0x000000000000000000000000000000000000dEaD"
+
+
+@pytest.fixture(autouse=True)
+def _seed_deposit_wallet_cache():
+    """deposit_wallet_address() resolves on-chain since the 2026-06-29 factory
+    upgrade; seed the cache so tool tests never hit RPC (this also short-
+    circuits the stranded-legacy-funds check: resolved == legacy -> None)."""
+    polymarket_wallet._RESOLVED[to_checksum_address(_ADDR)] = (
+        derive_legacy_deposit_wallet(_ADDR)
+    )
+    yield
+    polymarket_wallet._RESOLVED.clear()
+
+
 _WALLET = {"address": _ADDR}
 _SIGN_CB = AsyncMock(return_value=b"\x00" * 65)
 _HASH_CB = AsyncMock(return_value="0x" + "00" * 65)
@@ -47,8 +63,10 @@ async def test_polymarket_get_state_uses_adapter_full_state():
         assert out["ok"] is True
         assert out["result"]["ok"] is True
         assert out["result"]["state"]["protocol"] == "polymarket_read"
-        assert out["result"]["account"] == derive_deposit_wallet(_ADDR)
-        assert full_state.await_args.kwargs["account"] == derive_deposit_wallet(_ADDR)
+        assert out["result"]["account"] == derive_legacy_deposit_wallet(_ADDR)
+        assert full_state.await_args.kwargs["account"] == derive_legacy_deposit_wallet(
+            _ADDR
+        )
 
 
 @pytest.mark.asyncio
@@ -1353,7 +1371,7 @@ async def test_polymarket_place_market_order_preview_hydrates_buy_quote():
     summary = preview["summary"]
     assert "market: Will it happen?" in summary
     assert "resolved token_id: tok_yes" in summary
-    assert f"deposit wallet: {derive_deposit_wallet(_ADDR)}" in summary
+    assert f"deposit wallet: {derive_legacy_deposit_wallet(_ADDR)}" in summary
     assert "deposit pUSD balance: 12.34 pUSD" in summary
     assert "expected pUSD spent: 4 pUSD" in summary
     assert "expected shares: 76.923" in summary

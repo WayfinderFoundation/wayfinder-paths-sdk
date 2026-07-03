@@ -6,7 +6,7 @@ Polymarket V2 trades **from a per-user smart contract wallet** ("deposit wallet"
 
 ## How the deposit wallet works
 
-- **Per-user, CREATE2-derived** from the owner EOA — deterministic, predictable address.
+- **Per-user, resolved on-chain** from the owner EOA. Polymarket's factory changed its derivation scheme on 2026-06-29 (ERC-1967 CREATE2 → beacon proxy), so the SDK asks the chain instead of deriving locally: a wallet already deployed under the old scheme stays canonical; otherwise the factory's own `predictWalletAddress` is authoritative.
   - `adapter.deposit_wallet_address()` returns it.
 - **Auto-deployed on first trade** via `ensure_trading_setup(...)`:
   - Calls the deposit-wallet factory (relayer-mediated)
@@ -65,7 +65,7 @@ A full first-time flow looks like:
 
 ## Adapter methods
 
-- `adapter.deposit_wallet_address()` — **sync** derived address (cheap, no RPC). Do not `await` it.
+- `adapter.deposit_wallet_address()` — **sync**; the first call per wallet does one on-chain resolution (RPC round-trip) then caches for the process. Do not `await` it. Raises if Polygon RPC is unreachable — there is deliberately no local-derivation fallback (a stale local scheme is how funds get stranded).
 - `await adapter.fund_deposit_wallet(amount_raw=int)` — **async** pUSD owner → deposit wallet. **`amount_raw` is in base units (6 decimals).** Returns `(ok, {"deposit_wallet", "amount_raw", "tx_hash"})`.
 - `await adapter.withdraw_deposit_wallet(amount_raw=int | None)` — **async** pUSD deposit wallet → owner. `None` drains the full balance. Returns `(ok, {"deposit_wallet", "tx_hash", "amount_raw", "recipient"})`.
 - `adapter.ensure_trading_setup(token_id=...)` — idempotent (cached); deploy + approvals + CLOB creds + balance allowance. Order placement calls this automatically.
