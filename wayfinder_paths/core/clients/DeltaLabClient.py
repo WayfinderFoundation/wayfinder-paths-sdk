@@ -1947,9 +1947,7 @@ def _ts_params(
     truncated lookback_days=90 to ~21 days of data.
     """
     if limit is None:
-        limit = (
-            min(10_000, max(500, lookback_days * 24 + 24)) if lookback_days else 500
-        )
+        limit = min(10_000, max(500, lookback_days * 24 + 24)) if lookback_days else 500
     params: dict[str, Any] = {
         "lookback_days": lookback_days,
         "limit": limit,
