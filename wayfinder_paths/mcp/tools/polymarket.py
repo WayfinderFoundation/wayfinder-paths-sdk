@@ -1382,3 +1382,49 @@ async def polymarket_redeem_positions(
         )
     finally:
         await adapter.close()
+
+
+async def polymarket_sweep_wrapped_collateral(
+    *,
+    wallet_label: str,
+) -> dict[str, Any]:
+    """Recover winnings stuck as WCOL (Polymarket wrapped collateral).
+
+    Neg-risk market redemptions pay out WCOL (wraps USDC.e 1:1). If a past
+    redemption left WCOL sitting in the deposit wallet instead of pUSD, this
+    unwraps the full balance to USDC.e and wraps it to pUSD. No-op when the
+    wallet holds no WCOL.
+
+    Args:
+        wallet_label: Owner EOA wallet whose deposit wallet holds the WCOL.
+    """
+    wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
+    adapter, sender = await _make_polymarket_adapter(wallet_label)
+    try:
+        ok_s, res = await adapter.sweep_wrapped_collateral()
+        status = "confirmed" if ok_s else "failed"
+        _annotate(
+            address=sender,
+            label=wallet_label,
+            action="sweep_wrapped_collateral",
+            status=status,
+            chain_id=POLYGON_CHAIN_ID,
+            details={},
+        )
+        return ok(
+            {
+                "status": status,
+                "wallet_label": wallet_label,
+                "address": sender,
+                "effects": [
+                    {
+                        "type": "polymarket",
+                        "label": "sweep_wrapped_collateral",
+                        "ok": ok_s,
+                        "result": res,
+                    }
+                ],
+            }
+        )
+    finally:
+        await adapter.close()

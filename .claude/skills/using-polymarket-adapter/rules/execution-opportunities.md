@@ -103,4 +103,6 @@ MCP shortcut:
 
 - `mcp__wayfinder__polymarket_redeem_positions(wallet_label="main", condition_id="0x...")`
 
-The adapter preflights against the deposit wallet, submits `redeemPositions()` via a relayer batch from the deposit wallet, and (for NegRisk markets) submits a follow-up `unwrap()` batch. Collateral lands on the deposit wallet — use `withdraw_deposit_wallet` to move it back to the owner EOA.
+The adapter preflights against the deposit wallet, then submits ONE atomic relayer batch: `redeemPositions()` plus — for neg-risk (WCOL-collateralized) markets — an `unwrap()` sized as the pre-redeem WCOL balance + the exact CTF payout. Any USDC.e proceeds are auto-wrapped 1:1 to pUSD. Collateral lands on the deposit wallet — use `withdraw_deposit_wallet` to move it back to the owner EOA.
+
+**Stuck WCOL recovery**: if a wallet holds WCOL (`0x3A3BD7bb…002E2`) from a redemption done before the atomic-batch fix, run `mcp__wayfinder__polymarket_sweep_wrapped_collateral(wallet_label=...)` — it unwraps the full WCOL balance to USDC.e and wraps it to pUSD. No-op when the wallet holds no WCOL. Symptom: positions cleared after redeem but the pUSD balance never increased.

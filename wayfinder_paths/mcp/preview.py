@@ -488,6 +488,21 @@ async def build_polymarket_redeem_positions_preview(
     return {"summary": header + base + details}
 
 
+async def build_polymarket_sweep_wrapped_collateral_preview(
+    tool_input: dict[str, Any],
+) -> dict[str, Any]:
+    header, base, _sender = await _pm_preview_base(
+        tool_input, "POLYMARKET_SWEEP_WRAPPED_COLLATERAL\n"
+    )
+    details = (
+        "\n\nSWEEP"
+        "\nUnwraps the deposit wallet's full WCOL balance to USDC.e, then"
+        "\nwraps it 1:1 to pUSD. Recovers winnings stuck by a pre-fix"
+        "\nneg-risk redemption. No-op if the wallet holds no WCOL."
+    )
+    return {"summary": header + base + details}
+
+
 async def build_contract_execute_preview(tool_input: dict[str, Any]) -> dict[str, Any]:
     req = tool_input if isinstance(tool_input, dict) else {}
     if not req:

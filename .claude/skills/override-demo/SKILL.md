@@ -1,0 +1,43 @@
+---
+name: override-demo
+description: "Use the override-demo path through Wayfinder."
+metadata:
+  tags:
+    - monitor
+---
+
+# Override Demo
+
+Use this skill when you need to inspect, install, or operate the `override-demo` path.
+
+## What this skill does
+- Explains what the path is for
+- Points to the main component and supporting files in `path/`
+- Uses the bundled runtime entrypoint in `scripts/wf_run.py`
+- Summarizes the expected result of running the path
+- Explains how to republish the path from the repo when asked
+
+## Steps
+1. Verify the path manifest and any required configuration.
+2. Inspect the main component at `path/scripts/main.py`.
+3. Run the requested execution path with `python scripts/wf_run.py -- --help` or the task-specific arguments you need.
+4. Summarize what changed and any next actions.
+
+## If you need to publish this path
+1. Confirm the path includes a browser applet, or explicitly ask the owner before publishing without one.
+2. Run `wayfinder path fmt --path .` and `wayfinder path doctor --path .`.
+3. Set `WAYFINDER_PATHS_API_URL` to the target Strategies backend and set `WAYFINDER_API_KEY` if that environment requires auth.
+4. Run `wayfinder path publish --path .` for a normal publish, or add `--bonded --owner-wallet 0x... --risk-tier ...` for a bonded publish.
+5. The CLI will build `bundle.zip` and `source.zip`, generate thin skill exports, request signed upload URLs from the Paths API, upload artifacts directly to object storage, then finalize the submission.
+6. Report the returned `manageUrl`, `reviewState`, `publishState`, and `nextAction` to the user.
+7. If `ownerLinkRequired` is `true`, tell the owner to link the wallet and post the required bond. If `reviewState` is `review`, point them to the submissions page for recommended changes.
+
+## Delta Lab note
+- Use authenticated `DELTA_LAB_CLIENT` or `${system.api_base_url}/delta-lab/...` for scripts, server-side logic, and agent-side Python.
+- For browser presentation on prod, use `https://strategies.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`.
+- For browser presentation on dev, use `https://strategies-dev.wayfinder.ai/api/v1/delta-lab/public/assets/<symbol>/timeseries/`.
+- If the applet is embedded by the Strategies path page, same-origin `/api/v1/delta-lab/public/assets/<symbol>/timeseries/` is fine.
+- Prefer the host bridge base URL (`wf:state.apiBase`, then `wf:hello` origin) instead of hardcoding or probing environments.
+- Do not probe multiple environments from one applet build, and do not call `/api/v1/delta-lab/symbols/`.
+- Treat non-200 responses, especially `404`, as data unavailability and render a safe fallback UI.
+- Ensure every referenced file exists in `applet/dist/`, and include explicit `icon`, `shortcut icon`, and `apple-touch-icon` tags in the applet HTML to avoid implicit browser favicon 404s.

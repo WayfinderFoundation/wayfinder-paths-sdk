@@ -18,6 +18,7 @@ from wayfinder_paths.mcp.preview import (
     build_polymarket_place_limit_order_preview,
     build_polymarket_place_market_order_preview,
     build_polymarket_redeem_positions_preview,
+    build_polymarket_sweep_wrapped_collateral_preview,
     build_polymarket_withdraw_pusd_preview,
 )
 
@@ -30,6 +31,7 @@ _BUILDERS: dict[str, _PreviewBuilder] = {
     "polymarket_place_limit_order": build_polymarket_place_limit_order_preview,
     "polymarket_cancel_order": build_polymarket_cancel_order_preview,
     "polymarket_redeem_positions": build_polymarket_redeem_positions_preview,
+    "polymarket_sweep_wrapped_collateral": build_polymarket_sweep_wrapped_collateral_preview,
 }
 
 
