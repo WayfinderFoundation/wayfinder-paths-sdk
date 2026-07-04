@@ -110,7 +110,6 @@ from wayfinder_paths.mcp.tools.polymarket import (
     polymarket_place_market_order,
     polymarket_read,
     polymarket_redeem_positions,
-    polymarket_sweep_wrapped_collateral,
     polymarket_withdraw_pusd,
 )
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
@@ -204,7 +203,6 @@ def build_mcp(
     mcp.tool()(polymarket_deposit_pusd)
     mcp.tool()(polymarket_withdraw_pusd)
     mcp.tool()(polymarket_redeem_positions)
-    mcp.tool()(polymarket_sweep_wrapped_collateral)
 
     # ─── research_* ────────────────────────────────────────────────────
     # Bulk / time-series delta-lab lives in DELTA_LAB_CLIENT (Python), not MCP —

@@ -2421,6 +2421,19 @@ class PolymarketAdapter(BaseAdapter):
                 condition_id=condition_id, holder=deposit_wallet
             )
             if not ok:
+                # Nothing left to redeem — common after a prior redeem whose
+                # unwrap leg was skipped (positions burned, WCOL stranded).
+                # Re-running the redeem is the natural agent move, so recover
+                # the stranded collateral here instead of failing.
+                swept_ok, swept = await self.sweep_wrapped_collateral()
+                if swept_ok and isinstance(swept, dict) and swept.get("swept"):
+                    return True, {
+                        **swept,
+                        "message": (
+                            "Nothing left to redeem; recovered wrapped "
+                            "collateral stranded by a prior redemption."
+                        ),
+                    }
                 return False, path
 
             collateral = path["collateral"]
@@ -2490,7 +2503,9 @@ class PolymarketAdapter(BaseAdapter):
                         index_sets, balances, numerators, denominator
                     )
                     unwrap_amount = wcol_before + payout
-                elif is_wrapped:
+                else:
+                    # Non-wrapped market or non-zero parent: no WCOL payout
+                    # from this redeem, but sweep any resident WCOL anyway.
                     unwrap_amount = wcol_before
 
                 calls = [

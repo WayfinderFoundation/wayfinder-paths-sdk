@@ -1497,3 +1497,66 @@ class TestNegRiskRedeemUnwrap:
         # unwrap(depositWallet, resident WCOL + exact CTF payout)
         assert unwrap_encodes == [[self.DW, wcol_before + 10_200_000]]
         assert res["unwrap_tx_hash"] == "0xatomic"
+
+    @pytest.mark.asyncio
+    async def test_redeem_sweeps_stranded_wcol_when_nothing_redeemable(
+        self, adapter, monkeypatch
+    ):
+        """Re-running a redeem after a half-done one (positions burned, WCOL
+        stranded) must recover the WCOL instead of failing preflight."""
+        monkeypatch.setattr(adapter, "deposit_wallet_address", lambda: self.DW)
+
+        async def fake_preflight(**_kwargs):
+            return (
+                False,
+                "No redeemable balance detected for the provided condition_id.",
+            )
+
+        monkeypatch.setattr(adapter, "preflight_redeem", fake_preflight)
+
+        swept = {"called": False}
+
+        async def fake_sweep():
+            swept["called"] = True
+            return True, {
+                "deposit_wallet": self.DW,
+                "swept": 15_353_790,
+                "unwrap_tx_hash": "0xunwrap",
+                "wrap_tx_hash": "0xwrap",
+                "wrap_error": None,
+            }
+
+        monkeypatch.setattr(adapter, "sweep_wrapped_collateral", fake_sweep)
+
+        ok, res = await adapter.redeem_positions(condition_id=self.COND)
+        assert ok is True
+        assert swept["called"] is True
+        assert res["swept"] == 15_353_790
+        assert "recovered wrapped collateral" in res["message"]
+
+    @pytest.mark.asyncio
+    async def test_redeem_still_fails_when_nothing_redeemable_and_no_wcol(
+        self, adapter, monkeypatch
+    ):
+        monkeypatch.setattr(adapter, "deposit_wallet_address", lambda: self.DW)
+
+        async def fake_preflight(**_kwargs):
+            return (
+                False,
+                "No redeemable balance detected for the provided condition_id.",
+            )
+
+        monkeypatch.setattr(adapter, "preflight_redeem", fake_preflight)
+
+        async def fake_sweep():
+            return True, {
+                "deposit_wallet": self.DW,
+                "swept": 0,
+                "message": "No wrapped collateral to sweep.",
+            }
+
+        monkeypatch.setattr(adapter, "sweep_wrapped_collateral", fake_sweep)
+
+        ok, res = await adapter.redeem_positions(condition_id=self.COND)
+        assert ok is False
+        assert "No redeemable balance" in res

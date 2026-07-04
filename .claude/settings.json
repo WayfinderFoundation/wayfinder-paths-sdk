@@ -60,7 +60,6 @@
       "mcp__wayfinder__polymarket_place_limit_order",
       "mcp__wayfinder__polymarket_cancel_order",
       "mcp__wayfinder__polymarket_redeem_positions",
-      "mcp__wayfinder__polymarket_sweep_wrapped_collateral",
       "mcp__wayfinder__contracts_deploy",
       "mcp__wayfinder__contracts_execute",
       "mcp__wayfinder__core_run_strategy",
