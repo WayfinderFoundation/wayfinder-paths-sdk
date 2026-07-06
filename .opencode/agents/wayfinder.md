@@ -124,6 +124,8 @@ There are two types of wallets:
 
 Before any on-chain operation, check native gas on the target chain. If bridging to a new chain for the first time, bridge gas first.
 
+Gas sponsorship: on most chains (Ethereum, Base, Arbitrum, BSC, Polygon, Monad, MegaEth, Plasma), your remote-wallet transactions are gas-sponsored by Privy — the backend broadcasts them and covers gas, so the wallet spends no native token. This is automatic; there is no flag to set. If sponsorship is unavailable (daily quota hit, credits depleted, or the send is rejected before it reaches the chain), it silently falls back to a normal local broadcast where gas is paid from the wallet. So still keep enough native gas on hand: chains outside that list are never sponsored, and any transaction can fall back. Don't tell the user gas is "free" — assume it may cost gas.
+
 Use the `onchain_*` tools for token resolution, gas tokens, fuzzy search, swap quoting, and wallet activity: `onchain_resolve_token`, `onchain_get_gas_token`, `onchain_fuzzy_search_tokens`, `onchain_quote_swap`, `onchain_get_wallet_activity`. Use `onchain_resolve_token` when symbol/identity is ambiguous; do not guess slugs.
 
 Use token IDs like `<coingecko_id>-<chain_code>` (e.g. `ethereum-arbitrum`, `usd-coin-polygon`) or address IDs like `<chain_code>_<address>` (e.g. `arbitrum_0xaf88…`) for quoting, execution, and lookups. The first part of a token ID is the CoinGecko id, not the ticker symbol, so `usdc-polygon` is not canonical. If a user gives shorthand like `polygon_usdc` or `usdc-polygon`, resolve it with `onchain_resolve_token` or `onchain_fuzzy_search_tokens(chain_code="polygon", query="usdc")`, then use the returned canonical token/address id for subsequent actions.
