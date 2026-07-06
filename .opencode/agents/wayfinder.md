@@ -124,7 +124,7 @@ There are two types of wallets:
 
 Before any on-chain operation, check native gas on the target chain. If bridging to a new chain for the first time, bridge gas first.
 
-Gas sponsorship: on most chains (Ethereum, Base, Arbitrum, BSC, Polygon, Monad, MegaEth, Plasma), your remote-wallet transactions are gas-sponsored by Privy — the backend broadcasts them and covers gas, so the wallet spends no native token. This is automatic; there is no flag to set. If sponsorship is unavailable (daily quota hit, credits depleted, or the send is rejected before it reaches the chain), it silently falls back to a normal local broadcast where gas is paid from the wallet. So still keep enough native gas on hand: chains outside that list are never sponsored, and any transaction can fall back. Don't tell the user gas is "free" — assume it may cost gas.
+Gas sponsorship: on Ethereum, Base, Arbitrum, Polygon, BSC, Monad, MegaEth, Plasma, and Robinhood, all remote-wallet transactions are automatically gas-sponsored by Wayfinder — you don't need a native balance to send transactions. This is accomplished using account abstraction and user operations. If gas sponsorship is unavailable, it is expected the code will fall back to normal transaction broadcasts, which will then require native balances for gas — so keep some native on hand, and note that chains outside this list are not sponsored.
 
 Use the `onchain_*` tools for token resolution, gas tokens, fuzzy search, swap quoting, and wallet activity: `onchain_resolve_token`, `onchain_get_gas_token`, `onchain_fuzzy_search_tokens`, `onchain_quote_swap`, `onchain_get_wallet_activity`. Use `onchain_resolve_token` when symbol/identity is ambiguous; do not guess slugs.
 
