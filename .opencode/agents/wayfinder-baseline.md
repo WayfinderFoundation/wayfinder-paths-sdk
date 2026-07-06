@@ -135,8 +135,12 @@ Supported chain identifiers:
 | Polygon   |   137 | `polygon`   | POL    | `polygon-ecosystem-token-polygon` |                                                                                                |
 | BSC       |    56 | `bsc`       | BNB    | `binancecoin-bsc`                 |                                                                                                |
 | Avalanche | 43114 | `avalanche` | AVAX   | `avalanche-avalanche`             |                                                                                                |
-| Plasma    |  9745 | `plasma`    | PLASMA | `plasma-plasma`                   | EVM chain where Pendle deploys PT/YT markets.                                                  |
+| Plasma    |  9745 | `plasma`    | XPL    | `plasma-plasma`                   | EVM chain where Pendle deploys PT/YT markets.                                                  |
 | HyperEVM  |   999 | `hyperevm`  | HYPE   | `hyperliquid-hyperevm`            | Hyperliquid's EVM layer; on-chain tokens live here, perp/spot trading uses the Hyperliquid L1. |
+| Katana    | 747474 | `katana`   | ETH    | `ethereum-katana`                 | DeFi-focused EVM chain.                                                                         |
+| Monad     |   143 | `monad`     | MON    | `monad-monad`                     | High-performance parallel EVM L1.                                                              |
+| MegaEth   |  4326 | `megaeth`   | ETH    | `ethereum-megaeth`                | High-throughput real-time EVM L2.                                                             |
+| Robinhood |  4663 | `robinhood` | ETH    | `ethereum-robinhood`              | Robinhood's EVM chain.                                                                          |
 
 ### Hyperliquid
 
