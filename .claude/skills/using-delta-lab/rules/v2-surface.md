@@ -22,6 +22,13 @@ legacy `get_basis_apy_sources`, `get_top_apy`, `get_asset_timeseries`,
 **Never** default to `limit=500` on opportunity endpoints in agent
 contexts. Default `limit=25` lands under 10 KB for every search surface.
 
+Point time-series methods (`get_asset_price_ts`, `get_asset_yield_ts`,
+`get_market_lending_ts`, `get_market_pendle_ts`, `get_market_boros_ts`,
+`get_instrument_funding_ts`) auto-size `limit` to the `lookback_days`
+window at hourly cadence (`days × 24`, capped at 10,000) when you don't
+pass one — so `lookback_days=90` returns the full 90 days. Still verify
+the returned row count matches the window you asked for before charting.
+
 ## Composition recipes (chain calls for hard asks)
 
 Most single methods are narrow primitives. When one method doesn't give

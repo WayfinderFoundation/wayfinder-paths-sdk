@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from eth_utils.address import to_checksum_address
 
 import wayfinder_paths.adapters.polymarket_adapter.adapter as polymarket_adapter_module
 from wayfinder_paths.adapters.polymarket_adapter.adapter import PolymarketAdapter
@@ -11,7 +12,23 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYGON_P_USDC_PROXY_ADDRESS,
     POLYGON_USDC_ADDRESS,
     POLYGON_USDC_E_ADDRESS,
+    derive_legacy_deposit_wallet,
 )
+from wayfinder_paths.core.utils import polymarket_wallet
+
+
+@pytest.fixture(autouse=True)
+def _seed_deposit_wallet_cache():
+    """deposit_wallet_address() resolves on-chain since the 2026-06-29 factory
+    upgrade; seed the cache so unit tests never hit RPC. Seeding the legacy
+    derivation keeps the historical expected values meaningful."""
+    owners = ["0x000000000000000000000000000000000000dEaD", "0x" + "11" * 20]
+    for owner in owners:
+        polymarket_wallet._RESOLVED[to_checksum_address(owner)] = (
+            derive_legacy_deposit_wallet(owner)
+        )
+    yield
+    polymarket_wallet._RESOLVED.clear()
 
 
 def _gamma_response(status_code: int, endpoint: str, text: str = "") -> httpx.Response:
@@ -33,6 +50,40 @@ class TestPolymarketAdapter:
 
     def test_adapter_type(self, adapter):
         assert adapter.adapter_type == "POLYMARKET"
+
+    @pytest.mark.asyncio
+    async def test_fund_deposit_wallet_deploys_before_transfer(
+        self, adapter, monkeypatch
+    ):
+        """Deploy-first funding: the wallet must be deployed and code-verified
+        BEFORE any pUSD transfer — transferring to a codeless counterfactual
+        address is how the 2026-06-29 factory upgrade stranded funds."""
+        adapter.wallet_address = "0x000000000000000000000000000000000000dEaD"
+        adapter.sign_callback = AsyncMock()
+        order: list[str] = []
+
+        async def fake_ensure(deposit_wallet: str):
+            order.append("deploy")
+            return None
+
+        async def fake_build(**_kwargs):
+            order.append("build")
+            return {"tx": 1}
+
+        async def fake_send(_tx, _cb, confirmations=1):
+            order.append("send")
+            return "0xhash"
+
+        monkeypatch.setattr(adapter, "_ensure_deposit_wallet_deployed", fake_ensure)
+        monkeypatch.setattr(
+            polymarket_adapter_module, "build_send_transaction", fake_build
+        )
+        monkeypatch.setattr(polymarket_adapter_module, "send_transaction", fake_send)
+
+        ok, out = await adapter.fund_deposit_wallet(amount_raw=1_000_000)
+        assert ok is True
+        assert order == ["deploy", "build", "send"]
+        assert out["tx_hash"] == "0xhash"
 
     def test_clob_client_python_v2_constructor_signature(self):
         params = inspect.signature(
@@ -79,7 +130,7 @@ class TestPolymarketAdapter:
             kwargs["signature_type"]
             == polymarket_adapter_module.SignatureTypeV2.POLY_1271
         )
-        assert kwargs["funder"] == polymarket_adapter_module.derive_deposit_wallet(
+        assert kwargs["funder"] == derive_legacy_deposit_wallet(
             "0x000000000000000000000000000000000000dEaD"
         )
         assert (

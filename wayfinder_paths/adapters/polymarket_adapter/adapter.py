@@ -50,22 +50,23 @@ from wayfinder_paths.core.constants.polymarket import (
     POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
     POLYMARKET_DATA_BASE_URL,
     POLYMARKET_DEPOSIT_WALLET_FACTORY,
-    POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION,
     POLYMARKET_GAMMA_BASE_URL,
     POLYMARKET_RELAYER_BASE_URL,
     ZERO32_STR,
-    derive_deposit_wallet,
-    polymarket_deposit_wallet_id,
 )
 from wayfinder_paths.core.constants.polymarket_abi import (
     CONDITIONAL_TOKENS_ABI,
     POLYMARKET_DEPOSIT_WALLET_BATCH_TYPES,
-    POLYMARKET_DEPOSIT_WALLET_FACTORY_ABI,
     TOKEN_UNWRAP_ABI,
 )
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
+)
+from wayfinder_paths.core.utils.polymarket_wallet import (
+    get_deposit_wallet_status,
+    resolve_deposit_wallet,
+    resolve_deposit_wallet_sync,
 )
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
@@ -1355,7 +1356,10 @@ class PolymarketAdapter(BaseAdapter):
         return self.wallet_address
 
     def deposit_wallet_address(self) -> str:
-        return derive_deposit_wallet(self._require_wallet_address())
+        """Canonical deposit wallet. First call per owner does one on-chain
+        resolution (factory prediction / legacy-deployment check) then caches
+        for the process; raises if Polygon RPC is unreachable."""
+        return resolve_deposit_wallet_sync(self._require_wallet_address())
 
     def _require_signer(self) -> tuple[str, Any]:
         addr = self._require_wallet_address()
@@ -1522,6 +1526,8 @@ class PolymarketAdapter(BaseAdapter):
             deposit_wallet = self.deposit_wallet_address()
             if amount_raw <= 0:
                 return False, "amount must be positive"
+            # Deploy-first funding: never transfer to a codeless address.
+            await self._ensure_deposit_wallet_deployed(deposit_wallet)
             tx = await build_send_transaction(
                 from_address=owner,
                 to_address=deposit_wallet,
@@ -1579,14 +1585,47 @@ class PolymarketAdapter(BaseAdapter):
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
 
+    async def _ensure_deposit_wallet_deployed(self, deposit_wallet: str) -> str | None:
+        """Deploy the deposit wallet via the relayer if no code exists at the
+        resolved address, and verify code actually lands before returning.
+        Every funding path calls this BEFORE transferring — a transfer to a
+        codeless counterfactual address is exactly how the 2026-06-29 beacon
+        upgrade stranded funds. Returns the deploy tx hash when a deploy ran."""
+        owner = self._require_wallet_address()
+        async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
+            code = await web3.eth.get_code(deposit_wallet)
+            if code:
+                return None
+            payload = {
+                "type": "WALLET-CREATE",
+                "from": owner,
+                "to": POLYMARKET_DEPOSIT_WALLET_FACTORY,
+            }
+            body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+            headers = await self._builder_headers("POST", "/submit", body)
+            res = await self._relayer_http.post(
+                "/submit", content=body, headers=headers
+            )
+            res.raise_for_status()
+            deploy_tx = await self._poll_relayer_tx(res.json()["transactionID"])
+            deploy_tx_hash = deploy_tx["transactionHash"]
+            # The relayer must have deployed at the address the factory
+            # predicted — if not, the derivation scheme changed again and
+            # nothing may proceed against this address.
+            deployed_code = await web3.eth.get_code(deposit_wallet)
+            if not deployed_code:
+                raise ValueError(
+                    "Relayer WALLET-CREATE mined but no code exists at the "
+                    f"resolved deposit wallet {deposit_wallet}; the factory "
+                    "derivation may have changed — do not send funds."
+                )
+            return deploy_tx_hash
+
     async def _setup_deposit_wallet(self) -> tuple[str | None, str | None]:
         owner = self._require_wallet_address()
-        deposit_wallet = self.deposit_wallet_address()
+        deposit_wallet = await resolve_deposit_wallet(owner)
+        deploy_tx_hash = await self._ensure_deposit_wallet_deployed(deposit_wallet)
         async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
-            factory = web3.eth.contract(
-                address=POLYMARKET_DEPOSIT_WALLET_FACTORY,
-                abi=POLYMARKET_DEPOSIT_WALLET_FACTORY_ABI,
-            )
             pusd = web3.eth.contract(
                 address=POLYGON_P_USDC_PROXY_ADDRESS, abi=ERC20_ABI
             )
@@ -1594,12 +1633,7 @@ class PolymarketAdapter(BaseAdapter):
                 address=POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
                 abi=CONDITIONAL_TOKENS_ABI,
             )
-            predicted, code, allowances, approvals = await asyncio.gather(
-                factory.functions.predictWalletAddress(
-                    POLYMARKET_DEPOSIT_WALLET_IMPLEMENTATION,
-                    polymarket_deposit_wallet_id(owner),
-                ).call(block_identifier="latest"),
-                web3.eth.get_code(deposit_wallet),
+            allowances, approvals = await asyncio.gather(
                 asyncio.gather(
                     *[
                         pusd.functions.allowance(deposit_wallet, s).call(
@@ -1617,26 +1651,6 @@ class PolymarketAdapter(BaseAdapter):
                     ]
                 ),
             )
-            if to_checksum_address(predicted) != deposit_wallet:
-                raise ValueError(
-                    "Deposit wallet derivation mismatch, this should never happen, please contact support."
-                )
-
-            deploy_tx_hash: str | None = None
-            if not code:
-                payload = {
-                    "type": "WALLET-CREATE",
-                    "from": owner,
-                    "to": POLYMARKET_DEPOSIT_WALLET_FACTORY,
-                }
-                body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-                headers = await self._builder_headers("POST", "/submit", body)
-                res = await self._relayer_http.post(
-                    "/submit", content=body, headers=headers
-                )
-                res.raise_for_status()
-                deploy_tx = await self._poll_relayer_tx(res.json()["transactionID"])
-                deploy_tx_hash = deploy_tx["transactionHash"]
 
             calls: list[dict[str, Any]] = []
             for spender, allowance in zip(
@@ -1886,6 +1900,7 @@ class PolymarketAdapter(BaseAdapter):
             "usdc_e_balance": None,
             "usdc_balance": None,
             "balances": None,
+            "deposit_wallet_status": None,
             "errors": {},
         }
 
@@ -1979,7 +1994,22 @@ class PolymarketAdapter(BaseAdapter):
         if include_trades:
             coros.append(self.get_trades(user=addr, limit=trades_limit, offset=0))
 
+        # Deposit-wallet cohort status (legacy / beacon / stranded) — the
+        # agent-facing state block (only meaningful when this adapter owns the
+        # queried wallet). Failures never fail the state call.
+        status_task: asyncio.Task[Any] | None = None
+        if self.wallet_address:
+            status_task = asyncio.create_task(
+                get_deposit_wallet_status(self.wallet_address)
+            )
+
         results = await asyncio.gather(*coros, return_exceptions=True)
+
+        if status_task is not None:
+            try:
+                out["deposit_wallet_status"] = await status_task
+            except Exception as exc:  # noqa: BLE001
+                out["errors"]["deposit_wallet_status"] = str(exc)
 
         pos_result = results[0]
         if isinstance(pos_result, Exception):

@@ -1196,7 +1196,7 @@ class DeltaLabClient(WayfinderClient):
         *,
         asset_id: int,
         lookback_days: int | None = 30,
-        limit: int | None = 500,
+        limit: int | None = None,
         start: datetime | str | None = None,
         end: datetime | str | None = None,
     ) -> pd.DataFrame:
@@ -1222,7 +1222,7 @@ class DeltaLabClient(WayfinderClient):
         *,
         asset_id: int,
         lookback_days: int | None = 30,
-        limit: int | None = 500,
+        limit: int | None = None,
         start: datetime | str | None = None,
         end: datetime | str | None = None,
     ) -> pd.DataFrame:
@@ -1249,7 +1249,7 @@ class DeltaLabClient(WayfinderClient):
         market_id: int,
         asset_id: int,
         lookback_days: int | None = 30,
-        limit: int | None = 500,
+        limit: int | None = None,
         start: datetime | str | None = None,
         end: datetime | str | None = None,
     ) -> pd.DataFrame:
@@ -1287,7 +1287,7 @@ class DeltaLabClient(WayfinderClient):
         *,
         market_id: int,
         lookback_days: int | None = 30,
-        limit: int | None = 500,
+        limit: int | None = None,
         start: datetime | str | None = None,
         end: datetime | str | None = None,
     ) -> pd.DataFrame:
@@ -1313,7 +1313,7 @@ class DeltaLabClient(WayfinderClient):
         *,
         market_id: int,
         lookback_days: int | None = 30,
-        limit: int | None = 500,
+        limit: int | None = None,
         start: datetime | str | None = None,
         end: datetime | str | None = None,
     ) -> pd.DataFrame:
@@ -1339,7 +1339,7 @@ class DeltaLabClient(WayfinderClient):
         *,
         instrument_id: int,
         lookback_days: int | None = 30,
-        limit: int | None = 500,
+        limit: int | None = None,
         start: datetime | str | None = None,
         end: datetime | str | None = None,
     ) -> pd.DataFrame:
@@ -1940,7 +1940,14 @@ def _ts_params(
     end: datetime | str | None,
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Common query params for all ID-keyed point-TS endpoints."""
+    """Common query params for all ID-keyed point-TS endpoints.
+
+    When the caller sets a lookback but no explicit limit, size the limit to
+    cover the window at hourly cadence — a fixed 500 default silently
+    truncated lookback_days=90 to ~21 days of data.
+    """
+    if limit is None:
+        limit = min(10_000, max(500, lookback_days * 24 + 24)) if lookback_days else 500
     params: dict[str, Any] = {
         "lookback_days": lookback_days,
         "limit": limit,

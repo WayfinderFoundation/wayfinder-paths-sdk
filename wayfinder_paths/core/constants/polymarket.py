@@ -82,7 +82,15 @@ def polymarket_deposit_wallet_id(owner: str) -> bytes:
     return to_bytes(hexstr=to_checksum_address(owner)).rjust(32, b"\x00")
 
 
-def derive_deposit_wallet(owner: str) -> str:
+def derive_legacy_deposit_wallet(owner: str) -> str:
+    """Pre-2026-06-29 ERC-1967 CREATE2 derivation.
+
+    Polymarket's factory switched to a beacon-proxy scheme on June 29 2026,
+    so this address is only meaningful when a contract already exists there
+    (wallets deployed before the upgrade). It must NEVER be used as a deposit
+    destination on its own — resolve via
+    wayfinder_paths.core.utils.polymarket_wallet instead.
+    """
     args = abi_encode(
         ["address", "bytes32"],
         [POLYMARKET_DEPOSIT_WALLET_FACTORY, polymarket_deposit_wallet_id(owner)],

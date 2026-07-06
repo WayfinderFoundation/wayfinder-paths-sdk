@@ -4,15 +4,18 @@ from typing import Any
 
 from wayfinder_paths.core.constants.erc1155_abi import ERC1155_APPROVAL_ABI
 
+# Verified against the factory's current implementation
+# (0x848eeb1a79a8d0fd964e3386db6da400c22d278d, upgraded 2026-06-29 to a
+# beacon-proxy scheme). The one-arg predict is canonical; a two-arg overload
+# exists but ignores its address argument. There is no deployed-wallet
+# registry getter — pre-upgrade wallets are detected via eth_getCode on the
+# legacy derivation.
 POLYMARKET_DEPOSIT_WALLET_FACTORY_ABI: list[dict[str, Any]] = [
     {
         "type": "function",
         "name": "predictWalletAddress",
         "stateMutability": "view",
-        "inputs": [
-            {"name": "_implementation", "type": "address"},
-            {"name": "_id", "type": "bytes32"},
-        ],
+        "inputs": [{"name": "_id", "type": "bytes32"}],
         "outputs": [{"name": "", "type": "address"}],
     }
 ]

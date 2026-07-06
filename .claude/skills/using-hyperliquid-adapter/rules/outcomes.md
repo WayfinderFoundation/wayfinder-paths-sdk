@@ -38,12 +38,13 @@ Helpers exported from `wayfinder_paths.adapters.hyperliquid_adapter.adapter`:
 - Mid prices: `adapter.get_all_mid_prices()` returns a dict keyed by `#<encoding>` for outcome sides.
 - **Positions live in spot user state.** `HyperliquidAdapter.get_spot_user_state(address)` returns `balances[]` with `+<encoding>` entries — there's no dedicated outcome-positions endpoint upstream.
 
-### MCP — `hyperliquid_get_state(label)` returns all three surfaces
+### MCP — `hyperliquid_get_state(label)` returns all four surfaces
 
-`mcp__wayfinder__hyperliquid_get_state(label)` returns a single dict with `perp`, `spot`, and `outcomes` keys:
+`mcp__wayfinder__hyperliquid_get_state(label)` returns a single dict with `perp`, `spot`, `open_orders`, and `outcomes` keys:
 
 - `perp.state` — perp clearinghouse (cross/isolated margin, asset positions, withdrawable).
 - `spot.state.balances` — pure spot balances (`USDC`, `HYPE`, `USDH`, …). `+N` outcome entries are filtered out into the `outcomes` bucket.
+- `open_orders.orders` — all open orders (resting limits + untriggered TP/SL trigger orders) from `frontendOpenOrders`.
 - `outcomes.positions` — outcome positions only (parsed `outcome_id` / `side`, plus `total` / `hold` / `entryNtl`).
 
 Other reads:
