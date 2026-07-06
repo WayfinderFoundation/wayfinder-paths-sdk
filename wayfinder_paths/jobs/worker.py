@@ -10,7 +10,9 @@ from loguru import logger
 
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.jobs.application import claim_application, complete_application
+from wayfinder_paths.jobs.forward import is_forward_empty
 from wayfinder_paths.jobs.ledger import tail_ledger
+from wayfinder_paths.jobs.memory_hygiene import sanitize_job_memory
 from wayfinder_paths.jobs.models import (
     JOB_AUTO_WORKER_AGENT_NAME,
     JOB_WORKER_AGENT_NAME,
@@ -18,8 +20,6 @@ from wayfinder_paths.jobs.models import (
     normalize_agent_mode,
     utc_now_iso,
 )
-from wayfinder_paths.jobs.forward import is_forward_empty
-from wayfinder_paths.jobs.memory_hygiene import sanitize_job_memory
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
 
