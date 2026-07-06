@@ -738,9 +738,7 @@ def test_improve_round3_anti_confabulation_gate(tmp_path: Path) -> None:
         + "\nForward results: 5 forward trades, 100% win rate, +$574.63 PnL.\n",
         encoding="utf-8",
     )
-    bad = module.validate_improve_round(
-        ws, case, round_n=3, log_text="", pre_state=pre
-    )
+    bad = module.validate_improve_round(ws, case, round_n=3, log_text="", pre_state=pre)
     assert bad["status"] == "failed"
     claim_check = next(
         c for c in bad["checks"] if c["name"] == "no_unsupported_performance_claims"
@@ -749,9 +747,12 @@ def test_improve_round3_anti_confabulation_gate(tmp_path: Path) -> None:
     assert claim_check["claims"]  # surfaced the offending figures
 
     # Honest zeros must NOT trip the gate.
-    assert module._scan_unsupported_perf_claims(
-        "no forward data yet: 0 trades, $0 PnL, 0% win rate"
-    ) == []
+    assert (
+        module._scan_unsupported_perf_claims(
+            "no forward data yet: 0 trades, $0 PnL, 0% win rate"
+        )
+        == []
+    )
 
 
 def test_auto_world_oracle_never_leaks_and_validators_gate(tmp_path: Path) -> None:
@@ -901,8 +902,13 @@ def test_settle_auto_round_credits_redemption_against_original_entry() -> None:
     entry_oracle = {"markets": {"m": {"outcome_price": 0.50}}}
     entry_report = {
         "orders": [
-            {"market_id": "m", "side": "buy", "price": 0.50, "notional": 20,
-             "status": "filled"}
+            {
+                "market_id": "m",
+                "side": "buy",
+                "price": 0.50,
+                "notional": 20,
+                "status": "filled",
+            }
         ]
     }
     module.settle_auto_round(entry_oracle, entry_report, held, pnl_rows, 1)
@@ -913,8 +919,13 @@ def test_settle_auto_round_credits_redemption_against_original_entry() -> None:
     exit_oracle = {"markets": {"m": {"outcome_price": 0.60}}}
     exit_report = {
         "orders": [
-            {"market_id": "m", "action": "redeem", "price": 0.60, "notional": 20,
-             "status": "filled"}
+            {
+                "market_id": "m",
+                "action": "redeem",
+                "price": 0.60,
+                "notional": 20,
+                "status": "filled",
+            }
         ]
     }
     module.settle_auto_round(exit_oracle, exit_report, held, pnl_rows, 2)
@@ -936,8 +947,13 @@ def test_settle_open_positions_marks_held_positions_once() -> None:
     oracle = {"markets": {"m": {"outcome_price": 0.55}}}
     report = {
         "orders": [
-            {"market_id": "m", "side": "buy", "price": 0.50, "notional": 10,
-             "status": "filled"}
+            {
+                "market_id": "m",
+                "side": "buy",
+                "price": 0.50,
+                "notional": 10,
+                "status": "filled",
+            }
         ]
     }
     module.settle_auto_round(oracle, report, held, pnl_rows, 1)

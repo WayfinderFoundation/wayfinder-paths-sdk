@@ -428,9 +428,7 @@ def _prepare_candidate_workspace(
                         "type": "candidate_report_stale",
                         "proposal_id": proposal_id,
                         "recorded_revision": recorded,
-                        "candidate_revision": compute_workspace_revision(
-                            candidate_dir
-                        ),
+                        "candidate_revision": compute_workspace_revision(candidate_dir),
                     },
                 )
         shutil.rmtree(candidate_dir)

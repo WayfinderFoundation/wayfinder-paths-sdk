@@ -130,7 +130,9 @@ def sanitize_memory_json(obj: Any) -> tuple[Any, list[str]]:
 _LEDGER_NAMES = ("candidates", "decisions")
 
 
-def sanitize_ledger_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+def sanitize_ledger_rows(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Drop ledger rows whose text fields state an unsupported performance figure
     (e.g. a fabricated forward prove-out in a row `note`). Returns (kept, removed)."""
     kept: list[dict[str, Any]] = []
@@ -201,9 +203,7 @@ def sanitize_job_memory(
                 ),
                 encoding="utf-8",
             )
-            removed.extend(
-                {"source": f"ledger:{name}", "text": t} for t in quarantined
-            )
+            removed.extend({"source": f"ledger:{name}", "text": t} for t in quarantined)
             summary["ledger"] += len(quarantined)
 
     if removed:

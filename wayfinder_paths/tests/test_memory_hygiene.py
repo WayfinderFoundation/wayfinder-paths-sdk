@@ -127,12 +127,19 @@ def test_sanitize_job_memory_cleans_poisoned_ledger_rows(tmp_path: Path) -> None
     store.save(job)
     # A clean exploration row and a poisoned "forward prove-out" row.
     append_ledger_row(
-        store, job.id, "decisions",
+        store,
+        job.id,
+        "decisions",
         {"market": "n/a", "decision": "skipped", "reason": "thin edge"},
     )
     append_ledger_row(
-        store, job.id, "decisions",
-        {"decision": "note", "note": "Forward: 5 trend trades, 100% win rate, +$560.55"},
+        store,
+        job.id,
+        "decisions",
+        {
+            "decision": "note",
+            "note": "Forward: 5 trend trades, 100% win rate, +$560.55",
+        },
     )
 
     summary = sanitize_job_memory(store, job.id, forward={})

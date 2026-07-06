@@ -43,7 +43,9 @@ def test_render_forward_recap_is_deterministic_and_never_prints_none() -> None:
     full["trades"].update(
         {"closed_count": 5, "wins": 3, "losses": 2, "win_rate": 0.6, "net_pnl": 12.5}
     )
-    assert render_forward_recap(full) == "Forward: 5 closed · 3W/2L · 60% WR · +12.5 net"
+    assert (
+        render_forward_recap(full) == "Forward: 5 closed · 3W/2L · 60% WR · +12.5 net"
+    )
 
     # win_rate=None is derived from wins/closed, never printed as "None".
     derived = default_forward_summary("j")
@@ -98,7 +100,9 @@ def test_is_forward_empty_on_live_snapshot(tmp_path: Path, monkeypatch) -> None:
     assert is_forward_empty(load_forward_snapshot("empty-job", job_dir=job_dir)) is True
 
     get_forward_recorder().record_run(decision="wait", reason="blocked")
-    assert is_forward_empty(load_forward_snapshot("empty-job", job_dir=job_dir)) is False
+    assert (
+        is_forward_empty(load_forward_snapshot("empty-job", job_dir=job_dir)) is False
+    )
 
 
 def test_forward_recorder_uses_env_and_preserves_loose_rows(

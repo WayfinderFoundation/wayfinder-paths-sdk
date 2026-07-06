@@ -95,8 +95,8 @@ def render_forward_recap(summary: dict[str, Any] | None) -> str:
     losses = int(trades.get("losses") or 0)
     # Stored win_rate is a fraction (wins/closed); render as a whole percent.
     win_rate = trades.get("win_rate")
-    win_rate_pct = (float(win_rate) * 100.0) if win_rate is not None else (
-        wins / closed * 100.0
+    win_rate_pct = (
+        (float(win_rate) * 100.0) if win_rate is not None else (wins / closed * 100.0)
     )
     net_pnl = float(trades.get("net_pnl") or 0.0)
     return (
