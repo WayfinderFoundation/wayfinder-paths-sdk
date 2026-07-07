@@ -27,6 +27,10 @@ from wayfinder_paths.core.constants.contracts import (
     UNISWAP_V4_STATE_VIEW,
     UNISWAP_V4_UNIVERSAL_ROUTER,
 )
+from wayfinder_paths.core.constants.uniswap_v4_abi import (
+    PERMIT2_ABI,
+    UNIVERSAL_ROUTER_ABI,
+)
 from wayfinder_paths.core.utils.tokens import ensure_allowance, is_native_token
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
@@ -76,35 +80,6 @@ _UR_V4_SWAP = 0x10
 _V4_SWAP_EXACT_IN_SINGLE = 0x06
 _V4_SETTLE_ALL = 0x0C
 _V4_TAKE_ALL = 0x0F
-
-_UNIVERSAL_ROUTER_ABI = [
-    {
-        "type": "function",
-        "name": "execute",
-        "stateMutability": "payable",
-        "inputs": [
-            {"name": "commands", "type": "bytes"},
-            {"name": "inputs", "type": "bytes[]"},
-            {"name": "deadline", "type": "uint256"},
-        ],
-        "outputs": [],
-    }
-]
-
-_PERMIT2_ABI = [
-    {
-        "type": "function",
-        "name": "approve",
-        "stateMutability": "nonpayable",
-        "inputs": [
-            {"name": "token", "type": "address"},
-            {"name": "spender", "type": "address"},
-            {"name": "amount", "type": "uint160"},
-            {"name": "expiration", "type": "uint48"},
-        ],
-        "outputs": [],
-    }
-]
 
 _UINT160_MAX = (1 << 160) - 1
 _UINT48_MAX = (1 << 48) - 1
@@ -396,7 +371,7 @@ class UniswapV4SwapMixin:
 
             async with web3_from_chain_id(chain_id) as web3:
                 contract = web3.eth.contract(
-                    address=to_checksum_address(router), abi=_UNIVERSAL_ROUTER_ABI
+                    address=to_checksum_address(router), abi=UNIVERSAL_ROUTER_ABI
                 )
                 data = contract.encode_abi(
                     "execute", [bytes([_UR_V4_SWAP]), [swap_input], deadline]
@@ -426,7 +401,7 @@ class UniswapV4SwapMixin:
     async def _permit2_approve(self, token: str, spender: str) -> None:
         async with web3_from_chain_id(self.chain_id) as web3:
             contract = web3.eth.contract(
-                address=to_checksum_address(UNISWAP_PERMIT2), abi=_PERMIT2_ABI
+                address=to_checksum_address(UNISWAP_PERMIT2), abi=PERMIT2_ABI
             )
             data = contract.encode_abi(
                 "approve",
