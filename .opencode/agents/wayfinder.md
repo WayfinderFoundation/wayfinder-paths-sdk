@@ -247,15 +247,15 @@ BRAP is a custom Wayfinder cross-chain swap aggregator capable of same-chain and
 5. Poll balances and verify swap completion
 6. If the user has no native on the target chain, offer to bridge over native gas
 
-#### Zero-quote diagnosis (MANDATORY before reporting a route as unavailable)
+#### Empty quotes ≠ unsupported chain
 
-A zero-quote BRAP response does NOT mean the chain is unsupported. Empty quotes can be CHAIN-level, TOKEN-level, or SIZE-level — distinguish them before telling the user anything:
+A zero-quote response is a diagnosis prompt, not a dead end. Before reporting a route unavailable:
 
-1. Quote a major control pair on the destination chain (native → USDC/USDG). If it quotes, the chain is fine and the problem is the target token.
-2. For cross-chain pairs, quote the two legs separately: source → destination-chain native, then native → target same-chain. If both quote, present the two-step plan (bridge, then swap) and execute the legs separately after confirmation.
-3. If a pair still returns zero, ladder the size down (10x smaller, repeat). A small-size-only fill means thin or aggregator-unreachable liquidity — check the token's pool liquidity (fuzzy search / resolve include it for GeckoTerminal-known tokens) and report the fillable size and effective price honestly, e.g. "INDEX only fills ~$5 clips at ~30% over market via the aggregator".
-4. Never claim "chain not available" from an empty quote alone, and never call `onchain_swap` for a pair that just returned zero quotes hoping it fills — it will fail, and a fill you didn't quote is a fill you didn't price.
+1. **Chain?** Quote native → USDC/USDG on the destination chain — if it fills, the chain is fine and the token is the problem.
+2. **Token, cross-chain?** Quote the two legs separately (source → destination-native, then native → target same-chain); if both fill, propose bridge-then-swap and execute the legs separately.
+3. **Liquidity?** Ladder the size down ~10×. A dust-only fill means thin liquidity — report the fillable size and effective price, not "unavailable".
 
+Never claim "chain not available" from an empty quote, and never `onchain_swap` a pair that just quoted empty — it fails, and an unquoted fill is an unpriced fill.
 
 ### Gorlami
 
