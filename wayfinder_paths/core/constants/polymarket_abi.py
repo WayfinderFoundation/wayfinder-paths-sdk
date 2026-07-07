@@ -85,6 +85,23 @@ CONDITIONAL_TOKENS_ABI: list[dict[str, Any]] = [
         ],
         "outputs": [],
     },
+    {
+        "type": "function",
+        "stateMutability": "view",
+        "name": "payoutDenominator",
+        "inputs": [{"name": "conditionId", "type": "bytes32"}],
+        "outputs": [{"name": "", "type": "uint256"}],
+    },
+    {
+        "type": "function",
+        "stateMutability": "view",
+        "name": "payoutNumerators",
+        "inputs": [
+            {"name": "conditionId", "type": "bytes32"},
+            {"name": "index", "type": "uint256"},
+        ],
+        "outputs": [{"name": "", "type": "uint256"}],
+    },
 ]
 
 TOKEN_UNWRAP_ABI: list[dict[str, Any]] = [

@@ -107,6 +107,44 @@ LIFI_GENERIC = to_checksum_address("0x31a9b1835864706Af10103b31Ea2b79bdb995F5F")
 
 ROBINHOOD_WETH = to_checksum_address("0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73")
 
+# Uniswap v4 deployments. Every address verified live before pinning:
+# each has code on-chain, and a native-token → USDC exact-in quote through the
+# V4Quoter (which exercises PoolManager + StateView + the pinned Quoter) returns
+# a sane amount on each chain. Robinhood addresses also confirmed via the
+# INDEX/ETH PoolKey → on-chain poolId match and a Blockscout-verified router.
+# Mainnet/Base/Arbitrum are Uniswap's official canonical v4 deployments
+# (docs.uniswap.org), which is why their code sizes match across chains.
+UNISWAP_V4_POOL_MANAGER: dict[int, str] = {
+    1: to_checksum_address("0x000000000004444c5dc75cB358380D2e3dE08A90"),
+    8453: to_checksum_address("0x498581fF718922c3f8e6A244956aF099B2652b2b"),
+    42161: to_checksum_address("0x360E68faCcca8cA495c1B759Fd9EEe466db9FB32"),
+    4663: to_checksum_address("0x8366a39CC670B4001A1121B8F6A443A643e40951"),
+}
+
+UNISWAP_V4_UNIVERSAL_ROUTER: dict[int, str] = {
+    1: to_checksum_address("0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af"),
+    8453: to_checksum_address("0x6fF5693b99212Da76ad316178A184AB56D299b43"),
+    42161: to_checksum_address("0xA51afAFe0263b40EdaEf0Df8781eA9aa03E381a3"),
+    4663: to_checksum_address("0x8876789976DEcbFcBBBe364623c63652Db8C0904"),
+}
+
+UNISWAP_V4_QUOTER: dict[int, str] = {
+    1: to_checksum_address("0x52F0E24D1c21C8A0cB1e5a5dD6198556BD9E1203"),
+    8453: to_checksum_address("0x0d5e0F971ED27FBfF6c2837bf31316121532048D"),
+    42161: to_checksum_address("0x3972c00f7Ed4885e145823eB7C655375D275A1c5"),
+    4663: to_checksum_address("0x97627e46420bbc4bc5Df7e72D6Bb653345506b2f"),
+}
+
+UNISWAP_V4_STATE_VIEW: dict[int, str] = {
+    1: to_checksum_address("0x7fFE42C4a5DEeA5b0feC41C94C136Cf115597227"),
+    8453: to_checksum_address("0xA3c0c9b65baD0b08107Aa264b0f3dB444b867A71"),
+    42161: to_checksum_address("0x76Fd297e2D437cd7f76d50F01Afe6160f86e9990"),
+    4663: to_checksum_address("0xF3334192D15450CdD385c8B70e03f9A6bD9E673b"),
+}
+
+# Canonical Uniswap Permit2 — same address on virtually every chain.
+UNISWAP_PERMIT2 = to_checksum_address("0x000000000022D473030F116dDEE9F6B43aC78BA3")
+
 TOKENS_REQUIRING_APPROVAL_RESET: set[tuple[int, str]] = {
     (1, USDT_ETHEREUM),
     (137, USDT_POLYGON),

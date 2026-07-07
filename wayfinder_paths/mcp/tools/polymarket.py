@@ -1343,7 +1343,11 @@ async def polymarket_redeem_positions(
     """Claim winnings on a resolved Polymarket market.
 
     Any USDC.e proceeds are auto-wrapped 1:1 to pUSD via BRAP's polymarket_bridge solver
-    inside the deposit wallet, so the agent ends up holding pUSD.
+    inside the deposit wallet, so the agent ends up holding pUSD. Neg-risk (WCOL)
+    payouts are unwrapped in the same transaction batch as the redeem. If nothing is
+    left to redeem but WCOL from a prior incomplete redemption is stranded in the
+    deposit wallet, the call recovers it (unwrap -> USDC.e -> pUSD) — so re-running
+    a redeem that didn't credit pUSD is safe and is the recovery path.
 
     Args:
         wallet_label: Owner EOA wallet that held the position.

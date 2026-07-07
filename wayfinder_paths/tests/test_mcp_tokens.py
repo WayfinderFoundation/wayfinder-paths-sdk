@@ -112,3 +112,27 @@ async def test_list_tokens_passes_volume_dimension_and_limit():
 
     assert out["ok"] is True
     fake_client.discover_tokens.assert_awaited_once_with("base", "volume", 10)
+
+
+@pytest.mark.asyncio
+async def test_list_tokens_requires_a_specific_chain():
+    fake_client = AsyncMock()
+
+    with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
+        out = await onchain_list_tokens(chain_code="all")
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "unknown_chain_code"
+    fake_client.discover_tokens.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_list_tokens_unknown_chain_code_errors():
+    fake_client = AsyncMock()
+
+    with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
+        out = await onchain_list_tokens(chain_code="dogechain")
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "unknown_chain_code"
+    fake_client.discover_tokens.assert_not_awaited()
