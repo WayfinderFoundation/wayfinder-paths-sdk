@@ -64,20 +64,26 @@ async def onchain_fuzzy_search_tokens(chain_code: str, query: str) -> dict[str, 
     return ok(result)
 
 
-LIST_PAGE_SIZE = 25
+_LIST_DIMENSIONS = ("trending", "volume", "new", "active")
 
 
 @catch_errors
-async def onchain_list_tokens(chain_code: str, page: int = 1) -> dict[str, Any]:
-    """Browse a chain's tokens ranked by 24h volume, one page at a time.
+async def onchain_list_tokens(
+    chain_code: str, dimension: str = "trending", limit: int = 25
+) -> dict[str, Any]:
+    """Browse a chain's top tokens — what's actually live and moving right now.
 
-    Use this to see what exists on a chain when you have no name to search. Flip pages
-    with `page`. To resolve a specific token by name/symbol/address, use
-    onchain_fuzzy_search_tokens instead.
+    Use this to see what exists on a chain when you have no name to search: it
+    surfaces the top tokens (including brand-new launches the standard catalog
+    hasn't indexed) with price, liquidity, 24h volume, FDV, pool age, and DEX.
+    To resolve one token by name/symbol/address instead, use
+    onchain_fuzzy_search_tokens / onchain_resolve_token.
 
     Args:
-        chain_code: the chain to browse, e.g. base, arbitrum, polygon.
-        page: 1-based page of the volume-ranked list; ~25 tokens per page.
+        chain_code: the chain to browse, e.g. robinhood, base, arbitrum.
+        dimension: ranking — "trending" (default), "volume" (24h), "new"
+            (recently launched), or "active" (most 24h transactions).
+        limit: max tokens to return (1-50, default 25).
     """
     if chain_code not in CHAIN_CODE_TO_ID:
         return err(
@@ -85,13 +91,10 @@ async def onchain_list_tokens(chain_code: str, page: int = 1) -> dict[str, Any]:
             f"Unknown chain_code '{chain_code}'.",
             details={"valid": sorted(CHAIN_CODE_TO_ID)},
         )
-    tokens = await TOKEN_CLIENT.list_markets(chain_id=CHAIN_CODE_TO_ID[chain_code])
-    start = (page - 1) * LIST_PAGE_SIZE
-    return ok(
-        {
-            "tokens": tokens[start : start + LIST_PAGE_SIZE],
-            "page": page,
-            "total": len(tokens),
-            "has_next": start + LIST_PAGE_SIZE < len(tokens),
-        }
-    )
+    if dimension not in _LIST_DIMENSIONS:
+        return err(
+            "invalid_dimension",
+            f"dimension must be one of: {', '.join(_LIST_DIMENSIONS)}",
+        )
+    result = await TOKEN_CLIENT.discover_tokens(chain_code, dimension, limit)
+    return ok(result)

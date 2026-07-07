@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from typing import NotRequired, Required, TypedDict
+from typing import Any, NotRequired, Required, TypedDict
 
 from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
 from wayfinder_paths.core.config import get_api_base_url
@@ -87,22 +87,6 @@ class FuzzyTokenResult(TypedDict):
     confidence: NotRequired[int]
 
 
-class TokenMarket(TypedDict):
-    id: Required[str]
-    type: Required[str]
-    symbol: Required[str]
-    base: Required[str]
-    quote: Required[str]
-    imageUrl: NotRequired[str]
-    lastPrice: NotRequired[float]
-    change24h: NotRequired[float]
-    volume24h: NotRequired[float]
-    tvl: NotRequired[float]
-    name: NotRequired[str]
-    chainIds: NotRequired[list[int]]
-    tokenAddresses: NotRequired[dict[str, str]]
-
-
 class TokenClient(WayfinderClient):
     async def get_token_details(
         self, query: str, market_data: bool = False, chain_id: int | None = None
@@ -127,6 +111,15 @@ class TokenClient(WayfinderClient):
         data = response.json()
         return data.get("data", data)
 
+    async def discover_tokens(
+        self, chain_code: str, dimension: str = "trending", limit: int = 25
+    ) -> dict[str, Any]:
+        url = f"{get_api_base_url()}/blockchain/tokens/discover/"
+        params = {"chain_code": chain_code, "dimension": dimension, "limit": limit}
+        response = await self._authed_request("GET", url, params=params)
+        response.raise_for_status()
+        return response.json()
+
     async def fuzzy_search(
         self, query: str, chain: str | None = None
     ) -> dict[str, list[FuzzyTokenResult]]:
@@ -138,12 +131,6 @@ class TokenClient(WayfinderClient):
         response.raise_for_status()
         tokens = self._parse_fuzzy_xml(response.text)
         return {"tokens": tokens}
-
-    async def list_markets(self, chain_id: int) -> list[TokenMarket]:
-        url = f"{get_api_base_url()}/blockchain/tokens/markets/"
-        response = await self._authed_request("GET", url, params={"chain_id": chain_id})
-        response.raise_for_status()
-        return response.json()
 
     def _parse_fuzzy_xml(self, xml_content: str) -> list[FuzzyTokenResult]:
         root = ET.fromstring(xml_content)
