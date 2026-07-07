@@ -247,6 +247,16 @@ BRAP is a custom Wayfinder cross-chain swap aggregator capable of same-chain and
 5. Poll balances and verify swap completion
 6. If the user has no native on the target chain, offer to bridge over native gas
 
+#### Empty quotes ≠ unsupported chain
+
+A zero-quote response is a diagnosis prompt, not a dead end. Before reporting a route unavailable:
+
+1. **Chain?** Quote native → USDC/USDG on the destination chain — if it fills, the chain is fine and the token is the problem.
+2. **Token, cross-chain?** Quote the two legs separately (source → destination-native, then native → target same-chain); if both fill, propose bridge-then-swap and execute the legs separately.
+3. **Liquidity?** Ladder the size down ~10×. A dust-only fill means thin liquidity — report the fillable size and effective price, not "unavailable".
+
+Never claim "chain not available" from an empty quote, and never `onchain_swap` a pair that just quoted empty — it fails, and an unquoted fill is an unpriced fill.
+
 ### Gorlami
 
 Gorlami is a custom Wayfinder EVM simulations environment. You can fork mainnet, inject funds, impersonate send transactions to analyze balance differences and feasibility. Note: Offchain CLOBs like Hyperliquid and Polymarket cannot be forked.
