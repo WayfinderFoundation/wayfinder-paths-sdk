@@ -77,6 +77,12 @@ async def onchain_quote_swap(
     chains match intent, surfaces the best route, output, and fees, and returns a
     ready-to-use `suggested_swap_request` payload.
 
+    A `quote_count: 0` response does NOT mean the chain is unsupported — diagnose
+    before reporting: quote a control pair on the destination chain (native →
+    USDC/USDG), quote cross-chain pairs as two separate legs (bridge to native,
+    then same-chain swap), and ladder the amount down to detect thin liquidity.
+    Never call `onchain_swap` for a pair that just quoted empty.
+
     Args:
         wallet_label: Sender wallet (config.json label).
         from_token / to_token: Token id (`<coingecko_id>-<chain_code>`), address id

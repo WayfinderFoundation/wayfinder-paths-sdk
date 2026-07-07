@@ -35,3 +35,7 @@
 
 - For tiny amounts (e.g., 1 wei), use **scientific notation**: `"1e-18"` works, but `"0.000000000000000001"` may cause serialization errors.
 - Native sends require `token: "native"` and `chain_id` in the request.
+
+## Zero-quote diagnosis
+
+An empty quote (`quote_count: 0, providers: []`) is not "chain unsupported". Before reporting no route: (1) quote a control pair on the destination chain (native → USDC/USDG) — if that works the chain is fine; (2) for cross-chain, quote the bridge leg (source → destination native) and the swap leg (native → target, same-chain) separately and propose the two-step plan when both fill; (3) ladder the size down — a dust-only fill means thin/unreachable liquidity, so report the token's pool liquidity and fillable size instead. Never execute a swap whose quote just came back empty.
