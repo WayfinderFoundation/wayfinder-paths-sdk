@@ -107,6 +107,31 @@ LIFI_GENERIC = to_checksum_address("0x31a9b1835864706Af10103b31Ea2b79bdb995F5F")
 
 ROBINHOOD_WETH = to_checksum_address("0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73")
 
+# Uniswap v4 deployments. All addresses verified live on Robinhood (4663):
+# PoolManager owner + code confirmed, V4Quoter returns real quotes, StateView
+# getSlot0/getLiquidity resolve, UniversalRouter is Blockscout-verified, and
+# the reconstructed INDEX/ETH PoolKey hashes to the on-chain poolId. Permit2 is
+# Uniswap's canonical singleton (same address on every chain). Structured
+# per-chain so Base/Ethereum v4 can be added later.
+UNISWAP_V4_POOL_MANAGER: dict[int, str] = {
+    4663: to_checksum_address("0x8366a39CC670B4001A1121B8F6A443A643e40951"),
+}
+
+UNISWAP_V4_UNIVERSAL_ROUTER: dict[int, str] = {
+    4663: to_checksum_address("0x8876789976DEcbFcBBBe364623c63652Db8C0904"),
+}
+
+UNISWAP_V4_QUOTER: dict[int, str] = {
+    4663: to_checksum_address("0x97627e46420bbc4bc5Df7e72D6Bb653345506b2f"),
+}
+
+UNISWAP_V4_STATE_VIEW: dict[int, str] = {
+    4663: to_checksum_address("0xF3334192D15450CdD385c8B70e03f9A6bD9E673b"),
+}
+
+# Canonical Uniswap Permit2 — same address on virtually every chain.
+UNISWAP_PERMIT2 = to_checksum_address("0x000000000022D473030F116dDEE9F6B43aC78BA3")
+
 TOKENS_REQUIRING_APPROVAL_RESET: set[tuple[int, str]] = {
     (1, USDT_ETHEREUM),
     (137, USDT_POLYGON),
