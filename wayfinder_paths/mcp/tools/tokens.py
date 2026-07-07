@@ -64,19 +64,20 @@ async def onchain_fuzzy_search_tokens(chain_code: str, query: str) -> dict[str, 
     return ok(result)
 
 
-@catch_errors
-async def onchain_list_tokens(
-    chain_code: str, query: str | None = None, limit: int = 50
-) -> dict[str, Any]:
-    """List a chain's top tokens by 24h volume — enumeration, no search string needed.
+LIST_PAGE_SIZE = 25
 
-    Use this to see what tokens exist on a chain. Unlike onchain_fuzzy_search_tokens,
-    query is optional: omit it to get the highest-volume tokens, or pass it to filter.
+
+@catch_errors
+async def onchain_list_tokens(chain_code: str, page: int = 1) -> dict[str, Any]:
+    """Browse a chain's tokens ranked by 24h volume, one page at a time.
+
+    Use this to see what exists on a chain when you have no name to search. Flip pages
+    with `page`. To resolve a specific token by name/symbol/address, use
+    onchain_fuzzy_search_tokens instead.
 
     Args:
-        chain_code: e.g. base, arbitrum, polygon. Pass all or _ to list across every chain.
-        query: optional symbol/name filter; omit to list top tokens by volume.
-        limit: max rows, capped at 500 by the backend. Defaults to 50.
+        chain_code: e.g. base, arbitrum, polygon. Pass all or _ to browse every chain.
+        page: 1-based page of the volume-ranked list; ~25 tokens per page.
     """
     if chain_code in ALL_CHAINS:
         chain_id = None
@@ -85,10 +86,16 @@ async def onchain_list_tokens(
     else:
         return err(
             "unknown_chain_code",
-            f"Unknown chain_code '{chain_code}'. Pass all to list across every chain.",
+            f"Unknown chain_code '{chain_code}'. Pass all to browse every chain.",
             details={"valid": sorted(CHAIN_CODE_TO_ID)},
         )
-    tokens = await TOKEN_CLIENT.list_markets(
-        chain_id=chain_id, query=query, limit=limit
+    tokens = await TOKEN_CLIENT.list_markets(chain_id=chain_id)
+    start = (page - 1) * LIST_PAGE_SIZE
+    return ok(
+        {
+            "tokens": tokens[start : start + LIST_PAGE_SIZE],
+            "page": page,
+            "total": len(tokens),
+            "has_next": start + LIST_PAGE_SIZE < len(tokens),
+        }
     )
-    return ok({"tokens": tokens})
