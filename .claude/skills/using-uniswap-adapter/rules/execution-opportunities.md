@@ -153,12 +153,13 @@ asyncio.run(main())
 | `remove_liquidity(token_id, liquidity=None, slippage_bps=50, collect=True, burn=False)` | Decrease/close | liquidity=None for full |
 | `collect_fees(token_id)` | Collect accrued fees | — |
 
-## Uniswap v4 swaps (v4-only tokens, e.g. Robinhood chain)
+## Uniswap v4 swaps
 
-Some chains (Robinhood 4663) run Uniswap v4, and aggregators (BRAP/LiFi) may have no v4 coverage there — so v4-only tokens either don't quote or route through dust pools at a huge markup. Use the adapter's v4 methods directly for these.
+Uniswap v4 is supported on Ethereum (1), Base (8453), Arbitrum (42161), and Robinhood (4663). Use the v4 methods directly for v4-only tokens — on newer chains (Robinhood) aggregators (BRAP/LiFi) may have no v4 coverage, so those tokens either don't quote or route through dust pools at a huge markup.
 
 ```python
-adapter = await get_adapter(UniswapAdapter, chain_id=4663, wallet_label="main")
+# chain_id: 1 (Ethereum), 8453 (Base), 42161 (Arbitrum), or 4663 (Robinhood)
+adapter = await get_adapter(UniswapAdapter, chain_id=8453, wallet_label="main")
 
 # 1. Discover pools, ranked by live liquidity (deepest first).
 ok, pools = await adapter.v4_find_pools(token_in, token_out)
@@ -178,4 +179,5 @@ ok, result = await adapter.v4_swap_exact_in(
 - **`amount_in`**: base units (wei), an int — not a decimal string.
 - **Pool selection is by liquidity, never fee tier.** v4 lets anyone open a pool at any fee; the 10/20/50% pools are traps with dust in them. `v4_find_pools`/`v4_quote` already pick the deepest, but if you inspect pools yourself, rank by `liquidity`.
 - **Quote first, always.** A direct v4 quote is usually far better than the aggregator's dust route for v4-only tokens (INDEX/ETH: v4 direct returned ~24% more than BRAP's fallback).
-- Supported chains: `v4.v4_supported(chain_id)` (Robinhood 4663 today; structured to add Base/Ethereum later).
+- Supported chains: `v4.v4_supported(chain_id)` — Ethereum, Base, Arbitrum, Robinhood.
+- Pool discovery: mainstream pairs on the big chains are found by enumerating standard fee tiers (fast, scan-free); hooked/custom-tier pools (e.g. Robinhood memes) are found via an event scan on small chains. Either way, `v4_find_pools`/`v4_quote` rank by liquidity — trust the deepest pool.

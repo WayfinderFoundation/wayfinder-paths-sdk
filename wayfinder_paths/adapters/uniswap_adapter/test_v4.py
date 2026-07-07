@@ -125,6 +125,67 @@ async def test_v4_quote_reports_missing_pool():
     assert "No v4 pool" in result
 
 
-def test_v4_supported_flags_robinhood_only_where_configured():
-    assert v4.v4_supported(4663) is True
+def test_v4_supported_covers_configured_chains():
+    for chain_id in (1, 8453, 42161, 4663):
+        assert v4.v4_supported(chain_id) is True
     assert v4.v4_supported(999999) is False
+
+
+def test_all_v4_address_maps_agree_on_chains():
+    # PoolManager / UniversalRouter / Quoter / StateView must all be pinned for
+    # the same chain set — a swap needs every one of them.
+    from wayfinder_paths.core.constants.contracts import (
+        UNISWAP_V4_POOL_MANAGER,
+        UNISWAP_V4_QUOTER,
+        UNISWAP_V4_STATE_VIEW,
+        UNISWAP_V4_UNIVERSAL_ROUTER,
+    )
+
+    chains = set(UNISWAP_V4_POOL_MANAGER)
+    assert chains == {1, 8453, 42161, 4663}
+    assert set(UNISWAP_V4_UNIVERSAL_ROUTER) == chains
+    assert set(UNISWAP_V4_QUOTER) == chains
+    assert set(UNISWAP_V4_STATE_VIEW) == chains
+
+
+@pytest.mark.asyncio
+async def test_find_pools_enumerates_standard_tiers_scan_free():
+    # Large chains (no full log scan) discover mainstream pools by poolId +
+    # StateView liquidity — no Initialize log scan, so it scales to mainnet.
+    USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+
+    class _FakeEth:
+        def __init__(self):
+            self.get_logs_called = False
+
+        async def get_logs(self, *a, **k):
+            self.get_logs_called = True
+            return []
+
+        async def call(self, tx):
+            # Return non-zero liquidity only for the fee=3000 tier's poolId.
+            currency0, currency1 = v4._sorted_currencies(v4.NATIVE_ADDRESS, USDC)
+            target = PoolKey(currency0, currency1, 3000, 60, v4.NATIVE_ADDRESS).pool_id
+            data = tx["data"]
+            liq = 999 if target[2:] in data else 0
+            return bytes.fromhex(f"{liq:064x}")
+
+    fake_eth = _FakeEth()
+
+    class _FakeWeb3:
+        eth = fake_eth
+
+    class _Ctx:
+        async def __aenter__(self):
+            return _FakeWeb3()
+
+        async def __aexit__(self, *a):
+            return False
+
+    with patch.object(v4, "web3_from_chain_id", lambda _c: _Ctx()):
+        pools = await v4.find_pools(1, v4.NATIVE_ADDRESS, USDC)
+
+    assert fake_eth.get_logs_called is False  # mainnet: no log scan
+    assert len(pools) == 1
+    assert pools[0].key.fee == 3000
+    assert pools[0].liquidity == 999

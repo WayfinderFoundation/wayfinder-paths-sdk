@@ -46,6 +46,23 @@ _INITIALIZE_TOPIC = (
 # StateView view selector.
 _GET_LIQUIDITY_SELECTOR = "0x" + keccak(b"getLiquidity(bytes32)")[:4].hex()
 
+# Standard hookless (fee, tickSpacing) tiers — the v3-inherited convention that
+# mainstream pairs (ETH/USDC etc.) use on every chain. Enumerating these by
+# poolId + StateView is scan-free, so pool discovery works on large chains
+# (mainnet/Base/Arbitrum) where a from-genesis Initialize log scan is infeasible.
+_STANDARD_TIERS: tuple[tuple[int, int], ...] = (
+    (100, 1),
+    (500, 10),
+    (2500, 50),
+    (3000, 60),
+    (10000, 200),
+)
+
+# Chains small enough for a full-history Initialize log scan, which also finds
+# hooked/custom-tier pools (e.g. Robinhood meme pools with bespoke hooks). Large
+# chains rely on standard-tier enumeration for their mainstream (hookless) pools.
+_FULL_LOG_SCAN_CHAINS: frozenset[int] = frozenset({4663})
+
 # V4Quoter.quoteExactInputSingle((PoolKey,bool,uint128,bytes))
 _QUOTE_EXACT_IN_SELECTOR = (
     "0x"
@@ -145,50 +162,72 @@ async def _rpc_call(web3, to: str, data: str) -> str:
     return (await web3.eth.call({"to": to_checksum_address(to), "data": data})).hex()
 
 
+async def _pool_liquidity(web3, state_view: str, pool_id: str) -> int:
+    liquidity_hex = await _rpc_call(
+        web3, state_view, _GET_LIQUIDITY_SELECTOR + pool_id[2:]
+    )
+    return int(liquidity_hex, 16) if liquidity_hex not in ("", "0x") else 0
+
+
 async def find_pools(chain_id: int, token_a: str, token_b: str) -> list[V4Pool]:
     """All v4 pools for the pair, ranked by live liquidity (deepest first).
 
-    Discovers pools from PoolManager Initialize logs (currencies are indexed,
-    so the scan is a cheap topic filter) and reads current liquidity from
-    StateView. Never infers a pool from fee tier alone.
+    Two discovery paths, merged and deduped:
+    - Standard hookless tiers by poolId + StateView liquidity — scan-free, works
+      on every chain, covers mainstream pairs (the only feasible path on large
+      chains like mainnet/Base/Arbitrum).
+    - A full PoolManager Initialize log scan — only on small chains, to also
+      catch hooked/custom-tier pools (e.g. Robinhood meme pools).
+
+    Never infers a pool from fee tier alone; every candidate's liquidity is read
+    on-chain and zero-liquidity pools are dropped.
     """
     if chain_id not in UNISWAP_V4_POOL_MANAGER:
         return []
     currency0, currency1 = _sorted_currencies(token_a, token_b)
-    pool_manager = UNISWAP_V4_POOL_MANAGER[chain_id]
     state_view = UNISWAP_V4_STATE_VIEW[chain_id]
 
+    pools: list[V4Pool] = []
+    seen: set[str] = set()
+
     async with web3_from_chain_id(chain_id) as web3:
-        logs = await web3.eth.get_logs(
-            {
-                "address": to_checksum_address(pool_manager),
-                "fromBlock": 0,
-                "toBlock": "latest",
-                "topics": [
-                    _INITIALIZE_TOPIC,
-                    None,
-                    "0x" + "0" * 24 + currency0[2:].lower(),
-                    "0x" + "0" * 24 + currency1[2:].lower(),
-                ],
-            }
-        )
-        pools: list[V4Pool] = []
-        seen: set[str] = set()
-        for log in logs:
-            data = bytes(log["data"])
-            fee, tick_spacing, hooks, _sqrt_price, _tick = abi_decode(
-                ["uint24", "int24", "address", "uint160", "int24"], data
-            )
-            key = PoolKey(currency0, currency1, int(fee), int(tick_spacing), hooks)
+        # Path 1: standard hookless tiers (all chains).
+        for fee, tick_spacing in _STANDARD_TIERS:
+            key = PoolKey(currency0, currency1, fee, tick_spacing, NATIVE_ADDRESS)
             if key.pool_id in seen:
                 continue
             seen.add(key.pool_id)
-            liquidity_hex = await _rpc_call(
-                web3, state_view, _GET_LIQUIDITY_SELECTOR + key.pool_id[2:]
-            )
-            liquidity = int(liquidity_hex, 16) if liquidity_hex not in ("", "0x") else 0
+            liquidity = await _pool_liquidity(web3, state_view, key.pool_id)
             if liquidity > 0:
                 pools.append(V4Pool(key=key, liquidity=liquidity))
+
+        # Path 2: full Initialize scan for hooked/custom pools (small chains).
+        if chain_id in _FULL_LOG_SCAN_CHAINS:
+            logs = await web3.eth.get_logs(
+                {
+                    "address": to_checksum_address(UNISWAP_V4_POOL_MANAGER[chain_id]),
+                    "fromBlock": 0,
+                    "toBlock": "latest",
+                    "topics": [
+                        _INITIALIZE_TOPIC,
+                        None,
+                        "0x" + "0" * 24 + currency0[2:].lower(),
+                        "0x" + "0" * 24 + currency1[2:].lower(),
+                    ],
+                }
+            )
+            for log in logs:
+                fee, tick_spacing, hooks, _sqrt, _tick = abi_decode(
+                    ["uint24", "int24", "address", "uint160", "int24"],
+                    bytes(log["data"]),
+                )
+                key = PoolKey(currency0, currency1, int(fee), int(tick_spacing), hooks)
+                if key.pool_id in seen:
+                    continue
+                seen.add(key.pool_id)
+                liquidity = await _pool_liquidity(web3, state_view, key.pool_id)
+                if liquidity > 0:
+                    pools.append(V4Pool(key=key, liquidity=liquidity))
 
     pools.sort(key=lambda p: p.liquidity, reverse=True)
     return pools
