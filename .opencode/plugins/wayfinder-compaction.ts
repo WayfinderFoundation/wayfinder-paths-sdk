@@ -1,15 +1,28 @@
-// Compaction prompt baseline — copied VERBATIM from opencode upstream so we have
-// an exact starting point to modify from.
+// Wayfinder compaction plugin.
 //
-// Source: sst/opencode  packages/core/src/session/compaction.ts
-// Commit: 14a5529793a91001ca81c80e96f39533eab79127  (2026-07-07)
-// https://github.com/sst/opencode/blob/main/packages/core/src/session/compaction.ts
+// Loading: opencode auto-discovers `.opencode/{plugin,plugins}/*.{ts,js}`
+// (sst/opencode packages/core/src/config/plugin/external.ts) — the same
+// auto-discovery the old `.opencode/plugins/wayfinder-context.ts` relied on, so
+// dropping a `Plugin` export in this directory is all it takes to wire it up.
 //
-// How opencode compacts today: there is NO system-role prompt. Compaction is a
-// single user message assembled by `buildPrompt()` = a one-line preamble +
-// `SUMMARY_TEMPLATE` + the conversation context. The two constants below are
-// that prompt, word for word. Nothing here is wired in yet — this is the
-// unmodified baseline; we decide how to diverge from it next.
+// Baseline prompt is copied VERBATIM from opencode upstream so we diverge from
+// an exact reference:
+//   Source: sst/opencode packages/core/src/session/compaction.ts
+//   Commit: 14a5529793a91001ca81c80e96f39533eab79127 (2026-07-07)
+//
+// Hookup: the `experimental.session.compacting` hook appends via
+// `output.context` — the same mechanism the old wayfinder-context plugin used.
+// We append rather than set `output.prompt` on purpose: opencode consumes the
+// hook as `compacting.prompt ?? buildPrompt({ previousSummary, context })`
+// (packages/opencode/src/session/compaction.ts), and the hook is only handed
+// `{ sessionID }`. Setting `output.prompt` would replace buildPrompt entirely
+// and drop the anchored-summary merge (the <previous-summary> incremental
+// update). Appending keeps that intact and layers our rules on top.
+//
+// This is still the unmodified opencode baseline — next step is editing
+// SUMMARY_TEMPLATE (e.g. re-adding "exclude wallet balances, fetch live").
+
+import type { Plugin } from "@opencode-ai/plugin"
 
 export const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
 <template>
@@ -43,11 +56,8 @@ Rules:
 - Preserve exact file paths, symbols, commands, error strings, URLs, and identifiers when known.
 - Do not mention the summary process or that context was compacted.`
 
-export const buildPrompt = (input: { readonly previousSummary?: string; readonly context: readonly string[] }) =>
-  [
-    input.previousSummary
-      ? `Update the anchored summary below using the conversation history above.\nPreserve still-true details, remove stale details, and merge in the new facts.\n<previous-summary>\n${input.previousSummary}\n</previous-summary>`
-      : "Create a new anchored summary from the conversation history.",
-    SUMMARY_TEMPLATE,
-    ...input.context,
-  ].join("\n\n")
+export const WayfinderCompaction: Plugin = async () => ({
+  "experimental.session.compacting": async (_input, output) => {
+    output.context.push(SUMMARY_TEMPLATE)
+  },
+})
