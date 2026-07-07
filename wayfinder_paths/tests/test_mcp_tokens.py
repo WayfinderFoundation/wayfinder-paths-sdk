@@ -136,3 +136,25 @@ async def test_list_tokens_unknown_chain_code_errors():
     assert out["ok"] is False
     assert out["error"]["code"] == "unknown_chain_code"
     fake_client.discover_tokens.assert_not_awaited()
+
+
+@pytest.mark.live_data
+@pytest.mark.requires_config
+@pytest.mark.asyncio
+async def test_list_tokens_live_backend_propagation():
+    """Live: real discovery data flows backend -> TokenClient -> tool.
+
+    Skips (not fails) wherever the pipe can't be exercised — no API key in the
+    environment, or the backend discover endpoint (vault-backend #935) not
+    deployed yet. Once deployed, this proves the agent-facing tool returns
+    real tokens with identity + market data end to end.
+    """
+    out = await onchain_list_tokens("robinhood", "trending", 5)
+
+    if not out["ok"]:
+        pytest.skip(f"live discover unavailable here: {out['error']}")
+    tokens = out["result"]["tokens"]
+    assert tokens, "live discover returned no tokens for robinhood"
+    first = tokens[0]
+    assert first["token_id"].startswith("robinhood_0x")
+    assert {"symbol", "price_usd", "liquidity_usd", "volume_24h_usd"} <= set(first)
