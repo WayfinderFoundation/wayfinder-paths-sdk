@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from typing import NotRequired, Required, TypedDict
+from typing import Any, NotRequired, Required, TypedDict
 
 from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
 from wayfinder_paths.core.config import get_api_base_url
@@ -110,6 +110,15 @@ class TokenClient(WayfinderClient):
         response.raise_for_status()
         data = response.json()
         return data.get("data", data)
+
+    async def discover_tokens(
+        self, chain_code: str, dimension: str = "trending", limit: int = 25
+    ) -> dict[str, Any]:
+        url = f"{get_api_base_url()}/blockchain/tokens/discover/"
+        params = {"chain_code": chain_code, "dimension": dimension, "limit": limit}
+        response = await self._authed_request("GET", url, params=params)
+        response.raise_for_status()
+        return response.json()
 
     async def fuzzy_search(
         self, query: str, chain: str | None = None

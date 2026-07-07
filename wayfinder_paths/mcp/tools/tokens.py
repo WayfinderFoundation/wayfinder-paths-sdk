@@ -59,3 +59,33 @@ async def onchain_fuzzy_search_tokens(chain_code: str, query: str) -> dict[str, 
     chain = None if chain_code in ("all", "_") else chain_code
     result = await TOKEN_CLIENT.fuzzy_search(query, chain=chain)
     return ok(result)
+
+
+_DISCOVER_DIMENSIONS = ("trending", "volume", "new", "active")
+
+
+@catch_errors
+async def onchain_discover_tokens(
+    chain_code: str, dimension: str = "trending", limit: int = 25
+) -> dict[str, Any]:
+    """Browse a chain's top tokens — what's actually live and moving right now.
+
+    Use this to see what exists on a chain when you have no name to search: it
+    surfaces the top tokens (including brand-new launches the standard catalog
+    hasn't indexed) with price, liquidity, 24h volume, FDV, pool age, and DEX.
+    To resolve one token by name/symbol/address instead, use
+    onchain_fuzzy_search_tokens / onchain_resolve_token.
+
+    Args:
+        chain_code: the chain to browse, e.g. robinhood, base, arbitrum.
+        dimension: ranking — "trending" (default), "volume" (24h), "new"
+            (recently launched), or "active" (most 24h transactions).
+        limit: max tokens to return (1-50, default 25).
+    """
+    if dimension not in _DISCOVER_DIMENSIONS:
+        return err(
+            "invalid_dimension",
+            f"dimension must be one of: {', '.join(_DISCOVER_DIMENSIONS)}",
+        )
+    result = await TOKEN_CLIENT.discover_tokens(chain_code, dimension, limit)
+    return ok(result)

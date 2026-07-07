@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from wayfinder_paths.mcp.tools.tokens import (
+    onchain_discover_tokens,
     onchain_fuzzy_search_tokens,
     onchain_get_gas_token,
     onchain_resolve_token,
@@ -69,3 +70,45 @@ async def test_fuzzy_search_tokens_happy_path():
 
     assert out["ok"] is True
     assert out["result"]["results"][0]["id"] == "foo"
+
+
+@pytest.mark.asyncio
+async def test_discover_tokens_happy_path():
+    fake_client = AsyncMock()
+    fake_client.discover_tokens = AsyncMock(
+        return_value={
+            "success": True,
+            "chain_code": "robinhood",
+            "dimension": "trending",
+            "tokens": [{"symbol": "CASHCAT", "liquidity_usd": 353592.6}],
+        }
+    )
+
+    with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
+        out = await onchain_discover_tokens("robinhood", "trending")
+
+    assert out["ok"] is True
+    assert out["result"]["tokens"][0]["symbol"] == "CASHCAT"
+    fake_client.discover_tokens.assert_awaited_once_with("robinhood", "trending", 25)
+
+
+@pytest.mark.asyncio
+async def test_discover_tokens_rejects_bad_dimension():
+    fake_client = AsyncMock()
+    with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
+        out = await onchain_discover_tokens("robinhood", "bogus")
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "invalid_dimension"
+    fake_client.discover_tokens.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discover_tokens_passes_volume_dimension_and_limit():
+    fake_client = AsyncMock()
+    fake_client.discover_tokens = AsyncMock(return_value={"tokens": []})
+    with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
+        out = await onchain_discover_tokens("base", "volume", 10)
+
+    assert out["ok"] is True
+    fake_client.discover_tokens.assert_awaited_once_with("base", "volume", 10)
