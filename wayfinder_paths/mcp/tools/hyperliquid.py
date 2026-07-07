@@ -1933,12 +1933,33 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
         (spot_ok, spot),
         (abstraction_ok, abstraction),
         (orders_ok, orders),
+        (_spot_assets_ok, spot_map),
     ) = await asyncio.gather(
         adapter.get_user_state(addr),
         adapter.get_spot_user_state(addr),
         adapter.get_user_abstraction(addr),
         adapter.get_frontend_open_orders(addr),
+        adapter.get_spot_assets(),
     )
+
+    # Stamp the canonical `asset_name` onto every market-identifier field so
+    # state is interchangeable with search/quote/order tools — the agent reads
+    # one format and never re-guesses `-USDC`. `coin` (raw HL) is preserved.
+    spot_index_to_pair = {f"@{aid - 10000}": name for name, aid in spot_map.items()}
+
+    def _stamp(row: dict[str, Any]) -> None:
+        coin = str(row.get("coin") or "")
+        if coin:
+            row["asset_name"] = adapter.canonical_asset_name(coin, spot_index_to_pair)
+
+    if perp_ok and isinstance(perp, dict):
+        for entry in perp.get("assetPositions", []):
+            if isinstance(entry.get("position"), dict):
+                _stamp(entry["position"])
+    if orders_ok and isinstance(orders, list):
+        for order in orders:
+            if isinstance(order, dict):
+                _stamp(order)
 
     spot_balances: list[dict[str, Any]] = []
     outcome_positions: list[dict[str, Any]] = []
@@ -1952,6 +1973,10 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
                 outcome_positions.append(
                     {
                         "coin": coin,
+                        # Canonical HIP-4 path — feed straight to order tools to
+                        # close. Not routable through canonical_asset_name (a
+                        # `+` coin would wrongly resolve to `+enc-USDC`).
+                        "asset_name": f"#{coin[1:]}",
                         "outcome_id": encoding // 10,
                         "side": encoding % 10,
                         "total": bal.get("total"),
@@ -2140,11 +2165,11 @@ async def hyperliquid_search_mid_prices(
 
     # Rewrite raw allMids keys to canonical asset names so the response is
     # interchangeable with every other tool's asset_name format. See
-    # HyperliquidAdapter.canonical_from_mid_price_key for the key grammar.
+    # HyperliquidAdapter.canonical_asset_name for the key grammar.
     _, spot_map = await adapter.get_spot_assets()
     spot_index_to_pair = {f"@{aid - 10000}": name for name, aid in spot_map.items()}
     canonical = {
-        adapter.canonical_from_mid_price_key(key, spot_index_to_pair): mid
+        adapter.canonical_asset_name(key, spot_index_to_pair): mid
         for key, mid in prices.items()
     }
     return ok({"success": success, "prices": canonical})

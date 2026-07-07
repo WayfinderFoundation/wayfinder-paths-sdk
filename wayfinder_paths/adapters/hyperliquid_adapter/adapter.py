@@ -721,22 +721,28 @@ class HyperliquidAdapter(BaseAdapter):
             case _:  # hip3, hip4 — already canonical
                 return [asset_name]
 
-    def canonical_from_mid_price_key(
-        self, raw_key: str, spot_index_to_pair: dict[str, str]
+    def canonical_asset_name(
+        self, raw_coin: str, spot_index_to_pair: dict[str, str]
     ) -> str:
-        """Inverse of `get_mid_price_key` — canonical asset name from a raw
-        `allMids` key.
+        """Canonical asset name for any raw HL coin/key — the inverse of
+        `get_mid_price_key`.
+
+        Raw coins share one grammar across `allMids` keys, position/order
+        `coin` fields, and fills, so this is the single place that maps them to
+        the canonical `asset_name` every tool speaks: bare perp `kBONK` →
+        `kBONK-USDC`, `@index` spot → its pair, `dex:sym`/`a/b`/`#id` unchanged.
 
         Pass `spot_index_to_pair` built from `get_spot_assets()` (i.e.
         `{f"@{aid-10000}": name}`). Spot indices not in the map (e.g. HIP-3-dex-
         specific spot books) have no standard canonical name and are returned
-        unchanged.
+        unchanged. Outcome (`+encoding`) balances are NOT handled here — callers
+        build `#encoding` directly.
         """
-        if raw_key.startswith("@"):
-            return spot_index_to_pair.get(raw_key, raw_key)
-        if raw_key.startswith("#") or ":" in raw_key or "/" in raw_key:
-            return raw_key
-        return f"{raw_key}-USDC"
+        if raw_coin.startswith("@"):
+            return spot_index_to_pair.get(raw_coin, raw_coin)
+        if raw_coin.startswith("#") or ":" in raw_coin or "/" in raw_coin:
+            return raw_coin
+        return f"{raw_coin}-USDC"
 
     def get_sz_decimals(self, asset_id: int) -> int:
         if asset_id >= OUTCOME_ASSET_OFFSET:
