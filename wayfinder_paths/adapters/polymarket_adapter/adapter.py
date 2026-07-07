@@ -93,6 +93,25 @@ def _fuzzy_score(query: str, text: str) -> float:
     return SequenceMatcher(None, q, t).ratio()
 
 
+def compute_ctf_redeem_payout(
+    index_sets: list[int],
+    balances: list[int],
+    numerators: list[int],
+    denominator: int,
+) -> int:
+    """Replica of CTF.redeemPositions payout math: per index set, numerator =
+    sum of payoutNumerators over its set bits, payout = balance * numerator //
+    denominator (floored per set, like the contract). Used to pre-encode the
+    WCOL unwrap amount in the same relayer batch as the redeem."""
+    total = 0
+    for index_set, balance in zip(index_sets, balances, strict=True):
+        numerator = sum(
+            n for bit, n in enumerate(numerators) if (int(index_set) >> bit) & 1
+        )
+        total += int(balance) * int(numerator) // int(denominator)
+    return total
+
+
 class PolymarketAdapter(BaseAdapter):
     adapter_type = "POLYMARKET"
 
@@ -2357,15 +2376,18 @@ class PolymarketAdapter(BaseAdapter):
                         chunk_size=64,
                     )
 
-                    redeemable = [
-                        i for i, b in zip(index_sets, bals, strict=False) if int(b) > 0
+                    held = [
+                        (i, int(b))
+                        for i, b in zip(index_sets, bals, strict=False)
+                        if int(b) > 0
                     ]
-                    if redeemable:
+                    if held:
                         return True, {
                             "collateral": collateral_cs,
                             "parentCollectionId": "0x" + parent.hex(),
                             "conditionId": "0x" + cond_b32.hex(),
-                            "indexSets": redeemable,
+                            "indexSets": [i for i, _ in held],
+                            "balances": [b for _, b in held],
                         }
             return (
                 False,
@@ -2399,14 +2421,31 @@ class PolymarketAdapter(BaseAdapter):
                 condition_id=condition_id, holder=deposit_wallet
             )
             if not ok:
+                # Nothing left to redeem — common after a prior redeem whose
+                # unwrap leg was skipped (positions burned, WCOL stranded).
+                # Re-running the redeem is the natural agent move, so recover
+                # the stranded collateral here instead of failing.
+                swept_ok, swept = await self.sweep_wrapped_collateral()
+                if swept_ok and isinstance(swept, dict) and swept.get("swept"):
+                    return True, {
+                        **swept,
+                        "message": (
+                            "Nothing left to redeem; recovered wrapped "
+                            "collateral stranded by a prior redemption."
+                        ),
+                    }
                 return False, path
 
             collateral = path["collateral"]
             parent = path["parentCollectionId"]
             cond = path["conditionId"]
             index_sets = path["indexSets"]
+            balances = [int(b) for b in path.get("balances") or []]
+            is_wrapped = to_checksum_address(collateral) == to_checksum_address(
+                POLYMARKET_ADAPTER_COLLATERAL_ADDRESS
+            )
 
-            pusd_before, usdce_before = await asyncio.gather(
+            pusd_before, usdce_before, wcol_before = await asyncio.gather(
                 get_token_balance(
                     POLYGON_P_USDC_PROXY_ADDRESS,
                     POLYGON_CHAIN_ID,
@@ -2419,8 +2458,22 @@ class PolymarketAdapter(BaseAdapter):
                     deposit_wallet,
                     block_identifier="latest",
                 ),
+                get_token_balance(
+                    POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+                    POLYGON_CHAIN_ID,
+                    deposit_wallet,
+                    block_identifier="latest",
+                ),
             )
 
+            # Wrapped-collateral (neg-risk) positions pay the redeem out in
+            # WCOL. Unwrap in the SAME batch as the redeem, sized as the
+            # pre-redeem WCOL balance (sweeps previously-stranded collateral)
+            # plus the exact CTF payout. A post-redeem balance read cannot be
+            # trusted: the relayer mines on its own RPC while our read node
+            # lags, and a stale 0 silently skipped the unwrap, stranding
+            # winnings as WCOL (prod incident 2026-07-03).
+            unwrap_amount = 0
             async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
                 ctf = web3.eth.contract(
                     address=POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
@@ -2429,44 +2482,58 @@ class PolymarketAdapter(BaseAdapter):
                 redeem_data = ctf.encode_abi(
                     "redeemPositions", [collateral, parent, cond, index_sets]
                 )
-            redeem = await self._submit_wallet_batch(
-                calls=[
+                if is_wrapped and int(parent, 16) == 0 and balances:
+                    cond_b32 = self._b32(cond)
+                    denominator = await ctf.functions.payoutDenominator(cond_b32).call()
+                    if denominator == 0:
+                        return False, (
+                            "Market not settled on-chain yet "
+                            "(payoutDenominator=0) — retry in a few minutes."
+                        )
+                    max_bit = max(int(i).bit_length() for i in index_sets)
+                    numerators = list(
+                        await asyncio.gather(
+                            *[
+                                ctf.functions.payoutNumerators(cond_b32, j).call()
+                                for j in range(max_bit)
+                            ]
+                        )
+                    )
+                    payout = compute_ctf_redeem_payout(
+                        index_sets, balances, numerators, denominator
+                    )
+                    unwrap_amount = wcol_before + payout
+                else:
+                    # Non-wrapped market or non-zero parent: no WCOL payout
+                    # from this redeem, but sweep any resident WCOL anyway.
+                    unwrap_amount = wcol_before
+
+                calls = [
                     {
                         "target": POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
                         "value": 0,
                         "data": redeem_data,
                     }
                 ]
-            )
-
-            unwrap_tx_hash: str | None = None
-            if to_checksum_address(collateral) == to_checksum_address(
-                POLYMARKET_ADAPTER_COLLATERAL_ADDRESS
-            ):
-                shares = await get_token_balance(
-                    POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
-                    POLYGON_CHAIN_ID,
-                    deposit_wallet,
-                )
-                if shares > 0:
-                    async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
-                        wrapper = web3.eth.contract(
-                            address=POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
-                            abi=TOKEN_UNWRAP_ABI,
-                        )
-                        unwrap_data = wrapper.encode_abi(
-                            "unwrap", [deposit_wallet, shares]
-                        )
-                    unwrap = await self._submit_wallet_batch(
-                        calls=[
-                            {
-                                "target": POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
-                                "value": 0,
-                                "data": unwrap_data,
-                            }
-                        ]
+                if unwrap_amount > 0:
+                    wrapper = web3.eth.contract(
+                        address=POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+                        abi=TOKEN_UNWRAP_ABI,
                     )
-                    unwrap_tx_hash = unwrap["tx_hash"]
+                    calls.append(
+                        {
+                            "target": POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+                            "value": 0,
+                            "data": wrapper.encode_abi(
+                                "unwrap", [deposit_wallet, unwrap_amount]
+                            ),
+                        }
+                    )
+
+            redeem = await self._submit_wallet_batch(calls=calls)
+            unwrap_tx_hash: str | None = (
+                redeem["tx_hash"] if unwrap_amount > 0 else None
+            )
 
             # Poll for the redemption's payout to land on the public RPC —
             # the relayer reports MINED ahead of public-node propagation.
@@ -2511,6 +2578,69 @@ class PolymarketAdapter(BaseAdapter):
                 "wrap_tx_hash": wrap_tx_hash,
                 "wrap_error": wrap_error,
                 "path": path,
+            }
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)
+
+    async def sweep_wrapped_collateral(self) -> tuple[bool, dict[str, Any] | str]:
+        """Recover winnings stuck as WCOL (wrapped collateral) in the deposit
+        wallet — the output of a neg-risk redemption whose unwrap leg was
+        skipped. Unwraps the full WCOL balance to USDC.e, then wraps the
+        USDC.e to pUSD. The sweep amount is deterministic (unwrap is 1:1),
+        not a post-tx balance read, so a lagging read node can't shrink it."""
+        try:
+            deposit_wallet = self.deposit_wallet_address()
+            wcol_balance, usdce_before = await asyncio.gather(
+                get_token_balance(
+                    POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+                    POLYGON_CHAIN_ID,
+                    deposit_wallet,
+                    block_identifier="latest",
+                ),
+                get_token_balance(
+                    POLYGON_USDC_E_ADDRESS,
+                    POLYGON_CHAIN_ID,
+                    deposit_wallet,
+                    block_identifier="latest",
+                ),
+            )
+            if wcol_balance == 0:
+                return True, {
+                    "deposit_wallet": deposit_wallet,
+                    "swept": 0,
+                    "message": "No wrapped collateral to sweep.",
+                }
+            async with web3_from_chain_id(POLYGON_CHAIN_ID) as web3:
+                wrapper = web3.eth.contract(
+                    address=POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+                    abi=TOKEN_UNWRAP_ABI,
+                )
+                unwrap_data = wrapper.encode_abi(
+                    "unwrap", [deposit_wallet, wcol_balance]
+                )
+            unwrap = await self._submit_wallet_batch(
+                calls=[
+                    {
+                        "target": POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+                        "value": 0,
+                        "data": unwrap_data,
+                    }
+                ]
+            )
+            wrap_tx_hash: str | None = None
+            wrap_error: str | None = None
+            try:
+                wrap_tx_hash = await self._wrap_deposit_wallet_usdce_to_pusd(
+                    amount_base_unit=usdce_before + wcol_balance,
+                )
+            except Exception as wrap_exc:  # noqa: BLE001
+                wrap_error = str(wrap_exc)
+            return True, {
+                "deposit_wallet": deposit_wallet,
+                "swept": wcol_balance,
+                "unwrap_tx_hash": unwrap["tx_hash"],
+                "wrap_tx_hash": wrap_tx_hash,
+                "wrap_error": wrap_error,
             }
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
