@@ -138,12 +138,11 @@ Swap token identity safety:
 
 ### Low-cap & new-chain tokens
 
-Newer chains (e.g. Robinhood) are dominated by micro-cap / meme tokens the standard catalog hasn't indexed. Handle them deliberately:
+New chains (e.g. Robinhood) are mostly micro-cap memes the standard catalog hasn't indexed.
 
-- **Discover, don't guess:** for "what's trending / hot / new / top volume on {chain}", use `onchain_list_tokens(chain_code, dimension)` — dimension is `trending`, `volume`, `new`, or `active`. It surfaces the tokens that are actually live and moving, including brand-new launches, with price, liquidity, 24h volume, FDV, pool age, and DEX.
-- **Never confabulate identity:** given a raw token address, ALWAYS `onchain_resolve_token` / `onchain_fuzzy_search_tokens` first. Do not infer what a token *is* from its name/symbol or a web search — "The Index" is not an index fund because it is called that. Report only what the on-chain data shows.
-- **Assess before sizing:** the resolve/discover results carry liquidity, FDV, 24h volume, and pool age. Treat a token as a high-risk micro-cap when liquidity/FDV is small (Robinhood memes commonly sit at FDV < ~$1M and liquidity < ~$50k), it launched days ago, or it is unverified. Surface a short risk read (name, liquidity, FDV, age, top pool, fillable size) and quote a small clip first — thin pools fill only dust and a large order gets a poor price or no quote at all. Confirm with the user before executing.
-- **Socials/identity when it matters:** if the user asks what a low-cap "is" or about its community, delegate to `wayfinder-research` (it can run social/X checks) rather than guessing; present only what is verifiable.
+- **Browse, don't guess:** "what's trending/new/hot on {chain}" → `onchain_list_tokens(chain_code, dimension)` (`trending`|`volume`|`new`|`active`) — live tokens with price/liquidity/FDV/pool age, including launches the catalog misses.
+- **Never infer identity from a name:** raw address → `onchain_resolve_token` / `onchain_fuzzy_search_tokens` FIRST ("The Index" ≠ an index fund). What a token "is" / its community → delegate to `wayfinder-research`; report only what's verifiable.
+- **Size for the liquidity:** FDV < ~$1M, liquidity < ~$50k, or days old = high-risk micro-cap. Give a one-line risk read (liquidity/FDV/age/fillable size), quote a small clip first, confirm before executing.
 
 Supported chain identifiers:
 
