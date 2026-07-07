@@ -152,30 +152,3 @@ asyncio.run(main())
 | `increase_liquidity(token_id, amount0_desired, amount1_desired, slippage_bps=50)` | Add to existing | amounts in raw |
 | `remove_liquidity(token_id, liquidity=None, slippage_bps=50, collect=True, burn=False)` | Decrease/close | liquidity=None for full |
 | `collect_fees(token_id)` | Collect accrued fees | — |
-
-## Uniswap v4 swaps (v4-only tokens, e.g. Robinhood chain)
-
-Some chains (Robinhood 4663) run Uniswap v4, and aggregators (BRAP/LiFi) may have no v4 coverage there — so v4-only tokens either don't quote or route through dust pools at a huge markup. Use the adapter's v4 methods directly for these.
-
-```python
-adapter = await get_adapter(UniswapAdapter, chain_id=4663, wallet_label="main")
-
-# 1. Discover pools, ranked by live liquidity (deepest first).
-ok, pools = await adapter.v4_find_pools(token_in, token_out)
-
-# 2. Quote exact-in against the best (deepest) pool.
-ok, quote = await adapter.v4_quote(token_in, token_out, amount_in_wei)
-#   -> {"amount_out", "pool_id", "fee", "liquidity"}
-
-# 3. Execute (native input rides as msg.value; ERC-20 goes through Permit2).
-ok, result = await adapter.v4_swap_exact_in(
-    token_in=token_in, token_out=token_out,
-    amount_in=amount_in_wei, slippage_bps=50,
-)
-```
-
-- **`token_in`/`token_out`**: use `0x0000…0000` for native ETH (v4 pools are native, not WETH — GeckoTerminal may still label them "WETH").
-- **`amount_in`**: base units (wei), an int — not a decimal string.
-- **Pool selection is by liquidity, never fee tier.** v4 lets anyone open a pool at any fee; the 10/20/50% pools are traps with dust in them. `v4_find_pools`/`v4_quote` already pick the deepest, but if you inspect pools yourself, rank by `liquidity`.
-- **Quote first, always.** A direct v4 quote is usually far better than the aggregator's dust route for v4-only tokens (INDEX/ETH: v4 direct returned ~24% more than BRAP's fallback).
-- Supported chains: `v4.v4_supported(chain_id)` (Robinhood 4663 today; structured to add Base/Ethereum later).
