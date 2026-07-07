@@ -76,20 +76,16 @@ async def onchain_list_tokens(chain_code: str, page: int = 1) -> dict[str, Any]:
     onchain_fuzzy_search_tokens instead.
 
     Args:
-        chain_code: e.g. base, arbitrum, polygon. Pass all or _ to browse every chain.
+        chain_code: the chain to browse, e.g. base, arbitrum, polygon.
         page: 1-based page of the volume-ranked list; ~25 tokens per page.
     """
-    if chain_code in ALL_CHAINS:
-        chain_id = None
-    elif chain_code in CHAIN_CODE_TO_ID:
-        chain_id = CHAIN_CODE_TO_ID[chain_code]
-    else:
+    if chain_code not in CHAIN_CODE_TO_ID:
         return err(
             "unknown_chain_code",
-            f"Unknown chain_code '{chain_code}'. Pass all to browse every chain.",
+            f"Unknown chain_code '{chain_code}'.",
             details={"valid": sorted(CHAIN_CODE_TO_ID)},
         )
-    tokens = await TOKEN_CLIENT.list_markets(chain_id=chain_id)
+    tokens = await TOKEN_CLIENT.list_markets(chain_id=CHAIN_CODE_TO_ID[chain_code])
     start = (page - 1) * LIST_PAGE_SIZE
     return ok(
         {

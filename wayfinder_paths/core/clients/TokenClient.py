@@ -139,12 +139,9 @@ class TokenClient(WayfinderClient):
         tokens = self._parse_fuzzy_xml(response.text)
         return {"tokens": tokens}
 
-    async def list_markets(self, chain_id: int | None = None) -> list[TokenMarket]:
+    async def list_markets(self, chain_id: int) -> list[TokenMarket]:
         url = f"{get_api_base_url()}/blockchain/tokens/markets/"
-        params: dict[str, int] = {}
-        if chain_id is not None:
-            params["chain_id"] = chain_id
-        response = await self._authed_request("GET", url, params=params)
+        response = await self._authed_request("GET", url, params={"chain_id": chain_id})
         response.raise_for_status()
         return response.json()
 
