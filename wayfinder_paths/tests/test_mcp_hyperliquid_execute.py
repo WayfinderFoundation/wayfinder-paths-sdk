@@ -221,6 +221,16 @@ async def test_get_asset_id_perp():
 
 
 @pytest.mark.asyncio
+async def test_get_asset_id_bare_perp_coin():
+    """HL state reports positions by bare coin ('kBONK') — bare names must
+    resolve (2026-07-06: requiring -USDC made kBONK lookups silently miss)."""
+    adapter = _StubAdapter({"kBONK": 42, "BTC": 0}, {})
+    assert await adapter.get_asset_id("kBONK") == 42
+    assert await adapter.get_asset_id("kBONK-USDC") == 42
+    assert await adapter.get_asset_id("KBONK") is None  # HL coins are case-sensitive
+
+
+@pytest.mark.asyncio
 async def test_get_asset_id_hip3_perp():
     adapter = _StubAdapter({"xyz:SP500": 110000}, {})
     assert await adapter.get_asset_id("xyz:SP500") == 110000
@@ -244,7 +254,8 @@ async def test_get_asset_id_outcome():
 @pytest.mark.parametrize(
     "asset_name",
     [
-        "BTC",  # bare ticker
+        # NOTE: bare tickers ("BTC") are now VALID — see
+        # test_get_asset_id_bare_perp_coin (HL state reports coins bare).
         "btc-usdc",  # case mismatch
         "BTC-usdc",  # partial case mismatch
         "BTC/usdc",  # spot case mismatch

@@ -2114,15 +2114,29 @@ async def hyperliquid_search_mid_prices(
     success, prices = await adapter.get_all_mid_prices()
     if asset_names:
         filtered: dict[str, str] = {}
+        unmatched: list[str] = []
         for name in asset_names:
             asset_id = await adapter.get_asset_id(name)
             if asset_id is None:
+                unmatched.append(name)
                 continue
             for key in adapter.get_mid_price_key(name, asset_id):
                 if (mid := prices.get(key)) is not None:
                     filtered[name] = mid
                     break
-        return ok({"prices": filtered})
+            else:
+                unmatched.append(name)
+        result: dict[str, Any] = {"prices": filtered}
+        if unmatched:
+            # Silently-empty responses sent agents chasing ghosts (2026-07-06
+            # kBONK incident) — name the misses and how to fix them.
+            result["unmatched"] = unmatched
+            result["hint"] = (
+                "No market matched these asset names. Use canonical names "
+                "from hyperliquid_search_market(), e.g. 'BTC-USDC', "
+                "'BTC/USDC', 'xyz:NVDA', '#40'."
+            )
+        return ok(result)
 
     # Rewrite raw allMids keys to canonical asset names so the response is
     # interchangeable with every other tool's asset_name format. See

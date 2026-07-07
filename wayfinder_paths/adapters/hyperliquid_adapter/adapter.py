@@ -684,8 +684,10 @@ class HyperliquidAdapter(BaseAdapter):
     async def get_asset_id(self, asset_name: str) -> int | None:
         """Resolve a canonical market path to its HL asset id, or None if no match.
 
-        Accepts: 'BTC-USDC' (core perp), 'xyz:SP500' (HIP-3 perp),
-        'BTC/USDC' (spot pair), '#40' (HIP-4 outcome). Match is exact.
+        Accepts: 'BTC-USDC' or bare 'BTC' (core perp), 'xyz:SP500' (HIP-3
+        perp), 'BTC/USDC' (spot pair), '#40' (HIP-4 outcome). Bare coins
+        matter because HL state reports positions by coin ('kBONK'), and
+        requiring the -USDC suffix made those lookups silently miss.
         """
         match self.get_market_type(asset_name):
             case "hip4" if asset_name[1:].isdigit():
@@ -695,8 +697,8 @@ class HyperliquidAdapter(BaseAdapter):
                 return assets.get(asset_name)
             case "hip3":
                 return self.coin_to_asset.get(asset_name)
-            case "perp" if (bare := asset_name.removesuffix("-USDC")) != asset_name:
-                return self.coin_to_asset.get(bare)
+            case "perp":
+                return self.coin_to_asset.get(asset_name.removesuffix("-USDC"))
         return None
 
     @classmethod
