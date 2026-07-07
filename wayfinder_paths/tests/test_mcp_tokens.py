@@ -8,6 +8,7 @@ import pytest
 from wayfinder_paths.mcp.tools.tokens import (
     onchain_fuzzy_search_tokens,
     onchain_get_gas_token,
+    onchain_list_tokens,
     onchain_resolve_token,
 )
 
@@ -69,3 +70,45 @@ async def test_fuzzy_search_tokens_happy_path():
 
     assert out["ok"] is True
     assert out["result"]["results"][0]["id"] == "foo"
+
+
+@pytest.mark.asyncio
+async def test_list_tokens_resolves_chain_code_to_id():
+    fake_client = AsyncMock()
+    fake_client.list_markets = AsyncMock(return_value=[{"symbol": "USDC"}])
+
+    with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
+        out = await onchain_list_tokens(chain_code="base", limit=10)
+
+    assert out["ok"] is True
+    assert out["result"]["tokens"][0]["symbol"] == "USDC"
+    fake_client.list_markets.assert_awaited_once_with(
+        chain_id=8453, query=None, limit=10
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_tokens_all_chains_passes_no_chain_id():
+    fake_client = AsyncMock()
+    fake_client.list_markets = AsyncMock(return_value=[])
+
+    with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
+        out = await onchain_list_tokens(chain_code="all")
+
+    assert out["ok"] is True
+    fake_client.list_markets.assert_awaited_once_with(
+        chain_id=None, query=None, limit=50
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_tokens_unknown_chain_code_errors():
+    fake_client = AsyncMock()
+    fake_client.list_markets = AsyncMock()
+
+    with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
+        out = await onchain_list_tokens(chain_code="dogechain")
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "unknown_chain_code"
+    fake_client.list_markets.assert_not_awaited()
