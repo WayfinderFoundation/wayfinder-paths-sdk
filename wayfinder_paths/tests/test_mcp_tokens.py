@@ -6,9 +6,9 @@ import httpx
 import pytest
 
 from wayfinder_paths.mcp.tools.tokens import (
-    onchain_discover_tokens,
     onchain_fuzzy_search_tokens,
     onchain_get_gas_token,
+    onchain_list_tokens,
     onchain_resolve_token,
 )
 
@@ -73,7 +73,7 @@ async def test_fuzzy_search_tokens_happy_path():
 
 
 @pytest.mark.asyncio
-async def test_discover_tokens_happy_path():
+async def test_list_tokens_happy_path():
     fake_client = AsyncMock()
     fake_client.discover_tokens = AsyncMock(
         return_value={
@@ -85,7 +85,7 @@ async def test_discover_tokens_happy_path():
     )
 
     with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
-        out = await onchain_discover_tokens("robinhood", "trending")
+        out = await onchain_list_tokens("robinhood", "trending")
 
     assert out["ok"] is True
     assert out["result"]["tokens"][0]["symbol"] == "CASHCAT"
@@ -93,10 +93,10 @@ async def test_discover_tokens_happy_path():
 
 
 @pytest.mark.asyncio
-async def test_discover_tokens_rejects_bad_dimension():
+async def test_list_tokens_rejects_bad_dimension():
     fake_client = AsyncMock()
     with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
-        out = await onchain_discover_tokens("robinhood", "bogus")
+        out = await onchain_list_tokens("robinhood", "bogus")
 
     assert out["ok"] is False
     assert out["error"]["code"] == "invalid_dimension"
@@ -104,11 +104,11 @@ async def test_discover_tokens_rejects_bad_dimension():
 
 
 @pytest.mark.asyncio
-async def test_discover_tokens_passes_volume_dimension_and_limit():
+async def test_list_tokens_passes_volume_dimension_and_limit():
     fake_client = AsyncMock()
     fake_client.discover_tokens = AsyncMock(return_value={"tokens": []})
     with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
-        out = await onchain_discover_tokens("base", "volume", 10)
+        out = await onchain_list_tokens("base", "volume", 10)
 
     assert out["ok"] is True
     fake_client.discover_tokens.assert_awaited_once_with("base", "volume", 10)

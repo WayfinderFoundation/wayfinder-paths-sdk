@@ -61,11 +61,11 @@ async def onchain_fuzzy_search_tokens(chain_code: str, query: str) -> dict[str, 
     return ok(result)
 
 
-_DISCOVER_DIMENSIONS = ("trending", "volume", "new", "active")
+_LIST_DIMENSIONS = ("trending", "volume", "new", "active")
 
 
 @catch_errors
-async def onchain_discover_tokens(
+async def onchain_list_tokens(
     chain_code: str, dimension: str = "trending", limit: int = 25
 ) -> dict[str, Any]:
     """Browse a chain's top tokens — what's actually live and moving right now.
@@ -82,10 +82,10 @@ async def onchain_discover_tokens(
             (recently launched), or "active" (most 24h transactions).
         limit: max tokens to return (1-50, default 25).
     """
-    if dimension not in _DISCOVER_DIMENSIONS:
+    if dimension not in _LIST_DIMENSIONS:
         return err(
             "invalid_dimension",
-            f"dimension must be one of: {', '.join(_DISCOVER_DIMENSIONS)}",
+            f"dimension must be one of: {', '.join(_LIST_DIMENSIONS)}",
         )
     result = await TOKEN_CLIENT.discover_tokens(chain_code, dimension, limit)
     return ok(result)
