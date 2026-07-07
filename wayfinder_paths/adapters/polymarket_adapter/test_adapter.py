@@ -1358,3 +1358,205 @@ class TestPolymarketAdapter:
         assert res["method"] == "polymarket_bridge"
         assert res["tx_hash"] == "0xtransfer"
         assert res["unwrap"]["tx_hash"] == "0xunwrap"
+
+
+class TestNegRiskRedeemUnwrap:
+    """2026-07-03 incident: neg-risk (WCOL-collateralized) redemptions left
+    winnings stranded as WCOL because the unwrap leg was gated on a stale
+    post-redeem balance read. The unwrap must ride in the SAME batch with a
+    pre-computed amount."""
+
+    DW = to_checksum_address("0x0ab274fBf20Ca7c688aDAEFC93040669B1C68fdC")
+    COND = "0xb81d9a63be774f9c3db1b96af4d0e869128643a29c6eb922c0d8a20137880120"
+
+    def test_compute_ctf_redeem_payout_matches_incident(self):
+        # Argentina-win market: YES (indexSet 1) lost, NO (indexSet 2) won 1/1.
+        payout = polymarket_adapter_module.compute_ctf_redeem_payout(
+            [1, 2], [5_080_000, 10_200_000], [0, 1], 1
+        )
+        assert payout == 10_200_000
+
+    def test_compute_ctf_redeem_payout_floors_per_index_set(self):
+        # floor(3/2) + floor(5/2) = 1 + 2, not floor(8/2) = 4 — mirrors the
+        # CTF's per-set integer division.
+        payout = polymarket_adapter_module.compute_ctf_redeem_payout(
+            [1, 2], [3, 5], [1, 1], 2
+        )
+        assert payout == 3
+
+    @pytest.fixture
+    async def adapter(self):
+        adapter = PolymarketAdapter(config={})
+        try:
+            yield adapter
+        finally:
+            await adapter.close()
+
+    @pytest.mark.asyncio
+    async def test_redeem_unwraps_wcol_in_same_batch(self, adapter, monkeypatch):
+        from wayfinder_paths.core.constants.polymarket import (
+            POLYGON_P_USDC_PROXY_ADDRESS,
+            POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+            POLYMARKET_CONDITIONAL_TOKENS_ADDRESS,
+        )
+
+        wcol_before = 15_353_790
+        monkeypatch.setattr(adapter, "deposit_wallet_address", lambda: self.DW)
+
+        async def fake_preflight(**_kwargs):
+            return True, {
+                "collateral": POLYMARKET_ADAPTER_COLLATERAL_ADDRESS,
+                "parentCollectionId": "0x" + "00" * 32,
+                "conditionId": self.COND,
+                "indexSets": [2],
+                "balances": [10_200_000],
+            }
+
+        monkeypatch.setattr(adapter, "preflight_redeem", fake_preflight)
+
+        pusd_reads = {"count": 0}
+
+        async def fake_get_token_balance(token, _chain, _holder, **_kwargs):
+            if token == POLYGON_P_USDC_PROXY_ADDRESS:
+                pusd_reads["count"] += 1
+                # First read = pre-redeem baseline; later poll reads show the
+                # payout landed so the 5s poll exits immediately.
+                return 100 if pusd_reads["count"] == 1 else 999_999_999
+            if token == POLYMARKET_ADAPTER_COLLATERAL_ADDRESS:
+                return wcol_before
+            return 0
+
+        monkeypatch.setattr(
+            polymarket_adapter_module, "get_token_balance", fake_get_token_balance
+        )
+
+        unwrap_encodes: list[list] = []
+
+        class FakeContract:
+            def __init__(self, address):
+                self.address = address
+
+                class _Numerators:
+                    def __call__(_s, _cond, index):
+                        value = [0, 1][index]
+
+                        class _Call:
+                            async def call(_c):
+                                return value
+
+                        return _Call()
+
+                class _Denominator:
+                    def __call__(_s, _cond):
+                        class _Call:
+                            async def call(_c):
+                                return 1
+
+                        return _Call()
+
+                class _Functions:
+                    payoutNumerators = _Numerators()
+                    payoutDenominator = _Denominator()
+
+                self.functions = _Functions()
+
+            def encode_abi(self, fn_name, args):
+                if fn_name == "unwrap":
+                    unwrap_encodes.append(list(args))
+                return "0x" + fn_name.encode().hex()
+
+        class FakeEth:
+            def contract(self, *, address, abi):
+                return FakeContract(address)
+
+        class FakeWeb3:
+            eth = FakeEth()
+
+        @asynccontextmanager
+        async def fake_web3(_chain_id):
+            yield FakeWeb3()
+
+        monkeypatch.setattr(polymarket_adapter_module, "web3_from_chain_id", fake_web3)
+
+        batches: list[list[dict]] = []
+
+        async def fake_submit(*, calls):
+            batches.append(calls)
+            return {"tx_hash": "0xatomic"}
+
+        monkeypatch.setattr(adapter, "_submit_wallet_batch", fake_submit)
+
+        ok, res = await adapter.redeem_positions(condition_id=self.COND)
+
+        assert ok is True
+        # ONE batch containing redeem + unwrap — never a raced second batch.
+        assert len(batches) == 1
+        assert len(batches[0]) == 2
+        assert batches[0][0]["target"] == POLYMARKET_CONDITIONAL_TOKENS_ADDRESS
+        assert batches[0][1]["target"] == POLYMARKET_ADAPTER_COLLATERAL_ADDRESS
+        # unwrap(depositWallet, resident WCOL + exact CTF payout)
+        assert unwrap_encodes == [[self.DW, wcol_before + 10_200_000]]
+        assert res["unwrap_tx_hash"] == "0xatomic"
+
+    @pytest.mark.asyncio
+    async def test_redeem_sweeps_stranded_wcol_when_nothing_redeemable(
+        self, adapter, monkeypatch
+    ):
+        """Re-running a redeem after a half-done one (positions burned, WCOL
+        stranded) must recover the WCOL instead of failing preflight."""
+        monkeypatch.setattr(adapter, "deposit_wallet_address", lambda: self.DW)
+
+        async def fake_preflight(**_kwargs):
+            return (
+                False,
+                "No redeemable balance detected for the provided condition_id.",
+            )
+
+        monkeypatch.setattr(adapter, "preflight_redeem", fake_preflight)
+
+        swept = {"called": False}
+
+        async def fake_sweep():
+            swept["called"] = True
+            return True, {
+                "deposit_wallet": self.DW,
+                "swept": 15_353_790,
+                "unwrap_tx_hash": "0xunwrap",
+                "wrap_tx_hash": "0xwrap",
+                "wrap_error": None,
+            }
+
+        monkeypatch.setattr(adapter, "sweep_wrapped_collateral", fake_sweep)
+
+        ok, res = await adapter.redeem_positions(condition_id=self.COND)
+        assert ok is True
+        assert swept["called"] is True
+        assert res["swept"] == 15_353_790
+        assert "recovered wrapped collateral" in res["message"]
+
+    @pytest.mark.asyncio
+    async def test_redeem_still_fails_when_nothing_redeemable_and_no_wcol(
+        self, adapter, monkeypatch
+    ):
+        monkeypatch.setattr(adapter, "deposit_wallet_address", lambda: self.DW)
+
+        async def fake_preflight(**_kwargs):
+            return (
+                False,
+                "No redeemable balance detected for the provided condition_id.",
+            )
+
+        monkeypatch.setattr(adapter, "preflight_redeem", fake_preflight)
+
+        async def fake_sweep():
+            return True, {
+                "deposit_wallet": self.DW,
+                "swept": 0,
+                "message": "No wrapped collateral to sweep.",
+            }
+
+        monkeypatch.setattr(adapter, "sweep_wrapped_collateral", fake_sweep)
+
+        ok, res = await adapter.redeem_positions(condition_id=self.COND)
+        assert ok is False
+        assert "No redeemable balance" in res

@@ -87,6 +87,22 @@ class FuzzyTokenResult(TypedDict):
     confidence: NotRequired[int]
 
 
+class TokenMarket(TypedDict):
+    id: Required[str]
+    type: Required[str]
+    symbol: Required[str]
+    base: Required[str]
+    quote: Required[str]
+    imageUrl: NotRequired[str]
+    lastPrice: NotRequired[float]
+    change24h: NotRequired[float]
+    volume24h: NotRequired[float]
+    tvl: NotRequired[float]
+    name: NotRequired[str]
+    chainIds: NotRequired[list[int]]
+    tokenAddresses: NotRequired[dict[str, str]]
+
+
 class TokenClient(WayfinderClient):
     async def get_token_details(
         self, query: str, market_data: bool = False, chain_id: int | None = None
@@ -122,6 +138,12 @@ class TokenClient(WayfinderClient):
         response.raise_for_status()
         tokens = self._parse_fuzzy_xml(response.text)
         return {"tokens": tokens}
+
+    async def list_markets(self, chain_id: int) -> list[TokenMarket]:
+        url = f"{get_api_base_url()}/blockchain/tokens/markets/"
+        response = await self._authed_request("GET", url, params={"chain_id": chain_id})
+        response.raise_for_status()
+        return response.json()
 
     def _parse_fuzzy_xml(self, xml_content: str) -> list[FuzzyTokenResult]:
         root = ET.fromstring(xml_content)
