@@ -2,7 +2,7 @@
 description: Hidden sports worker for live sports data, data analysis and modelling, and provider-agnostic betting backtests (models, evaluations, predictions, run monitoring).
 mode: subagent
 hidden: true
-steps: 28
+steps: 32
 temperature: 0.1
 permission:
   task:

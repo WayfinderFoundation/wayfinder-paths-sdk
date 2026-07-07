@@ -283,8 +283,12 @@ Supported chains:
 | Polygon   | 137   | `polygon`   | POL    | `polygon-ecosystem-token-polygon` |
 | BSC       | 56    | `bsc`       | BNB    | `binancecoin-bsc`                 |
 | Avalanche | 43114 | `avalanche` | AVAX   | `avalanche-avalanche`             |
-| Plasma    | 9745  | `plasma`    | PLASMA | `plasma-plasma`                   |
+| Plasma    | 9745  | `plasma`    | XPL    | `plasma-plasma`                   |
 | HyperEVM  | 999   | `hyperevm`  | HYPE   | `hyperliquid-hyperevm`            |
+| Katana    | 747474 | `katana`   | ETH    | `ethereum-katana`                 |
+| Monad     | 143   | `monad`     | MON    | `monad-monad`                     |
+| MegaEth   | 4326  | `megaeth`   | ETH    | `ethereum-megaeth`                |
+| Robinhood | 4663  | `robinhood` | ETH    | `ethereum-robinhood`              |
 
 - **Plasma**: EVM chain where Pendle deploys PT/YT markets. Not Pendle-specific — it's its own chain.
 - **HyperEVM**: Hyperliquid's EVM layer. On-chain tokens (HYPE, USDC) live here; perp/spot trading uses the Hyperliquid L1 (off-chain, not EVM).

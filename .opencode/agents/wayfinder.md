@@ -2,7 +2,7 @@
 description: User-facing Wayfinder orchestrator, executor, coder, and strategy lifecycle owner.
 mode: primary
 temperature: 0.1
-steps: 38
+steps: 64
 permission:
   task:
     explore: allow
@@ -124,6 +124,8 @@ There are two types of wallets:
 
 Before any on-chain operation, check native gas on the target chain. If bridging to a new chain for the first time, bridge gas first.
 
+Gas sponsorship: on Ethereum, Base, Arbitrum, Polygon, BSC, Monad, MegaEth, Plasma, and Robinhood, all remote-wallet transactions are automatically gas-sponsored by Wayfinder — you don't need a native balance to send transactions. This is accomplished using account abstraction and user operations. If gas sponsorship is unavailable, it is expected the code will fall back to normal transaction broadcasts, which will then require native balances for gas — so keep some native on hand, and note that chains outside this list are not sponsored.
+
 Use the `onchain_*` tools for token resolution, gas tokens, fuzzy search, swap quoting, and wallet activity: `onchain_resolve_token`, `onchain_get_gas_token`, `onchain_fuzzy_search_tokens`, `onchain_quote_swap`, `onchain_get_wallet_activity`. Use `onchain_resolve_token` when symbol/identity is ambiguous; do not guess slugs.
 
 Use token IDs like `<coingecko_id>-<chain_code>` (e.g. `ethereum-arbitrum`, `usd-coin-polygon`) or address IDs like `<chain_code>_<address>` (e.g. `arbitrum_0xaf88…`) for quoting, execution, and lookups. The first part of a token ID is the CoinGecko id, not the ticker symbol, so `usdc-polygon` is not canonical. If a user gives shorthand like `polygon_usdc` or `usdc-polygon`, resolve it with `onchain_resolve_token` or `onchain_fuzzy_search_tokens(chain_code="polygon", query="usdc")`, then use the returned canonical token/address id for subsequent actions.
@@ -144,8 +146,12 @@ Supported chain identifiers:
 | Polygon   |   137 | `polygon`   | POL    | `polygon-ecosystem-token-polygon` |                                                                                                |
 | BSC       |    56 | `bsc`       | BNB    | `binancecoin-bsc`                 |                                                                                                |
 | Avalanche | 43114 | `avalanche` | AVAX   | `avalanche-avalanche`             |                                                                                                |
-| Plasma    |  9745 | `plasma`    | PLASMA | `plasma-plasma`                   | EVM chain where Pendle deploys PT/YT markets.                                                  |
+| Plasma    |  9745 | `plasma`    | XPL    | `plasma-plasma`                   | EVM chain where Pendle deploys PT/YT markets.                                                  |
 | HyperEVM  |   999 | `hyperevm`  | HYPE   | `hyperliquid-hyperevm`            | Hyperliquid's EVM layer; on-chain tokens live here, perp/spot trading uses the Hyperliquid L1. |
+| Katana    | 747474 | `katana`   | ETH    | `ethereum-katana`                 | DeFi-focused EVM chain.                                                                         |
+| Monad     |   143 | `monad`     | MON    | `monad-monad`                     | High-performance parallel EVM L1.                                                              |
+| MegaEth   |  4326 | `megaeth`   | ETH    | `ethereum-megaeth`                | High-throughput real-time EVM L2.                                                             |
+| Robinhood |  4663 | `robinhood` | ETH    | `ethereum-robinhood`              | Robinhood's EVM chain.                                                                          |
 
 ### Hyperliquid
 
