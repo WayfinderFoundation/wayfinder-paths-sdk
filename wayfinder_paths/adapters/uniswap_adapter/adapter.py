@@ -5,12 +5,13 @@ from typing import Any
 from eth_utils import to_checksum_address
 
 from wayfinder_paths.adapters.uniswap_adapter.base import UniswapV3BaseAdapter
+from wayfinder_paths.adapters.uniswap_adapter.v4 import UniswapV4SwapMixin
 from wayfinder_paths.core.constants.contracts import UNISWAP_V3_FACTORY, UNISWAP_V3_NPM
 
 SUPPORTED_CHAIN_IDS = set(UNISWAP_V3_NPM.keys())
 
 
-class UniswapAdapter(UniswapV3BaseAdapter):
+class UniswapAdapter(UniswapV4SwapMixin, UniswapV3BaseAdapter):
     adapter_type = "UNISWAP"
 
     def __init__(
