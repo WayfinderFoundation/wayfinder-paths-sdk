@@ -54,7 +54,8 @@ Rules:
 - Keep every section, even when empty.
 - Use terse bullets, not prose paragraphs.
 - Preserve exact file paths, symbols, commands, error strings, URLs, and identifiers when known.
-- Do not mention the summary process or that context was compacted.`
+- Do not mention the summary process or that context was compacted.
+- Do not carry wallet balances into the summary — the user holds the EOA key and can move funds at any time, so any balance goes stale immediately; always re-pull balances live before reporting them.`
 
 export const WayfinderCompaction: Plugin = async () => ({
   "experimental.session.compacting": async (_input, output) => {
