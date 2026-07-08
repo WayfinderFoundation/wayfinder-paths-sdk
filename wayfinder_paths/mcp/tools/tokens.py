@@ -98,3 +98,73 @@ async def onchain_list_tokens(
         )
     result = await TOKEN_CLIENT.discover_tokens(chain_code, dimension, limit)
     return ok(result)
+
+
+# Chains the backend's Moralis integration covers. Deliberately narrower than
+# CHAIN_CODE_TO_ID — e.g. robinhood/hyperevm/monad are not Moralis-indexed yet.
+_HOLDER_INTEL_CHAINS = (
+    "ethereum",
+    "bsc",
+    "polygon",
+    "base",
+    "arbitrum",
+    "avalanche",
+)
+
+
+@catch_errors("Holder intelligence lookup failed")
+async def onchain_token_holder_intel(
+    chain_code: str, token_address: str, refresh: bool = False
+) -> dict[str, Any]:
+    """Holder-base intelligence for a token: who holds it, what they paid, and
+    whether they're up — the health check a trader runs before touching a lowcap.
+
+    Answers questions like: "what's the avg PnL of holders of X?", "how long do
+    holders hold?", "what did the top 15-20% of supply pay to get in?". Returns:
+    - holder_pnl: mean/median/p10/p90 PnL %, % profitable, realized+unrealized
+    - hold_time: supply-weighted avg + median hold hours, diamond-hands % (>7d)
+    - whale_entry: top-supply cohort (default 20%) VWAP entry vs current price,
+      cohort PnL, first/last entry times
+    - holder_stats: total holders, holder change (5min-30d), top10/25/50
+      concentration, holders by acquisition (swap/transfer/airdrop), distribution
+    - coverage: honesty metadata — ALWAYS report these caveats to the user:
+      PnL covers only swap-acquired positions (`pnl_coverage_pct` of analyzed
+      holders); `swap_coverage: "partial"` means older history was truncated.
+
+    Data is computed from the top ~100 holders and up to ~2000 recent swaps,
+    cached ~10 minutes (pass refresh=true to force recompute — costs more).
+
+    Args:
+        chain_code: ethereum, bsc, polygon, base, arbitrum, or avalanche.
+        token_address: 0x-prefixed token contract address.
+        refresh: bypass the cache and recompute from fresh upstream data.
+    """
+    if chain_code not in _HOLDER_INTEL_CHAINS:
+        return err(
+            "unsupported_chain",
+            f"Holder intel is not available for '{chain_code}'.",
+            details={"valid": sorted(_HOLDER_INTEL_CHAINS)},
+        )
+    chain_id = CHAIN_CODE_TO_ID[chain_code]
+    try:
+        result = await TOKEN_CLIENT.get_holder_intel(chain_id, token_address, refresh)
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code
+        if status_code == 404:
+            return err(
+                "token_not_found",
+                "No holders or price found for this token on this chain.",
+                details={"status_code": status_code},
+            )
+        if status_code == 503:
+            return err(
+                "not_configured",
+                "Holder intelligence is not configured on this backend.",
+                details={"status_code": status_code},
+            )
+        return err(
+            "holder_intel_failed",
+            "Holder intelligence lookup failed in the backend.",
+            details={"status_code": status_code},
+        )
+    return ok(result)
