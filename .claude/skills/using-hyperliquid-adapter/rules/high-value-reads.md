@@ -77,6 +77,8 @@ Symbol rules:
 - `open_orders.orders` — every open order across all dexes, from `frontendOpenOrders`: resting limit orders AND untriggered trigger orders (`isTrigger`, `triggerPx`, `orderType`, `isPositionTpsl`, `reduceOnly`). No separate call needed to see stop losses / take profits.
 - `outcomes.positions` — outcome positions only (`+N` entries with non-zero total), parsed `outcome_id` / `side`. See `rules/outcomes.md`.
 
+Positions, open orders, and outcome positions each carry a canonical **`asset_name`** (`kBONK-USDC`, `xyz:NVDA`, `PURR/USDC`, `#40`) next to the raw HL `coin`. Feed `asset_name` straight into `hyperliquid_search_mid_prices` / `hyperliquid_get_trade_asset` / the order tools — it is the same format every HL tool speaks, so never re-derive the `-USDC` suffix from `coin` yourself.
+
 For selected perp/HIP-3 trade capacity, use `mcp__wayfinder__hyperliquid_get_trade_asset(label, asset_name)`. This reads Hyperliquid `activeAssetData` and returns side-specific available margin, max order notional, max base size, current leverage, max leverage, compatible margin modes, and the live position. Do not derive available-to-open capacity from spot USDC balance, withdrawable, account value, or `crossMarginSummary`.
 
 Adapter calls (raw, no filtering — both still expose outcome `+N` entries on the spot side):

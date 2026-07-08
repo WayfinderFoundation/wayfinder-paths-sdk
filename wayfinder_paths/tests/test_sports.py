@@ -505,7 +505,7 @@ def test_sports_subagent_is_hidden_with_full_facade() -> None:
     fm = _frontmatter(REPO / ".opencode" / "agents" / "wayfinder-sports.md")
     assert fm["mode"] == "subagent"
     assert fm["hidden"] is True
-    assert fm["steps"] == 28  # analysis/modelling workflows need fetch+script headroom
+    assert fm["steps"] == 32  # analysis/modelling workflows need fetch+script headroom
     perm = fm["permission"]
     assert perm["task"]["*"] == "deny"
     assert perm["wayfinder_*"] == "deny"
@@ -1296,10 +1296,10 @@ def test_primary_agent_has_enough_steps_for_broad_sports_scans() -> None:
         "utf-8"
     )
 
-    assert "steps: 38" in primary
-    assert "steps: 28" in sports
-    assert "steps: 22" in quant
-    assert "steps: 14" in research
+    assert "steps: 64" in primary
+    assert "steps: 32" in sports
+    assert "steps: 64" in quant
+    assert "steps: 64" in research
 
 
 def test_primary_routes_broad_sports_scans_through_ttl_surface_pack() -> None:
