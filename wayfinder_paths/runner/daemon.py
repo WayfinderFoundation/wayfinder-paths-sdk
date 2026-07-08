@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import signal
@@ -439,7 +440,7 @@ class RunnerDaemon:
         job, _ = result
         session_id = job.payload.get("notify_session_id")
 
-        if not session_id or not OPENCODE_CLIENT.healthy():
+        if not session_id or not asyncio.run(OPENCODE_CLIENT.healthy()):
             return
         event = _extract_job_result_event(running_process.log_path)
         should_post_success = job.payload.get(

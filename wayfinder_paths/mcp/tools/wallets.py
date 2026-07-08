@@ -219,7 +219,7 @@ async def core_wallets(
     match action:
         case "create":
             load_config(config_path)
-            if not remote and OPENCODE_CLIENT.healthy():
+            if not remote and await OPENCODE_CLIENT.healthy():
                 return err(
                     "invalid_request",
                     "Local wallets are discouraged for OpenCode instances",

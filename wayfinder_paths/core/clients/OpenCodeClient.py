@@ -19,13 +19,18 @@ class OpenCodeClient:
             headers={"Content-Type": "application/json"},
         )
 
-    def healthy(self) -> bool:
+    async def healthy(self) -> bool:
+        """Await the health check so callers on the MCP server's single event
+        loop yield instead of freezing every other in-flight request (including
+        a booting OpenCode's connect handshake) while OpenCode responds.
+        """
         try:
-            return (
-                self.client.get(f"{self.base_url}/global/health")
-                .json()
-                .get("healthy", False)
-            )
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(10),
+                headers={"Content-Type": "application/json"},
+            ) as client:
+                resp = await client.get(f"{self.base_url}/global/health")
+                return resp.json().get("healthy", False)
         except Exception:
             return False
 

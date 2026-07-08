@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, RunStatus
@@ -165,7 +165,7 @@ def test_notify_session_skips_routine_success(tmp_path: Path, monkeypatch) -> No
     )
     job, _ = daemon._db.get_job(name="quiet-job")
     calls: list[str] = []
-    monkeypatch.setattr(OPENCODE_CLIENT, "healthy", lambda: True)
+    monkeypatch.setattr(OPENCODE_CLIENT, "healthy", AsyncMock(return_value=True))
     monkeypatch.setattr(
         OPENCODE_CLIENT,
         "send_message",
@@ -209,7 +209,7 @@ def test_notify_session_posts_failures(tmp_path: Path, monkeypatch) -> None:
     )
     job, _ = daemon._db.get_job(name="loud-job")
     calls: list[str] = []
-    monkeypatch.setattr(OPENCODE_CLIENT, "healthy", lambda: True)
+    monkeypatch.setattr(OPENCODE_CLIENT, "healthy", AsyncMock(return_value=True))
     monkeypatch.setattr(
         OPENCODE_CLIENT,
         "send_message",
@@ -265,7 +265,7 @@ def test_notify_session_posts_success_with_job_result_marker(
     )
     job, _ = daemon._db.get_job(name="event-job")
     calls: list[str] = []
-    monkeypatch.setattr(OPENCODE_CLIENT, "healthy", lambda: True)
+    monkeypatch.setattr(OPENCODE_CLIENT, "healthy", AsyncMock(return_value=True))
     monkeypatch.setattr(
         OPENCODE_CLIENT,
         "send_message",
