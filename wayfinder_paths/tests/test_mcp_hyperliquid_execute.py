@@ -163,6 +163,14 @@ class _FakeExecutionAdapter:
     async def get_frontend_open_orders(self, _address: str):
         return True, self.frontend_open_orders
 
+    async def get_spot_assets(self):
+        return True, {"PURR/USDC": 10000, "KNTQ/USDH": 10001}
+
+    def canonical_asset_name(self, raw_coin: str, spot_index_to_pair: dict[str, str]):
+        return HyperliquidAdapter.canonical_asset_name(
+            self, raw_coin, spot_index_to_pair
+        )
+
     async def get_dex_collateral_mapping(self) -> dict[str, str]:
         return {"": "USDC", "xyz": "USDC"}
 
@@ -221,6 +229,16 @@ async def test_get_asset_id_perp():
 
 
 @pytest.mark.asyncio
+async def test_get_asset_id_bare_perp_coin():
+    """HL state reports positions by bare coin ('kBONK') — bare names must
+    resolve (2026-07-06: requiring -USDC made kBONK lookups silently miss)."""
+    adapter = _StubAdapter({"kBONK": 42, "BTC": 0}, {})
+    assert await adapter.get_asset_id("kBONK") == 42
+    assert await adapter.get_asset_id("kBONK-USDC") == 42
+    assert await adapter.get_asset_id("KBONK") is None  # HL coins are case-sensitive
+
+
+@pytest.mark.asyncio
 async def test_get_asset_id_hip3_perp():
     adapter = _StubAdapter({"xyz:SP500": 110000}, {})
     assert await adapter.get_asset_id("xyz:SP500") == 110000
@@ -244,7 +262,8 @@ async def test_get_asset_id_outcome():
 @pytest.mark.parametrize(
     "asset_name",
     [
-        "BTC",  # bare ticker
+        # NOTE: bare tickers ("BTC") are now VALID — see
+        # test_get_asset_id_bare_perp_coin (HL state reports coins bare).
         "btc-usdc",  # case mismatch
         "BTC-usdc",  # partial case mismatch
         "BTC/usdc",  # spot case mismatch
@@ -503,21 +522,73 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
     assert "trade_context" not in result
     assert "account_collateral" not in result
     assert result["account_abstraction"]["state"] == "unifiedAccount"
-    assert result["perp"]["state"]["assetPositions"][0]["position"]["coin"] == "BTC"
+    # Positions and orders carry the canonical asset_name every other tool
+    # speaks (interchangeable format), with the raw HL coin preserved.
+    position = result["perp"]["state"]["assetPositions"][0]["position"]
+    assert position["coin"] == "BTC"
+    assert position["asset_name"] == "BTC-USDC"
     assert [bal["coin"] for bal in result["spot"]["state"]["balances"]] == ["USDC"]
     # Trigger (TP/SL) orders and resting limits surface directly in state —
     # agents must not need a second call to discover them.
     assert result["open_orders"]["success"] is True
     assert result["open_orders"]["orders"] == [stop_loss, resting_limit]
+    assert [o["asset_name"] for o in result["open_orders"]["orders"]] == [
+        "HYPE-USDC",
+        "BTC-USDC",
+    ]
     assert result["outcomes"]["positions"] == [
         {
             "coin": "+41",
+            "asset_name": "#41",
             "outcome_id": 4,
             "side": 1,
             "total": "2",
             "hold": "0",
             "entryNtl": "1.0",
         }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hyperliquid_get_state_canonicalizes_every_market_type():
+    # The kBONK incident: a bare k-prefix perp coin from state must come back
+    # canonical so it feeds straight into search/quote/order tools. hip3 stays
+    # as-is; a spot @index order resolves to its pair via the spot map.
+    fake = _FakeExecutionAdapter(
+        user_state={
+            "assetPositions": [
+                {"position": {"coin": "kBONK", "szi": "1000"}},
+                {"position": {"coin": "xyz:SP500", "szi": "-2"}},
+            ]
+        },
+        frontend_open_orders=[
+            {"coin": "kBONK", "oid": 1, "side": "B", "sz": "500"},
+            {"coin": "@1", "oid": 2, "side": "A", "sz": "3"},
+        ],
+    )
+
+    with (
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.resolve_wallet_address",
+            new=AsyncMock(return_value=("0x1234", None)),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter",
+            return_value=fake,
+        ),
+    ):
+        out = await hyperliquid_get_state(label="main")
+
+    positions = out["result"]["perp"]["state"]["assetPositions"]
+    assert [p["position"]["asset_name"] for p in positions] == [
+        "kBONK-USDC",
+        "xyz:SP500",
+    ]
+    # raw coin preserved alongside the canonical name
+    assert positions[0]["position"]["coin"] == "kBONK"
+    assert [o["asset_name"] for o in out["result"]["open_orders"]["orders"]] == [
+        "kBONK-USDC",
+        "KNTQ/USDH",  # @1 → spot pair at index 1
     ]
 
 

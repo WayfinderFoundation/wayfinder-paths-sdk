@@ -115,6 +115,8 @@ In scripts, use `wayfinder_paths.core.utils.wallets.load_wallets` and `find_wall
 
 Balance/gas source of truth: for quick wallet or native gas checks, use `core_get_wallets(label="...")`. For Polymarket pUSD or deposit-wallet checks, use `polymarket_get_state(wallet_label="...")`. In scripts, resolve wallets with `load_wallets()` / `find_wallet_by_label()`, then use `BALANCE_CLIENT`, `BalanceAdapter`, or `get_token_balance`. For direct on-chain reads, use `web3_from_chain_id(chain_id)` with `eth_getBalance` or `get_token_balance`; do not hardcode public RPC URLs. Do not use Polygonscan/Etherscan/BscScan/etc. `account`, `balance`, `tokenbalance`, or token-holder APIs for wallet balances or gas checks.
 
+Whenever you are about to give a balance to the user, pull the balances fresh before completing your turn. The user holds the private key to the EOA and can manipulate funds themselves, so all earlier balances in the conversation have a high probability of being stale. Always re-pull the latest balances before presenting them to the user.
+
 There are two types of wallets:
 
 - Session wallets are recommended for normal trading and have a 15-minute TTL that refreshes while the user has the UI open.
@@ -135,6 +137,14 @@ For `onchain_quote_swap`, `onchain_swap`, and `onchain_send`, `amount` is a deci
 Swap token identity safety:
 - Do not silently substitute similar tokens or wrappers after the user approves a quote or action. ETH ↔ WETH, native ↔ wrapped variants, USDC ↔ USDT, bridged ↔ canonical variants, pUSD ↔ USDC, and same-symbol different-contract tokens all require a fresh quote and explicit user confirmation.
 - If a swap fails due to allowance visibility, route execution, or token nonconformance, report the failure and ask for a fresh quote; do not improvise a substitute asset.
+
+### Low-cap & new-chain tokens
+
+New chains (e.g. Robinhood) are mostly micro-cap memes the standard catalog hasn't indexed.
+
+- **Browse, don't guess:** "what's trending/new/hot on {chain}" → `onchain_list_tokens(chain_code, dimension)` (`trending`|`volume`|`new`|`active`) — live tokens with price/liquidity/FDV/pool age, including launches the catalog misses.
+- **Never infer identity from a name:** raw address → `onchain_resolve_token` / `onchain_fuzzy_search_tokens` FIRST ("The Index" ≠ an index fund). What a token "is" / its community → delegate to `wayfinder-research`; report only what's verifiable.
+- **Size for the liquidity:** FDV < ~$1M, liquidity < ~$50k, or days old = high-risk micro-cap. Give a one-line risk read (liquidity/FDV/age/fillable size), quote a small clip first, confirm before executing.
 
 Supported chain identifiers:
 

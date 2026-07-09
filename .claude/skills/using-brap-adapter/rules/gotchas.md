@@ -35,3 +35,11 @@
 
 - For tiny amounts (e.g., 1 wei), use **scientific notation**: `"1e-18"` works, but `"0.000000000000000001"` may cause serialization errors.
 - Native sends require `token: "native"` and `chain_id` in the request.
+
+## Low-cap / meme tokens on new chains
+
+Newer chains (e.g. Robinhood) are mostly micro-cap memes the standard catalog hasn't indexed. Before quoting or swapping one:
+
+- **Browse with `onchain_list_tokens(chain_code, dimension)`** (`trending` | `volume` | `new` | `active`) to see what's actually live — including brand-new launches — with price, liquidity, 24h volume, FDV, pool age, and DEX.
+- **Resolve a pasted address first** (`onchain_resolve_token` / `onchain_fuzzy_search_tokens`); never infer a token's identity or purpose from its name/symbol.
+- **Size for the liquidity.** Micro-caps (FDV < ~$1M, liquidity < ~$50k, days old, unverified) have thin pools: a large order gets a poor price or no quote. Quote a small clip first, surface the risk read (liquidity, FDV, age, fillable size), and confirm before executing.

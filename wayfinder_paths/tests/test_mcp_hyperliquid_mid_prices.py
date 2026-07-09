@@ -81,6 +81,14 @@ async def test_search_mid_prices_unfiltered():
 
 
 @pytest.mark.asyncio
+async def test_mid_price_bare_kprefix_perp():
+    # 2026-07-06 incident: positions report coin='kBONK' (bare, case-sensitive)
+    # and the mid-price lookup returned {} for it.
+    mid = await _resolved_mid("kBONK")
+    assert mid is not None and mid > 0
+
+
+@pytest.mark.asyncio
 async def test_search_mid_prices_filter_mixed_markets():
     # Pick a HIP-4 outcome that's currently on book.
     adapter = HyperliquidAdapter()
@@ -89,9 +97,12 @@ async def test_search_mid_prices_filter_mixed_markets():
     hip4 = _first_book_coin(outcomes)
 
     res = await hyperliquid_search_mid_prices(
-        ["BTC-USDC", "xyz:NVDA", "KNTQ/USDH", hip4, "BOGUS"],
+        ["BTC-USDC", "xyz:NVDA", "KNTQ/USDH", hip4, "kBONK", "BOGUS"],
     )
     assert res["ok"]
     prices = res["result"]["prices"]
-    assert {"BTC-USDC", "xyz:NVDA", "KNTQ/USDH", hip4} == prices.keys()
+    assert {"BTC-USDC", "xyz:NVDA", "KNTQ/USDH", hip4, "kBONK"} == prices.keys()
     assert all(float(prices[k]) > 0 for k in prices)
+    # Misses are named instead of silently dropped.
+    assert res["result"]["unmatched"] == ["BOGUS"]
+    assert "hyperliquid_search_market" in res["result"]["hint"]
