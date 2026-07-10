@@ -13,6 +13,8 @@ pydantic-settings>=2.7.0
 # Blockchain/Web3
 web3>=7.13.0
 eth-account>=0.13.7
+solana>=0.40.0
+solders>=0.27.0
 
 # HTTP client
 httpx>=0.28.1
