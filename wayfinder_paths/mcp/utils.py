@@ -211,6 +211,7 @@ def public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
         "label": w.get("label"),
         "address": w.get("address"),
         "wallet_type": w.get("wallet_type"),
+        "chain_type": w.get("chain_type"),
         "session_expires_at": w.get("session_expires_at"),
         "session_expires_in": w.get("session_expires_in"),
     }

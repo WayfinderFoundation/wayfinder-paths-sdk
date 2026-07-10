@@ -182,6 +182,7 @@ async def core_wallets(
     remote: bool = False,
     policies: list[dict] = [],  # noqa: B006
     wallet_type: str | None = None,
+    chain_type: str = "ethereum",
 ) -> dict[str, Any]:
     """Create wallets, annotate wallet profiles, and discover cross-protocol portfolios.
 
@@ -209,6 +210,7 @@ async def core_wallets(
         remote: True → remote (managed) wallet on `create`. Required on Shells.
         policies: Remote-wallet signing policies (passed through to the wallet service).
         wallet_type: "session" or "strategy" — required when `remote=True`.
+        chain_type: "ethereum" (default) or "solana" — the chain family of a remote wallet.
 
     Supported protocols for `discover_portfolio`: hyperliquid, hyperlend, moonwell, morpho,
     boros, pendle, polymarket, aave.
@@ -244,8 +246,15 @@ async def core_wallets(
                     "wallet_type is required for remote wallets (one of: session, policy, strategy)",
                     wallet_type,
                 )
+                if chain_type not in ("ethereum", "solana"):
+                    raise ValueError(
+                        f"chain_type must be 'ethereum' or 'solana', got {chain_type!r}"
+                    )
                 result = await create_remote_wallet(
-                    label=want, wallet_type=wallet_type, policies=policies
+                    label=want,
+                    wallet_type=wallet_type,
+                    chain_type=chain_type,
+                    policies=policies,
                 )
                 refreshed = await load_wallets()
                 return ok(
@@ -254,6 +263,7 @@ async def core_wallets(
                         "created": {
                             "label": result.get("label", want),
                             "address": result["wallet_address"],
+                            "chain_type": result.get("chain_type", chain_type),
                         },
                     }
                 )
