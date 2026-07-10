@@ -307,9 +307,9 @@ class TokenResolver:
             addr = _normalize_token_address(q_raw)
             if not addr:
                 raise ValueError(f"Cannot resolve token: {query}")
-            from wayfinder_paths.core.utils import svm as svm_utils
+            from wayfinder_paths.core.utils import svm_tokens
 
-            decimals = await svm_utils.get_spl_mint_decimals(q_raw, chain_id_i)
+            decimals = await svm_tokens.get_spl_mint_decimals(q_raw, chain_id_i)
             return {
                 "token_id": q_raw,
                 "symbol": q_raw,

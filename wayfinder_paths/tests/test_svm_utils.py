@@ -19,6 +19,10 @@ from wayfinder_paths.core.constants.chains import (
     SVM_CHAIN_IDS,
 )
 from wayfinder_paths.core.utils.svm import (
+    is_solana_chain,
+    solana_client_from_chain_id,
+)
+from wayfinder_paths.core.utils.svm_tokens import (
     SOL_NATIVE_SENTINEL,
     WRAPPED_SOL_MINT,
     get_associated_token_address,
@@ -26,8 +30,6 @@ from wayfinder_paths.core.utils.svm import (
     get_solana_token_balance,
     get_spl_mint_decimals,
     get_spl_token_balance,
-    is_solana_chain,
-    solana_client_from_chain_id,
 )
 from wayfinder_paths.core.utils.svm_transaction import (
     confirm_solana_signature,
@@ -49,7 +51,10 @@ def _patch_client(fake_client):
         yield fake_client
 
     with (
-        patch("wayfinder_paths.core.utils.svm.solana_client_from_chain_id", fake_ctx),
+        patch(
+            "wayfinder_paths.core.utils.svm_tokens.solana_client_from_chain_id",
+            fake_ctx,
+        ),
         patch(
             "wayfinder_paths.core.utils.svm_transaction.solana_client_from_chain_id",
             fake_ctx,
@@ -419,7 +424,7 @@ async def test_token_resolver_meta_solana_mint():
     from wayfinder_paths.core.utils.token_resolver import TokenResolver
 
     with patch(
-        "wayfinder_paths.core.utils.svm.get_spl_mint_decimals",
+        "wayfinder_paths.core.utils.svm_tokens.get_spl_mint_decimals",
         new=AsyncMock(return_value=6),
     ):
         meta = await TokenResolver.resolve_token_meta(
