@@ -142,6 +142,34 @@ async def test_solana_client_uses_resolved_rpcs():
     mock_rpcs.assert_called_once_with(CHAIN_ID_SOLANA)
 
 
+@pytest.mark.asyncio
+async def test_solana_client_multi_rpc_no_leak():
+    """With multiple resolved RPCs, only ONE client is built and it is closed."""
+    fake_client = AsyncMock()
+    with (
+        patch(
+            "wayfinder_paths.core.utils.svm._get_rpcs_for_chain_id",
+            return_value=[
+                "https://rpc-0.example.com/",
+                "https://rpc-1.example.com/",
+                "https://rpc-2.example.com/",
+            ],
+        ),
+        patch(
+            "wayfinder_paths.core.utils.svm._client_for_rpc",
+            return_value=fake_client,
+        ) as mock_factory,
+    ):
+        async with solana_client_from_chain_id(CHAIN_ID_SOLANA) as client:
+            assert client is fake_client
+
+    # Exactly one client constructed — for the first RPC only.
+    mock_factory.assert_called_once()
+    assert mock_factory.call_args.args[0] == "https://rpc-0.example.com/"
+    # And that one client was closed on exit.
+    fake_client.close.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # Balances (mocked RPC)
 # ---------------------------------------------------------------------------
@@ -277,20 +305,22 @@ async def test_send_solana_transaction():
     assert out == str(signature)
     args, kwargs = fake.send_raw_transaction.await_args
     assert args[0] == raw
-    assert kwargs["opts"].skip_preflight is True
+    # Preflight simulation runs by default so send failures surface
+    # immediately instead of as confirmation timeouts.
+    assert kwargs["opts"].skip_preflight is False
 
 
 @pytest.mark.asyncio
-async def test_send_solana_transaction_preflight():
+async def test_send_solana_transaction_skip_preflight_opt_out():
     fake = AsyncMock()
     fake.send_raw_transaction = AsyncMock(
         return_value=SimpleNamespace(value=Signature.default())
     )
     with _patch_client(fake):
         await send_solana_transaction(
-            base64.b64encode(b"tx").decode(), skip_preflight=False
+            base64.b64encode(b"tx").decode(), skip_preflight=True
         )
-    assert fake.send_raw_transaction.await_args.kwargs["opts"].skip_preflight is False
+    assert fake.send_raw_transaction.await_args.kwargs["opts"].skip_preflight is True
 
 
 @pytest.mark.asyncio

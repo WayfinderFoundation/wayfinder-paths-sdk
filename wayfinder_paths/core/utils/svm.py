@@ -100,13 +100,17 @@ async def solana_client_from_chain_id(
 
     RPC resolution mirrors ``web3_from_chain_id``: explicit ``rpc_urls``
     config overrides win, otherwise the Wayfinder RPC proxy is used
-    (authenticated with the configured API key).
+    (authenticated with the configured API key). Only the first resolved
+    RPC gets a client — constructing one per RPC would leak the unused
+    httpx sessions.
     """
-    clients = get_solana_clients_from_chain_id(chain_id, commitment)
+    _require_solana_chain(chain_id)
+    rpcs = _get_rpcs_for_chain_id(chain_id)
+    client = _client_for_rpc(rpcs[0], commitment)
     try:
-        yield clients[0]
+        yield client
     finally:
-        await clients[0].close()
+        await client.close()
 
 
 def get_associated_token_address(
@@ -193,13 +197,19 @@ async def get_spl_mint_decimals(mint: str, chain_id: int = CHAIN_ID_SOLANA) -> i
 async def send_solana_transaction(
     serialized_b64: str,
     chain_id: int = CHAIN_ID_SOLANA,
-    skip_preflight: bool = True,
+    skip_preflight: bool = False,
 ) -> str:
     """Broadcast a base64-encoded, fully signed transaction.
 
     Accepts both legacy and versioned transactions (the wire encoding is
     opaque to the RPC). Returns the base58 transaction signature — used
     wherever EVM code passes ``tx_hash``.
+
+    Preflight simulation is ON by default so simulation-detectable failures
+    (insufficient funds, rent violations, program errors) surface as
+    immediate RPC errors instead of confirmation timeouts. Pass
+    ``skip_preflight=True`` to opt out (e.g. latency-sensitive sends where
+    the transaction was already simulated).
     """
     raw = base64.b64decode(serialized_b64)
     async with solana_client_from_chain_id(chain_id) as client:
