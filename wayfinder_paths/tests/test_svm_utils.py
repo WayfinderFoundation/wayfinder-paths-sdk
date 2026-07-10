@@ -349,6 +349,9 @@ async def test_confirm_solana_signature_success():
     assert out["err"] is None
     assert out["confirmation_status"] == "confirmed"
     assert out["signature"] == sig
+    # must search history so signatures older than the recent-status cache resolve
+    for call in fake.get_signature_statuses.call_args_list:
+        assert call.kwargs.get("search_transaction_history") is True
 
 
 @pytest.mark.asyncio

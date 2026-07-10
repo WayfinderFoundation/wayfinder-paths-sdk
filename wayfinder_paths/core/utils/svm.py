@@ -235,7 +235,10 @@ async def confirm_solana_signature(
     deadline = loop.time() + timeout_s
     async with solana_client_from_chain_id(chain_id) as client:
         while True:
-            resp = await client.get_signature_statuses([sig])
+            # search_transaction_history covers signatures older than the
+            # node's recent-status cache (~150 blocks); without it, confirming
+            # anything but a just-sent transaction times out.
+            resp = await client.get_signature_statuses([sig], search_transaction_history=True)
             status = resp.value[0]
             if status is not None:
                 err = status.err
