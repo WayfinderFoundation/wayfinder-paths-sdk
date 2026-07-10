@@ -12,9 +12,8 @@ CHAIN_ID_MONAD = 143
 CHAIN_ID_MEGAETH = 4326
 CHAIN_ID_ROBINHOOD = 4663
 
-# Internal Wayfinder chain id for Solana mainnet-beta (matches FE ChainId.Solana
-# and BE SOLANA_CHAIN_ID). Li.Fi's external id 1151111081099710 maps to/from 900
-# at service boundaries only.
+# Internal chain id for Solana mainnet-beta. Li.Fi's external id
+# 1151111081099710 maps to/from 900 at service boundaries only.
 CHAIN_ID_SOLANA = 900
 
 CHAIN_CODE_TO_ID = {
@@ -42,11 +41,10 @@ CHAIN_ID_TO_CODE: dict[int, str] = {
 
 # SVM (Solana Virtual Machine) chains. Deliberately kept OUT of the EVM-only
 # sets below (SUPPORTED_CHAINS, GAS_SPONSORED_CHAIN_IDS, POA/pre-1559 sets):
-# those gate web3/EVM code paths (nonce/gas handling, backend EVM broadcast,
-# middleware). Solana flows go through wayfinder_paths.core.utils.svm instead.
+# those gate EVM code paths (nonce/gas handling, middleware). Solana flows go
+# through wayfinder_paths.core.utils.svm instead.
 SVM_CHAIN_IDS: set[int] = {CHAIN_ID_SOLANA}
 
-# EVM chains supported by the web3/EVM transaction pipeline.
 SUPPORTED_CHAINS = [
     CHAIN_ID_ETHEREUM,
     CHAIN_ID_BASE,

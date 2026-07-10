@@ -46,7 +46,6 @@ _NATIVE_SOL_ALIASES = {
 
 
 def is_solana_chain(chain_id: int | str | None) -> bool:
-    """True when ``chain_id`` is an SVM (Solana) chain."""
     try:
         return int(chain_id) in SVM_CHAIN_IDS  # type: ignore[arg-type]
     except (TypeError, ValueError):
@@ -54,7 +53,6 @@ def is_solana_chain(chain_id: int | str | None) -> bool:
 
 
 def is_native_sol(token_address: str | None) -> bool:
-    """True when ``token_address`` denotes native SOL (not an SPL mint)."""
     if token_address is None:
         return True
     return str(token_address).strip().lower() in _NATIVE_SOL_ALIASES
@@ -79,16 +77,6 @@ def _client_for_rpc(rpc: str, commitment: Commitment | None) -> AsyncClient:
         commitment=commitment or Confirmed,
         extra_headers=extra_headers,
     )
-
-
-def get_solana_clients_from_chain_id(
-    chain_id: int = CHAIN_ID_SOLANA,
-    commitment: Commitment | None = None,
-) -> list[AsyncClient]:
-    """One ``AsyncClient`` per resolved RPC (config override or proxy pool)."""
-    _require_solana_chain(chain_id)
-    rpcs = _get_rpcs_for_chain_id(chain_id)
-    return [_client_for_rpc(rpc, commitment) for rpc in rpcs]
 
 
 @asynccontextmanager
@@ -176,7 +164,6 @@ async def get_spl_token_balance(
 async def get_solana_token_balance(
     wallet_address: str, token_address: str, chain_id: int = CHAIN_ID_SOLANA
 ) -> int:
-    """Dispatch native SOL vs SPL token balance based on ``token_address``."""
     if is_native_sol(token_address):
         return await get_sol_balance(wallet_address, chain_id)
     return await get_spl_token_balance(wallet_address, token_address, chain_id)
@@ -238,7 +225,9 @@ async def confirm_solana_signature(
             # search_transaction_history covers signatures older than the
             # node's recent-status cache (~150 blocks); without it, confirming
             # anything but a just-sent transaction times out.
-            resp = await client.get_signature_statuses([sig], search_transaction_history=True)
+            resp = await client.get_signature_statuses(
+                [sig], search_transaction_history=True
+            )
             status = resp.value[0]
             if status is not None:
                 err = status.err

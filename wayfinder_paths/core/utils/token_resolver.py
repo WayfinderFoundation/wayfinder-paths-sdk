@@ -153,14 +153,7 @@ def _select_chain_and_address(
 
 
 def _is_solana_mint_query(query: str, chain_id: int | None) -> bool:
-    """True when ``query`` is a base58 mint address and the chain hint is SVM."""
-    if chain_id is None:
-        return False
-    try:
-        chain_id_i = int(chain_id)
-    except (TypeError, ValueError):
-        return False
-    return chain_id_i in SVM_CHAIN_IDS and looks_like_solana_address(query)
+    return chain_id in SVM_CHAIN_IDS and looks_like_solana_address(query)
 
 
 class TokenResolver:
