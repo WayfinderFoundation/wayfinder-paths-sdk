@@ -35,10 +35,12 @@ from wayfinder_paths.core.constants.chains import (
     CHAIN_ID_PLASMA,
     CHAIN_ID_POLYGON,
     CHAIN_ID_ROBINHOOD,
+    CHAIN_ID_SOLANA,
     CHAIN_ID_SONIC,
     POA_MIDDLEWARE_CHAIN_IDS,
     PRE_EIP_1559_CHAIN_IDS,
     SUPPORTED_CHAINS,
+    SVM_CHAIN_IDS,
 )
 from wayfinder_paths.core.constants.contracts import (
     BOROS_MERKLE_DISTRIBUTOR,
@@ -108,6 +110,8 @@ __all__ = [
     "CHAIN_ID_MONAD",
     "CHAIN_ID_MEGAETH",
     "CHAIN_ID_ROBINHOOD",
+    "CHAIN_ID_SOLANA",
+    "SVM_CHAIN_IDS",
     "SUPPORTED_CHAINS",
     "POA_MIDDLEWARE_CHAIN_IDS",
     "PRE_EIP_1559_CHAIN_IDS",

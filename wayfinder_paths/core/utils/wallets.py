@@ -1,3 +1,4 @@
+import base64
 import json
 from pathlib import Path
 from typing import Any
@@ -5,6 +6,11 @@ from typing import Any
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 from loguru import logger
+from solders.keypair import Keypair
+from solders.message import to_bytes_versioned
+from solders.signature import Signature
+from solders.transaction import Transaction as SoldersLegacyTransaction
+from solders.transaction import VersionedTransaction
 
 from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.config import (
@@ -20,7 +26,16 @@ from wayfinder_paths.policies.session import build_session_policy, build_strateg
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 
+CHAIN_TYPE_ETHEREUM = "ethereum"
+CHAIN_TYPE_SOLANA = "solana"
+
 Account.enable_unaudited_hdwallet_features()
+
+
+def wallet_chain_type(wallet: dict[str, Any]) -> str:
+    """Wallet's chain type; defaults to "ethereum" when absent (legacy configs)."""
+    chain_type = str(wallet.get("chain_type") or "").strip().lower()
+    return chain_type or CHAIN_TYPE_ETHEREUM
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +129,7 @@ def get_local_sign_callback(private_key: str):
     # None means local key — send_transaction() never routes it through the
     # sponsored backend broadcast.
     sign_callback.wallet_address = None
+    sign_callback.chain_type = CHAIN_TYPE_ETHEREUM
     return sign_callback
 
 
@@ -138,6 +154,79 @@ def get_local_sign_hash_callback(private_key: str):
         return "0x" + signed.signature.hex()
 
     return sign_hash
+
+
+# ---------------------------------------------------------------------------
+# Signing callbacks (local, Solana)
+# ---------------------------------------------------------------------------
+
+
+def solana_keypair_from_base58(private_key: str) -> Keypair:
+    return Keypair.from_base58_string(str(private_key).strip())
+
+
+def _coerce_solana_transaction(
+    transaction: Any,
+) -> VersionedTransaction | SoldersLegacyTransaction:
+    """Accept a solders transaction object, raw bytes, or a base64 string."""
+    if isinstance(transaction, (VersionedTransaction, SoldersLegacyTransaction)):
+        return transaction
+    if isinstance(transaction, str):
+        transaction = base64.b64decode(transaction)
+    if isinstance(transaction, (bytes, bytearray)):
+        raw = bytes(transaction)
+        try:
+            return VersionedTransaction.from_bytes(raw)
+        except Exception:
+            return SoldersLegacyTransaction.from_bytes(raw)
+    raise TypeError(
+        f"Unsupported Solana transaction type: {type(transaction).__name__}"
+    )
+
+
+def _sign_versioned_transaction(
+    tx: VersionedTransaction, keypair: Keypair
+) -> VersionedTransaction:
+    message = tx.message
+    signature = keypair.sign_message(to_bytes_versioned(message))
+    num_required = message.header.num_required_signatures
+    signer_keys = list(message.account_keys)[:num_required]
+    try:
+        signer_index = signer_keys.index(keypair.pubkey())
+    except ValueError as exc:
+        raise ValueError(
+            f"Wallet {keypair.pubkey()} is not a required signer for this transaction"
+        ) from exc
+    existing = list(tx.signatures)
+    signatures = [
+        existing[i] if i < len(existing) else Signature.default()
+        for i in range(num_required)
+    ]
+    signatures[signer_index] = signature
+    return VersionedTransaction.populate(message, signatures)
+
+
+def get_local_solana_sign_callback(private_key: str):
+    """Sign callback for a local Solana wallet (base58 private key).
+
+    The callback accepts a solders ``VersionedTransaction`` / legacy
+    ``Transaction`` (or its serialized bytes / base64 string), signs the
+    transaction message with the wallet keypair, and returns the fully
+    serialized signed transaction bytes.
+    """
+    keypair = solana_keypair_from_base58(private_key)
+
+    async def sign_callback(transaction: Any) -> bytes:
+        tx = _coerce_solana_transaction(transaction)
+        if isinstance(tx, VersionedTransaction):
+            return bytes(_sign_versioned_transaction(tx, keypair))
+        tx.partial_sign([keypair], tx.message.recent_blockhash)
+        return bytes(tx)
+
+    # Sign-callback contract: `wallet_address` is None for local keys.
+    sign_callback.wallet_address = None
+    sign_callback.chain_type = CHAIN_TYPE_SOLANA
+    return sign_callback
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +275,7 @@ def get_remote_sign_callback(wallet_address: str):
     # Sign-callback contract: send_transaction() reads this to route
     # gas-sponsored chains through the backend broadcast.
     sign_callback.wallet_address = wallet_address
+    sign_callback.chain_type = CHAIN_TYPE_ETHEREUM
     return sign_callback
 
 
@@ -234,6 +324,16 @@ def _require_wallet_address(wallet: dict[str, Any], label: str) -> str:
 
 def _build_signing_callback(wallet: dict[str, Any], label: str):
     address = _require_wallet_address(wallet, label)
+    chain_type = wallet_chain_type(wallet)
+    if chain_type == CHAIN_TYPE_SOLANA:
+        if wallet.get("type") == "remote":
+            raise ValueError(
+                f"Wallet '{label}': remote Solana wallet signing is not supported yet."
+            )
+        pk = get_private_key(wallet)
+        if not pk:
+            raise ValueError(f"Wallet '{label}' is missing private_key.")
+        return get_local_solana_sign_callback(pk), address
     if wallet.get("type") == "remote":
         return get_remote_sign_callback(address), address
     else:
@@ -245,6 +345,10 @@ def _build_signing_callback(wallet: dict[str, Any], label: str):
 
 def _build_typed_data_callback(wallet: dict[str, Any], label: str):
     address = _require_wallet_address(wallet, label)
+    if wallet_chain_type(wallet) == CHAIN_TYPE_SOLANA:
+        raise ValueError(
+            f"Wallet '{label}' is a Solana wallet; EIP-712 typed-data signing is EVM-only."
+        )
     if wallet.get("type") == "remote":
         return get_remote_sign_typed_data_callback(address), address
     pk = get_private_key(wallet)
@@ -255,6 +359,10 @@ def _build_typed_data_callback(wallet: dict[str, Any], label: str):
 
 def _build_sign_hash_callback(wallet: dict[str, Any], label: str):
     address = _require_wallet_address(wallet, label)
+    if wallet_chain_type(wallet) == CHAIN_TYPE_SOLANA:
+        raise ValueError(
+            f"Wallet '{label}' is a Solana wallet; raw hash signing is EVM-only."
+        )
     if wallet.get("type") == "remote":
         return get_remote_sign_hash_callback(address), address
     pk = get_private_key(wallet)

@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+import re
+
 from eth_utils import is_address
 
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
+
+# Base58 (no 0, O, I, l), 32-44 chars — the shared cross-repo Solana
+# address/mint validation regex.
+_SOLANA_ADDRESS_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
+
+
+def looks_like_solana_address(value: str | None) -> bool:
+    if value is None:
+        return False
+    return bool(_SOLANA_ADDRESS_RE.match(str(value).strip()))
 
 
 def looks_like_evm_address(value: str | None) -> bool:

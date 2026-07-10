@@ -6,9 +6,14 @@ from typing import Any, cast
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.base import NATIVE_COINGECKO_IDS, NATIVE_GAS_SYMBOLS
-from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID, CHAIN_ID_TO_CODE
+from wayfinder_paths.core.constants.chains import (
+    CHAIN_CODE_TO_ID,
+    CHAIN_ID_TO_CODE,
+    SVM_CHAIN_IDS,
+)
 from wayfinder_paths.core.utils.token_refs import (
     looks_like_evm_address,
+    looks_like_solana_address,
     parse_token_id_to_chain_and_address,
 )
 from wayfinder_paths.core.utils.tokens import get_token_decimals, is_native_token
@@ -147,6 +152,17 @@ def _select_chain_and_address(
     return chain_id, token_address_out
 
 
+def _is_solana_mint_query(query: str, chain_id: int | None) -> bool:
+    """True when ``query`` is a base58 mint address and the chain hint is SVM."""
+    if chain_id is None:
+        return False
+    try:
+        chain_id_i = int(chain_id)
+    except (TypeError, ValueError):
+        return False
+    return chain_id_i in SVM_CHAIN_IDS and looks_like_solana_address(query)
+
+
 class TokenResolver:
     _token_details_cache: dict[str, dict[str, Any]] = {}
     _gas_token_cache: dict[str, dict[str, Any]] = {}
@@ -208,6 +224,13 @@ class TokenResolver:
             return int(parsed_chain_id), addr
 
         if looks_like_evm_address(q_raw):
+            chain_id_i = cls._validate_chain_id_hint(chain_id, query=q_raw)
+            addr = _normalize_token_address(q_raw)
+            if not addr:
+                raise ValueError(f"Cannot resolve token: {query}")
+            return chain_id_i, addr
+
+        if _is_solana_mint_query(q_raw, chain_id):
             chain_id_i = cls._validate_chain_id_hint(chain_id, query=q_raw)
             addr = _normalize_token_address(q_raw)
             if not addr:
@@ -277,6 +300,23 @@ class TokenResolver:
             if not addr:
                 raise ValueError(f"Cannot resolve token: {query}")
             decimals = await get_token_decimals(addr, int(chain_id_i))
+            return {
+                "token_id": q_raw,
+                "symbol": q_raw,
+                "decimals": int(decimals),
+                "chain_id": int(chain_id_i),
+                "address": addr,
+                "metadata": {"source": "address"},
+            }
+
+        if _is_solana_mint_query(q_raw, chain_id):
+            chain_id_i = cls._validate_chain_id_hint(chain_id, query=q_raw)
+            addr = _normalize_token_address(q_raw)
+            if not addr:
+                raise ValueError(f"Cannot resolve token: {query}")
+            from wayfinder_paths.core.utils import svm as svm_utils
+
+            decimals = await svm_utils.get_spl_mint_decimals(q_raw, chain_id_i)
             return {
                 "token_id": q_raw,
                 "symbol": q_raw,
