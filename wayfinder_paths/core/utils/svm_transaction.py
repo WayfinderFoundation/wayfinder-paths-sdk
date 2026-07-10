@@ -1,22 +1,48 @@
-"""Solana (SVM) transaction broadcast and confirmation.
+"""Solana (SVM) transaction fee handling, broadcast, and confirmation.
 
 Built on the ``AsyncClient`` lifecycle in ``svm.py``. Kept separate from the
 balance/ATA read helpers so the send/confirm surface — the fund-moving part —
-stays isolated.
+stays isolated. ``send_solana_versioned_transaction`` mirrors the EVM
+``send_transaction`` flow: sponsored backend broadcast for remote wallets
+when enabled, otherwise compute-budget surgery + sign callback + local
+broadcast + confirmation.
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import math
+import time
+from collections.abc import Callable, Sequence
 from typing import Any
 
+import httpx
+from loguru import logger
 from solana.rpc.models import TxOpts
+from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
+from solders.instruction import CompiledInstruction
+from solders.message import MessageHeader, MessageV0
+from solders.pubkey import Pubkey
 from solders.signature import Signature
+from solders.transaction import VersionedTransaction
 from solders.transaction_status import TransactionConfirmationStatus
 
+from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
+from wayfinder_paths.core.config import get_solana_priority_fee_rpc
 from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
 from wayfinder_paths.core.utils.svm import solana_client_from_chain_id
+from wayfinder_paths.core.utils.transaction import (
+    SponsorshipUnavailableError,
+    TransactionRevertedError,
+    sponsorship_enabled,
+)
+
+COMPUTE_BUDGET_PROGRAM_ID = Pubkey.from_string(
+    "ComputeBudget111111111111111111111111111111"
+)
+# Protocol-level hard cap on compute units per transaction.
+MAX_COMPUTE_UNIT_LIMIT = 1_400_000
 
 
 async def send_solana_transaction(
@@ -91,3 +117,287 @@ async def confirm_solana_signature(
                     f"Timed out after {timeout_s}s waiting for Solana signature {signature}"
                 )
             await asyncio.sleep(1)
+
+
+# ---------------------------------------------------------------------------
+# Priority fees
+# ---------------------------------------------------------------------------
+
+
+async def _quicknode_priority_fee(
+    rpc_url: str, percentile: int, floor: int, ceiling: int
+) -> int:
+    """Priority fee from QuikNode's ``qn_estimatePriorityFees`` percentiles."""
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "qn_estimatePriorityFees",
+        "params": {"last_n_blocks": 100},
+    }
+    async with httpx.AsyncClient(timeout=10) as http:
+        resp = await http.post(rpc_url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+    fee = int(data["result"]["per_compute_unit"]["percentiles"][str(percentile)])
+    return max(floor, min(ceiling, fee))
+
+
+async def get_recent_priority_fee(
+    writable_accounts: Sequence[str | Pubkey] | None = None,
+    chain_id: int = CHAIN_ID_SOLANA,
+    percentile: int = 85,
+    floor: int = 1_000,
+    ceiling: int = 3_000_000,
+) -> int:
+    """Recent priority fee in micro-lamports per compute unit.
+
+    Uses ``getRecentPrioritizationFees`` and takes the given percentile of
+    the NONZERO samples, clamped to ``[floor, ceiling]``. Zero-fee samples
+    dominate the response on quiet slots and would peg the estimate to zero,
+    so they are dropped; when every sample is zero the floor is returned.
+
+    When ``solana_priority_fee_rpc`` is configured (a QuikNode endpoint),
+    its ``qn_estimatePriorityFees`` percentiles are preferred; any failure
+    falls back to the generic path above.
+    """
+    override_rpc = get_solana_priority_fee_rpc()
+    if override_rpc:
+        try:
+            return await _quicknode_priority_fee(
+                override_rpc, percentile, floor, ceiling
+            )
+        except Exception as exc:
+            logger.warning(
+                f"qn_estimatePriorityFees via {override_rpc} failed ({exc}); "
+                "falling back to getRecentPrioritizationFees"
+            )
+
+    addresses = [
+        Pubkey.from_string(a) if isinstance(a, str) else a
+        for a in writable_accounts or []
+    ] or None
+    async with solana_client_from_chain_id(chain_id) as client:
+        resp = await client.get_recent_prioritization_fees(addresses)
+    fees = sorted(f.prioritization_fee for f in resp.value if f.prioritization_fee > 0)
+    if not fees:
+        return floor
+    # Nearest-rank percentile over the nonzero samples.
+    fee = fees[max(0, math.ceil(percentile / 100 * len(fees)) - 1)]
+    return max(floor, min(ceiling, fee))
+
+
+# ---------------------------------------------------------------------------
+# Compute budget
+# ---------------------------------------------------------------------------
+
+
+def _coerce_versioned_transaction(
+    transaction: VersionedTransaction | str | bytes,
+) -> VersionedTransaction:
+    """Accept a solders ``VersionedTransaction``, raw bytes, or base64 string."""
+    if isinstance(transaction, VersionedTransaction):
+        return transaction
+    if isinstance(transaction, str):
+        transaction = base64.b64decode(transaction)
+    if isinstance(transaction, (bytes, bytearray)):
+        return VersionedTransaction.from_bytes(bytes(transaction))
+    raise TypeError(
+        f"Unsupported Solana transaction type: {type(transaction).__name__}"
+    )
+
+
+def _shifted(index: int, inserted_at: int) -> int:
+    return index + 1 if index >= inserted_at else index
+
+
+async def apply_compute_budget(
+    transaction: VersionedTransaction | str,
+    chain_id: int = CHAIN_ID_SOLANA,
+    cu_limit_multiplier: float = 1.2,
+    priority_fee_micro_lamports: int | None = None,
+) -> VersionedTransaction:
+    """Set an exact compute-unit limit and priority fee on a v0 transaction.
+
+    Ported from the legacy transaction service: simulate the transaction to
+    measure units consumed, then rebuild the message with fresh
+    ``SetComputeUnitLimit``/``SetComputeUnitPrice`` instructions, dropping any
+    ComputeBudget instructions the builder (e.g. Jupiter) already attached —
+    duplicates are illegal.
+
+    When the ComputeBudget program is not among the static account keys it is
+    appended at the END of the static keys (the readonly-unsigned region), so
+    no static index moves; only compiled account indices pointing into the
+    address-table-lookup region (>= the insertion position) shift up by one.
+    Address table lookups, the blockhash, and signature placeholders are all
+    preserved.
+    """
+    tx = _coerce_versioned_transaction(transaction)
+    message = tx.message
+    if not isinstance(message, MessageV0):
+        raise TypeError(
+            "apply_compute_budget requires a v0 transaction message, "
+            f"got {type(message).__name__}"
+        )
+
+    account_keys = list(message.account_keys)
+    num_readonly_unsigned = message.header.num_readonly_unsigned_accounts
+    cb_index = next(
+        (i for i, key in enumerate(account_keys) if key == COMPUTE_BUDGET_PROGRAM_ID),
+        None,
+    )
+
+    if cb_index is None:
+        account_keys.append(COMPUTE_BUDGET_PROGRAM_ID)
+        cb_index = len(account_keys) - 1
+        num_readonly_unsigned += 1
+        instructions = [
+            CompiledInstruction(
+                program_id_index=_shifted(ix.program_id_index, cb_index),
+                data=ix.data,
+                accounts=bytes(_shifted(a, cb_index) for a in ix.accounts),
+            )
+            for ix in message.instructions
+        ]
+    else:
+        instructions = [
+            ix for ix in message.instructions if ix.program_id_index != cb_index
+        ]
+
+    async with solana_client_from_chain_id(chain_id) as client:
+        sim = await client.simulate_transaction(tx, sig_verify=False)
+    if sim.value.err is not None:
+        raise RuntimeError(
+            f"Solana transaction simulation failed: {sim.value.err}; "
+            f"logs: {sim.value.logs}"
+        )
+    units_consumed = sim.value.units_consumed
+    if not units_consumed:
+        raise RuntimeError("Solana transaction simulation returned no compute units")
+
+    cu_limit = min(int(units_consumed * cu_limit_multiplier), MAX_COMPUTE_UNIT_LIMIT)
+    if priority_fee_micro_lamports is None:
+        priority_fee_micro_lamports = await get_recent_priority_fee(chain_id=chain_id)
+
+    budget_instructions = [
+        CompiledInstruction(program_id_index=cb_index, data=ix.data, accounts=b"")
+        for ix in (
+            set_compute_unit_price(priority_fee_micro_lamports),
+            set_compute_unit_limit(cu_limit),
+        )
+    ]
+
+    new_message = MessageV0(
+        header=MessageHeader(
+            num_required_signatures=message.header.num_required_signatures,
+            num_readonly_signed_accounts=message.header.num_readonly_signed_accounts,
+            num_readonly_unsigned_accounts=num_readonly_unsigned,
+        ),
+        account_keys=account_keys,
+        recent_blockhash=message.recent_blockhash,
+        instructions=budget_instructions + instructions,
+        address_table_lookups=list(message.address_table_lookups),
+    )
+    return VersionedTransaction.populate(new_message, list(tx.signatures))
+
+
+# ---------------------------------------------------------------------------
+# Send flow (mirrors transaction.py::send_transaction)
+# ---------------------------------------------------------------------------
+
+
+async def _send_sponsored_solana_transaction(
+    wallet_address: str, transaction: VersionedTransaction, chain_id: int
+) -> str:
+    """Submit via the backend's sponsored broadcast and return the signature.
+
+    Mirrors the EVM ``send_sponsored_transaction``: a 4xx means the
+    broadcaster refused the submission and nothing reached the chain, so it
+    is safe to fall back to a local broadcast. 5xx/timeouts are ambiguous —
+    the transaction may have been accepted — and stay fatal. The signature
+    can lag the submit, so poll until it lands.
+    """
+    envelope = {
+        "chainId": int(chain_id),
+        "chainType": "solana",
+        "serializedTransaction": base64.b64encode(bytes(transaction)).decode(),
+    }
+    try:
+        result = await WALLET_CLIENT.send_privy_transaction_sponsored(
+            wallet_address, envelope
+        )
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in (400, 402, 403, 429):
+            raise SponsorshipUnavailableError(
+                f"Sponsored send rejected with {exc.response.status_code}"
+            ) from exc
+        raise
+    txn_hash = result["hash"]
+    deadline = time.monotonic() + 120
+    while not txn_hash:
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"Sponsored transaction {result['transaction_id']} has no hash "
+                f"after 120s"
+            )
+        await asyncio.sleep(2)
+        status = await WALLET_CLIENT.get_privy_transaction_status(
+            wallet_address, result["transaction_id"]
+        )
+        # "failed" is pre-broadcast (no signature will ever land); an on-chain
+        # failure still yields a signature and is caught by confirmation.
+        if status["status"] == "failed":
+            raise SponsorshipUnavailableError(
+                f"Sponsored transaction {result['transaction_id']} failed before broadcast"
+            )
+        txn_hash = status["hash"]
+    return txn_hash
+
+
+async def send_solana_versioned_transaction(
+    transaction: VersionedTransaction | str,
+    sign_callback: Callable,
+    chain_id: int = CHAIN_ID_SOLANA,
+    wait_for_confirmation: bool = True,
+    cu_limit_multiplier: float = 1.2,
+) -> str:
+    """Sign and broadcast a v0 transaction; returns the base58 signature.
+
+    Remote wallets with sponsorship enabled route through the backend's
+    sponsored broadcast (the backend signs, broadcasts, and covers fees);
+    a refused submission falls back to the local path: compute-budget
+    surgery, sign via callback, broadcast, and (optionally) confirmation.
+    Every sign callback carries ``wallet_address`` (None for local keys) —
+    see the factories in ``core/utils/wallets.py``.
+    """
+    if sign_callback is None:
+        raise ValueError("sign_callback must be provided to send transaction")
+
+    tx = _coerce_versioned_transaction(transaction)
+    signature = None
+    if getattr(sign_callback, "wallet_address", None) and await sponsorship_enabled():
+        try:
+            signature = await _send_sponsored_solana_transaction(
+                sign_callback.wallet_address, tx, chain_id
+            )
+        except SponsorshipUnavailableError as exc:
+            logger.warning(
+                f"Sponsored send unavailable, falling back to local broadcast: {exc}"
+            )
+    if signature is None:
+        budgeted = await apply_compute_budget(
+            tx, chain_id=chain_id, cu_limit_multiplier=cu_limit_multiplier
+        )
+        signed_bytes = await sign_callback(budgeted)
+        signature = await send_solana_transaction(
+            base64.b64encode(bytes(signed_bytes)).decode(), chain_id=chain_id
+        )
+    logger.info(f"Solana transaction broadcasted: {signature}")
+    if wait_for_confirmation:
+        status = await confirm_solana_signature(signature, chain_id=chain_id)
+        if not status["confirmed"]:
+            raise TransactionRevertedError(
+                signature,
+                status,
+                message=f"Solana transaction failed: {signature} err={status['err']}",
+            )
+    return signature
