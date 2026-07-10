@@ -279,6 +279,30 @@ def get_remote_sign_callback(wallet_address: str):
     return sign_callback
 
 
+def get_remote_solana_sign_callback(wallet_address: str):
+    """Sign callback for a remote (Privy-backed) Solana wallet.
+
+    Accepts the same inputs as the local Solana callback — a solders
+    ``VersionedTransaction`` / legacy ``Transaction``, raw bytes, or a base64
+    string — sends the base64-encoded unsigned transaction to the backend for
+    signing, and returns the fully serialized signed transaction bytes.
+    """
+
+    async def sign_callback(transaction: Any) -> bytes:
+        tx = _coerce_solana_transaction(transaction)
+        serialized_b64 = base64.b64encode(bytes(tx)).decode()
+        signed_b64 = await WALLET_CLIENT.sign_solana_transaction(
+            wallet_address, serialized_b64
+        )
+        return base64.b64decode(signed_b64)
+
+    # Sign-callback contract: send_solana_versioned_transaction() reads this
+    # to route remote wallets through the sponsored backend broadcast.
+    sign_callback.wallet_address = wallet_address
+    sign_callback.chain_type = CHAIN_TYPE_SOLANA
+    return sign_callback
+
+
 def _sanitize_typed_data(obj: Any) -> Any:
     """Recursively hex-encode bytes for JSON serialization of EIP-712 payloads."""
     if isinstance(obj, bytes):
@@ -327,9 +351,7 @@ def _build_signing_callback(wallet: dict[str, Any], label: str):
     chain_type = wallet_chain_type(wallet)
     if chain_type == CHAIN_TYPE_SOLANA:
         if wallet.get("type") == "remote":
-            raise ValueError(
-                f"Wallet '{label}': remote Solana wallet signing is not supported yet."
-            )
+            return get_remote_solana_sign_callback(address), address
         pk = get_private_key(wallet)
         if not pk:
             raise ValueError(f"Wallet '{label}' is missing private_key.")

@@ -17,6 +17,7 @@ from wayfinder_paths.core.utils.wallets import (
     create_remote_wallet,
     find_wallet_by_label,
     get_local_solana_sign_callback,
+    get_remote_solana_sign_callback,
     get_wallet_sign_hash_callback,
     get_wallet_sign_typed_data_callback,
     get_wallet_signing_callback,
@@ -155,6 +156,78 @@ async def test_solana_sign_callback_rejects_bad_input(solana_keypair):
 
 
 # ---------------------------------------------------------------------------
+# Remote solana sign callback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_remote_solana_sign_callback_signs_via_backend(solana_keypair):
+    address = str(solana_keypair.pubkey())
+    callback = get_remote_solana_sign_callback(address)
+    assert callback.wallet_address == address
+    assert callback.chain_type == "solana"
+
+    unsigned = _unsigned_v0_transaction(solana_keypair)
+    # Realistic backend response: the locally-signed transaction, base64'd.
+    signed_bytes = await get_local_solana_sign_callback(str(solana_keypair))(unsigned)
+    with patch.object(
+        WALLET_CLIENT,
+        "sign_solana_transaction",
+        new=AsyncMock(return_value=base64.b64encode(signed_bytes).decode()),
+    ) as mock_sign:
+        out = await callback(unsigned)
+
+    assert out == signed_bytes
+    mock_sign.assert_awaited_once_with(
+        address, base64.b64encode(bytes(unsigned)).decode()
+    )
+    signed = VersionedTransaction.from_bytes(out)
+    assert signed.signatures[0].verify(
+        solana_keypair.pubkey(), to_bytes_versioned(signed.message)
+    )
+
+
+@pytest.mark.asyncio
+async def test_remote_solana_sign_callback_accepts_bytes_and_base64(solana_keypair):
+    address = str(solana_keypair.pubkey())
+    callback = get_remote_solana_sign_callback(address)
+    unsigned = _unsigned_v0_transaction(solana_keypair)
+    expected_payload = base64.b64encode(bytes(unsigned)).decode()
+
+    with patch.object(
+        WALLET_CLIENT,
+        "sign_solana_transaction",
+        new=AsyncMock(return_value=base64.b64encode(b"signed").decode()),
+    ) as mock_sign:
+        assert await callback(bytes(unsigned)) == b"signed"
+        assert await callback(expected_payload) == b"signed"
+
+    for call in mock_sign.await_args_list:
+        assert call.args == (address, expected_payload)
+
+
+@pytest.mark.asyncio
+async def test_wallet_client_sign_solana_transaction_endpoint():
+    mock_request = AsyncMock(return_value=_Response({"signed_transaction": "c2lnbmVk"}))
+    with (
+        patch(
+            "wayfinder_paths.core.clients.WalletClient.get_api_base_url",
+            return_value="https://example.com/api/v1",
+        ),
+        patch.object(WALLET_CLIENT, "_authed_request", new=mock_request),
+    ):
+        out = await WALLET_CLIENT.sign_solana_transaction("SolAddr", "dW5zaWduZWQ=")
+
+    assert out == "c2lnbmVk"
+    args, kwargs = mock_request.await_args
+    assert args == (
+        "POST",
+        "https://example.com/api/v1/wallets/SolAddr/sign-solana-transaction/",
+    )
+    assert kwargs["json"] == {"transaction": {"serializedTransaction": "dW5zaWduZWQ="}}
+
+
+# ---------------------------------------------------------------------------
 # Wallet resolution → signing callback dispatch
 # ---------------------------------------------------------------------------
 
@@ -180,10 +253,12 @@ async def test_get_wallet_signing_callback_local_solana(solana_keypair):
 
 
 @pytest.mark.asyncio
-async def test_get_wallet_signing_callback_remote_solana_unsupported(solana_keypair):
+async def test_get_wallet_signing_callback_remote_solana(solana_keypair):
+    """Remote Solana wallets resolve to the backend signing callback."""
+    address = str(solana_keypair.pubkey())
     wallet = {
         "label": "sol-remote",
-        "address": str(solana_keypair.pubkey()),
+        "address": address,
         "chain_type": "solana",
         "type": "remote",
     }
@@ -191,8 +266,13 @@ async def test_get_wallet_signing_callback_remote_solana_unsupported(solana_keyp
         "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
         new=AsyncMock(return_value=wallet),
     ):
-        with pytest.raises(ValueError, match="remote Solana wallet signing"):
-            await get_wallet_signing_callback("sol-remote")
+        callback, resolved = await get_wallet_signing_callback("sol-remote")
+
+    assert resolved == address
+    # Sign-callback contract: wallet_address routes sends through the
+    # sponsored backend broadcast; chain_type marks the signing scheme.
+    assert callback.wallet_address == address
+    assert callback.chain_type == "solana"
 
 
 @pytest.mark.asyncio
