@@ -1,24 +1,19 @@
 """Solana (SVM) chain utilities.
 
-Mirrors the EVM helpers in ``core/utils/web3.py`` for chain id 900:
-RPC resolution goes through the same config override / Wayfinder RPC proxy
-fallback, and balances / transaction send / confirmation are exposed as
-small async helpers built on solana-py's ``AsyncClient``.
+Mirrors the EVM helpers in ``core/utils/web3.py`` for chain id 900: RPC
+resolution goes through the same config override / Wayfinder RPC proxy
+fallback, and native/SPL balances are exposed as small async helpers built
+on solana-py's ``AsyncClient``. Transaction broadcast/confirmation live in
+``svm_transaction.py``.
 """
 
 from __future__ import annotations
 
-import asyncio
-import base64
 from contextlib import asynccontextmanager
-from typing import Any
 
 from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Commitment, Confirmed
-from solana.rpc.models import TxOpts
 from solders.pubkey import Pubkey
-from solders.signature import Signature
-from solders.transaction_status import TransactionConfirmationStatus
 from spl.token._layouts import MINT_LAYOUT
 from spl.token.constants import (
     ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -28,21 +23,12 @@ from spl.token.constants import (
 
 from wayfinder_paths.core.config import get_api_key
 from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA, SVM_CHAIN_IDS
+from wayfinder_paths.core.utils.tokens import is_native_token
 from wayfinder_paths.core.utils.web3 import _get_rpcs_for_chain_id, _is_wayfinder_rpc
 
-# Native SOL sentinel (system program id format, per the shared cross-repo
-# contract) plus the EVM-style aliases the token resolver produces.
 SOL_NATIVE_SENTINEL = "11111111111111111111111111111111"
 WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112"
 SOL_DECIMALS = 9
-
-_NATIVE_SOL_ALIASES = {
-    "",
-    "native",
-    SOL_NATIVE_SENTINEL.lower(),
-    "0x0000000000000000000000000000000000000000",
-    "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-}
 
 
 def is_solana_chain(chain_id: int | str | None) -> bool:
@@ -50,12 +36,6 @@ def is_solana_chain(chain_id: int | str | None) -> bool:
         return int(chain_id) in SVM_CHAIN_IDS  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return False
-
-
-def is_native_sol(token_address: str | None) -> bool:
-    if token_address is None:
-        return True
-    return str(token_address).strip().lower() in _NATIVE_SOL_ALIASES
 
 
 def _require_solana_chain(chain_id: int) -> int:
@@ -164,14 +144,14 @@ async def get_spl_token_balance(
 async def get_solana_token_balance(
     wallet_address: str, token_address: str, chain_id: int = CHAIN_ID_SOLANA
 ) -> int:
-    if is_native_sol(token_address):
+    if is_native_token(token_address):
         return await get_sol_balance(wallet_address, chain_id)
     return await get_spl_token_balance(wallet_address, token_address, chain_id)
 
 
 async def get_spl_mint_decimals(mint: str, chain_id: int = CHAIN_ID_SOLANA) -> int:
     """Decimals for an SPL mint (native SOL sentinel returns 9)."""
-    if is_native_sol(mint):
+    if is_native_token(mint):
         return SOL_DECIMALS
     async with solana_client_from_chain_id(chain_id) as client:
         info = await _get_mint_account(client, Pubkey.from_string(mint))
@@ -179,77 +159,3 @@ async def get_spl_mint_decimals(mint: str, chain_id: int = CHAIN_ID_SOLANA) -> i
         if len(data) < MINT_LAYOUT.sizeof():
             raise ValueError(f"Account {mint} does not look like an SPL mint")
         return int(MINT_LAYOUT.parse(data).decimals)
-
-
-async def send_solana_transaction(
-    serialized_b64: str,
-    chain_id: int = CHAIN_ID_SOLANA,
-    skip_preflight: bool = False,
-) -> str:
-    """Broadcast a base64-encoded, fully signed transaction.
-
-    Accepts both legacy and versioned transactions (the wire encoding is
-    opaque to the RPC). Returns the base58 transaction signature — used
-    wherever EVM code passes ``tx_hash``.
-
-    Preflight simulation is ON by default so simulation-detectable failures
-    (insufficient funds, rent violations, program errors) surface as
-    immediate RPC errors instead of confirmation timeouts. Pass
-    ``skip_preflight=True`` to opt out (e.g. latency-sensitive sends where
-    the transaction was already simulated).
-    """
-    raw = base64.b64decode(serialized_b64)
-    async with solana_client_from_chain_id(chain_id) as client:
-        resp = await client.send_raw_transaction(
-            raw, opts=TxOpts(skip_preflight=skip_preflight)
-        )
-        return str(resp.value)
-
-
-async def confirm_solana_signature(
-    signature: str,
-    chain_id: int = CHAIN_ID_SOLANA,
-    timeout_s: float = 60,
-) -> dict[str, Any]:
-    """Poll signature status until confirmed/finalized, errored, or timeout.
-
-    Returns ``{"signature", "slot", "err", "confirmation_status", "confirmed"}``.
-    ``confirmed`` is True only when the transaction landed without error.
-    Raises ``TimeoutError`` if no confirmation within ``timeout_s``.
-    """
-    sig = Signature.from_string(signature)
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout_s
-    async with solana_client_from_chain_id(chain_id) as client:
-        while True:
-            # search_transaction_history covers signatures older than the
-            # node's recent-status cache (~150 blocks); without it, confirming
-            # anything but a just-sent transaction times out.
-            resp = await client.get_signature_statuses(
-                [sig], search_transaction_history=True
-            )
-            status = resp.value[0]
-            if status is not None:
-                err = status.err
-                confirmation_status = status.confirmation_status
-                done = err is not None or confirmation_status in (
-                    TransactionConfirmationStatus.Confirmed,
-                    TransactionConfirmationStatus.Finalized,
-                )
-                if done:
-                    return {
-                        "signature": signature,
-                        "slot": int(status.slot),
-                        "err": str(err) if err is not None else None,
-                        "confirmation_status": (
-                            str(confirmation_status).rsplit(".", 1)[-1].lower()
-                            if confirmation_status is not None
-                            else None
-                        ),
-                        "confirmed": err is None,
-                    }
-            if loop.time() >= deadline:
-                raise TimeoutError(
-                    f"Timed out after {timeout_s}s waiting for Solana signature {signature}"
-                )
-            await asyncio.sleep(1)

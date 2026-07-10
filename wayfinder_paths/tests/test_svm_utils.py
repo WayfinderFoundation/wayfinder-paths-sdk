@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import base64
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -21,16 +21,17 @@ from wayfinder_paths.core.constants.chains import (
 from wayfinder_paths.core.utils.svm import (
     SOL_NATIVE_SENTINEL,
     WRAPPED_SOL_MINT,
-    confirm_solana_signature,
     get_associated_token_address,
     get_sol_balance,
     get_solana_token_balance,
     get_spl_mint_decimals,
     get_spl_token_balance,
-    is_native_sol,
     is_solana_chain,
-    send_solana_transaction,
     solana_client_from_chain_id,
+)
+from wayfinder_paths.core.utils.svm_transaction import (
+    confirm_solana_signature,
+    send_solana_transaction,
 )
 from wayfinder_paths.core.utils.token_refs import looks_like_solana_address
 
@@ -41,12 +42,20 @@ EXPECTED_USDC_ATA = "F8biqkCRK2tHR6EncrcXDGgVTkGRrtojqyW39w41Qspn"
 EXPECTED_USDC_ATA_2022 = "8UQrn3SEPVqkggQ7Y7QEpGxutSyYQgJVFsgSxzwge858"
 
 
+@contextmanager
 def _patch_client(fake_client):
     @asynccontextmanager
     async def fake_ctx(chain_id=CHAIN_ID_SOLANA, commitment=None):
         yield fake_client
 
-    return patch("wayfinder_paths.core.utils.svm.solana_client_from_chain_id", fake_ctx)
+    with (
+        patch("wayfinder_paths.core.utils.svm.solana_client_from_chain_id", fake_ctx),
+        patch(
+            "wayfinder_paths.core.utils.svm_transaction.solana_client_from_chain_id",
+            fake_ctx,
+        ),
+    ):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -61,17 +70,6 @@ def test_is_solana_chain():
     assert not is_solana_chain(CHAIN_ID_BASE)
     assert not is_solana_chain(None)
     assert not is_solana_chain("solana")
-
-
-def test_is_native_sol():
-    assert is_native_sol(SOL_NATIVE_SENTINEL)
-    assert is_native_sol("native")
-    assert is_native_sol("")
-    assert is_native_sol(None)
-    assert is_native_sol("0x0000000000000000000000000000000000000000")
-    # Wrapped SOL is an SPL mint, not native.
-    assert not is_native_sol(WRAPPED_SOL_MINT)
-    assert not is_native_sol(USDC_MINT)
 
 
 def test_looks_like_solana_address():
@@ -340,7 +338,9 @@ async def test_confirm_solana_signature_success():
     fake.get_signature_statuses = AsyncMock(side_effect=[pending, confirmed])
     with (
         _patch_client(fake),
-        patch("wayfinder_paths.core.utils.svm.asyncio.sleep", new=AsyncMock()),
+        patch(
+            "wayfinder_paths.core.utils.svm_transaction.asyncio.sleep", new=AsyncMock()
+        ),
     ):
         out = await confirm_solana_signature(sig, timeout_s=30)
 
