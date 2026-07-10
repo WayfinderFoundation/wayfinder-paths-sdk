@@ -5,7 +5,6 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import httpx
-from eth_account import Account
 from loguru import logger
 from web3 import AsyncWeb3
 
@@ -63,15 +62,8 @@ def _raise_revert_error(
     transaction: dict[str, Any],
     cause: Exception | None = None,
 ) -> None:
-    try:
-        gas_used = int(receipt.get("gasUsed") or 0)
-    except (TypeError, ValueError):
-        gas_used = 0
-
-    try:
-        gas_limit = int(transaction.get("gas") or 0)
-    except (TypeError, ValueError):
-        gas_limit = 0
+    gas_used = int(receipt.get("gasUsed") or 0)
+    gas_limit = int(transaction.get("gas") or 0)
 
     oogs = bool(gas_used and gas_limit and gas_used >= gas_limit)
     suffix = (
@@ -157,21 +149,17 @@ async def gas_price_transaction(transaction: dict):
             )
 
             base_fee = max(base_fees)
-            priority_fee = max(priority_fees)
-
-            transaction["maxFeePerGas"] = int(
-                base_fee * MAX_BASE_FEE_GROWTH_MULTIPLIER
-                + max(
-                    priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER,
-                    MIN_PRIORITY_FEE_BY_CHAIN_ID.get(chain_id, 0),
-                )
-            )
-            transaction["maxPriorityFeePerGas"] = int(
+            priority_fee = int(
                 max(
-                    priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER,
+                    max(priority_fees) * SUGGESTED_PRIORITY_FEE_MULTIPLIER,
                     MIN_PRIORITY_FEE_BY_CHAIN_ID.get(chain_id, 0),
                 )
             )
+
+            transaction["maxFeePerGas"] = (
+                int(base_fee * MAX_BASE_FEE_GROWTH_MULTIPLIER) + priority_fee
+            )
+            transaction["maxPriorityFeePerGas"] = priority_fee
 
     return transaction
 
@@ -406,27 +394,6 @@ async def send_transaction(
         if status is not None and int(status) == 0:
             _raise_revert_error(txn_hash, receipt, transaction)
     return txn_hash
-
-
-async def sign_and_send_transaction(
-    transaction: dict,
-    private_key: str,
-    wait_for_receipt: bool = True,
-    confirmations: int = 0,
-) -> str:
-    account = Account.from_key(private_key)
-
-    async def sign_callback(tx: dict) -> bytes:
-        signed = account.sign_transaction(tx)
-        return signed.raw_transaction
-
-    sign_callback.wallet_address = None
-    return await send_transaction(
-        transaction,
-        sign_callback,
-        wait_for_receipt=wait_for_receipt,
-        confirmations=confirmations,
-    )
 
 
 async def encode_call(
