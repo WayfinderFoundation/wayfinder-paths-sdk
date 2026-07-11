@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import sys
+import time
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Mapping
@@ -66,6 +68,10 @@ class ExecutionBacktestResult:
     trace: dict[str, Any]
     validation: dict[str, Any]
     visualization: dict[str, Any]
+    # Run telemetry: wall time, bars/sec, per-bar tick timing, the compute
+    # window used, and a self-diagnostic `hint` when the run looks O(N²).
+    # Additive (default {}) so older callers/readers are unaffected.
+    profile: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -173,6 +179,143 @@ class BacktestBroker:
         )
 
 
+# Default per-bar compute window. Bounding the view the simulator hands each
+# tick keeps the DEFAULT backtest O(N·k) instead of O(N²): a strategy that
+# recomputes indicators over the whole handed frame goes quadratic when that
+# frame grows with the replay index (the classic "simple backtest pegs the
+# CPU" trap). 512 bars covers the lookback of essentially every standard
+# indicator (SMA200, ATR/ADX, long EMAs) with margin. Strategies tune it via
+# `warmup_bars`; genuine since-genesis strategies opt out with
+# `full_history: true`.
+DEFAULT_WARMUP_BARS = 512
+
+
+def _resolve_compute_window(
+    params_data: Mapping[str, Any], strategy: Any
+) -> tuple[int | None, str, bool]:
+    """Size of the trailing view handed to `decide()` each bar.
+
+    Resolution (first hit wins):
+      1. ``params['warmup_bars']``  — explicit, canonical name.
+      2. ``params['lookback_bars']`` — back-compat with the old windowing lever.
+      3. ``strategy.warmup_bars``   — strategy-declared attribute.
+      4. ``DEFAULT_WARMUP_BARS``.
+    ``params['full_history']`` truthy opts back into full-history views.
+
+    Returns ``(window_size | None, source, full_history)``; ``None`` window ⇒
+    full history (``through(index)``).
+    """
+    if params_data.get("full_history"):
+        return None, "full_history", True
+    for key in ("warmup_bars", "lookback_bars"):
+        raw = params_data.get(key)
+        if raw:
+            return max(int(raw), 1), key, False
+    attr = getattr(strategy, "warmup_bars", None)
+    if attr:
+        return max(int(attr), 1), "strategy.warmup_bars", False
+    return DEFAULT_WARMUP_BARS, "default", False
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    rank = (pct / 100.0) * (len(ordered) - 1)
+    lo = int(rank)
+    hi = min(lo + 1, len(ordered) - 1)
+    return ordered[lo] + (ordered[hi] - ordered[lo]) * (rank - lo)
+
+
+def _tick_time_growing(tick_ms: list[float]) -> bool:
+    """True when per-bar time trends up with the replay index — the fingerprint
+    of an O(history) recompute inside `decide()`. Compares the mean of the
+    first decile against the last; needs enough bars to be meaningful."""
+    if len(tick_ms) < 40:
+        return False
+    decile = max(1, len(tick_ms) // 10)
+    first = sum(tick_ms[:decile]) / decile
+    last = sum(tick_ms[-decile:]) / decile
+    return last > 5.0 and last > first * 3.0
+
+
+def _fmt_duration(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    if seconds < 90:
+        return f"{seconds:.0f}s"
+    return f"{seconds / 60:.1f}m"
+
+
+def _emit_progress(
+    done: int, total: int, wall_start: float, tick_ms: list[float]
+) -> None:
+    elapsed = time.perf_counter() - wall_start
+    rate = done / elapsed if elapsed > 0 else 0.0
+    eta = (total - done) / rate if rate > 0 else 0.0
+    p95 = _percentile(tick_ms, 95)
+    grow = " ↑growing" if _tick_time_growing(tick_ms) else ""
+    print(
+        f"[backtest] bar {done}/{total} · {rate:.0f} bars/s · "
+        f"ETA {_fmt_duration(eta)} · tick p95 {p95:.0f}ms{grow}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _build_profile(
+    *,
+    tick_ms: list[float],
+    wall_start: float,
+    total_bars: int,
+    window_size: int | None,
+    window_source: str,
+    full_history: bool,
+) -> dict[str, Any]:
+    wall_s = time.perf_counter() - wall_start
+    timed = len(tick_ms)
+    mean_ms = sum(tick_ms) / timed if timed else 0.0
+    growing = _tick_time_growing(tick_ms)
+    profile: dict[str, Any] = {
+        "wall_seconds": round(wall_s, 3),
+        "bars_total": total_bars,
+        "bars_timed": timed,
+        "bars_per_second": round(timed / wall_s, 1) if wall_s > 0 else None,
+        "tick_ms": {
+            "mean": round(mean_ms, 2),
+            "p50": round(_percentile(tick_ms, 50), 2),
+            "p95": round(_percentile(tick_ms, 95), 2),
+            "max": round(max(tick_ms), 2) if tick_ms else 0.0,
+            "last": round(tick_ms[-1], 2) if tick_ms else 0.0,
+        },
+        "compute_window": "full_history" if full_history else window_size,
+        "compute_window_source": window_source,
+        "tick_time_growing": growing,
+    }
+    # Most "why is this backtest so slow" cases are a heavy full recompute in
+    # decide() run once per bar × many bars on a small/throttled box — O(N)
+    # with a big constant, not necessarily O(N²). The projection (measured per
+    # bar × total bars) is machine-relative, so the hint fires exactly when the
+    # run is actually slow on THIS box, and stays quiet when it's fine.
+    if growing:
+        profile["hint"] = (
+            "Per-bar time is growing with the replay index — decide() is "
+            "recomputing over an ever-larger frame (heading toward O(N²)). "
+            "Compute on a bounded trailing window: set `warmup_bars` to your "
+            "longest indicator lookback + a small buffer, or slice "
+            "`ctx.view.window(...)` instead of the full `symbol_frame()`."
+        )
+    elif mean_ms >= 15.0:
+        profile["hint"] = (
+            f"Heavy per-bar work: ~{mean_ms:.0f} ms/bar × {total_bars} bars ≈ "
+            f"{_fmt_duration(mean_ms * total_bars / 1000.0)} for the full run. "
+            "decide() recomputes its indicators from scratch every bar — "
+            "compute them incrementally or on a bounded window (`warmup_bars` / "
+            "`ctx.view.window`), and iterate on a shorter backtest "
+            "(`--quick`) before running the full history."
+        )
+    return profile
+
+
 def simulate_execution(
     script_entrypoint: str | Path | Callable[..., Any],
     dataset: PreparedExecutionDataset,
@@ -206,12 +349,17 @@ def simulate_execution(
     )
     # None unless params["enable_liquidation"] is truthy — default-off parity.
     liquidation = LiquidationConfig.from_params(params_data)
-    # When declared, each tick sees the same bounded trailing window the live
-    # driver fetches (lookback_bars) instead of full history — this is a
-    # live-parity choice for path-dependent indicators AND turns per-tick
-    # strategy recompute from O(n) into O(k). Unset keeps full history.
-    raw_lookback = params_data.get("lookback_bars")
-    lookback_bars = int(raw_lookback) if raw_lookback else None
+    # Each tick sees a bounded trailing window (the same the live driver
+    # fetches) so per-tick strategy recompute stays O(k), not O(index). This
+    # is now the DEFAULT — full history is opt-in via `full_history: true`.
+    window_size, window_source, full_history = _resolve_compute_window(
+        params_data, strategy
+    )
+
+    total_bars = len(dataset.bars.timestamps)
+    progress_every = max(1, total_bars // 20)
+    tick_ms: list[float] = []
+    wall_start = time.perf_counter()
 
     async def _run_simulation() -> None:
         for index, timestamp in enumerate(dataset.bars.timestamps):
@@ -230,12 +378,13 @@ def simulate_execution(
                         "volume": bar.volume,
                     }
                 )
+            tick_start = time.perf_counter()
             tick = await run_tick(
                 strategy,
                 view=(
-                    dataset.bars.window(index, lookback_bars)
-                    if lookback_bars
-                    else dataset.bars.through(index)
+                    dataset.bars.through(index)
+                    if full_history
+                    else dataset.bars.window(index, window_size)
                 ),
                 brokers={"*": broker},
                 state=state,
@@ -247,6 +396,9 @@ def simulate_execution(
                 trace=trace,
                 liquidation=liquidation,
             )
+            tick_ms.append((time.perf_counter() - tick_start) * 1000.0)
+            if total_bars and (index + 1) % progress_every == 0:
+                _emit_progress(index + 1, total_bars, wall_start, tick_ms)
             if tick.skipped:
                 continue
             trades.extend(tick.trade_rows)
@@ -312,6 +464,14 @@ def simulate_execution(
         "params": params_data,
         "validation": validation,
     }
+    profile = _build_profile(
+        tick_ms=tick_ms,
+        wall_start=wall_start,
+        total_bars=total_bars,
+        window_size=window_size,
+        window_source=window_source,
+        full_history=full_history,
+    )
     return ExecutionBacktestResult(
         run_id=uuid.uuid4().hex[:12],
         params=params_data,
@@ -322,6 +482,7 @@ def simulate_execution(
         trace=trace.to_dict(),
         validation=validation,
         visualization=visualization,
+        profile=profile,
     )
 
 

@@ -21,7 +21,10 @@ from wayfinder_paths.jobs.execution.experiments import (
     promote_params,
     run_experiment,
 )
-from wayfinder_paths.jobs.execution.job import backtest_execution_job
+from wayfinder_paths.jobs.execution.job import (
+    backtest_execution_job,
+    summarize_backtest_payload,
+)
 from wayfinder_paths.jobs.execution.preflight import build_live_dataset, run_preflight
 from wayfinder_paths.jobs.execution.reconcile import reconcile_job
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
@@ -215,8 +218,16 @@ def validate_cmd(job_id: str, strict: bool) -> None:
     default="serial",
     show_default=True,
 )
+@click.option(
+    "--full",
+    is_flag=True,
+    default=False,
+    help="Print the full payload (equity curve, trades, positions, trace, "
+    "visualization) instead of the compact stats summary. The full result is "
+    "always written to results/backtest/ regardless.",
+)
 def backtest_cmd(
-    job_id: str, grid_path: str | None, workers: int, parallel: str
+    job_id: str, grid_path: str | None, workers: int, parallel: str, full: bool
 ) -> None:
     store = JobStore()
     result = backtest_execution_job(
@@ -226,7 +237,11 @@ def backtest_cmd(
         parallel=parallel,
         store=store,
     )
-    _echo_json({"ok": True, "result": result})
+    # Default to the ~2 KB summary — the full payload is ~8 MB and lives on disk
+    # (browse it with `job backtest-view`). `--full` restores the old dump.
+    _echo_json(
+        {"ok": True, "result": result if full else summarize_backtest_payload(result)}
+    )
 
 
 @job_cli.command(
