@@ -151,6 +151,102 @@ def load_backtest_view(
     }
 
 
+def diagnose_backtest(
+    job_id: str,
+    *,
+    store: JobStore | None = None,
+    proposal_id: str | None = None,
+    top_trades: int = 5,
+) -> dict[str, Any]:
+    """Framework-computed breakdown of the latest backtest — win rate, PnL, and
+    counts bucketed by exit reason, close hour (UTC), and side, plus the best/
+    worst trades. The headline is taken VERBATIM from the run's `stats`, and the
+    buckets come from the same `realized_pnl_delta` the engine recorded on each
+    closing fill — so this never disagrees with `job backtest`. Read this to find
+    a strategy's strong/weak spots instead of recomputing PnL by hand (ad-hoc
+    recomputation is what drifts from the framework's numbers)."""
+    store = store or JobStore()
+    prefix = (
+        f"applications/{proposal_id}/candidate/results/backtest"
+        if proposal_id
+        else "results/backtest"
+    )
+    latest = store.read_json(job_id, f"{prefix}/latest.json", default={}) or {}
+    if not latest:
+        return {"available": False}
+    stats = latest.get("stats") or {}
+    trades = latest.get("trades") or []
+    # Completed trades = closing fills carrying realized PnL (same source as stats).
+    closes = [t for t in trades if abs(float(t.get("realized_pnl_delta") or 0.0)) > 0]
+
+    def _reason(trade: dict[str, Any]) -> str:
+        raw = trade.get("raw") or {}
+        meta = raw.get("metadata") or raw
+        return str(
+            meta.get("exit_reason") or ("close" if trade.get("reduce_only") else "open")
+        )
+
+    def _hour(trade: dict[str, Any]) -> int:
+        ts = _parse_ts(trade.get("timestamp"))
+        return ts.hour if ts else -1
+
+    def _bucket(key_fn: Any) -> dict[Any, dict[str, Any]]:
+        agg: dict[Any, dict[str, float]] = {}
+        for trade in closes:
+            key = key_fn(trade)
+            row = agg.setdefault(key, {"trades": 0.0, "pnl": 0.0, "wins": 0.0})
+            pnl = float(trade.get("realized_pnl_delta") or 0.0)
+            row["trades"] += 1
+            row["pnl"] += pnl
+            row["wins"] += 1 if pnl > 0 else 0
+        return {
+            key: {
+                "trades": int(row["trades"]),
+                "pnl": round(row["pnl"], 4),
+                "win_rate": round(row["wins"] / row["trades"], 3)
+                if row["trades"]
+                else 0.0,
+                "avg_pnl": round(row["pnl"] / row["trades"], 4)
+                if row["trades"]
+                else 0.0,
+            }
+            for key, row in agg.items()
+        }
+
+    def _trade_view(trade: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "timestamp": trade.get("timestamp"),
+            "side": trade.get("side"),
+            "pnl": round(float(trade.get("realized_pnl_delta") or 0.0), 4),
+            "reason": _reason(trade),
+        }
+
+    ranked = sorted(closes, key=lambda t: float(t.get("realized_pnl_delta") or 0.0))
+    headline_keys = (
+        "net_return",
+        "trade_count",
+        "win_rate",
+        "profit_factor",
+        "avg_trade_pnl",
+        "sharpe",
+        "sortino",
+        "max_drawdown_pct",
+        "best_trade_pnl",
+        "worst_trade_pnl",
+    )
+    return {
+        "available": True,
+        "run_id": latest.get("run_id"),
+        "headline": {k: stats[k] for k in headline_keys if k in stats},
+        "closed_trades_analyzed": len(closes),
+        "by_exit_reason": _bucket(_reason),
+        "by_close_hour_utc": dict(sorted(_bucket(_hour).items())),
+        "by_side": _bucket(lambda t: t.get("side") or "?"),
+        "worst_trades": [_trade_view(t) for t in ranked[:top_trades]],
+        "best_trades": [_trade_view(t) for t in reversed(ranked[-top_trades:])],
+    }
+
+
 def _in_range(
     current: datetime | None, start: datetime | None, end: datetime | None
 ) -> bool:

@@ -5,6 +5,7 @@ strategy loop."""
 from __future__ import annotations
 
 import datetime
+import json
 import types
 
 from wayfinder_paths.jobs.execution import ExecutionContext, OrderIntent
@@ -147,9 +148,97 @@ def test_summarize_backtest_payload_drops_heavy_arrays() -> None:
     for heavy in ("equity_curve", "trades", "positions", "trace", "visualization"):
         assert heavy not in summary["result"]
     # And the summary is dramatically smaller.
-    import json
-
     assert (
         len(json.dumps(summary, default=str))
         < len(json.dumps(payload, default=str)) // 10
     )
+
+
+def test_effective_workers_never_oversubscribes(monkeypatch) -> None:
+    from wayfinder_paths.jobs.execution import simulator as sim
+
+    monkeypatch.setattr(sim, "available_cpu_count", lambda: 2)
+    assert sim._effective_workers(8, "process") == 2  # clamped to cores
+    assert sim._effective_workers(1, "process") == 1
+    assert sim._effective_workers(0, "process") == 2  # 0 => all cores
+    assert sim._effective_workers(8, "serial") == 1  # serial is always 1
+
+
+def test_quick_bars_truncates_to_last_n() -> None:
+    """--quick backtests only the last N bars — cheap for parameter sweeps."""
+    full = simulate_execution(_build_strategy, _dataset(300), SPEC, {})
+    ds = _dataset(300)
+    # Emulate the job-level `quick_bars` truncation (last 60 bars).
+    from wayfinder_paths.jobs.execution.simulator import PreparedExecutionDataset
+
+    ts = ds.bars.timestamps
+    quick = PreparedExecutionDataset(ds.bars.window(len(ts) - 1, 60), {})
+    quick_res = simulate_execution(_build_strategy, quick, SPEC, {})
+    assert quick_res.profile["bars_total"] == 60
+    assert full.profile["bars_total"] == 300
+
+
+def test_diagnose_backtest_agrees_with_stats(tmp_path) -> None:
+    """The diagnose headline is the run's own stats verbatim, and the buckets
+    come from the same realized PnL — so it never disagrees with the backtest
+    (unlike hand-rolled recomputation)."""
+    from wayfinder_paths.jobs.backtest_artifacts import diagnose_backtest
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = JobStore(repo_root=tmp_path)
+    job_id = "diag-job"
+    bt_dir = store.job_dir(job_id) / "results" / "backtest"
+    bt_dir.mkdir(parents=True, exist_ok=True)
+    latest = {
+        "run_id": "r1",
+        "stats": {
+            "net_return": 0.05,
+            "trade_count": 3,
+            "win_rate": 0.667,
+            "sharpe": 1.2,
+        },
+        "trades": [
+            {
+                "timestamp": "2026-01-01T08:00:00+00:00",
+                "side": "buy",
+                "reduce_only": True,
+                "realized_pnl_delta": 2.0,
+                "raw": {"metadata": {"exit_reason": "take_profit"}},
+            },
+            {
+                "timestamp": "2026-01-01T09:00:00+00:00",
+                "side": "buy",
+                "reduce_only": True,
+                "realized_pnl_delta": 1.0,
+                "raw": {"metadata": {"exit_reason": "take_profit"}},
+            },
+            {
+                "timestamp": "2026-01-01T10:00:00+00:00",
+                "side": "buy",
+                "reduce_only": True,
+                "realized_pnl_delta": -1.5,
+                "raw": {"metadata": {"exit_reason": "stop_loss"}},
+            },
+            # entry fill (no realized pnl) — excluded from trade buckets
+            {
+                "timestamp": "2026-01-01T07:00:00+00:00",
+                "side": "sell",
+                "realized_pnl_delta": 0.0,
+            },
+        ],
+    }
+    (bt_dir / "latest.json").write_text(json.dumps(latest))
+
+    diag = diagnose_backtest(job_id, store=store)
+    assert diag["available"] is True
+    # Headline is the stats verbatim — no recomputation, no drift.
+    assert diag["headline"]["net_return"] == 0.05
+    assert diag["headline"]["win_rate"] == 0.667
+    # Only the 3 closing fills are analyzed.
+    assert diag["closed_trades_analyzed"] == 3
+    tp = diag["by_exit_reason"]["take_profit"]
+    assert tp["trades"] == 2 and tp["pnl"] == 3.0 and tp["win_rate"] == 1.0
+    sl = diag["by_exit_reason"]["stop_loss"]
+    assert sl["trades"] == 1 and sl["pnl"] == -1.5 and sl["win_rate"] == 0.0
+    assert diag["worst_trades"][0]["pnl"] == -1.5
+    assert diag["best_trades"][0]["pnl"] == 2.0
