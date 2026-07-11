@@ -47,6 +47,7 @@ from wayfinder_paths.jobs.models import (
     normalize_agent_mode,
 )
 from wayfinder_paths.jobs.proposals import propose_change
+from wayfinder_paths.jobs.research import pair_check_job, signal_check_job
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
@@ -547,6 +548,64 @@ def fetch_dataset_cmd(
         exchange=exchange,
         market_type=market_type,
         quote=quote,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="pair-check",
+    help="Pre-trade pair admission gate: cointegration both directions, "
+    "rolling stability, half-life, cost hurdle, funding carry — PASS/REJECT "
+    "with numbers. Run BEFORE building any pair/spread strategy.",
+)
+@click.argument("job_id")
+@click.option("--symbols", default=None, help="Comma-separated pair, e.g. ETH,SOL.")
+@click.option("--days", type=int, default=720, show_default=True)
+@click.option("--bar", "bar_interval", default=None, help="Bar interval override.")
+@click.option("--exchange", default="binance", show_default=True)
+@click.option("--fee-bps", "fee_bps", type=float, default=None)
+@click.option("--slippage-bps", "slippage_bps", type=float, default=None)
+def pair_check_cmd(
+    job_id: str,
+    symbols: str | None,
+    days: int,
+    bar_interval: str | None,
+    exchange: str,
+    fee_bps: float | None,
+    slippage_bps: float | None,
+) -> None:
+    store = JobStore()
+    result = pair_check_job(
+        job_id,
+        symbols=[s.strip() for s in symbols.split(",")] if symbols else None,
+        days=days,
+        bar_interval=bar_interval,
+        exchange=exchange,
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
+        store=store,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="signal-check",
+    help="Event-study a strategy's precomputed signal column against forward "
+    "returns (vs the series' own drift) — run BEFORE building a strategy "
+    "around the signal.",
+)
+@click.argument("job_id")
+@click.option("--column", required=True, help="Precomputed signal column name.")
+@click.option(
+    "--horizons", default=None, help="Comma-separated forward horizons in bars."
+)
+def signal_check_cmd(job_id: str, column: str, horizons: str | None) -> None:
+    store = JobStore()
+    result = signal_check_job(
+        job_id,
+        column=column,
+        horizons=[int(h) for h in horizons.split(",")] if horizons else None,
+        store=store,
     )
     _echo_json({"ok": True, "result": result})
 

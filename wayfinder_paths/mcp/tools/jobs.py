@@ -38,6 +38,8 @@ JobAction = Literal[
     "validate_job",
     "fetch_dataset",
     "fetch_funding",
+    "pair_check",
+    "signal_check",
     "backtest_job",
     "backtest_diagnose",
     "experiments",
@@ -145,6 +147,10 @@ async def core_jobs(
     grid_id: str | None = None,
     run_id: str | None = None,
     via_proposal: bool = False,
+    symbols: list[str] | None = None,
+    column: str | None = None,
+    horizons: list[int] | None = None,
+    bar_interval: str | None = None,
 ) -> dict[str, Any]:
     """Manage high-level Wayfinder jobs.
 
@@ -161,10 +167,14 @@ async def core_jobs(
       - `approve_proposal` / `reject_proposal` after the worker creates proposals.
       - `claim_application` / `validate_application` / `complete_application`
         from an apply worker.
-      - Strategy-development loop for execution-spec jobs: `fetch_dataset` (real
-        candles into the job; `dataset_source="ccxt"` + `exchange="binance"` for
-        long history), `fetch_funding` (historical funding rates into the job's
-        feature store — first-class carry data, as-of merged onto the bars as a
+      - Strategy-development loop for execution-spec jobs: `signal_check`
+        (event-study a precomputed entry column BEFORE building — no edge at
+        the signal level means no strategy will fix it) and `pair_check` (the
+        statistical admission gate for any pair/spread idea — run it FIRST; a
+        REJECT saves days of tuning), `fetch_dataset` (real candles into the
+        job; `dataset_source="ccxt"` + `exchange="binance"` for long history),
+        `fetch_funding` (historical funding rates into the job's feature
+        store — first-class carry data, as-of merged onto the bars as a
         `funding` column), `backtest_job` (use `quick_bars` while iterating),
         `backtest_diagnose` (ranked next steps), `experiments` (param grid via
         `grid` inline or `grid_path`; pass `wf_test_bars`/`wf_folds` for
@@ -257,6 +267,29 @@ async def core_jobs(
         return await _run_job_op(
             "fetch_funding",
             {"job_id": job_id, "days": days, "exchange": exchange, "quote": quote},
+        )
+
+    if action == "pair_check":
+        # Admission gate for any two-legged idea: run BEFORE building a pair/
+        # spread strategy. days defaults to 14 in this signature for dataset
+        # fetches; pair statistics need years, so widen unless caller set it.
+        return await _run_job_op(
+            "pair_check",
+            {
+                "job_id": job_id,
+                "symbols": symbols,
+                "days": days if days != 14 else 720,
+                "bar_interval": bar_interval,
+                "exchange": exchange,
+            },
+        )
+
+    if action == "signal_check":
+        if not column:
+            return err("invalid_request", "signal_check requires column")
+        return await _run_job_op(
+            "signal_check",
+            {"job_id": job_id, "column": column, "horizons": horizons},
         )
 
     if action == "experiments":

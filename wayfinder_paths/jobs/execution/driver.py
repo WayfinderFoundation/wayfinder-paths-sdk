@@ -17,9 +17,9 @@ from wayfinder_paths.jobs.execution.engine import (
     run_tick,
 )
 from wayfinder_paths.jobs.execution.features import (
+    apply_precompute,
     feature_staleness,
     load_feature_rows,
-    apply_precompute,
     merge_features,
     parse_feature_specs,
 )
