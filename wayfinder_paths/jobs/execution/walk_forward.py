@@ -27,6 +27,12 @@ from wayfinder_paths.jobs.execution.simulator import (
     simulate_execution,
 )
 
+# Rolling train window = this many test windows. Bounds each fold's cost to a
+# fixed size regardless of dataset length, so walk-forward stays fast enough for
+# interactive validation. Anchored/expanding windows (opt-in) re-replay all prior
+# history every fold — ~4x slower on a full dataset.
+DEFAULT_WF_TRAIN_MULTIPLE = 4
+
 
 def run_walk_forward(
     script_entrypoint: str | Path | Callable[..., Any],
@@ -51,7 +57,10 @@ def run_walk_forward(
     if folds <= 0:
         raise ValueError("walk-forward requires folds > 0")
     if train_bars is None and not anchored:
-        raise ValueError("pass train_bars or anchored=True")
+        # Default to a bounded rolling window instead of erroring — keeps fold
+        # cost independent of dataset size (fast) and removes a footgun that made
+        # callers fall back to the slow anchored path.
+        train_bars = max(warmup_bars, DEFAULT_WF_TRAIN_MULTIPLE * test_bars)
 
     timestamps = dataset.bars.timestamps  # unique + sorted (multi-symbol safe)
     total = len(timestamps)

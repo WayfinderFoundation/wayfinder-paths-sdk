@@ -360,3 +360,37 @@ def test_recommendations_validate_path_points_to_walk_forward(tmp_path) -> None:
     assert "decay_ratio" in validate[0]["suggest"]
     # No blocking/high issue on a clean promising run.
     assert diag["recommendations"][0]["severity"] == "validate"
+
+
+def test_walk_forward_default_is_bounded_rolling_not_anchored() -> None:
+    """Walk-forward with only folds/test_bars must NOT raise and must use a
+    bounded ROLLING train window (constant size across folds) — the fast path.
+    Previously this raised, pushing callers to the ~4x-slower anchored/expanding
+    window that made OOS validation blow past the interactive time budget."""
+    from wayfinder_paths.jobs.execution.walk_forward import (
+        DEFAULT_WF_TRAIN_MULTIPLE,
+        run_walk_forward,
+    )
+
+    ds = _dataset(500)
+    rep = run_walk_forward(
+        _build_strategy, ds, SPEC, [{}], folds=3, test_bars=60, warmup_bars=60
+    )
+    ok = [f for f in rep["folds"] if f["status"] == "ok"]
+    assert len(ok) == 3
+    # Rolling: every fold trains on the same bounded window (4 x test_bars).
+    assert {f["train"]["bars"] for f in ok} == {DEFAULT_WF_TRAIN_MULTIPLE * 60}
+
+    # Anchored is opt-in and expands — later folds train on strictly more bars.
+    anchored = run_walk_forward(
+        _build_strategy,
+        ds,
+        SPEC,
+        [{}],
+        folds=3,
+        test_bars=60,
+        warmup_bars=60,
+        anchored=True,
+    )
+    a_sizes = [f["train"]["bars"] for f in anchored["folds"] if f["status"] == "ok"]
+    assert a_sizes[-1] > a_sizes[0]
