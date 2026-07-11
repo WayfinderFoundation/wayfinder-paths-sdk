@@ -37,6 +37,7 @@ JobAction = Literal[
     "review_now",
     "validate_job",
     "fetch_dataset",
+    "fetch_funding",
     "backtest_job",
     "backtest_diagnose",
     "experiments",
@@ -161,7 +162,10 @@ async def core_jobs(
       - `claim_application` / `validate_application` / `complete_application`
         from an apply worker.
       - Strategy-development loop for execution-spec jobs: `fetch_dataset` (real
-        candles into the job), `backtest_job` (use `quick_bars` while iterating),
+        candles into the job; `dataset_source="ccxt"` + `exchange="binance"` for
+        long history), `fetch_funding` (historical funding rates into the job's
+        feature store — first-class carry data, as-of merged onto the bars as a
+        `funding` column), `backtest_job` (use `quick_bars` while iterating),
         `backtest_diagnose` (ranked next steps), `experiments` (param grid via
         `grid` inline or `grid_path`; pass `wf_test_bars`/`wf_folds` for
         walk-forward out-of-sample validation), then `promote_params`
@@ -247,6 +251,12 @@ async def core_jobs(
                 "market_type": market_type,
                 "quote": quote,
             },
+        )
+
+    if action == "fetch_funding":
+        return await _run_job_op(
+            "fetch_funding",
+            {"job_id": job_id, "days": days, "exchange": exchange, "quote": quote},
         )
 
     if action == "experiments":

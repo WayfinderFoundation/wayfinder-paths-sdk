@@ -668,3 +668,84 @@ def test_precompute_row_mismatch_raises() -> None:
 
     with pytest.raises(ValueError, match="one per input bar"):
         apply_precompute(ns, _dataset(100).bars)
+
+
+class _FakeFundingExchange:
+    """Injectable ccxt fake: one funding page per market, then empty.
+    Timestamps anchor to the requested `since` (hour-quantized so a re-fetch
+    seconds later produces identical rows — exercising the dedupe path)."""
+
+    def __init__(self):
+        self.pages: dict = {}
+
+    async def load_markets(self):
+        return {
+            "ETH/USDT:USDT": {"active": True, "symbol": "ETH/USDT:USDT"},
+            "SOL/USDT:USDT": {"active": True, "symbol": "SOL/USDT:USDT"},
+        }
+
+    async def fetch_funding_rate_history(self, market, since=None, limit=500):
+        page = self.pages.get(market, 0)
+        self.pages[market] = page + 1
+        if page > 0:
+            return []
+        base = (int(since) // 3_600_000) * 3_600_000 + 3_600_000
+        return [
+            {"timestamp": base + i * 3_600_000, "fundingRate": 0.0001 * (i + 1)}
+            for i in range(3)
+        ]
+
+    async def close(self):
+        return None
+
+
+def test_fetch_funding_features_end_to_end(tmp_path) -> None:
+    """Funding rates are FIRST-CLASS: one call pulls history into the job's
+    feature store in the canonical row shape, dedupes on re-fetch, and
+    declares the feature in the execution spec so bars carry a `funding`
+    column in backtest and live. (The agent previously had to improvise this
+    with scratch scripts and hand-copied JSONL.)"""
+    import json as _json
+
+    from wayfinder_paths.jobs.execution.preflight import fetch_funding_features
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = JobStore(repo_root=tmp_path)
+    root = store.job_dir("pair-job")
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "job.yaml").write_text("id: pair-job\n")
+    (root / "execution_spec.json").write_text(
+        _json.dumps(
+            {
+                "market_kind": "perp",
+                "data_contract": {"bar_interval": "1h", "symbols": ["ETH", "SOL"]},
+            }
+        )
+    )
+
+    result = fetch_funding_features(
+        "pair-job", days=2, store=store, exchange_client=_FakeFundingExchange()
+    )
+    assert result["rows_fetched"] == 6  # 3 rows x 2 symbols
+    assert result["rows_appended"] == 6
+    assert result["per_symbol"] == {"ETH": 3, "SOL": 3}
+    assert result["feature_declared_now"] is True
+
+    lines = [
+        _json.loads(line)
+        for line in (root / "state" / "features.jsonl").read_text().splitlines()
+    ]
+    assert len(lines) == 6
+    row = lines[0]
+    assert row["name"] == "funding" and row["symbol"] == "ETH"
+    assert isinstance(row["value"], float) and "written_at" in row
+
+    spec = _json.loads((root / "execution_spec.json").read_text())
+    assert {"name": "funding"} in spec["data_contract"]["features"]
+
+    # Re-fetch: identical rows dedupe to zero appends; feature already declared.
+    again = fetch_funding_features(
+        "pair-job", days=2, store=store, exchange_client=_FakeFundingExchange()
+    )
+    assert again["rows_appended"] == 0
+    assert again["feature_declared_now"] is False
