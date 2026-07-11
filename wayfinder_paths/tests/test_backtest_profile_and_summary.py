@@ -394,3 +394,24 @@ def test_walk_forward_default_is_bounded_rolling_not_anchored() -> None:
     )
     a_sizes = [f["train"]["bars"] for f in anchored["folds"] if f["status"] == "ok"]
     assert a_sizes[-1] > a_sizes[0]
+
+
+def test_simulator_runs_from_async_only_via_thread() -> None:
+    """The simulator refuses to run inside a live event loop, so the async MCP
+    backtest tool MUST offload it to a thread. Guards that contract: inline
+    raises, `to_thread` works. If the guard or the MCP wrapper regresses, the
+    agent loses its only working backtest tool and falls back to fighting the
+    CLI / raw Python (the failure this fix removes)."""
+    import asyncio
+
+    import pytest
+
+    async def run():
+        with pytest.raises(RuntimeError, match="event loop"):
+            simulate_execution(_build_strategy, _dataset(120), SPEC, {})
+        return await asyncio.to_thread(
+            simulate_execution, _build_strategy, _dataset(120), SPEC, {}
+        )
+
+    res = asyncio.run(run())
+    assert "net_return" in res.stats
