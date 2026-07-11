@@ -11,10 +11,16 @@ from wayfinder_paths.jobs.application import (
 )
 from wayfinder_paths.jobs.backtest_artifacts import diagnose_backtest
 from wayfinder_paths.jobs.compiler import JobCompiler
+from wayfinder_paths.jobs.execution.experiments import (
+    list_experiments,
+    promote_params,
+    run_experiment,
+)
 from wayfinder_paths.jobs.execution.job import (
     backtest_execution_job,
     summarize_backtest_payload,
 )
+from wayfinder_paths.jobs.execution.preflight import build_live_dataset
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
 from wayfinder_paths.jobs.models import (
@@ -37,8 +43,11 @@ JobAction = Literal[
     "set_agent_mode",
     "review_now",
     "validate_job",
+    "fetch_dataset",
     "backtest_job",
     "backtest_diagnose",
+    "experiments",
+    "promote_params",
     "proposals",
     "propose",
     "approve_proposal",
@@ -88,11 +97,24 @@ async def core_jobs(
     memo: str | None = None,
     strict: bool = False,
     grid_path: str | None = None,
+    grid: dict[str, Any] | list[dict[str, Any]] | None = None,
     workers: int = 1,
     parallel: Literal["serial", "thread", "process"] = "serial",
     compile: bool = True,  # noqa: A002
     full: bool = False,
     quick_bars: int | None = None,
+    days: int = 14,
+    dataset_source: Literal["venues", "ccxt"] = "venues",
+    exchange: str = "binance",
+    market_type: Literal["swap", "spot"] = "swap",
+    quote: str = "USDT",
+    rank_by: str = "net_return",
+    wf_test_bars: int | None = None,
+    wf_train_bars: int | None = None,
+    wf_folds: int = 3,
+    grid_id: str | None = None,
+    run_id: str | None = None,
+    via_proposal: bool = False,
 ) -> dict[str, Any]:
     """Manage high-level Wayfinder jobs.
 
@@ -109,7 +131,12 @@ async def core_jobs(
       - `approve_proposal` / `reject_proposal` after the worker creates proposals.
       - `claim_application` / `validate_application` / `complete_application`
         from an apply worker.
-      - `validate_job` / `backtest_job` for execution-spec jobs.
+      - Strategy-development loop for execution-spec jobs: `fetch_dataset` (real
+        candles into the job), `backtest_job` (use `quick_bars` while iterating),
+        `backtest_diagnose` (ranked next steps), `experiments` (param grid via
+        `grid` inline or `grid_path`; pass `wf_test_bars`/`wf_folds` for
+        walk-forward out-of-sample validation), then `promote_params`
+        (`grid_id`/`run_id`) once it survives OOS.
     """
 
     store = JobStore()
@@ -179,6 +206,63 @@ async def core_jobs(
 
     if action == "validate_job":
         return ok(validate_execution_job(job_id, strict=strict, store=store))
+
+    if action == "fetch_dataset":
+        # Network + disk bound and fully sync — off the MCP loop it goes.
+        return ok(
+            await asyncio.to_thread(
+                build_live_dataset,
+                job_id,
+                days=days,
+                store=store,
+                source=dataset_source,
+                exchange=exchange,
+                market_type=market_type,
+                quote=quote,
+            )
+        )
+
+    if action == "experiments":
+        chosen_grid = grid if grid is not None else grid_path
+        if chosen_grid is None:
+            return ok(list_experiments(job_id, store=store))
+        walk_forward = None
+        if wf_test_bars is not None:
+            # No train_bars -> run_walk_forward's bounded rolling window (the
+            # fast default); anchored/expanding stays CLI-only opt-in.
+            walk_forward = {
+                "test_bars": wf_test_bars,
+                "train_bars": wf_train_bars,
+                "folds": wf_folds,
+                "anchored": False,
+            }
+        result = await asyncio.to_thread(
+            run_experiment,
+            job_id,
+            chosen_grid,
+            rank_by=rank_by,
+            workers=workers,
+            parallel=parallel,
+            walk_forward=walk_forward,
+            store=store,
+        )
+        backtest = result.get("backtest")
+        if isinstance(backtest, dict) and not full:
+            result["backtest"] = summarize_backtest_payload(backtest)
+        return ok(result)
+
+    if action == "promote_params":
+        return ok(
+            await asyncio.to_thread(
+                promote_params,
+                job_id,
+                grid_id=grid_id,
+                run_id=run_id,
+                params=execution_params,
+                via_proposal=via_proposal,
+                store=store,
+            )
+        )
 
     if action == "backtest_job":
         # Run the (sync, CPU-bound) simulator in a worker thread. It guards
