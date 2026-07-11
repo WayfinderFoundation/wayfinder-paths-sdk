@@ -476,3 +476,25 @@ def test_op_runner_summarizes_experiments_backtest(monkeypatch) -> None:
     backtest = result["backtest"]
     assert "equity_curve" not in backtest["result"]["ranked"][0]
     assert "note" in backtest
+
+
+def test_run_experiment_threads_quick_bars_and_parallel(monkeypatch) -> None:
+    """Experiments default to a CPU-clamped process pool and accept quick_bars
+    — a serial full-history sweep of a heavy strategy is what blew the
+    interactive budget live (8 combos x 4319 bars at ~30 bars/s ≈ 20 min)."""
+    import wayfinder_paths.jobs.execution.experiments as experiments_mod
+
+    captured: dict = {}
+
+    def fake_backtest(job_id, **kwargs):
+        captured.update(kwargs, job_id=job_id)
+        return {"type": "grid", "result": {"grid_id": "g", "ranked": []}}
+
+    monkeypatch.setattr(experiments_mod, "backtest_execution_job", fake_backtest)
+    monkeypatch.setattr(
+        experiments_mod, "record_experiment", lambda job_id, payload, store: {}
+    )
+    experiments_mod.run_experiment("j", {"a": [1, 2]}, quick_bars=2000)
+    assert captured["quick_bars"] == 2000
+    assert captured["workers"] == 0  # 0 = all cores, clamped downstream
+    assert captured["parallel"] == "process"
