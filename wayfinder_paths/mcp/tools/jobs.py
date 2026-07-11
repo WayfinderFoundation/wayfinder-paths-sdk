@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sys
 from typing import Any, Literal
 
 from wayfinder_paths.jobs.application import (
@@ -11,16 +13,7 @@ from wayfinder_paths.jobs.application import (
 )
 from wayfinder_paths.jobs.backtest_artifacts import diagnose_backtest
 from wayfinder_paths.jobs.compiler import JobCompiler
-from wayfinder_paths.jobs.execution.experiments import (
-    list_experiments,
-    promote_params,
-    run_experiment,
-)
-from wayfinder_paths.jobs.execution.job import (
-    backtest_execution_job,
-    summarize_backtest_payload,
-)
-from wayfinder_paths.jobs.execution.preflight import build_live_dataset
+from wayfinder_paths.jobs.execution.experiments import list_experiments
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
 from wayfinder_paths.jobs.models import (
@@ -63,6 +56,42 @@ JobAction = Literal[
     "delete",
     "sync",
 ]
+
+
+async def _run_job_op(op: str, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Run a heavy jobs operation in an isolated child process.
+
+    Backtests/experiments must NOT run inside this long-lived MCP server
+    process: GIL contention with the event loop slows the tick loop ~28x, and
+    the memory spike can get the whole server OOM-killed — which silently
+    drops every wayfinder tool for the session (opencode never reconnects).
+    A child process keeps the server responsive and turns a killed run into a
+    clean tool error. See op_runner for the protocol.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "wayfinder_paths.jobs.execution.op_runner",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate(
+        json.dumps({"op": op, "kwargs": kwargs}).encode()
+    )
+    if proc.returncode != 0:
+        lines = (stderr or b"").decode(errors="replace").strip().splitlines()
+        tail = " | ".join(lines[-3:]) if lines else None
+        if proc.returncode < 0:  # killed by signal — on this box, usually OOM
+            return err(
+                "job_op_killed",
+                f"{op} process was killed (signal {-proc.returncode}) — likely "
+                "out of memory; retry with fewer bars (quick_bars) or a smaller "
+                "grid",
+                tail,
+            )
+        return err("job_op_failed", f"{op} failed (exit {proc.returncode})", tail)
+    return ok(json.loads(stdout.decode()))
 
 
 @catch_errors
@@ -208,18 +237,16 @@ async def core_jobs(
         return ok(validate_execution_job(job_id, strict=strict, store=store))
 
     if action == "fetch_dataset":
-        # Network + disk bound and fully sync — off the MCP loop it goes.
-        return ok(
-            await asyncio.to_thread(
-                build_live_dataset,
-                job_id,
-                days=days,
-                store=store,
-                source=dataset_source,
-                exchange=exchange,
-                market_type=market_type,
-                quote=quote,
-            )
+        return await _run_job_op(
+            "fetch_dataset",
+            {
+                "job_id": job_id,
+                "days": days,
+                "source": dataset_source,
+                "exchange": exchange,
+                "market_type": market_type,
+                "quote": quote,
+            },
         )
 
     if action == "experiments":
@@ -236,54 +263,45 @@ async def core_jobs(
                 "folds": wf_folds,
                 "anchored": False,
             }
-        result = await asyncio.to_thread(
-            run_experiment,
-            job_id,
-            chosen_grid,
-            rank_by=rank_by,
-            workers=workers,
-            parallel=parallel,
-            walk_forward=walk_forward,
-            store=store,
+        return await _run_job_op(
+            "experiments",
+            {
+                "job_id": job_id,
+                "grid": chosen_grid,
+                "rank_by": rank_by,
+                "workers": workers,
+                "parallel": parallel,
+                "walk_forward": walk_forward,
+                "full": full,
+            },
         )
-        backtest = result.get("backtest")
-        if isinstance(backtest, dict) and not full:
-            result["backtest"] = summarize_backtest_payload(backtest)
-        return ok(result)
 
     if action == "promote_params":
-        return ok(
-            await asyncio.to_thread(
-                promote_params,
-                job_id,
-                grid_id=grid_id,
-                run_id=run_id,
-                params=execution_params,
-                via_proposal=via_proposal,
-                store=store,
-            )
+        return await _run_job_op(
+            "promote_params",
+            {
+                "job_id": job_id,
+                "grid_id": grid_id,
+                "run_id": run_id,
+                "params": execution_params,
+                "via_proposal": via_proposal,
+            },
         )
 
     if action == "backtest_job":
-        # Run the (sync, CPU-bound) simulator in a worker thread. It guards
-        # against running inside an event loop (simulator raises if
-        # asyncio.get_running_loop() succeeds), so calling it inline here — in
-        # this async tool — would fail; to_thread also keeps it from blocking
-        # the MCP loop. Without this the agent has no working backtest tool and
-        # falls back to fighting the CLI / raw Python.
-        payload = await asyncio.to_thread(
-            backtest_execution_job,
-            job_id,
-            grid_path=grid_path,
-            workers=workers,
-            parallel=parallel,
-            quick_bars=quick_bars,
-            store=store,
+        # The child summarizes unless full=True — the compact summary is ~2 KB
+        # vs ~8 MB of per-bar arrays (all persisted under results/backtest/).
+        return await _run_job_op(
+            "backtest_job",
+            {
+                "job_id": job_id,
+                "grid_path": grid_path,
+                "workers": workers,
+                "parallel": parallel,
+                "quick_bars": quick_bars,
+                "full": full,
+            },
         )
-        # Default to the compact summary (~2 KB) — the full payload is ~8 MB of
-        # per-bar arrays already persisted to results/backtest/. Pass full=True
-        # to return everything.
-        return ok(payload if full else summarize_backtest_payload(payload))
 
     if action == "backtest_diagnose":
         return ok(diagnose_backtest(job_id, proposal_id=proposal_id, store=store))

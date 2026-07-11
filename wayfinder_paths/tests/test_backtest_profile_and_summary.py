@@ -417,37 +417,36 @@ def test_simulator_runs_from_async_only_via_thread() -> None:
     assert "net_return" in res.stats
 
 
-def test_mcp_loop_actions_run_off_loop_and_summarize(monkeypatch) -> None:
-    """The full strategy-dev loop (fetch_dataset / experiments / promote_params)
-    is reachable via the async MCP tool: each sync step must execute OFF the
-    event loop (to_thread), and the experiments backtest payload comes back
-    summarized (heavy arrays stripped, in-sample note attached)."""
+def test_mcp_job_ops_run_in_isolated_subprocess() -> None:
+    """Heavy job ops (backtest/experiments/fetch/promote) run in a CHILD
+    process, not inside the MCP server: in-server runs contend with the event
+    loop for the GIL (~28x slowdown observed) and a memory spike OOM-kills the
+    whole server, silently dropping every wayfinder tool. This drives the real
+    subprocess pipe end-to-end (echo op) and asserts failures come back as
+    clean tool errors instead of a dead server."""
     import asyncio
 
     from wayfinder_paths.mcp.tools import jobs as mcp_jobs
 
-    def _off_loop_marker(name):
-        def stub(*args, **kwargs):
-            try:
-                asyncio.get_running_loop()
-            except RuntimeError:
-                return {"stub": name}
-            raise AssertionError(f"{name} ran ON the event loop")
+    async def drive():
+        echoed = await mcp_jobs._run_job_op("__echo__", {"a": 1, "b": [2, 3]})
+        failed = await mcp_jobs._run_job_op("__nope__", {})
+        return echoed, failed
 
-        return stub
+    echoed, failed = asyncio.run(drive())
+    assert echoed == {"ok": True, "result": {"a": 1, "b": [2, 3]}}
+    assert failed["ok"] is False
+    assert failed["error"]["code"] == "job_op_failed"
+    # The child's traceback tail is surfaced so real errors stay debuggable.
+    assert "unknown op" in str(failed["error"]["details"])
 
-    monkeypatch.setattr(
-        mcp_jobs, "build_live_dataset", _off_loop_marker("fetch_dataset")
-    )
-    monkeypatch.setattr(mcp_jobs, "promote_params", _off_loop_marker("promote"))
 
-    def fake_experiment(*args, **kwargs):
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            pass
-        else:
-            raise AssertionError("run_experiment ran ON the event loop")
+def test_op_runner_summarizes_experiments_backtest(monkeypatch) -> None:
+    """The child summarizes the experiments backtest payload (heavy arrays
+    stripped, in-sample note attached) so only ~2 KB crosses the pipe."""
+    from wayfinder_paths.jobs.execution import op_runner
+
+    def fake_experiment(job_id, grid, **kwargs):
         return {
             "experiment": {"id": "e1"},
             "backtest": {
@@ -468,22 +467,12 @@ def test_mcp_loop_actions_run_off_loop_and_summarize(monkeypatch) -> None:
             },
         }
 
-    monkeypatch.setattr(mcp_jobs, "run_experiment", fake_experiment)
+    import wayfinder_paths.jobs.execution.experiments as experiments_mod
 
-    async def drive():
-        fetched = await mcp_jobs.core_jobs(action="fetch_dataset", job_id="j")
-        promoted = await mcp_jobs.core_jobs(
-            action="promote_params", job_id="j", grid_id="g1"
-        )
-        exp = await mcp_jobs.core_jobs(
-            action="experiments", job_id="j", grid={"a": [1, 2]}
-        )
-        return fetched, promoted, exp
-
-    fetched, promoted, exp = asyncio.run(drive())
-    assert fetched == {"ok": True, "result": {"stub": "fetch_dataset"}}
-    assert promoted == {"ok": True, "result": {"stub": "promote"}}
-    backtest = exp["result"]["backtest"]
-    # Summarized: heavy per-run arrays stripped + in-sample note attached.
+    monkeypatch.setattr(experiments_mod, "run_experiment", fake_experiment)
+    result = op_runner._run(
+        "experiments", {"job_id": "j", "grid": {"a": [1, 2]}, "full": False}
+    )
+    backtest = result["backtest"]
     assert "equity_curve" not in backtest["result"]["ranked"][0]
     assert "note" in backtest
