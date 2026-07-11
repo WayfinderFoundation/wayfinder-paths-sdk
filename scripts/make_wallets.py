@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from eth_account import Account
+from solders.keypair import Keypair
 
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.core.config import (
@@ -22,6 +23,16 @@ from wayfinder_paths.core.utils.wallets import (
 
 def to_keystore_json(private_key_hex: str, password: str):
     return Account.encrypt(private_key_hex, password)
+
+
+def make_local_solana_wallet(label: str) -> dict:
+    keypair = Keypair()
+    return {
+        "address": str(keypair.pubkey()),
+        "private_key": str(keypair),  # base58-encoded 64-byte keypair
+        "chain_type": "solana",
+        "label": label,
+    }
 
 
 async def main():
@@ -82,7 +93,21 @@ async def main():
         default="session",
         help="Remote wallet type: session (default, 1h TTL), strategy (7d TTL), or policy (custom)",
     )
+    parser.add_argument(
+        "--chain-type",
+        choices=["ethereum", "solana"],
+        default="ethereum",
+        help="Wallet chain type: ethereum (default) or solana",
+    )
     args = parser.parse_args()
+
+    if args.chain_type == "solana":
+        if args.mnemonic is not None:
+            raise SystemExit(
+                "--mnemonic is EVM-only; local solana wallets use random keypairs"
+            )
+        if args.keystore_password:
+            raise SystemExit("--keystore-password is EVM-only (geth keystores)")
 
     # --default means "ensure main wallet exists" (and do nothing otherwise).
     if args.default:
@@ -168,7 +193,10 @@ async def main():
         for label in labels_to_create:
             policies = json.loads(args.policies)
             result = await create_remote_wallet(
-                label=label, wallet_type=args.wallet_type, policies=policies
+                label=label,
+                wallet_type=args.wallet_type,
+                chain_type=args.chain_type,
+                policies=policies,
             )
             print(
                 f"[remote] {result['wallet_address']}  (label: {result.get('label', label)})"
@@ -176,11 +204,14 @@ async def main():
         return
 
     for i, label in enumerate(labels_to_create):
-        w = make_local_wallet(
-            label=label,
-            existing_wallets=existing,
-            mnemonic=mnemonic_to_use,
-        )
+        if args.chain_type == "solana":
+            w = make_local_solana_wallet(label)
+        else:
+            w = make_local_wallet(
+                label=label,
+                existing_wallets=existing,
+                mnemonic=mnemonic_to_use,
+            )
         suffix = "(main)" if label.lower() == "main" else f"(label: {label})"
         print(f"[{i}] {w['address']}  {suffix}")
         try:

@@ -12,14 +12,26 @@ from solders.system_program import TransferParams, transfer
 from solders.transaction import Transaction as SoldersLegacyTransaction
 from solders.transaction import VersionedTransaction
 
+from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.utils.wallets import (
+    create_remote_wallet,
+    find_wallet_by_label,
     get_local_solana_sign_callback,
     get_wallet_sign_hash_callback,
     get_wallet_sign_typed_data_callback,
     get_wallet_signing_callback,
+    load_remote_wallets,
     solana_keypair_from_base58,
     wallet_chain_type,
 )
+
+
+class _Response:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
 
 
 @pytest.fixture
@@ -228,3 +240,130 @@ async def test_typed_data_and_hash_callbacks_reject_solana(solana_keypair):
             await get_wallet_sign_typed_data_callback("sol")
         with pytest.raises(ValueError, match="EVM-only"):
             await get_wallet_sign_hash_callback("sol")
+
+
+# ---------------------------------------------------------------------------
+# Remote wallet listing / creation (chain_type passthrough)
+# ---------------------------------------------------------------------------
+
+
+def _remote_listing_patches(raw: list[dict]):
+    return (
+        patch(
+            "wayfinder_paths.core.utils.wallets.get_api_key",
+            return_value="test-key",
+        ),
+        patch(
+            "wayfinder_paths.core.utils.wallets.is_opencode_instance",
+            return_value=True,
+        ),
+        patch(
+            "wayfinder_paths.core.utils.wallets.get_opencode_instance_id",
+            return_value="inst-1",
+        ),
+        patch.object(WALLET_CLIENT, "list_wallets", new=AsyncMock(return_value=raw)),
+    )
+
+
+@pytest.mark.asyncio
+async def test_load_remote_wallets_solana_shape(solana_keypair):
+    sol_address = str(solana_keypair.pubkey())
+    raw = [
+        {
+            "wallet_address": sol_address,
+            "label": "sol-remote",
+            "chain_type": "solana",
+            "wallet_type": "session",
+            "session_expires_at": "2026-07-10T00:00:00Z",
+            "session_expires_in": 3600,
+        },
+        {
+            "wallet_address": "0x000000000000000000000000000000000000dEaD",
+            "label": "evm-remote",
+        },
+    ]
+    p1, p2, p3, p4 = _remote_listing_patches(raw)
+    with p1, p2, p3, p4:
+        wallets = await load_remote_wallets()
+
+    assert len(wallets) == 2
+    sol = wallets[0]
+    assert sol == {
+        "address": sol_address,
+        "label": "sol-remote",
+        "type": "remote",
+        "chain_type": "solana",
+        "wallet_type": "session",
+        "session_expires_at": "2026-07-10T00:00:00Z",
+        "session_expires_in": 3600,
+    }
+    # Missing chain_type defaults to ethereum (legacy remote wallets).
+    assert wallets[1]["chain_type"] == "ethereum"
+
+
+@pytest.mark.asyncio
+async def test_find_wallet_by_label_solana_round_trip(solana_keypair):
+    sol_address = str(solana_keypair.pubkey())
+    raw = [
+        {
+            "wallet_address": sol_address,
+            "label": "sol-remote",
+            "chain_type": "solana",
+            "wallet_type": "session",
+        }
+    ]
+    p1, p2, p3, p4 = _remote_listing_patches(raw)
+    with (
+        p1,
+        p2,
+        p3,
+        p4,
+        patch(
+            "wayfinder_paths.core.utils.wallets._load_local_wallets",
+            return_value=[],
+        ),
+    ):
+        wallet = await find_wallet_by_label("sol-remote")
+
+    assert wallet is not None
+    assert wallet["address"] == sol_address
+    assert wallet["type"] == "remote"
+    assert wallet_chain_type(wallet) == "solana"
+
+
+@pytest.mark.asyncio
+async def test_create_remote_wallet_sends_solana_chain_type(solana_keypair):
+    sol_address = str(solana_keypair.pubkey())
+    mock_request = AsyncMock(
+        return_value=_Response(
+            {
+                "wallet_address": sol_address,
+                "label": "sol-remote",
+                "chain_type": "solana",
+            }
+        )
+    )
+    with (
+        patch(
+            "wayfinder_paths.core.clients.WalletClient.get_api_base_url",
+            return_value="https://example.com/api/v1",
+        ),
+        patch.object(WALLET_CLIENT, "_authed_request", new=mock_request),
+        patch(
+            "wayfinder_paths.core.utils.wallets.is_opencode_instance",
+            return_value=False,
+        ),
+    ):
+        result = await create_remote_wallet(
+            label="sol-remote", wallet_type="session", chain_type="solana"
+        )
+
+    assert result["wallet_address"] == sol_address
+    mock_request.assert_awaited_once()
+    args, kwargs = mock_request.await_args
+    assert args == ("POST", "https://example.com/api/v1/wallets/")
+    body = kwargs["json"]
+    assert body["chain_type"] == "solana"
+    assert body["wallet_type"] == "session"
+    assert body["label"] == "sol-remote"
+    assert body["policies"]  # session policy auto-built when none provided
