@@ -99,6 +99,35 @@ def build_strategy(params: dict | None = None):
 
 Put `metadata={"exit_reason": "..."}` on close intents — `backtest-diagnose` buckets PnL by it.
 
+## Make it fast: `precompute` (one vectorized pass, not per-bar pandas)
+
+Per-bar pandas inside `decide()` costs ~5ms of fixed overhead per rolling/ewm/concat call — a 15-op `decide()` runs at ~30 bars/s and turns every grid into a crawl. Move ALL indicator math into the optional `precompute` hook: one vectorized pass, columns merged onto the bars, `decide()` just reads them.
+
+```python
+def precompute(frames: dict) -> dict:
+    """frames: per-symbol raw bars (full history in backtest, bounded window
+    live). Return per-symbol frames of derived columns, row-aligned with the
+    input. CAUSAL transforms only (rolling / shift / ewm) — never anything
+    that reads future rows."""
+    close = frames["IMX"]["close"].astype(float)
+    feats = frames["IMX"][[]].copy()
+    feats["z"] = (close - close.rolling(20).mean()) / close.rolling(20).std()
+    return {"IMX": feats}
+
+def decide(ctx: ExecutionContext) -> list[OrderIntent]:
+    frame = ctx.view.symbol_frame("IMX")     # includes the "z" column
+    z = float(frame["z"].iloc[-1])
+    ...
+
+def build_strategy(params: dict | None = None):
+    import types
+    ns = types.SimpleNamespace()
+    ns.decide = decide; ns.precompute = precompute; ns.warmup_bars = 60
+    return ns
+```
+
+Cross-symbol features (pair z-scores, spreads) read several input frames and attach to the traded symbol's rows. Exogenous series (e.g. funding rates) come in as feature columns instead: declare under `execution_spec.data_contract.features`, append rows to `state/features.jsonl` (`{timestamp, name, value, symbol}`) — the engine as-of merges them onto the bars in backtest AND live, and `precompute` can consume them.
+
 ## Rules (these are the mistakes to avoid)
 
 1. **Keep `decide()` cheap.** Compute indicators on the handed frame only (it's bounded to `warmup_bars`). Never re-slice the full history or `copy()` a growing frame every bar. If a backtest is slow, the `profile.hint` tells you why — set/lower `warmup_bars`.
