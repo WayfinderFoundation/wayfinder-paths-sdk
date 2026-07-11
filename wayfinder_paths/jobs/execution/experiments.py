@@ -253,17 +253,25 @@ def run_experiment(
     grid: Mapping[str, Any] | list[Mapping[str, Any]] | str | Path,
     *,
     rank_by: str = "net_return",
-    workers: int = 1,
-    parallel: str = "serial",
+    workers: int = 0,
+    parallel: str = "process",
     walk_forward: Mapping[str, Any] | None = None,
     optimizer: str = "grid",
     optuna_options: Mapping[str, Any] | None = None,
+    quick_bars: int | None = None,
     store: JobStore | None = None,
 ) -> dict[str, Any]:
     """Grid/optuna backtest + experiment record in one step (CLI convenience).
 
     `grid` doubles as the optuna search space when optimizer="optuna" — the
     two file formats are self-distinguishing (dict-of-lists vs typed dims).
+
+    Defaults to a process pool across all (cgroup-clamped) cores — grid cells
+    are independent and a serial sweep of a heavy strategy over full history
+    is what blows the interactive time budget (observed live: 8 combos x 4319
+    bars at ~30 bars/s ~= 20 minutes serial). `quick_bars` bounds the dataset
+    to the last N bars for the whole experiment (grid AND walk-forward) for
+    iteration-speed sweeps; leave it unset for the final validation.
     """
     store = store or JobStore()
     match grid:
@@ -285,6 +293,7 @@ def run_experiment(
         walk_forward=walk_forward,
         optimizer=optimizer,
         optuna_options=optuna_options,
+        quick_bars=quick_bars,
         store=store,
     )
     row = record_experiment(job_id, payload, store=store)

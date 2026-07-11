@@ -345,12 +345,26 @@ def tick_cmd(job_id: str, mode: str | None, dry_run: bool) -> None:
 @click.argument("job_id")
 @click.option("--grid", "grid_path", default=None, help="Path to a grid JSON file.")
 @click.option("--rank-by", default="net_return", show_default=True)
-@click.option("--workers", type=int, default=1, show_default=True)
+@click.option(
+    "--workers",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Grid workers; 0 = all cores (cgroup-clamped).",
+)
 @click.option(
     "--parallel",
     type=click.Choice(["serial", "thread", "process"]),
-    default="serial",
+    default="process",
     show_default=True,
+)
+@click.option(
+    "--quick",
+    "quick_bars",
+    type=int,
+    default=None,
+    help="Run the whole experiment (grid + walk-forward) on only the last N "
+    "bars — iteration-speed sweeps; omit for the final validation.",
 )
 @click.option("--list", "list_only", is_flag=True, default=False)
 @click.option(
@@ -396,6 +410,7 @@ def experiments_cmd(
     rank_by: str,
     workers: int,
     parallel: str,
+    quick_bars: int | None,
     list_only: bool,
     wf_test_bars: int | None,
     wf_train_bars: int | None,
@@ -434,6 +449,7 @@ def experiments_cmd(
         walk_forward=walk_forward,
         optimizer=optimizer,
         optuna_options=optuna_options,
+        quick_bars=quick_bars,
         store=store,
     )
     wf_report = (result.get("backtest") or {}).get("walk_forward")

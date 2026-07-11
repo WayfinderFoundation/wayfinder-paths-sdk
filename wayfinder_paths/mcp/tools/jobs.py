@@ -127,8 +127,8 @@ async def core_jobs(
     strict: bool = False,
     grid_path: str | None = None,
     grid: dict[str, Any] | list[dict[str, Any]] | None = None,
-    workers: int = 1,
-    parallel: Literal["serial", "thread", "process"] = "serial",
+    workers: int = 0,
+    parallel: Literal["serial", "thread", "process"] = "process",
     compile: bool = True,  # noqa: A002
     full: bool = False,
     quick_bars: int | None = None,
@@ -272,6 +272,7 @@ async def core_jobs(
                 "workers": workers,
                 "parallel": parallel,
                 "walk_forward": walk_forward,
+                "quick_bars": quick_bars,
                 "full": full,
             },
         )
