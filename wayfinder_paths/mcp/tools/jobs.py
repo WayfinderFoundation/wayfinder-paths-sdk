@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal
 
 from wayfinder_paths.jobs.application import (
@@ -180,7 +181,14 @@ async def core_jobs(
         return ok(validate_execution_job(job_id, strict=strict, store=store))
 
     if action == "backtest_job":
-        payload = backtest_execution_job(
+        # Run the (sync, CPU-bound) simulator in a worker thread. It guards
+        # against running inside an event loop (simulator raises if
+        # asyncio.get_running_loop() succeeds), so calling it inline here — in
+        # this async tool — would fail; to_thread also keeps it from blocking
+        # the MCP loop. Without this the agent has no working backtest tool and
+        # falls back to fighting the CLI / raw Python.
+        payload = await asyncio.to_thread(
+            backtest_execution_job,
             job_id,
             grid_path=grid_path,
             workers=workers,
