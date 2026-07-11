@@ -93,6 +93,16 @@ async def get_token_balance(
     web3: AsyncWeb3 | None = None,
     block_identifier: str | int = "pending",
 ) -> int:
+    # Local imports: svm_tokens imports is_native_token from this module at
+    # module level, so a top-level reverse import would create a cycle.
+    from wayfinder_paths.core.utils.svm import is_solana_chain
+
+    if is_solana_chain(chain_id):
+        # web3/block_identifier are EVM-only and ignored on this branch.
+        from wayfinder_paths.core.utils.svm_tokens import get_solana_token_balance
+
+        return await get_solana_token_balance(wallet_address, token_address, chain_id)
+
     async def _read_with_web3(w3: AsyncWeb3) -> int:
         checksum_wallet = w3.to_checksum_address(wallet_address)
 
@@ -127,6 +137,16 @@ async def get_token_decimals(
     block_identifier: str | int = "latest",
     default_native_decimals: int = 18,
 ) -> int:
+    from wayfinder_paths.core.utils.svm import is_solana_chain
+
+    if is_solana_chain(chain_id):
+        # Native SOL is always 9 decimals (the sentinel check inside returns
+        # 9 without an RPC call); web3/block_identifier/default_native_decimals
+        # are EVM-only and ignored on this branch.
+        from wayfinder_paths.core.utils.svm_tokens import get_spl_mint_decimals
+
+        return await get_spl_mint_decimals(token_address, chain_id)
+
     async def _read_with_web3(w3: AsyncWeb3) -> int:
         if is_native_token(token_address):
             return int(default_native_decimals)
@@ -157,6 +177,22 @@ async def get_token_balance_with_decimals(
     decimals_block_identifier: str | int = "latest",
     default_native_decimals: int = 18,
 ) -> tuple[int, int]:
+    from wayfinder_paths.core.utils.svm import is_solana_chain
+
+    if is_solana_chain(chain_id):
+        # web3/block identifiers/default_native_decimals are EVM-only and
+        # ignored on this branch (native SOL is always 9 decimals).
+        from wayfinder_paths.core.utils.svm_tokens import (
+            get_solana_token_balance,
+            get_spl_mint_decimals,
+        )
+
+        balance, decimals = await asyncio.gather(
+            get_solana_token_balance(wallet_address, token_address, chain_id),
+            get_spl_mint_decimals(token_address, chain_id),
+        )
+        return int(balance), int(decimals)
+
     async def _read_with_web3(w3: AsyncWeb3) -> tuple[int, int]:
         checksum_wallet = w3.to_checksum_address(wallet_address)
 
@@ -233,6 +269,21 @@ async def build_send_transaction(
     chain_id: int,
     amount: int,
 ) -> dict:
+    from wayfinder_paths.core.utils.svm import is_solana_chain
+
+    if is_solana_chain(chain_id):
+        # Returns the Solana transaction envelope:
+        # {"chainType", "chainId", "serializedTransaction", "lastValidBlockHeight"}
+        from wayfinder_paths.core.utils.svm_tokens import build_solana_send_transaction
+
+        return await build_solana_send_transaction(
+            from_address=from_address,
+            to_address=to_address,
+            token_address=token_address,
+            amount=amount,
+            chain_id=chain_id,
+        )
+
     async with web3_from_chain_id(chain_id) as web3:
         from_checksum = web3.to_checksum_address(from_address)
         to_checksum = web3.to_checksum_address(to_address)
