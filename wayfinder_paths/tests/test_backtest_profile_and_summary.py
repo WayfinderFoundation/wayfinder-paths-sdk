@@ -154,6 +154,32 @@ def test_summarize_backtest_payload_drops_heavy_arrays() -> None:
     )
 
 
+def test_grid_summary_flags_in_sample_only() -> None:
+    """A grid with no walk-forward is in-sample only — the summary must say so
+    (and strip the heavy per-run arrays), so the agent validates OOS instead of
+    trusting a curve-fit ranking."""
+    grid_payload = {
+        "type": "grid",
+        "result": {
+            "grid_id": "g1",
+            "rank_by": "net_return",
+            "runs": [{}, {}],
+            "invalid": [],
+            "ranked": [
+                {"params": {"x": 1}, "net_return": 0.4, "equity_curve": [1, 2, 3]}
+            ],
+        },
+    }
+    summary = summarize_backtest_payload(grid_payload)
+    assert "note" in summary and "out-of-sample" in summary["note"]
+    assert "equity_curve" not in summary["result"]["ranked"][0]  # heavy key stripped
+    # Once validated out-of-sample, the overfit note goes away.
+    validated = summarize_backtest_payload(
+        {**grid_payload, "walk_forward": {"summary": {"decay_ratio": 0.9}}}
+    )
+    assert "note" not in validated
+
+
 def test_effective_workers_never_oversubscribes(monkeypatch) -> None:
     from wayfinder_paths.jobs.execution import simulator as sim
 

@@ -61,6 +61,15 @@ def summarize_backtest_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
                 {k: v for k, v in row.items() if k not in _HEAVY_RESULT_KEYS}
                 for row in (result.get("ranked") or [])[:10]
             ]
+            # In-sample grids overfit: the top params were picked AND scored on
+            # the same data, so their metrics are not evidence of an edge.
+            if "walk_forward" not in payload:
+                summary["note"] = (
+                    "In-sample ranking only — these params were tuned and scored "
+                    "on the same data. Validate out-of-sample before trusting "
+                    "them: `job experiments <id> --grid <file> --wf-test-bars N "
+                    "--wf-folds K`, then judge on decay_ratio / oos_positive_folds."
+                )
         else:  # single run — the ~8 MB case
             summary["result"] = {
                 k: result[k]

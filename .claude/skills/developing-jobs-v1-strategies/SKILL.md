@@ -20,11 +20,21 @@ wayfinder job fetch-dataset <id> --days 180
 wayfinder job backtest <id> --quick 1000      # fast iteration: last 1000 bars, ~2 KB summary
 wayfinder job backtest-diagnose <id>          # win/PnL by exit reason, hour, side — READ THIS, don't recompute
 # tune params, repeat backtest --quick / diagnose
-wayfinder job experiments <id> --grid grid.json   # sweep several params at once (bounded, CPU-safe)
-wayfinder job backtest <id>                   # full-history confirmation run
+# THE decision step — tune AND validate out-of-sample in one shot (never trust an in-sample grid):
+wayfinder job experiments <id> --grid grid.json --wf-test-bars 240 --wf-folds 4
+wayfinder job backtest <id>                   # full-history confirmation of the promoted params
 ```
 
 The `backtest` output is a compact stats summary (`stats` + `profile` + artifact paths). Add `--full` only if you truly need the raw curves; they're always on disk (`job backtest-view`).
+
+## Judge a strategy out-of-sample, or you're just curve-fitting
+
+A single backtest tunes and scores on the **same** data — its Sharpe / profit factor are **not evidence of an edge**. A "great" in-sample result (Sharpe 6+, PF 10+) almost always means you overfit. The only number that means anything is **out-of-sample**:
+
+- Run `job experiments <id> --grid grid.json --wf-test-bars 240 --wf-folds 4`. This picks params on each fold's train window and scores them on the **held-out** window it never saw.
+- Read the walk-forward report and judge on: **`decay_ratio`** (OOS mean ÷ IS mean — want it near 1; ≪ 1 = overfit), **`oos_positive_folds`** (want most folds profitable OOS), and OOS mean return vs IS mean. If OOS collapses vs IS, the strategy is fit to noise — go back to the idea, don't tune harder.
+- Also sanity-check the *regime*: if you're shorting an asset that fell 50% over the window, most of the "edge" is the trend, not the strategy — confirm it holds on a flat/up stretch too.
+- **Model costs.** Set `fee_bps` / `slippage_bps` in `execution_params`; a strategy with hundreds of trades and `total_fees: 0` is fiction.
 
 ## The strategy contract (copy this skeleton)
 
@@ -69,6 +79,6 @@ Put `metadata={"exit_reason": "..."}` on close intents — `backtest-diagnose` b
 
 1. **Keep `decide()` cheap.** Compute indicators on the handed frame only (it's bounded to `warmup_bars`). Never re-slice the full history or `copy()` a growing frame every bar. If a backtest is slow, the `profile.hint` tells you why — set/lower `warmup_bars`.
 2. **Never recompute PnL/stats by hand.** Ad-hoc pandas drifts from the framework and confuses everyone ("why is your PnL different than the framework?"). Read `job backtest` `stats` and `job backtest-diagnose`. They are the source of truth.
-3. **Sweep parameters with `job experiments` / `--grid`, not manual edit-and-rerun.** It's CPU-safe (bounded to the box's cores) and runs several params at once. Add `--quick` while exploring.
+3. **Tune AND validate with `job experiments --grid … --wf-test-bars N --wf-folds K`, not manual edit-and-rerun.** It's CPU-safe (bounded to the box's cores), sweeps several params at once, and — crucially — scores them **out-of-sample**. A plain grid or a hand-tuned single backtest is in-sample only; its metrics are not an edge. Decide with `decay_ratio` and `oos_positive_folds`, not in-sample Sharpe.
 4. **The dev box is small (2 vCPU).** Iterate on `--quick 1000`; only do the full-history run to confirm a candidate. Don't wrap backtests in `timeout` — read the ETA on the progress line.
 5. **The strategy lives in the job's script**, not `.wayfinder_runs/`. Edit that file, then `wayfinder job backtest` — don't maintain a scratch copy.
