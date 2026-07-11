@@ -9,7 +9,10 @@ from typing import Any
 
 import pandas as pd
 
-from wayfinder_paths.jobs.execution.ccxt_feed import fetch_ccxt_dataset_rows
+from wayfinder_paths.jobs.execution.ccxt_feed import (
+    fetch_ccxt_dataset_rows,
+    fetch_ccxt_funding_rows,
+)
 from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.paper import PaperBroker
@@ -582,3 +585,97 @@ def _write_report(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")
     return report
+
+
+def fetch_funding_features(
+    job_id: str,
+    *,
+    days: int = 30,
+    exchange: str = "binance",
+    quote: str = "USDT",
+    store: JobStore | None = None,
+    exchange_client: Any | None = None,
+) -> dict[str, Any]:
+    """Fetch historical funding rates for the job's symbols into the job's
+    feature store — the first-class path for carry data.
+
+    Appends canonical rows to state/features.jsonl (deduped on
+    timestamp+name+symbol, so re-fetching extends rather than duplicates) and
+    declares the "funding" feature in execution_spec.data_contract.features
+    when missing, so both backtest and live as-of merge a `funding` column
+    onto each symbol's bars. Declaring the feature restamps the workspace
+    revision — consuming new data IS a strategy change and re-gates promotion.
+    """
+    store = store or JobStore()
+    root = store.job_dir(job_id)
+    job_data = _load_job_yaml(root)
+    spec_data, spec_path = resolve_execution_spec(root, job_data)
+    spec = ExecutionSpec.from_dict(spec_data)
+    params = dict(job_data.get("execution_params") or {})
+    symbols = [
+        str(symbol)
+        for symbol in (params.get("symbols") or spec.data_contract.get("symbols") or [])
+    ]
+    if not symbols:
+        raise ValueError("no symbols configured for funding fetch")
+
+    rows, metadata = asyncio.run(
+        fetch_ccxt_funding_rows(
+            symbols,
+            days=days,
+            exchange_id=exchange,
+            quote=quote,
+            exchange=exchange_client,
+        )
+    )
+
+    features_path = root / "state" / "features.jsonl"
+    features_path.parent.mkdir(parents=True, exist_ok=True)
+    existing: set[tuple[str, str, str]] = set()
+    if features_path.exists():
+        for line in features_path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                existing.add(
+                    (
+                        str(row.get("timestamp")),
+                        str(row.get("name")),
+                        str(row.get("symbol")),
+                    )
+                )
+    written_at = pd.Timestamp.now(tz="UTC").isoformat()
+    appended = 0
+    with features_path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            key = (str(row["timestamp"]), str(row["name"]), str(row["symbol"]))
+            if key in existing:
+                continue
+            existing.add(key)
+            handle.write(json.dumps({**row, "written_at": written_at}) + "\n")
+            appended += 1
+
+    declared = False
+    target = spec_path if spec_path is not None else root / "execution_spec.json"
+    if target.exists():
+        spec_doc = json.loads(target.read_text(encoding="utf-8"))
+        contract = spec_doc.setdefault("data_contract", {})
+        features = contract.setdefault("features", [])
+        if not any(
+            isinstance(item, dict) and item.get("name") == "funding"
+            for item in features
+        ):
+            features.append({"name": "funding"})
+            target.write_text(json.dumps(spec_doc, indent=2) + "\n", encoding="utf-8")
+            declared = True
+
+    return {
+        "rows_fetched": len(rows),
+        "rows_appended": appended,
+        "per_symbol": metadata.get("per_symbol", {}),
+        "features_path": str(features_path),
+        "feature_declared_now": declared,
+        "metadata": metadata,
+    }

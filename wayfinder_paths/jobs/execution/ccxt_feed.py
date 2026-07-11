@@ -217,3 +217,73 @@ async def fetch_ccxt_dataset_rows(
         "label_convention": "close_time",
     }
     return view.to_rows(), metadata
+
+
+async def fetch_ccxt_funding_rows(
+    symbols: Sequence[str],
+    *,
+    days: int,
+    exchange_id: str = "binance",
+    quote: str = "USDT",
+    exchange: Any | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Historical funding rates as canonical feature rows.
+
+    First-class carry data for perp strategies: rows come back in the
+    features.jsonl shape ({timestamp, name: "funding", value, symbol}) so they
+    as-of merge onto the bars like any other feature — no scratch scripts, no
+    hand-copied JSONL. Works for any ccxt exchange with funding history
+    (binance, hyperliquid, bybit, ...); perp market resolution and the
+    injectable fake follow fetch_ccxt_dataset_rows.
+    """
+    feed = CcxtMarketFeed(
+        exchange_id=exchange_id, market_type="swap", quote=quote, exchange=exchange
+    )
+    now_ms = int(pd.Timestamp.now(tz="UTC").timestamp() * 1000)
+    start_ms = now_ms - int(days) * 86_400_000
+    rows: list[dict[str, Any]] = []
+    per_symbol: dict[str, int] = {}
+    try:
+        client = await feed._get_exchange()
+        for coin in symbols:
+            market = await feed.resolve_market_symbol(str(coin))
+            since = start_ms
+            count = 0
+            for _page in range(200):  # hard cap: no infinite pagination
+                page = await client.fetch_funding_rate_history(
+                    market, since=since, limit=500
+                )
+                if not page:
+                    break
+                for item in page:
+                    rate = item.get("fundingRate")
+                    ts = item.get("timestamp")
+                    if rate is None or ts is None:
+                        continue
+                    rows.append(
+                        {
+                            "timestamp": pd.Timestamp(
+                                int(ts), unit="ms", tz="UTC"
+                            ).isoformat(),
+                            "name": "funding",
+                            "value": float(rate),
+                            "symbol": str(coin),
+                        }
+                    )
+                    count += 1
+                next_since = int(page[-1]["timestamp"]) + 1
+                if next_since <= since or next_since >= now_ms or len(page) < 2:
+                    break
+                since = next_since
+            per_symbol[str(coin)] = count
+    finally:
+        await feed.close()
+    metadata = {
+        "exchange": exchange_id,
+        "quote": quote,
+        "symbol_map": dict(feed.symbol_map),
+        "feature": "funding",
+        "days": int(days),
+        "per_symbol": per_symbol,
+    }
+    return rows, metadata

@@ -126,7 +126,7 @@ def build_strategy(params: dict | None = None):
     return ns
 ```
 
-Cross-symbol features (pair z-scores, spreads) read several input frames and attach to the traded symbol's rows. Exogenous series (e.g. funding rates) come in as feature columns instead: declare under `execution_spec.data_contract.features`, append rows to `state/features.jsonl` (`{timestamp, name, value, symbol}`) — the engine as-of merges them onto the bars in backtest AND live, and `precompute` can consume them.
+Cross-symbol features (pair z-scores, spreads) read several input frames and attach to the traded symbol's rows. FUNDING RATES are first-class: `wayfinder job fetch-funding <id> --days 60 --exchange binance` (or `hyperliquid`) pulls history into the feature store and declares the feature — bars then carry a `funding` column in backtest AND live. Long-history candles: `wayfinder job fetch-dataset <id> --days 365 --source ccxt --exchange binance`. Other exogenous series follow the same shape: declare under `execution_spec.data_contract.features`, append rows to `state/features.jsonl` (`{timestamp, name, value, symbol}`).
 
 ## Rules (these are the mistakes to avoid)
 

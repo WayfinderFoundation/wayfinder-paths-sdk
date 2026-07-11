@@ -35,6 +35,10 @@ def _run(op: str, kwargs: dict[str, Any]) -> Any:
         from wayfinder_paths.jobs.execution.preflight import build_live_dataset
 
         return build_live_dataset(kwargs.pop("job_id"), **kwargs)
+    if op == "fetch_funding":
+        from wayfinder_paths.jobs.execution.preflight import fetch_funding_features
+
+        return fetch_funding_features(kwargs.pop("job_id"), **kwargs)
     if op == "backtest_job":
         from wayfinder_paths.jobs.execution.job import (
             backtest_execution_job,

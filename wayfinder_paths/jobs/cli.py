@@ -28,7 +28,11 @@ from wayfinder_paths.jobs.execution.job import (
     backtest_execution_job,
     summarize_backtest_payload,
 )
-from wayfinder_paths.jobs.execution.preflight import build_live_dataset, run_preflight
+from wayfinder_paths.jobs.execution.preflight import (
+    build_live_dataset,
+    fetch_funding_features,
+    run_preflight,
+)
 from wayfinder_paths.jobs.execution.reconcile import reconcile_job
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.execution.walk_forward import format_fold_table
@@ -543,6 +547,24 @@ def fetch_dataset_cmd(
         exchange=exchange,
         market_type=market_type,
         quote=quote,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="fetch-funding",
+    help="Fetch historical funding rates into the job's feature store "
+    "(state/features.jsonl) and declare the 'funding' feature — first-class "
+    "carry data, as-of merged onto the bars in backtest AND live.",
+)
+@click.argument("job_id")
+@click.option("--days", type=int, default=30, show_default=True)
+@click.option("--exchange", default="binance", show_default=True)
+@click.option("--quote", default="USDT", show_default=True)
+def fetch_funding_cmd(job_id: str, days: int, exchange: str, quote: str) -> None:
+    store = JobStore()
+    result = fetch_funding_features(
+        job_id, days=days, exchange=exchange, quote=quote, store=store
     )
     _echo_json({"ok": True, "result": result})
 
