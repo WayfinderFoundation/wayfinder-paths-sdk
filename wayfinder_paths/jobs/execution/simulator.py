@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import os
 import sys
 import time
 import uuid
@@ -522,6 +523,42 @@ def rank_and_partition(
     return ranked[:top_n], invalid
 
 
+def available_cpu_count() -> int:
+    """Usable CPUs for backtest fan-out. Respects a cgroup CPU quota (Fly
+    machines are quota-limited, and os.cpu_count() reports the host's cores,
+    not the machine's) and an explicit WAYFINDER_MAX_BACKTEST_WORKERS override.
+    Always ≥ 1."""
+    override = os.environ.get("WAYFINDER_MAX_BACKTEST_WORKERS")
+    if override:
+        try:
+            return max(1, int(override))
+        except ValueError:
+            pass
+    # cgroup v2 quota → effective cores.
+    try:
+        quota, period = (
+            open("/sys/fs/cgroup/cpu.max").read().split()
+        )  # e.g. "200000 100000" → 2 cores; "max" → unlimited
+        if quota != "max":
+            return max(1, round(int(quota) / int(period)))
+    except (OSError, ValueError):
+        pass
+    return max(1, os.cpu_count() or 1)
+
+
+def _effective_workers(workers: int, parallel: str) -> int:
+    """Clamp requested workers so a parameter sweep uses the box's cores fully
+    but never oversubscribes them — the difference between "at CPU" and the
+    thrash/peg of "out of CPU" on a small shared-vCPU machine. `workers <= 0`
+    means "use all available cores"."""
+    if parallel == "serial":
+        return 1
+    cap = available_cpu_count()
+    if workers <= 0:
+        return cap
+    return max(1, min(workers, cap))
+
+
 def run_execution_grid(
     script_entrypoint: str | Path,
     dataset: PreparedExecutionDataset,
@@ -544,6 +581,17 @@ def run_execution_grid(
                 for combo in itertools.product(*(param_grid[key] for key in keys))
             ]
     grid_id = uuid.uuid4().hex[:12]
+    # Never spawn more workers than the box has cores — oversubscribing a
+    # 2-vCPU Fly machine pegs it (each process also reloads pandas + a copy of
+    # the dataset). Threads don't help CPU-bound pandas (GIL); process is the
+    # only real parallelism, and it's now bounded.
+    workers = _effective_workers(workers, parallel)
+    print(
+        f"[grid] {len(params_list)} params · {parallel} · {workers} worker(s) "
+        f"(of {available_cpu_count()} core(s))",
+        file=sys.stderr,
+        flush=True,
+    )
     if parallel == "serial" or workers <= 1:
         results = [
             simulate_execution(script_entrypoint, dataset, execution_spec, params)
@@ -585,6 +633,12 @@ def run_execution_grid(
         runs=run_rows,
         ranked=ranked,
         invalid=invalid,
+        search={
+            "parallel": parallel,
+            "workers": workers,
+            "cpu_count": available_cpu_count(),
+            "param_count": len(params_list),
+        },
     )
 
 

@@ -13,7 +13,10 @@ from wayfinder_paths.jobs.application import (
     ensure_jobs_v1_contract,
     validate_application_candidate,
 )
-from wayfinder_paths.jobs.backtest_artifacts import load_backtest_view
+from wayfinder_paths.jobs.backtest_artifacts import (
+    diagnose_backtest,
+    load_backtest_view,
+)
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.experiments import (
@@ -211,12 +214,29 @@ def validate_cmd(job_id: str, strict: bool) -> None:
 @job_cli.command(name="backtest", help="Run an execution-contract backtest for a job.")
 @click.argument("job_id")
 @click.option("--grid", "grid_path", default=None)
-@click.option("--workers", type=int, default=1, show_default=True)
+@click.option(
+    "--workers",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Parallel backtest workers for a grid. 0 = use all available cores. "
+    "Always clamped to the box's core count — never oversubscribes.",
+)
 @click.option(
     "--parallel",
     type=click.Choice(["serial", "thread", "process"]),
     default="serial",
     show_default=True,
+    help="Grid parallelism. `process` uses multiple cores (bounded by "
+    "--workers/CPU count); `thread` won't speed up CPU-bound backtests.",
+)
+@click.option(
+    "--quick",
+    "quick_bars",
+    type=int,
+    default=None,
+    help="Backtest only the last N bars — fast iteration / parameter sweeps "
+    "before the full-history confirmation run.",
 )
 @click.option(
     "--full",
@@ -227,7 +247,12 @@ def validate_cmd(job_id: str, strict: bool) -> None:
     "always written to results/backtest/ regardless.",
 )
 def backtest_cmd(
-    job_id: str, grid_path: str | None, workers: int, parallel: str, full: bool
+    job_id: str,
+    grid_path: str | None,
+    workers: int,
+    parallel: str,
+    quick_bars: int | None,
+    full: bool,
 ) -> None:
     store = JobStore()
     result = backtest_execution_job(
@@ -235,6 +260,7 @@ def backtest_cmd(
         grid_path=grid_path,
         workers=workers,
         parallel=parallel,
+        quick_bars=quick_bars,
         store=store,
     )
     # Default to the ~2 KB summary — the full payload is ~8 MB and lives on disk
@@ -570,6 +596,26 @@ def backtest_view_cmd(
         proposal_id=proposal_id,
     )
     _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="backtest-diagnose",
+    help="Framework-computed breakdown of the latest backtest (win rate + PnL "
+    "by exit reason / close hour / side, best & worst trades). Read this to find "
+    "a strategy's strong/weak spots — do NOT recompute PnL by hand; that drifts "
+    "from the backtest's own numbers.",
+)
+@click.argument("job_id")
+@click.option(
+    "--proposal", "proposal_id", default=None, help="Diagnose a candidate run."
+)
+def backtest_diagnose_cmd(job_id: str, proposal_id: str | None) -> None:
+    _echo_json(
+        {
+            "ok": True,
+            "result": diagnose_backtest(job_id, proposal_id=proposal_id),
+        }
+    )
 
 
 @job_cli.command(name="report", help="Show a compact terminal report for a job.")

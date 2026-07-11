@@ -80,6 +80,7 @@ def backtest_execution_job(
     walk_forward: Mapping[str, Any] | None = None,
     optimizer: str = "grid",
     optuna_options: Mapping[str, Any] | None = None,
+    quick_bars: int | None = None,
     store: JobStore | None = None,
 ) -> dict[str, Any]:
     store = store or JobStore()
@@ -97,6 +98,15 @@ def backtest_execution_job(
             f"Execution script not found for job {job_id}: {script}"
         )
     dataset = _load_dataset(root, spec, job_data)
+    # `--quick N`: backtest only the last N bars — cheap enough to sweep many
+    # parameters fast while iterating, before the full-history confirmation run.
+    if quick_bars and quick_bars > 0:
+        timestamps = dataset.bars.timestamps
+        if len(timestamps) > quick_bars:
+            dataset = PreparedExecutionDataset(
+                dataset.bars.window(len(timestamps) - 1, quick_bars),
+                {**dataset.metadata, "quick_bars": quick_bars},
+            )
     output_dir = root / "results" / "backtest"
     stamp = {
         "revision": compute_workspace_revision(root),
