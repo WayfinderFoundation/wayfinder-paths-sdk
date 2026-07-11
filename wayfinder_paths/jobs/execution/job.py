@@ -29,6 +29,46 @@ from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
+_HEAVY_RESULT_KEYS = ("equity_curve", "trades", "positions", "trace", "visualization")
+
+
+def summarize_backtest_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Compact view of a backtest payload for stdout / agent context.
+
+    Keeps the decision-grade fields — `stats`, `profile` (timing), `validation`,
+    artifact paths, revision stamp — and drops the multi-MB per-bar arrays
+    (`equity_curve`, `trades`, `positions`, `trace`, `visualization`). Those are
+    all persisted under `results/backtest/` and browsable via `job backtest-view`,
+    so nothing is lost — the full payload can also be requested with `--full`.
+    A single-run backtest payload is ~8 MB; this trims it to ~2 KB.
+    """
+    summary: dict[str, Any] = {
+        k: payload[k]
+        for k in ("type", "artifacts", "stamp", "walk_forward", "validation")
+        if k in payload
+    }
+    result = payload.get("result")
+    if isinstance(result, Mapping):
+        if "ranked" in result:  # grid / optuna result
+            summary["result"] = {
+                k: result[k]
+                for k in ("grid_id", "rank_by", "optimizer", "search")
+                if k in result
+            }
+            summary["result"]["run_count"] = len(result.get("runs") or [])
+            summary["result"]["invalid_count"] = len(result.get("invalid") or [])
+            summary["result"]["ranked"] = [
+                {k: v for k, v in row.items() if k not in _HEAVY_RESULT_KEYS}
+                for row in (result.get("ranked") or [])[:10]
+            ]
+        else:  # single run — the ~8 MB case
+            summary["result"] = {
+                k: result[k]
+                for k in ("run_id", "params", "stats", "validation", "profile")
+                if k in result
+            }
+    return summary
+
 
 def backtest_execution_job(
     job_id: str,

@@ -9,7 +9,10 @@ from wayfinder_paths.jobs.application import (
     validate_application_candidate,
 )
 from wayfinder_paths.jobs.compiler import JobCompiler
-from wayfinder_paths.jobs.execution.job import backtest_execution_job
+from wayfinder_paths.jobs.execution.job import (
+    backtest_execution_job,
+    summarize_backtest_payload,
+)
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
 from wayfinder_paths.jobs.models import (
@@ -85,6 +88,7 @@ async def core_jobs(
     workers: int = 1,
     parallel: Literal["serial", "thread", "process"] = "serial",
     compile: bool = True,  # noqa: A002
+    full: bool = False,
 ) -> dict[str, Any]:
     """Manage high-level Wayfinder jobs.
 
@@ -173,15 +177,17 @@ async def core_jobs(
         return ok(validate_execution_job(job_id, strict=strict, store=store))
 
     if action == "backtest_job":
-        return ok(
-            backtest_execution_job(
-                job_id,
-                grid_path=grid_path,
-                workers=workers,
-                parallel=parallel,
-                store=store,
-            )
+        payload = backtest_execution_job(
+            job_id,
+            grid_path=grid_path,
+            workers=workers,
+            parallel=parallel,
+            store=store,
         )
+        # Default to the compact summary (~2 KB) — the full payload is ~8 MB of
+        # per-bar arrays already persisted to results/backtest/. Pass full=True
+        # to return everything.
+        return ok(payload if full else summarize_backtest_payload(payload))
 
     if action == "proposals":
         return ok(store.proposals(job_id))
