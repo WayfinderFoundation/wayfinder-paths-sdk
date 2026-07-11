@@ -22,6 +22,7 @@ from wayfinder_paths.jobs.execution.engine import (
     _bars_at_timestamp,
     run_tick,
 )
+from wayfinder_paths.jobs.execution.features import apply_precompute
 from wayfinder_paths.jobs.execution.primitives import (
     DEFAULT_INITIAL_CAPITAL,
     CompletedBarsView,
@@ -326,6 +327,13 @@ def simulate_execution(
     spec = ExecutionSpec.coerce(execution_spec)
     params_data = dict(params) if params else {}
     strategy = _load_strategy(script_entrypoint, params_data)
+    # One vectorized pass for strategy-declared derived columns (optional
+    # `precompute` hook — see features.apply_precompute). Runs on the (already
+    # quick_bars-truncated, feature-merged) dataset, so the replay's per-bar
+    # decide() just reads columns instead of re-deriving indicators.
+    dataset = PreparedExecutionDataset(
+        apply_precompute(strategy, dataset.bars), dict(dataset.metadata)
+    )
     broker = BacktestBroker(
         fee_bps=float(params_data.get("fee_bps") or 0.0),
         slippage_bps=float(params_data.get("slippage_bps") or 0.0),

@@ -21,6 +21,11 @@ SPEC = {
     "data_contract": {"bar_interval": "1h", "symbols": ["IMX"]},
 }
 
+SPEC_PAIR = {
+    "market_kind": "perp",
+    "data_contract": {"bar_interval": "1h", "symbols": ["ETH", "SOL"]},
+}
+
 
 def _dataset(n: int) -> PreparedExecutionDataset:
     rows = []
@@ -498,3 +503,168 @@ def test_run_experiment_threads_quick_bars_and_parallel(monkeypatch) -> None:
     assert captured["quick_bars"] == 2000
     assert captured["workers"] == 0  # 0 = all cores, clamped downstream
     assert captured["parallel"] == "process"
+
+
+def _pair_dataset(n: int) -> PreparedExecutionDataset:
+    rows = []
+    eth, sol = 1000.0, 100.0
+    for i in range(n):
+        eth = max(1.0, eth * (1.0 + 0.02 * ((i % 13) - 6) / 100.0))
+        sol = max(0.1, sol * (1.0 + 0.02 * ((i % 7) - 3) / 100.0))
+        secs = 1_700_000_000 + i * 3600
+        ts = datetime.datetime.fromtimestamp(secs, datetime.UTC).isoformat()
+        for sym, px in (("ETH", eth), ("SOL", sol)):
+            rows.append(
+                {
+                    "timestamp": ts,
+                    "symbol": sym,
+                    "open": px,
+                    "high": px * 1.01,
+                    "low": px * 0.99,
+                    "close": px,
+                    "volume": 1000.0,
+                }
+            )
+    return PreparedExecutionDataset.from_rows(rows)
+
+
+def _zscore_intents(ctx: ExecutionContext, frame, z_last: float):
+    pos = ctx.ledger.positions.get("IMX")
+    last = float(frame["close"].iloc[-1])
+    if pos is None and z_last <= -0.9:
+        return [
+            OrderIntent(
+                action="open",
+                venue="hyperliquid",
+                symbol="IMX",
+                side="long",
+                notional=100.0,
+                reduce_only=False,
+                bracket={
+                    "stop_loss": last * 0.93,
+                    "take_profit": last * 1.1,
+                    "policy": "conservative",
+                },
+            )
+        ]
+    if pos is not None and z_last >= 0.8:
+        return [
+            OrderIntent(
+                action="close",
+                venue="hyperliquid",
+                symbol="IMX",
+                side="sell",
+                size=pos.size,
+                reduce_only=True,
+                metadata={"exit_reason": "z_exit"},
+            )
+        ]
+    return []
+
+
+def test_precompute_matches_inline_and_runs_once() -> None:
+    """The `precompute` hook (one vectorized pass, columns merged onto the
+    bars) must produce IDENTICAL results to computing the same indicator
+    inside decide() every bar — it exists purely to kill the ~5ms-per-pandas-
+    op-per-bar overhead that made replays crawl. Also: exactly one call per
+    backtest."""
+    calls = {"n": 0}
+
+    def build_inline(params=None):
+        def decide(ctx: ExecutionContext):
+            frame = ctx.view.symbol_frame("IMX")
+            if len(frame) < 22:
+                return []
+            close = frame["close"].astype(float)
+            mean = close.rolling(20).mean()
+            std = close.rolling(20).std().replace(0, 1e-9)
+            z_last = float(((close - mean) / std).iloc[-1])
+            return _zscore_intents(ctx, frame, z_last)
+
+        ns = types.SimpleNamespace()
+        ns.decide = decide
+        ns.warmup_bars = 60
+        return ns
+
+    def build_precomputed(params=None):
+        def precompute(frames):
+            out = {}
+            for sym, frame in frames.items():
+                close = frame["close"].astype(float)
+                mean = close.rolling(20).mean()
+                std = close.rolling(20).std().replace(0, 1e-9)
+                feats = frame[[]].copy()
+                feats["z"] = (close - mean) / std
+                out[sym] = feats
+            calls["n"] += 1
+            return out
+
+        def decide(ctx: ExecutionContext):
+            frame = ctx.view.symbol_frame("IMX")
+            if len(frame) < 22:
+                return []
+            z_last = float(frame["z"].iloc[-1])
+            return _zscore_intents(ctx, frame, z_last)
+
+        ns = types.SimpleNamespace()
+        ns.decide = decide
+        ns.precompute = precompute
+        ns.warmup_bars = 60
+        return ns
+
+    inline = simulate_execution(build_inline, _dataset(400), SPEC, {})
+    fast = simulate_execution(build_precomputed, _dataset(400), SPEC, {})
+    assert calls["n"] == 1  # one vectorized pass, not one per bar
+    for key in ("net_return", "trade_count", "win_rate", "sharpe"):
+        assert inline.stats[key] == fast.stats[key]
+    assert inline.stats["trade_count"] > 0  # the comparison actually traded
+
+
+def test_precompute_cross_symbol_pair_columns() -> None:
+    """Cross-symbol features (the pair-trade case): precompute reads BOTH
+    symbols' frames and attaches the spread column to the traded symbol —
+    decide() then just reads it."""
+    seen = {"cols": None}
+
+    def build(params=None):
+        def precompute(frames):
+            eth = frames["ETH"]["close"].astype(float).to_numpy()
+            sol = frames["SOL"]["close"].astype(float).to_numpy()
+            n = min(len(eth), len(sol))
+            import pandas as pd
+
+            ratio = pd.Series(eth[:n] / sol[:n])
+            z = (ratio - ratio.rolling(20).mean()) / ratio.rolling(20).std()
+            feats = frames["ETH"][[]].iloc[:n].copy()
+            feats["pair_z"] = z.to_numpy()
+            return {"ETH": feats}
+
+        def decide(ctx: ExecutionContext):
+            frame = ctx.view.symbol_frame("ETH")
+            seen["cols"] = list(frame.columns)
+            if len(frame) < 25 or frame["pair_z"].iloc[-1] is None:
+                return []
+            return []
+
+        ns = types.SimpleNamespace()
+        ns.decide = decide
+        ns.precompute = precompute
+        ns.warmup_bars = 60
+        return ns
+
+    simulate_execution(build, _pair_dataset(120), SPEC_PAIR, {})
+    assert "pair_z" in (seen["cols"] or [])
+
+
+def test_precompute_row_mismatch_raises() -> None:
+    from wayfinder_paths.jobs.execution.features import apply_precompute
+
+    def bad_precompute(frames):
+        frame = next(iter(frames.values()))
+        return {next(iter(frames)): frame[[]].iloc[:-5].assign(x=1.0)}
+
+    ns = types.SimpleNamespace(precompute=bad_precompute)
+    import pytest
+
+    with pytest.raises(ValueError, match="one per input bar"):
+        apply_precompute(ns, _dataset(100).bars)

@@ -19,6 +19,7 @@ from wayfinder_paths.jobs.execution.engine import (
 from wayfinder_paths.jobs.execution.features import (
     feature_staleness,
     load_feature_rows,
+    apply_precompute,
     merge_features,
     parse_feature_specs,
 )
@@ -223,6 +224,13 @@ async def tick_job(
         )
         if not feature_skip:
             view = merge_features(view, feature_frames, feature_specs)
+
+    # Strategy-precomputed indicator columns (optional `precompute` hook): one
+    # vectorized pass over the bounded window, after the exogenous feature
+    # merge so precompute() can consume those columns. The backtest applies
+    # the same hook over full history — parity by construction, and the
+    # derived columns land in view_hash/recorded rows for exact replays.
+    view = apply_precompute(strategy, view)
 
     # Captured before run_tick mutates state: the reconciler replays each tick
     # from exactly this state.

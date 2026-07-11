@@ -189,6 +189,59 @@ def merge_features(
     return CompletedBarsView(bars)
 
 
+# Bar-contract columns a strategy may never overwrite from precompute().
+BAR_COLUMNS = frozenset(
+    {"timestamp", "symbol", "open", "high", "low", "close", "volume"}
+)
+
+
+def apply_precompute(strategy: Any, view: CompletedBarsView) -> CompletedBarsView:
+    """Merge strategy-precomputed indicator columns onto the bars.
+
+    The optional strategy hook ``precompute(frames: dict[symbol, DataFrame])
+    -> dict[symbol, DataFrame]`` runs ONE vectorized pass instead of
+    re-deriving indicators inside decide() every bar — per-bar pandas carries
+    ~5ms of fixed overhead per rolling/ewm/concat call, which is what turns
+    replays into minute-long crawls (measured live: ~30 bars/s for a 15-op
+    decide()). Backtest calls this once over full history; the live driver
+    calls it per tick over the bounded fetched window — rolling/shift columns
+    are identical in both wherever the lookback fits inside ``warmup_bars``,
+    so backtest/live parity holds. Transforms must be CAUSAL (rolling / shift
+    / expanding — nothing that reads future rows); the returned frames align
+    row-for-row with the input frames. Cross-symbol features (spreads,
+    ratios) read several input frames and attach to the traded symbol's rows.
+    Runs after the exogenous feature merge, so precompute() can consume those
+    columns (e.g. a funding-rate feed) too.
+    """
+    precompute = getattr(strategy, "precompute", None)
+    if not callable(precompute):
+        return view
+    bars = view.to_frame().sort_values(["timestamp", "symbol"]).reset_index(drop=True)
+    frames = {
+        str(symbol): bars[bars["symbol"] == symbol].reset_index(drop=True)
+        for symbol in sorted(bars["symbol"].astype(str).unique())
+    }
+    derived = precompute(frames) or {}
+    for symbol, feats in derived.items():
+        base = frames.get(str(symbol))
+        if feats is None or base is None:
+            continue
+        if len(feats) != len(base):
+            raise ValueError(
+                f"precompute() returned {len(feats)} rows for {symbol!r}; "
+                f"expected {len(base)} (one per input bar, same order)"
+            )
+        mask = (bars["symbol"] == str(symbol)).to_numpy()
+        for column in feats.columns:
+            if column in BAR_COLUMNS:
+                continue
+            if column not in bars.columns:
+                bars[column] = None
+            values = feats[column].to_numpy()
+            bars.loc[mask, column] = values
+    return CompletedBarsView(bars)
+
+
 def feature_staleness(
     specs: list[FeatureSpec],
     frames: Mapping[str, pd.DataFrame],
