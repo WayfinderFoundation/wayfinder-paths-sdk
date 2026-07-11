@@ -234,17 +234,224 @@ def diagnose_backtest(
         "best_trade_pnl",
         "worst_trade_pnl",
     )
+    by_exit_reason = _bucket(_reason)
+    by_close_hour = dict(sorted(_bucket(_hour).items()))
+    by_side = _bucket(lambda t: t.get("side") or "?")
+    recommendations = _recommendations(
+        stats, by_exit_reason, by_side, by_close_hour, len(closes)
+    )
     return {
         "available": True,
         "run_id": latest.get("run_id"),
         "headline": {k: stats[k] for k in headline_keys if k in stats},
         "closed_trades_analyzed": len(closes),
-        "by_exit_reason": _bucket(_reason),
-        "by_close_hour_utc": dict(sorted(_bucket(_hour).items())),
-        "by_side": _bucket(lambda t: t.get("side") or "?"),
+        # The single most important thing to do next — read this first.
+        "next_step": recommendations[0]["suggest"] if recommendations else None,
+        "recommendations": recommendations,
+        "by_exit_reason": by_exit_reason,
+        "by_close_hour_utc": by_close_hour,
+        "by_side": by_side,
         "worst_trades": [_trade_view(t) for t in ranked[:top_trades]],
         "best_trades": [_trade_view(t) for t in reversed(ranked[-top_trades:])],
     }
+
+
+# Severity rank → sort order for recommendations (blocking first).
+_REC_RANK = {"blocking": 0, "high": 1, "medium": 2, "low": 3, "validate": 4}
+
+
+def _recommendations(
+    stats: dict[str, Any],
+    by_reason: dict[Any, dict[str, Any]],
+    by_side: dict[Any, dict[str, Any]],
+    by_hour: dict[Any, dict[str, Any]],
+    n_closes: int,
+) -> list[dict[str, Any]]:
+    """Turn the run's own stats + trade buckets into ranked, evidence-backed
+    next actions — so a bad backtest yields concrete things to try instead of a
+    hand-rolled recompute. Every recommendation quotes the numbers that triggered
+    it (never invented); the top one is echoed as `next_step`. This is what makes
+    the diagnose→improve loop good: read `recommendations`, change ONE thing, and
+    re-run `--quick` rather than thrashing across many full backtests."""
+
+    def pct(value: Any) -> str:
+        return (
+            f"{float(value) * 100:.1f}%" if isinstance(value, (int, float)) else "n/a"
+        )
+
+    def num(value: Any, places: int = 2) -> str:
+        return (
+            f"{float(value):.{places}f}" if isinstance(value, (int, float)) else "n/a"
+        )
+
+    net = stats.get("net_return")
+    sharpe = stats.get("sharpe")
+    pf = stats.get("profit_factor")
+    wr = stats.get("win_rate")
+    tc = int(stats.get("trade_count") or 0)
+    avg = stats.get("avg_trade_pnl")
+    fees = float(stats.get("total_fees") or 0.0)
+    bh = stats.get("buy_hold_return")
+    liq = int(stats.get("liquidation_count") or 0)
+    recs: list[dict[str, Any]] = []
+
+    def add(severity: str, issue: str, evidence: str, suggest: str) -> None:
+        recs.append(
+            {
+                "severity": severity,
+                "issue": issue,
+                "evidence": evidence,
+                "suggest": suggest,
+            }
+        )
+
+    # Blocking: can't conclude anything from too few trades — don't tune on noise.
+    if tc < 10:
+        add(
+            "blocking",
+            "Too few trades to judge or tune",
+            f"trade_count={tc}",
+            "Loosen the entry condition (or fetch a longer dataset) so there are "
+            "≥20 trades. Tuning params on this few is fitting to noise."
+            if tc > 0
+            else "Entry never triggered — check the symbol, the threshold, and that "
+            "the frame has enough bars before `decide()` returns an intent.",
+        )
+    # Blocking: forced liquidation means the sizing/stop is wrong before anything else.
+    if liq > 0:
+        add(
+            "blocking",
+            "Position was liquidated",
+            f"liquidation_count={liq}",
+            "Reduce leverage and/or widen the stop — the position is force-closed "
+            "before the thesis can play out. Fix this before tuning entries.",
+        )
+    # High: negative base — params rarely rescue a signal with no edge.
+    if tc >= 10 and net is not None and net <= 0:
+        add(
+            "high",
+            "No edge on this data (net loss)",
+            f"net_return={pct(net)}, sharpe={num(sharpe)}, profit_factor={num(pf)}",
+            "Change the entry/exit idea or add a regime filter — a negative base "
+            "rarely turns positive from parameter tuning alone. Re-think the trigger "
+            "before sweeping params.",
+        )
+    # High: wins often but the losers are bigger — a payoff problem, not an entry one.
+    if wr is not None and wr > 0.55 and pf is not None and pf < 1.1:
+        add(
+            "high",
+            "Winners smaller than losers (poor payoff)",
+            f"win_rate={pct(wr)}, profit_factor={num(pf)}",
+            "Tighten the stop or add a take-profit / trailing exit — you win often "
+            "but give it back on the losses. Do NOT loosen entry.",
+        )
+    # Medium: most of the P&L is just the market trend, not alpha.
+    if (
+        bh is not None
+        and abs(float(bh)) > 0.20
+        and (net is None or abs(float(net)) <= abs(float(bh)))
+    ):
+        add(
+            "medium",
+            "Result may be mostly market trend, not edge",
+            f"buy_hold_return={pct(bh)} vs net_return={pct(net)}",
+            "The underlying moved a lot over this window, so a large share of any "
+            "P&L is beta. Re-test on a flat or opposite-regime slice before trusting it.",
+        )
+    # Medium: trading costs eat a big share of gross — cut trade count.
+    gross = abs(float(avg) * tc) if isinstance(avg, (int, float)) and tc else 0.0
+    if fees > 0 and gross > 0 and fees >= 0.3 * gross:
+        add(
+            "medium",
+            "Trading costs eat a large share of P&L",
+            f"total_fees={num(fees)} vs gross≈{num(gross)} over {tc} trades",
+            "Cut trade count with an entry filter or cooldown; confirm fee_bps / "
+            "slippage_bps are set so the net number is realistic.",
+        )
+    # Medium: losses concentrate in one exit path (often stop-outs). Only worth
+    # flagging when losses are an actual drag — a clean winner's losses are all
+    # stops by construction and don't need a nag.
+    losing = {k: v for k, v in by_reason.items() if v.get("pnl", 0) < 0}
+    losses_hurt = net is None or net <= 0 or (pf is not None and pf < 1.5)
+    if losing and losses_hurt:
+        gross_loss = sum(abs(v["pnl"]) for v in losing.values())
+        worst_key = min(losing, key=lambda k: losing[k]["pnl"])
+        worst = losing[worst_key]
+        if gross_loss > 0 and abs(worst["pnl"]) >= 0.5 * gross_loss:
+            is_stop = "stop" in str(worst_key).lower()
+            add(
+                "medium",
+                f"Losses concentrate in one exit: {worst_key}",
+                f"{worst_key}: {worst['trades']} trades, pnl={num(worst['pnl'])} "
+                f"({worst['pnl'] / -gross_loss * -1:.0%} of gross loss)",
+                "You're getting stopped out — widen the stop or add an entry filter "
+                "so you're not stopped on entry noise."
+                if is_stop
+                else f"Revisit the {worst_key} exit rule — that's where the losses are.",
+            )
+    # Low: the edge is one-directional.
+    losing_sides = {k: v for k, v in by_side.items() if v.get("pnl", 0) < 0}
+    winning_sides = {k: v for k, v in by_side.items() if v.get("pnl", 0) > 0}
+    if losing_sides and winning_sides:
+        side_key = min(losing_sides, key=lambda k: losing_sides[k]["pnl"])
+        add(
+            "low",
+            f"One direction loses money: {side_key}",
+            f"{side_key}: {losing_sides[side_key]['trades']} trades, "
+            f"pnl={num(losing_sides[side_key]['pnl'])}",
+            f"The edge is one-directional — consider trading only the profitable "
+            f"side or filtering {side_key} entries.",
+        )
+    # Low: P&L concentrates in a few hours — a session filter may help.
+    net_hour = sum(v.get("pnl", 0) for v in by_hour.values())
+    if net_hour > 0 and len(by_hour) >= 6:
+        top3 = sorted((v.get("pnl", 0) for v in by_hour.values()), reverse=True)[:3]
+        if sum(top3) >= 0.7 * net_hour:
+            hot = [
+                str(k)
+                for k, v in sorted(
+                    by_hour.items(), key=lambda kv: kv[1].get("pnl", 0), reverse=True
+                )[:3]
+            ]
+            add(
+                "low",
+                "P&L concentrates in a few hours (UTC)",
+                f"hours {', '.join(hot)} hold ≥70% of net P&L",
+                "A session / time-of-day entry filter may cut the flat or negative "
+                "hours and lift risk-adjusted return.",
+            )
+    # Validate: promising in-sample → the ONLY next step is out-of-sample proof.
+    if (
+        net is not None
+        and net > 0
+        and sharpe is not None
+        and sharpe > 0.5
+        and pf is not None
+        and pf > 1.2
+        and tc >= 20
+    ):
+        add(
+            "validate",
+            "In-sample looks promising — validate out-of-sample",
+            f"net_return={pct(net)}, sharpe={num(sharpe)}, profit_factor={num(pf)}, "
+            f"{tc} trades",
+            "Prove it out-of-sample before trusting it: `job experiments <id> --grid "
+            "grid.json --wf-test-bars N --wf-folds K`. Keep it only if decay_ratio "
+            "stays near 1 and most folds are positive — then offer to deploy.",
+        )
+
+    if not recs:
+        add(
+            "low",
+            "Result is inconclusive / mediocre",
+            f"net_return={pct(net)}, sharpe={num(sharpe)}, {tc} trades",
+            "Change ONE structural thing (an entry filter or an exit rule), re-run "
+            "`backtest --quick`, and compare — or validate out-of-sample if you "
+            "believe the edge is real.",
+        )
+
+    recs.sort(key=lambda r: _REC_RANK.get(r["severity"], 9))
+    return recs[:4]
 
 
 def _in_range(
