@@ -90,6 +90,9 @@ class ExecutionGridResult:
     # the search settings when not an exhaustive grid.
     optimizer: str = "grid"
     search: dict[str, Any] | None = None
+    # Additive: neighbor-robustness of the top cell (grid_plateau) — only for
+    # exhaustive dict-of-lists grids; None for optuna and list-of-dicts.
+    plateau: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -531,6 +534,70 @@ def rank_and_partition(
     return ranked[:top_n], invalid
 
 
+def grid_plateau(
+    run_rows: list[dict[str, Any]],
+    param_grid: Mapping[str, list[Any]],
+    *,
+    rank_by: str,
+) -> dict[str, Any] | None:
+    """Neighbor-robustness of the top grid cell: neighbors differ in exactly
+    one parameter by one step along that parameter's grid list, and
+    plateau_score = mean(neighbor metric) / top metric. Near 1.0 means the
+    optimum sits on a plateau; < 0.5 means a lone spike that is likely noise —
+    the walk_forward docstring's failure mode (a top cell whose neighbors all
+    lose), now measured instead of discovered out-of-sample. Returns None when
+    nothing is swept (no axis with >1 value), the top metric is <= 0 (a ratio
+    against a loss is meaningless), or the top cell has no valid neighbors."""
+    valid = [row for row in run_rows if row["validation"]["execution_valid"]]
+    axes = {key: list(values) for key, values in param_grid.items() if len(values) > 1}
+    if not valid or not axes:
+        return None
+    top = max(valid, key=lambda row: float(row[rank_by] or 0))
+    top_metric = float(top[rank_by] or 0)
+    if top_metric <= 0:
+        return None
+
+    def is_neighbor(row: dict[str, Any]) -> bool:
+        diffs = [
+            key
+            for key in param_grid
+            if row["params"].get(key) != top["params"].get(key)
+        ]
+        if len(diffs) != 1 or diffs[0] not in axes:
+            return False
+        axis = axes[diffs[0]]
+        try:
+            step = abs(
+                axis.index(row["params"][diffs[0]])
+                - axis.index(top["params"][diffs[0]])
+            )
+        except ValueError:
+            return False
+        return step == 1
+
+    neighbors = [row for row in valid if is_neighbor(row)]
+    if not neighbors:
+        return None
+    neighbor_mean = sum(float(row[rank_by] or 0) for row in neighbors) / len(neighbors)
+    score = neighbor_mean / top_metric
+    result: dict[str, Any] = {
+        "rank_by": rank_by,
+        "top_params": top["params"],
+        "top_metric": round(top_metric, 6),
+        "neighbor_count": len(neighbors),
+        "neighbor_mean": round(neighbor_mean, 6),
+        "plateau_score": round(score, 3),
+    }
+    if score < 0.5:
+        result["note"] = (
+            f"top cell is a lone spike — its one-step neighbors average "
+            f"{score:.0%} of its {rank_by}, which is likely noise. Prefer a "
+            "parameter region where the neighbors also perform (the best "
+            "plateau), and confirm with walk-forward before trusting it."
+        )
+    return result
+
+
 def available_cpu_count() -> int:
     """Usable CPUs for backtest fan-out. Respects a cgroup CPU quota (Fly
     machines are quota-limited, and os.cpu_count() reports the host's cores,
@@ -647,6 +714,11 @@ def run_execution_grid(
             "cpu_count": available_cpu_count(),
             "param_count": len(params_list),
         },
+        plateau=(
+            grid_plateau(run_rows, param_grid, rank_by=rank_by)
+            if isinstance(param_grid, Mapping)
+            else None
+        ),
     )
 
 
