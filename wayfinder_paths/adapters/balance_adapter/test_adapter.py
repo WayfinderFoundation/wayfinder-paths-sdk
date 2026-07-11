@@ -5,6 +5,21 @@ import pytest
 from wayfinder_paths.adapters.balance_adapter.adapter import BalanceAdapter
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 
+_ADAPTER_MODULE = "wayfinder_paths.adapters.balance_adapter.adapter"
+
+SOL_OWNER = "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"
+SOL_RECIPIENT = "7VHUFJHWu2CuExkJcJrzhQPJ2oygupTWkL2A2For4BmE"
+USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+
+def _solana_envelope() -> dict:
+    return {
+        "chainType": "solana",
+        "chainId": 900,
+        "serializedTransaction": "c2VyaWFsaXplZC10eA==",
+        "lastValidBlockHeight": 250_000_000,
+    }
+
 
 @pytest.fixture(autouse=True)
 def _clear_token_resolver_cache():
@@ -220,3 +235,159 @@ class TestBalanceAdapter:
         )
 
         assert balance == 2.0
+
+    @pytest.mark.asyncio
+    async def test_send_to_address_solana(self, adapter):
+        signing_callback = AsyncMock()
+        token_info = {
+            "token_id": "usd-coin-solana",
+            "address": USDC_MINT,
+            "decimals": 6,
+            "chain": {"id": 900},
+        }
+        envelope = _solana_envelope()
+
+        with (
+            patch(
+                f"{_ADAPTER_MODULE}.TOKEN_CLIENT.get_token_details",
+                new=AsyncMock(return_value=token_info),
+            ),
+            patch(
+                f"{_ADAPTER_MODULE}.build_send_transaction",
+                new=AsyncMock(return_value=envelope),
+            ) as mock_build,
+            patch(
+                f"{_ADAPTER_MODULE}.send_solana_versioned_transaction",
+                new=AsyncMock(return_value="Base58Signature"),
+            ) as mock_svm_send,
+            patch(f"{_ADAPTER_MODULE}.send_transaction", new=AsyncMock()) as mock_evm,
+        ):
+            ok, tx_hash = await adapter.send_to_address(
+                token_id="usd-coin-solana",
+                amount=5_000_000,
+                from_wallet={"address": SOL_OWNER},
+                to_address=SOL_RECIPIENT,
+                signing_callback=signing_callback,
+            )
+
+        assert ok is True
+        assert tx_hash == "Base58Signature"
+        mock_build.assert_awaited_once_with(
+            from_address=SOL_OWNER,
+            to_address=SOL_RECIPIENT,
+            token_address=USDC_MINT,
+            chain_id=900,
+            amount=5_000_000,
+        )
+        mock_svm_send.assert_awaited_once_with(
+            "c2VyaWFsaXplZC10eA==", signing_callback, chain_id=900
+        )
+        mock_evm.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_send_to_address_evm_regression(self, adapter):
+        signing_callback = AsyncMock()
+        token_info = {
+            "token_id": "usd-coin-base",
+            "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+            "decimals": 6,
+            "chain": {"id": 8453},
+        }
+        evm_tx = {
+            "to": token_info["address"],
+            "from": "0xWallet",
+            "data": "0xdeadbeef",
+            "chainId": 8453,
+        }
+
+        with (
+            patch(
+                f"{_ADAPTER_MODULE}.TOKEN_CLIENT.get_token_details",
+                new=AsyncMock(return_value=token_info),
+            ),
+            patch(
+                f"{_ADAPTER_MODULE}.build_send_transaction",
+                new=AsyncMock(return_value=evm_tx),
+            ) as mock_build,
+            patch(
+                f"{_ADAPTER_MODULE}.send_transaction",
+                new=AsyncMock(return_value="0xevmhash"),
+            ) as mock_evm,
+            patch(
+                f"{_ADAPTER_MODULE}.send_solana_versioned_transaction",
+                new=AsyncMock(),
+            ) as mock_svm_send,
+        ):
+            ok, tx_hash = await adapter.send_to_address(
+                token_id="usd-coin-base",
+                amount=5_000_000,
+                from_wallet={"address": "0xWallet"},
+                to_address="0xRecipient",
+                signing_callback=signing_callback,
+            )
+
+        assert ok is True
+        assert tx_hash == "0xevmhash"
+        mock_build.assert_awaited_once_with(
+            from_address="0xWallet",
+            to_address="0xRecipient",
+            token_address=token_info["address"],
+            chain_id=8453,
+            amount=5_000_000,
+        )
+        mock_evm.assert_awaited_once_with(evm_tx, signing_callback)
+        mock_svm_send.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_move_between_wallets_solana(self):
+        main_callback = AsyncMock()
+        strategy_callback = AsyncMock()
+        adapter = BalanceAdapter(
+            config={},
+            main_sign_callback=main_callback,
+            strategy_sign_callback=strategy_callback,
+            main_wallet_address=SOL_OWNER,
+            strategy_wallet_address=SOL_RECIPIENT,
+        )
+        token_info = {
+            "token_id": "usd-coin-solana",
+            "address": USDC_MINT,
+            "decimals": 6,
+            "chain": {"id": 900},
+        }
+        envelope = _solana_envelope()
+
+        with (
+            patch(
+                f"{_ADAPTER_MODULE}.TOKEN_CLIENT.get_token_details",
+                new=AsyncMock(return_value=token_info),
+            ),
+            patch(
+                f"{_ADAPTER_MODULE}.build_send_transaction",
+                new=AsyncMock(return_value=envelope),
+            ) as mock_build,
+            patch(
+                f"{_ADAPTER_MODULE}.send_solana_versioned_transaction",
+                new=AsyncMock(return_value="MoveSignature"),
+            ) as mock_svm_send,
+            patch(f"{_ADAPTER_MODULE}.send_transaction", new=AsyncMock()) as mock_evm,
+        ):
+            ok, tx_hash = await adapter.move_from_main_wallet_to_strategy_wallet(
+                token_id="usd-coin-solana",
+                amount=1.5,
+                skip_ledger=True,
+            )
+
+        assert ok is True
+        assert tx_hash == "MoveSignature"
+        mock_build.assert_awaited_once_with(
+            from_address=SOL_OWNER,
+            to_address=SOL_RECIPIENT,
+            token_address=USDC_MINT,
+            chain_id=900,
+            amount=1_500_000,
+        )
+        mock_svm_send.assert_awaited_once_with(
+            "c2VyaWFsaXplZC10eA==", main_callback, chain_id=900
+        )
+        mock_evm.assert_not_awaited()
