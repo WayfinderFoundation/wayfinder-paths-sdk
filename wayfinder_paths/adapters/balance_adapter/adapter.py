@@ -8,6 +8,10 @@ from wayfinder_paths.core.adapters.BaseAdapter import BaseAdapter
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils.evm_helpers import resolve_chain_id
+from wayfinder_paths.core.utils.svm import is_solana_chain
+from wayfinder_paths.core.utils.svm_transaction import (
+    send_solana_versioned_transaction,
+)
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
@@ -219,8 +223,29 @@ class BalanceAdapter(BaseAdapter):
             chain_id=chain_id,
             amount=amount,
         )
-        tx_hash = await send_transaction(tx, signing_callback)
+        tx_hash = await self._dispatch_send(tx, chain_id, signing_callback)
         return True, tx_hash
+
+    async def _dispatch_send(
+        self,
+        transaction: dict[str, Any],
+        chain_id: int,
+        signing_callback,
+    ) -> str:
+        """Broadcast a built transfer on the right stack.
+
+        On Solana chains ``build_send_transaction`` returns the transaction
+        envelope, so the serialized transaction is routed through the SVM
+        send flow (sponsored vs. local signing handled internally); everything
+        else is an EVM transaction dict.
+        """
+        if is_solana_chain(chain_id):
+            return await send_solana_versioned_transaction(
+                transaction["serializedTransaction"],
+                signing_callback,
+                chain_id=int(chain_id),
+            )
+        return await send_transaction(transaction, signing_callback)
 
     async def _move_between_wallets(
         self,
@@ -254,7 +279,7 @@ class BalanceAdapter(BaseAdapter):
             and from_address.lower() == self.main_wallet_address.lower()
             else self.strategy_sign_callback
         )
-        tx_hash = await send_transaction(transaction, callback)
+        tx_hash = await self._dispatch_send(transaction, chain_id, callback)
 
         if ledger_method:
             wallet_for_ledger = from_address if ledger_wallet == "from" else to_address

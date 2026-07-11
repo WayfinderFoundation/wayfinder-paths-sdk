@@ -11,6 +11,11 @@ from wayfinder_paths.core.adapters.models import SWAP
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.clients.LedgerClient import TransactionRecord
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
+from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
+from wayfinder_paths.core.utils.svm import is_solana_chain
+from wayfinder_paths.core.utils.svm_transaction import (
+    send_solana_versioned_transaction,
+)
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     is_native_token,
@@ -158,44 +163,68 @@ class BRAPAdapter(BaseAdapter):
         quote: dict[str, Any],
         strategy_name: str | None = None,
     ) -> tuple[bool, Any]:
-        chain_id = from_token["chain"]["id"]
-
         calldata = quote.get("calldata")
-        if not calldata or not calldata.get("data"):
-            return (False, "Quote missing calldata")
-
-        transaction = {
-            **calldata,
-            "chainId": chain_id,
-            "from": Web3.to_checksum_address(from_address),
-        }
-        if "value" in calldata:
-            transaction["value"] = int(calldata["value"])
-
-        approve_amount = (
-            quote.get("input_amount")
-            or quote.get("inputAmount")
-            or transaction.get("value")
+        is_solana_quote = bool(calldata) and (
+            calldata.get("chainType") == "solana"
+            or is_solana_chain(calldata.get("chainId"))
         )
-        token_address = from_token.get("address")
 
-        spender = transaction.get("to")
-        if (
-            token_address
-            and spender
-            and approve_amount
-            and not is_native_token(token_address)
-        ):
-            await ensure_allowance(
-                token_address=token_address,
-                owner=from_address,
-                spender=spender,
-                amount=int(approve_amount),
-                chain_id=chain_id,
-                signing_callback=self.sign_callback,
+        if is_solana_quote:
+            # Solana quotes carry a pre-built transaction envelope: no
+            # checksumming (base58 addresses) and no allowance step (SPL
+            # transfers are authorized by the transaction signature itself).
+            serialized = calldata.get("serializedTransaction")
+            if not serialized:
+                return (False, "Quote missing serializedTransaction")
+            raw_chain_id = calldata.get("chainId")
+            if raw_chain_id is None:
+                raw_chain_id = (from_token.get("chain") or {}).get("id")
+            chain_id = (
+                int(raw_chain_id) if raw_chain_id is not None else CHAIN_ID_SOLANA
             )
+            txn_hash = await send_solana_versioned_transaction(
+                serialized,
+                self.sign_callback,
+                chain_id=chain_id,
+            )
+        else:
+            chain_id = from_token["chain"]["id"]
 
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+            if not calldata or not calldata.get("data"):
+                return (False, "Quote missing calldata")
+
+            transaction = {
+                **calldata,
+                "chainId": chain_id,
+                "from": Web3.to_checksum_address(from_address),
+            }
+            if "value" in calldata:
+                transaction["value"] = int(calldata["value"])
+
+            approve_amount = (
+                quote.get("input_amount")
+                or quote.get("inputAmount")
+                or transaction.get("value")
+            )
+            token_address = from_token.get("address")
+
+            spender = transaction.get("to")
+            if (
+                token_address
+                and spender
+                and approve_amount
+                and not is_native_token(token_address)
+            ):
+                await ensure_allowance(
+                    token_address=token_address,
+                    owner=from_address,
+                    spender=spender,
+                    amount=int(approve_amount),
+                    chain_id=chain_id,
+                    signing_callback=self.sign_callback,
+                )
+
+            txn_hash = await send_transaction(transaction, self.sign_callback)
         self.logger.info(f"Swap broadcast: tx={txn_hash}")
 
         try:

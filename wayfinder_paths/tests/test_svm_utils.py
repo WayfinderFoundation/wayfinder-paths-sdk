@@ -4,7 +4,7 @@ import base64
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -20,12 +20,19 @@ from solders.message import (
 )
 from solders.pubkey import Pubkey
 from solders.signature import Signature
+from solders.system_program import ID as SYS_PROGRAM_ID
 from solders.system_program import TransferParams, transfer
 from solders.transaction import VersionedTransaction
 from solders.transaction_status import TransactionConfirmationStatus
 from spl.token._layouts import MINT_LAYOUT
-from spl.token.constants import TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID
+from spl.token.constants import (
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+    TOKEN_2022_PROGRAM_ID,
+    TOKEN_PROGRAM_ID,
+)
 from spl.token.instructions import get_associated_token_address as spl_reference_ata
+from spl.token.instructions import transfer_checked
+from spl.token.models import TransferCheckedParams
 
 from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.constants.chains import (
@@ -33,6 +40,7 @@ from wayfinder_paths.core.constants.chains import (
     CHAIN_ID_SOLANA,
     SVM_CHAIN_IDS,
 )
+from wayfinder_paths.core.utils import tokens
 from wayfinder_paths.core.utils.svm import (
     is_solana_chain,
     solana_client_from_chain_id,
@@ -40,6 +48,7 @@ from wayfinder_paths.core.utils.svm import (
 from wayfinder_paths.core.utils.svm_tokens import (
     SOL_NATIVE_SENTINEL,
     WRAPPED_SOL_MINT,
+    build_solana_send_transaction,
     get_associated_token_address,
     get_sol_balance,
     get_solana_token_balance,
@@ -66,9 +75,33 @@ _SVM_TX_MODULE = "wayfinder_paths.core.utils.svm_transaction"
 
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 OWNER = "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T"
+RECIPIENT = str(Pubkey.from_bytes(b"\x07" * 32))
 # Derived offline with solana-py's reference implementation.
 EXPECTED_USDC_ATA = "F8biqkCRK2tHR6EncrcXDGgVTkGRrtojqyW39w41Qspn"
 EXPECTED_USDC_ATA_2022 = "8UQrn3SEPVqkggQ7Y7QEpGxutSyYQgJVFsgSxzwge858"
+
+
+def _mint_data(decimals: int) -> bytes:
+    return MINT_LAYOUT.build(
+        {
+            "mint_authority_option": 0,
+            "mint_authority": bytes(32),
+            "supply": 1_000_000,
+            "decimals": decimals,
+            "is_initialized": 1,
+            "freeze_authority_option": 0,
+            "freeze_authority": bytes(32),
+        }
+    )
+
+
+def _blockhash_resp(last_valid_block_height: int = 250_000_000) -> SimpleNamespace:
+    return SimpleNamespace(
+        value=SimpleNamespace(
+            blockhash=Hash.default(),
+            last_valid_block_height=last_valid_block_height,
+        )
+    )
 
 
 @contextmanager
@@ -293,17 +326,7 @@ async def test_get_solana_token_balance_dispatch():
 
 @pytest.mark.asyncio
 async def test_get_spl_mint_decimals():
-    mint_data = MINT_LAYOUT.build(
-        {
-            "mint_authority_option": 0,
-            "mint_authority": bytes(32),
-            "supply": 1_000_000,
-            "decimals": 6,
-            "is_initialized": 1,
-            "freeze_authority_option": 0,
-            "freeze_authority": bytes(32),
-        }
-    )
+    mint_data = _mint_data(decimals=6)
     fake = AsyncMock()
     fake.get_account_info = AsyncMock(
         return_value=SimpleNamespace(
@@ -1244,3 +1267,361 @@ async def test_sponsored_solana_failed_status_maps_to_fallback_error():
             SponsorshipUnavailableError, match="failed before broadcast"
         ):
             await _send_sponsored_solana_transaction("addr", tx, CHAIN_ID_SOLANA)
+
+
+# ---------------------------------------------------------------------------
+# Transfer envelope builder (mocked RPC)
+# ---------------------------------------------------------------------------
+
+
+def _decode_envelope(envelope: dict) -> VersionedTransaction:
+    assert envelope["chainType"] == "solana"
+    assert envelope["chainId"] == CHAIN_ID_SOLANA
+    return VersionedTransaction.from_bytes(
+        base64.b64decode(envelope["serializedTransaction"])
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("token_address", [None, SOL_NATIVE_SENTINEL, "native"])
+async def test_build_solana_send_transaction_native(token_address):
+    fake = AsyncMock()
+    fake.get_latest_blockhash = AsyncMock(return_value=_blockhash_resp())
+    with _patch_client(fake):
+        envelope = await build_solana_send_transaction(
+            OWNER, RECIPIENT, token_address, 1_000_000
+        )
+
+    assert envelope["lastValidBlockHeight"] == 250_000_000
+    tx = _decode_envelope(envelope)
+    msg = tx.message
+
+    # Sender is fee payer; single system transfer instruction.
+    assert msg.account_keys[0] == Pubkey.from_string(OWNER)
+    assert len(msg.instructions) == 1
+    ix = msg.instructions[0]
+    assert msg.account_keys[ix.program_id_index] == SYS_PROGRAM_ID
+    expected = transfer(
+        TransferParams(
+            from_pubkey=Pubkey.from_string(OWNER),
+            to_pubkey=Pubkey.from_string(RECIPIENT),
+            lamports=1_000_000,
+        )
+    )
+    assert bytes(ix.data) == bytes(expected.data)
+
+    # Unsigned envelope: placeholder signatures only.
+    assert len(tx.signatures) == msg.header.num_required_signatures
+    assert all(sig == Signature.default() for sig in tx.signatures)
+    # Native path needs no account reads.
+    fake.get_account_info.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_build_solana_send_transaction_spl_existing_ata():
+    mint_account = SimpleNamespace(owner=TOKEN_PROGRAM_ID, data=_mint_data(decimals=6))
+    fake = AsyncMock()
+    fake.get_account_info = AsyncMock(
+        side_effect=[
+            SimpleNamespace(value=mint_account),  # token program resolve
+            SimpleNamespace(value=SimpleNamespace(owner=TOKEN_PROGRAM_ID)),  # dest ATA
+            SimpleNamespace(value=mint_account),  # decimals
+        ]
+    )
+    fake.get_latest_blockhash = AsyncMock(return_value=_blockhash_resp())
+    with _patch_client(fake):
+        envelope = await build_solana_send_transaction(
+            OWNER, RECIPIENT, USDC_MINT, 2_500_000
+        )
+
+    tx = _decode_envelope(envelope)
+    msg = tx.message
+
+    owner = Pubkey.from_string(OWNER)
+    recipient = Pubkey.from_string(RECIPIENT)
+    mint = Pubkey.from_string(USDC_MINT)
+    dest_ata = get_associated_token_address(recipient, mint, TOKEN_PROGRAM_ID)
+
+    # Existing ATA: no create instruction, just transfer_checked.
+    assert len(msg.instructions) == 1
+    ix = msg.instructions[0]
+    assert msg.account_keys[ix.program_id_index] == TOKEN_PROGRAM_ID
+    expected = transfer_checked(
+        TransferCheckedParams(
+            program_id=TOKEN_PROGRAM_ID,
+            source=get_associated_token_address(owner, mint, TOKEN_PROGRAM_ID),
+            mint=mint,
+            dest=dest_ata,
+            owner=owner,
+            amount=2_500_000,
+            decimals=6,
+        )
+    )
+    assert bytes(ix.data) == bytes(expected.data)
+    assert dest_ata in list(msg.account_keys)
+    # The existence probe hit the derived destination ATA.
+    assert fake.get_account_info.await_args_list[1].args[0] == dest_ata
+
+
+@pytest.mark.asyncio
+async def test_build_solana_send_transaction_spl_missing_ata():
+    mint_account = SimpleNamespace(owner=TOKEN_PROGRAM_ID, data=_mint_data(decimals=6))
+    fake = AsyncMock()
+    fake.get_account_info = AsyncMock(
+        side_effect=[
+            SimpleNamespace(value=mint_account),  # token program resolve
+            SimpleNamespace(value=None),  # dest ATA missing
+            SimpleNamespace(value=mint_account),  # decimals
+        ]
+    )
+    fake.get_latest_blockhash = AsyncMock(return_value=_blockhash_resp())
+    with _patch_client(fake):
+        envelope = await build_solana_send_transaction(OWNER, RECIPIENT, USDC_MINT, 42)
+
+    tx = _decode_envelope(envelope)
+    msg = tx.message
+
+    # Missing ATA: idempotent create for the recipient, then transfer_checked.
+    assert len(msg.instructions) == 2
+    create_ix, transfer_ix = msg.instructions
+    assert msg.account_keys[create_ix.program_id_index] == ASSOCIATED_TOKEN_PROGRAM_ID
+    assert bytes(create_ix.data) == bytes([1])  # CreateIdempotent discriminator
+    assert msg.account_keys[transfer_ix.program_id_index] == TOKEN_PROGRAM_ID
+    assert bytes(transfer_ix.data)[0] == 12  # TransferChecked discriminator
+
+    # The create instruction's payer is the sender.
+    assert msg.account_keys[create_ix.accounts[0]] == Pubkey.from_string(OWNER)
+
+
+@pytest.mark.asyncio
+async def test_build_solana_send_transaction_token_2022():
+    mint_account = SimpleNamespace(
+        owner=TOKEN_2022_PROGRAM_ID, data=_mint_data(decimals=9)
+    )
+    fake = AsyncMock()
+    fake.get_account_info = AsyncMock(
+        side_effect=[
+            SimpleNamespace(value=mint_account),  # token program resolve
+            SimpleNamespace(value=None),  # dest ATA missing
+            SimpleNamespace(value=mint_account),  # decimals
+        ]
+    )
+    fake.get_latest_blockhash = AsyncMock(return_value=_blockhash_resp())
+    with _patch_client(fake):
+        envelope = await build_solana_send_transaction(OWNER, RECIPIENT, USDC_MINT, 10)
+
+    tx = _decode_envelope(envelope)
+    msg = tx.message
+
+    recipient = Pubkey.from_string(RECIPIENT)
+    mint = Pubkey.from_string(USDC_MINT)
+
+    assert len(msg.instructions) == 2
+    create_ix, transfer_ix = msg.instructions
+    # Transfer runs under Token-2022, and the ATA is derived under Token-2022.
+    assert msg.account_keys[transfer_ix.program_id_index] == TOKEN_2022_PROGRAM_ID
+    dest_ata_2022 = get_associated_token_address(recipient, mint, TOKEN_2022_PROGRAM_ID)
+    assert dest_ata_2022 in list(msg.account_keys)
+    assert get_associated_token_address(recipient, mint, TOKEN_PROGRAM_ID) not in list(
+        msg.account_keys
+    )
+    assert bytes(create_ix.data) == bytes([1])
+    assert bytes(transfer_ix.data)[9] == 9  # transfer_checked decimals byte
+
+
+@pytest.mark.asyncio
+async def test_build_solana_send_transaction_rejects_nonpositive_amount():
+    with pytest.raises(ValueError, match="must be positive"):
+        await build_solana_send_transaction(OWNER, RECIPIENT, None, 0)
+    with pytest.raises(ValueError, match="must be positive"):
+        await build_solana_send_transaction(OWNER, RECIPIENT, USDC_MINT, -1)
+
+
+# ---------------------------------------------------------------------------
+# tokens.py choke-point dispatch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_token_balance_dispatches_to_solana():
+    mock_solana = AsyncMock(return_value=42)
+    with (
+        patch(
+            "wayfinder_paths.core.utils.svm_tokens.get_solana_token_balance",
+            new=mock_solana,
+        ),
+        patch("wayfinder_paths.core.utils.tokens.web3_from_chain_id") as mock_web3,
+    ):
+        out = await tokens.get_token_balance(USDC_MINT, CHAIN_ID_SOLANA, OWNER)
+
+    assert out == 42
+    mock_solana.assert_awaited_once_with(OWNER, USDC_MINT, CHAIN_ID_SOLANA)
+    mock_web3.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_token_decimals_solana_native_is_nine():
+    with patch("wayfinder_paths.core.utils.tokens.web3_from_chain_id") as mock_web3:
+        assert await tokens.get_token_decimals(None, CHAIN_ID_SOLANA) == 9
+        assert (
+            await tokens.get_token_decimals(SOL_NATIVE_SENTINEL, CHAIN_ID_SOLANA) == 9
+        )
+        # The EVM-only default_native_decimals is ignored on the Solana branch.
+        assert (
+            await tokens.get_token_decimals(
+                None, CHAIN_ID_SOLANA, default_native_decimals=18
+            )
+            == 9
+        )
+    mock_web3.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_token_decimals_dispatches_to_solana_mint():
+    mock_decimals = AsyncMock(return_value=6)
+    with (
+        patch(
+            "wayfinder_paths.core.utils.svm_tokens.get_spl_mint_decimals",
+            new=mock_decimals,
+        ),
+        patch("wayfinder_paths.core.utils.tokens.web3_from_chain_id") as mock_web3,
+    ):
+        assert await tokens.get_token_decimals(USDC_MINT, CHAIN_ID_SOLANA) == 6
+
+    mock_decimals.assert_awaited_once_with(USDC_MINT, CHAIN_ID_SOLANA)
+    mock_web3.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_token_balance_with_decimals_dispatches_to_solana():
+    with (
+        patch(
+            "wayfinder_paths.core.utils.svm_tokens.get_solana_token_balance",
+            new=AsyncMock(return_value=123_456),
+        ) as mock_balance,
+        patch(
+            "wayfinder_paths.core.utils.svm_tokens.get_spl_mint_decimals",
+            new=AsyncMock(return_value=6),
+        ) as mock_decimals,
+        patch("wayfinder_paths.core.utils.tokens.web3_from_chain_id") as mock_web3,
+    ):
+        out = await tokens.get_token_balance_with_decimals(
+            USDC_MINT, CHAIN_ID_SOLANA, OWNER
+        )
+
+    assert out == (123_456, 6)
+    mock_balance.assert_awaited_once_with(OWNER, USDC_MINT, CHAIN_ID_SOLANA)
+    mock_decimals.assert_awaited_once_with(USDC_MINT, CHAIN_ID_SOLANA)
+    mock_web3.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_build_send_transaction_dispatches_to_solana():
+    envelope = {
+        "chainType": "solana",
+        "chainId": CHAIN_ID_SOLANA,
+        "serializedTransaction": "AAo=",
+        "lastValidBlockHeight": 1,
+    }
+    mock_build = AsyncMock(return_value=envelope)
+    with (
+        patch(
+            "wayfinder_paths.core.utils.svm_tokens.build_solana_send_transaction",
+            new=mock_build,
+        ),
+        patch("wayfinder_paths.core.utils.tokens.web3_from_chain_id") as mock_web3,
+    ):
+        out = await tokens.build_send_transaction(
+            from_address=OWNER,
+            to_address=RECIPIENT,
+            token_address=USDC_MINT,
+            chain_id=CHAIN_ID_SOLANA,
+            amount=5,
+        )
+
+    assert out is envelope
+    mock_build.assert_awaited_once_with(
+        from_address=OWNER,
+        to_address=RECIPIENT,
+        token_address=USDC_MINT,
+        amount=5,
+        chain_id=CHAIN_ID_SOLANA,
+    )
+    mock_web3.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_token_balance_evm_path_bypasses_solana_dispatch():
+    fake_w3 = MagicMock()
+    fake_w3.to_checksum_address = lambda addr: addr
+    fake_w3.eth.get_balance = AsyncMock(return_value=5)
+    with patch(
+        "wayfinder_paths.core.utils.svm_tokens.get_solana_token_balance",
+        new=AsyncMock(),
+    ) as mock_solana:
+        out = await tokens.get_token_balance(
+            None, CHAIN_ID_BASE, "0xWallet", web3=fake_w3
+        )
+
+    assert out == 5
+    mock_solana.assert_not_awaited()
+    fake_w3.eth.get_balance.assert_awaited_once_with(
+        "0xWallet", block_identifier="pending"
+    )
+
+
+# ---------------------------------------------------------------------------
+# BalanceAdapter via the choke-point dispatch (mocked svm clients)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_balance_adapter_get_balance_solana():
+    from wayfinder_paths.adapters.balance_adapter.adapter import BalanceAdapter
+
+    adapter = BalanceAdapter(config={})
+    mock_balance = AsyncMock(return_value=999)
+    with patch(
+        "wayfinder_paths.core.utils.svm_tokens.get_solana_token_balance",
+        new=mock_balance,
+    ):
+        ok, balance = await adapter.get_balance(
+            wallet_address=OWNER,
+            token_address=USDC_MINT,
+            chain_id=CHAIN_ID_SOLANA,
+        )
+
+    assert ok is True
+    assert balance == 999
+    mock_balance.assert_awaited_once_with(OWNER, USDC_MINT, CHAIN_ID_SOLANA)
+
+
+@pytest.mark.asyncio
+async def test_balance_adapter_get_balance_details_solana():
+    from wayfinder_paths.adapters.balance_adapter.adapter import BalanceAdapter
+
+    adapter = BalanceAdapter(config={})
+    with (
+        patch(
+            "wayfinder_paths.core.utils.svm_tokens.get_solana_token_balance",
+            new=AsyncMock(return_value=1_234_567),
+        ),
+        patch(
+            "wayfinder_paths.core.utils.svm_tokens.get_spl_mint_decimals",
+            new=AsyncMock(return_value=6),
+        ),
+    ):
+        ok, out = await adapter.get_balance_details(
+            wallet_address=OWNER,
+            token_address=USDC_MINT,
+            chain_id=CHAIN_ID_SOLANA,
+        )
+
+    assert ok is True
+    assert isinstance(out, dict)
+    assert out["chain_id"] == CHAIN_ID_SOLANA
+    assert out["token_address"] == USDC_MINT
+    assert out["wallet_address"] == OWNER
+    assert out["balance_raw"] == 1_234_567
+    assert out["decimals"] == 6
+    assert out["balance_decimal"] == pytest.approx(1.234567)
