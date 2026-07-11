@@ -44,7 +44,7 @@ Severity ladder: `blocking` (too few trades / liquidated — fix first, nothing 
 
 A single backtest tunes and scores on the **same** data — its Sharpe / profit factor are **not evidence of an edge**. A "great" in-sample result (Sharpe 6+, PF 10+) almost always means you overfit. The only number that means anything is **out-of-sample**:
 
-- Run `job experiments <id> --grid grid.json --wf-test-bars 240 --wf-folds 4`. This picks params on each fold's train window and scores them on the **held-out** window it never saw.
+- Run `job experiments <id> --grid grid.json --wf-test-bars 240 --wf-folds 4`. This picks params on each fold's train window and scores them on the **held-out** window it never saw. It defaults to a **bounded rolling** train window, so it stays fast (seconds–low minutes) even on a full dataset — don't pass `--wf-anchored` (expanding window, ~4x slower) unless you specifically want anchored folds, and don't hand-shrink the dataset to make it finish.
 - Read the walk-forward report and judge on: **`decay_ratio`** (OOS mean ÷ IS mean — want it near 1; ≪ 1 = overfit), **`oos_positive_folds`** (want most folds profitable OOS), and OOS mean return vs IS mean. If OOS collapses vs IS, the strategy is fit to noise — go back to the idea, don't tune harder.
 - Also sanity-check the *regime*: if you're shorting an asset that fell 50% over the window, most of the "edge" is the trend, not the strategy — confirm it holds on a flat/up stretch too.
 - **Model costs.** Set `fee_bps` / `slippage_bps` in `execution_params`; a strategy with hundreds of trades and `total_fees: 0` is fiction.

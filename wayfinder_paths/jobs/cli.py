@@ -417,7 +417,10 @@ def experiments_cmd(
             "train_bars": wf_train_bars,
             "folds": wf_folds,
             "warmup_bars": wf_warmup_bars,
-            "anchored": wf_anchored or wf_train_bars is None,
+            # Anchor (expanding train window) ONLY when explicitly asked. Default
+            # (no --wf-train-bars) → run_walk_forward's bounded rolling window,
+            # which is ~4x faster than expanding on a full dataset.
+            "anchored": wf_anchored,
         }
     optuna_options = (
         {"n_trials": n_trials, "seed": seed} if optimizer == "optuna" else None
