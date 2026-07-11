@@ -18,14 +18,27 @@ wayfinder job create <id> --script <strategy.py> --execution-contract jobs_v1 --
 # edit execution_spec.json (data_contract.symbols + bar_interval) and the strategy
 wayfinder job fetch-dataset <id> --days 180
 wayfinder job backtest <id> --quick 1000      # fast iteration: last 1000 bars, ~2 KB summary
-wayfinder job backtest-diagnose <id>          # win/PnL by exit reason, hour, side — READ THIS, don't recompute
-# tune params, repeat backtest --quick / diagnose
+wayfinder job backtest-diagnose <id>          # READ next_step + recommendations — the framework tells you what to try
+# apply the ONE change next_step names, repeat backtest --quick / diagnose (see "the improve loop" below)
 # THE decision step — tune AND validate out-of-sample in one shot (never trust an in-sample grid):
 wayfinder job experiments <id> --grid grid.json --wf-test-bars 240 --wf-folds 4
 wayfinder job backtest <id>                   # full-history confirmation of the promoted params
 ```
 
 The `backtest` output is a compact stats summary (`stats` + `profile` + artifact paths). Add `--full` only if you truly need the raw curves; they're always on disk (`job backtest-view`).
+
+## The improve loop — read the recommendations, change ONE thing (don't thrash)
+
+`backtest-diagnose` returns a **`next_step`** (the single most important action) and a ranked **`recommendations`** list, each with the `evidence` (the actual stats/buckets) that triggered it — computed by the framework, so you never hand-roll `json.load(latest.json)` one-liners again. The loop that keeps churn low:
+
+1. Run `backtest --quick`, then `backtest-diagnose`.
+2. Read `next_step`. Apply **exactly one** change it names (widen the stop, add an entry filter, cut leverage, loosen entry…). Changing three things at once means you can't tell which one helped.
+3. Re-run `backtest --quick` and compare the headline. Kept the gain? Keep the change. Otherwise revert it.
+4. Repeat until `recommendations[0].severity == "validate"` (a promising in-sample result) — then go to the decision step.
+
+Severity ladder: `blocking` (too few trades / liquidated — fix first, nothing downstream matters) → `high` (no edge / poor payoff) → `medium` (trend-riding / costs / stop bleed) → `low` (side or session skew) → `validate` (good enough to prove out-of-sample). A `blocking` rec means **stop tuning params** and fix that first.
+
+**Limited churn:** iterate on `--quick`, one change per loop, and let `job experiments` do parameter sweeps in one CPU-safe pass. A full-history `backtest` is only for confirming a promoted candidate — re-running it after every tweak is the churn that pegs the box. If `--quick 1000` takes more than ~1–2 minutes, lower `warmup_bars` or the quick window; that's a signal, not something to wait out.
 
 ## Judge a strategy out-of-sample, or you're just curve-fitting
 
@@ -35,6 +48,17 @@ A single backtest tunes and scores on the **same** data — its Sharpe / profit 
 - Read the walk-forward report and judge on: **`decay_ratio`** (OOS mean ÷ IS mean — want it near 1; ≪ 1 = overfit), **`oos_positive_folds`** (want most folds profitable OOS), and OOS mean return vs IS mean. If OOS collapses vs IS, the strategy is fit to noise — go back to the idea, don't tune harder.
 - Also sanity-check the *regime*: if you're shorting an asset that fell 50% over the window, most of the "edge" is the trend, not the strategy — confirm it holds on a flat/up stretch too.
 - **Model costs.** Set `fee_bps` / `slippage_bps` in `execution_params`; a strategy with hundreds of trades and `total_fees: 0` is fiction.
+
+## Ship it — offer to deploy once (and only once) it validates
+
+When a candidate clears walk-forward (`decay_ratio` near 1, most `oos_positive_folds`), it's earned a deploy. Do this, don't skip to it:
+
+1. `wayfinder job promote-params <id> --grid <grid_id>` — writes the winning params into the job's `execution_params`.
+2. `wayfinder job backtest <id>` — one full-history confirmation on the promoted params.
+3. **Offer the deploy to the user** — summarize the OOS numbers (net, decay_ratio, oos_positive_folds, max drawdown) and *ask* before making it live. Going live is fund-moving; never enable it unprompted.
+4. On a yes: enable the runner loop (`wayfinder job set-mode <id> --mode monitor` / `wayfinder job resume <id>`, or `core_runner` add-job) so `update` runs on the interval.
+
+Do NOT offer to deploy a strategy that only looks good in-sample — that's the curve-fit trap the whole loop exists to avoid.
 
 ## The strategy contract (copy this skeleton)
 

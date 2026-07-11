@@ -268,3 +268,95 @@ def test_diagnose_backtest_agrees_with_stats(tmp_path) -> None:
     assert sl["trades"] == 1 and sl["pnl"] == -1.5 and sl["win_rate"] == 0.0
     assert diag["worst_trades"][0]["pnl"] == -1.5
     assert diag["best_trades"][0]["pnl"] == 2.0
+    # 3 trades → the top recommendation is the blocking "too few trades" one.
+    assert diag["recommendations"][0]["severity"] == "blocking"
+    assert diag["next_step"] == diag["recommendations"][0]["suggest"]
+
+
+def _write_latest(store, job_id: str, stats: dict, trades: list) -> None:
+    bt_dir = store.job_dir(job_id) / "results" / "backtest"
+    bt_dir.mkdir(parents=True, exist_ok=True)
+    (bt_dir / "latest.json").write_text(
+        json.dumps({"run_id": "r1", "stats": stats, "trades": trades})
+    )
+
+
+def _closes(pnls_reasons_sides: list) -> list:
+    """Build closing fills (reduce_only, non-zero pnl) from (pnl, reason, side)."""
+    out = []
+    for i, (pnl, reason, side) in enumerate(pnls_reasons_sides):
+        out.append(
+            {
+                "timestamp": f"2026-01-01T{i % 24:02d}:00:00+00:00",
+                "side": side,
+                "reduce_only": True,
+                "realized_pnl_delta": pnl,
+                "raw": {"metadata": {"exit_reason": reason}},
+            }
+        )
+    return out
+
+
+def test_recommendations_flag_poor_payoff_high_winrate(tmp_path) -> None:
+    """Win often but lose more per loss (PF < 1.1) → a HIGH 'poor payoff' rec
+    that says tighten exits, not loosen entry — evidence quotes the real stats."""
+    from wayfinder_paths.jobs.backtest_artifacts import diagnose_backtest
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = JobStore(repo_root=tmp_path)
+    # 24 trades, 70% winners but a poor profit factor.
+    trades = _closes(
+        [(1.0, "take_profit", "buy")] * 17 + [(-3.0, "stop_loss", "buy")] * 7
+    )
+    _write_latest(
+        store,
+        "payoff",
+        {
+            "net_return": -0.04,
+            "trade_count": 24,
+            "win_rate": 17 / 24,
+            "profit_factor": 17.0 / 21.0,
+            "avg_trade_pnl": (17 - 21) / 24,
+            "sharpe": -0.3,
+        },
+        trades,
+    )
+    diag = diagnose_backtest("payoff", store=store)
+    sevs = [r["severity"] for r in diag["recommendations"]]
+    issues = " ".join(r["issue"] for r in diag["recommendations"]).lower()
+    assert "high" in sevs
+    assert "payoff" in issues or "losers" in issues
+    # Stop-outs are the whole loss → a stop-bleed rec appears too.
+    assert any("stop" in r["suggest"].lower() for r in diag["recommendations"])
+
+
+def test_recommendations_validate_path_points_to_walk_forward(tmp_path) -> None:
+    """A promising in-sample result yields the 'validate out-of-sample' rec
+    naming job experiments / decay_ratio — the offer-to-deploy gate."""
+    from wayfinder_paths.jobs.backtest_artifacts import diagnose_backtest
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = JobStore(repo_root=tmp_path)
+    trades = _closes(
+        [(3.0, "take_profit", "short")] * 22 + [(-1.0, "stop_loss", "short")] * 8
+    )
+    _write_latest(
+        store,
+        "good",
+        {
+            "net_return": 0.31,
+            "trade_count": 30,
+            "win_rate": 22 / 30,
+            "profit_factor": 66.0 / 8.0,
+            "avg_trade_pnl": (66 - 8) / 30,
+            "sharpe": 2.1,
+        },
+        trades,
+    )
+    diag = diagnose_backtest("good", store=store)
+    validate = [r for r in diag["recommendations"] if r["severity"] == "validate"]
+    assert validate, diag["recommendations"]
+    assert "experiments" in validate[0]["suggest"]
+    assert "decay_ratio" in validate[0]["suggest"]
+    # No blocking/high issue on a clean promising run.
+    assert diag["recommendations"][0]["severity"] == "validate"
