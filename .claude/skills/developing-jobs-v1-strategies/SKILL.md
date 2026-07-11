@@ -16,7 +16,10 @@ Do NOT hand-write the strategy into `.wayfinder_runs/` (that's one-off scratch s
 ```
 wayfinder job create <id> --script <strategy.py> --execution-contract jobs_v1 --interval 3600 --initial-capital 1000
 # edit execution_spec.json (data_contract.symbols + bar_interval) and the strategy
-wayfinder job fetch-dataset <id> --days 180
+wayfinder job fetch-dataset <id> --days 720 --source ccxt --exchange binance
+# STEP 0 — validate the IDEA before building on it (see rules/strategy-search.md):
+wayfinder job pair-check <id> --symbols ETH,SOL --days 720    # any pair/long-short idea: the admission gate
+wayfinder job signal-check <id> --column entry_signal        # any entry signal: does it beat drift?
 wayfinder job backtest <id> --quick 1000      # fast iteration: last 1000 bars, ~2 KB summary
 wayfinder job backtest-diagnose <id>          # READ next_step + recommendations — the framework tells you what to try
 # apply the ONE change next_step names, repeat backtest --quick / diagnose (see "the improve loop" below)
@@ -24,6 +27,18 @@ wayfinder job backtest-diagnose <id>          # READ next_step + recommendations
 wayfinder job experiments <id> --grid grid.json --wf-test-bars 240 --wf-folds 4
 wayfinder job backtest <id>                   # full-history confirmation of the promoted params
 ```
+
+**Step 0 verdicts:** `pair-check` REJECT means the pair does not form a
+tradeable spread — no parameter rescues it; offer a structurally different
+idea instead (that is a success outcome). PASS hands you `suggested`
+(hedge_ratio — never size 1:1 — lookback and time-stop from the half-life).
+`signal-check` reports forward returns after signal fires vs the series'
+unconditional drift: no horizon with t ≥ 2 and n ≥ 30 means the entry has no
+predictive power — change the idea, not the parameters. Full search
+methodology (breadth-before-depth, depth budget, validation ladder, honest
+stops): `rules/strategy-search.md`. Multi-leg / pair / basket patterns
+(simultaneous legs, hedge-ratio sizing, `target_weights_to_intents`, the four
+documented-edge families): `rules/pairs-and-baskets.md`.
 
 The `backtest` output is a compact stats summary (`stats` + `profile` + artifact paths). Add `--full` only if you truly need the raw curves; they're always on disk (`job backtest-view`).
 
