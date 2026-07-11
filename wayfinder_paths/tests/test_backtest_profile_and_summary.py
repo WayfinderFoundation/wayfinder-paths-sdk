@@ -286,10 +286,12 @@ def _write_latest(store, job_id: str, stats: dict, trades: list) -> None:
     )
 
 
-def _closes(pnls_reasons_sides: list) -> list:
-    """Build closing fills (reduce_only, non-zero pnl) from (pnl, reason, side)."""
+def _closes(rows: list) -> list:
+    """Build closing fills (reduce_only, non-zero pnl) from (pnl, reason, side)
+    or (pnl, reason, side, symbol) tuples."""
     out = []
-    for i, (pnl, reason, side) in enumerate(pnls_reasons_sides):
+    for i, row in enumerate(rows):
+        pnl, reason, side, *rest = row
         out.append(
             {
                 "timestamp": f"2026-01-01T{i % 24:02d}:00:00+00:00",
@@ -297,6 +299,7 @@ def _closes(pnls_reasons_sides: list) -> list:
                 "reduce_only": True,
                 "realized_pnl_delta": pnl,
                 "raw": {"metadata": {"exit_reason": reason}},
+                **({"symbol": rest[0]} if rest else {}),
             }
         )
     return out
@@ -309,19 +312,20 @@ def test_recommendations_flag_poor_payoff_high_winrate(tmp_path) -> None:
     from wayfinder_paths.jobs.store import JobStore
 
     store = JobStore(repo_root=tmp_path)
-    # 24 trades, 70% winners but a poor profit factor.
+    # 25 trades, 68% winners but a poor profit factor; 8 stop-outs clear the
+    # bucket sample gate (n>=8 and >=25% of closes) so the stop rec fires.
     trades = _closes(
-        [(1.0, "take_profit", "buy")] * 17 + [(-3.0, "stop_loss", "buy")] * 7
+        [(1.0, "take_profit", "buy")] * 17 + [(-3.0, "stop_loss", "buy")] * 8
     )
     _write_latest(
         store,
         "payoff",
         {
-            "net_return": -0.04,
-            "trade_count": 24,
-            "win_rate": 17 / 24,
-            "profit_factor": 17.0 / 21.0,
-            "avg_trade_pnl": (17 - 21) / 24,
+            "net_return": -0.07,
+            "trade_count": 25,
+            "win_rate": 17 / 25,
+            "profit_factor": 17.0 / 24.0,
+            "avg_trade_pnl": (17 - 24) / 25,
             "sharpe": -0.3,
         },
         trades,
@@ -365,6 +369,282 @@ def test_recommendations_validate_path_points_to_walk_forward(tmp_path) -> None:
     assert "decay_ratio" in validate[0]["suggest"]
     # No blocking/high issue on a clean promising run.
     assert diag["recommendations"][0]["severity"] == "validate"
+
+
+def test_bucket_rules_gate_on_sample_size(tmp_path) -> None:
+    """A bucket below n>=8 or <25% of closes is a hypothesis, not evidence —
+    concentration rules must NOT fire on it (n=12 bucket inferences drove a
+    live exit change that didn't survive validation). The same fixture with
+    the bucket at n=8 fires."""
+    from wayfinder_paths.jobs.backtest_artifacts import diagnose_backtest
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = JobStore(repo_root=tmp_path)
+    stats = {
+        "net_return": -0.06,
+        "trade_count": 24,
+        "win_rate": 19 / 24,
+        "profit_factor": 0.8,
+        "avg_trade_pnl": -0.25,
+        "sharpe": -0.4,
+    }
+    # 5 stop-outs hold ALL the gross loss but n=5 < 8 → gated out.
+    _write_latest(
+        store,
+        "gated",
+        stats,
+        _closes([(1.0, "take_profit", "buy")] * 19 + [(-5.0, "stop_loss", "buy")] * 5),
+    )
+    diag = diagnose_backtest("gated", store=store)
+    assert not any(
+        "concentrate in one exit" in r["issue"].lower() for r in diag["recommendations"]
+    ), diag["recommendations"]
+    # Same shape with 8 stop-outs (8 >= 25% of 24 closes... 8/24 = 33%) → fires.
+    _write_latest(
+        store,
+        "ungated",
+        stats,
+        _closes([(1.0, "take_profit", "buy")] * 16 + [(-5.0, "stop_loss", "buy")] * 8),
+    )
+    diag = diagnose_backtest("ungated", store=store)
+    fired = [
+        r
+        for r in diag["recommendations"]
+        if "concentrate in one exit" in r["issue"].lower()
+    ]
+    assert fired and "n=8" in fired[0]["evidence"]
+
+
+def test_no_recommendation_removes_risk_controls(tmp_path) -> None:
+    """String-level invariant: across payloads engineered to fire every rule,
+    no suggestion may contain removal language for stops/time-stops. Retune,
+    widen, filter — never remove."""
+    import re
+
+    from wayfinder_paths.jobs.backtest_artifacts import diagnose_backtest
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = JobStore(repo_root=tmp_path)
+    payloads = {
+        # poor payoff + stop concentration + one-sided losses
+        "a": (
+            {
+                "net_return": -0.08,
+                "trade_count": 32,
+                "win_rate": 0.6,
+                "profit_factor": 0.7,
+                "avg_trade_pnl": -0.1,
+                "sharpe": -0.5,
+                "liquidation_count": 1,
+                "total_fees": 50.0,
+                "buy_hold_return": 0.4,
+            },
+            _closes(
+                [(1.0, "take_profit", "buy")] * 19
+                + [(-4.0, "stop_loss", "buy")] * 9
+                + [(-2.0, "stop_loss", "sell")] * 4
+            ),
+        ),
+        # multi-symbol losing pair, one leg carrying the losses
+        "b": (
+            {
+                "net_return": -0.12,
+                "trade_count": 30,
+                "win_rate": 0.4,
+                "profit_factor": 0.6,
+                "avg_trade_pnl": -0.2,
+                "sharpe": -0.9,
+            },
+            _closes(
+                [(1.0, "signal", "buy", "ETH")] * 10
+                + [(-0.5, "signal", "buy", "ETH")] * 5
+                + [(-4.0, "signal", "sell", "SOL")] * 15
+            ),
+        ),
+        # artifact-grade win rate
+        "c": (
+            {
+                "net_return": 0.5,
+                "trade_count": 12,
+                "win_rate": 0.95,
+                "profit_factor": 9.0,
+                "avg_trade_pnl": 1.0,
+                "sharpe": 3.0,
+            },
+            _closes([(1.0, "take_profit", "buy")] * 12),
+        ),
+    }
+    forbidden = re.compile(
+        r"(remove|delete|disable|drop|get rid of|no longer need|trade without)"
+        r"[^.]{0,40}(stop|time[- ]?stop|risk control)",
+        re.IGNORECASE,
+    )
+    for job_id, (stats, trades) in payloads.items():
+        _write_latest(store, job_id, stats, trades)
+        diag = diagnose_backtest(job_id, store=store)
+        for rec in diag["recommendations"]:
+            text = f"{rec['issue']} {rec['suggest']}"
+            assert not forbidden.search(text), (job_id, text)
+        assert "Never remove a risk control" in diag["how_to_use"]
+
+
+def test_simulation_artifact_detector(tmp_path) -> None:
+    """>90% win rate on n>=10, or entries that close on their own bar, is
+    flagged as a likely execution artifact — the same-bar bracket-fill case a
+    live session had to catch by hand."""
+    from wayfinder_paths.jobs.backtest_artifacts import diagnose_backtest
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = JobStore(repo_root=tmp_path)
+    # Interleave open fills (pnl=0) at the SAME timestamp as their close —
+    # same-bar bracket fills.
+    trades = []
+    for i in range(12):
+        ts = f"2026-01-01T{i % 24:02d}:00:00+00:00"
+        trades.append(
+            {
+                "timestamp": ts,
+                "side": "buy",
+                "symbol": "ETH",
+                "realized_pnl_delta": 0.0,
+            }
+        )
+        trades.append(
+            {
+                "timestamp": ts,
+                "side": "sell",
+                "symbol": "ETH",
+                "reduce_only": True,
+                "realized_pnl_delta": 1.0,
+                "raw": {"metadata": {"exit_reason": "take_profit"}},
+            }
+        )
+    _write_latest(
+        store,
+        "artifact",
+        {
+            "net_return": 0.4,
+            "trade_count": 12,
+            "win_rate": 1.0,
+            "profit_factor": 99.0,
+            "avg_trade_pnl": 1.0,
+            "sharpe": 4.0,
+        },
+        trades,
+    )
+    diag = diagnose_backtest("artifact", store=store)
+    fired = [r for r in diag["recommendations"] if "artifact" in r["issue"].lower()]
+    assert fired, diag["recommendations"]
+    assert fired[0]["severity"] == "high"
+    assert "100% of closes fill on the entry bar" in fired[0]["evidence"]
+    assert "same_bar_policy" in fired[0]["suggest"]
+
+
+def test_multi_symbol_losing_recommends_pair_check(tmp_path) -> None:
+    """A losing multi-symbol strategy gets 'run pair-check' ranked ABOVE the
+    generic no-edge advice (which it replaces), plus the hedge-ratio sizing rec
+    when one leg carries >=80% of the symbol gross loss."""
+    from wayfinder_paths.jobs.backtest_artifacts import diagnose_backtest
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = JobStore(repo_root=tmp_path)
+    trades = _closes(
+        [(1.0, "signal", "buy", "ETH")] * 10
+        + [(-0.5, "signal", "buy", "ETH")] * 5
+        + [(-4.0, "signal", "sell", "SOL")] * 15
+    )
+    _write_latest(
+        store,
+        "pair",
+        {
+            "net_return": -0.12,
+            "trade_count": 30,
+            "win_rate": 10 / 30,
+            "profit_factor": 10.0 / 62.5,
+            "avg_trade_pnl": -1.75,
+            "sharpe": -1.1,
+        },
+        trades,
+    )
+    diag = diagnose_backtest("pair", store=store)
+    assert diag["by_symbol"]["SOL"]["trades"] == 15
+    top = diag["recommendations"][0]
+    assert top["severity"] == "high"
+    assert "pair-check" in top["suggest"]
+    assert "correlated is not cointegrated" in top["suggest"]
+    # The generic single-symbol no-edge text is replaced, not duplicated.
+    assert not any(
+        r["issue"].startswith("No edge on this data") for r in diag["recommendations"]
+    )
+    hedge = [r for r in diag["recommendations"] if "hedge ratio" in r["suggest"]]
+    assert hedge, diag["recommendations"]
+    assert "SOL" in hedge[0]["issue"]
+
+
+def test_grid_plateau_lone_spike_vs_plateau() -> None:
+    """plateau_score = mean(one-step neighbors) / top cell. A lone spike
+    (<0.5) carries the noise note; a genuine plateau does not. Nothing swept
+    or a non-positive top metric → None."""
+    from wayfinder_paths.jobs.execution.simulator import grid_plateau
+
+    grid = {"a": [1, 2, 3], "b": [10, 20]}
+
+    def row(a, b, metric):
+        return {
+            "params": {"a": a, "b": b},
+            "validation": {"execution_valid": True},
+            "net_return": metric,
+        }
+
+    spike = [
+        row(1, 10, 0.05),
+        row(2, 10, 1.0),  # top
+        row(3, 10, 0.05),
+        row(1, 20, 0.05),
+        row(2, 20, 0.05),  # neighbor (b: 10→20)
+        row(3, 20, 0.05),
+    ]
+    result = grid_plateau(spike, grid, rank_by="net_return")
+    assert result["top_params"] == {"a": 2, "b": 10}
+    assert result["neighbor_count"] == 3  # (1,10), (3,10), (2,20)
+    assert result["plateau_score"] == 0.05
+    assert "lone spike" in result["note"]
+
+    plateau = (
+        [r | {"net_return": 0.9} for r in spike[:1]]
+        + spike[1:2]
+        + [r | {"net_return": 0.9} for r in spike[2:]]
+    )
+    result = grid_plateau(plateau, grid, rank_by="net_return")
+    assert result["plateau_score"] == 0.9
+    assert "note" not in result
+
+    # Non-positive top metric → ratio is meaningless → None.
+    losing = [row(1, 10, -0.2), row(2, 10, -0.1), row(3, 10, -0.3)]
+    assert grid_plateau(losing, grid, rank_by="net_return") is None
+    # Nothing swept → None.
+    assert grid_plateau(spike, {"a": [2]}, rank_by="net_return") is None
+
+
+def test_grid_summary_carries_plateau() -> None:
+    """summarize_backtest_payload keeps the plateau block so the agent sees
+    the robustness read without loading the full grid payload."""
+    from wayfinder_paths.jobs.execution.job import summarize_backtest_payload
+
+    payload = {
+        "type": "grid",
+        "result": {
+            "grid_id": "g1",
+            "rank_by": "net_return",
+            "runs": [],
+            "ranked": [],
+            "invalid": [],
+            "plateau": {"plateau_score": 0.3, "note": "top cell is a lone spike"},
+        },
+        "stamp": {},
+    }
+    summary = summarize_backtest_payload(payload)
+    assert summary["result"]["plateau"]["plateau_score"] == 0.3
 
 
 def test_walk_forward_default_is_bounded_rolling_not_anchored() -> None:

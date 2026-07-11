@@ -52,7 +52,7 @@ def summarize_backtest_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         if "ranked" in result:  # grid / optuna result
             summary["result"] = {
                 k: result[k]
-                for k in ("grid_id", "rank_by", "optimizer", "search")
+                for k in ("grid_id", "rank_by", "optimizer", "search", "plateau")
                 if k in result
             }
             summary["result"]["run_count"] = len(result.get("runs") or [])

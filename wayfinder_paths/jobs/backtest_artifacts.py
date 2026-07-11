@@ -190,6 +190,24 @@ def diagnose_backtest(
         ts = _parse_ts(trade.get("timestamp"))
         return ts.hour if ts else -1
 
+    def _same_bar_close_fraction() -> float | None:
+        # Fraction of closes that fill on the SAME timestamp as the position's
+        # most recent opening fill — the signature of same-bar bracket fills,
+        # which produce fantasy win rates the live engine cannot reproduce.
+        opens: dict[str, str | None] = {}
+        paired = 0
+        same = 0
+        for trade in trades:
+            symbol = str(trade.get("symbol") or "?")
+            if abs(float(trade.get("realized_pnl_delta") or 0.0)) > 0:
+                open_ts = opens.get(symbol)
+                if open_ts is not None:
+                    paired += 1
+                    same += 1 if trade.get("timestamp") == open_ts else 0
+            else:
+                opens[symbol] = trade.get("timestamp")
+        return same / paired if paired else None
+
     def _bucket(key_fn: Any) -> dict[Any, dict[str, Any]]:
         agg: dict[Any, dict[str, float]] = {}
         for trade in closes:
@@ -237,20 +255,35 @@ def diagnose_backtest(
     by_exit_reason = _bucket(_reason)
     by_close_hour = dict(sorted(_bucket(_hour).items()))
     by_side = _bucket(lambda t: t.get("side") or "?")
+    by_symbol = _bucket(lambda t: str(t.get("symbol") or "?"))
     recommendations = _recommendations(
-        stats, by_exit_reason, by_side, by_close_hour, len(closes)
+        stats,
+        by_exit_reason,
+        by_side,
+        by_close_hour,
+        by_symbol,
+        len(closes),
+        same_bar_close_fraction=_same_bar_close_fraction(),
     )
     return {
         "available": True,
         "run_id": latest.get("run_id"),
         "headline": {k: stats[k] for k in headline_keys if k in stats},
         "closed_trades_analyzed": len(closes),
+        "how_to_use": (
+            "Recommendations are hypotheses ranked by evidence, not edicts — "
+            "verify any change on the full dataset AND out-of-sample "
+            "(walk-forward) before keeping it. Never remove a risk control "
+            "(stop / time-stop) to lift a backtest; retune it via a grid + "
+            "walk-forward instead."
+        ),
         # The single most important thing to do next — read this first.
         "next_step": recommendations[0]["suggest"] if recommendations else None,
         "recommendations": recommendations,
         "by_exit_reason": by_exit_reason,
         "by_close_hour_utc": by_close_hour,
         "by_side": by_side,
+        "by_symbol": by_symbol,
         "worst_trades": [_trade_view(t) for t in ranked[:top_trades]],
         "best_trades": [_trade_view(t) for t in reversed(ranked[-top_trades:])],
     }
@@ -265,14 +298,31 @@ def _recommendations(
     by_reason: dict[Any, dict[str, Any]],
     by_side: dict[Any, dict[str, Any]],
     by_hour: dict[Any, dict[str, Any]],
+    by_symbol: dict[Any, dict[str, Any]],
     n_closes: int,
+    *,
+    same_bar_close_fraction: float | None = None,
 ) -> list[dict[str, Any]]:
     """Turn the run's own stats + trade buckets into ranked, evidence-backed
     next actions — so a bad backtest yields concrete things to try instead of a
     hand-rolled recompute. Every recommendation quotes the numbers that triggered
     it (never invented); the top one is echoed as `next_step`. This is what makes
     the diagnose→improve loop good: read `recommendations`, change ONE thing, and
-    re-run `--quick` rather than thrashing across many full backtests."""
+    re-run `--quick` rather than thrashing across many full backtests.
+
+    INVARIANT (risk-control preservation): no recommendation text may suggest
+    REMOVING a risk control — stop, time-stop, trailing stop, liquidation
+    buffer. Suggestions may retune (widen/tighten via grid + walk-forward),
+    never delete. A string-level test in test_backtest_profile_and_summary.py
+    enforces this across crafted payloads.
+
+    Bucket-driven rules (exit-reason / side / hour / symbol concentration) only
+    fire when the bucket has n >= 8 trades AND >= 25% of all closes — below
+    that a bucket is a hypothesis, not evidence (n=12 bucket inferences drove a
+    live exit-rule change that didn't survive validation)."""
+
+    def gated(bucket_n: int) -> bool:
+        return bucket_n >= 8 and bucket_n >= 0.25 * n_closes
 
     def pct(value: Any) -> str:
         return (
@@ -326,16 +376,55 @@ def _recommendations(
             "Reduce leverage and/or widen the stop — the position is force-closed "
             "before the thesis can play out. Fix this before tuning entries.",
         )
-    # High: negative base — params rarely rescue a signal with no edge.
-    if tc >= 10 and net is not None and net <= 0:
+    # High: results too good to be real are usually simulation artifacts —
+    # same-bar bracket fills, look-ahead in precompute, or fantasy fill prices.
+    # This codifies what a live session had to catch by hand.
+    same_bar_hot = (
+        same_bar_close_fraction is not None and same_bar_close_fraction >= 0.5
+    )
+    if tc >= 10 and ((wr is not None and wr > 0.90) or same_bar_hot):
+        evidence = f"win_rate={pct(wr)} over {tc} trades"
+        if same_bar_close_fraction is not None:
+            evidence += (
+                f"; {same_bar_close_fraction:.0%} of closes fill on the entry bar"
+            )
         add(
             "high",
-            "No edge on this data (net loss)",
-            f"net_return={pct(net)}, sharpe={num(sharpe)}, profit_factor={num(pf)}",
-            "Change the entry/exit idea or add a regime filter — a negative base "
-            "rarely turns positive from parameter tuning alone. Re-think the trigger "
-            "before sweeping params.",
+            "Result looks like an execution artifact, not edge",
+            evidence,
+            "Win rates this high (or entries that close on their own bar) are "
+            "usually a simulation artifact — same-bar bracket fills, look-ahead "
+            "in precompute, or unrealistic fill prices. Check same_bar_policy / "
+            "ohlc_rules in the execution spec and validate before believing any "
+            "of these numbers.",
         )
+    multi_symbol = len([k for k in by_symbol if str(k) != "?"]) >= 2
+    # High: negative base — params rarely rescue a signal with no edge. For a
+    # multi-symbol (pair/basket) strategy the first question is statistical:
+    # correlated is not cointegrated, and no parameter rescues a spread that
+    # does not mean-revert — so pair-check outranks generic re-thinking.
+    if tc >= 10 and net is not None and net <= 0:
+        if multi_symbol:
+            add(
+                "high",
+                "Losing multi-symbol strategy — test the relationship first",
+                f"net_return={pct(net)}, profit_factor={num(pf)}, "
+                f"symbols={sorted(str(k) for k in by_symbol)}",
+                "Run `job pair-check <id> --symbols A,B` before tuning anything: "
+                "correlated is not cointegrated, and no parameter rescues a "
+                "spread that does not mean-revert. If the gate REJECTs, change "
+                "the pair or the idea (funding-spread pair, momentum, carry) — "
+                "not the thresholds.",
+            )
+        else:
+            add(
+                "high",
+                "No edge on this data (net loss)",
+                f"net_return={pct(net)}, sharpe={num(sharpe)}, profit_factor={num(pf)}",
+                "Change the entry/exit idea or add a regime filter — a negative "
+                "base rarely turns positive from parameter tuning alone. "
+                "Re-think the trigger before sweeping params.",
+            )
     # High: wins often but the losers are bigger — a payoff problem, not an entry one.
     if wr is not None and wr > 0.55 and pf is not None and pf < 1.1:
         add(
@@ -377,48 +466,83 @@ def _recommendations(
         gross_loss = sum(abs(v["pnl"]) for v in losing.values())
         worst_key = min(losing, key=lambda k: losing[k]["pnl"])
         worst = losing[worst_key]
-        if gross_loss > 0 and abs(worst["pnl"]) >= 0.5 * gross_loss:
+        if (
+            gross_loss > 0
+            and abs(worst["pnl"]) >= 0.5 * gross_loss
+            and gated(worst["trades"])
+        ):
             is_stop = "stop" in str(worst_key).lower()
             add(
                 "medium",
                 f"Losses concentrate in one exit: {worst_key}",
-                f"{worst_key}: {worst['trades']} trades, pnl={num(worst['pnl'])} "
+                f"{worst_key}: n={worst['trades']} of {n_closes} closes, "
+                f"pnl={num(worst['pnl'])} "
                 f"({worst['pnl'] / -gross_loss * -1:.0%} of gross loss)",
-                "You're getting stopped out — widen the stop or add an entry filter "
-                "so you're not stopped on entry noise."
+                "You're getting stopped out — widen the stop (via grid + "
+                "walk-forward) or add an entry filter so you're not stopped on "
+                "entry noise. Keep the stop — never trade without one."
                 if is_stop
-                else f"Revisit the {worst_key} exit rule — that's where the losses are.",
+                else f"Revisit the {worst_key} exit rule — that's where the "
+                "losses are. Retune it through the validation ladder, don't "
+                "delete it.",
             )
+    # Medium: one leg of a multi-symbol strategy carries the losses — a sizing
+    # problem (1:1 notional is almost never neutral), not an entry problem.
+    if multi_symbol and losses_hurt:
+        losing_symbols = {k: v for k, v in by_symbol.items() if v.get("pnl", 0) < 0}
+        if losing_symbols:
+            sym_gross_loss = sum(abs(v["pnl"]) for v in losing_symbols.values())
+            worst_sym = min(losing_symbols, key=lambda k: losing_symbols[k]["pnl"])
+            leg = losing_symbols[worst_sym]
+            if (
+                sym_gross_loss > 0
+                and abs(leg["pnl"]) >= 0.8 * sym_gross_loss
+                and gated(leg["trades"])
+            ):
+                add(
+                    "medium",
+                    f"One leg carries the losses: {worst_sym}",
+                    f"{worst_sym}: n={leg['trades']} of {n_closes} closes, "
+                    f"pnl={num(leg['pnl'])} "
+                    f"({abs(leg['pnl']) / sym_gross_loss:.0%} of symbol gross loss)",
+                    "Size the legs by the regression hedge ratio, not 1:1 — "
+                    "`job pair-check` reports `suggested.hedge_ratio`. A 1:1 "
+                    "notional pair carries directional exposure on the more "
+                    "volatile leg.",
+                )
     # Low: the edge is one-directional.
     losing_sides = {k: v for k, v in by_side.items() if v.get("pnl", 0) < 0}
     winning_sides = {k: v for k, v in by_side.items() if v.get("pnl", 0) > 0}
     if losing_sides and winning_sides:
         side_key = min(losing_sides, key=lambda k: losing_sides[k]["pnl"])
-        add(
-            "low",
-            f"One direction loses money: {side_key}",
-            f"{side_key}: {losing_sides[side_key]['trades']} trades, "
-            f"pnl={num(losing_sides[side_key]['pnl'])}",
-            f"The edge is one-directional — consider trading only the profitable "
-            f"side or filtering {side_key} entries.",
-        )
+        if gated(losing_sides[side_key]["trades"]):
+            add(
+                "low",
+                f"One direction loses money: {side_key}",
+                f"{side_key}: n={losing_sides[side_key]['trades']} of "
+                f"{n_closes} closes, pnl={num(losing_sides[side_key]['pnl'])}",
+                f"The edge is one-directional — consider trading only the "
+                f"profitable side or filtering {side_key} entries. Verify on the "
+                f"full dataset first; a one-sided split can be a regime artifact.",
+            )
     # Low: P&L concentrates in a few hours — a session filter may help.
     net_hour = sum(v.get("pnl", 0) for v in by_hour.values())
     if net_hour > 0 and len(by_hour) >= 6:
-        top3 = sorted((v.get("pnl", 0) for v in by_hour.values()), reverse=True)[:3]
-        if sum(top3) >= 0.7 * net_hour:
-            hot = [
-                str(k)
-                for k, v in sorted(
-                    by_hour.items(), key=lambda kv: kv[1].get("pnl", 0), reverse=True
-                )[:3]
-            ]
+        hot_rows = sorted(
+            by_hour.items(), key=lambda kv: kv[1].get("pnl", 0), reverse=True
+        )[:3]
+        top3_pnl = sum(v.get("pnl", 0) for _, v in hot_rows)
+        top3_n = sum(int(v.get("trades", 0)) for _, v in hot_rows)
+        if top3_pnl >= 0.7 * net_hour and gated(top3_n):
+            hot = [str(k) for k, _ in hot_rows]
             add(
                 "low",
                 "P&L concentrates in a few hours (UTC)",
-                f"hours {', '.join(hot)} hold ≥70% of net P&L",
+                f"hours {', '.join(hot)} hold ≥70% of net P&L "
+                f"(n={top3_n} of {n_closes} closes)",
                 "A session / time-of-day entry filter may cut the flat or negative "
-                "hours and lift risk-adjusted return.",
+                "hours and lift risk-adjusted return. Treat as a hypothesis — "
+                "verify on the full dataset and out-of-sample before keeping it.",
             )
     # Validate: promising in-sample → the ONLY next step is out-of-sample proof.
     if (
