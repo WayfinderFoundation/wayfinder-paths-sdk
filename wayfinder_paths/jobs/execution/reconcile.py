@@ -173,6 +173,10 @@ async def _replay_rows(
             snapshot=StateSnapshot(
                 status=str(snapshot_data.get("status") or "valid"),
                 reason=snapshot_data.get("reason"),
+                # data carries venue-reconciled account equity; dropping it
+                # here would replay live equity-sized intents at config
+                # capital and flag false drift.
+                data=dict(snapshot_data.get("data") or {}),
             ),
         )
         recorded = [

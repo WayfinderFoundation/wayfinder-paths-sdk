@@ -24,6 +24,13 @@ native gas.)
    platform; scripts get a signer via
    `wayfinder_paths.core.utils.wallets.get_remote_sign_callback(address)`.
 4. **Fund it** (§2).
+4b. **Schedule at the bar close, not "24h from now"**: set
+   `script_loop.cron_expr` in `job.yaml` (e.g. `"10 0 * * *"` UTC for daily
+   bars — close +10min) instead of an interval anchored at resume time,
+   which acts on each bar ~a day late. Schedule/mode/contract changes are
+   ALWAYS made by editing `job.yaml` and running `wayfinder job compile
+   <id>` (or `core_jobs(action="sync")`) — never by updating the runner
+   job directly (a direct update drops the env that carries live mode).
 5. **Point the job at its wallet**: set `wallet_label: <job-id>` under
    `execution_params` in `job.yaml` — the live driver defaults to the "main"
    wallet and will trade the wrong account without it.
@@ -79,6 +86,15 @@ Rules: quote first and show the user output/fee; check each step's success
 tuple before the next (a bridge takes minutes — poll the destination balance,
 don't fire the deposit blind); a receipt with `status=0` is a FAILURE.
 
+## 2b. Sizing capital: live is reconciled from the venue
+
+Live order sizing now uses the venue's marked account value automatically
+(reconciled every tick — the engine puts it on the tick snapshot). You still
+SET `execution_params.initial_capital` to the actual deposit because it
+feeds (a) paper-mode parity (paper has no venue account) and (b) the risk
+circuit breaker's drawdown math. Just know a stale value can no longer
+mis-size live orders.
+
 ## 3. Sizing minimums (do this math out loud)
 
 `per_leg = capital × leverage / n_legs` must clear **$10**. A $30 deposit on
@@ -94,6 +110,11 @@ remember the $5 bridge-deposit minimum on top.
   the SDK tick driver and need no standalone file.
 - **Orders not appearing live**: check per-leg notional ≥ $10, and that the
   runner job is resumed (`core_runner_status(action="status")`).
+- **Switching paper→live**: the engine now archives and resets its state
+  on a mode flip (paper test ticks no longer pollute live), adopting your
+  real venue positions on the first live tick. Jobs whose state predates
+  this fix need a one-time manual reset: delete `state/engine_state.json`
+  before the first live tick.
 - **New jobs**: `core_jobs(action="create")` defaults to
   `execution_contract="jobs_v1"` — never hand-edit job.yaml for this on new
   jobs; only legacy standalone scripts need `execution_contract="legacy"`.
