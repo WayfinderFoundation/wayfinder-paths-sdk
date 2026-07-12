@@ -868,3 +868,128 @@ def test_forward_detail_capped_so_ledgers_survive_prompt(tmp_path: Path) -> None
     assert '"win_rate"' in dyn  # summary survives
     # Detail rows are capped, not all 25 present.
     assert dyn.count('"reason"') <= 12
+
+
+class _FakeBridge:
+    """RunnerBridge stand-in: records calls, never touches a daemon."""
+
+    def __init__(self, *, repo_root=None):  # noqa: ANN001
+        self.repo_root = repo_root
+
+    def ensure_started(self):
+        return {"ok": True}
+
+    def add_or_update_script_job(self, **kwargs):
+        return {"ok": True, "result": {"name": kwargs["name"]}}
+
+
+def test_legacy_compile_fails_loudly_on_missing_entrypoint(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import pytest
+
+    """A legacy (runpy) wrapper against a nonexistent script must fail at
+    COMPILE time, not at 3am when the runner fires it — this exact wrapper
+    shipped broken in a live session (pointed at /wf/sdk/strategy.py)."""
+    monkeypatch.setattr("wayfinder_paths.jobs.compiler.RunnerBridge", _FakeBridge)
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "ghost-script",
+        script="strategy.py",
+        interval_seconds=60,
+        execution_contract="legacy",
+    )
+    store.save(job)
+    with pytest.raises(ValueError, match="jobs_v1"):
+        JobCompiler(store=store).compile(job, start_daemon=False)
+
+
+def test_jobs_v1_wrapper_uses_scheduled_tick_driver(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """jobs_v1 wrappers call run_scheduled_tick(JOB_DIR) — no entrypoint file
+    needs to exist because the driver resolves the strategy at tick time."""
+    monkeypatch.setattr("wayfinder_paths.jobs.compiler.RunnerBridge", _FakeBridge)
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "tick-driven",
+        script="strategy.py",
+        interval_seconds=60,
+        execution_contract="jobs_v1",
+    )
+    store.save(job)
+    JobCompiler(store=store).compile(job, start_daemon=False)
+    wrapper = tmp_path / ".wayfinder_runs/jobs/tick_driven_script.py"
+    text = wrapper.read_text(encoding="utf-8")
+    assert "run_scheduled_tick" in text
+    assert "runpy" not in text
+
+
+def test_mcp_create_defaults_to_jobs_v1(tmp_path: Path, monkeypatch) -> None:
+    """core_jobs(action='create') births jobs_v1 by default — the legacy
+    default is what compiled broken runpy wrappers for every agent-created
+    strategy job."""
+    import asyncio
+
+    from wayfinder_paths.mcp.tools import jobs as jobs_tools
+
+    monkeypatch.setattr("wayfinder_paths.jobs.compiler.RunnerBridge", _FakeBridge)
+    monkeypatch.setattr(jobs_tools, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    monkeypatch.setattr(jobs_tools, "sync_all_jobs", lambda store=None: None)
+
+    result = asyncio.run(
+        jobs_tools.core_jobs(
+            action="create",
+            job_id="fresh-strategy",
+            script="strategy.py",
+            interval_seconds=3600,
+        )
+    )
+    assert result["ok"], result
+    store = JobStore(repo_root=tmp_path)
+    job = store.load("fresh-strategy")
+    assert job.execution_contract == "jobs_v1"
+    wrapper = tmp_path / ".wayfinder_runs/jobs/fresh_strategy_script.py"
+    assert "run_scheduled_tick" in wrapper.read_text(encoding="utf-8")
+
+
+def test_mcp_sync_heals_stale_wrapper_after_contract_flip(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Agents hand-edit job.yaml (legacy -> jobs_v1); sync must recompile the
+    wrapper instead of leaving the stale runpy one to fail on schedule."""
+    import asyncio
+
+    from wayfinder_paths.mcp.tools import jobs as jobs_tools
+
+    monkeypatch.setattr("wayfinder_paths.jobs.compiler.RunnerBridge", _FakeBridge)
+    monkeypatch.setattr(jobs_tools, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    monkeypatch.setattr(jobs_tools, "sync_all_jobs", lambda store=None: None)
+
+    store = JobStore(repo_root=tmp_path)
+    # Born legacy with a real script so create-time compile succeeds.
+    root = tmp_path / ".wayfinder/jobs/flip-me"
+    script = root / "workspace" / "loop.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("print('ok')\n", encoding="utf-8")
+    job = WayfinderJob.new(
+        "flip-me",
+        script="workspace/loop.py",
+        interval_seconds=60,
+        execution_contract="legacy",
+    )
+    store.save(job)
+    JobCompiler(store=store).compile(job, start_daemon=False)
+    wrapper = tmp_path / ".wayfinder_runs/jobs/flip_me_script.py"
+    assert "runpy" in wrapper.read_text(encoding="utf-8")
+
+    # The hand edit agents actually perform:
+    job.execution_contract = "jobs_v1"
+    store.save(job)
+
+    result = asyncio.run(jobs_tools.core_jobs(action="sync"))
+    assert result["ok"], result
+    assert "flip-me" in result["result"]["recompiled"]
+    text = wrapper.read_text(encoding="utf-8")
+    assert "run_scheduled_tick" in text
+    assert "runpy" not in text

@@ -113,6 +113,7 @@ async def core_jobs(
     | None = None,
     agent_wake_seconds: int | None = None,
     auto_limits: dict[str, Any] | None = None,
+    execution_contract: Literal["jobs_v1", "legacy"] = "jobs_v1",
     proposal_id: str | None = None,
     application_status: Literal["applied", "failed"] | None = None,
     changed_files: list[str] | None = None,
@@ -161,6 +162,9 @@ async def core_jobs(
 
     Typical flow:
       - `create` with `script` + `interval_seconds` for script-only jobs.
+        Jobs default to `execution_contract="jobs_v1"` (decide()/build_strategy
+        driven by the SDK tick driver); pass `execution_contract="legacy"` only
+        for a real standalone script that runs top-to-bottom.
       - `create` with `agent_mode="monitor"` or `"intervene"` for supervised jobs.
       - `create` with `agent_mode="auto"` and `auto_limits` for agent-only auto jobs.
       - `review_now` to queue an immediate worker wakeup.
@@ -188,8 +192,25 @@ async def core_jobs(
         return ok([snapshot_job(job.id, store=store) for job in store.list_jobs()])
 
     if action == "sync":
+        # Recompile runner links first: job.yaml is agent-editable (e.g.
+        # flipping execution_contract), and a stale wrapper from create time
+        # otherwise fails at schedule time, not edit time.
+        recompiled: list[str] = []
+        compile_errors: dict[str, str] = {}
+        compiler = JobCompiler(store=store)
+        for job in store.list_jobs():
+            if not job.script_loop.enabled:
+                continue
+            try:
+                compiler.compile(job, start_daemon=False)
+                recompiled.append(job.id)
+            except Exception as exc:  # one bad job must not block the sync
+                compile_errors[job.id] = str(exc)
         sync_all_jobs(store=store)
-        return ok({"synced": True})
+        result: dict[str, Any] = {"synced": True, "recompiled": recompiled}
+        if compile_errors:
+            result["compile_errors"] = compile_errors
+        return ok(result)
 
     if not job_id:
         return err("invalid_request", "job_id is required")
@@ -217,6 +238,7 @@ async def core_jobs(
             agent_mode=mode,
             agent_wake_seconds=agent_wake_seconds,
             auto_limits=auto_limits,
+            execution_contract=execution_contract,
         )
         job_path = store.save(job)
         result: dict[str, Any] = {"job": job.to_dict(), "job_yaml": str(job_path)}
