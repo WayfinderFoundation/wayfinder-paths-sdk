@@ -421,9 +421,11 @@ def _recommendations(
                 "high",
                 "No edge on this data (net loss)",
                 f"net_return={pct(net)}, sharpe={num(sharpe)}, profit_factor={num(pf)}",
-                "Change the entry/exit idea or add a regime filter — a negative "
-                "base rarely turns positive from parameter tuning alone. "
-                "Re-think the trigger before sweeping params.",
+                "Test the SIGNAL before touching parameters: run `job "
+                "signal-check <id> --column <entry_column>` — if no horizon "
+                "beats the series' own drift (t >= 2, n >= 30), the entry has "
+                "no predictive power and no exit/stop/sizing change will save "
+                "it; change the idea or add a regime filter instead.",
             )
     # High: wins often but the losers are bigger — a payoff problem, not an entry one.
     if wr is not None and wr > 0.55 and pf is not None and pf < 1.1:
