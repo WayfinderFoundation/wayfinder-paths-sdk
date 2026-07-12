@@ -61,8 +61,30 @@ idea, and you only find it by looking.
   top cell is a lone spike — likely noise — so pick from the best stable
   region instead.
 - If the signal check never beats drift, or PF never crosses 1.0 after the
-  grid, the idea is dead. Say so, with the numbers, and move to the next
-  branch.
+  grid, that VERSION is dead. Say so, with the numbers, and evolve (below) —
+  do not stop to present a menu.
+
+## 2b. Idea evolution — carry the user's seed to a working strategy
+
+The user's idea is a seed, not a spec. A failed validation is not a terminal
+verdict — **the evidence names the successor**, and testing that successor is
+your job, not the user's homework:
+
+| Failure evidence | Natural successor |
+|---|---|
+| Stop-outs dominate losses, entries fine | regime filter (trade only with the trend) |
+| Entry never beats drift on any horizon | different trigger or timeframe for the same thesis |
+| Pair gate REJECTs (no cointegration) | funding-spread pair on the SAME assets, or momentum on the same assets |
+| One leg carries the losses | hedge-ratio sizing; widen the universe |
+| Edge exists but decays OOS | slower bars, longer formation window, fewer rebalances |
+| Shorts drag in a narrow universe | widen the universe so "weakest" means something |
+
+Rules of evolution: preserve the user's *intent* (their assets, their thesis
+direction, their risk appetite) while changing the *mechanism*; one structural
+change per step; every successor goes through the same ladder. Spend the
+depth budget (~4 structural steps) before returning — coming back after one
+dead variant with a list of suggestions is stopping too early. Return with
+either a validated candidate or the honest map of everything tried.
 
 ## 3. The validation ladder (THE protocol — every rung, in order)
 
@@ -88,11 +110,14 @@ closes for the same reason — below that, a bucket is noise.
 
 ## 5. Stop conditions and honest exits
 
-After 2–3 dead structural ideas on the same goal, stop and present the
-evidence: what was tried, what each signal check / backtest showed, and which
-documented-edge families remain untried (table below). Recommending a
-different direction with numbers is a SUCCESS outcome. Continuing to tune a
-dead idea is the failure outcome.
+Stop and present the evidence only when the evolution budget is exhausted:
+~4 structural successors tried on the same goal, each validated and dead.
+Then show the map — what was tried, what each signal check / backtest showed,
+and which documented-edge families remain untried (table below). Recommending
+a different direction with numbers after a spent budget is a SUCCESS outcome.
+Two failure modes bound it on either side: tuning parameters on a dead signal
+(churn), and returning to the user after a single dead variant with a menu
+(stopping too early).
 
 ## 6. What "good" looks like (realistic expectations per family)
 
