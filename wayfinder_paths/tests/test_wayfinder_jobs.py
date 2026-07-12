@@ -993,3 +993,45 @@ def test_mcp_sync_heals_stale_wrapper_after_contract_flip(
     text = wrapper.read_text(encoding="utf-8")
     assert "run_scheduled_tick" in text
     assert "runpy" not in text
+
+
+def test_bridge_requires_env() -> None:
+    """update_job replaces the runner payload wholesale — a schedule-only
+    update without env silently reverted WAYFINDER_JOB_MODE to paper on a
+    LIVE job in production. env is now mandatory."""
+    import pytest
+
+    from wayfinder_paths.jobs.runner_bridge import RunnerBridge
+
+    bridge = RunnerBridge.__new__(RunnerBridge)  # skip daemon paths
+    with pytest.raises(ValueError, match="JobCompiler.compile"):
+        bridge.add_or_update_script_job(
+            name="x-script", script_path="x.py", interval_seconds=60, env={}
+        )
+
+
+def test_bridge_update_path_carries_env(monkeypatch) -> None:
+    from wayfinder_paths.jobs import runner_bridge as rb
+
+    calls: list[tuple[str, dict]] = []
+
+    class FakeClient:
+        def call(self, method, params):
+            calls.append((method, params))
+            if method == "add_job":
+                return {"ok": False, "error": "UNIQUE constraint failed: jobs.name"}
+            return {"ok": True}
+
+    bridge = rb.RunnerBridge.__new__(rb.RunnerBridge)
+    bridge.client = FakeClient()
+    resp = bridge.add_or_update_script_job(
+        name="x-script",
+        script_path="x.py",
+        interval_seconds=60,
+        env={"WAYFINDER_JOB_MODE": "live"},
+    )
+    assert resp["ok"]
+    update_calls = [p for m, p in calls if m == "update_job"]
+    assert update_calls and update_calls[0]["payload"]["env"] == {
+        "WAYFINDER_JOB_MODE": "live"
+    }

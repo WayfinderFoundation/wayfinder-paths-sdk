@@ -632,10 +632,16 @@ class ExecutionContext:
 
 
 def mark_to_market_equity(ctx: ExecutionContext) -> float:
-    """Current equity as decide() can see it: initial capital + realized PnL +
-    unrealized mark-to-market at the latest completed close. Pure (ctx data
-    only — purity-sandbox safe) and bar-identical to the simulator's equity
-    curve, so compound sizing in backtest and live use the same number."""
+    """Current equity as decide() can see it. In LIVE mode the reconcile step
+    puts the venue's marked account value on `state_snapshot.data` and that is
+    authoritative (it already embeds realized + unrealized PnL) — sizing from
+    config capital nearly fired ~$8k orders on a $29.50 account. Backtests
+    never populate snapshot data, so they keep the config-capital arithmetic:
+    initial capital + realized PnL + unrealized mark-to-market at the latest
+    completed close. Pure (ctx data only — purity-sandbox safe)."""
+    live_account_value = (ctx.state_snapshot.data or {}).get("account_value")
+    if live_account_value is not None and float(live_account_value) > 0:
+        return float(live_account_value)
     equity = (
         float(ctx.params.get("initial_capital") or DEFAULT_INITIAL_CAPITAL)
         + ctx.ledger.realized_pnl

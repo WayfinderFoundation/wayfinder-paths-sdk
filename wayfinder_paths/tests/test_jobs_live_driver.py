@@ -89,10 +89,12 @@ class FakeLiveBroker:
         *,
         venue_positions: dict[str, PositionRecord] | None = None,
         fetch_error: Exception | None = None,
+        account_value: float | None = None,
     ) -> None:
         self.placed: list[OrderIntent] = []
         self.venue_positions = venue_positions or {}
         self.fetch_error = fetch_error
+        self.account_value = account_value
         self.snapshot: Any = None
 
     async def place(
@@ -115,7 +117,16 @@ class FakeLiveBroker:
     async def fetch_state(self, symbols: Any = ()) -> VenueState:
         if self.fetch_error is not None:
             raise self.fetch_error
-        return VenueState(positions=dict(self.venue_positions), source="fake")
+        balances = (
+            {"accountValue": self.account_value}
+            if self.account_value is not None
+            else {}
+        )
+        return VenueState(
+            positions=dict(self.venue_positions),
+            balances=balances,
+            source="fake",
+        )
 
     async def get_capacity(self, symbol: str, side: str) -> TradeCapacity:
         return TradeCapacity(safe=True, source="fake")
@@ -487,3 +498,170 @@ def test_compiler_wrapper_branches_on_contract(tmp_path: Path) -> None:
     legacy_wrapper = (tmp_path / legacy_wrappers["script"]).read_text(encoding="utf-8")
     assert 'runpy.run_path(str(ENTRYPOINT), run_name="__main__")' in legacy_wrapper
     assert "run_scheduled_tick" not in legacy_wrapper
+
+
+EQUITY_STRATEGY = """
+from wayfinder_paths.jobs.execution import OrderIntent
+from wayfinder_paths.jobs.execution.primitives import mark_to_market_equity
+
+
+class Strategy:
+    def __init__(self, params):
+        self.params = params
+
+    def decide(self, ctx):
+        if "SNX" in ctx.ledger.positions:
+            return []
+        equity = mark_to_market_equity(ctx)
+        return [
+            OrderIntent(
+                action="OPEN",
+                venue="hyperliquid",
+                symbol="SNX",
+                side="long",
+                notional=equity * 0.5,
+            )
+        ]
+
+
+def build_strategy(params):
+    return Strategy(params)
+"""
+
+
+def _equity_job(tmp_path: Path, *, params: dict[str, Any] | None = None):
+    store, job, root = _make_job(tmp_path, mode="live", params=params)
+    script = root / "workspace" / "src" / "strategy.py"
+    script.write_text(EQUITY_STRATEGY.lstrip(), encoding="utf-8")
+    return store, job, root
+
+
+async def test_live_sizing_uses_venue_account_value(tmp_path: Path) -> None:
+    """The $8k-orders-on-a-$29.50-account bug: live equity must come from the
+    venue's marked account value on snapshot.data, not config initial_capital."""
+    store, job, root = _equity_job(tmp_path, params={"initial_capital": 10_000.0})
+    broker = FakeLiveBroker(account_value=29.50)
+    view = _view(2)
+    result = await tick_job(
+        job,
+        root,
+        "live",
+        store=store,
+        adapters={"hyperliquid": FakeAdapter(view, broker)},
+        now=_now(view),
+    )
+    assert result["snapshot"]["data"]["account_value"] == 29.50
+    intents = result["intents"]
+    assert intents, result
+    assert abs(float(intents[0]["notional"]) - 29.50 * 0.5) < 1e-9
+    # The recorded tick row carries the same snapshot data (replay parity).
+    ticks_file = root / "results" / "forward" / "ticks.jsonl"
+    row = json.loads(ticks_file.read_text().strip().splitlines()[-1])
+    assert row["snapshot"]["data"]["account_value"] == 29.50
+
+
+async def test_live_sizing_falls_back_to_config_without_balances(
+    tmp_path: Path,
+) -> None:
+    store, job, root = _equity_job(tmp_path, params={"initial_capital": 500.0})
+    broker = FakeLiveBroker()  # no account_value reported
+    view = _view(2)
+    result = await tick_job(
+        job,
+        root,
+        "live",
+        store=store,
+        adapters={"hyperliquid": FakeAdapter(view, broker)},
+        now=_now(view),
+    )
+    assert "account_value" not in (result["snapshot"].get("data") or {})
+    intents = result["intents"]
+    assert intents and abs(float(intents[0]["notional"]) - 250.0) < 1e-9
+
+
+async def test_mode_flip_archives_state_and_adopts_venue(tmp_path: Path) -> None:
+    """Paper test ticks must not pollute live: on paper->live the state file is
+    archived, strategy_state resets, and venue positions are adopted."""
+    store, job, root = _make_job(tmp_path, mode="live")
+    view = _view(2)
+    # Paper tick writes state stamped mode=paper (and consumes the bar).
+    await tick_job(
+        job,
+        root,
+        "paper",
+        store=store,
+        adapters={
+            "hyperliquid": FakeAdapter(view, PaperBroker(capabilities=PERP_CAPS))
+        },
+        now=_now(view),
+    )
+    state_path = root / "state" / "engine_state.json"
+    assert EngineState.load(state_path).mode == "paper"
+
+    venue_positions = {
+        "SNX": PositionRecord(symbol="SNX", side="long", size=2.0, avg_price=9.5)
+    }
+    broker = FakeLiveBroker(venue_positions=venue_positions, account_value=100.0)
+    result = await tick_job(
+        job,
+        root,
+        "live",
+        store=store,
+        adapters={"hyperliquid": FakeAdapter(view, broker)},
+        now=_now(view),
+    )
+    archives = list((root / "state").glob("engine_state.paper.*.json"))
+    assert archives, "paper state should be archived on flip"
+    flip_events = [
+        e for e in result["guard_events"] if e.get("kind") == "mode_flip_state_reset"
+    ]
+    assert flip_events and flip_events[0]["from_mode"] == "paper"
+    restored = EngineState.load(state_path)
+    assert restored.mode == "live"
+    assert restored.ledger.positions["SNX"].metadata.get("adopted_from_venue")
+    assert restored.strategy_state == {}
+
+
+async def test_legacy_state_without_mode_is_stamped_not_archived(
+    tmp_path: Path,
+) -> None:
+    store, job, root = _make_job(tmp_path, mode="live")
+    state_path = root / "state" / "engine_state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy = EngineState().to_dict()
+    legacy.pop("mode")
+    state_path.write_text(json.dumps(legacy), encoding="utf-8")
+
+    view = _view(2)
+    await tick_job(
+        job,
+        root,
+        "live",
+        store=store,
+        adapters={"hyperliquid": FakeAdapter(view, FakeLiveBroker())},
+        now=_now(view),
+    )
+    assert not list((root / "state").glob("engine_state.*.*.json"))
+    assert EngineState.load(state_path).mode == "live"
+
+
+async def test_risk_halt_downgrade_preserves_snapshot_data(tmp_path: Path) -> None:
+    store, job, root = _make_job(
+        tmp_path, mode="live", params={"initial_capital": 100.0}
+    )
+    (root / "workspace").mkdir(parents=True, exist_ok=True)
+    (root / "workspace" / "risk_limits.json").write_text(
+        json.dumps({"max_drawdown_pct": -0.0000001}), encoding="utf-8"
+    )
+    broker = FakeLiveBroker(account_value=42.0)
+    view = _view(2)
+    result = await tick_job(
+        job,
+        root,
+        "live",
+        store=store,
+        adapters={"hyperliquid": FakeAdapter(view, broker)},
+        now=_now(view),
+    )
+    # Whatever the halt outcome, the venue equity must not be dropped.
+    assert result["snapshot"]["data"]["account_value"] == 42.0

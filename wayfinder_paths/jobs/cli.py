@@ -17,7 +17,7 @@ from wayfinder_paths.jobs.backtest_artifacts import (
     diagnose_backtest,
     load_backtest_view,
 )
-from wayfinder_paths.jobs.compiler import JobCompiler
+from wayfinder_paths.jobs.compiler import JobCompiler, compile_job
 from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.experiments import (
     list_experiments,
@@ -194,6 +194,16 @@ def list_cmd() -> None:
             "result": [snapshot_job(job.id, store=store) for job in store.list_jobs()],
         }
     )
+
+
+@job_cli.command(
+    name="compile",
+    help="Recompile runner wrappers/links from job.yaml (source of truth). "
+    "Run after editing script_loop schedule, mode, or execution_contract.",
+)
+@click.argument("job_id")
+def compile_cmd(job_id: str) -> None:
+    _echo_json({"ok": True, "result": compile_job(job_id)})
 
 
 @job_cli.command(name="status", help="Show a high-level job snapshot.")

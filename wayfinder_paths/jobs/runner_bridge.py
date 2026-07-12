@@ -41,8 +41,16 @@ class RunnerBridge:
         cron_expr: str | None = None,
         timezone: str = "UTC",
         timeout_seconds: int | None = None,
-        env: dict[str, str] | None = None,
+        env: dict[str, str],
     ) -> dict[str, Any]:
+        if not env:
+            raise ValueError(
+                "add_or_update_script_job requires the full job env: update_job "
+                "replaces the runner payload wholesale, and a missing env "
+                "silently reverts WAYFINDER_JOB_MODE to paper (this flipped a "
+                "live job in production). Regenerate via JobCompiler.compile — "
+                "job.yaml is the source of truth for schedules and env."
+            )
         schedule = schedule_request_params(
             interval_seconds=interval_seconds,
             cron_expr=cron_expr,
@@ -52,11 +60,10 @@ class RunnerBridge:
             "script_path": script_path,
             "args": [],
             "debug": False,
+            "env": {str(k): str(v) for k, v in env.items()},
         }
         if timeout_seconds is not None:
             payload["timeout_seconds"] = int(timeout_seconds)
-        if env:
-            payload["env"] = {str(k): str(v) for k, v in env.items()}
 
         params: dict[str, Any] = {
             "name": name,

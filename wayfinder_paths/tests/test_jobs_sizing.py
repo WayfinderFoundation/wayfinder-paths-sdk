@@ -180,3 +180,49 @@ def test_grid_accepts_return_on_margin_and_leverage_dimension(tmp_path) -> None:
     assert all(row["stats"]["return_on_margin"] is not None for row in result.runs)
     leverages = {row["params"]["leverage"] for row in result.runs}
     assert leverages == {1.0, 2.0, 3.0}
+
+
+def test_mark_to_market_equity_prefers_live_account_value() -> None:
+    """Live ticks carry the venue's marked account value on snapshot.data —
+    it already embeds realized+unrealized PnL, so it wins outright."""
+    from wayfinder_paths.jobs.execution import CompletedBarsView, ExecutionSpec
+    from wayfinder_paths.jobs.execution.primitives import (
+        ExecutionContext,
+        PositionLedger,
+        StateSnapshot,
+        mark_to_market_equity,
+    )
+
+    view = CompletedBarsView.from_rows(
+        [
+            {
+                "timestamp": "2026-01-01T00:00:00Z",
+                "symbol": "SNX",
+                "open": 10.0,
+                "high": 10.5,
+                "low": 9.5,
+                "close": 10.0,
+                "volume": 1.0,
+            }
+        ]
+    )
+
+    def ctx_with(snapshot: StateSnapshot) -> ExecutionContext:
+        return ExecutionContext(
+            view=view,
+            ledger=PositionLedger(),
+            state_snapshot=snapshot,
+            capacity=None,
+            params={"initial_capital": 10_000.0},
+            timestamp="2026-01-01T00:00:00Z",
+            execution_spec=ExecutionSpec(),
+        )
+
+    live = ctx_with(StateSnapshot(status="valid", data={"account_value": 29.5}))
+    assert mark_to_market_equity(live) == 29.5
+    # No snapshot data (every backtest) -> config-capital arithmetic unchanged.
+    backtest = ctx_with(StateSnapshot(status="valid"))
+    assert mark_to_market_equity(backtest) == 10_000.0
+    # Zero/negative account value is not a sane override -> fall back.
+    broke = ctx_with(StateSnapshot(status="valid", data={"account_value": 0.0}))
+    assert mark_to_market_equity(broke) == 10_000.0
