@@ -3,12 +3,15 @@
 The complete last mile, in order. A live session burned ~25 tool calls
 reverse-engineering this from adapter source; it is all here.
 
-## 0. Gasless — do NOT manage gas
+## 0. Gas is sponsored — do NOT manage gas
 
-Transactions on this platform are **gasless**. Never check native gas
-balances, never bridge ETH/gas to a chain, never use `gas_token_amount`.
-If old guidance mentions gas requirements, it predates gasless execution —
-ignore it. Funding is about ONE asset: the collateral (USDC).
+Remote-wallet transactions are **gas-sponsored** (account abstraction) on
+Ethereum, Base, Arbitrum, Polygon, BSC, Monad, MegaEth, Plasma, and
+Robinhood — every chain this runbook touches. Never check native gas
+balances, never bridge gas, never use `gas_token_amount`. Funding is about
+ONE asset: the collateral (USDC). (Only unsponsored chains outside that
+list, or a sponsorship outage falling back to normal broadcasts, ever need
+native gas.)
 
 ## 1. The go-live checklist
 
