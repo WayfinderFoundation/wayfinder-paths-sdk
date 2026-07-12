@@ -2,7 +2,7 @@
 description: Hidden quant worker for backtests, Delta Lab time series, CCXT analysis, and long-running analytics scripts.
 mode: subagent
 hidden: true
-steps: 64
+steps: 96
 temperature: 0.1
 permission:
   task:

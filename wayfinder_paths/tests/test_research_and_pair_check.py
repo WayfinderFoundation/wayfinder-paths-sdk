@@ -300,3 +300,75 @@ def test_op_runner_routes_research_ops(monkeypatch) -> None:
         "stub": "signal",
         "column": "z",
     }
+
+
+def _cross_section(n_bars: int, n_symbols: int, *, informative: bool, seed: int = 5):
+    """Synthetic multi-symbol frames. When informative, the ranking column
+    equals each symbol's next-period relative performance rank plus noise —
+    a real cross-sectional edge. Otherwise the column is pure noise."""
+    from wayfinder_paths.jobs.research import rank_ic  # noqa: F401 (import check)
+
+    rng = np.random.default_rng(seed)
+    ts = pd.date_range("2024-01-01", periods=n_bars, freq="D", tz="UTC")
+    # per-symbol daily relative strengths, drawn fresh each bar
+    rel = rng.normal(0, 0.01, size=(n_bars, n_symbols))
+    frames: dict[str, pd.DataFrame] = {}
+    for j in range(n_symbols):
+        # forward return of symbol j at bar i is rel[i+1, j]
+        log_close = np.cumsum(np.concatenate([[0.0], rel[1:, j]])) + np.log(100)
+        close = np.exp(log_close)
+        if informative:
+            score = np.empty(n_bars)
+            score[:-1] = rel[1:, j] + rng.normal(0, 0.004, n_bars - 1)
+            score[-1] = 0.0
+        else:
+            score = rng.normal(0, 1, n_bars)
+        frames[f"S{j}"] = pd.DataFrame(
+            {"timestamp": ts, "close": close, "score": score}
+        )
+    return frames
+
+
+def test_rank_ic_detects_informative_ranking_and_rejects_noise() -> None:
+    from wayfinder_paths.jobs.research import rank_ic
+
+    informative = rank_ic(
+        _cross_section(400, 10, informative=True), "score", horizons=[1]
+    )
+    assert informative["has_edge"], informative
+    h1 = informative["horizons"][0]
+    assert h1["n"] >= 30 and h1["mean_ic"] > 0.2 and h1["sign_stable"]
+
+    noise = rank_ic(_cross_section(400, 10, informative=False), "score", horizons=[1])
+    assert not noise["has_edge"], noise
+
+
+def test_rank_ic_flags_insufficient_sample() -> None:
+    from wayfinder_paths.jobs.research import rank_ic
+
+    result = rank_ic(_cross_section(25, 6, informative=True), "score", horizons=[1])
+    h1 = result["horizons"][0]
+    assert h1["n"] < 30 and h1["note"] == "insufficient sample (n<30)"
+
+
+def test_rank_ic_missing_column_lists_available() -> None:
+    from wayfinder_paths.jobs.research import rank_ic
+
+    frames = _cross_section(50, 4, informative=False)
+    with pytest.raises(KeyError, match="score"):
+        rank_ic(frames, "nope", horizons=[1])
+
+
+def test_rank_check_op_routes(monkeypatch) -> None:
+    import wayfinder_paths.jobs.research as research_mod
+    from wayfinder_paths.jobs.execution import op_runner
+
+    monkeypatch.setattr(
+        research_mod,
+        "rank_check_job",
+        lambda job_id, **kw: {"stub": "rank", "column": kw.get("column")},
+    )
+    assert op_runner._run("rank_check", {"job_id": "j", "column": "mom"}) == {
+        "stub": "rank",
+        "column": "mom",
+    }

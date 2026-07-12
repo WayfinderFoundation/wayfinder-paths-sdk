@@ -951,6 +951,10 @@ def test_mcp_create_defaults_to_jobs_v1(tmp_path: Path, monkeypatch) -> None:
     assert job.execution_contract == "jobs_v1"
     wrapper = tmp_path / ".wayfinder_runs/jobs/fresh_strategy_script.py"
     assert "run_scheduled_tick" in wrapper.read_text(encoding="utf-8")
+    # Create tells the agent exactly where the strategy module lives —
+    # layout guessing cost real tool calls in live sessions.
+    assert result["result"]["script_entrypoint"].endswith("strategy.py")
+    assert "script_entrypoint" in result["result"]["hint"]
 
 
 def test_mcp_sync_heals_stale_wrapper_after_contract_flip(

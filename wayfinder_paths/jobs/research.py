@@ -372,6 +372,112 @@ def event_study(
     }
 
 
+def rank_ic(
+    frames: dict[str, pd.DataFrame],
+    column: str,
+    horizons: list[int] | None = None,
+) -> dict[str, Any]:
+    """Does a cross-sectional RANKING column predict relative forward returns?
+    The basket-strategy analogue of event_study: baskets trade the ranking
+    (long the top, short the bottom), so the right pre-build test is the rank
+    information coefficient, not per-symbol event returns.
+
+    For each horizon h and each timestamp with >= 4 ranked symbols: Spearman
+    rank correlation between the column's cross-sectional ranks and the
+    ranks of forward log-returns. Reports mean IC, a t-stat over the period
+    ICs, the period count, and sign stability across the two halves of the
+    sample. Edge bar: |t| >= 2, n >= 30 periods, and both halves agree on
+    sign — testing many columns inflates false positives, same as signals.
+    """
+    horizons = horizons or [1, 2, 5, 10]
+    aligned: dict[str, pd.DataFrame] = {}
+    for symbol, frame in frames.items():
+        if column not in frame.columns:
+            raise KeyError(
+                f"column {column!r} not in frame for {symbol}; available: "
+                f"{sorted(frame.columns)}"
+            )
+        sub = frame[["timestamp", column, "close"]].copy()
+        sub["close"] = sub["close"].astype(float)
+        aligned[symbol] = sub.set_index("timestamp")
+    per_horizon = []
+    any_edge = False
+    for h in sorted({int(h) for h in horizons}):
+        if h <= 0:
+            continue
+        ics: list[float] = []
+        # union of timestamps, evaluated cross-sectionally
+        index = sorted(set().union(*(set(f.index) for f in aligned.values())))
+        for i, ts in enumerate(index):
+            if i + h >= len(index):
+                break
+            fwd_ts = index[i + h]
+            scores: list[float] = []
+            fwd: list[float] = []
+            for frame in aligned.values():
+                if ts not in frame.index or fwd_ts not in frame.index:
+                    continue
+                value = frame.at[ts, column]
+                c_now = frame.at[ts, "close"]
+                c_fwd = frame.at[fwd_ts, "close"]
+                if pd.isna(value) or pd.isna(c_now) or pd.isna(c_fwd) or c_now <= 0:
+                    continue
+                scores.append(float(value))
+                fwd.append(math.log(float(c_fwd) / float(c_now)))
+            if len(scores) < 4:
+                continue
+            rank_scores = pd.Series(scores).rank()
+            rank_fwd = pd.Series(fwd).rank()
+            ic = float(rank_scores.corr(rank_fwd))
+            if math.isfinite(ic):
+                ics.append(ic)
+        n = len(ics)
+        if n == 0:
+            per_horizon.append({"horizon": h, "n": 0, "verdict": "no periods"})
+            continue
+        mean_ic = float(np.mean(ics))
+        std_ic = float(np.std(ics, ddof=1)) if n > 1 else 0.0
+        t = mean_ic / (std_ic / math.sqrt(n)) if n > 1 and std_ic > 0 else 0.0
+        half = n // 2
+        first_sign = float(np.mean(ics[:half])) if half else 0.0
+        second_sign = float(np.mean(ics[half:])) if half else 0.0
+        stable = bool(
+            half >= 5 and first_sign * second_sign > 0
+        )  # both halves agree on sign
+        edge = bool(abs(t) >= 2.0 and n >= 30 and stable)
+        any_edge = any_edge or edge
+        per_horizon.append(
+            {
+                "horizon": h,
+                "n": n,
+                "mean_ic": mean_ic,
+                "t_stat": float(t),
+                "ic_first_half": first_sign,
+                "ic_second_half": second_sign,
+                "sign_stable": stable,
+                "edge": edge,
+                "note": "insufficient sample (n<30)" if n < 30 else None,
+            }
+        )
+    return {
+        "column": column,
+        "horizons": per_horizon,
+        "has_edge": any_edge,
+        "read": (
+            "the ranking carries cross-sectional information at one or more "
+            "horizons — worth building the basket and validating"
+            if any_edge
+            else "no horizon shows a stable rank IC with |t|>=2 and n>=30 — "
+            "the ranking does not order future returns; change the ranking "
+            "signal, not the basket parameters"
+        ),
+        "multiple_testing_note": (
+            "testing many ranking columns inflates false positives — at "
+            "|t|>=2 roughly 1 in 20 random rankings looks good by chance"
+        ),
+    }
+
+
 # ── pair admission gate (pure: DataFrames in, dict out) ──────────────────────
 
 
@@ -776,3 +882,56 @@ def signal_check_job(
             "change the idea before building a strategy around it"
         ),
     }
+
+
+def rank_check_job(
+    job_id: str,
+    *,
+    column: str,
+    horizons: list[int] | None = None,
+    store: Any | None = None,
+) -> dict[str, Any]:
+    """Rank-IC study of a strategy's precomputed ranking column across the
+    job's symbols — the pre-build test for basket/cross-sectional ideas
+    (event_study covers per-symbol entry signals; this covers rankings)."""
+    from wayfinder_paths.jobs.execution.features import apply_precompute
+    from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
+    from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+    from wayfinder_paths.jobs.execution.simulator import _load_strategy
+    from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = store or JobStore()
+    root = store.job_dir(job_id)
+    job_data = _load_job_yaml(root)
+    spec_data, _ = resolve_execution_spec(root, job_data)
+    spec = ExecutionSpec.from_dict(spec_data)
+    params = dict(job_data.get("execution_params") or {})
+    script = store.resolve_script_entrypoint(job_id, job_data)
+    strategy = _load_strategy(script, params)
+    dataset = _load_dataset(root, spec, job_data)
+    view = apply_precompute(strategy, dataset.bars)
+    frame = view.to_frame()
+    symbols = sorted(frame["symbol"].astype(str).unique())
+    if len(symbols) < 4:
+        raise ValueError(
+            f"rank-check needs >=4 symbols for a cross-section; job has "
+            f"{symbols} — for 1-2 symbols use signal-check instead"
+        )
+    frames = {
+        symbol: frame[frame["symbol"] == symbol].reset_index(drop=True)
+        for symbol in symbols
+    }
+    missing = [s for s, f in frames.items() if column not in f.columns]
+    if missing:
+        non_bar = sorted(
+            set(frame.columns)
+            - {"timestamp", "symbol", "open", "high", "low", "close", "volume"}
+        )
+        raise KeyError(
+            f"column {column!r} not found after precompute (missing for "
+            f"{missing}); available non-bar columns: {non_bar}"
+        )
+    result = rank_ic(frames, column, horizons=horizons)
+    result["symbols"] = symbols
+    return result

@@ -300,3 +300,54 @@ def test_validation_flags_feature_schema_and_availability(tmp_path: Path) -> Non
     checks = _feature_checks(tmp_path, spec)
     assert checks[0]["name"] == "declared_features_valid"
     assert checks[0]["passed"] is False
+
+
+def test_feature_coverage_metadata_and_summary_note(tmp_path: Path) -> None:
+    """A feature spanning only the tail of the dataset must be measured
+    (metadata.feature_coverage) and called out in the backtest summary —
+    a 1-year funding file silently handicapped a signal against 6 years of
+    candles in a live comparison."""
+    from wayfinder_paths.jobs.execution.job import summarize_backtest_payload
+
+    store, job, root = _feature_job(tmp_path)
+    bars = _bars(40)  # 40 x 5min bars
+    (root / "results" / "backtest").mkdir(parents=True, exist_ok=True)
+    (root / "results" / "backtest" / "input_bars.json").write_text(
+        json.dumps(bars), encoding="utf-8"
+    )
+    # sentiment rows cover only the last ~10% of the bar span
+    tail_rows = [
+        {"timestamp": bars[-3]["timestamp"], "name": "sentiment", "value": 0.9},
+        {"timestamp": bars[-1]["timestamp"], "name": "sentiment", "value": 0.2},
+    ]
+    (root / "state" / "features.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in tail_rows) + "\n", encoding="utf-8"
+    )
+    spec = ExecutionSpec.from_dict(job.execution_spec)
+    dataset = _load_dataset(root, spec, job.to_dict())
+    coverage = dataset.metadata["feature_coverage"]["sentiment"]
+    assert coverage["rows"] == 2
+    assert coverage["coverage_fraction"] < 0.2
+
+    payload = {
+        "type": "single",
+        "result": {"run_id": "r", "params": {}, "stats": {}, "validation": {}},
+        "dataset": dict(dataset.metadata),
+    }
+    summary = summarize_backtest_payload(payload)
+    note = summary.get("feature_coverage_note")
+    assert note and "sentiment" in note and "biased" in note
+    assert summary["feature_coverage"]["sentiment"]["rows"] == 2
+
+    # Full-coverage feature -> no note.
+    full_rows = [
+        {"timestamp": bars[0]["timestamp"], "name": "sentiment", "value": 0.1},
+        {"timestamp": bars[-1]["timestamp"], "name": "sentiment", "value": 0.2},
+    ]
+    (root / "state" / "features.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in full_rows) + "\n", encoding="utf-8"
+    )
+    dataset = _load_dataset(root, spec, job.to_dict())
+    payload["dataset"] = dict(dataset.metadata)
+    summary = summarize_backtest_payload(payload)
+    assert "feature_coverage_note" not in summary

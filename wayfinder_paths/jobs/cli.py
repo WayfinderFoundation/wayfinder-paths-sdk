@@ -47,7 +47,11 @@ from wayfinder_paths.jobs.models import (
     normalize_agent_mode,
 )
 from wayfinder_paths.jobs.proposals import propose_change
-from wayfinder_paths.jobs.research import pair_check_job, signal_check_job
+from wayfinder_paths.jobs.research import (
+    pair_check_job,
+    rank_check_job,
+    signal_check_job,
+)
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
@@ -612,6 +616,28 @@ def pair_check_cmd(
 def signal_check_cmd(job_id: str, column: str, horizons: str | None) -> None:
     store = JobStore()
     result = signal_check_job(
+        job_id,
+        column=column,
+        horizons=[int(h) for h in horizons.split(",")] if horizons else None,
+        store=store,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="rank-check",
+    help="Rank-IC study of a precomputed cross-sectional ranking column vs "
+    "relative forward returns — run BEFORE building a long/short basket "
+    "on that ranking.",
+)
+@click.argument("job_id")
+@click.option("--column", required=True, help="Precomputed ranking column name.")
+@click.option(
+    "--horizons", default=None, help="Comma-separated forward horizons in bars."
+)
+def rank_check_cmd(job_id: str, column: str, horizons: str | None) -> None:
+    store = JobStore()
+    result = rank_check_job(
         job_id,
         column=column,
         horizons=[int(h) for h in horizons.split(",")] if horizons else None,

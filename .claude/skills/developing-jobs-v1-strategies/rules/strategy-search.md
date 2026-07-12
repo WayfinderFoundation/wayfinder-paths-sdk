@@ -26,7 +26,13 @@ with `n >= 30`. **If no horizon beats drift, the entry has no predictive power
 filter tuning rescues entries that carry no information. This 30-second check
 is what converts "six variants of a dead idea" into one honest sentence.
 
-For any pair / long-short / basket idea, the equivalent step 0 is the
+For basket / cross-sectional ideas the equivalent test is
+`wayfinder job rank-check <id> --column <ranking>` — the Spearman rank IC of
+the ranking column vs relative forward returns (|t| >= 2, n >= 30, sign
+stable across both halves). A ranking that does not order future returns
+cannot be rescued by rebalance cadence or weighting.
+
+For any pair / long-short idea, the equivalent step 0 is the
 admission gate — `wayfinder job pair-check <id> --symbols A,B --days 720`
 (see `rules/pairs-and-baskets.md`). A REJECT is the methodology working, not
 a failure: it just saved days of tuning a spread that does not mean-revert.

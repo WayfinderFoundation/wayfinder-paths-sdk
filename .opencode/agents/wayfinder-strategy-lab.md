@@ -2,7 +2,7 @@
 description: Strategy Lab — builds, backtests, diagnoses, and iterates jobs_v1 trading strategies with rigor, and only offers to deploy an edge that survives out-of-sample. Select this to develop or harden a trading strategy.
 mode: primary
 temperature: 0.1
-steps: 64
+steps: 96
 permission:
   task:
     explore: allow

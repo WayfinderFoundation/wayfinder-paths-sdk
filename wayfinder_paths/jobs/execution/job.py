@@ -47,6 +47,25 @@ def summarize_backtest_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
         for k in ("type", "artifacts", "stamp", "walk_forward", "validation")
         if k in payload
     }
+    coverage = ((payload.get("dataset") or {}).get("feature_coverage")) or {}
+    thin = {
+        name: info
+        for name, info in coverage.items()
+        if float(info.get("coverage_fraction") or 0.0) < 0.8
+    }
+    if coverage:
+        # summarize drops the raw dataset metadata; coverage is decision-grade.
+        summary["feature_coverage"] = coverage
+    if thin:
+        worst = min(thin, key=lambda k: float(thin[k].get("coverage_fraction") or 0.0))
+        frac = float(thin[worst].get("coverage_fraction") or 0.0)
+        summary["feature_coverage_note"] = (
+            f"feature '{worst}' covers only {frac:.0%} of the bars span "
+            f"(thin: {sorted(thin)}) — bars outside a feature's span carry "
+            "NaN, so any comparison against full-history signals is biased. "
+            "Re-fetch the feature to match the dataset window "
+            "(e.g. fetch_funding with the same days as the candles)."
+        )
     result = payload.get("result")
     if isinstance(result, Mapping):
         if "ranked" in result:  # grid / optuna result
@@ -217,9 +236,40 @@ def _load_dataset(
         frames = load_feature_rows(list(feature_roots or (root,)), specs)
         dataset = PreparedExecutionDataset(
             merge_features(dataset.bars, frames, specs),
-            {**dataset.metadata, "features": [item.name for item in specs]},
+            {
+                **dataset.metadata,
+                "features": [item.name for item in specs],
+                "feature_coverage": _feature_coverage(dataset.bars, frames),
+            },
         )
     return dataset
+
+
+def _feature_coverage(bars: Any, frames: Mapping[str, Any]) -> dict[str, Any]:
+    """Per-feature span vs the bars span. A feature that covers only the tail
+    of the dataset silently handicaps that signal in any comparison (a 1-year
+    funding file against 6 years of candles condemned a signal in a live
+    session); coverage_fraction < 1 means every earlier bar carries NaN."""
+    timestamps = bars.timestamps
+    if not timestamps:
+        return {}
+    bars_first, bars_last = timestamps[0], timestamps[-1]
+    bars_span = max((bars_last - bars_first).total_seconds(), 1.0)
+    coverage: dict[str, Any] = {}
+    for name, frame in frames.items():
+        if frame.empty:
+            coverage[name] = {"rows": 0, "coverage_fraction": 0.0}
+            continue
+        first = frame["timestamp"].iloc[0]
+        last = frame["timestamp"].iloc[-1]
+        overlap = (min(last, bars_last) - max(first, bars_first)).total_seconds()
+        coverage[name] = {
+            "first_ts": str(first),
+            "last_ts": str(last),
+            "rows": int(len(frame)),
+            "coverage_fraction": round(max(0.0, overlap) / bars_span, 3),
+        }
+    return coverage
 
 
 def _resolve_dataset(
