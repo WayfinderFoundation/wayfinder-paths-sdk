@@ -55,8 +55,7 @@ def precompute(frames: dict) -> dict:
     return {"ETH": feats}
 
 def decide(ctx):
-    frame = ctx.view.symbol_frame("ETH")
-    z = float(frame["pair_z"].iloc[-1])
+    z = float(ctx.view.latest("ETH")["pair_z"])  # last row incl. precompute cols
     eth, sol = ctx.ledger.positions.get("ETH"), ctx.ledger.positions.get("SOL")
     hedge, notional = 0.63, 100.0
     if eth is None and sol is None and z > 2.0:
@@ -91,11 +90,24 @@ For 3+ legs (long strongest / short weakest), compute signed target weights in
 ```python
 from wayfinder_paths.jobs.strategies.portfolio import target_weights_to_intents
 
+REBALANCE_BARS = 72  # rebalance cadence in bars
+
 def decide(ctx):
-    weights = {"ETH": 0.33, "SOL": -0.33, "BTC": 0.34}   # + long, − short
+    # Cheap gate FIRST — ctx.bar_index touches no DataFrame, so the strategy
+    # does zero pandas work on the ~71 of 72 ticks it skips.
+    if ctx.bar_index < warmup_bars or ctx.bar_index % REBALANCE_BARS:
+        return []
+    # Rankings/vols are precompute columns; read only the LAST row per symbol.
+    rows = {sym: ctx.view.latest(sym) for sym in ctx.view.symbols}
+    weights = weights_from(rows)   # your ranking → signed weights, gross 1.0
     return target_weights_to_intents(ctx, weights, rebalance_threshold=0.05,
                                      min_trade_notional=15.0)
 ```
+
+**Keep `decide()` cheap for baskets:** everything heavy (rankings, smoothed
+funding, vols) is a `precompute` column; `decide()` gates on `ctx.bar_index`
+and reads `ctx.view.latest(sym)`. Per-tick pandas inside `decide()` is the
+10x slowdown that turns every grid into a crawl.
 
 It handles opens, closes, sign flips, and partial rebalances; gross > 1 is
 normalized unless you pass `normalize_gross=False` (deliberate leverage).
