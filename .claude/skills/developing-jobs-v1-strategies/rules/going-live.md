@@ -21,14 +21,17 @@ ignore it. Funding is about ONE asset: the collateral (USDC).
    platform; scripts get a signer via
    `wayfinder_paths.core.utils.wallets.get_remote_sign_callback(address)`.
 4. **Fund it** (§2).
-5. **Switch the job live**: edit `job.yaml` runner `mode: paper` → `live`,
+5. **Point the job at its wallet**: set `wallet_label: <job-id>` under
+   `execution_params` in `job.yaml` — the live driver defaults to the "main"
+   wallet and will trade the wrong account without it.
+6. **Switch the job live**: edit `job.yaml` runner `mode: paper` → `live`,
    then `core_jobs(action="sync")` — sync also recompiles the runner
    wrappers, which heals any stale wrapper from create time.
-6. **Resume the runner**: `core_runner(action="resume_job",
+7. **Resume the runner**: `core_runner(action="resume_job",
    name="<job-id>-script")`.
-7. **Set the watch level** the user chose (see `deploy-and-agent-loop.md`):
+8. **Set the watch level** the user chose (see `deploy-and-agent-loop.md`):
    `core_jobs(action="set_agent_mode", job_id=…, mode="monitor")`.
-8. **Verify the first tick**: `core_runner_status(action="job_runs",
+9. **Verify the first tick**: `core_runner_status(action="job_runs",
    name="<job-id>-script", limit=3)` — a `FAILED` run here means fix it now,
    not at the next schedule.
 
