@@ -6,7 +6,7 @@ temperature: 0.1
 # Discretionary allocation wakes sweep several markets (research each, place
 # multiple small orders, redeem, report) — needs more headroom than a
 # single-decision wake.
-steps: 40
+steps: 64
 permission:
   task:
     "*": deny

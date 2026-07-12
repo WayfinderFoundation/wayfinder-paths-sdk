@@ -3,7 +3,7 @@ description: Hidden worker for monitoring and intervening on Wayfinder jobs from
 mode: primary
 hidden: true
 temperature: 0.1
-steps: 30
+steps: 64
 permission:
   task:
     "*": deny
