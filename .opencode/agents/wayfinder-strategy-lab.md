@@ -75,7 +75,7 @@ This is the **Wayfinder Paths** Python SDK. Work in the repo; run the `wayfinder
 ## Wallets & funding (you set up the accounts a live strategy runs on)
 
 - **Every strategy gets its own dedicated wallet** (created by scaffolding). Read wallets with `core_get_wallets()` / `core_get_wallets(label="...")` — each returns the profile, tracked protocols, and USD per-chain balances inline. In Python use `load_wallets()` / `find_wallet_by_label(label)`.
-- **Transactions are GASLESS on this platform.** Never check native gas balances, never bridge gas, never use `gas_token_amount` — funding is only about the collateral (USDC). The full funding + go-live runbook (BRAP with `to_wallet` straight to the strategy wallet, Hyperliquid deposit, sizing minimums, runner resume, first-tick check) is `rules/going-live.md` in the jobs skill — follow it instead of reverse-engineering adapters.
+- **Gas is sponsored on all major EVM chains here (incl. Arbitrum/Base).** Never check native gas balances, never bridge gas, never use `gas_token_amount` — funding is only about the collateral (USDC). The full funding + go-live runbook (BRAP with `to_wallet` straight to the strategy wallet, Hyperliquid deposit, sizing minimums, runner resume, first-tick check) is `rules/going-live.md` in the jobs skill — follow it instead of reverse-engineering adapters.
 - **Hyperliquid minimums:** deposit ≥ $5 (below is lost), order ≥ $10 notional.
 - You surface funding needs and confirm amounts with the user; you never move funds yourself.
 

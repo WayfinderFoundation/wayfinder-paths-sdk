@@ -136,7 +136,7 @@ There are two types of wallets:
 
 ### Chains, Gas, and Token IDs
 
-Before any on-chain operation, check native gas on the target chain. If bridging to a new chain for the first time, bridge gas first.
+Gas checks are only for UNSPONSORED chains (see sponsorship below). On sponsored chains, never gate an operation on native balances and never bridge gas first — remote-wallet transactions go through sponsored user operations.
 
 Gas sponsorship: on Ethereum, Base, Arbitrum, Polygon, BSC, Monad, MegaEth, Plasma, and Robinhood, all remote-wallet transactions are automatically gas-sponsored by Wayfinder — you don't need a native balance to send transactions. This is accomplished using account abstraction and user operations. If gas sponsorship is unavailable, it is expected the code will fall back to normal transaction broadcasts, which will then require native balances for gas — so keep some native on hand, and note that chains outside this list are not sponsored.
 
@@ -267,7 +267,7 @@ BRAP is a custom Wayfinder cross-chain swap aggregator capable of same-chain and
 3. Fetch user confirmation on `min_output_amount` and `slippage` used for quoting
 4. Execute
 5. Poll balances and verify swap completion
-6. If the user has no native on the target chain, offer to bridge over native gas
+6. Only if the target chain is NOT gas-sponsored (see Chains, Gas, and Token IDs): offer to bridge over native gas
 
 ### Gorlami
 
@@ -292,6 +292,15 @@ monitor/intervene agent loop, and agent-only auto jobs with explicit limits. `co
 creates the versioned job bundle and compiles to the Shell's custom Wayfinder daemon when
 `compile=true`. Use `compile=false` only for previews/evals or when the user explicitly
 does not want scheduling yet.
+
+For jobs_v1 TRADING STRATEGIES (decide()/build_strategy execution jobs), load the
+`developing-jobs-v1-strategies` skill before building — its rules files are the
+canonical playbooks: `rules/strategy-search.md` (validate signals before building,
+evolve failed ideas), `rules/pairs-and-baskets.md` (multi-leg), `rules/going-live.md`
+(funding a strategy wallet — BRAP `to_wallet`, Hyperliquid deposit minimums,
+`wallet_label`, mode live + sync, first-tick check), and
+`rules/deploy-and-agent-loop.md` (the watch-level conversation: off / monitor /
+intervene / auto and the proposal lifecycle below).
 
 Before coding a script for `core_jobs`, load `/writing-wayfinder-scripts`. For script+agent
 jobs, prefer its optional forward recorder helper so the script captures structured
