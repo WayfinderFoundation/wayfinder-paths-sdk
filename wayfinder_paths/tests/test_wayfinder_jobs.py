@@ -1039,3 +1039,23 @@ def test_bridge_update_path_carries_env(monkeypatch) -> None:
     assert update_calls and update_calls[0]["payload"]["env"] == {
         "WAYFINDER_JOB_MODE": "live"
     }
+
+
+def test_worker_prompt_requires_withdrawing_superseded_drafts(
+    tmp_path: Path,
+) -> None:
+    """A live wake left v1/v2 drafts of the same fix pending — the owner
+    reviewed stale drafts. The wake rules must direct the worker to reject a
+    superseded draft before proposing its replacement."""
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("draft-hygiene", agent_mode="intervene")
+    store.save(job)
+    prompt = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job),
+    )["prompt"]
+    assert "ONE open proposal per concern" in prompt
+    assert "reject_proposal" in prompt
+    assert "superseded by <new-id>" in prompt
