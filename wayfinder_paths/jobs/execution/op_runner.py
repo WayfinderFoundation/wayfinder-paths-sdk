@@ -47,6 +47,10 @@ def _run(op: str, kwargs: dict[str, Any]) -> Any:
         from wayfinder_paths.jobs.research import signal_check_job
 
         return signal_check_job(kwargs.pop("job_id"), **kwargs)
+    if op == "rank_check":
+        from wayfinder_paths.jobs.research import rank_check_job
+
+        return rank_check_job(kwargs.pop("job_id"), **kwargs)
     if op == "backtest_job":
         from wayfinder_paths.jobs.execution.job import (
             backtest_execution_job,

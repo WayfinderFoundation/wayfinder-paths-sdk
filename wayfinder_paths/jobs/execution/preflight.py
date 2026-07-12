@@ -153,7 +153,29 @@ def build_live_dataset(
         json.dumps({"bars": rows, "metadata": metadata}, indent=2, default=str) + "\n",
         encoding="utf-8",
     )
-    return {"path": str(path), "bars": len(rows), "metadata": metadata}
+    result: dict[str, Any] = {
+        "path": str(path),
+        "bars": len(rows),
+        "metadata": metadata,
+    }
+    # Requested-vs-received: venue feeds cap history silently — an agent asked
+    # for 720 days, got 290, and analyzed away without noticing the shortfall.
+    stamps = sorted({str(row.get("timestamp")) for row in rows})
+    if stamps:
+        first = pd.Timestamp(stamps[0])
+        last = pd.Timestamp(stamps[-1])
+        days_received = round((last - first).total_seconds() / 86_400, 1)
+        result["first_ts"] = str(first)
+        result["last_ts"] = str(last)
+        result["days_requested"] = days
+        result["days_received"] = days_received
+        if days_received < 0.9 * float(days):
+            result["warning"] = (
+                f"received {days_received} days of {days} requested — the "
+                "venue caps history. For longer windows use "
+                "dataset_source='ccxt' (exchange='binance')."
+            )
+    return result
 
 
 class ReplayFeed:
@@ -671,7 +693,7 @@ def fetch_funding_features(
             target.write_text(json.dumps(spec_doc, indent=2) + "\n", encoding="utf-8")
             declared = True
 
-    return {
+    result: dict[str, Any] = {
         "rows_fetched": len(rows),
         "rows_appended": appended,
         "per_symbol": metadata.get("per_symbol", {}),
@@ -679,3 +701,20 @@ def fetch_funding_features(
         "feature_declared_now": declared,
         "metadata": metadata,
     }
+    stamps = sorted(str(row.get("timestamp")) for row in rows)
+    if stamps:
+        first = pd.Timestamp(stamps[0])
+        last = pd.Timestamp(stamps[-1])
+        days_received = round((last - first).total_seconds() / 86_400, 1)
+        result["first_ts"] = str(first)
+        result["last_ts"] = str(last)
+        result["days_requested"] = days
+        result["days_received"] = days_received
+        if days_received < 0.9 * float(days):
+            result["warning"] = (
+                f"funding history covers {days_received} days of {days} "
+                "requested — bars outside this span carry NaN funding, which "
+                "biases any funding-vs-price-signal comparison. Match the "
+                "candle window or note the shortfall in your analysis."
+            )
+    return result

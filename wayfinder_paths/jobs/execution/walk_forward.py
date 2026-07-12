@@ -67,9 +67,23 @@ def run_walk_forward(
     min_train = max(train_bars or warmup_bars, warmup_bars)
     required = folds * test_bars + min_train
     if total < required:
+        # Say what WOULD fit — agents were burning retries guessing fold sizes.
+        max_test_bars = (total - min_train) // folds if total > min_train else 0
+        max_folds = (total - min_train) // test_bars if total > min_train else 0
+        if max_test_bars >= 1:
+            feasible = (
+                f" Feasible here: test_bars<={max_test_bars} at folds={folds}, "
+                f"or folds<={max_folds} at test_bars={test_bars}."
+            )
+        else:
+            feasible = (
+                f" Dataset too small for any walk-forward at train>={min_train}; "
+                "fetch more history or lower train_bars/warmup_bars."
+            )
         raise ValueError(
             f"dataset has {total} bars; walk-forward with folds={folds}, "
-            f"test_bars={test_bars}, train>= {min_train} needs at least {required}"
+            f"test_bars={test_bars}, train>= {min_train} needs at least "
+            f"{required}.{feasible}"
         )
 
     fold_rows: list[dict[str, Any]] = []

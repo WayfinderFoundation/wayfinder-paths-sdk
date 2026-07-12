@@ -40,6 +40,7 @@ JobAction = Literal[
     "fetch_funding",
     "pair_check",
     "signal_check",
+    "rank_check",
     "backtest_job",
     "backtest_diagnose",
     "experiments",
@@ -173,7 +174,10 @@ async def core_jobs(
         from an apply worker.
       - Strategy-development loop for execution-spec jobs: `signal_check`
         (event-study a precomputed entry column BEFORE building — no edge at
-        the signal level means no strategy will fix it) and `pair_check` (the
+        the signal level means no strategy will fix it), `rank_check` (the
+        basket analogue: Spearman rank IC of a cross-sectional ranking column
+        vs relative forward returns — run BEFORE building any long/short
+        basket on that ranking) and `pair_check` (the
         statistical admission gate for any pair/spread idea — run it FIRST; a
         REJECT saves days of tuning), `fetch_dataset` (real candles into the
         job; `dataset_source="ccxt"` + `exchange="binance"` for long history),
@@ -242,6 +246,14 @@ async def core_jobs(
         )
         job_path = store.save(job)
         result: dict[str, Any] = {"job": job.to_dict(), "job_yaml": str(job_path)}
+        entrypoint = store.resolve_script_entrypoint(job.id, job.to_dict())
+        if entrypoint is not None:
+            result["script_entrypoint"] = str(entrypoint)
+            result["hint"] = (
+                "write your decide()/build_strategy strategy at "
+                "script_entrypoint — the tick driver and backtests resolve "
+                "the module from there; do not copy it elsewhere"
+            )
         if compile:
             result["compile"] = JobCompiler(store=store).compile(job)
             sync_all_jobs(store=store)
@@ -311,6 +323,14 @@ async def core_jobs(
             return err("invalid_request", "signal_check requires column")
         return await _run_job_op(
             "signal_check",
+            {"job_id": job_id, "column": column, "horizons": horizons},
+        )
+
+    if action == "rank_check":
+        if not column:
+            return err("invalid_request", "rank_check requires column")
+        return await _run_job_op(
+            "rank_check",
             {"job_id": job_id, "column": column, "horizons": horizons},
         )
 

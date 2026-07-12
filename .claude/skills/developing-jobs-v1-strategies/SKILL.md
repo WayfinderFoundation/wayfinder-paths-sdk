@@ -20,6 +20,7 @@ wayfinder job fetch-dataset <id> --days 720 --source ccxt --exchange binance
 # STEP 0 — validate the IDEA before building on it (see rules/strategy-search.md):
 wayfinder job pair-check <id> --symbols ETH,SOL --days 720    # any pair/long-short idea: the admission gate
 wayfinder job signal-check <id> --column entry_signal        # any entry signal: does it beat drift?
+wayfinder job rank-check <id> --column mom_score             # any basket ranking: does it order forward returns?
 wayfinder job backtest <id> --quick 1000      # fast iteration: last 1000 bars, ~2 KB summary
 wayfinder job backtest-diagnose <id>          # READ next_step + recommendations — the framework tells you what to try
 # apply the ONE change next_step names, repeat backtest --quick / diagnose (see "the improve loop" below)

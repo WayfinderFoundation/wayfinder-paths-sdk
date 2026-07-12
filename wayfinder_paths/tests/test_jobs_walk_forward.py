@@ -228,3 +228,18 @@ def test_experiment_records_walk_forward_and_promotion_never_blocks(
     job = store.load(job_id)
     assert job.execution_params["direction"] == "long"
     assert outcome["backtest"]["walk_forward"]["summary"]["fold_count"] == 2
+
+
+def test_insufficient_bars_error_names_feasible_sizing(tmp_path: Path) -> None:
+    """The error must say what WOULD fit — agents burned five retries
+    guessing fold sizes against the bare 'needs at least N' message."""
+    with pytest.raises(ValueError, match=r"Feasible here: test_bars<=\d+"):
+        run_walk_forward(
+            _script(tmp_path),
+            PreparedExecutionDataset.from_rows(_bars(count=200)),
+            _spec(),
+            {"direction": ["long"]},
+            folds=4,
+            test_bars=100,
+            train_bars=80,
+        )
