@@ -10,6 +10,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Literal
 
+import numpy as np
 import pandas as pd
 
 OrderAction = Literal["OPEN", "CLOSE", "STOP_LOSS", "TAKE_PROFIT", "CANCEL"]
@@ -127,6 +128,11 @@ class CompletedBarsView:
         # {(ts, symbol): MarketBar} + {ts: first MarketBar at ts}; shared with
         # truncated child views (they guard lookups against their own bounds).
         self._row_index: dict[Any, MarketBar] | None = None
+        # {symbol: sorted positional indices in THIS frame}; shared with child
+        # views alongside this view's absolute offset, so symbol_frame() is an
+        # integer take instead of a per-call string-equality mask.
+        self._symbol_positions: dict[str, np.ndarray] | None = None
+        self._symbol_positions_offset: int = 0
 
     @classmethod
     def from_rows(cls, rows: list[Mapping[str, Any]]) -> CompletedBarsView:
@@ -139,6 +145,8 @@ class CompletedBarsView:
         *,
         timestamps: list[pd.Timestamp] | None = None,
         row_index: dict[Any, MarketBar] | None = None,
+        symbol_positions: dict[str, np.ndarray] | None = None,
+        symbol_positions_offset: int = 0,
     ) -> CompletedBarsView:
         """Fast path for frames already coerced+sorted by a prior __init__
         (e.g. per-tick truncation). Skipping re-coercion turns the simulator's
@@ -150,6 +158,8 @@ class CompletedBarsView:
         view._timestamps_cache = timestamps
         view._symbols_cache = None
         view._row_index = row_index
+        view._symbol_positions = symbol_positions
+        view._symbol_positions_offset = symbol_positions_offset
         return view
 
     @property
@@ -199,7 +209,16 @@ class CompletedBarsView:
     def _filter_symbol(self, symbol: str | None) -> pd.DataFrame:
         if symbol is None:
             return self._bars
-        return self._bars[self._bars["symbol"] == symbol]
+        return self.symbol_frame(symbol)
+
+    def _ensure_symbol_positions(self) -> dict[str, np.ndarray]:
+        if self._symbol_positions is None:
+            codes, uniques = pd.factorize(self._bars["symbol"])
+            self._symbol_positions = {
+                str(uniques[i]): np.flatnonzero(codes == i) for i in range(len(uniques))
+            }
+            self._symbol_positions_offset = 0
+        return self._symbol_positions
 
     def feature(self, name: str, symbol: str | None = None) -> Any:
         """Latest non-null value of an exogenous feature column (merged by
@@ -259,6 +278,8 @@ class CompletedBarsView:
             self._bars.iloc[start_pos:end_pos],
             timestamps=timestamps[start : end + 1],
             row_index=self._ensure_row_index(),
+            symbol_positions=self._ensure_symbol_positions(),
+            symbol_positions_offset=self._symbol_positions_offset + start_pos,
         )
 
     def row_at(self, timestamp: pd.Timestamp, symbol: str | None = None) -> MarketBar:
@@ -286,8 +307,25 @@ class CompletedBarsView:
 
     def symbol_frame(self, symbol: str) -> pd.DataFrame:
         """Rows for one symbol WITHOUT the defensive whole-frame copy of
-        to_frame(). Callers must treat the result as read-only."""
-        return self._bars[self._bars["symbol"] == symbol]
+        to_frame(). Callers must treat the result as read-only.
+
+        Positional take over cached per-symbol indices (shared root→child via
+        _from_trusted) instead of a per-call string-equality mask — the mask
+        made this the top engine cost for multi-symbol strategies (14 symbols
+        = 14 full-window scans per tick)."""
+        positions = self._ensure_symbol_positions()
+        pos = positions.get(symbol)
+        if pos is None and not isinstance(symbol, str):
+            pos = positions.get(str(symbol))
+        if pos is None or not len(pos):
+            return self._bars.iloc[0:0]
+        offset = self._symbol_positions_offset
+        lo = int(np.searchsorted(pos, offset, side="left"))
+        hi = int(np.searchsorted(pos, offset + len(self._bars), side="left"))
+        window_pos = pos[lo:hi]
+        if offset:
+            window_pos = window_pos - offset
+        return self._bars.iloc[window_pos]
 
     def to_rows(self) -> list[dict[str, Any]]:
         return self._bars.to_dict(orient="records")
@@ -329,7 +367,21 @@ class OrderIntent:
                 )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        # Manual dict: asdict() deep-copies recursively and was a measured
+        # per-tick engine cost (trace/rows serialize intents and fills).
+        return {
+            "action": self.action,
+            "venue": self.venue,
+            "symbol": self.symbol,
+            "side": self.side,
+            "size": self.size,
+            "notional": self.notional,
+            "reduce_only": self.reduce_only,
+            "client_order_id": self.client_order_id,
+            "bracket": dict(self.bracket) if self.bracket else self.bracket,
+            "limit_price": self.limit_price,
+            "metadata": dict(self.metadata),
+        }
 
 
 @dataclass
@@ -353,7 +405,21 @@ class FillEvent:
         return self.status == "filled" and self.filled_size > 0
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "status": self.status,
+            "venue": self.venue,
+            "symbol": self.symbol,
+            "side": self.side,
+            "filled_size": self.filled_size,
+            "avg_price": self.avg_price,
+            "fee": self.fee,
+            "order_id": self.order_id,
+            "client_order_id": self.client_order_id,
+            "reduce_only": self.reduce_only,
+            "error": self.error,
+            "raw": dict(self.raw),
+            "timestamp": self.timestamp,
+        }
 
 
 @dataclass
@@ -394,7 +460,17 @@ class PositionRecord:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        # Ledger snapshots run up to 3x per tick over every open position —
+        # asdict() here was ~20% of total engine time on multi-leg strategies.
+        return {
+            "symbol": self.symbol,
+            "side": self.side,
+            "size": self.size,
+            "avg_price": self.avg_price,
+            "bars_held": self.bars_held,
+            "opened_at": self.opened_at,
+            "metadata": dict(self.metadata),
+        }
 
 
 class PositionLedger:
@@ -546,6 +622,13 @@ class ExecutionContext:
     timestamp: str
     execution_spec: ExecutionSpec
     strategy_state: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def bar_index(self) -> int:
+        """1-based count of completed timestamps in the handed view — the
+        cheap cadence gate (`if ctx.bar_index % REBAL: return []`) that lets
+        decide() skip ticks without touching any DataFrame."""
+        return len(self.view._ensure_timestamps())
 
 
 def mark_to_market_equity(ctx: ExecutionContext) -> float:
