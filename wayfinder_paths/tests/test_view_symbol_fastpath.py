@@ -101,6 +101,44 @@ def test_bar_index_property() -> None:
     assert ctx.bar_index == len(view.timestamps)
 
 
+def test_every_n_bars_is_epoch_aligned_not_window_relative() -> None:
+    """Live hands a constant-length sliding window, so bar_index % n is
+    frozen; every_n_bars must fire on the global bar clock as the window END
+    advances."""
+    from wayfinder_paths.jobs.execution.primitives import (
+        ExecutionContext,
+        ExecutionSpec,
+        PositionLedger,
+        StateSnapshot,
+    )
+
+    spec = ExecutionSpec()
+    spec.data_contract["bar_interval"] = "1h"
+    root = CompletedBarsView.from_rows(_rows(30, SYMBOLS))
+
+    def ctx_at(end_index: int) -> ExecutionContext:
+        return ExecutionContext(
+            view=root.window(end_index, 10),  # constant window length: 10
+            ledger=PositionLedger(),
+            state_snapshot=StateSnapshot(status="valid"),
+            capacity=None,
+            params={},
+            timestamp="2024-01-02T00:00:00+00:00",
+            execution_spec=spec,
+        )
+
+    fired = [ctx_at(i).every_n_bars(2) for i in range(20, 26)]
+    # Alternates tick to tick even though bar_index stays 10 throughout.
+    assert fired in ([True, False, True, False, True, False],
+                     [False, True, False, True, False, True])
+    assert all(ctx_at(i).bar_index == 10 for i in range(20, 26))
+    # n<=1 is always live; a missing interval never blocks.
+    assert ctx_at(20).every_n_bars(1) is True
+    bare = ctx_at(20)
+    bare.execution_spec = ExecutionSpec()
+    assert bare.every_n_bars(7) is True
+
+
 @pytest.mark.parametrize(
     "obj",
     [

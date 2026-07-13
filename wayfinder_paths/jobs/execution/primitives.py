@@ -625,10 +625,33 @@ class ExecutionContext:
 
     @property
     def bar_index(self) -> int:
-        """1-based count of completed timestamps in the handed view — the
-        cheap cadence gate (`if ctx.bar_index % REBAL: return []`) that lets
-        decide() skip ticks without touching any DataFrame."""
+        """1-based count of completed timestamps in the handed view.
+
+        Good for WARMUP gates (`if ctx.bar_index < warmup_bars`): it measures
+        data actually available, cheaply (no DataFrame touched). NOT a
+        cadence clock — live hands a sliding fixed-length window, so this
+        stays constant tick after tick and `bar_index % n` silently never
+        (or always) fires. Use `ctx.every_n_bars(n)` for cadence."""
         return len(self.view._ensure_timestamps())
+
+    def every_n_bars(self, n: int) -> bool:
+        """Epoch-aligned cadence gate: True when the latest completed bar's
+        position in the GLOBAL bar sequence (timestamp // bar_interval) is a
+        multiple of n. Identical in backtest and live, and restart-proof —
+        never count ticks in `strategy_state` for warmup or cadence (a state
+        reset re-warms the counter and the job goes dark for a full warmup
+        period)."""
+        if n <= 1:
+            return True
+        timestamps = self.view._ensure_timestamps()
+        if not timestamps:
+            return False
+        interval = bar_interval_seconds(
+            self.execution_spec.data_contract.get("bar_interval")
+        )
+        if not interval:
+            return True
+        return int(timestamps[-1].timestamp() // interval) % n == 0
 
 
 def mark_to_market_equity(ctx: ExecutionContext) -> float:

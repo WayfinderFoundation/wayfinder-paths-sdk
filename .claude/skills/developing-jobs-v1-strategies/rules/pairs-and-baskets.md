@@ -93,9 +93,13 @@ from wayfinder_paths.jobs.strategies.portfolio import target_weights_to_intents
 REBALANCE_BARS = 72  # rebalance cadence in bars
 
 def decide(ctx):
-    # Cheap gate FIRST — ctx.bar_index touches no DataFrame, so the strategy
-    # does zero pandas work on the ~71 of 72 ticks it skips.
-    if ctx.bar_index < warmup_bars or ctx.bar_index % REBALANCE_BARS:
+    # Cheap gates FIRST — neither touches a DataFrame, so the strategy does
+    # zero pandas work on the ~71 of 72 ticks it skips.
+    # WARMUP gates on data in the view (bar_index); CADENCE gates on the
+    # epoch-aligned every_n_bars — NEVER on bar_index % n (constant in live's
+    # sliding window) and NEVER on tick counters in strategy_state (a state
+    # reset re-warms them and the job goes dark for a full warmup period).
+    if ctx.bar_index < warmup_bars or not ctx.every_n_bars(REBALANCE_BARS):
         return []
     # Rankings/vols are precompute columns; read only the LAST row per symbol.
     rows = {sym: ctx.view.latest(sym) for sym in ctx.view.symbols}
@@ -106,7 +110,7 @@ def decide(ctx):
 
 **Keep `decide()` cheap for baskets:** everything heavy (rankings, smoothed
 funding, vols) is a `precompute` column; `decide()` gates on `ctx.bar_index`
-and reads `ctx.view.latest(sym)`. Per-tick pandas inside `decide()` is the
+(warmup) + `ctx.every_n_bars(n)` (cadence) and reads `ctx.view.latest(sym)`. Per-tick pandas inside `decide()` is the
 10x slowdown that turns every grid into a crawl.
 
 It handles opens, closes, sign flips, and partial rebalances; gross > 1 is
