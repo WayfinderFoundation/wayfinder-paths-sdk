@@ -953,8 +953,11 @@ def test_mcp_create_defaults_to_jobs_v1(tmp_path: Path, monkeypatch) -> None:
     assert "run_scheduled_tick" in wrapper.read_text(encoding="utf-8")
     # Create tells the agent exactly where the strategy module lives —
     # layout guessing cost real tool calls in live sessions.
-    assert result["result"]["script_entrypoint"].endswith("strategy.py")
-    assert "script_entrypoint" in result["result"]["hint"]
+    # The scaffold pins the module inside the versioned workspace.
+    assert result["result"]["script_entrypoint"].endswith(
+        "workspace/src/strategy.py"
+    )
+    assert "workspace/src/" in result["result"]["hint"]
 
 
 def test_mcp_sync_heals_stale_wrapper_after_contract_flip(
@@ -1059,3 +1062,118 @@ def test_worker_prompt_requires_withdrawing_superseded_drafts(
     assert "ONE open proposal per concern" in prompt
     assert "reject_proposal" in prompt
     assert "superseded by <new-id>" in prompt
+
+
+def test_create_job_copies_external_script_into_workspace_src(
+    tmp_path: Path,
+) -> None:
+    """Strategy code outside workspace/ is invisible to revisions and
+    proposals — create must move it to the one versionable home."""
+    from wayfinder_paths.jobs.gating import compute_workspace_revision
+
+    external = tmp_path / "elsewhere" / "momo.py"
+    external.parent.mkdir(parents=True)
+    external.write_text("def decide(ctx):\n    return []\n", encoding="utf-8")
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "scaffold-copy", script=str(external), interval_seconds=3600
+    )
+    store.create_job(job)
+
+    assert job.script_loop.entrypoint == "workspace/src/momo.py"
+    copied = store.job_dir(job.id) / "workspace" / "src" / "momo.py"
+    assert copied.read_text(encoding="utf-8").startswith("def decide")
+    journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
+    assert "entrypoint_scaffolded" in journal
+    # The copied file is now inside the revision hash.
+    before = compute_workspace_revision(store.job_dir(job.id))
+    copied.write_text("def decide(ctx):\n    return list()\n", encoding="utf-8")
+    assert compute_workspace_revision(store.job_dir(job.id)) != before
+
+
+def test_create_job_defaults_missing_script_to_workspace_src(
+    tmp_path: Path,
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "scaffold-default", script="strategy.py", interval_seconds=3600
+    )
+    store.create_job(job)
+
+    assert job.script_loop.entrypoint == "workspace/src/strategy.py"
+    # No stub: execution_script_exists must stay honest until the agent
+    # writes the real module.
+    assert not (
+        store.job_dir(job.id) / "workspace" / "src" / "strategy.py"
+    ).exists()
+
+
+def test_create_job_keeps_workspace_relative_entrypoint(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "scaffold-noop", script="workspace/src/loop.py", interval_seconds=3600
+    )
+    store.create_job(job)
+
+    assert job.script_loop.entrypoint == "workspace/src/loop.py"
+    journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
+    assert "entrypoint_scaffolded" not in journal
+
+
+def test_compiler_journals_entrypoint_outside_workspace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr("wayfinder_paths.jobs.compiler.RunnerBridge", _FakeBridge)
+    store = JobStore(repo_root=tmp_path)
+    rogue = tmp_path / "rogue.py"
+    rogue.write_text("def decide(ctx):\n    return []\n", encoding="utf-8")
+    job = WayfinderJob.new(
+        "rogue-entrypoint", script=str(rogue), interval_seconds=3600
+    )
+    # Raw save (no scaffold) mirrors the legacy jobs already on disk.
+    store.save(job)
+
+    JobCompiler(store=store).compile(job, start_daemon=False)
+
+    journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
+    assert "entrypoint_outside_workspace" in journal
+
+
+def test_worker_prompt_states_workspace_staging_rule(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("staging-rule", agent_mode="intervene")
+    store.save(job)
+    prompt = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job),
+    )["prompt"]
+
+    assert "Proposals stage ONLY `workspace/` + `job.yaml`" in prompt
+    assert "FIRST proposal must migrate it into" in prompt
+
+
+def test_worker_prompt_intervene_ladder_and_retry_budget(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("ladder", agent_mode="intervene")
+    store.save(job)
+    prompt = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job),
+    )["prompt"]
+
+    assert "Wake priority ladder" in prompt
+    assert "healthy, no change warranted" in prompt
+    assert "after 2 failed propose attempts in a wake" in prompt
+    # The ladder is intervene/monitor task guidance, not part of the apply wake.
+    apply_prompt = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job),
+        apply_proposal_id="prop_x",
+    )["prompt"]
+    assert "Wake priority ladder" not in apply_prompt

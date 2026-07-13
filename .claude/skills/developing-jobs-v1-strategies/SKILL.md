@@ -15,6 +15,8 @@ Do NOT hand-write the strategy into `.wayfinder_runs/` (that's one-off scratch s
 
 ```
 wayfinder job create <id> --script <strategy.py> --execution-contract jobs_v1 --interval 3600 --initial-capital 1000
+# create echoes script_entrypoint (.wayfinder/jobs/<id>/workspace/src/<file>.py) — write the strategy THERE;
+# only workspace/ + job.yaml are versioned and proposable, so code anywhere else can't be promoted
 # edit execution_spec.json (data_contract.symbols + bar_interval) and the strategy
 wayfinder job fetch-dataset <id> --days 720 --source ccxt --exchange binance
 # STEP 0 — validate the IDEA before building on it (see rules/strategy-search.md):

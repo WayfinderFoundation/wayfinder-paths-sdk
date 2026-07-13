@@ -15,6 +15,10 @@ native gas.)
 
 ## 1. The go-live checklist
 
+0. **Strategy source lives in the workspace**: the entrypoint must be
+   `.wayfinder/jobs/<id>/workspace/src/<file>.py` — `validate_job` fails
+   `entrypoint_inside_workspace` otherwise (code elsewhere can't be
+   versioned or proposed).
 1. **Promote** the validated params: `core_jobs(action="promote_params", …)`
    + one full-history confirmation backtest.
 2. **Sizing math BEFORE funding** (see §3) — confirm every leg clears venue

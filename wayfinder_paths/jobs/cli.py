@@ -181,8 +181,11 @@ def create_cmd(
     )
     if initial_capital is not None:
         job.execution_params["initial_capital"] = float(initial_capital)
-    path = store.save(job)
+    path = store.create_job(job)
     result: dict[str, Any] = {"job": job.to_dict(), "job_yaml": str(path)}
+    entrypoint = store.resolve_script_entrypoint(job.id, job.to_dict())
+    if entrypoint is not None:
+        result["script_entrypoint"] = str(entrypoint)
     if not no_compile:
         result["compile"] = JobCompiler(store=store).compile(job)
         sync_all_jobs(store=store)

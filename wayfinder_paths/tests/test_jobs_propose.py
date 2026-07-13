@@ -290,3 +290,27 @@ def test_propose_memo_writes_file_and_rides_change_summary(tmp_path: Path) -> No
     plain = _propose_params(store, job_id, params={"threshold": 11.1})
     assert plain["change_summary"] == plain["proposed_change"]["summary"]
     assert not (root / "proposals" / f"{plain['proposal_id']}.md").exists()
+
+
+def test_propose_fails_named_check_when_entrypoint_outside_workspace(
+    tmp_path: Path,
+) -> None:
+    """The exact live failure mode: strategy at the job root → candidate
+    staging can't carry it → propose must fail with a check whose name and
+    hint tell the worker how to migrate."""
+    store, job_id, root = _make_job(tmp_path)
+    rogue = root / "strategy.py"
+    rogue.write_text(
+        (root / "workspace" / "src" / "strategy.py").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    job_yaml = root / "job.yaml"
+    data = yaml.safe_load(job_yaml.read_text(encoding="utf-8"))
+    data["script_loop"]["entrypoint"] = str(rogue)
+    job_yaml.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    proposal = _propose_params(store, job_id)
+
+    summary = proposal["candidate_report"]["validation_summary"]
+    assert summary["status"] == "failed"
+    assert "entrypoint_inside_workspace" in summary["failed_checks"]

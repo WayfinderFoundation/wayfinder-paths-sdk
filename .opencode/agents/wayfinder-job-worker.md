@@ -67,6 +67,13 @@ triggering event first.
 Never execute live trades.
 Never activate a candidate revision without user approval.
 
+Durable-location contract: `/wf/user_vault/` (the volume) survives restarts
+and agent updates; `/wf/sdk/` + `/wf/opencode/` are image content replaced on
+every update, and `.wayfinder_runs/.scratch/` is session-cleaned. Anything you
+want to exist at the next wake lives in the job bundle
+(`.wayfinder/jobs/<id>/`), and strategy code specifically in
+`workspace/src/` — the only versioned, proposable location.
+
 ## Creating proposals (intervene)
 
 Do NOT hand-write `proposals/<proposal_id>.json` — hand-written proposals
@@ -86,8 +93,12 @@ core_jobs(action="propose", job_id=..., kind="code_change"|"params_update"|"mode
 baseline-vs-candidate backtest comparison, and attaches the `candidate_report`
 approvals require. For code changes, either pass `candidate_dir` pointing at a
 bundle you pre-edited (a `workspace/` tree ± `job.yaml`), or propose params
-directly. If propose reports a failed validation or a non-live-ready gate,
-fix the change and re-propose — do not ask the user to approve a red report.
+directly. Staging covers ONLY `workspace/` + `job.yaml` — strategy code lives
+at `workspace/src/<file>.py` and nowhere else; if the active entrypoint is
+outside `workspace/`, your first proposal migrates it there. If propose
+reports a failed validation or a non-live-ready gate, read ALL failing check
+names and fix them in ONE re-propose — do not ask the user to approve a red
+report; after two failed attempts in a wake, stop and report the blocker.
 
 When `core_jobs` MCP tools are unavailable, use the CLI directly — the exact
 signature, so you never need `--help`:

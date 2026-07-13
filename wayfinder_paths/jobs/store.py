@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -166,6 +167,56 @@ class JobStore:
             yaml.safe_dump(job.to_dict(), sort_keys=False), encoding="utf-8"
         )
         return path
+
+    def create_job(self, job: WayfinderJob) -> Path:
+        """Creation path: layout + workspace entrypoint scaffolding + save.
+
+        Only creation calls this (CLI/MCP create). `save()` stays
+        scaffold-free because it runs on every mutation and must never move
+        entrypoints out from under a running job.
+        """
+        self.init_layout(job)
+        self.scaffold_workspace_entrypoint(job)
+        return self.save(job)
+
+    def scaffold_workspace_entrypoint(self, job: WayfinderJob) -> dict[str, Any]:
+        """Force the script entrypoint under <job>/workspace/src.
+
+        Revisions hash only workspace/* + job.yaml and proposals stage only
+        workspace/, so strategy code anywhere else can never be versioned or
+        promoted. An existing file outside the workspace is copied in; a
+        not-yet-written script just gets its entrypoint rewritten to the
+        workspace path (no stub — execution_script_exists should stay honest).
+        """
+        if not (job.script_loop.enabled and job.script_loop.entrypoint):
+            return {"entrypoint": job.script_loop.entrypoint, "scaffolded": False}
+        root = self.job_dir(job.id)
+        workspace = (root / "workspace").resolve()
+        resolved = self.resolve_script_entrypoint(job.id, job.to_dict())
+        if resolved is not None and resolved.resolve().is_relative_to(workspace):
+            return {"entrypoint": job.script_loop.entrypoint, "scaffolded": False}
+
+        basename = Path(job.script_loop.entrypoint).name or "strategy.py"
+        target_rel = f"workspace/src/{basename}"
+        copied_from: str | None = None
+        if resolved is not None and resolved.is_file():
+            (root / "workspace" / "src").mkdir(parents=True, exist_ok=True)
+            shutil.copy2(resolved, root / target_rel)
+            copied_from = str(resolved)
+        job.script_loop.entrypoint = target_rel
+        self.append_journal(
+            job.id,
+            {
+                "type": "entrypoint_scaffolded",
+                "entrypoint": target_rel,
+                "copied_from": copied_from,
+            },
+        )
+        return {
+            "entrypoint": target_rel,
+            "copied_from": copied_from,
+            "scaffolded": True,
+        }
 
     def load(self, job_id: str) -> WayfinderJob:
         path = self.job_yaml_path(job_id)

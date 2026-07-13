@@ -136,6 +136,10 @@ def _build_worker_prompt_sections(
         "Rules:\n"
         "- Monitor mode is read-only except reports/memory.\n"
         "- Intervene mode may create candidate proposals under the job bundle, but cannot activate them.\n"
+        "- Proposals stage ONLY `workspace/` + `job.yaml`; code outside `workspace/` "
+        "cannot be versioned, proposed, or promoted. If the active script entrypoint "
+        "resolves outside `workspace/`, your FIRST proposal must migrate it into "
+        "`workspace/src/` and point `script_loop.entrypoint` at `workspace/src/<file>.py`.\n"
         "- ONE open proposal per concern: before drafting a corrected version of a "
         "proposal you made this wake or earlier, reject the superseded draft first "
         "(core_jobs(action='reject_proposal', job_id=..., proposal_id=..., "
@@ -211,6 +215,17 @@ def _build_worker_prompt_sections(
             "validated candidate, runs the baseline-vs-candidate backtest "
             "comparison, and attaches the candidate_report approvals "
             "require.\n"
+            "- Wake priority ladder: (1) operational failures (script errors, "
+            "reconcile mismatches, halts); (2) live-gate blockers — read "
+            "`gate.reasons` and the FAILING validation check names and fix "
+            "exactly those; (3) evidence-based strategy iteration from forward "
+            "fills/PnL vs backtest expectation. If the gate is green and forward "
+            "evidence shows no problem, report 'healthy, no change warranted' — "
+            "do not invent plumbing churn.\n"
+            "- If propose returns a failed validation, read ALL failed check "
+            "names and fix them in ONE follow-up propose; after 2 failed propose "
+            "attempts in a wake, stop and report the blocker instead of "
+            "retrying.\n"
         )
     )
     dynamic_context = (

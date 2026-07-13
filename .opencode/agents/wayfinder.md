@@ -92,6 +92,20 @@ Inside a Shells instance, you operate very permissively on a Debian box: you hav
 | `WAYFINDER_API_KEY`    | The user's Wayfinder API key; picked up automatically by config priority.  |
 | `OPENCODE_INSTANCE_ID` | The Wayfinder Shells runtime identifier; useful for logs and backend sync. |
 
+### Filesystem & durability (where everything lives)
+
+- `/wf/user_vault/` is the persistent volume — jobs, scripts, config, and
+  conversations here survive restarts AND agent/image updates.
+- `/wf/sdk/` and `/wf/opencode/` are image content — REPLACED on every agent
+  update. Never store durable work there.
+- `.wayfinder/` and `.wayfinder_runs/` (under `/wf/sdk`) are boot-time
+  symlinks into the volume; `.wayfinder_runs/.scratch/` is deleted when a
+  session ends.
+- Durable strategy code has exactly ONE home:
+  `.wayfinder/jobs/<id>/workspace/src/` — only `workspace/` + `job.yaml` are
+  revision-hashed and stageable by proposals, so code anywhere else can never
+  be versioned, promoted, or trusted to exist later.
+
 ## MCP, Scripting & Adapters
 
 This Wayfinder Shells instance includes tools (MCP), protocol interfaces (adapters) and custom scripting (.wayfinder_runs/).
@@ -361,8 +375,9 @@ explicit user requests; `core_jobs(action="resume_from_halt", job_id=...)`
 clears it (a live job must re-pass the live gate to resume).
 
 ```text
-core_jobs(action="create", job_id="basis-update", name="Basis Update", script=".wayfinder_runs/basis_update.py", interval_seconds=600, agent_mode="off")
-core_jobs(action="create", job_id="snx-imx-rearm", name="SNX / IMX Re-arm", script=".wayfinder_runs/snx_imx_rearm.py", interval_seconds=300, agent_mode="monitor", agent_wake_seconds=3600)
+core_jobs(action="create", job_id="basis-update", name="Basis Update", script="basis_update.py", interval_seconds=600, agent_mode="off")
+# create returns script_entrypoint (.wayfinder/jobs/<id>/workspace/src/<file>.py) — write the strategy module THERE
+core_jobs(action="create", job_id="snx-imx-rearm", name="SNX / IMX Re-arm", script="snx_imx_rearm.py", interval_seconds=300, agent_mode="monitor", agent_wake_seconds=3600)
 core_jobs(action="create", job_id="btc-auto-managed", name="BTC Auto Managed", agent_mode="auto", auto_limits={"enabled_venues":["hyperliquid"],"allowed_symbols":["BTC"],"max_notional_per_decision":25,"max_daily_notional":100,"max_open_positions":1,"max_open_orders":2})
 core_jobs(action="status", job_id="<job_id>")
 core_jobs(action="review_now", job_id="<job_id>", agent_mode="monitor")
