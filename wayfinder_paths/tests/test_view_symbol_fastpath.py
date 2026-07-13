@@ -132,6 +132,10 @@ def test_every_n_bars_is_epoch_aligned_not_window_relative() -> None:
     assert fired in ([True, False, True, False, True, False],
                      [False, True, False, True, False, True])
     assert all(ctx_at(i).bar_index == 10 for i in range(20, 26))
+    # offset pins the phase: complementary offsets partition the bars.
+    for i in range(20, 26):
+        a, b = ctx_at(i).every_n_bars(2), ctx_at(i).every_n_bars(2, offset=1)
+        assert a != b
     # n<=1 is always live; a missing interval never blocks.
     assert ctx_at(20).every_n_bars(1) is True
     bare = ctx_at(20)

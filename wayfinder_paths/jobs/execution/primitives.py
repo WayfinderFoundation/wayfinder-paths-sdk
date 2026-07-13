@@ -634,13 +634,16 @@ class ExecutionContext:
         (or always) fires. Use `ctx.every_n_bars(n)` for cadence."""
         return len(self.view._ensure_timestamps())
 
-    def every_n_bars(self, n: int) -> bool:
+    def every_n_bars(self, n: int, *, offset: int = 0) -> bool:
         """Epoch-aligned cadence gate: True when the latest completed bar's
-        position in the GLOBAL bar sequence (timestamp // bar_interval) is a
-        multiple of n. Identical in backtest and live, and restart-proof —
-        never count ticks in `strategy_state` for warmup or cadence (a state
-        reset re-warms the counter and the job goes dark for a full warmup
-        period)."""
+        position in the GLOBAL bar sequence (timestamp // bar_interval) is
+        congruent to `offset` mod n. Identical in backtest and live, and
+        restart-proof — never count ticks in `strategy_state` for warmup or
+        cadence (a state reset re-warms the counter and the job goes dark
+        for a full warmup period). `offset` pins WHICH bars fire: a strategy
+        validated on a particular rebalance phase keeps that exact schedule
+        (phase can matter — a one-day shift materially changed a break-even
+        daily basket's 4-year path)."""
         if n <= 1:
             return True
         timestamps = self.view._ensure_timestamps()
@@ -651,7 +654,7 @@ class ExecutionContext:
         )
         if not interval:
             return True
-        return int(timestamps[-1].timestamp() // interval) % n == 0
+        return int(timestamps[-1].timestamp() // interval) % n == offset % n
 
 
 def mark_to_market_equity(ctx: ExecutionContext) -> float:
