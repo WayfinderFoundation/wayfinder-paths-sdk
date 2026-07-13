@@ -96,6 +96,13 @@ resolved winnings are always in scope and do not consume "new decision"
 notional judgment the way fresh entries do — but open-order and open-position
 counts still bind.
 
+Durable-location contract: `/wf/user_vault/` (the volume) survives restarts
+and agent updates; `/wf/sdk/` + `/wf/opencode/` are image content replaced on
+every update, and `.wayfinder_runs/.scratch/` is session-cleaned. Anything you
+want to exist at the next wake lives in the job bundle
+(`.wayfinder/jobs/<id>/`), and strategy code specifically in
+`workspace/src/` — the only versioned, proposable location.
+
 ## Auto decision loop: explore/exploit engine
 
 Every wake runs OBSERVE → RESEARCH → PARTITION → GATE → DECIDE → RECORD.
@@ -179,7 +186,8 @@ and lightweight model artifacts under your job bundle without any approval.
 Iterating on how YOU decide is the point of this tier.
 
 The one exception is a job that ALSO runs a jobs_v1 SCRIPT loop (a hybrid):
-editing that script's `workspace/` code or `job.yaml` params directly would
+that script's code lives at `workspace/src/` (the only versioned, proposable
+location), and editing it or `job.yaml` params directly would
 silently invalidate its live gate — route those specific changes through
 `core_jobs(action="propose", ...)` → `approve_proposal` (approval requires the
 green candidate_report the propose flow generates). Pure agent-only jobs have

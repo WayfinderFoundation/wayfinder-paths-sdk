@@ -244,15 +244,17 @@ async def core_jobs(
             auto_limits=auto_limits,
             execution_contract=execution_contract,
         )
-        job_path = store.save(job)
+        job_path = store.create_job(job)
         result: dict[str, Any] = {"job": job.to_dict(), "job_yaml": str(job_path)}
         entrypoint = store.resolve_script_entrypoint(job.id, job.to_dict())
         if entrypoint is not None:
             result["script_entrypoint"] = str(entrypoint)
             result["hint"] = (
                 "write your decide()/build_strategy strategy at "
-                "script_entrypoint — the tick driver and backtests resolve "
-                "the module from there; do not copy it elsewhere"
+                "script_entrypoint — it always lives under the job's "
+                "workspace/src/ because only workspace/ + job.yaml are "
+                "revision-hashed and stageable by proposals; do not author "
+                "strategy code at the job root or in .wayfinder_runs/"
             )
         if compile:
             result["compile"] = JobCompiler(store=store).compile(job)

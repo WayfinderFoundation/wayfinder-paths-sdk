@@ -19,7 +19,10 @@ from wayfinder_paths.jobs.execution.simulator import (
     simulate_execution,
     write_backtest_artifacts,
 )
-from wayfinder_paths.jobs.execution.validation import FORBIDDEN_ORDER_PATTERNS
+from wayfinder_paths.jobs.execution.validation import (
+    FORBIDDEN_ORDER_PATTERNS,
+    entrypoint_inside_workspace_check,
+)
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
@@ -120,6 +123,10 @@ def validate_candidate_application(
             "script_required": script_required,
         }
     )
+    if script_required:
+        checks.append(
+            entrypoint_inside_workspace_check(candidate_dir, script_path)
+        )
     if script_path and script_path.exists():
         if contract == "jobs_v1":
             checks.extend(_jobs_v1_script_checks(script_path))

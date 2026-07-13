@@ -113,6 +113,21 @@ class JobCompiler:
             if entrypoint is None:
                 raise ValueError("script loop is enabled but entrypoint is missing")
             script_wrapper = self.store.runs_jobs_dir / f"{safe_module_name}_script.py"
+            workspace = (root / "workspace").resolve()
+            if entrypoint.exists() and not entrypoint.resolve().is_relative_to(
+                workspace
+            ):
+                # Non-fatal: live loops keep ticking, but the placement is
+                # unversionable — validation blocks it and the worker's first
+                # proposal should migrate the script into workspace/src/.
+                self.store.append_journal(
+                    job.id,
+                    {
+                        "type": "entrypoint_outside_workspace",
+                        "entrypoint": str(entrypoint),
+                        "expected_dir": str(root / "workspace" / "src"),
+                    },
+                )
             if job.execution_contract != "jobs_v1" and not entrypoint.exists():
                 raise ValueError(
                     f"script entrypoint does not exist: {entrypoint}. For jobs_v1 "

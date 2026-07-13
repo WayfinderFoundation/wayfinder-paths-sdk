@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import json
 import py_compile
 import re
+import tokenize
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -173,6 +175,7 @@ def validate_execution_job(
             "path": str(script_path) if script_path else None,
         }
     )
+    checks.append(entrypoint_inside_workspace_check(root, script_path))
     if script_path and script_path.exists():
         checks.extend(_script_static_checks(script_path, spec))
         try:
@@ -417,6 +420,68 @@ def _execution_spec_checks(spec: ExecutionSpec) -> list[dict[str, Any]]:
     ]
 
 
+def entrypoint_inside_workspace_check(
+    root: Path, script_path: Path | None
+) -> dict[str, Any]:
+    """Blocking: strategy code has exactly one durable, versionable home.
+
+    Revisions hash only workspace/* + job.yaml and proposals stage only
+    workspace/, so an entrypoint anywhere else can never be versioned,
+    staged, or promoted (and may not even survive an image update).
+    """
+    workspace = (root / "workspace").resolve()
+    passed = bool(
+        script_path is not None
+        and script_path.resolve().is_relative_to(workspace)
+    )
+    check: dict[str, Any] = {
+        "name": "entrypoint_inside_workspace",
+        "passed": passed,
+        "blocking": True,
+        "path": str(script_path) if script_path else None,
+        "expected_dir": str(root / "workspace" / "src"),
+    }
+    if not passed:
+        check["hint"] = (
+            "move the strategy into <job>/workspace/src/ and set "
+            "script_loop.entrypoint to 'workspace/src/<file>.py' — revisions "
+            "hash only workspace/* + job.yaml and proposals stage only "
+            "workspace/, so code elsewhere cannot be versioned or promoted"
+        )
+    return check
+
+
+def _code_only_text(text: str) -> str:
+    """Strip comments and docstrings so static greps see only real code.
+
+    Falls back to the raw text on tokenize failures — those scripts already
+    fail execution_script_py_compile with the real error.
+    """
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    except Exception:
+        return text
+    keep: list[str] = []
+    prev_significant = tokenize.INDENT
+    for tok in tokens:
+        if tok.type == tokenize.COMMENT:
+            continue
+        if tok.type == tokenize.STRING and prev_significant in (
+            tokenize.INDENT,
+            tokenize.DEDENT,
+            tokenize.NEWLINE,
+        ):
+            # Expression-statement string == docstring; drop it.
+            prev_significant = tok.type
+            continue
+        if tok.type not in (tokenize.NL, tokenize.NEWLINE):
+            prev_significant = tok.type
+        elif tok.type == tokenize.NEWLINE:
+            prev_significant = tokenize.NEWLINE
+        keep.append(tok.string)
+    return " ".join(keep)
+
+
 def _script_static_checks(
     script_path: Path, spec: ExecutionSpec
 ) -> list[dict[str, Any]]:
@@ -451,13 +516,18 @@ def _script_static_checks(
             ),
         }
     )
-    close_stop_pattern = re.search(r"(stop|take_profit|tp).*close", text, re.IGNORECASE)
+    # Comments and docstrings must neither trip this check ("# time stop:
+    # close if held > N days") nor rescue it (a comment saying BracketEngine).
+    code_text = _code_only_text(text)
+    close_stop_pattern = re.search(
+        r"(stop|take_profit|tp).*close", code_text, re.IGNORECASE
+    )
     checks.append(
         {
             "name": "no_close_only_stop_tp",
             "passed": close_stop_pattern is None
-            or "BracketEngine" in text
-            or "ohlc_" in text,
+            or "BracketEngine" in code_text
+            or "ohlc_" in code_text,
         }
     )
     return checks
