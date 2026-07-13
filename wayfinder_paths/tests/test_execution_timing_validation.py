@@ -356,3 +356,32 @@ def test_bracket_escape_hatch_must_be_code_not_comment(tmp_path: Path) -> None:
         "def build_strategy(params):\n    return None\n",
     )
     assert _check(report, "no_close_only_stop_tp")["passed"] is False
+
+
+def test_boot_relative_warmup_counter_is_flagged(tmp_path: Path) -> None:
+    report = _close_stop_report(
+        tmp_path,
+        "def decide(ctx):\n"
+        "    bar_count = ctx.strategy_state.get('bar_count', 0) + 1\n"
+        "    ctx.strategy_state['bar_count'] = bar_count\n"
+        "    if bar_count < 28:\n"
+        "        return []\n"
+        "    return []\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    check = _check(report, "no_boot_relative_warmup")
+    assert check["passed"] is False
+    assert check["blocking"] is False
+    assert "every_n_bars" in check["hint"]
+
+
+def test_data_derived_warmup_passes_counter_check(tmp_path: Path) -> None:
+    report = _close_stop_report(
+        tmp_path,
+        "def decide(ctx):\n"
+        "    if ctx.bar_index < 28 or not ctx.every_n_bars(2):\n"
+        "        return []\n"
+        "    return []\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    assert _check(report, "no_boot_relative_warmup")["passed"] is True

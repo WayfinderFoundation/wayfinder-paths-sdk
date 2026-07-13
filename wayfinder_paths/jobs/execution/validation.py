@@ -519,6 +519,27 @@ def _script_static_checks(
     # Comments and docstrings must neither trip this check ("# time stop:
     # close if held > N days") nor rescue it (a comment saying BracketEngine).
     code_text = _code_only_text(text)
+    # Boot-relative warmup/cadence counters go dark for a full warmup period
+    # after every state reset and never fire correctly in live's sliding
+    # window — the live funding-carry job sat 27 days from one of these.
+    counter_gate = re.search(
+        r"strategy_state\s*(?:\.\s*get\s*\(|\[)\s*[\"'](?:bar|tick)_?count",
+        code_text,
+    )
+    checks.append(
+        {
+            "name": "no_boot_relative_warmup",
+            "passed": counter_gate is None,
+            "blocking": False,
+            "hint": (
+                "gate warmup on ctx.bar_index (data available in the view) and "
+                "cadence on ctx.every_n_bars(n) — tick counters in "
+                "strategy_state re-warm from zero on every state reset"
+            )
+            if counter_gate is not None
+            else None,
+        }
+    )
     close_stop_pattern = re.search(
         r"(stop|take_profit|tp).*close", code_text, re.IGNORECASE
     )
