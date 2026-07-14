@@ -38,9 +38,15 @@ native gas.)
 5. **Point the job at its wallet**: set `wallet_label: <job-id>` under
    `execution_params` in `job.yaml` — the live driver defaults to the "main"
    wallet and will trade the wrong account without it.
-6. **Switch the job live**: edit `job.yaml` runner `mode: paper` → `live`,
-   then `core_jobs(action="sync")` — sync also recompiles the runner
-   wrappers, which heals any stale wrapper from create time.
+6. **Switch the job live**: `core_jobs(action="set_script_mode", job_id=…,
+   script_mode="live")`. This is the ONLY correct switch — it edits
+   `script_loop.mode` in `job.yaml`, recompiles (re-baking the runner env),
+   and re-syncs. It runs the live gate first (fresh validation/backtest/
+   preflight) and refuses with a named blocker if `wallet_label` (step 5) is
+   missing or the gate isn't ready. **Never** flip mode by patching the runner
+   env (`WAYFINDER_JOB_MODE` via `core_runner(update_job)`) — the compiler owns
+   that value, so the next recompile silently reverts the patch and leaves a
+   paper/live split-brain (a job once ran live while the UI read "paper").
 7. **Resume the runner**: `core_runner(action="resume_job",
    name="<job-id>-script")`.
 8. **Set the watch level** the user chose (see `deploy-and-agent-loop.md`):
@@ -106,7 +112,33 @@ a 6-leg market-neutral basket is $5/leg — every order silently skipped; at
 5× leverage it's $25/leg — fine. Set leverage via the strategy's params, and
 remember the $5 bridge-deposit minimum on top.
 
-## 4. Troubleshooting
+## 4. Reverting, pausing, and stopping a live job
+
+Every one of these is a `job.yaml`/state change through a `core_jobs` action —
+never a runner env patch. Pick by how hard a stop the user wants:
+
+- **Back to paper (keep it running, stop trading real funds)**:
+  `core_jobs(action="set_script_mode", job_id=…, script_mode="paper")`. Same
+  compiler-safe path as go-live; no gate needed to step down. The loop keeps
+  ticking in paper. Open positions are NOT closed — this only stops NEW live
+  orders; to flatten, withdraw (below).
+- **Pause the whole job (stop the schedule entirely)**:
+  `core_jobs(action="pause", job_id=…)` pauses both the script and agent loops;
+  `core_jobs(action="resume", job_id=…)` restarts them. A paused live job keeps
+  `mode: live` but does not tick.
+- **Halt (emergency kill switch)**: `core_jobs(action="halt", job_id=…,
+  reason="…")`, or `flatten=True` to also request position flattening. It
+  blocks execution until `core_jobs(action="resume_from_halt", job_id=…)`. Use
+  this when something is wrong and you want a hard stop that survives restarts.
+- **Withdraw the funds (close positions → cash → home wallet)**: two ordered
+  steps on the strategy itself — `core_run_strategy(strategy=…, action=
+  "withdraw")` first (liquidates all positions to stablecoin, funds stay in the
+  strategy wallet), then `core_run_strategy(strategy=…, action="exit")` (moves
+  the cash from the strategy wallet back to main). "Withdraw everything" = both,
+  in that order; "transfer remaining funds" (already flat) = `exit` alone. These
+  move real funds — confirm with the user first.
+
+## 5. Troubleshooting
 
 - **Runner job FAILED with a missing-file path** (`…/strategy.py not
   found`): stale wrapper from before the job was jobs_v1. Run

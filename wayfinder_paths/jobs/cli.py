@@ -57,7 +57,7 @@ from wayfinder_paths.jobs.research import (
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.strategies import library_catalog
-from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
+from wayfinder_paths.jobs.sync import apply_script_mode, snapshot_job, sync_all_jobs
 from wayfinder_paths.jobs.worker import run_job_worker
 
 
@@ -888,6 +888,21 @@ def report_cmd(job_id: str) -> None:
     if latest_summary:
         click.echo("")
         click.echo(f"Latest agent check: {latest_summary}")
+
+
+@job_cli.command(
+    name="set-script-mode",
+    help="Flip the script loop between paper and live (recompiles the runner). "
+    "Going live requires a passing live gate and a wallet_label.",
+)
+@click.argument("job_id")
+@click.argument("mode", type=click.Choice(["paper", "live"]))
+def set_script_mode_cmd(job_id: str, mode: str) -> None:
+    try:
+        result = apply_script_mode(job_id, mode)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
 
 
 @job_cli.group(name="agent", help="Control a job's agent loop.")

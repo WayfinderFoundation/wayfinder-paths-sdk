@@ -112,5 +112,78 @@ def test_mcp_runner_tool_status_roundtrip() -> None:
         server.stop()
 
 
+def test_runner_env_guard_blocks_compiler_owned_keys_only() -> None:
+    # Mutating actions preflight the daemon, so the guard runs against a live
+    # server — but rejects BEFORE the daemon receives the job (nothing recorded).
+    sock = (
+        Path(tempfile.gettempdir()) / f"wayfinder-core_runner-env-{time.time_ns()}.sock"
+    )
+    daemon = _FakeDaemon()
+    server = RunnerControlServer(sock_path=sock, daemon=daemon)
+    daemon.control = server
+    server.start()
+    try:
+        # add_job with a compiler-owned mode env → rejected, daemon untouched.
+        out = _run(
+            core_runner(
+                action="add_job",
+                sock_path=str(sock),
+                name="carry-script",
+                type="script",
+                script_path=".wayfinder_runs/job.py",
+                interval_seconds=60,
+                env={"WAYFINDER_JOB_MODE": "live"},
+            )
+        )
+        assert out["ok"] is False
+        assert out["error"]["code"] == "compiler_owned_env"
+        assert "set_script_mode" in out["error"]["message"]
+        assert not daemon.calls  # never reached the daemon
+
+        # update_job with a compiler-owned agent-mode env in payload → rejected.
+        out = _run(
+            core_runner(
+                action="update_job",
+                sock_path=str(sock),
+                name="carry-script",
+                payload={"env": {"WAYFINDER_JOB_AGENT_MODE": "auto"}},
+            )
+        )
+        assert out["ok"] is False
+        assert out["error"]["code"] == "compiler_owned_env"
+        assert "set_agent_mode" in out["error"]["message"]
+        assert not daemon.calls
+
+        # Ordinary env is legitimate for user script jobs → passes through.
+        out = _run(
+            core_runner(
+                action="add_job",
+                sock_path=str(sock),
+                name="user-script",
+                type="script",
+                script_path=".wayfinder_runs/job.py",
+                interval_seconds=60,
+                env={"MY_FLAG": "1"},
+            )
+        )
+        assert out["ok"] is True
+        assert daemon.calls[-1][0] == "add_job"
+        assert daemon.calls[-1][1]["payload"]["env"] == {"MY_FLAG": "1"}
+
+        out = _run(
+            core_runner(
+                action="update_job",
+                sock_path=str(sock),
+                name="user-script",
+                payload={"env": {"MY_FLAG": "2"}},
+            )
+        )
+        assert out["ok"] is True
+        assert daemon.calls[-1][0] == "update_job"
+        assert daemon.calls[-1][1]["payload"]["env"] == {"MY_FLAG": "2"}
+    finally:
+        server.stop()
+
+
 def _run(coro):  # type: ignore[no-untyped-def]
     return asyncio.run(coro)
