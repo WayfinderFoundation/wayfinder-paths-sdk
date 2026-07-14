@@ -34,6 +34,20 @@ def test_new_leaves_controller_empty_without_env(monkeypatch) -> None:
     assert job.controller == {}
 
 
+def test_new_sanitizes_session_id_charset(monkeypatch) -> None:
+    # A hostile parent-process env can't smuggle newlines/quotes/spaces into
+    # the spec that syncs downstream — only [A-Za-z0-9_-] survives.
+    monkeypatch.setenv("OPENCODE_SESSION_ID", 'ses_abc\ninjected: "x" /../')
+    job = WayfinderJob.new("init-dirty", interval_seconds=3600)
+    assert job.controller["initializer_session_id"] == "ses_abcinjectedx"
+
+
+def test_new_drops_all_junk_session_id(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCODE_SESSION_ID", "\n  \t !@#")
+    job = WayfinderJob.new("init-junk", interval_seconds=3600)
+    assert job.controller == {}
+
+
 def test_controller_round_trips_through_yaml(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCODE_SESSION_ID", "ses_roundtrip")
     store = JobStore(repo_root=tmp_path)
@@ -43,9 +57,7 @@ def test_controller_round_trips_through_yaml(tmp_path: Path, monkeypatch) -> Non
     loaded = store.load("init-roundtrip")
 
     assert loaded.controller["initializer_session_id"] == "ses_roundtrip"
-    assert loaded.to_dict()["controller"]["initializer_session_id"] == (
-        "ses_roundtrip"
-    )
+    assert loaded.to_dict()["controller"]["initializer_session_id"] == ("ses_roundtrip")
 
 
 def test_mcp_create_result_carries_initializer(tmp_path: Path, monkeypatch) -> None:
