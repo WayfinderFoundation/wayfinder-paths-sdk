@@ -23,9 +23,12 @@ wayfinder job create <id> --script <strategy.py> --execution-contract jobs_v1 --
 # edit execution_spec.json (data_contract.symbols + bar_interval) and the strategy
 wayfinder job fetch-dataset <id> --days 720 --source ccxt --exchange binance
 # STEP 0 — validate the IDEA before building on it (see rules/strategy-search.md):
+wayfinder job signal-scan <id> --timeframes 1h,4h,1d         # the WHOLE canonical trigger library, both directions, BH q-gate + folds, reserves a 15% holdout — run FIRST
+wayfinder job strategy-library                               # shipped reference strategies (ports of live bots) — check before re-implementing one
 wayfinder job pair-check <id> --symbols ETH,SOL --days 720    # any pair/long-short idea: the admission gate
-wayfinder job signal-check <id> --column entry_signal        # any entry signal: does it beat drift?
+wayfinder job signal-check <id> --column entry_signal --direction short  # a custom entry the library doesn't cover — DECLARE the side (short edges have negative t)
 wayfinder job rank-check <id> --column mom_score             # any basket ranking: does it order forward returns?
+wayfinder job holdout-check <id> --signal new_low_5 --horizon 24 --direction short  # ONE confirmation of a FROZEN candidate on the reserved tail
 wayfinder job backtest <id> --quick 1000      # fast iteration: last 1000 bars, ~2 KB summary
 wayfinder job backtest-diagnose <id>          # READ next_step + recommendations — the framework tells you what to try
 # apply the ONE change next_step names, repeat backtest --quick / diagnose (see "the improve loop" below)
@@ -38,9 +41,25 @@ wayfinder job backtest <id>                   # full-history confirmation of the
 tradeable spread — no parameter rescues it; offer a structurally different
 idea instead (that is a success outcome). PASS hands you `suggested`
 (hedge_ratio — never size 1:1 — lookback and time-stop from the half-life).
+`signal-scan` event-studies every canonical trigger (both directions, across
+timeframes) with BH q-values, 4-fold stability, and a reserved holdout tail —
+PROMOTE means q ≤ 0.10 + ≥3/4 folds, not raw t ≥ 2; read `direction` from the
+t-stat sign: a "failed short" trigger with t ≥ +2 is a LONG candidate. Take
+at most 3 promoted cards forward (CORE/ADJACENT/DIVERGENT), build the minimal
+fixed-time-exit version at the measured horizon first (path_stats then picks
+the exit family), and spend `holdout-check` exactly once per frozen candidate.
 `signal-check` reports forward returns after signal fires vs the series'
-unconditional drift: no horizon with t ≥ 2 and n ≥ 30 means the entry has no
-predictive power — change the idea, not the parameters. Full search
+unconditional drift (events decimated to horizon spacing): no horizon with
+|t| ≥ 2 in the declared direction and n ≥ 30 means the entry has no
+predictive power — change the idea, not the parameters. **Signal vs system:**
+these checks test the TRIGGER; a complete trade system (gates + holds +
+asymmetric exits + re-arm + stop) can still earn its keep when the raw
+trigger fails — judge a fully-specified system by full backtest +
+walk-forward, never by the trigger alone. **Replicating a known/live
+strategy:** `strategy-library` first (one-line re-export beats prose
+transcription); ambiguous specs get BOTH readings tested; a 0-for-N result on
+a system the user says works live means your implementation is wrong
+(`rules/strategy-search.md` §0b). Full search
 methodology (breadth-before-depth, depth budget, validation ladder, honest
 stops): `rules/strategy-search.md`. Multi-leg / pair / basket patterns
 (simultaneous legs, hedge-ratio sizing, `target_weights_to_intents`, the four
@@ -77,7 +96,7 @@ When a candidate clears walk-forward (`decay_ratio` near 1, most `oos_positive_f
 1. `wayfinder job promote-params <id> --grid <grid_id>` — writes the winning params into the job's `execution_params`.
 2. `wayfinder job backtest <id>` — one full-history confirmation on the promoted params.
 3. **Offer the deploy to the user** — summarize the OOS numbers (net, decay_ratio, oos_positive_folds, max drawdown) and *ask two things*: go-live yes/no, AND the watch level (agent mode) in plain English — just run it (`off`) / watch and report (`monitor`, recommended) / watch and suggest changes for approval (`intervene`) / automatic within limits (`auto`). Mode semantics + the proposal lifecycle: `rules/deploy-and-agent-loop.md`. Going live is fund-moving; never enable it unprompted.
-4. On a yes: follow `rules/going-live.md` — the gasless funding path (BRAP `to_wallet` → strategy wallet → Hyperliquid deposit), sizing minimums, `mode: live` + sync, runner resume, agent mode, and the first-tick check.
+4. On a yes: follow `rules/going-live.md` — the gasless funding path (BRAP `to_wallet` → strategy wallet → Hyperliquid deposit), sizing minimums, `mode: live` + sync, runner resume, agent mode, and the first-tick check. **Non-negotiable before the mode flip: set `execution_params.wallet_label` in job.yaml** (a label from `core_get_wallets()`) — the engine default is `main`, which does not exist here; it is not a job-root key, an env var, or an adapter config file, and `validate_job` blocks live mode without it.
 
 Do NOT offer to deploy a strategy that only looks good in-sample — that's the curve-fit trap the whole loop exists to avoid.
 

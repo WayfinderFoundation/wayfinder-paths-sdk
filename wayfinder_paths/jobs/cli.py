@@ -48,12 +48,15 @@ from wayfinder_paths.jobs.models import (
 )
 from wayfinder_paths.jobs.proposals import propose_change
 from wayfinder_paths.jobs.research import (
+    holdout_check_job,
     pair_check_job,
     rank_check_job,
     signal_check_job,
+    signal_scan_job,
 )
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.strategies import library_catalog
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
 from wayfinder_paths.jobs.worker import run_job_worker
 
@@ -616,15 +619,122 @@ def pair_check_cmd(
 @click.option(
     "--horizons", default=None, help="Comma-separated forward horizons in bars."
 )
-def signal_check_cmd(job_id: str, column: str, horizons: str | None) -> None:
+@click.option(
+    "--direction",
+    type=click.Choice(["long", "short", "auto"]),
+    default="auto",
+    show_default=True,
+    help="Trade side under test. A genuine short edge has NEGATIVE forward "
+    "returns; auto reads the side from the t-stat sign (counts as 2 trials).",
+)
+def signal_check_cmd(
+    job_id: str, column: str, horizons: str | None, direction: str
+) -> None:
     store = JobStore()
     result = signal_check_job(
         job_id,
         column=column,
         horizons=[int(h) for h in horizons.split(",")] if horizons else None,
+        direction=direction,
         store=store,
     )
     _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="signal-scan",
+    help="Event-study the ENTIRE canonical trigger library against the job's "
+    "dataset in one call (both directions, multi-timeframe, BH q-values, "
+    "4-fold stability, reserved holdout tail) — run BEFORE hand-writing "
+    "trigger variants into precompute(). Needs no strategy script.",
+)
+@click.argument("job_id")
+@click.option("--symbols", default=None, help="Comma-separated symbols (default: all).")
+@click.option(
+    "--horizons", default=None, help="Comma-separated forward horizons in bars."
+)
+@click.option(
+    "--timeframes",
+    default=None,
+    help="Comma-separated resample timeframes, e.g. 1h,4h,1d "
+    "(default: the job's base bar interval only).",
+)
+@click.option(
+    "--holdout-fraction",
+    type=float,
+    default=0.15,
+    show_default=True,
+    help="Final fraction of history the scan NEVER sees — reserved for one "
+    "holdout-check per frozen candidate. 0 disables (exploratory only).",
+)
+def signal_scan_cmd(
+    job_id: str,
+    symbols: str | None,
+    horizons: str | None,
+    timeframes: str | None,
+    holdout_fraction: float,
+) -> None:
+    store = JobStore()
+    result = signal_scan_job(
+        job_id,
+        symbols=[s.strip() for s in symbols.split(",")] if symbols else None,
+        horizons=[int(h) for h in horizons.split(",")] if horizons else None,
+        timeframes=[t.strip() for t in timeframes.split(",")] if timeframes else None,
+        holdout_fraction=holdout_fraction,
+        store=store,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="holdout-check",
+    help="One-shot confirmation of a FROZEN scan candidate (signal + "
+    "timeframe + horizon + direction) on the reserved holdout tail. Spend "
+    "it once per candidate — the trial ledger remembers repeat looks.",
+)
+@click.argument("job_id")
+@click.option("--signal", required=True, help="Canonical library signal name.")
+@click.option("--horizon", type=int, required=True, help="Forward horizon in bars.")
+@click.option(
+    "--direction",
+    type=click.Choice(["long", "short"]),
+    required=True,
+    help="The frozen candidate's trade side.",
+)
+@click.option(
+    "--timeframe", default=None, help="Resample timeframe (default: base interval)."
+)
+@click.option("--symbols", default=None, help="Comma-separated symbols (default: all).")
+def holdout_check_cmd(
+    job_id: str,
+    signal: str,
+    horizon: int,
+    direction: str,
+    timeframe: str | None,
+    symbols: str | None,
+) -> None:
+    store = JobStore()
+    result = holdout_check_job(
+        job_id,
+        signal=signal,
+        horizon=horizon,
+        direction=direction,
+        timeframe=timeframe,
+        symbols=[s.strip() for s in symbols.split(",")] if symbols else None,
+        store=store,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="strategy-library",
+    help="List the shipped reference strategies (verbatim ports of audited "
+    "live scripts) with their import lines and default params — when the "
+    "user references a known/live strategy, start here instead of "
+    "transcribing it from prose.",
+)
+def strategy_library_cmd() -> None:
+    _echo_json({"ok": True, "result": library_catalog()})
 
 
 @job_cli.command(

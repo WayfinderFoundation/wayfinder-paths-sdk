@@ -146,29 +146,65 @@ def test_gate_half_life_band_unit_conversion() -> None:
     assert hl_4h == pytest.approx(hl_1h * 4, rel=0.01)
 
 
-def test_event_study_detects_planted_edge_and_rejects_random() -> None:
+def _planted_world(sign: float, seed: int = 11) -> pd.DataFrame:
+    """Deterministically spaced events (gap 48 > h=24, so decimation is a
+    no-op) followed by a strong 24-bar drift of the given sign."""
     n = 6000
-    close = np.full(n, 100.0)
     signal = np.zeros(n, dtype=bool)
-    rng = np.random.default_rng(11)
+    rng = np.random.default_rng(seed)
     drift = rng.normal(0, 0.002, n)
-    # plant: after each signal bar, the next 24 bars drift up strongly
-    fire_at = rng.choice(np.arange(100, n - 100), size=120, replace=False)
+    fire_at = np.arange(120, 5800, 48)
     signal[fire_at] = True
     boost = np.zeros(n)
     for i in fire_at:
-        boost[i + 1 : i + 25] += 0.004
-    log_close = np.cumsum(drift + boost) + np.log(100)
-    close = np.exp(log_close)
-    frame = pd.DataFrame({"close": close, "sig": signal, "rand": rng.random(n) < 0.02})
+        boost[i + 1 : i + 25] += sign * 0.004
+    close = np.exp(np.cumsum(drift + boost) + np.log(100))
+    return pd.DataFrame({"close": close, "sig": signal, "rand": rng.random(n) < 0.02})
+
+
+def test_event_study_detects_planted_edge_and_rejects_random() -> None:
+    frame = _planted_world(+1)
 
     planted = event_study(frame, "sig", horizons=[24])
     assert planted["has_edge"], planted
     h24 = planted["horizons"][0]
     assert h24["n"] >= 100 and h24["t_stat_vs_drift"] >= 2.0
+    assert h24["n"] == h24["n_raw"]  # spaced events: decimation is a no-op
 
     random_sig = event_study(frame, "rand", horizons=[24])
     assert not random_sig["has_edge"], random_sig
+
+
+def test_event_study_detects_planted_short_edge() -> None:
+    frame = _planted_world(-1)
+
+    short = event_study(frame, "sig", horizons=[24], direction="short")
+    assert short["has_edge"], short
+    h24 = short["horizons"][0]
+    assert h24["t_stat_vs_drift"] <= -2.0
+    assert h24["hit_rate"] > 0.5  # direction-adjusted: mean(-fwd > 0)
+
+    # The pre-fix behavior: a long-only read rejects the same genuine edge.
+    long_only = event_study(frame, "sig", horizons=[24], direction="long")
+    assert not long_only["has_edge"]
+
+    auto = event_study(frame, "sig", horizons=[24], direction="auto")
+    assert auto["has_edge"]
+    assert auto["horizons"][0]["direction"] == "short"
+    assert auto["trials_multiplier"] == 2
+
+
+def test_event_study_decimates_clustered_events() -> None:
+    rng = np.random.default_rng(5)
+    n = 400
+    close = np.exp(np.cumsum(rng.normal(0, 0.005, n)) + 4)
+    sig = np.zeros(n, dtype=bool)
+    sig[100:140] = True  # one 40-bar burst
+    frame = pd.DataFrame({"close": close, "sig": sig})
+    result = event_study(frame, "sig", horizons=[10])
+    h10 = result["horizons"][0]
+    assert h10["n_raw"] == 40
+    assert h10["n"] == 4  # 40 consecutive bars at h=10 -> 4 non-overlapping
 
 
 def test_event_study_flags_insufficient_sample() -> None:

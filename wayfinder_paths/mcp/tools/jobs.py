@@ -24,6 +24,7 @@ from wayfinder_paths.jobs.models import (
 from wayfinder_paths.jobs.proposals import propose_change
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.strategies import library_catalog
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
 from wayfinder_paths.jobs.worker import run_job_worker
 from wayfinder_paths.mcp.utils import catch_errors, err, ok
@@ -40,7 +41,10 @@ JobAction = Literal[
     "fetch_funding",
     "pair_check",
     "signal_check",
+    "signal_scan",
+    "holdout_check",
     "rank_check",
+    "strategy_library",
     "backtest_job",
     "backtest_diagnose",
     "experiments",
@@ -153,6 +157,11 @@ async def core_jobs(
     column: str | None = None,
     horizons: list[int] | None = None,
     bar_interval: str | None = None,
+    direction: Literal["long", "short", "auto"] | None = None,
+    timeframes: list[str] | None = None,
+    holdout_fraction: float = 0.15,
+    signal: str | None = None,
+    horizon: int | None = None,
 ) -> dict[str, Any]:
     """Manage high-level Wayfinder jobs.
 
@@ -172,9 +181,24 @@ async def core_jobs(
       - `approve_proposal` / `reject_proposal` after the worker creates proposals.
       - `claim_application` / `validate_application` / `complete_application`
         from an apply worker.
-      - Strategy-development loop for execution-spec jobs: `signal_check`
-        (event-study a precomputed entry column BEFORE building — no edge at
-        the signal level means no strategy will fix it), `rank_check` (the
+      - Strategy-development loop for execution-spec jobs: `signal_scan`
+        (event-study the ENTIRE canonical trigger library — both directions,
+        multi-timeframe via `timeframes=["1h","4h","1d"]`, BH q-values,
+        4-fold stability, and a reserved holdout tail the scan never sees —
+        in one call BEFORE hand-writing trigger variants; needs no strategy
+        script), `holdout_check` (one-shot confirmation of a FROZEN scan
+        candidate — signal + horizon + direction — on the reserved tail;
+        spend it once per candidate, the trial ledger remembers),
+        `strategy_library` (list the
+        shipped reference strategies — verbatim ports of audited live
+        scripts; when the user references a known/live strategy, start here
+        instead of transcribing it from prose), `signal_check`
+        (event-study a precomputed entry column BEFORE building — pass
+        `direction` for a directional thesis, default "auto" reads the side
+        from the t-stat sign; no edge at
+        the signal level means the TRIGGER carries no information; a complete
+        trade system can still earn its keep via gates/exits/regime — judge
+        those by full backtest + walk-forward), `rank_check` (the
         basket analogue: Spearman rank IC of a cross-sectional ranking column
         vs relative forward returns — run BEFORE building any long/short
         basket on that ranking) and `pair_check` (the
@@ -325,8 +349,48 @@ async def core_jobs(
             return err("invalid_request", "signal_check requires column")
         return await _run_job_op(
             "signal_check",
-            {"job_id": job_id, "column": column, "horizons": horizons},
+            {
+                "job_id": job_id,
+                "column": column,
+                "horizons": horizons,
+                "direction": direction or "auto",
+            },
         )
+
+    if action == "signal_scan":
+        return await _run_job_op(
+            "signal_scan",
+            {
+                "job_id": job_id,
+                "symbols": symbols,
+                "horizons": horizons,
+                "timeframes": timeframes,
+                "holdout_fraction": holdout_fraction,
+            },
+        )
+
+    if action == "holdout_check":
+        if not signal or horizon is None or direction not in {"long", "short"}:
+            return err(
+                "invalid_request",
+                "holdout_check requires signal, horizon, and direction "
+                "long|short (a frozen candidate is directional)",
+            )
+        return await _run_job_op(
+            "holdout_check",
+            {
+                "job_id": job_id,
+                "signal": signal,
+                "horizon": horizon,
+                "direction": direction,
+                "timeframe": bar_interval,
+                "symbols": symbols,
+                "holdout_fraction": holdout_fraction,
+            },
+        )
+
+    if action == "strategy_library":
+        return ok(library_catalog())
 
     if action == "rank_check":
         if not column:

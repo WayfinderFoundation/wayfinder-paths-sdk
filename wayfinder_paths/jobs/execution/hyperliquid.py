@@ -458,7 +458,14 @@ async def _hl_state_result(wallet_label: str) -> dict[str, Any]:
         case {"ok": True, "result": dict() as result}:
             return result
         case _:
-            raise RuntimeError(f"hyperliquid_get_state failed: {_mcp_error(outcome)}")
+            message = str(_mcp_error(outcome))
+            if "not found" in message.lower():
+                message += (
+                    " — the live wallet comes from execution_params."
+                    "wallet_label in job.yaml (engine default 'main'); set it "
+                    "to a label from core_get_wallets()"
+                )
+            raise RuntimeError(f"hyperliquid_get_state failed: {message}")
 
 
 def _cancel_needs_asset_context(venue: str, client_order_id: str) -> FillEvent:

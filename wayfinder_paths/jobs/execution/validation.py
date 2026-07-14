@@ -205,6 +205,7 @@ def validate_execution_job(
         )
 
     checks.extend(_preflight_checks(root, job_data, spec))
+    checks.extend(_live_wallet_checks(job_data))
 
     report = _report(checks, strict=strict or spec.strict)
     report["revision"] = compute_workspace_revision(root)
@@ -237,6 +238,35 @@ def _feature_checks(root: Path, spec: ExecutionSpec) -> list[dict[str, Any]]:
             "missing": missing,
             "blocking": False,
         },
+    ]
+
+
+def _live_wallet_checks(job_data: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Live execution signs with `execution_params.wallet_label`; the engine
+    default is 'main', which rarely exists on hosted instances — a live job
+    without an explicit label starts cleanly and then fails EVERY tick with
+    'Wallet not found: main' (observed live: three config guesses across two
+    sessions before the nested key was found). Blocking when mode is live."""
+    if str(job_data.get("execution_contract") or "legacy") != "jobs_v1":
+        return []
+    script_loop = job_data.get("script_loop") or {}
+    if str(script_loop.get("mode") or "paper") != "live":
+        return []
+    params = job_data.get("execution_params") or {}
+    label = str(params.get("wallet_label") or "").strip()
+    return [
+        {
+            "name": "wallet_label_declared",
+            "passed": bool(label),
+            "blocking": True,
+            "hint": (
+                "live mode signs with execution_params.wallet_label (the "
+                "engine default 'main' rarely exists on this instance) — set "
+                "it to a label from core_get_wallets() before going live; it "
+                "is NOT a job-root key, an env var, or an adapter config file"
+            ),
+            "details": {"wallet_label": label or None},
+        }
     ]
 
 
@@ -431,8 +461,7 @@ def entrypoint_inside_workspace_check(
     """
     workspace = (root / "workspace").resolve()
     passed = bool(
-        script_path is not None
-        and script_path.resolve().is_relative_to(workspace)
+        script_path is not None and script_path.resolve().is_relative_to(workspace)
     )
     check: dict[str, Any] = {
         "name": "entrypoint_inside_workspace",

@@ -9,22 +9,87 @@ one, and let the validation ladder — not enthusiasm — decide what survives.
 
 ## 0. Signal first — no backtest until the signal beats drift
 
-Any new idea starts with a signal check, not a strategy build:
+Any new idea starts with a signal scan, not a strategy build:
 
 ```
-wayfinder job signal-check <id> --column entry_signal [--horizons 4,24,48]
-# MCP: core_jobs(action="signal_check", job_id=…, column="entry_signal")
+wayfinder job signal-scan <id> --timeframes 1h,4h,1d    # the WHOLE library, one call
+# MCP: core_jobs(action="signal_scan", job_id=…, timeframes=["1h","4h","1d"])
+wayfinder job signal-check <id> --column entry_signal --direction short|long|auto
+# MCP: core_jobs(action="signal_check", job_id=…, column=…, direction=…)
+wayfinder job holdout-check <id> --signal new_low_5 --horizon 24 --direction short
+# MCP: core_jobs(action="holdout_check", job_id=…, signal=…, horizon=…, direction=…)
 ```
 
-Write the entry condition as a boolean column in `precompute()` (you need that
-column for `decide()` anyway), and the check event-studies it: forward returns
+`signal-scan` event-studies the entire canonical trigger library (momentum,
+breakout, MA-cross, RSI/BB fades, volatility, exhaustion — BOTH directions)
+across the requested timeframes in one call. Its discipline is built in, not
+optional:
+
+1. **Fingerprint first.** The report opens with a dataset fingerprint — read
+   it before any candidate row. `cost_to_range > ~0.3` kills short-horizon
+   families outright; `acf1`/variance ratios say whether reversal or
+   continuation families are even plausible (a VR rejection of a random walk
+   is a routing hint, not proof of mean reversion); a dominant regime
+   quadrant means any edge found is regime-conditional.
+2. **The holdout is reserved before anything is measured.** The scan never
+   sees the final 15% of history; the cutoff timestamp is in the report.
+   NOBODY looks at that tail until a candidate is frozen — then
+   `holdout-check` spends the ONE pre-registered confirmation (signal +
+   timeframe + horizon + direction; directional t >= 1). The trial ledger
+   remembers a spent tail; a second look is data snooping.
+3. **Scan wide, promote narrow.** PROMOTE = BH `q <= 0.10` AND sign
+   agreement in >= 3 of 4 chronological folds — not raw `t >= 2` (with 100+
+   tests, ~5 lucky |t|>=2 passes are EXPECTED; the q-value already accounts
+   for that). Take at most 3 promoted cards forward: CORE (best q, closest
+   to the user's thesis), ADJACENT (same mechanism, different timeframe or
+   horizon), DIVERGENT (a different family) — and record them in the job's
+   `candidates` ledger with exactly those buckets.
+4. **Minimal viable strategy first.** Build the CORE card as: the exact
+   scanned entry, a fixed-time exit at the measured horizon, the protective
+   stop, nothing else. Judge THAT by backtest before any exit engineering.
+   Then let the card's `path_stats` pick the exit family:
+   | Path shape | Exit family |
+   |---|---|
+   | MFE arrives early (`bars_to_mfe <= horizon/3`) and edge decays at longer horizons | target exit |
+   | MFE builds to the horizon | fixed-time or trailing |
+   | `mfe_mae_ratio < ~1.25` | time-stop only — a tight stop eats the edge |
+5. **Every scan is a recorded trial.** The scan appends every executed test
+   to `results/research/signal_scan/ledger.jsonl` and reports cumulative
+   counts — cite them ("3rd scan of this workspace, 400 tests to date").
+   Never re-test a dead candidate under a new name; the ledger hash catches
+   it.
+
+Because triggers are events with signed t-stats, a "failed short" trigger
+with `t >= +2` surfaces as a LONG candidate instead of a dead end.
+Hand-write `signal-check` columns only for triggers genuinely outside the
+library — a pre-specified user signal is ONE trial and keeps the simpler
+standard: signed `|t| >= 2` (declare `--direction`; a genuine short edge has
+NEGATIVE forward returns) plus a holdout confirmation.
+
+The check event-studies a column: forward returns
 after signal fires vs the **unconditional drift** of the same series — a
 random entry at the same frequency earns the drift for free, so the signal
-must beat it, not zero. Read the per-horizon verdicts: an edge is `t >= 2`
+must beat it, not zero. Events are decimated to horizon spacing (overlapping
+forward windows would count one selloff as dozens of samples — `n` is the
+honest count, `n_raw` the trigger-bar count). Read the per-horizon verdicts:
+an edge is `|t| >= 2` in the declared direction
 with `n >= 30`. **If no horizon beats drift, the entry has no predictive power
 — change the idea, not the parameters.** No exit engineering, sizing, or
 filter tuning rescues entries that carry no information. This 30-second check
 is what converts "six variants of a dead idea" into one honest sentence.
+
+**Signal vs system — what a failed signal-check does and does not mean.** The
+check tests the TRIGGER in isolation. A complete trade *system* — entry gate +
+minimum hold + asymmetric exits + re-arm + stop — can be profitable even when
+its raw trigger never beats drift, because the geometry (where it's allowed to
+enter, how it exits each side) does the work the trigger doesn't. This is not
+hypothetical: the live IMX momentum short's NewLow5 trigger fails signal-check
+on the full history while the full system backtests profitably across windows.
+So: for NEW ideas, the gate stands — don't build on a dead trigger. For a
+fully-specified system (a live bot, a shipped reference strategy, a complete
+rule set the user hands you), a failed signal-check means "no standalone
+timing alpha" — report that, then judge the SYSTEM by full backtest +
+walk-forward, never by the trigger alone.
 
 For basket / cross-sectional ideas the equivalent test is
 `wayfinder job rank-check <id> --column <ranking>` — the Spearman rank IC of
@@ -38,8 +103,41 @@ admission gate — `wayfinder job pair-check <id> --symbols A,B --days 720`
 a failure: it just saved days of tuning a spread that does not mean-revert.
 
 Multiple-testing honesty: if you signal-check many candidate columns, expect
-~1 in 20 to clear t≈2 by luck. Scan wide, but demand stability (does it hold
-on both halves of the data?) before building on a marginal pass.
+~1 in 20 to clear t≈2 by luck. Scan wide, but demand the q-gate and fold
+stability before building on a marginal pass — `signal-scan` computes both.
+Deferred rigor (recorded, deliberately not built yet): HAC/bootstrap standard
+errors, Deflated Sharpe / PBO overfit stats, BTC/ETH market-relative
+controls. If a result only matters under those corrections, it was too
+marginal to trade anyway.
+
+## 0b. Replicating a live / known strategy — port, don't transcribe
+
+When the user references a strategy that already exists ("there's an X bot
+that works"), the workflow is different from idea mining, and getting it
+wrong inverts conclusions. Observed live: a pasted prose spec had its SMA50
+gap filter written BACKWARDS vs the running bot, and every backtest that
+followed tested the opposite entry universe — "everything loses" while the
+real bot made money.
+
+1. **Check the shipped library first** — `wayfinder job strategy-library`
+   (MCP: `core_jobs(action="strategy_library")`) lists verbatim ports of
+   audited live scripts with import lines and default params. If the strategy
+   is there, the workspace script is ONE line:
+   `from wayfinder_paths.jobs.strategies.<module> import build_strategy`.
+   Never re-implement from memory or prose what already exists as code.
+2. **Prose specs are lossy.** On ANY ambiguity or internal contradiction
+   (a threshold quoted two ways, a filter whose direction is unclear), do not
+   pick an interpretation and move on — implement BOTH readings and backtest
+   both. The wrong reading usually reveals itself immediately.
+3. **Fingerprint parity before conclusions.** Before trusting any result,
+   compare the simulated trade fingerprint — trades per week, typical hold,
+   win rate, exit-reason mix — against how the live strategy is described or
+   observed to behave. A replication that trades 5x less often, or holds 10x
+   longer, is not the same strategy, whatever the spec says.
+4. **0-for-N on a known-working system means YOUR code is wrong.** If the
+   user says it works live and your replication loses every trade, the prior
+   is an implementation or transcription bug — find it (or diff against the
+   library port) before reporting that the strategy has no edge.
 
 ## 1. Breadth before depth
 
@@ -51,7 +149,9 @@ the user's goal — different families, not different parameters:
 - mean reversion (ONLY with a passed admission gate)
 - cross-sectional (rank a universe, trade the extremes)
 
-Signal-check all sketches; build only the most promising. One structural idea
+One `signal-scan` covers the trigger families for the job's symbols in a
+single call; signal-check any custom sketches it doesn't cover. Build only
+the most promising. One structural idea
 failing does not mean "tune it harder" — it means try the next branch. The
 best strategy for the user is usually in a different family than the first
 idea, and you only find it by looking.
@@ -79,7 +179,8 @@ your job, not the user's homework:
 | Failure evidence | Natural successor |
 |---|---|
 | Stop-outs dominate losses, entries fine | regime filter (trade only with the trend) |
-| Entry never beats drift on any horizon | different trigger or timeframe for the same thesis |
+| Entry never beats drift on any horizon | different trigger or timeframe for the same thesis (`signal-scan --timeframes 1h,4h,1d` shows every library trigger at once) |
+| Signal has edge in the WRONG direction (t significant, sign flipped) | invert the trade — a failed short entry that predicts bounces is a long entry; test it, don't discard it |
 | Pair gate REJECTs (no cointegration) | funding-spread pair on the SAME assets, or momentum on the same assets |
 | One leg carries the losses | hedge-ratio sizing; widen the universe |
 | Edge exists but decays OOS | slower bars, longer formation window, fewer rebalances |
