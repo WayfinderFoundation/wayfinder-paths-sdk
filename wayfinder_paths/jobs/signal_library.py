@@ -45,7 +45,7 @@ def _wilder_rsi(close: pd.Series, period: int = 14) -> pd.Series:
     return 100 - 100 / (1 + rs)
 
 
-def _atr(frame: pd.DataFrame, period: int = 14) -> pd.Series:
+def wilder_atr(frame: pd.DataFrame, period: int = 14) -> pd.Series:
     high = frame["high"].astype(float)
     low = frame["low"].astype(float)
     prev_close = frame["close"].astype(float).shift(1)
@@ -53,6 +53,9 @@ def _atr(frame: pd.DataFrame, period: int = 14) -> pd.Series:
         [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
     ).max(axis=1)
     return tr.ewm(alpha=1 / period, adjust=False).mean()
+
+
+_atr = wilder_atr
 
 
 def _close(frame: pd.DataFrame) -> pd.Series:

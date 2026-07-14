@@ -23,11 +23,12 @@ wayfinder job create <id> --script <strategy.py> --execution-contract jobs_v1 --
 # edit execution_spec.json (data_contract.symbols + bar_interval) and the strategy
 wayfinder job fetch-dataset <id> --days 720 --source ccxt --exchange binance
 # STEP 0 — validate the IDEA before building on it (see rules/strategy-search.md):
-wayfinder job signal-scan <id>                               # the WHOLE canonical trigger library, both directions, one call — run FIRST
+wayfinder job signal-scan <id> --timeframes 1h,4h,1d         # the WHOLE canonical trigger library, both directions, BH q-gate + folds, reserves a 15% holdout — run FIRST
 wayfinder job strategy-library                               # shipped reference strategies (ports of live bots) — check before re-implementing one
 wayfinder job pair-check <id> --symbols ETH,SOL --days 720    # any pair/long-short idea: the admission gate
-wayfinder job signal-check <id> --column entry_signal        # a custom entry signal the library doesn't cover: does it beat drift?
+wayfinder job signal-check <id> --column entry_signal --direction short  # a custom entry the library doesn't cover — DECLARE the side (short edges have negative t)
 wayfinder job rank-check <id> --column mom_score             # any basket ranking: does it order forward returns?
+wayfinder job holdout-check <id> --signal new_low_5 --horizon 24 --direction short  # ONE confirmation of a FROZEN candidate on the reserved tail
 wayfinder job backtest <id> --quick 1000      # fast iteration: last 1000 bars, ~2 KB summary
 wayfinder job backtest-diagnose <id>          # READ next_step + recommendations — the framework tells you what to try
 # apply the ONE change next_step names, repeat backtest --quick / diagnose (see "the improve loop" below)
@@ -40,11 +41,16 @@ wayfinder job backtest <id>                   # full-history confirmation of the
 tradeable spread — no parameter rescues it; offer a structurally different
 idea instead (that is a success outcome). PASS hands you `suggested`
 (hedge_ratio — never size 1:1 — lookback and time-stop from the half-life).
-`signal-scan` event-studies every canonical trigger (both directions) with
-multiple-testing counts and half-split stability — read `direction` from the
-t-stat sign: a "failed short" trigger with t ≥ +2 is a LONG candidate.
+`signal-scan` event-studies every canonical trigger (both directions, across
+timeframes) with BH q-values, 4-fold stability, and a reserved holdout tail —
+PROMOTE means q ≤ 0.10 + ≥3/4 folds, not raw t ≥ 2; read `direction` from the
+t-stat sign: a "failed short" trigger with t ≥ +2 is a LONG candidate. Take
+at most 3 promoted cards forward (CORE/ADJACENT/DIVERGENT), build the minimal
+fixed-time-exit version at the measured horizon first (path_stats then picks
+the exit family), and spend `holdout-check` exactly once per frozen candidate.
 `signal-check` reports forward returns after signal fires vs the series'
-unconditional drift: no horizon with t ≥ 2 and n ≥ 30 means the entry has no
+unconditional drift (events decimated to horizon spacing): no horizon with
+|t| ≥ 2 in the declared direction and n ≥ 30 means the entry has no
 predictive power — change the idea, not the parameters. **Signal vs system:**
 these checks test the TRIGGER; a complete trade system (gates + holds +
 asymmetric exits + re-arm + stop) can still earn its keep when the raw

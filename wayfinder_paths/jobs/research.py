@@ -19,6 +19,15 @@ Statistical caveats (documented, deliberate):
 - Multiple testing: at the 5% level, ~1 in 20 random pairs "passes"
   cointegration by chance. The rolling-stability majority requirement is the
   main defense; reports carry an explicit note. Scan wide, trade few.
+- Event-study p-values use the normal approximation of the t-stat via
+  math.erfc (the n>=30 sample gate makes the small-sample error negligible);
+  the scan's multiplicity control is Benjamini-Hochberg over the full test
+  family, and event decimation (horizon-spaced) removes forward-window
+  overlap — the dominant dependence source at these frequencies.
+- Deferred rigor (recorded, not built): HAC/Newey-West + block-bootstrap
+  standard errors (revisit if the null-world tests start failing), Deflated
+  Sharpe / PBO-CSCV strategy-level overfit stats, BTC/ETH market-relative
+  controls + matched regime baselines, funding/carry scan family.
 
 Stats functions adapted with thanks from
 examples/paths/spread-radar-reference/scripts/lib.py (ou_half_life,
@@ -31,12 +40,18 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from wayfinder_paths.jobs.signal_library import SIGNAL_LIBRARY, build_signal_frame
+from wayfinder_paths.jobs.signal_library import (
+    SIGNAL_LIBRARY,
+    build_signal_frame,
+    signal_defs,
+    wilder_atr,
+)
 
 # MacKinnon case-2 (constant, 2 variables) critical values for the
 # Engle-Granger residual t-stat. The upstream example labeled -3.34 as
@@ -299,6 +314,10 @@ def event_study(
     frame: pd.DataFrame,
     signal: str | pd.Series,
     horizons: list[int] | None = None,
+    *,
+    direction: str = "long",
+    decimate: bool = True,
+    min_events: int = 30,
 ) -> dict[str, Any]:
     """Does an entry signal predict forward returns AT ALL? Run this before
     building a strategy around it — if the signal doesn't beat the series'
@@ -306,9 +325,23 @@ def event_study(
 
     For each horizon h: mean forward log-return after signal bars vs the
     unconditional mean forward return of the whole series (the random-entry
-    baseline), with a t-stat on the difference and the event count. n < 30 is
-    flagged insufficient — never treated as evidence of edge.
+    baseline), with a t-stat on the difference and the event count.
+    n < min_events is flagged insufficient — never treated as evidence.
+
+    `direction` declares the trade side under test: "long" needs t >= 2,
+    "short" needs t <= -2 (a genuine short edge produces NEGATIVE forward
+    returns — the pre-fix behavior rejected exactly those), and "auto" reads
+    the side from the t-stat sign per horizon (|t| >= 2) but counts as TWO
+    trials per horizon (`trials_multiplier`). The hit rate is
+    direction-adjusted: mean(side * fwd > 0).
+
+    Events are DECIMATED to at least h bars apart (`decimate=True`) so
+    forward windows never overlap — clustered triggers would otherwise count
+    one episode as dozens of "independent" samples. `n` is the decimated
+    count the t-test used; `n_raw` is pre-decimation.
     """
+    if direction not in {"long", "short", "auto"}:
+        raise ValueError(f"direction must be long|short|auto, got {direction!r}")
     horizons = horizons or [1, 4, 12, 24, 48]
     close = frame["close"].astype(float).to_numpy()
     if isinstance(signal, str):
@@ -328,12 +361,16 @@ def event_study(
         if h <= 0 or h >= n:
             continue
         fwd = np.log(close[h:] / close[:-h])  # forward return starting at t
-        events = sig[: n - h]
+        raw_events = sig[: n - h]
+        n_raw = int(raw_events.sum())
+        events = _decimate_events(raw_events, h) if decimate else raw_events
         event_returns = fwd[events]
         n_events = int(events.sum())
         drift = float(fwd.mean())
         if n_events == 0:
-            per_horizon.append({"horizon": h, "n": 0, "verdict": "no events"})
+            per_horizon.append(
+                {"horizon": h, "n": 0, "n_raw": n_raw, "verdict": "no events"}
+            )
             continue
         mean_r = float(event_returns.mean())
         std_r = float(event_returns.std(ddof=1)) if n_events > 1 else 0.0
@@ -341,37 +378,66 @@ def event_study(
             std_r / math.sqrt(n_events) if n_events > 1 and std_r > 0 else float("inf")
         )
         t = (mean_r - drift) / sem if math.isfinite(sem) else 0.0
-        edge = bool(t >= 2.0 and n_events >= 30)
+        if direction == "long":
+            side = 1
+            edge = bool(t >= 2.0 and n_events >= min_events)
+        elif direction == "short":
+            side = -1
+            edge = bool(t <= -2.0 and n_events >= min_events)
+        else:
+            side = 1 if t > 0 else -1 if t < 0 else 0
+            edge = bool(abs(t) >= 2.0 and n_events >= min_events)
+        row_direction = (
+            direction
+            if direction != "auto"
+            else ("long" if side > 0 else "short" if side < 0 else None)
+        )
         any_edge = any_edge or edge
         per_horizon.append(
             {
                 "horizon": h,
                 "n": n_events,
+                "n_raw": n_raw,
                 "mean_fwd_return": mean_r,
                 "drift_baseline": drift,
-                "hit_rate": float((event_returns > 0).mean()),
+                "hit_rate": float((side * event_returns > 0).mean()),
                 "t_stat_vs_drift": float(t),
+                "direction": row_direction,
                 "edge": edge,
-                "note": "insufficient sample (n<30)" if n_events < 30 else None,
+                "note": (
+                    f"insufficient sample (n<{min_events})"
+                    if n_events < min_events
+                    else None
+                ),
             }
         )
-    return {
+    multiple_testing_note = (
+        "testing many signals inflates false positives — at t>=2, roughly "
+        "1 in 20 random signals looks good by chance; prefer fewer, "
+        "stronger hypotheses"
+    )
+    if direction == "auto":
+        multiple_testing_note += (
+            " — auto evaluates both sides, so count this as two trials per horizon"
+        )
+    result: dict[str, Any] = {
+        "direction": direction,
         "horizons": per_horizon,
         "has_edge": any_edge,
         "read": (
-            "signal beats the series' own drift at one or more horizons — "
-            "worth building and validating"
+            f"signal beats the series' own drift at one or more horizons "
+            f"(direction={direction}) — worth building and validating"
             if any_edge
-            else "no horizon beats the unconditional drift with t>=2 and "
-            "n>=30 — the entry has no measured predictive power; change the "
-            "idea, not the parameters"
+            else f"no horizon beats the unconditional drift with the required "
+            f"sign (direction={direction}, |t|>=2, n>={min_events} "
+            "non-overlapping events) — the entry has no measured predictive "
+            "power; change the idea, not the parameters"
         ),
-        "multiple_testing_note": (
-            "testing many signals inflates false positives — at t>=2, roughly "
-            "1 in 20 random signals looks good by chance; prefer fewer, "
-            "stronger hypotheses"
-        ),
+        "multiple_testing_note": multiple_testing_note,
     }
+    if direction == "auto":
+        result["trials_multiplier"] = 2
+    return result
 
 
 def _decimate_events(events: np.ndarray, min_gap: int) -> np.ndarray:
@@ -386,104 +452,553 @@ def _decimate_events(events: np.ndarray, min_gap: int) -> np.ndarray:
     return kept
 
 
+def resample_ohlcv(
+    frame: pd.DataFrame, rule_seconds: int, *, bar_seconds: int
+) -> pd.DataFrame:
+    """Causal OHLCV resample of one symbol's CLOSE-labeled bars.
+
+    Right-closed/right-labeled: an output bar labeled T aggregates source
+    bars with close-timestamps in (T - rule, T] — only bars already completed
+    at T, so appending source bars never changes earlier output (prefix
+    property, pinned by test). The trailing bucket is dropped unless the last
+    source bar lands exactly on its label (an in-progress bucket is not a
+    completed bar). Both dataset feeds label bars by CLOSE time; an
+    open-labeled source would silently leak one bar — keep it that way.
+    """
+    if rule_seconds <= 0 or bar_seconds <= 0 or rule_seconds % bar_seconds != 0:
+        raise ValueError(
+            f"rule_seconds ({rule_seconds}) must be a positive multiple of "
+            f"bar_seconds ({bar_seconds})"
+        )
+    if rule_seconds == bar_seconds:
+        return frame.reset_index(drop=True)
+    symbol = str(frame["symbol"].iloc[0]) if len(frame) else ""
+    indexed = frame.set_index(pd.to_datetime(frame["timestamp"], utc=True))
+    resampled = indexed.resample(f"{rule_seconds}s", closed="right", label="right").agg(
+        {
+            "open": "first",
+            "high": "max",
+            "low": "min",
+            "close": "last",
+            "volume": "sum",
+        }
+    )
+    resampled = resampled.dropna(subset=["close"])
+    if len(resampled) and len(indexed):
+        last_source = indexed.index[-1]
+        if resampled.index[-1] != last_source:
+            resampled = resampled.iloc[:-1]
+    out = resampled.reset_index().rename(columns={"index": "timestamp"})
+    out["symbol"] = symbol
+    return out[["timestamp", "symbol", "open", "high", "low", "close", "volume"]]
+
+
+def bh_qvalues(pvalues: Sequence[float]) -> list[float]:
+    """Benjamini-Hochberg q-values (monotone step-up): q_(i) = min over
+    j >= i of (m * p_(j) / j), clipped to 1, returned in input order."""
+    m = len(pvalues)
+    if m == 0:
+        return []
+    order = np.argsort(pvalues)
+    ranked = np.asarray(pvalues, dtype=float)[order]
+    scaled = ranked * m / np.arange(1, m + 1)
+    qvals = np.minimum.accumulate(scaled[::-1])[::-1].clip(max=1.0)
+    out = np.empty(m, dtype=float)
+    out[order] = qvals
+    return out.tolist()
+
+
+def _t_to_pvalue(t: float) -> float:
+    """Two-sided p from the normal approximation of a t-stat — the right
+    trial accounting for sign-inferred direction (inferring the side from the
+    sign does not double-count under a two-sided p)."""
+    return math.erfc(abs(t) / math.sqrt(2.0))
+
+
+def _variance_ratio(returns: np.ndarray, q: int) -> float | None:
+    if len(returns) <= q or q < 2:
+        return None
+    base_var = float(returns.var(ddof=1))
+    if base_var <= 0:
+        return None
+    agg = np.convolve(returns, np.ones(q), mode="valid")
+    return float(agg.var(ddof=1) / (q * base_var))
+
+
+def dataset_fingerprint(
+    frame: pd.DataFrame,
+    *,
+    bar_seconds: int,
+    fee_bps: float = 5.0,
+    slippage_bps: float = 3.5,
+) -> dict[str, Any]:
+    """Compact market map read BEFORE any scan row: cost-to-range kills
+    short-horizon families outright, return dependence routes budget toward
+    continuation vs reversal families (a VR rejection of a random walk is a
+    routing hint, not proof of stationary mean reversion), and a dominant
+    regime quadrant warns that any edge found is regime-conditional."""
+    timestamps = pd.to_datetime(frame["timestamp"], utc=True)
+    close = frame["close"].astype(float).to_numpy()
+    high = frame["high"].astype(float).to_numpy()
+    low = frame["low"].astype(float).to_numpy()
+    n = len(close)
+    if n < 3:
+        return {"span": {"bars": n}, "note": "too few bars to fingerprint"}
+    gaps = timestamps.diff().dt.total_seconds().to_numpy()[1:]
+    missing = int(np.round(gaps[gaps > bar_seconds] / bar_seconds - 1).sum())
+    returns = np.diff(np.log(close))
+    abs_returns = np.abs(returns)
+    round_trip_bps = 2 * (fee_bps + slippage_bps)
+    median_range_bps = float(np.median((high - low) / close) * 1e4)
+    close_series = pd.Series(close)
+    sma200 = close_series.rolling(min(200, max(n // 4, 2))).mean()
+    vol24 = pd.Series(returns).rolling(min(24, max(n // 8, 2))).std()
+    trend_up = (close_series >= sma200).to_numpy()[1:]
+    vol_high = (vol24 >= vol24.median()).to_numpy()
+    size = min(len(trend_up), len(vol_high))
+    trend_up, vol_high = trend_up[:size], vol_high[:size]
+    quadrants = {
+        "up_high_vol": float((trend_up & vol_high).mean()),
+        "up_low_vol": float((trend_up & ~vol_high).mean()),
+        "down_high_vol": float((~trend_up & vol_high).mean()),
+        "down_low_vol": float((~trend_up & ~vol_high).mean()),
+    }
+    return {
+        "span": {
+            "first_ts": str(timestamps.iloc[0]),
+            "last_ts": str(timestamps.iloc[-1]),
+            "bars": n,
+            "days": round((timestamps.iloc[-1] - timestamps.iloc[0]).days, 1),
+        },
+        "gaps": {
+            "missing_bars": missing,
+            "max_gap_bars": int(np.max(gaps) // bar_seconds) if len(gaps) else 0,
+        },
+        "cost": {
+            "fee_bps": fee_bps,
+            "slippage_bps": slippage_bps,
+            "round_trip_bps": round_trip_bps,
+            "median_bar_range_bps": round(median_range_bps, 2),
+            "cost_to_range": round(round_trip_bps / max(median_range_bps, 1e-9), 3),
+            "note": (
+                "cost_to_range > ~0.3 makes short-horizon families unviable after costs"
+            ),
+        },
+        "returns": {
+            "acf1": float(pd.Series(returns).autocorr(1)),
+            "vr4": _variance_ratio(returns, 4),
+            "vr24": _variance_ratio(returns, 24),
+            "abs_acf1": float(pd.Series(abs_returns).autocorr(1)),
+        },
+        "regimes": {
+            **{k: round(v, 3) for k, v in quadrants.items()},
+            "note": (
+                "single-regime data; expect regime-dependent edges"
+                if max(quadrants.values()) > 0.5
+                else None
+            ),
+        },
+    }
+
+
+def event_path_stats(
+    frame: pd.DataFrame,
+    events: np.ndarray,
+    *,
+    horizon: int,
+    direction: str,
+    atr_period: int = 14,
+) -> dict[str, Any]:
+    """Path shape after DECIMATED events: median favorable/adverse excursion
+    in ATR units and how fast each arrives — enough to shortlist an exit
+    family (target vs fixed-time/trail vs time-stop) without optimizing
+    exits. Endpoint returns alone can't tell you how to trade a signal."""
+    close = frame["close"].astype(float).to_numpy()
+    high = frame["high"].astype(float).to_numpy()
+    low = frame["low"].astype(float).to_numpy()
+    atr = wilder_atr(frame, atr_period).to_numpy()
+    n = len(close)
+    idx = np.flatnonzero(events)
+    idx = idx[(idx + horizon < n) & (idx >= atr_period)]
+    if len(idx) == 0:
+        return {"n": 0, "note": "no events with a full forward window"}
+    high_w = np.lib.stride_tricks.sliding_window_view(high[1:], horizon)[idx]
+    low_w = np.lib.stride_tricks.sliding_window_view(low[1:], horizon)[idx]
+    entry = close[idx]
+    unit = np.maximum(atr[idx], 1e-12)
+    if direction == "short":
+        favorable = (entry - low_w.min(axis=1)) / unit
+        adverse = (high_w.max(axis=1) - entry) / unit
+        bars_to_fav = low_w.argmin(axis=1) + 1
+        bars_to_adv = high_w.argmax(axis=1) + 1
+    else:
+        favorable = (high_w.max(axis=1) - entry) / unit
+        adverse = (entry - low_w.min(axis=1)) / unit
+        bars_to_fav = high_w.argmax(axis=1) + 1
+        bars_to_adv = low_w.argmin(axis=1) + 1
+    mfe = float(np.median(favorable))
+    mae = float(np.median(adverse))
+    bars_to_mfe = float(np.median(bars_to_fav))
+    ratio = mfe / max(mae, 1e-9)
+    if ratio < 1.25:
+        exit_hint = "time_stop_only"
+    elif bars_to_mfe <= horizon / 3:
+        exit_hint = "target"
+    else:
+        exit_hint = "fixed_time_or_trail"
+    return {
+        "n": int(len(idx)),
+        "mfe_atr_median": round(mfe, 3),
+        "mae_atr_median": round(mae, 3),
+        "mfe_mae_ratio": round(ratio, 3),
+        "bars_to_mfe_median": bars_to_mfe,
+        "bars_to_mae_median": float(np.median(bars_to_adv)),
+        "horizon": horizon,
+        "exit_hint": exit_hint,
+    }
+
+
+def apply_bh_verdicts(
+    rows: list[dict[str, Any]],
+    *,
+    q_threshold: float = 0.10,
+    min_folds_agree: int = 3,
+) -> None:
+    """Annotate scan rows in place with BH q-values and verdicts over ONE
+    test family (all rows passed in). promote = q <= threshold AND fold
+    stability; candidate = |t| >= 2 (report continuity)."""
+    qvals = bh_qvalues([row["p_value"] for row in rows])
+    for row, q in zip(rows, qvals, strict=True):
+        row["q_value"] = round(float(q), 4)
+        t = row["t_stat_vs_drift"]
+        promote = (
+            q <= q_threshold
+            and bool(row.get("fold_stable"))
+            and int(row.get("folds_agreeing") or 0) >= min_folds_agree
+        )
+        row["verdict"] = "promote" if promote else "candidate" if abs(t) >= 2 else None
+
+
+def holdout_event_study(
+    frame: pd.DataFrame,
+    *,
+    signal: str,
+    horizon: int,
+    direction: str,
+    cutoff_ts: Any,
+    bar_seconds: int,
+    timeframe_seconds: int | None = None,
+    min_events: int = 10,
+    t_threshold: float = 1.0,
+) -> dict[str, Any]:
+    """One pre-registered confirmation of a FROZEN scan candidate on the
+    reserved holdout tail. The bar is deliberately lower than the scan's
+    q-gate (directional t >= 1, n >= 10) because this is a single declared
+    test, not a search — and it is spendable ONCE per candidate (the scan
+    ledger remembers).
+
+    The signal is computed over the FULL series so holdout events get proper
+    indicator warmup; the causal prefix property means this cannot leak."""
+    defs = signal_defs()
+    if signal not in defs:
+        raise KeyError(
+            f"signal {signal!r} not in the canonical library; available: {sorted(defs)}"
+        )
+    if direction not in {"long", "short"}:
+        raise ValueError(
+            f"a frozen candidate is directional — direction must be long|short, "
+            f"got {direction!r}"
+        )
+    tf_seconds = timeframe_seconds or bar_seconds
+    bars = resample_ohlcv(frame, tf_seconds, bar_seconds=bar_seconds)
+    close = bars["close"].astype(float).to_numpy()
+    n = len(close)
+    spec = defs[signal]
+    sig = (
+        spec.build(bars).fillna(False).astype(bool).to_numpy()
+        if n >= spec.min_bars
+        else np.zeros(n, dtype=bool)
+    )
+    cutoff = pd.Timestamp(cutoff_ts)
+    in_tail = (pd.to_datetime(bars["timestamp"], utc=True) > cutoff).to_numpy()
+    if horizon <= 0 or horizon >= n:
+        raise ValueError(f"horizon {horizon} out of range for {n} resampled bars")
+    fwd = np.log(close[horizon:] / close[:-horizon])
+    tail_mask = in_tail[: n - horizon]
+    tail_fwd = fwd[tail_mask]
+    events = _decimate_events(sig[: n - horizon] & tail_mask, horizon)
+    n_raw = int((sig[: n - horizon] & tail_mask).sum())
+    n_events = int(events.sum())
+    side = 1 if direction == "long" else -1
+    if n_events == 0 or len(tail_fwd) == 0:
+        return {
+            "signal": signal,
+            "horizon": horizon,
+            "direction": direction,
+            "cutoff_ts": str(cutoff),
+            "n": 0,
+            "n_raw": n_raw,
+            "verdict": "insufficient",
+            "read": "no holdout events yet — the tail grows as new data accrues",
+        }
+    event_returns = fwd[events]
+    drift = float(tail_fwd.mean())
+    mean_r = float(event_returns.mean())
+    std_r = float(event_returns.std(ddof=1)) if n_events > 1 else 0.0
+    sem = std_r / math.sqrt(n_events) if n_events > 1 and std_r > 0 else float("inf")
+    t = (mean_r - drift) / sem if math.isfinite(sem) else 0.0
+    if n_events < min_events:
+        verdict = "insufficient"
+    elif side * t >= t_threshold:
+        verdict = "confirmed"
+    else:
+        verdict = "failed"
+    return {
+        "signal": signal,
+        "timeframe_seconds": tf_seconds,
+        "horizon": horizon,
+        "direction": direction,
+        "cutoff_ts": str(cutoff),
+        "n": n_events,
+        "n_raw": n_raw,
+        "mean_fwd_return": mean_r,
+        "drift_baseline": drift,
+        "t_stat_vs_drift": float(t),
+        "hit_rate": float((side * event_returns > 0).mean()),
+        "verdict": verdict,
+        "read": {
+            "confirmed": "the frozen candidate held up on data the scan never "
+            "saw — proceed to the minimal strategy build",
+            "failed": "the edge did not survive the holdout tail — the "
+            "candidate is dead; do not retune it against this tail",
+            "insufficient": f"fewer than {min_events} non-overlapping holdout "
+            "events — wait for more data rather than lowering the bar",
+        }[verdict],
+    }
+
+
+_DEFAULT_SCAN_HORIZONS = {
+    3600: [1, 4, 12, 24, 48],
+    14400: [1, 3, 6, 12, 24],
+    86400: [1, 2, 3, 5, 10],
+}
+_GENERIC_SCAN_HORIZONS = [1, 2, 4, 8, 16]
+
+
+def _fold_stability(
+    events: np.ndarray,
+    fwd: np.ndarray,
+    reference_sign: float,
+    *,
+    folds: int,
+    min_fold_events: int,
+) -> tuple[list[float] | None, int, bool]:
+    """Chronological fold deltas (event mean minus the fold's own drift) and
+    the count agreeing in sign with the full-sample effect. Any fold below
+    min_fold_events decimated events → insufficient evidence of stability."""
+    bounds = np.linspace(0, len(fwd), folds + 1, dtype=int)
+    deltas: list[float] = []
+    for start, end in zip(bounds[:-1], bounds[1:], strict=True):
+        fold_events = events[start:end]
+        fold_fwd = fwd[start:end]
+        if int(fold_events.sum()) < min_fold_events or len(fold_fwd) == 0:
+            return None, 0, False
+        deltas.append(float(fold_fwd[fold_events].mean()) - float(fold_fwd.mean()))
+    agreeing = int(sum(1 for d in deltas if np.sign(d) == reference_sign != 0))
+    return deltas, agreeing, True
+
+
 def scan_signals(
     frame: pd.DataFrame,
     horizons: list[int] | None = None,
+    *,
+    bar_seconds: int = 3600,
+    timeframes: list[str] | None = None,
+    holdout_fraction: float = 0.15,
+    min_events: int = 30,
+    min_fold_events: int = 5,
+    folds: int = 4,
+    min_folds_agree: int = 3,
+    q_threshold: float = 0.10,
+    fee_bps: float = 5.0,
+    slippage_bps: float = 3.5,
 ) -> dict[str, Any]:
     """Event-study EVERY canonical library trigger against one symbol's bars
-    in a single pass — the breadth tool that replaces hand-rewriting
-    `precompute()` once per trigger idea.
+    — across timeframes, in a single pass — the breadth tool that replaces
+    hand-rewriting `precompute()` once per trigger idea.
 
-    Direction is classified from the SIGN of the t-stat (t <= -2: prices fall
-    after the event — a short edge; t >= +2: a long edge), so a trigger that
-    fails one side surfaces as a candidate for the other instead of a dead
-    end. Every candidate carries a half-split stability flag, and the report
-    counts tests run vs the ~5% expected to pass by luck — a lone marginal
-    pass in a 100-test scan is noise until it survives both halves.
-
-    Overlap honesty: for horizon h, events are DECIMATED to at least h bars
-    apart before counting, so forward windows never overlap. Clustered
-    triggers (e.g. consecutive breakdown bars in one selloff) would otherwise
-    count one episode as dozens of "independent" samples and inflate t-stats
-    — a pure random walk shows spurious stable edges without this.
+    Discipline built in:
+    - A holdout tail (`holdout_fraction`, default the final 15%) is reserved
+      BEFORE anything is measured — the scan never sees it; confirm a frozen
+      candidate later via `holdout_event_study`, once.
+    - Events are DECIMATED to horizon spacing so forward windows never
+      overlap (clustered triggers otherwise inflate t-stats — a pure random
+      walk shows spurious stable edges without this).
+    - Multiple testing is controlled by Benjamini-Hochberg q-values over all
+      tests in the scan; `promote` requires q <= q_threshold AND sign
+      agreement in >= min_folds_agree of `folds` chronological folds.
+    - Direction is classified from the SIGN of the t-stat (t <= -2 short,
+      t >= +2 long) — a trigger that fails one side surfaces as a candidate
+      for the other instead of a dead end.
+    - Promoted rows carry `path_stats` (MFE/MAE shape → exit-family hint)
+      and `edge_by_horizon` (decay across sibling horizons).
     """
-    horizons = sorted({int(h) for h in (horizons or [1, 4, 12, 24, 48])})
-    bars = frame.reset_index(drop=True)
-    close = bars["close"].astype(float).to_numpy()
-    n = len(close)
-    signals = build_signal_frame(bars)
+    from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
+
+    bars_full = frame.reset_index(drop=True)
+    n_full = len(bars_full)
+    cutoff_index = int(n_full * (1 - holdout_fraction))
+    base = bars_full.iloc[:cutoff_index].reset_index(drop=True)
+    cutoff_ts = str(base["timestamp"].iloc[-1]) if len(base) else None
+    fingerprint = dataset_fingerprint(
+        base, bar_seconds=bar_seconds, fee_bps=fee_bps, slippage_bps=slippage_bps
+    )
+    tf_specs: list[tuple[str, int]] = []
+    timeframes_skipped: list[dict[str, str]] = []
+    for tf in timeframes or [f"{bar_seconds}s"]:
+        seconds = bar_interval_seconds(tf)
+        if not seconds or seconds < bar_seconds or seconds % bar_seconds != 0:
+            timeframes_skipped.append(
+                {"timeframe": str(tf), "reason": "not a multiple of the base bar"}
+            )
+            continue
+        tf_specs.append((str(tf), seconds))
     rows: list[dict[str, Any]] = []
     tests_run = 0
-    for spec in SIGNAL_LIBRARY:
-        sig = signals[spec.name].to_numpy()
-        for h in horizons:
+    tests_skipped = 0
+    horizons_used: dict[str, list[int]] = {}
+    frames_by_tf: dict[str, pd.DataFrame] = {}
+    events_cache: dict[tuple[str, str, int], np.ndarray] = {}
+    for tf_name, tf_seconds in tf_specs:
+        bars = resample_ohlcv(base, tf_seconds, bar_seconds=bar_seconds)
+        frames_by_tf[tf_name] = bars
+        close = bars["close"].astype(float).to_numpy()
+        n = len(close)
+        signals = build_signal_frame(bars)
+        tf_horizons = sorted(
+            {int(h) for h in horizons}
+            if horizons
+            else set(_DEFAULT_SCAN_HORIZONS.get(tf_seconds, _GENERIC_SCAN_HORIZONS))
+        )
+        horizons_used[tf_name] = tf_horizons
+        for h in tf_horizons:
             if h <= 0 or h >= n:
+                tests_skipped += 1
+                continue
+            if n // h < min_events:
+                # Decimated-event ceiling can't reach the sample gate.
+                tests_skipped += 1
                 continue
             fwd = np.log(close[h:] / close[:-h])
-            events = _decimate_events(sig[: n - h], h)
-            n_events = int(events.sum())
-            if n_events < 30:
-                continue
-            tests_run += 1
-            event_returns = fwd[events]
             drift = float(fwd.mean())
-            mean_r = float(event_returns.mean())
-            std_r = float(event_returns.std(ddof=1))
-            if std_r <= 0:
-                continue
-            t = (mean_r - drift) / (std_r / math.sqrt(n_events))
-            mid = (n - h) // 2
-            half_deltas = []
-            for half_events, half_fwd in (
-                (events[:mid], fwd[:mid]),
-                (events[mid:], fwd[mid:]),
-            ):
-                if int(half_events.sum()) < 10:
-                    half_deltas = []
-                    break
-                half_deltas.append(
-                    float(half_fwd[half_events].mean()) - float(half_fwd.mean())
+            for spec in SIGNAL_LIBRARY:
+                sig = signals[spec.name].to_numpy()
+                events = _decimate_events(sig[: n - h], h)
+                n_events = int(events.sum())
+                n_raw = int(sig[: n - h].sum())
+                if n_events < min_events:
+                    continue
+                tests_run += 1
+                event_returns = fwd[events]
+                mean_r = float(event_returns.mean())
+                std_r = float(event_returns.std(ddof=1))
+                if std_r <= 0:
+                    continue
+                t = (mean_r - drift) / (std_r / math.sqrt(n_events))
+                fold_deltas, agreeing, measurable = _fold_stability(
+                    events,
+                    fwd,
+                    float(np.sign(mean_r - drift)),
+                    folds=folds,
+                    min_fold_events=min_fold_events,
                 )
-            stable = bool(
-                len(half_deltas) == 2
-                and np.sign(half_deltas[0]) == np.sign(half_deltas[1]) != 0
-            )
-            rows.append(
-                {
-                    "signal": spec.name,
-                    "family": spec.family,
-                    "description": spec.description,
-                    "horizon": h,
-                    "n": n_events,
-                    "mean_fwd_return": mean_r,
-                    "drift_baseline": drift,
-                    "t_stat_vs_drift": float(t),
-                    "direction": "short" if t <= -2 else "long" if t >= 2 else None,
-                    "stable_across_halves": stable,
-                }
-            )
+                events_cache[(tf_name, spec.name, h)] = events
+                rows.append(
+                    {
+                        "signal": spec.name,
+                        "family": spec.family,
+                        "description": spec.description,
+                        "timeframe": tf_name,
+                        "horizon": h,
+                        "n": n_events,
+                        "n_raw": n_raw,
+                        "mean_fwd_return": mean_r,
+                        "drift_baseline": drift,
+                        "t_stat_vs_drift": float(t),
+                        "p_value": _t_to_pvalue(float(t)),
+                        "direction": (
+                            "short" if t <= -2 else "long" if t >= 2 else None
+                        ),
+                        "fold_deltas": fold_deltas,
+                        "folds_agreeing": agreeing,
+                        "fold_stable": bool(measurable and agreeing >= min_folds_agree),
+                    }
+                )
+    apply_bh_verdicts(rows, q_threshold=q_threshold, min_folds_agree=min_folds_agree)
+    # Path stats for every |t|>=2 candidate (not just promoted): pooled
+    # multi-symbol BH in signal_scan_job can shift verdicts after this
+    # returns, and the set is small enough to be cheap.
+    for row in rows:
+        if not row["direction"]:
+            continue
+        direction = row["direction"]
+        row["path_stats"] = event_path_stats(
+            frames_by_tf[row["timeframe"]],
+            events_cache[(row["timeframe"], row["signal"], row["horizon"])],
+            horizon=row["horizon"],
+            direction=direction,
+        )
+        row["edge_by_horizon"] = {
+            sibling["horizon"]: {
+                "t": round(sibling["t_stat_vs_drift"], 2),
+                "mean_minus_drift": sibling["mean_fwd_return"]
+                - sibling["drift_baseline"],
+            }
+            for sibling in rows
+            if sibling["signal"] == row["signal"]
+            and sibling["timeframe"] == row["timeframe"]
+        }
     rows.sort(key=lambda r: -abs(r["t_stat_vs_drift"]))
     candidates = [r for r in rows if r["direction"]]
-    stable_candidates = [r for r in candidates if r["stable_across_halves"]]
+    promoted = [r for r in rows if r["verdict"] == "promote"]
     expected_lucky = round(tests_run * 0.05, 1)
     return {
         "signals_tested": len(SIGNAL_LIBRARY),
-        "horizons": horizons,
+        "timeframes": [name for name, _ in tf_specs],
+        "timeframes_skipped": timeframes_skipped,
+        "horizons": horizons_used,
         "tests_run": tests_run,
+        "tests_skipped_insufficient_data": tests_skipped,
         "expected_lucky_passes": expected_lucky,
         "candidates": candidates,
+        "promoted": promoted,
         "top_by_abs_t": rows[:5],
+        "holdout": {
+            "fraction": holdout_fraction,
+            "cutoff_ts": cutoff_ts,
+            "train_bars": len(base),
+            "holdout_bars": n_full - len(base),
+        },
+        "fingerprint": fingerprint,
+        # Full row list for pooled multi-symbol BH in signal_scan_job —
+        # q-values are only meaningful over the COMPLETE test family.
+        # Stripped from the persisted artifact.
+        "_all_rows": rows,
         "read": (
-            f"{len(candidates)} of {tests_run} tests cleared |t|>=2 "
-            f"({len(stable_candidates)} also stable across both data halves) "
-            f"vs ~{expected_lucky} expected by luck — build only on stable "
-            "candidates, and read direction from the sign: these are EVENTS, "
-            "so a 'failed short' trigger with t>=+2 is a LONG candidate"
-            if candidates
-            else f"0 of {tests_run} tests cleared |t|>=2 on this symbol — no "
-            "canonical trigger has standalone timing alpha here; a complete "
-            "trade SYSTEM can still work (gates + exits + regime), but new "
-            "signal mining on this series is unlikely to pay"
+            f"{len(promoted)} of {tests_run} tests PROMOTED "
+            f"(q<={q_threshold} + >={min_folds_agree}/{folds} fold sign "
+            f"agreement); {len(candidates)} cleared raw |t|>=2 vs "
+            f"~{expected_lucky} expected by luck. Take at most 3 promoted "
+            "cards forward (CORE/ADJACENT/DIVERGENT), build the minimal "
+            "fixed-time-exit strategy at the measured horizon first, and "
+            "confirm a FROZEN candidate on the holdout tail (holdout_check) "
+            "exactly once before trusting it"
+            if promoted
+            else f"0 of {tests_run} tests cleared the q<={q_threshold} + fold "
+            "stability gate on this symbol — no canonical trigger has "
+            "standalone timing alpha here; a complete trade SYSTEM can still "
+            "work (gates + exits + regime), but new signal mining on this "
+            "series is unlikely to pay"
         ),
     }
 
@@ -952,11 +1467,17 @@ def signal_check_job(
     *,
     column: str,
     horizons: list[int] | None = None,
+    direction: str = "auto",
     store: Any | None = None,
 ) -> dict[str, Any]:
     """Event-study a strategy's precomputed signal column against the job's
     dataset — per symbol — WITHOUT running a backtest. The strategy's
-    `precompute()` materializes the column (the same one decide() reads)."""
+    `precompute()` materializes the column (the same one decide() reads).
+
+    `direction` defaults to "auto" here (read the side from the t-stat sign,
+    counted as two trials): the observed failure this fixes is genuine SHORT
+    edges being labeled "no edge" by the long-only t >= 2 rule. Pass an
+    explicit direction when the thesis is directional — that is one trial."""
     from wayfinder_paths.jobs.execution.features import apply_precompute
     from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
     from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
@@ -984,10 +1505,13 @@ def signal_check_job(
                 f"non-bar columns: "
                 f"{sorted(set(sub.columns) - {'timestamp', 'symbol', 'open', 'high', 'low', 'close', 'volume'})}"
             )
-        results[symbol] = event_study(sub, column, horizons=horizons)
+        results[symbol] = event_study(
+            sub, column, horizons=horizons, direction=direction
+        )
     overall = any(r["has_edge"] for r in results.values())
-    return {
+    result: dict[str, Any] = {
         "column": column,
+        "direction": direction,
         "per_symbol": results,
         "has_edge": overall,
         "read": (
@@ -998,6 +1522,71 @@ def signal_check_job(
             "change the idea before building a strategy around it"
         ),
     }
+    if direction == "auto":
+        result["trials_multiplier"] = 2
+    return result
+
+
+_SCAN_LEDGER = "ledger.jsonl"
+_SCAN_LEDGER_COMPACT_ROWS = 20_000
+
+
+def _scan_dir(root: Any) -> Any:
+    return root / "results" / "research" / "signal_scan"
+
+
+def _read_scan_ledger(root: Any) -> list[dict[str, Any]]:
+    target = _scan_dir(root) / _SCAN_LEDGER
+    if not target.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in target.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue  # a corrupt line never breaks the ledger
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _append_scan_ledger(root: Any, rows: list[dict[str, Any]]) -> None:
+    from wayfinder_paths.jobs.models import utc_now_iso
+
+    target = _scan_dir(root) / _SCAN_LEDGER
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(
+                json.dumps({"ts": utc_now_iso(), **row}, sort_keys=True, default=str)
+                + "\n"
+            )
+    existing = _read_scan_ledger(root)
+    if len(existing) <= _SCAN_LEDGER_COMPACT_ROWS:
+        return
+    # Compact: latest scan_test per hash; scan_meta and holdout_check rows
+    # are NEVER dropped — holdout spends are the honesty backbone.
+    kept: list[dict[str, Any]] = []
+    latest_by_hash: dict[str, dict[str, Any]] = {}
+    for row in existing:
+        if row.get("kind") == "scan_test" and row.get("hash"):
+            latest_by_hash[str(row["hash"])] = row
+        else:
+            kept.append(row)
+    kept.extend(latest_by_hash.values())
+    with target.open("w", encoding="utf-8") as handle:
+        for row in kept:
+            handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+
+
+def _trial_hash(symbol: str, signal: str, timeframe: str, horizon: int) -> str:
+    import hashlib
+
+    key = f"{symbol}|{signal}|{timeframe}|{horizon}"
+    return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 
 def signal_scan_job(
@@ -1005,16 +1594,27 @@ def signal_scan_job(
     *,
     symbols: list[str] | None = None,
     horizons: list[int] | None = None,
+    timeframes: list[str] | None = None,
+    holdout_fraction: float = 0.15,
     store: Any | None = None,
 ) -> dict[str, Any]:
     """Scan the ENTIRE canonical trigger library against the job's dataset —
-    per symbol, in one call, with multiple-testing honesty. Needs no strategy
-    script: the library computes its own columns from OHLCV, so it works even
-    when the workspace strategy is broken or absent. Run it BEFORE
-    hand-writing trigger variants into `precompute()`."""
+    per symbol, across timeframes, in one call. Needs no strategy script: the
+    library computes its own columns from OHLCV, so it works even when the
+    workspace strategy is broken or absent. Run it BEFORE hand-writing
+    trigger variants into `precompute()`.
+
+    Honesty machinery: a reserved holdout tail the scan never sees (confirm
+    frozen candidates later via holdout_check, once), BH q-values recomputed
+    over ALL rows across symbols (one pooled test family), and an append-only
+    trial ledger so repeat scans of the same workspace stay accountable."""
     from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
-    from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+    from wayfinder_paths.jobs.execution.primitives import (
+        ExecutionSpec,
+        bar_interval_seconds,
+    )
     from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+    from wayfinder_paths.jobs.models import utc_now_iso
     from wayfinder_paths.jobs.store import JobStore
 
     store = store or JobStore()
@@ -1022,6 +1622,10 @@ def signal_scan_job(
     job_data = _load_job_yaml(root)
     spec_data, _ = resolve_execution_spec(root, job_data)
     spec = ExecutionSpec.from_dict(spec_data)
+    params = dict(job_data.get("execution_params") or {})
+    bar_seconds = bar_interval_seconds(spec.data_contract.get("bar_interval")) or 3600
+    fee_bps = float(params.get("fee_bps") or 5.0)
+    slippage_bps = float(params.get("slippage_bps") or 3.5)
     dataset = _load_dataset(root, spec, job_data)
     frame = dataset.bars.to_frame()
     available = sorted(frame["symbol"].astype(str).unique())
@@ -1035,21 +1639,213 @@ def signal_scan_job(
         symbol: scan_signals(
             frame[frame["symbol"] == symbol].reset_index(drop=True),
             horizons=horizons,
+            bar_seconds=bar_seconds,
+            timeframes=timeframes,
+            holdout_fraction=holdout_fraction,
+            fee_bps=fee_bps,
+            slippage_bps=slippage_bps,
         )
         for symbol in targets
     }
+    # One pooled BH family across every row of every symbol — the per-symbol
+    # q-values were provisional; these are the final numbers.
+    all_rows_by_symbol = {
+        symbol: scan.pop("_all_rows") for symbol, scan in per_symbol.items()
+    }
+    apply_bh_verdicts([row for rows in all_rows_by_symbol.values() for row in rows])
+    for scan in per_symbol.values():
+        scan["promoted"] = [
+            row for row in scan["candidates"] if row.get("verdict") == "promote"
+        ]
+    prior = _read_scan_ledger(root)
+    prior_scans = sum(1 for row in prior if row.get("kind") == "scan_meta")
+    prior_tests = sum(1 for row in prior if row.get("kind") == "scan_test")
+    prior_unique = len(
+        {row.get("hash") for row in prior if row.get("kind") == "scan_test"}
+    )
+    ledger_rows: list[dict[str, Any]] = [
+        {
+            "kind": "scan_meta",
+            "scan_id": utc_now_iso(),
+            "symbols": targets,
+            "timeframes": timeframes or ["base"],
+            "tests_run": sum(s["tests_run"] for s in per_symbol.values()),
+            "holdout_fraction": holdout_fraction,
+            "cutoff_ts": {
+                sym: scan["holdout"]["cutoff_ts"] for sym, scan in per_symbol.items()
+            },
+        }
+    ]
+    # EVERY executed test is a recorded trial — not just the survivors.
+    for symbol, rows in all_rows_by_symbol.items():
+        for row in rows:
+            ledger_rows.append(
+                {
+                    "kind": "scan_test",
+                    "hash": _trial_hash(
+                        symbol, row["signal"], row["timeframe"], row["horizon"]
+                    ),
+                    "symbol": symbol,
+                    "signal": row["signal"],
+                    "timeframe": row["timeframe"],
+                    "horizon": row["horizon"],
+                    "direction": row["direction"],
+                    "n": row["n"],
+                    "t": round(row["t_stat_vs_drift"], 3),
+                    "q": row.get("q_value"),
+                    "folds_agreeing": row.get("folds_agreeing"),
+                    "verdict": row.get("verdict"),
+                }
+            )
+    _append_scan_ledger(root, ledger_rows)
+    cumulative_tests = prior_tests + sum(s["tests_run"] for s in per_symbol.values())
     result: dict[str, Any] = {
         "per_symbol": per_symbol,
+        "holdout": {
+            "fraction": holdout_fraction,
+            "cutoff_ts_per_symbol": {
+                sym: scan["holdout"]["cutoff_ts"] for sym, scan in per_symbol.items()
+            },
+        },
+        "ledger": {
+            "prior_scans": prior_scans,
+            "prior_tests": prior_tests,
+            "prior_unique_tests": prior_unique,
+            "cumulative_tests": cumulative_tests,
+        },
         "read": (
-            "direction comes from the t-stat sign per event; candidates that "
-            "are not stable_across_halves are luck until proven otherwise; "
-            "a passing trigger still rides the full validation ladder before "
-            "it is an edge"
+            "promote = q<=0.10 (pooled across symbols) + fold stability; take "
+            "at most 3 promoted cards forward (CORE/ADJACENT/DIVERGENT), build "
+            "the minimal fixed-time-exit strategy at the measured horizon "
+            "first, and spend the one holdout_check per candidate only after "
+            f"the spec is frozen. This workspace has now run "
+            f"{cumulative_tests} tests across {prior_scans + 1} scans — "
+            "q-values control this scan only; the ledger keeps repeat scans "
+            "honest"
         ),
     }
-    out_dir = root / "results" / "research" / "signal_scan"
+    out_dir = _scan_dir(root)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "scan.json"
+    out_path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+    result["artifact"] = str(out_path)
+    return result
+
+
+def holdout_check_job(
+    job_id: str,
+    *,
+    signal: str,
+    horizon: int,
+    direction: str,
+    timeframe: str | None = None,
+    symbols: list[str] | None = None,
+    holdout_fraction: float = 0.15,
+    store: Any | None = None,
+) -> dict[str, Any]:
+    """One-shot confirmation of a FROZEN scan candidate on the reserved
+    holdout tail. Spend it once per candidate: a second look at the same tail
+    is data snooping — the trial ledger remembers, and a repeat run is
+    flagged `already_spent` (warned, not refused)."""
+    from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
+    from wayfinder_paths.jobs.execution.primitives import (
+        ExecutionSpec,
+        bar_interval_seconds,
+    )
+    from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = store or JobStore()
+    root = store.job_dir(job_id)
+    job_data = _load_job_yaml(root)
+    spec_data, _ = resolve_execution_spec(root, job_data)
+    spec = ExecutionSpec.from_dict(spec_data)
+    bar_seconds = bar_interval_seconds(spec.data_contract.get("bar_interval")) or 3600
+    tf_name = timeframe or str(spec.data_contract.get("bar_interval") or "1h")
+    tf_seconds = bar_interval_seconds(tf_name)
+    if not tf_seconds:
+        raise ValueError(f"unparseable timeframe {tf_name!r}")
+    dataset = _load_dataset(root, spec, job_data)
+    frame = dataset.bars.to_frame()
+    available = sorted(frame["symbol"].astype(str).unique())
+    targets = [str(s) for s in symbols] if symbols else available
+    scan_path = _scan_dir(root) / "scan.json"
+    recorded_cutoffs: dict[str, Any] = {}
+    if scan_path.exists():
+        try:
+            recorded_cutoffs = (
+                json.loads(scan_path.read_text(encoding="utf-8"))
+                .get("holdout", {})
+                .get("cutoff_ts_per_symbol", {})
+            )
+        except ValueError:
+            recorded_cutoffs = {}
+    ledger = _read_scan_ledger(root)
+    per_symbol: dict[str, Any] = {}
+    ledger_rows: list[dict[str, Any]] = []
+    already_spent = False
+    for symbol in targets:
+        sub = frame[frame["symbol"] == symbol].reset_index(drop=True)
+        cutoff = recorded_cutoffs.get(symbol)
+        cutoff_note = None
+        if cutoff is None:
+            cutoff_index = int(len(sub) * (1 - holdout_fraction))
+            cutoff = str(sub["timestamp"].iloc[max(cutoff_index - 1, 0)])
+            cutoff_note = (
+                "no scan recorded a cutoff for this symbol — computed from "
+                f"holdout_fraction={holdout_fraction}"
+            )
+        trial = _trial_hash(symbol, signal, tf_name, horizon)
+        spent = any(
+            row.get("kind") == "holdout_check" and row.get("hash") == trial
+            for row in ledger
+        )
+        already_spent = already_spent or spent
+        report = holdout_event_study(
+            sub,
+            signal=signal,
+            horizon=horizon,
+            direction=direction,
+            cutoff_ts=cutoff,
+            bar_seconds=bar_seconds,
+            timeframe_seconds=tf_seconds,
+        )
+        if cutoff_note:
+            report["cutoff_note"] = cutoff_note
+        report["timeframe"] = tf_name
+        per_symbol[symbol] = report
+        ledger_rows.append(
+            {
+                "kind": "holdout_check",
+                "hash": trial,
+                "symbol": symbol,
+                "signal": signal,
+                "timeframe": tf_name,
+                "horizon": horizon,
+                "direction": direction,
+                "n": report.get("n"),
+                "t": round(report.get("t_stat_vs_drift", 0.0), 3),
+                "verdict": report["verdict"],
+            }
+        )
+    _append_scan_ledger(root, ledger_rows)
+    result: dict[str, Any] = {
+        "signal": signal,
+        "timeframe": tf_name,
+        "horizon": horizon,
+        "direction": direction,
+        "per_symbol": per_symbol,
+        "already_spent": already_spent,
+    }
+    if already_spent:
+        result["read"] = (
+            "this tail has already been used to confirm this candidate — a "
+            "second look is data snooping; treat this result as descriptive "
+            "only"
+        )
+    out_dir = _scan_dir(root)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"holdout_{_trial_hash('*', signal, tf_name, horizon)}.json"
     out_path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
     result["artifact"] = str(out_path)
     return result

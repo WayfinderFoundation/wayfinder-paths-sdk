@@ -12,26 +12,67 @@ one, and let the validation ladder — not enthusiasm — decide what survives.
 Any new idea starts with a signal scan, not a strategy build:
 
 ```
-wayfinder job signal-scan <id> [--horizons 4,24,48]     # the WHOLE library, one call
-# MCP: core_jobs(action="signal_scan", job_id=…)
-wayfinder job signal-check <id> --column entry_signal   # one custom column
-# MCP: core_jobs(action="signal_check", job_id=…, column="entry_signal")
+wayfinder job signal-scan <id> --timeframes 1h,4h,1d    # the WHOLE library, one call
+# MCP: core_jobs(action="signal_scan", job_id=…, timeframes=["1h","4h","1d"])
+wayfinder job signal-check <id> --column entry_signal --direction short|long|auto
+# MCP: core_jobs(action="signal_check", job_id=…, column=…, direction=…)
+wayfinder job holdout-check <id> --signal new_low_5 --horizon 24 --direction short
+# MCP: core_jobs(action="holdout_check", job_id=…, signal=…, horizon=…, direction=…)
 ```
 
 `signal-scan` event-studies the entire canonical trigger library (momentum,
 breakout, MA-cross, RSI/BB fades, volatility, exhaustion — BOTH directions)
-against the job's dataset in one call, with multiple-testing counts and
-half-split stability built in. Run it FIRST: it replaces hand-rewriting
-`precompute()` once per trigger idea — every rewrite is a fresh chance for an
-implementation bug — and because triggers are events with signed t-stats, a
-"failed short" trigger with `t >= +2` surfaces as a LONG candidate instead of
-a dead end. Hand-write `signal-check` columns only for triggers genuinely
-outside the library.
+across the requested timeframes in one call. Its discipline is built in, not
+optional:
+
+1. **Fingerprint first.** The report opens with a dataset fingerprint — read
+   it before any candidate row. `cost_to_range > ~0.3` kills short-horizon
+   families outright; `acf1`/variance ratios say whether reversal or
+   continuation families are even plausible (a VR rejection of a random walk
+   is a routing hint, not proof of mean reversion); a dominant regime
+   quadrant means any edge found is regime-conditional.
+2. **The holdout is reserved before anything is measured.** The scan never
+   sees the final 15% of history; the cutoff timestamp is in the report.
+   NOBODY looks at that tail until a candidate is frozen — then
+   `holdout-check` spends the ONE pre-registered confirmation (signal +
+   timeframe + horizon + direction; directional t >= 1). The trial ledger
+   remembers a spent tail; a second look is data snooping.
+3. **Scan wide, promote narrow.** PROMOTE = BH `q <= 0.10` AND sign
+   agreement in >= 3 of 4 chronological folds — not raw `t >= 2` (with 100+
+   tests, ~5 lucky |t|>=2 passes are EXPECTED; the q-value already accounts
+   for that). Take at most 3 promoted cards forward: CORE (best q, closest
+   to the user's thesis), ADJACENT (same mechanism, different timeframe or
+   horizon), DIVERGENT (a different family) — and record them in the job's
+   `candidates` ledger with exactly those buckets.
+4. **Minimal viable strategy first.** Build the CORE card as: the exact
+   scanned entry, a fixed-time exit at the measured horizon, the protective
+   stop, nothing else. Judge THAT by backtest before any exit engineering.
+   Then let the card's `path_stats` pick the exit family:
+   | Path shape | Exit family |
+   |---|---|
+   | MFE arrives early (`bars_to_mfe <= horizon/3`) and edge decays at longer horizons | target exit |
+   | MFE builds to the horizon | fixed-time or trailing |
+   | `mfe_mae_ratio < ~1.25` | time-stop only — a tight stop eats the edge |
+5. **Every scan is a recorded trial.** The scan appends every executed test
+   to `results/research/signal_scan/ledger.jsonl` and reports cumulative
+   counts — cite them ("3rd scan of this workspace, 400 tests to date").
+   Never re-test a dead candidate under a new name; the ledger hash catches
+   it.
+
+Because triggers are events with signed t-stats, a "failed short" trigger
+with `t >= +2` surfaces as a LONG candidate instead of a dead end.
+Hand-write `signal-check` columns only for triggers genuinely outside the
+library — a pre-specified user signal is ONE trial and keeps the simpler
+standard: signed `|t| >= 2` (declare `--direction`; a genuine short edge has
+NEGATIVE forward returns) plus a holdout confirmation.
 
 The check event-studies a column: forward returns
 after signal fires vs the **unconditional drift** of the same series — a
 random entry at the same frequency earns the drift for free, so the signal
-must beat it, not zero. Read the per-horizon verdicts: an edge is `t >= 2`
+must beat it, not zero. Events are decimated to horizon spacing (overlapping
+forward windows would count one selloff as dozens of samples — `n` is the
+honest count, `n_raw` the trigger-bar count). Read the per-horizon verdicts:
+an edge is `|t| >= 2` in the declared direction
 with `n >= 30`. **If no horizon beats drift, the entry has no predictive power
 — change the idea, not the parameters.** No exit engineering, sizing, or
 filter tuning rescues entries that carry no information. This 30-second check
@@ -62,9 +103,12 @@ admission gate — `wayfinder job pair-check <id> --symbols A,B --days 720`
 a failure: it just saved days of tuning a spread that does not mean-revert.
 
 Multiple-testing honesty: if you signal-check many candidate columns, expect
-~1 in 20 to clear t≈2 by luck. Scan wide, but demand stability (does it hold
-on both halves of the data?) before building on a marginal pass —
-`signal-scan` reports both counts for you.
+~1 in 20 to clear t≈2 by luck. Scan wide, but demand the q-gate and fold
+stability before building on a marginal pass — `signal-scan` computes both.
+Deferred rigor (recorded, deliberately not built yet): HAC/bootstrap standard
+errors, Deflated Sharpe / PBO overfit stats, BTC/ETH market-relative
+controls. If a result only matters under those corrections, it was too
+marginal to trade anyway.
 
 ## 0b. Replicating a live / known strategy — port, don't transcribe
 
@@ -135,7 +179,7 @@ your job, not the user's homework:
 | Failure evidence | Natural successor |
 |---|---|
 | Stop-outs dominate losses, entries fine | regime filter (trade only with the trend) |
-| Entry never beats drift on any horizon | different trigger or timeframe for the same thesis (`signal-scan` shows every library trigger at once) |
+| Entry never beats drift on any horizon | different trigger or timeframe for the same thesis (`signal-scan --timeframes 1h,4h,1d` shows every library trigger at once) |
 | Signal has edge in the WRONG direction (t significant, sign flipped) | invert the trade — a failed short entry that predicts bounces is a long entry; test it, don't discard it |
 | Pair gate REJECTs (no cointegration) | funding-spread pair on the SAME assets, or momentum on the same assets |
 | One leg carries the losses | hedge-ratio sizing; widen the universe |
