@@ -96,7 +96,7 @@ When a candidate clears walk-forward (`decay_ratio` near 1, most `oos_positive_f
 1. `wayfinder job promote-params <id> --grid <grid_id>` — writes the winning params into the job's `execution_params`.
 2. `wayfinder job backtest <id>` — one full-history confirmation on the promoted params.
 3. **Offer the deploy to the user** — summarize the OOS numbers (net, decay_ratio, oos_positive_folds, max drawdown) and *ask two things*: go-live yes/no, AND the watch level (agent mode) in plain English — just run it (`off`) / watch and report (`monitor`, recommended) / watch and suggest changes for approval (`intervene`) / automatic within limits (`auto`). Mode semantics + the proposal lifecycle: `rules/deploy-and-agent-loop.md`. Going live is fund-moving; never enable it unprompted.
-4. On a yes: follow `rules/going-live.md` — the gasless funding path (BRAP `to_wallet` → strategy wallet → Hyperliquid deposit), sizing minimums, `mode: live` + sync, runner resume, agent mode, and the first-tick check.
+4. On a yes: follow `rules/going-live.md` — the gasless funding path (BRAP `to_wallet` → strategy wallet → Hyperliquid deposit), sizing minimums, `mode: live` + sync, runner resume, agent mode, and the first-tick check. **Non-negotiable before the mode flip: set `execution_params.wallet_label` in job.yaml** (a label from `core_get_wallets()`) — the engine default is `main`, which does not exist here; it is not a job-root key, an env var, or an adapter config file, and `validate_job` blocks live mode without it.
 
 Do NOT offer to deploy a strategy that only looks good in-sample — that's the curve-fit trap the whole loop exists to avoid.
 

@@ -385,3 +385,31 @@ def test_data_derived_warmup_passes_counter_check(tmp_path: Path) -> None:
         "def build_strategy(params):\n    return None\n",
     )
     assert _check(report, "no_boot_relative_warmup")["passed"] is True
+
+
+def test_live_mode_blocks_without_wallet_label() -> None:
+    from wayfinder_paths.jobs.execution.validation import _live_wallet_checks
+
+    live_no_wallet = {
+        "execution_contract": "jobs_v1",
+        "script_loop": {"mode": "live"},
+        "execution_params": {"venue": "hyperliquid"},
+    }
+    checks = _live_wallet_checks(live_no_wallet)
+    assert checks[0]["name"] == "wallet_label_declared"
+    assert checks[0]["passed"] is False
+    assert checks[0]["blocking"] is True
+    assert "execution_params.wallet_label" in checks[0]["hint"]
+
+    live_with_wallet = {
+        "execution_contract": "jobs_v1",
+        "script_loop": {"mode": "live"},
+        "execution_params": {"wallet_label": "funding-carry-basket"},
+    }
+    assert _live_wallet_checks(live_with_wallet)[0]["passed"] is True
+
+    # Paper mode and legacy jobs are exempt — the check exists for live only.
+    paper = {"execution_contract": "jobs_v1", "script_loop": {"mode": "paper"}}
+    assert _live_wallet_checks(paper) == []
+    legacy = {"execution_contract": "legacy", "script_loop": {"mode": "live"}}
+    assert _live_wallet_checks(legacy) == []
