@@ -9,11 +9,38 @@ from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.mcp.tools.execute import onchain_swap
 
+QUOTE_ID = "quote-1234567890123456"
+
 
 @pytest.fixture(autouse=True)
 def _clear_token_resolver_cache():
     TokenResolver._token_details_cache.clear()
     TokenResolver._gas_token_cache.clear()
+
+
+def _quote_intent(
+    wallet: dict,
+    from_meta: dict,
+    to_meta: dict,
+    best_quote: dict,
+    slippage: float = 0.005,
+) -> dict:
+    return {
+        "quote_id": QUOTE_ID,
+        "expires_at": 1_800_000_000,
+        "request": {
+            "from_wallet": wallet["address"],
+            "to_wallet": wallet["address"],
+            "from_token": from_meta["address"],
+            "to_token": to_meta["address"],
+            "from_chain": from_meta["chain_id"],
+            "to_chain": to_meta["chain_id"],
+            "from_amount": int(best_quote["input_amount"]),
+            "to_amount": None,
+            "slippage": slippage,
+        },
+        "best_quote": best_quote,
+    }
 
 
 @pytest.mark.asyncio
@@ -96,10 +123,27 @@ async def test_resolve_token_meta_normal_erc20_unchanged():
 @pytest.mark.asyncio
 async def test_swap_missing_wallet_label_is_structured():
     out = await onchain_swap(
-        wallet_label=" ", from_token="from", to_token="to", amount="1.0"
+        wallet_label=" ",
+        from_token="from",
+        to_token="to",
+        amount="1.0",
+        quote_id=QUOTE_ID,
     )
     assert out["ok"] is False
     assert out["error"]["code"] == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_swap_requires_bound_quote_id():
+    out = await onchain_swap(
+        wallet_label="main",
+        from_token="from",
+        to_token="to",
+        amount="1.0",
+        quote_id="",
+    )
+    assert out["ok"] is False
+    assert out["error"]["code"] == "quote_required"
 
 
 @pytest.mark.asyncio
@@ -136,22 +180,17 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
         raise AssertionError(f"unexpected token query: {query}")
 
     fake_brap = AsyncMock()
-    fake_brap.get_quote = AsyncMock(
-        return_value={
-            "quotes": [
-                {"provider": "brap_best"},
-                {"provider": "brap_alt"},
-            ],
-            "best_quote": {
-                "provider": "brap_best",
-                "input_amount": "1000000",
-                "calldata": {
-                    "to": "0x" + "33" * 20,
-                    "data": "0xdeadbeef",
-                    "value": "0",
-                },
-            },
-        }
+    best_quote = {
+        "provider": "brap_best",
+        "input_amount": "1000000",
+        "calldata": {
+            "to": "0x" + "33" * 20,
+            "data": "0xdeadbeef",
+            "value": "0",
+        },
+    }
+    fake_brap.get_quote_intent = AsyncMock(
+        return_value=_quote_intent(wallet, from_meta, to_meta, best_quote)
     )
 
     async def fake_ensure_allowance(**_kwargs):  # noqa: ANN003
@@ -187,6 +226,7 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
             from_token="from",
             to_token="to",
             amount="1.0",
+            quote_id=QUOTE_ID,
             slippage_bps=50,
         )
         assert out1["ok"] is True
@@ -204,6 +244,7 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
             from_token="from",
             to_token="to",
             amount="1.0",
+            quote_id=QUOTE_ID,
             slippage_bps=50,
             wait_for_receipt=False,
         )
@@ -213,6 +254,19 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
         assert send_transaction_mock.await_args.kwargs["wait_for_receipt"] is False
         assert send_transaction_mock.await_args.kwargs["confirmations"] == 0
         fake_brap.wait_for_bridge_execution.assert_not_awaited()
+
+        send_transaction_mock.reset_mock()
+        mismatch = await onchain_swap(
+            wallet_label="main",
+            from_token="from",
+            to_token="to",
+            amount="2.0",
+            quote_id=QUOTE_ID,
+            slippage_bps=50,
+        )
+        assert mismatch["ok"] is False
+        assert mismatch["error"]["code"] == "quote_mismatch"
+        send_transaction_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -249,20 +303,18 @@ async def test_execute_cross_chain_swap_waits_for_bridge(tmp_path: Path, monkeyp
         return from_meta if query == "from" else to_meta
 
     fake_brap = AsyncMock()
-    fake_brap.get_quote = AsyncMock(
-        return_value={
-            "quotes": [{"provider": "lifi"}],
-            "best_quote": {
-                "provider": "lifi",
-                "input_amount": "1000000",
-                "calldata": {
-                    "to": "0x" + "33" * 20,
-                    "data": "0xdeadbeef",
-                    "value": "0",
-                },
-                "bridge_tracking": bridge_tracking,
-            },
-        }
+    best_quote = {
+        "provider": "lifi",
+        "input_amount": "1000000",
+        "calldata": {
+            "to": "0x" + "33" * 20,
+            "data": "0xdeadbeef",
+            "value": "0",
+        },
+        "bridge_tracking": bridge_tracking,
+    }
+    fake_brap.get_quote_intent = AsyncMock(
+        return_value=_quote_intent(wallet, from_meta, to_meta, best_quote)
     )
     fake_brap.wait_for_bridge_execution = AsyncMock(
         return_value={"is_success": True, "state": "completed"}
@@ -301,6 +353,7 @@ async def test_execute_cross_chain_swap_waits_for_bridge(tmp_path: Path, monkeyp
             from_token="from",
             to_token="to",
             amount="1.0",
+            quote_id=QUOTE_ID,
         )
 
     assert out["ok"] is True
@@ -335,25 +388,23 @@ async def test_execute_cross_chain_swap_failed_bridge_marks_failed(
     }
 
     fake_brap = AsyncMock()
-    fake_brap.get_quote = AsyncMock(
-        return_value={
-            "quotes": [{"provider": "lifi"}],
-            "best_quote": {
-                "provider": "lifi",
-                "input_amount": "1000000",
-                "calldata": {
-                    "to": "0x" + "33" * 20,
-                    "data": "0xdeadbeef",
-                    "value": "0",
-                },
-                "bridge_tracking": {
-                    "provider": "lifi",
-                    "requires_source_tx_hash": True,
-                    "from_chain": 1,
-                    "to_chain": 8453,
-                },
-            },
-        }
+    best_quote = {
+        "provider": "lifi",
+        "input_amount": "1000000",
+        "calldata": {
+            "to": "0x" + "33" * 20,
+            "data": "0xdeadbeef",
+            "value": "0",
+        },
+        "bridge_tracking": {
+            "provider": "lifi",
+            "requires_source_tx_hash": True,
+            "from_chain": 1,
+            "to_chain": 8453,
+        },
+    }
+    fake_brap.get_quote_intent = AsyncMock(
+        return_value=_quote_intent(wallet, from_meta, to_meta, best_quote)
     )
     fake_brap.wait_for_bridge_execution = AsyncMock(
         return_value={"is_success": False, "state": "failed", "error": "reverted"}
@@ -396,6 +447,7 @@ async def test_execute_cross_chain_swap_failed_bridge_marks_failed(
             from_token="from",
             to_token="to",
             amount="1.0",
+            quote_id=QUOTE_ID,
         )
 
     assert out["ok"] is True
@@ -432,21 +484,19 @@ async def test_execute_swap_prefers_quote_approval_address(tmp_path: Path, monke
         return from_meta if query == "from" else to_meta
 
     fake_brap = AsyncMock()
-    fake_brap.get_quote = AsyncMock(
-        return_value={
-            "quotes": [{"provider": "lifi"}],
-            "best_quote": {
-                "provider": "lifi",
-                "approvalAddress": "0x" + "44" * 20,
-                "input_amount": "1000000",
-                "output_amount": "2000000",
-                "calldata": {
-                    "to": "0x" + "33" * 20,
-                    "data": "0xdeadbeef",
-                    "value": "0",
-                },
-            },
-        }
+    best_quote = {
+        "provider": "lifi",
+        "approvalAddress": "0x" + "44" * 20,
+        "input_amount": "1000000",
+        "output_amount": "2000000",
+        "calldata": {
+            "to": "0x" + "33" * 20,
+            "data": "0xdeadbeef",
+            "value": "0",
+        },
+    }
+    fake_brap.get_quote_intent = AsyncMock(
+        return_value=_quote_intent(wallet, from_meta, to_meta, best_quote)
     )
     ensure_mock = AsyncMock(return_value=(True, "0xapprove"))
 
@@ -477,8 +527,106 @@ async def test_execute_swap_prefers_quote_approval_address(tmp_path: Path, monke
             from_token="from",
             to_token="to",
             amount="1.0",
+            quote_id=QUOTE_ID,
         )
 
     assert out["ok"] is True
     assert out["result"]["status"] == "confirmed"
     assert ensure_mock.await_args.kwargs["spender"] == "0x" + "44" * 20
+
+
+@pytest.mark.asyncio
+async def test_execute_bound_uniswap_quote_runs_prerequisites_in_order(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setenv("WAYFINDER_MCP_STATE_PATH", str(tmp_path / "mcp.sqlite3"))
+    monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
+    wallet = {
+        "address": "0x000000000000000000000000000000000000dEaD",
+        "private_key_hex": "0x" + "11" * 32,
+    }
+    from_meta = {
+        "symbol": "GRID",
+        "decimals": 18,
+        "chain_id": 4663,
+        "address": "0x62537C09A874Cfe886E052D5afcd28356A98e549",
+    }
+    to_meta = {
+        "symbol": "ETH",
+        "decimals": 18,
+        "chain_id": 4663,
+        "address": ZERO_ADDRESS,
+    }
+    prerequisites = [
+        {
+            "to": "0x" + "44" * 20,
+            "data": "0xapprove1",
+            "value": "0x0",
+            "description": "Approve Permit2",
+        },
+        {
+            "to": "0x" + "55" * 20,
+            "data": "0xapprove2",
+            "value": "0x0",
+            "description": "Authorize router",
+        },
+    ]
+    best_quote = {
+        "provider": "uniswap_v4",
+        "quote": {"route": "uniswap_v4"},
+        "input_amount": str(10**18),
+        "calldata": {
+            "to": "0x" + "33" * 20,
+            "data": "0xswap",
+            "value": 0,
+        },
+        "prerequisite_transactions": prerequisites,
+    }
+    fake_brap = AsyncMock()
+    fake_brap.get_quote_intent = AsyncMock(
+        return_value=_quote_intent(wallet, from_meta, to_meta, best_quote)
+    )
+    send_mock = AsyncMock(side_effect=["0xapproval1", "0xapproval2", "0xswap"])
+    ensure_mock = AsyncMock(return_value=(True, None))
+
+    async def fake_resolve(query: str, *, chain_id: int | None = None):
+        _ = chain_id
+        return from_meta if query == "from" else to_meta
+
+    with (
+        patch(
+            "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
+            return_value=wallet,
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.TokenResolver.resolve_token_meta",
+            new_callable=AsyncMock,
+            side_effect=fake_resolve,
+        ),
+        patch("wayfinder_paths.mcp.tools.execute.BRAP_CLIENT", fake_brap),
+        patch("wayfinder_paths.mcp.tools.execute.ensure_allowance", ensure_mock),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.send_transaction",
+            send_mock,
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.get_token_balance",
+            new=AsyncMock(return_value=10**18),
+        ),
+    ):
+        out = await onchain_swap(
+            wallet_label="main",
+            from_token="from",
+            to_token="to",
+            amount="1.0",
+            quote_id=QUOTE_ID,
+        )
+
+    assert out["ok"] is True
+    assert [item["txn_hash"] for item in out["result"]["effects"]["prerequisites"]] == [
+        "0xapproval1",
+        "0xapproval2",
+    ]
+    assert out["result"]["effects"]["swap"]["txn_hash"] == "0xswap"
+    assert send_mock.await_count == 3
+    ensure_mock.assert_not_awaited()
