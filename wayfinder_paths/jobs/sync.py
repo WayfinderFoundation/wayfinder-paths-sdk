@@ -60,6 +60,34 @@ class WayfinderJobsClient:
 WAYFINDER_JOBS_CLIENT = WayfinderJobsClient()
 
 
+def _report_with_session(
+    store: JobStore, job_id: str, *dir_names: str
+) -> dict[str, Any] | None:
+    """Latest report for a mode, with session_id/created_at backfilled from
+    the durable sidecar. The wake agent overwrites latest.json with its own
+    finding and drops those keys; without the backfill the frontend's per-job
+    Conversations list can't link the wake session. `dir_names` allows the
+    legacy fallback (intervene->improve, auto->decide)."""
+    for dir_name in dir_names:
+        report = store.read_json(
+            job_id, f"reports/{dir_name}/latest.json", default=None
+        )
+        if not isinstance(report, dict):
+            continue
+        if not report.get("session_id") or not report.get("created_at"):
+            sidecar = store.read_json(
+                job_id, f"reports/{dir_name}/session.json", default=None
+            )
+            if isinstance(sidecar, dict):
+                report = {
+                    **report,
+                    "session_id": report.get("session_id") or sidecar.get("session_id"),
+                    "created_at": report.get("created_at") or sidecar.get("created_at"),
+                }
+        return report
+    return None
+
+
 def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any]:
     store = store or JobStore()
     job = store.load(job_id)
@@ -82,19 +110,10 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
                 "paused": any(statuses.get(n) == "PAUSED" for n in loop_names),
             }
     runner_links = store.read_json(job_id, "runner_links.json", default={}) or {}
-    latest_monitor = store.read_json(
-        job_id, "reports/monitor/latest.json", default=None
-    )
-    latest_intervene = store.read_json(
-        job_id,
-        "reports/intervene/latest.json",
-        default=store.read_json(job_id, "reports/improve/latest.json", default=None),
-    )
-    latest_auto = store.read_json(
-        job_id,
-        "reports/auto/latest.json",
-        default=store.read_json(job_id, "reports/decide/latest.json", default=None),
-    )
+    latest_monitor = _report_with_session(store, job_id, "monitor")
+    latest_intervene = _report_with_session(store, job_id, "intervene", "improve")
+    latest_auto = _report_with_session(store, job_id, "auto", "decide")
+    latest_apply = _report_with_session(store, job_id, "apply")
     validation = (
         store.read_json(job_id, "reports/validation/latest.json", default={}) or {}
     )
@@ -117,6 +136,7 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
             "monitor": latest_monitor,
             "intervene": latest_intervene,
             "auto": latest_auto,
+            "apply": latest_apply,
             "reconcile": store.read_json(
                 job_id, "reports/reconcile/latest.json", default=None
             ),
