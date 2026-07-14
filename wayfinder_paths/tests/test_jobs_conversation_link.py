@@ -29,6 +29,9 @@ class _FakeBridge:
     def __call__(self, *, repo_root=None):
         return self
 
+    def job_states(self) -> dict:
+        return {}
+
     def job_statuses(self) -> dict[str, str]:
         return {}
 

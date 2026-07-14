@@ -55,12 +55,29 @@ def run_scheduled_tick(job_dir: str | Path | None = None) -> dict[str, Any]:
     mode = os.environ.get("WAYFINDER_JOB_MODE") or "paper"
     store = None
     job = None
+    divergence: dict[str, Any] | None = None
     try:
         store = JobStore()
         job = WayfinderJob.from_dict(_load_job_yaml(root))
+        # Fail-safe: never trade LIVE while the approved config (job.yaml) says
+        # paper. The runner env WAYFINDER_JOB_MODE can be flipped to live
+        # without updating job.yaml or recompiling — that split-brain once left
+        # a job live-trading real funds under a paper gate. Downgrade to paper
+        # and surface the divergence loudly so it can't happen silently.
+        declared_mode = str(job.script_loop.mode or "paper")
+        if mode == "live" and declared_mode != "live":
+            divergence = {
+                "kind": "mode_divergence",
+                "runner_mode": "live",
+                "declared_mode": declared_mode,
+                "action": "downgraded_to_paper",
+            }
+            mode = "paper"
         payload = asyncio.run(tick_job(job, root, mode, store=store))
     except Exception as exc:
         payload = {"ok": False, "error": str(exc)}
+    if divergence is not None:
+        payload.setdefault("guard_events", []).append(divergence)
     # Event-driven agent wakes fire ONLY from the scheduled entrypoint —
     # never from tick_job itself, so preflight sandbox ticks and manual
     # `wayfinder job tick` runs cannot wake the advisor.
@@ -84,6 +101,10 @@ def _tick_trigger_events(payload: dict[str, Any]) -> list[str]:
     }
     if guard_kinds & {"risk_halt", "manual_halt"}:
         events.append("risk_halt")
+    if "mode_divergence" in guard_kinds:
+        # Declared vs executed mode disagree — wake the advisor to reconcile
+        # job.yaml (reuses the reconcile_mismatch trigger).
+        events.append("reconcile_mismatch")
     return events
 
 

@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from wayfinder_paths.jobs import sync as sync_mod
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
-from wayfinder_paths.jobs import sync as sync_mod
 from wayfinder_paths.jobs.sync import snapshot_job
 
 
@@ -24,14 +24,20 @@ def _job(tmp_path: Path) -> tuple[JobStore, WayfinderJob]:
 
 
 class _FakeBridge:
-    def __init__(self, statuses: dict[str, str]) -> None:
-        self._statuses = statuses
+    def __init__(self, states: dict) -> None:
+        # Accepts either {name: status_str} or {name: full_state_dict}.
+        self._states = {
+            n: (s if isinstance(s, dict) else {"status": s}) for n, s in states.items()
+        }
 
     def __call__(self, *, repo_root=None):  # constructed as RunnerBridge(repo_root=…)
         return self
 
+    def job_states(self) -> dict:
+        return self._states
+
     def job_statuses(self) -> dict[str, str]:
-        return self._statuses
+        return {n: str(s.get("status") or "") for n, s in self._states.items()}
 
 
 def test_paused_script_loop_sets_scorecard_paused(tmp_path, monkeypatch) -> None:
