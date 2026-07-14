@@ -24,6 +24,7 @@ from wayfinder_paths.jobs.models import (
 from wayfinder_paths.jobs.proposals import propose_change
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.strategies import library_catalog
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
 from wayfinder_paths.jobs.worker import run_job_worker
 from wayfinder_paths.mcp.utils import catch_errors, err, ok
@@ -40,7 +41,9 @@ JobAction = Literal[
     "fetch_funding",
     "pair_check",
     "signal_check",
+    "signal_scan",
     "rank_check",
+    "strategy_library",
     "backtest_job",
     "backtest_diagnose",
     "experiments",
@@ -172,9 +175,17 @@ async def core_jobs(
       - `approve_proposal` / `reject_proposal` after the worker creates proposals.
       - `claim_application` / `validate_application` / `complete_application`
         from an apply worker.
-      - Strategy-development loop for execution-spec jobs: `signal_check`
+      - Strategy-development loop for execution-spec jobs: `signal_scan`
+        (event-study the ENTIRE canonical trigger library — both directions,
+        multiple-testing honesty — in one call BEFORE hand-writing trigger
+        variants; needs no strategy script), `strategy_library` (list the
+        shipped reference strategies — verbatim ports of audited live
+        scripts; when the user references a known/live strategy, start here
+        instead of transcribing it from prose), `signal_check`
         (event-study a precomputed entry column BEFORE building — no edge at
-        the signal level means no strategy will fix it), `rank_check` (the
+        the signal level means the TRIGGER carries no information; a complete
+        trade system can still earn its keep via gates/exits/regime — judge
+        those by full backtest + walk-forward), `rank_check` (the
         basket analogue: Spearman rank IC of a cross-sectional ranking column
         vs relative forward returns — run BEFORE building any long/short
         basket on that ranking) and `pair_check` (the
@@ -327,6 +338,15 @@ async def core_jobs(
             "signal_check",
             {"job_id": job_id, "column": column, "horizons": horizons},
         )
+
+    if action == "signal_scan":
+        return await _run_job_op(
+            "signal_scan",
+            {"job_id": job_id, "symbols": symbols, "horizons": horizons},
+        )
+
+    if action == "strategy_library":
+        return ok(library_catalog())
 
     if action == "rank_check":
         if not column:

@@ -23,8 +23,10 @@ wayfinder job create <id> --script <strategy.py> --execution-contract jobs_v1 --
 # edit execution_spec.json (data_contract.symbols + bar_interval) and the strategy
 wayfinder job fetch-dataset <id> --days 720 --source ccxt --exchange binance
 # STEP 0 — validate the IDEA before building on it (see rules/strategy-search.md):
+wayfinder job signal-scan <id>                               # the WHOLE canonical trigger library, both directions, one call — run FIRST
+wayfinder job strategy-library                               # shipped reference strategies (ports of live bots) — check before re-implementing one
 wayfinder job pair-check <id> --symbols ETH,SOL --days 720    # any pair/long-short idea: the admission gate
-wayfinder job signal-check <id> --column entry_signal        # any entry signal: does it beat drift?
+wayfinder job signal-check <id> --column entry_signal        # a custom entry signal the library doesn't cover: does it beat drift?
 wayfinder job rank-check <id> --column mom_score             # any basket ranking: does it order forward returns?
 wayfinder job backtest <id> --quick 1000      # fast iteration: last 1000 bars, ~2 KB summary
 wayfinder job backtest-diagnose <id>          # READ next_step + recommendations — the framework tells you what to try
@@ -38,9 +40,20 @@ wayfinder job backtest <id>                   # full-history confirmation of the
 tradeable spread — no parameter rescues it; offer a structurally different
 idea instead (that is a success outcome). PASS hands you `suggested`
 (hedge_ratio — never size 1:1 — lookback and time-stop from the half-life).
+`signal-scan` event-studies every canonical trigger (both directions) with
+multiple-testing counts and half-split stability — read `direction` from the
+t-stat sign: a "failed short" trigger with t ≥ +2 is a LONG candidate.
 `signal-check` reports forward returns after signal fires vs the series'
 unconditional drift: no horizon with t ≥ 2 and n ≥ 30 means the entry has no
-predictive power — change the idea, not the parameters. Full search
+predictive power — change the idea, not the parameters. **Signal vs system:**
+these checks test the TRIGGER; a complete trade system (gates + holds +
+asymmetric exits + re-arm + stop) can still earn its keep when the raw
+trigger fails — judge a fully-specified system by full backtest +
+walk-forward, never by the trigger alone. **Replicating a known/live
+strategy:** `strategy-library` first (one-line re-export beats prose
+transcription); ambiguous specs get BOTH readings tested; a 0-for-N result on
+a system the user says works live means your implementation is wrong
+(`rules/strategy-search.md` §0b). Full search
 methodology (breadth-before-depth, depth budget, validation ladder, honest
 stops): `rules/strategy-search.md`. Multi-leg / pair / basket patterns
 (simultaneous legs, hedge-ratio sizing, `target_weights_to_intents`, the four

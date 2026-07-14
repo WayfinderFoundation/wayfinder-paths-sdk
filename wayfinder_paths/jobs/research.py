@@ -36,6 +36,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from wayfinder_paths.jobs.signal_library import SIGNAL_LIBRARY, build_signal_frame
+
 # MacKinnon case-2 (constant, 2 variables) critical values for the
 # Engle-Granger residual t-stat. The upstream example labeled -3.34 as
 # p=0.03; it is the 5% critical value — corrected here.
@@ -368,6 +370,120 @@ def event_study(
             "testing many signals inflates false positives — at t>=2, roughly "
             "1 in 20 random signals looks good by chance; prefer fewer, "
             "stronger hypotheses"
+        ),
+    }
+
+
+def _decimate_events(events: np.ndarray, min_gap: int) -> np.ndarray:
+    """Keep only events at least `min_gap` bars after the last kept event, so
+    horizon-h forward windows never overlap."""
+    kept = np.zeros_like(events, dtype=bool)
+    last = -min_gap
+    for index in np.flatnonzero(events):
+        if index - last >= min_gap:
+            kept[index] = True
+            last = index
+    return kept
+
+
+def scan_signals(
+    frame: pd.DataFrame,
+    horizons: list[int] | None = None,
+) -> dict[str, Any]:
+    """Event-study EVERY canonical library trigger against one symbol's bars
+    in a single pass — the breadth tool that replaces hand-rewriting
+    `precompute()` once per trigger idea.
+
+    Direction is classified from the SIGN of the t-stat (t <= -2: prices fall
+    after the event — a short edge; t >= +2: a long edge), so a trigger that
+    fails one side surfaces as a candidate for the other instead of a dead
+    end. Every candidate carries a half-split stability flag, and the report
+    counts tests run vs the ~5% expected to pass by luck — a lone marginal
+    pass in a 100-test scan is noise until it survives both halves.
+
+    Overlap honesty: for horizon h, events are DECIMATED to at least h bars
+    apart before counting, so forward windows never overlap. Clustered
+    triggers (e.g. consecutive breakdown bars in one selloff) would otherwise
+    count one episode as dozens of "independent" samples and inflate t-stats
+    — a pure random walk shows spurious stable edges without this.
+    """
+    horizons = sorted({int(h) for h in (horizons or [1, 4, 12, 24, 48])})
+    bars = frame.reset_index(drop=True)
+    close = bars["close"].astype(float).to_numpy()
+    n = len(close)
+    signals = build_signal_frame(bars)
+    rows: list[dict[str, Any]] = []
+    tests_run = 0
+    for spec in SIGNAL_LIBRARY:
+        sig = signals[spec.name].to_numpy()
+        for h in horizons:
+            if h <= 0 or h >= n:
+                continue
+            fwd = np.log(close[h:] / close[:-h])
+            events = _decimate_events(sig[: n - h], h)
+            n_events = int(events.sum())
+            if n_events < 30:
+                continue
+            tests_run += 1
+            event_returns = fwd[events]
+            drift = float(fwd.mean())
+            mean_r = float(event_returns.mean())
+            std_r = float(event_returns.std(ddof=1))
+            if std_r <= 0:
+                continue
+            t = (mean_r - drift) / (std_r / math.sqrt(n_events))
+            mid = (n - h) // 2
+            half_deltas = []
+            for half_events, half_fwd in (
+                (events[:mid], fwd[:mid]),
+                (events[mid:], fwd[mid:]),
+            ):
+                if int(half_events.sum()) < 10:
+                    half_deltas = []
+                    break
+                half_deltas.append(
+                    float(half_fwd[half_events].mean()) - float(half_fwd.mean())
+                )
+            stable = bool(
+                len(half_deltas) == 2
+                and np.sign(half_deltas[0]) == np.sign(half_deltas[1]) != 0
+            )
+            rows.append(
+                {
+                    "signal": spec.name,
+                    "family": spec.family,
+                    "description": spec.description,
+                    "horizon": h,
+                    "n": n_events,
+                    "mean_fwd_return": mean_r,
+                    "drift_baseline": drift,
+                    "t_stat_vs_drift": float(t),
+                    "direction": "short" if t <= -2 else "long" if t >= 2 else None,
+                    "stable_across_halves": stable,
+                }
+            )
+    rows.sort(key=lambda r: -abs(r["t_stat_vs_drift"]))
+    candidates = [r for r in rows if r["direction"]]
+    stable_candidates = [r for r in candidates if r["stable_across_halves"]]
+    expected_lucky = round(tests_run * 0.05, 1)
+    return {
+        "signals_tested": len(SIGNAL_LIBRARY),
+        "horizons": horizons,
+        "tests_run": tests_run,
+        "expected_lucky_passes": expected_lucky,
+        "candidates": candidates,
+        "top_by_abs_t": rows[:5],
+        "read": (
+            f"{len(candidates)} of {tests_run} tests cleared |t|>=2 "
+            f"({len(stable_candidates)} also stable across both data halves) "
+            f"vs ~{expected_lucky} expected by luck — build only on stable "
+            "candidates, and read direction from the sign: these are EVENTS, "
+            "so a 'failed short' trigger with t>=+2 is a LONG candidate"
+            if candidates
+            else f"0 of {tests_run} tests cleared |t|>=2 on this symbol — no "
+            "canonical trigger has standalone timing alpha here; a complete "
+            "trade SYSTEM can still work (gates + exits + regime), but new "
+            "signal mining on this series is unlikely to pay"
         ),
     }
 
@@ -882,6 +998,61 @@ def signal_check_job(
             "change the idea before building a strategy around it"
         ),
     }
+
+
+def signal_scan_job(
+    job_id: str,
+    *,
+    symbols: list[str] | None = None,
+    horizons: list[int] | None = None,
+    store: Any | None = None,
+) -> dict[str, Any]:
+    """Scan the ENTIRE canonical trigger library against the job's dataset —
+    per symbol, in one call, with multiple-testing honesty. Needs no strategy
+    script: the library computes its own columns from OHLCV, so it works even
+    when the workspace strategy is broken or absent. Run it BEFORE
+    hand-writing trigger variants into `precompute()`."""
+    from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
+    from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+    from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = store or JobStore()
+    root = store.job_dir(job_id)
+    job_data = _load_job_yaml(root)
+    spec_data, _ = resolve_execution_spec(root, job_data)
+    spec = ExecutionSpec.from_dict(spec_data)
+    dataset = _load_dataset(root, spec, job_data)
+    frame = dataset.bars.to_frame()
+    available = sorted(frame["symbol"].astype(str).unique())
+    targets = [str(s) for s in symbols] if symbols else available
+    missing = [s for s in targets if s not in available]
+    if missing:
+        raise ValueError(
+            f"symbols {missing} not in the job dataset; available: {available}"
+        )
+    per_symbol = {
+        symbol: scan_signals(
+            frame[frame["symbol"] == symbol].reset_index(drop=True),
+            horizons=horizons,
+        )
+        for symbol in targets
+    }
+    result: dict[str, Any] = {
+        "per_symbol": per_symbol,
+        "read": (
+            "direction comes from the t-stat sign per event; candidates that "
+            "are not stable_across_halves are luck until proven otherwise; "
+            "a passing trigger still rides the full validation ladder before "
+            "it is an edge"
+        ),
+    }
+    out_dir = root / "results" / "research" / "signal_scan"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "scan.json"
+    out_path.write_text(json.dumps(result, indent=2, default=str), encoding="utf-8")
+    result["artifact"] = str(out_path)
+    return result
 
 
 def rank_check_job(

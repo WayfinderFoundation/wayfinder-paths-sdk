@@ -9,15 +9,26 @@ one, and let the validation ladder — not enthusiasm — decide what survives.
 
 ## 0. Signal first — no backtest until the signal beats drift
 
-Any new idea starts with a signal check, not a strategy build:
+Any new idea starts with a signal scan, not a strategy build:
 
 ```
-wayfinder job signal-check <id> --column entry_signal [--horizons 4,24,48]
+wayfinder job signal-scan <id> [--horizons 4,24,48]     # the WHOLE library, one call
+# MCP: core_jobs(action="signal_scan", job_id=…)
+wayfinder job signal-check <id> --column entry_signal   # one custom column
 # MCP: core_jobs(action="signal_check", job_id=…, column="entry_signal")
 ```
 
-Write the entry condition as a boolean column in `precompute()` (you need that
-column for `decide()` anyway), and the check event-studies it: forward returns
+`signal-scan` event-studies the entire canonical trigger library (momentum,
+breakout, MA-cross, RSI/BB fades, volatility, exhaustion — BOTH directions)
+against the job's dataset in one call, with multiple-testing counts and
+half-split stability built in. Run it FIRST: it replaces hand-rewriting
+`precompute()` once per trigger idea — every rewrite is a fresh chance for an
+implementation bug — and because triggers are events with signed t-stats, a
+"failed short" trigger with `t >= +2` surfaces as a LONG candidate instead of
+a dead end. Hand-write `signal-check` columns only for triggers genuinely
+outside the library.
+
+The check event-studies a column: forward returns
 after signal fires vs the **unconditional drift** of the same series — a
 random entry at the same frequency earns the drift for free, so the signal
 must beat it, not zero. Read the per-horizon verdicts: an edge is `t >= 2`
@@ -25,6 +36,19 @@ with `n >= 30`. **If no horizon beats drift, the entry has no predictive power
 — change the idea, not the parameters.** No exit engineering, sizing, or
 filter tuning rescues entries that carry no information. This 30-second check
 is what converts "six variants of a dead idea" into one honest sentence.
+
+**Signal vs system — what a failed signal-check does and does not mean.** The
+check tests the TRIGGER in isolation. A complete trade *system* — entry gate +
+minimum hold + asymmetric exits + re-arm + stop — can be profitable even when
+its raw trigger never beats drift, because the geometry (where it's allowed to
+enter, how it exits each side) does the work the trigger doesn't. This is not
+hypothetical: the live IMX momentum short's NewLow5 trigger fails signal-check
+on the full history while the full system backtests profitably across windows.
+So: for NEW ideas, the gate stands — don't build on a dead trigger. For a
+fully-specified system (a live bot, a shipped reference strategy, a complete
+rule set the user hands you), a failed signal-check means "no standalone
+timing alpha" — report that, then judge the SYSTEM by full backtest +
+walk-forward, never by the trigger alone.
 
 For basket / cross-sectional ideas the equivalent test is
 `wayfinder job rank-check <id> --column <ranking>` — the Spearman rank IC of
@@ -39,7 +63,37 @@ a failure: it just saved days of tuning a spread that does not mean-revert.
 
 Multiple-testing honesty: if you signal-check many candidate columns, expect
 ~1 in 20 to clear t≈2 by luck. Scan wide, but demand stability (does it hold
-on both halves of the data?) before building on a marginal pass.
+on both halves of the data?) before building on a marginal pass —
+`signal-scan` reports both counts for you.
+
+## 0b. Replicating a live / known strategy — port, don't transcribe
+
+When the user references a strategy that already exists ("there's an X bot
+that works"), the workflow is different from idea mining, and getting it
+wrong inverts conclusions. Observed live: a pasted prose spec had its SMA50
+gap filter written BACKWARDS vs the running bot, and every backtest that
+followed tested the opposite entry universe — "everything loses" while the
+real bot made money.
+
+1. **Check the shipped library first** — `wayfinder job strategy-library`
+   (MCP: `core_jobs(action="strategy_library")`) lists verbatim ports of
+   audited live scripts with import lines and default params. If the strategy
+   is there, the workspace script is ONE line:
+   `from wayfinder_paths.jobs.strategies.<module> import build_strategy`.
+   Never re-implement from memory or prose what already exists as code.
+2. **Prose specs are lossy.** On ANY ambiguity or internal contradiction
+   (a threshold quoted two ways, a filter whose direction is unclear), do not
+   pick an interpretation and move on — implement BOTH readings and backtest
+   both. The wrong reading usually reveals itself immediately.
+3. **Fingerprint parity before conclusions.** Before trusting any result,
+   compare the simulated trade fingerprint — trades per week, typical hold,
+   win rate, exit-reason mix — against how the live strategy is described or
+   observed to behave. A replication that trades 5x less often, or holds 10x
+   longer, is not the same strategy, whatever the spec says.
+4. **0-for-N on a known-working system means YOUR code is wrong.** If the
+   user says it works live and your replication loses every trade, the prior
+   is an implementation or transcription bug — find it (or diff against the
+   library port) before reporting that the strategy has no edge.
 
 ## 1. Breadth before depth
 
@@ -51,7 +105,9 @@ the user's goal — different families, not different parameters:
 - mean reversion (ONLY with a passed admission gate)
 - cross-sectional (rank a universe, trade the extremes)
 
-Signal-check all sketches; build only the most promising. One structural idea
+One `signal-scan` covers the trigger families for the job's symbols in a
+single call; signal-check any custom sketches it doesn't cover. Build only
+the most promising. One structural idea
 failing does not mean "tune it harder" — it means try the next branch. The
 best strategy for the user is usually in a different family than the first
 idea, and you only find it by looking.
@@ -79,7 +135,8 @@ your job, not the user's homework:
 | Failure evidence | Natural successor |
 |---|---|
 | Stop-outs dominate losses, entries fine | regime filter (trade only with the trend) |
-| Entry never beats drift on any horizon | different trigger or timeframe for the same thesis |
+| Entry never beats drift on any horizon | different trigger or timeframe for the same thesis (`signal-scan` shows every library trigger at once) |
+| Signal has edge in the WRONG direction (t significant, sign flipped) | invert the trade — a failed short entry that predicts bounces is a long entry; test it, don't discard it |
 | Pair gate REJECTs (no cointegration) | funding-spread pair on the SAME assets, or momentum on the same assets |
 | One leg carries the losses | hedge-ratio sizing; widen the universe |
 | Edge exists but decays OOS | slower bars, longer formation window, fewer rebalances |
