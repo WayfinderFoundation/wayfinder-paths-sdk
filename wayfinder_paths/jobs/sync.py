@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -88,27 +89,88 @@ def _report_with_session(
     return None
 
 
+def _unix_to_iso(value: Any) -> str | None:
+    try:
+        return datetime.fromtimestamp(float(value), tz=UTC).isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _engine_mode(store: JobStore, job_id: str) -> str | None:
+    state = store.read_json(job_id, "state/engine_state.json", default=None)
+    if isinstance(state, dict) and state.get("mode"):
+        return str(state["mode"])
+    return None
+
+
+def _runtime_reconciliation(job: Any, store: JobStore) -> dict[str, Any]:
+    """Overlay the live runner/engine truth onto the scorecard so the UI shows
+    what's ACTUALLY running, not the declared job.yaml. The driver executes the
+    mode baked into the runner env (WAYFINDER_JOB_MODE), which an agent can flip
+    without touching job.yaml — that split-brain once left a job live-trading
+    while the UI read "paper". This extends the original paused reconciliation
+    to mode, agent_mode, active_revision, and the runner's scheduling/health
+    metrics. Degrades to {} (keep declared values) when the runner is down."""
+    script = job.script_loop
+    agent = job.agent_loop
+    loop_names = [
+        loop.runner_job_name
+        for loop in (script, agent)
+        if loop.enabled and loop.runner_job_name
+    ]
+    if not loop_names:
+        return {}
+    states = RunnerBridge(repo_root=store.repo_root).job_states()
+    if not states:
+        return {}
+    out: dict[str, Any] = {
+        "paused": any(states.get(n, {}).get("status") == "PAUSED" for n in loop_names)
+    }
+    script_state = states.get(script.runner_job_name or "") if script.enabled else None
+    if script_state:
+        env = (script_state.get("payload") or {}).get("env") or {}
+        declared_mode = str(script.mode or "paper")
+        runtime_mode = str(
+            env.get("WAYFINDER_JOB_MODE")
+            or _engine_mode(store, job.id)
+            or declared_mode
+        )
+        out["mode"] = runtime_mode
+        out["mode_mismatch"] = runtime_mode != declared_mode
+        if env.get("WAYFINDER_JOB_REVISION"):
+            out["active_revision"] = str(env["WAYFINDER_JOB_REVISION"])
+        out["runner_status"] = str(script_state.get("status") or "")
+        for src, iso in (
+            ("last_run_at", True),
+            ("last_ok_at", True),
+            ("next_run_at", True),
+        ):
+            value = script_state.get(src)
+            if value is not None:
+                out[src] = _unix_to_iso(value) if iso else value
+        out["consecutive_failures"] = int(script_state.get("consecutive_failures") or 0)
+        if script_state.get("last_error"):
+            out["last_error"] = str(script_state["last_error"])
+    agent_state = states.get(agent.runner_job_name or "") if agent.enabled else None
+    if agent_state:
+        aenv = (agent_state.get("payload") or {}).get("env") or {}
+        if aenv.get("WAYFINDER_JOB_AGENT_MODE"):
+            out["agent_mode"] = str(aenv["WAYFINDER_JOB_AGENT_MODE"])
+    return out
+
+
 def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any]:
     store = store or JobStore()
     job = store.load(job_id)
     scorecard = store.read_json(job_id, "scorecard.json", default={}) or {}
-    # Reconcile runtime pause from the runner: a job's script_loop.mode stays
-    # "live" while paused, so without this the UI can't tell a paused live job
-    # from one that is actively trading. Self-healing (reflects true runner
-    # state regardless of how the pause was triggered); degrades to unchanged
-    # on a down runner.
-    loop_names = [
-        loop.runner_job_name
-        for loop in (job.script_loop, job.agent_loop)
-        if loop.enabled and loop.runner_job_name
-    ]
-    if loop_names:
-        statuses = RunnerBridge(repo_root=store.repo_root).job_statuses()
-        if statuses:
-            scorecard = {
-                **scorecard,
-                "paused": any(statuses.get(n) == "PAUSED" for n in loop_names),
-            }
+    # Reflect the live runner/engine state, not the declared job.yaml: mode
+    # (paper/live), agent_mode, active_revision, paused, and scheduling/health
+    # metrics all come from the runner where it is the source of truth. See
+    # _runtime_reconciliation. Degrades to the declared scorecard on a down
+    # runner, so a sync never breaks.
+    runtime = _runtime_reconciliation(job, store)
+    if runtime:
+        scorecard = {**scorecard, **runtime}
     runner_links = store.read_json(job_id, "runner_links.json", default={}) or {}
     latest_monitor = _report_with_session(store, job_id, "monitor")
     latest_intervene = _report_with_session(store, job_id, "intervene", "improve")

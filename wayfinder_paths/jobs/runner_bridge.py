@@ -84,19 +84,26 @@ class RunnerBridge:
         update_params.update(schedule)
         return self.client.call("update_job", update_params)
 
-    def job_statuses(self) -> dict[str, str]:
-        """Live runner status per job name, e.g. {"foo-script": "PAUSED"}.
-        Empty when the daemon is unreachable — callers degrade to "not paused"
-        rather than raise, so a down runner never breaks a sync."""
+    def job_states(self) -> dict[str, dict[str, Any]]:
+        """Full live runner state per job name — status, next_run_at,
+        last_run_at, last_ok_at, consecutive_failures, last_error, and the
+        baked `payload.env` (WAYFINDER_JOB_MODE / WAYFINDER_JOB_AGENT_MODE /
+        WAYFINDER_JOB_REVISION). This is the runtime source of truth: the
+        driver executes the mode in the env, not job.yaml. Empty when the
+        daemon is unreachable — callers degrade to the declared config rather
+        than raise, so a down runner never breaks a sync."""
         try:
             resp = self.client.call("status")
         except Exception:
             return {}
         jobs = ((resp or {}).get("result") or {}).get("jobs") or []
+        return {str(job.get("name")): job for job in jobs if job.get("name")}
+
+    def job_statuses(self) -> dict[str, str]:
+        """Live runner status per job name, e.g. {"foo-script": "PAUSED"}."""
         return {
-            str(job.get("name")): str(job.get("status") or "")
-            for job in jobs
-            if job.get("name")
+            name: str(state.get("status") or "")
+            for name, state in self.job_states().items()
         }
 
     def pause(self, name: str) -> dict[str, Any]:
