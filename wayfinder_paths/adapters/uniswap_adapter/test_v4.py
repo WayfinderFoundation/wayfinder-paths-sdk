@@ -140,7 +140,7 @@ async def test_quote_best_pool_skips_bad_first_pool_and_uses_best_output():
     safe_a = V4Pool(
         PoolKey(NATIVE_ADDRESS, INDEX, 3000, 60, NATIVE_ADDRESS), liquidity=10_000
     )
-    safe_b = V4Pool(PoolKey(NATIVE_ADDRESS, INDEX, 10000, 200, HOOK), liquidity=1_000)
+    safe_b = V4Pool(PoolKey(NATIVE_ADDRESS, INDEX, 30000, 600, HOOK), liquidity=1_000)
     toxic_grid_pool = V4Pool(
         PoolKey(NATIVE_ADDRESS, INDEX, 500000, 10000, NATIVE_ADDRESS),
         liquidity=999_999,
@@ -149,7 +149,7 @@ async def test_quote_best_pool_skips_bad_first_pool_and_uses_best_output():
     async def fake_quote(_chain_id, pool, _token_in, amount_in):
         if pool.fee == 3000:
             return amount_in * 2
-        if pool.fee == 10000:
+        if pool.fee == 30000:
             return amount_in * 3
         raise AssertionError("toxic pool should not be quoted")
 
@@ -169,13 +169,13 @@ async def test_quote_best_pool_skips_bad_first_pool_and_uses_best_output():
 
 
 @pytest.mark.asyncio
-async def test_quote_best_pool_rejects_price_impact_over_three_percent():
+async def test_quote_best_pool_rejects_price_impact_over_twenty_percent():
     pool = V4Pool(
         PoolKey(NATIVE_ADDRESS, INDEX, 3000, 60, NATIVE_ADDRESS), liquidity=10_000
     )
 
     async def fake_quote(_chain_id, _pool, _token_in, amount_in):
-        return 100 if amount_in == 100 else 9_699
+        return 100 if amount_in == 100 else 7_999
 
     with (
         patch.object(v4, "find_pools", AsyncMock(return_value=[pool])),
@@ -184,6 +184,25 @@ async def test_quote_best_pool_rejects_price_impact_over_three_percent():
         selected = await v4.quote_best_pool(4663, NATIVE_ADDRESS, INDEX, 10_000)
 
     assert selected is None
+
+
+@pytest.mark.asyncio
+async def test_quote_best_pool_accepts_price_impact_at_twenty_percent():
+    pool = V4Pool(
+        PoolKey(NATIVE_ADDRESS, INDEX, 30000, 600, NATIVE_ADDRESS), liquidity=10_000
+    )
+
+    async def fake_quote(_chain_id, _pool, _token_in, amount_in):
+        return 100 if amount_in == 100 else 8_000
+
+    with (
+        patch.object(v4, "find_pools", AsyncMock(return_value=[pool])),
+        patch.object(v4, "quote_exact_in", AsyncMock(side_effect=fake_quote)),
+    ):
+        selected = await v4.quote_best_pool(4663, NATIVE_ADDRESS, INDEX, 10_000)
+
+    assert selected is not None
+    assert selected.price_impact_bps == 2_000
 
 
 def test_v4_supported_covers_configured_chains():

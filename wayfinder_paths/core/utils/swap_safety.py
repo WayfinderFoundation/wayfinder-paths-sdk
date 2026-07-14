@@ -1,6 +1,6 @@
 MAX_SLIPPAGE_BPS = 2_000
-MAX_UNISWAP_FEE = 10_000
-MAX_PRICE_IMPACT_BPS = 300
+MAX_UNISWAP_FEE = 30_000
+MAX_PRICE_IMPACT_BPS = 2_000
 
 
 def effective_slippage_bps(slippage_bps: int) -> int:
