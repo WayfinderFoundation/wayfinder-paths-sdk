@@ -491,6 +491,25 @@ def _write_report(
     (report_dir / "latest.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    # Durable session pointer. The wake agent overwrites latest.json with its
+    # own structured finding, which drops session_id/created_at — so the
+    # frontend's per-job Conversations list loses the link (observed: a job
+    # whose agent wrote rich findings showed "No linked conversations yet"
+    # while one whose envelope survived linked fine). This sidecar is never
+    # touched by the agent; snapshot_job backfills from it. The session per
+    # (job, mode) is stable (reused by title), so a stale sidecar stays
+    # correct. Only overwrite on a real session so a failed wake can't blank
+    # a good pointer.
+    if session_id:
+        (report_dir / "session.json").write_text(
+            json.dumps(
+                {"session_id": session_id, "created_at": report["created_at"]},
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     scorecard_updates: dict[str, Any] = {
         "health": status,
         "last_agent_check_at": report["created_at"],
