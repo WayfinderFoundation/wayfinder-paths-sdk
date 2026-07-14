@@ -238,7 +238,7 @@ async def test_quote_swap_accepts_top_level_brap_shape():
 
 
 @pytest.mark.asyncio
-async def test_quote_swap_caps_requested_slippage_at_ten_percent():
+async def test_quote_swap_caps_requested_slippage_at_twenty_percent():
     fake_wallet = {"address": "0x000000000000000000000000000000000000dEaD"}
     from_meta = {
         "token_id": "from",
@@ -259,7 +259,7 @@ async def test_quote_swap_caps_requested_slippage_at_ten_percent():
         return_value={
             "quote_id": "quote-1234567890123456",
             "expires_at": 1_800_000_000,
-            "effective_slippage_bps": 1_000,
+            "effective_slippage_bps": 2_000,
             "quotes": [{"provider": "lifi"}],
             "best_quote": {
                 "provider": "lifi",
@@ -286,12 +286,12 @@ async def test_quote_swap_caps_requested_slippage_at_ten_percent():
             from_token="from",
             to_token="to",
             amount="1.0",
-            slippage_bps=2_000,
+            slippage_bps=3_000,
         )
 
     assert out["ok"] is True
     result = out["result"]
-    assert result["requested_slippage_bps"] == 2_000
-    assert result["slippage_bps"] == 1_000
-    assert result["suggested_swap_request"]["slippage_bps"] == 1_000
-    assert fake_brap.get_quote.await_args.kwargs["slippage"] == 0.1
+    assert result["requested_slippage_bps"] == 3_000
+    assert result["slippage_bps"] == 2_000
+    assert result["suggested_swap_request"]["slippage_bps"] == 2_000
+    assert fake_brap.get_quote.await_args.kwargs["slippage"] == 0.2
