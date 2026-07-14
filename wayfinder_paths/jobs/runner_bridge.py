@@ -84,6 +84,21 @@ class RunnerBridge:
         update_params.update(schedule)
         return self.client.call("update_job", update_params)
 
+    def job_statuses(self) -> dict[str, str]:
+        """Live runner status per job name, e.g. {"foo-script": "PAUSED"}.
+        Empty when the daemon is unreachable — callers degrade to "not paused"
+        rather than raise, so a down runner never breaks a sync."""
+        try:
+            resp = self.client.call("status")
+        except Exception:
+            return {}
+        jobs = ((resp or {}).get("result") or {}).get("jobs") or []
+        return {
+            str(job.get("name")): str(job.get("status") or "")
+            for job in jobs
+            if job.get("name")
+        }
+
     def pause(self, name: str) -> dict[str, Any]:
         return self.client.call("pause_job", {"name": name})
 

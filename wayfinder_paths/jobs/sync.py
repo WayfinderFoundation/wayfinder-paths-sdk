@@ -17,6 +17,7 @@ from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.forward import load_forward_snapshot
 from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.halt import read_halt
+from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 
 
@@ -63,6 +64,23 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
     store = store or JobStore()
     job = store.load(job_id)
     scorecard = store.read_json(job_id, "scorecard.json", default={}) or {}
+    # Reconcile runtime pause from the runner: a job's script_loop.mode stays
+    # "live" while paused, so without this the UI can't tell a paused live job
+    # from one that is actively trading. Self-healing (reflects true runner
+    # state regardless of how the pause was triggered); degrades to unchanged
+    # on a down runner.
+    loop_names = [
+        loop.runner_job_name
+        for loop in (job.script_loop, job.agent_loop)
+        if loop.enabled and loop.runner_job_name
+    ]
+    if loop_names:
+        statuses = RunnerBridge(repo_root=store.repo_root).job_statuses()
+        if statuses:
+            scorecard = {
+                **scorecard,
+                "paused": any(statuses.get(n) == "PAUSED" for n in loop_names),
+            }
     runner_links = store.read_json(job_id, "runner_links.json", default={}) or {}
     latest_monitor = store.read_json(
         job_id, "reports/monitor/latest.json", default=None
