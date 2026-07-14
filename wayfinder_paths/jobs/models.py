@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -247,12 +248,16 @@ class WayfinderJob:
         )
         # The creating agent's opencode session — the "initializer" the UI
         # re-enters from a strategy's Conversations list. Rides the whole-spec
-        # sync, so no backend change is needed.
-        initializer_session = (
+        # sync, so no backend change is needed. opencode ids are `ses_<alnum>`;
+        # strip to that charset so a hostile parent-process env can't smuggle
+        # newlines/quotes/control chars downstream into frontend URLs or text.
+        initializer_session = re.sub(
+            r"[^A-Za-z0-9_-]",
+            "",
             os.environ.get("OPENCODE_SESSION_ID")
             or os.environ.get("OPENCODE_SESSIONID")
-            or ""
-        ).strip()
+            or "",
+        )
         controller: dict[str, Any] = (
             {
                 "initializer_session_id": initializer_session,
