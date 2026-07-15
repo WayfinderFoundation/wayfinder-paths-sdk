@@ -25,7 +25,7 @@ from wayfinder_paths.jobs.proposals import propose_change
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.strategies import library_catalog
-from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
+from wayfinder_paths.jobs.sync import apply_script_mode, snapshot_job, sync_all_jobs
 from wayfinder_paths.jobs.worker import run_job_worker
 from wayfinder_paths.mcp.utils import catch_errors, err, ok
 
@@ -35,6 +35,7 @@ JobAction = Literal[
     "status",
     "report",
     "set_agent_mode",
+    "set_script_mode",
     "review_now",
     "validate_job",
     "fetch_dataset",
@@ -116,6 +117,7 @@ async def core_jobs(
     timeout_seconds: int | None = None,
     agent_mode: Literal["off", "monitor", "intervene", "auto", "improve", "decide"]
     | None = None,
+    script_mode: Literal["live", "paper"] | None = None,
     agent_wake_seconds: int | None = None,
     auto_limits: dict[str, Any] | None = None,
     execution_contract: Literal["jobs_v1", "legacy"] = "jobs_v1",
@@ -177,6 +179,16 @@ async def core_jobs(
         for a real standalone script that runs top-to-bottom.
       - `create` with `agent_mode="monitor"` or `"intervene"` for supervised jobs.
       - `create` with `agent_mode="auto"` and `auto_limits` for agent-only auto jobs.
+      - `set_script_mode` with `script_mode="live"` / `"paper"` to flip the
+        script loop between paper and live trading. This is the ONLY correct way
+        to change execution mode: it edits `job.yaml` and recompiles, which
+        re-bakes the runner env. Never hand-patch the runner env
+        (`WAYFINDER_JOB_MODE` via `core_runner`) — the compiler owns that value
+        and the next recompile silently reverts a hand-patch, leaving a
+        paper/live split-brain. Going live is gated: the job must pass the live
+        gate (fresh validation/backtest/preflight) and declare a
+        `wallet_label`, else the call returns an error naming the blocker.
+      - `set_agent_mode` to change the agent watch level (monitor/intervene/…).
       - `review_now` to queue an immediate worker wakeup.
       - `approve_proposal` / `reject_proposal` after the worker creates proposals.
       - `claim_application` / `validate_application` / `complete_application`
@@ -300,6 +312,19 @@ async def core_jobs(
         result = JobCompiler(store=store).compile(job)
         sync_all_jobs(store=store)
         return ok(result)
+
+    if action == "set_script_mode":
+        if script_mode is None:
+            return err(
+                "invalid_argument",
+                "set_script_mode requires script_mode='live' or 'paper'",
+            )
+        try:
+            return ok(apply_script_mode(job_id, script_mode, store=store))
+        except ValueError as exc:
+            # Live-gate / wallet blockers name the missing precondition; surface
+            # them as an actionable error rather than a generic failure.
+            return err("script_mode_blocked", str(exc))
 
     if action == "review_now":
         mode = normalize_agent_mode(agent_mode or "monitor")

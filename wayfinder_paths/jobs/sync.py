@@ -13,6 +13,7 @@ from wayfinder_paths.core.config import (
     is_opencode_instance,
 )
 from wayfinder_paths.jobs.backtest_artifacts import summarize_backtest_artifacts
+from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.features import summarize_features
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.forward import load_forward_snapshot
@@ -20,6 +21,8 @@ from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.halt import read_halt
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
+
+SCRIPT_MODES = ("paper", "live")
 
 
 class WayfinderJobsClient:
@@ -229,3 +232,43 @@ def sync_all_jobs(*, store: JobStore | None = None) -> None:
     store = store or JobStore()
     snapshots = [snapshot_job(job.id, store=store) for job in store.list_jobs()]
     WAYFINDER_JOBS_CLIENT.sync(snapshots)
+
+
+def apply_script_mode(
+    job_id: str, mode: str, *, store: JobStore | None = None
+) -> dict[str, Any]:
+    """Flip a job's script-loop mode (paper<->live) the compiler-safe way.
+
+    Mirrors set_agent_mode: edits ``job.yaml`` (`script_loop.mode`), saves,
+    recompiles — which re-bakes ``WAYFINDER_JOB_MODE`` into the runner env — and
+    re-syncs. This is the ONLY supported way to change execution mode. The env is
+    derived from job.yaml at compile time, so hand-patching the runner env
+    creates a paper/live split-brain that the next recompile silently reverts.
+
+    Going live is gated: the job must pass ``evaluate_live_gate`` (``live_ready``)
+    and declare ``execution_params.wallet_label``. A blocked gate raises
+    ``ValueError`` naming the blocker and writes nothing. Reverting to paper is
+    always allowed.
+    """
+    if mode not in SCRIPT_MODES:
+        raise ValueError(f"script mode must be one of {SCRIPT_MODES}, got {mode!r}")
+    store = store or JobStore()
+    job = store.load(job_id)
+
+    if mode == "live":
+        if not job.execution_params.get("wallet_label"):
+            raise ValueError(
+                "cannot go live: execution_params.wallet_label is not set — a "
+                "live job needs a funded wallet to trade from (set it via the "
+                "job's execution params, then retry)"
+            )
+        gate = evaluate_live_gate(job_id, store=store)
+        if not gate["live_ready"]:
+            reasons = "; ".join(gate["reasons"]) or "live gate not ready"
+            raise ValueError(f"cannot go live: {reasons}")
+
+    job.script_loop.mode = mode
+    store.save(job)
+    result = JobCompiler(store=store).compile(job)
+    sync_all_jobs(store=store)
+    return {"job_id": job_id, "mode": mode, "compile": result}
