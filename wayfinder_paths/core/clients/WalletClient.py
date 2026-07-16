@@ -14,10 +14,10 @@ class WalletClient(WayfinderClient):
         resp = await self._authed_request("GET", url)
         return resp.json()
 
-    async def list_wallets(
+    async def list_wallet_rings(
         self, instance_id: str | None = None
     ) -> list[dict[str, Any]]:
-        url = f"{get_api_base_url()}/wallets/"
+        url = f"{get_api_base_url()}/wallets/rings/"
         if instance_id:
             url += f"?instance_id={instance_id}"
         resp = await self._authed_request("GET", url)
