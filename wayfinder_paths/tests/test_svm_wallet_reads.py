@@ -26,40 +26,52 @@ def _ring_side(
     return side
 
 
-@pytest.mark.asyncio
-async def test_load_remote_wallets_one_entry_per_leg(monkeypatch):
+def _rings() -> list[dict[str, object]]:
+    return [
+        {
+            "label": "solar-wind",
+            "evm": _ring_side(
+                chain_type="ethereum",
+                address="0x000000000000000000000000000000000000dEaD",
+                expires_at=1784224019,
+            ),
+            "svm": _ring_side(
+                chain_type="solana",
+                address="So11111111111111111111111111111111111111112",
+                expires_at=1784224999,
+            ),
+        },
+        {
+            "label": "lone-oak",
+            "evm": _ring_side(
+                chain_type="ethereum",
+                address="0x000000000000000000000000000000000000bEEF",
+            ),
+            "svm": None,
+        },
+    ]
+
+
+def _setup(monkeypatch, *, solana_enabled: bool) -> None:
     monkeypatch.setattr(wallets_mod, "get_api_key", lambda: "wk_test")
     monkeypatch.setattr(wallets_mod, "is_opencode_instance", lambda: True)
     monkeypatch.setattr(wallets_mod, "get_opencode_instance_id", lambda: "app-123")
+    switches = ["solana_enabled"] if solana_enabled else []
+    monkeypatch.setattr(
+        wallets_mod.WALLET_CLIENT,
+        "get_features",
+        AsyncMock(return_value={"enabledSwitches": switches, "enabledFlags": []}),
+    )
     monkeypatch.setattr(
         wallets_mod.WALLET_CLIENT,
         "list_wallet_rings",
-        AsyncMock(
-            return_value=[
-                {
-                    "label": "solar-wind",
-                    "evm": _ring_side(
-                        chain_type="ethereum",
-                        address="0x000000000000000000000000000000000000dEaD",
-                        expires_at=1784224019,
-                    ),
-                    "svm": _ring_side(
-                        chain_type="solana",
-                        address="So11111111111111111111111111111111111111112",
-                        expires_at=1784224999,
-                    ),
-                },
-                {
-                    "label": "lone-oak",
-                    "evm": _ring_side(
-                        chain_type="ethereum",
-                        address="0x000000000000000000000000000000000000bEEF",
-                    ),
-                    "svm": None,
-                },
-            ]
-        ),
+        AsyncMock(return_value=_rings()),
     )
+
+
+@pytest.mark.asyncio
+async def test_load_remote_wallets_one_entry_per_leg(monkeypatch):
+    _setup(monkeypatch, solana_enabled=True)
 
     result = await wallets_mod.load_remote_wallets()
 
@@ -80,6 +92,16 @@ async def test_load_remote_wallets_one_entry_per_leg(monkeypatch):
     assert evm2["label"] == "lone-oak"
     assert evm2["chain_type"] == "ethereum"
     assert evm2["session_expires_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_load_remote_wallets_omits_svm_when_solana_disabled(monkeypatch):
+    _setup(monkeypatch, solana_enabled=False)
+
+    result = await wallets_mod.load_remote_wallets()
+
+    # SVM legs are dropped — only the two EVM legs remain.
+    assert [w["chain_type"] for w in result] == ["ethereum", "ethereum"]
 
 
 def test_public_wallet_view_shape():

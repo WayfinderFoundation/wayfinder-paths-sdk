@@ -39,18 +39,22 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
     if not get_api_key() or not is_opencode_instance():
         return []
     try:
+        features = await WALLET_CLIENT.get_features()
+        solana_enabled = "solana_enabled" in features["enabledSwitches"]
         rings = await WALLET_CLIENT.list_wallet_rings(
             instance_id=get_opencode_instance_id()
         )
         wallets = []
         for i, ring in enumerate(rings):
             label = ring["label"] or f"remote-{i}"
-            # One entry per ring leg — the EVM and SVM wallets share the ring
-            # label and are distinguished by chain_type; each leg carries its own
-            # session expiry (session/strategy wallets only).
-            for leg in (ring["evm"], ring.get("svm")):
-                if not leg:
-                    continue
+            # One entry per ring leg — the EVM leg always, the SVM leg only when
+            # Solana is enabled. Same ring label, distinguished by chain_type; each
+            # leg carries its own session expiry (session/strategy wallets only).
+            legs = [ring["evm"]]
+            svm = ring.get("svm")
+            if svm and solana_enabled:
+                legs.append(svm)
+            for leg in legs:
                 wallets.append(
                     {
                         "address": leg["wallet_address"],
