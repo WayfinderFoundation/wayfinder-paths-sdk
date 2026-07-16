@@ -59,6 +59,13 @@ MAINNET = "Mainnet"
 # Collateral: outcomes settle in USDC.
 
 
+def _spot_token_by_index(tokens: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    # Spot universe pairs reference tokens by their `index` field, which stops
+    # matching array position once tokens are delisted and gaps appear. Indexing
+    # positionally silently drops every high-index token, so map by `index`.
+    return {t["index"]: t for t in tokens if "index" in t}
+
+
 def outcome_encoding(outcome_id: int, side: int) -> int:
     return 10 * outcome_id + side
 
@@ -417,6 +424,7 @@ class HyperliquidAdapter(BaseAdapter):
             response = {}
             tokens = spot_meta.get("tokens", [])
             universe = spot_meta.get("universe", [])
+            token_by_index = _spot_token_by_index(tokens)
 
             for pair in universe:
                 pair_tokens = pair.get("tokens", [])
@@ -425,8 +433,8 @@ class HyperliquidAdapter(BaseAdapter):
 
                 base_idx, quote_idx = pair_tokens[0], pair_tokens[1]
 
-                base_info = tokens[base_idx] if base_idx < len(tokens) else {}
-                quote_info = tokens[quote_idx] if quote_idx < len(tokens) else {}
+                base_info = token_by_index.get(base_idx, {})
+                quote_info = token_by_index.get(quote_idx, {})
 
                 base_name = base_info.get("name", f"TOKEN{base_idx}")
                 quote_name = quote_info.get("name", f"TOKEN{quote_idx}")
