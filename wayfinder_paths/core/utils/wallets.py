@@ -44,22 +44,24 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
         )
         wallets = []
         for i, ring in enumerate(rings):
-            evm = ring["evm"]
-            addr = evm["wallet_address"]
-            svm = ring.get("svm")
-            entry = {
-                # Ring label is the source of truth; identity/binding stays the EVM wallet.
-                "address": addr,
-                "label": ring.get("label") or f"remote-{i}",
-                "type": "remote",
-                "chain_type": evm["chain_type"],
-                "wallet_type": evm["wallet_type"],
-                # TTL fields live at the ring level, present only for session/strategy wallets.
-                "session_expires_at": ring.get("session_expires_at"),
-                "session_expires_in": ring.get("session_expires_in"),
-                "svm_address": svm["wallet_address"] if svm else None,
-            }
-            wallets.append(entry)
+            label = ring["label"] or f"remote-{i}"
+            # One entry per ring leg — the EVM and SVM wallets share the ring
+            # label and are distinguished by chain_type; each leg carries its own
+            # session expiry (session/strategy wallets only).
+            for leg in (ring["evm"], ring.get("svm")):
+                if not leg:
+                    continue
+                wallets.append(
+                    {
+                        "address": leg["wallet_address"],
+                        "label": label,
+                        "type": "remote",
+                        "chain_type": leg["chain_type"],
+                        "wallet_type": leg["wallet_type"],
+                        "session_expires_at": leg.get("session_expires_at"),
+                        "session_expires_in": leg.get("session_expires_in"),
+                    }
+                )
         return wallets
     except Exception as exc:
         logger.debug(f"Failed to fetch remote wallets: {exc}")

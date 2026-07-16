@@ -207,19 +207,16 @@ def read_text_excerpt(path: Path, *, max_chars: int = 1200) -> str | None:
 
 
 def public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
-    view = {
-        # Ring label + the EVM (primary) address; both surfaced to the agent.
+    # Each ring leg (EVM / SVM) is its own entry — chain_type tells them apart,
+    # the shared label ties them to the same ring.
+    return {
         "label": w.get("label"),
         "address": w.get("address"),
+        "chain_type": w.get("chain_type"),
         "wallet_type": w.get("wallet_type"),
         "session_expires_at": w.get("session_expires_at"),
         "session_expires_in": w.get("session_expires_in"),
     }
-    # Surface the paired Solana address only once the ring has an SVM side.
-    svm_address = w.get("svm_address")
-    if svm_address:
-        view["svm_address"] = svm_address
-    return view
 
 
 def normalize_address(addr: str | None) -> str | None:
