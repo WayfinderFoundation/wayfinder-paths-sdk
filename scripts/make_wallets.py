@@ -170,8 +170,10 @@ async def main():
             result = await create_remote_wallet(
                 label=label, wallet_type=args.wallet_type, policies=policies
             )
+            evm, svm = result["evm"], result["svm"]
             print(
-                f"[remote] {result['wallet_address']}  (label: {result.get('label', label)})"
+                f"[remote] evm={evm['wallet_address']} svm={svm['wallet_address']}  "
+                f"(label: {evm['label']})"
             )
         return
 

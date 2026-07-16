@@ -336,9 +336,11 @@ async def create_remote_wallet(
         label=label,
         wallet_type=wallet_type,
     )
+    # A create provisions an EVM + SVM wallet pair ({"evm": ..., "svm": ...});
+    # the instance binds to the EVM wallet.
     if is_opencode_instance():
         await WALLET_CLIENT.bind_to_instance(
-            result["wallet_address"], get_opencode_instance_id()
+            result["evm"]["wallet_address"], get_opencode_instance_id()
         )
     return result
 

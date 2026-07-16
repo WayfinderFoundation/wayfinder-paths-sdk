@@ -252,8 +252,9 @@ async def core_wallets(
                     {
                         "wallets": [public_wallet_view(x) for x in refreshed],
                         "created": {
-                            "label": result.get("label", want),
-                            "address": result["wallet_address"],
+                            "label": result["evm"]["label"],
+                            "evm_address": result["evm"]["wallet_address"],
+                            "svm_address": result["svm"]["wallet_address"],
                         },
                     }
                 )
