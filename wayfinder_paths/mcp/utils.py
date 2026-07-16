@@ -207,9 +207,12 @@ def read_text_excerpt(path: Path, *, max_chars: int = 1200) -> str | None:
 
 
 def public_wallet_view(w: dict[str, Any]) -> dict[str, Any]:
+    # Each ring leg (EVM / SVM) is its own entry — chain_type tells them apart,
+    # the shared label ties them to the same ring.
     return {
         "label": w.get("label"),
         "address": w.get("address"),
+        "chain_type": w.get("chain_type"),
         "wallet_type": w.get("wallet_type"),
         "session_expires_at": w.get("session_expires_at"),
         "session_expires_in": w.get("session_expires_in"),

@@ -39,22 +39,33 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
     if not get_api_key() or not is_opencode_instance():
         return []
     try:
-        raw = await WALLET_CLIENT.list_wallets(instance_id=get_opencode_instance_id())
+        features = await WALLET_CLIENT.get_features()
+        solana_enabled = "solana_enabled" in features["enabledSwitches"]
+        rings = await WALLET_CLIENT.list_wallet_rings(
+            instance_id=get_opencode_instance_id()
+        )
         wallets = []
-        for i, w in enumerate(raw):
-            addr = w.get("wallet_address")
-            if not addr:
-                continue
-            entry = {
-                "address": addr,
-                "label": w.get("label") or f"remote-{i}",
-                "type": "remote",
-                "chain_type": w.get("chain_type", "ethereum"),
-                "wallet_type": w.get("wallet_type", "session"),
-                "session_expires_at": w.get("session_expires_at"),
-                "session_expires_in": w.get("session_expires_in"),
-            }
-            wallets.append(entry)
+        for i, ring in enumerate(rings):
+            label = ring["label"] or f"remote-{i}"
+            # One entry per ring leg — the EVM leg always, the SVM leg only when
+            # Solana is enabled. Same ring label, distinguished by chain_type; each
+            # leg carries its own session expiry (session/strategy wallets only).
+            legs = [ring["evm"]]
+            svm = ring.get("svm")
+            if svm and solana_enabled:
+                legs.append(svm)
+            for leg in legs:
+                wallets.append(
+                    {
+                        "address": leg["wallet_address"],
+                        "label": label,
+                        "type": "remote",
+                        "chain_type": leg["chain_type"],
+                        "wallet_type": leg["wallet_type"],
+                        "session_expires_at": leg.get("session_expires_at"),
+                        "session_expires_in": leg.get("session_expires_in"),
+                    }
+                )
         return wallets
     except Exception as exc:
         logger.debug(f"Failed to fetch remote wallets: {exc}")
@@ -336,9 +347,11 @@ async def create_remote_wallet(
         label=label,
         wallet_type=wallet_type,
     )
+    # A create provisions an EVM + SVM wallet pair ({"evm": ..., "svm": ...});
+    # the instance binds to the EVM wallet.
     if is_opencode_instance():
         await WALLET_CLIENT.bind_to_instance(
-            result["wallet_address"], get_opencode_instance_id()
+            result["evm"]["wallet_address"], get_opencode_instance_id()
         )
     return result
 
