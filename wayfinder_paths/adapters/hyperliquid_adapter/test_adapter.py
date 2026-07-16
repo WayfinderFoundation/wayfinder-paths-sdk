@@ -3,7 +3,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
+from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
+    HyperliquidAdapter,
+    _spot_token_by_index,
+)
 
 
 class TestHyperliquidAdapter:
@@ -119,6 +122,44 @@ class TestHyperliquidAdapter:
         with _patch_adapter():
             success, data = await adapter.get_spot_meta()
             assert success
+
+    def test_spot_token_by_index_maps_by_index_field(self):
+        # position 1 holds a token whose `index` is 844 — the real HL shape once
+        # earlier tokens delist. A positional list lookup can't reach index 844.
+        tokens = [
+            {"index": 0, "name": "USDC"},
+            {"index": 844, "name": "UANSEM"},
+        ]
+        by_index = _spot_token_by_index(tokens)
+        assert by_index[844]["name"] == "UANSEM"
+        assert by_index[0]["name"] == "USDC"
+        assert 844 >= len(tokens)  # positional access would be out of range
+
+    @pytest.mark.asyncio
+    async def test_get_spot_assets_resolves_high_index_tokens(
+        self, adapter, mock_info, _patch_adapter
+    ):
+        # tokens list is 3 long, but UANSEM sits at index 844. Positional
+        # `tokens[844]` fell back to the placeholder "TOKEN844"; the index map
+        # resolves it to the real name so the agent can trade the pair.
+        mock_info.spot_meta = {
+            "tokens": [
+                {"index": 0, "name": "USDC"},
+                {"index": 19, "name": "ANSEM"},
+                {"index": 844, "name": "UANSEM"},
+            ],
+            "universe": [
+                {"tokens": [19, 0], "name": "@18", "index": 18},
+                {"tokens": [844, 0], "name": "@699", "index": 699},
+            ],
+        }
+        with _patch_adapter():
+            success, assets = await adapter.get_spot_assets()
+
+        assert success
+        assert assets["UANSEM/USDC"] == 10699
+        assert assets["ANSEM/USDC"] == 10018
+        assert not any(name.startswith("TOKEN") for name in assets)
 
     @pytest.mark.asyncio
     async def test_get_l2_book(self, adapter, mock_info, _patch_adapter):
