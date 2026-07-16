@@ -9,22 +9,17 @@ from wayfinder_paths.mcp.tools.wallets import core_get_wallets
 
 @pytest.fixture
 def mock_wallet():
-    return {"label": "test", "address": "0x000000000000000000000000000000000000dEaD"}
+    return {
+        "label": "test",
+        "address": "0x000000000000000000000000000000000000dEaD",
+        "chain_type": "ethereum",
+    }
 
 
 @pytest.mark.asyncio
-async def test_get_wallets_filters_solana(mock_wallet):
+async def test_get_wallets_evm_uses_address_param(mock_wallet):
     fake_client = AsyncMock()
-    fake_client.get_enriched_wallet_balances = AsyncMock(
-        return_value={
-            "balances": [
-                {"network": "base", "balanceUSD": 1.5},
-                {"network": "solana", "balanceUSD": 999.0},
-                {"network": "arbitrum", "balanceUSD": 2.0},
-            ],
-            "total_balance_usd": 1002.5,
-        }
-    )
+    fake_client.get_enriched_wallet_balances = AsyncMock(return_value={"balances": []})
 
     with (
         patch("wayfinder_paths.mcp.tools.wallets.BALANCE_CLIENT", fake_client),
@@ -36,13 +31,38 @@ async def test_get_wallets_filters_solana(mock_wallet):
         out = await core_get_wallets(label="test")
 
     assert out["ok"] is True
-    data = out["result"]
-    assert len(data["wallets"]) == 1
-    balances_data = data["wallets"][0]["balances"]
-    assert balances_data["total_balance_usd"] == pytest.approx(3.5)
-    assert balances_data["chain_breakdown"]["base"] == pytest.approx(1.5)
-    assert balances_data["chain_breakdown"]["arbitrum"] == pytest.approx(2.0)
-    assert all(b["network"].lower() != "solana" for b in balances_data["balances"])
+    kwargs = fake_client.get_enriched_wallet_balances.await_args.kwargs
+    assert kwargs["wallet_address"] == mock_wallet["address"]
+    assert "svm_address" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_get_wallets_solana_uses_svm_address_param():
+    svm_wallet = {
+        "label": "test",
+        "address": "BTXGZD6APaEPLUnELUT3Q1HWUYaWatu42WXT3YCU1vxY",
+        "chain_type": "solana",
+    }
+    fake_client = AsyncMock()
+    fake_client.get_enriched_wallet_balances = AsyncMock(
+        return_value={"balances": [{"chain": "solana", "symbol": "SOL", "value_usd": 8.0}]}
+    )
+
+    with (
+        patch("wayfinder_paths.mcp.tools.wallets.BALANCE_CLIENT", fake_client),
+        patch(
+            "wayfinder_paths.mcp.tools.wallets.find_wallet_by_label",
+            new=AsyncMock(return_value=svm_wallet),
+        ),
+    ):
+        out = await core_get_wallets(label="test")
+
+    assert out["ok"] is True
+    kwargs = fake_client.get_enriched_wallet_balances.await_args.kwargs
+    assert kwargs["svm_address"] == svm_wallet["address"]
+    assert "wallet_address" not in kwargs
+    balances = out["result"]["wallets"][0]["balances"]["balances"]
+    assert balances[0]["symbol"] == "SOL"
 
 
 @pytest.mark.asyncio
