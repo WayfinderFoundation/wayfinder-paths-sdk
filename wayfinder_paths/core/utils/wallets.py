@@ -39,20 +39,25 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
     if not get_api_key() or not is_opencode_instance():
         return []
     try:
-        raw = await WALLET_CLIENT.list_wallets(instance_id=get_opencode_instance_id())
+        rings = await WALLET_CLIENT.list_wallet_rings(
+            instance_id=get_opencode_instance_id()
+        )
         wallets = []
-        for i, w in enumerate(raw):
-            addr = w.get("wallet_address")
-            if not addr:
-                continue
+        for i, ring in enumerate(rings):
+            evm = ring["evm"]
+            addr = evm["wallet_address"]
+            svm = ring.get("svm")
             entry = {
+                # Ring label is the source of truth; identity/binding stays the EVM wallet.
                 "address": addr,
-                "label": w.get("label") or f"remote-{i}",
+                "label": ring.get("label") or f"remote-{i}",
                 "type": "remote",
-                "chain_type": w.get("chain_type", "ethereum"),
-                "wallet_type": w.get("wallet_type", "session"),
-                "session_expires_at": w.get("session_expires_at"),
-                "session_expires_in": w.get("session_expires_in"),
+                "chain_type": evm["chain_type"],
+                "wallet_type": evm["wallet_type"],
+                # TTL fields live at the ring level, present only for session/strategy wallets.
+                "session_expires_at": ring.get("session_expires_at"),
+                "session_expires_in": ring.get("session_expires_in"),
+                "svm_address": svm["wallet_address"] if svm else None,
             }
             wallets.append(entry)
         return wallets
