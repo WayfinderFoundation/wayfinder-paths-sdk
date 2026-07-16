@@ -417,42 +417,13 @@ async def core_wallets(
             return err("invalid_request", f"Unknown action: {action}")
 
 
-def _balance_usd(entry: dict[str, Any]) -> float:
-    val = entry.get("balanceUSD", 0)
-    try:
-        return float(val or 0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _strip_solana(data: Any) -> Any:
-    """Drop Solana entries from an enriched-balances response (EVM-only view)."""
-    if not isinstance(data, dict) or not isinstance(data.get("balances"), list):
-        return data
-    balances_list = [b for b in data["balances"] if isinstance(b, dict)]
-    filtered = [
-        b for b in balances_list if str(b.get("network", "")).lower() != "solana"
-    ]
-    if len(filtered) == len(balances_list):
-        return data
-    out = dict(data)
-    out["balances"] = filtered
-    out["total_balance_usd"] = sum(_balance_usd(b) for b in filtered)
-    breakdown: dict[str, float] = {}
-    for b in filtered:
-        net = str(b.get("network") or "").strip()
-        if net:
-            breakdown[net] = breakdown.get(net, 0.0) + _balance_usd(b)
-    out["chain_breakdown"] = breakdown
-    return out
-
-
 async def _fetch_balances(address: str) -> dict[str, Any] | None:
+    # Solana entries are included: SVM chains are first-class now
+    # (see wayfinder_paths.core.utils.svm).
     try:
-        data = await BALANCE_CLIENT.get_enriched_wallet_balances(
+        return await BALANCE_CLIENT.get_enriched_wallet_balances(
             wallet_address=address, exclude_spam_tokens=True
         )
-        return _strip_solana(data)
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
 

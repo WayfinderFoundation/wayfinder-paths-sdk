@@ -13,7 +13,8 @@ def mock_wallet():
 
 
 @pytest.mark.asyncio
-async def test_get_wallets_filters_solana(mock_wallet):
+async def test_get_wallets_includes_solana(mock_wallet):
+    """Solana is a supported chain now: balances must NOT be stripped."""
     fake_client = AsyncMock()
     fake_client.get_enriched_wallet_balances = AsyncMock(
         return_value={
@@ -39,10 +40,13 @@ async def test_get_wallets_filters_solana(mock_wallet):
     data = out["result"]
     assert len(data["wallets"]) == 1
     balances_data = data["wallets"][0]["balances"]
-    assert balances_data["total_balance_usd"] == pytest.approx(3.5)
-    assert balances_data["chain_breakdown"]["base"] == pytest.approx(1.5)
-    assert balances_data["chain_breakdown"]["arbitrum"] == pytest.approx(2.0)
-    assert all(b["network"].lower() != "solana" for b in balances_data["balances"])
+    networks = [b["network"].lower() for b in balances_data["balances"]]
+    assert "solana" in networks
+    assert balances_data["total_balance_usd"] == pytest.approx(1002.5)
+    solana_entry = next(
+        b for b in balances_data["balances"] if b["network"].lower() == "solana"
+    )
+    assert solana_entry["balanceUSD"] == pytest.approx(999.0)
 
 
 @pytest.mark.asyncio
