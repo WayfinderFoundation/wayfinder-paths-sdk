@@ -417,42 +417,17 @@ async def core_wallets(
             return err("invalid_request", f"Unknown action: {action}")
 
 
-def _balance_usd(entry: dict[str, Any]) -> float:
-    val = entry.get("balanceUSD", 0)
+async def _fetch_balances(address: str, chain_type: str) -> dict[str, Any] | None:
+    # Solana wallets are base58 and must go to the svm_address param — the
+    # default address param is the EVM path and returns nothing for them.
     try:
-        return float(val or 0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _strip_solana(data: Any) -> Any:
-    """Drop Solana entries from an enriched-balances response (EVM-only view)."""
-    if not isinstance(data, dict) or not isinstance(data.get("balances"), list):
-        return data
-    balances_list = [b for b in data["balances"] if isinstance(b, dict)]
-    filtered = [
-        b for b in balances_list if str(b.get("network", "")).lower() != "solana"
-    ]
-    if len(filtered) == len(balances_list):
-        return data
-    out = dict(data)
-    out["balances"] = filtered
-    out["total_balance_usd"] = sum(_balance_usd(b) for b in filtered)
-    breakdown: dict[str, float] = {}
-    for b in filtered:
-        net = str(b.get("network") or "").strip()
-        if net:
-            breakdown[net] = breakdown.get(net, 0.0) + _balance_usd(b)
-    out["chain_breakdown"] = breakdown
-    return out
-
-
-async def _fetch_balances(address: str) -> dict[str, Any] | None:
-    try:
-        data = await BALANCE_CLIENT.get_enriched_wallet_balances(
+        if chain_type == "solana":
+            return await BALANCE_CLIENT.get_enriched_wallet_balances(
+                svm_address=address, exclude_spam_tokens=True
+            )
+        return await BALANCE_CLIENT.get_enriched_wallet_balances(
             wallet_address=address, exclude_spam_tokens=True
         )
-        return _strip_solana(data)
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
 
@@ -482,7 +457,7 @@ async def core_get_wallets(
         existing = await load_wallets()
 
     views: list[dict[str, Any]] = []
-    addresses: list[str | None] = []
+    addr_chains: list[tuple[str | None, str]] = []
     for w in existing:
         view = public_wallet_view(w)
         addr = normalize_address(w.get("address"))
@@ -494,10 +469,13 @@ async def core_get_wallets(
         else:
             view["protocols"] = []
         views.append(view)
-        addresses.append(addr)
+        addr_chains.append((addr, w.get("chain_type") or "ethereum"))
 
     balances = await asyncio.gather(
-        *(_fetch_balances(a) if a else asyncio.sleep(0, result=None) for a in addresses)
+        *(
+            _fetch_balances(a, ct) if a else asyncio.sleep(0, result=None)
+            for a, ct in addr_chains
+        )
     )
     for view, bal in zip(views, balances, strict=True):
         view["balances"] = bal
