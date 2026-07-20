@@ -15,23 +15,8 @@ from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Commitment, Confirmed
 
 from wayfinder_paths.core.config import get_api_key
-from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA, SVM_CHAIN_IDS
+from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
 from wayfinder_paths.core.utils.web3 import _get_rpcs_for_chain_id, _is_wayfinder_rpc
-
-
-def is_solana_chain(chain_id: int | str | None) -> bool:
-    try:
-        return int(chain_id) in SVM_CHAIN_IDS  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return False
-
-
-def _require_solana_chain(chain_id: int) -> int:
-    if not is_solana_chain(chain_id):
-        raise ValueError(
-            f"chain_id {chain_id} is not a Solana chain (expected one of {sorted(SVM_CHAIN_IDS)})"
-        )
-    return int(chain_id)
 
 
 def _client_for_rpc(rpc: str, commitment: Commitment | None) -> AsyncClient:
@@ -60,7 +45,6 @@ async def solana_client_from_chain_id(
     RPC gets a client — constructing one per RPC would leak the unused
     httpx sessions.
     """
-    _require_solana_chain(chain_id)
     rpcs = _get_rpcs_for_chain_id(chain_id)
     client = _client_for_rpc(rpcs[0], commitment)
     try:

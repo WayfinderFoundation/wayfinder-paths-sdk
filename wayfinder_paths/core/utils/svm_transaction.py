@@ -14,7 +14,7 @@ import asyncio
 import base64
 import math
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -124,7 +124,6 @@ async def confirm_solana_signature(
 
 
 async def get_recent_priority_fee(
-    writable_accounts: Sequence[str | Pubkey] | None = None,
     chain_id: int = CHAIN_ID_SOLANA,
     percentile: int = 85,
     floor: int = 1_000,
@@ -137,12 +136,8 @@ async def get_recent_priority_fee(
     dominate the response on quiet slots and would peg the estimate to zero,
     so they are dropped; when every sample is zero the floor is returned.
     """
-    addresses = [
-        Pubkey.from_string(a) if isinstance(a, str) else a
-        for a in writable_accounts or []
-    ] or None
     async with solana_client_from_chain_id(chain_id) as client:
-        resp = await client.get_recent_prioritization_fees(addresses)
+        resp = await client.get_recent_prioritization_fees()
     fees = sorted(f.prioritization_fee for f in resp.value if f.prioritization_fee > 0)
     if not fees:
         return floor
@@ -316,7 +311,7 @@ async def send_solana_versioned_transaction(
         raise ValueError("sign_callback must be provided to send transaction")
 
     signature = None
-    if getattr(sign_callback, "wallet_address", None) and await sponsorship_enabled():
+    if sign_callback.wallet_address and await sponsorship_enabled():
         try:
             signature = await _send_sponsored_solana_transaction(
                 sign_callback.wallet_address, tx, chain_id
