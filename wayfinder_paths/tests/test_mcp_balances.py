@@ -45,7 +45,9 @@ async def test_get_wallets_solana_uses_svm_address_param():
     }
     fake_client = AsyncMock()
     fake_client.get_enriched_wallet_balances = AsyncMock(
-        return_value={"balances": [{"chain": "solana", "symbol": "SOL", "value_usd": 8.0}]}
+        return_value={
+            "balances": [{"chain": "solana", "symbol": "SOL", "value_usd": 8.0}]
+        }
     )
 
     with (
