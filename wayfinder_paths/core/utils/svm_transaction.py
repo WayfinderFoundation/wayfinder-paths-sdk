@@ -29,7 +29,6 @@ from solders.transaction import VersionedTransaction
 from solders.transaction_status import TransactionConfirmationStatus
 
 from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
-from wayfinder_paths.core.config import get_solana_priority_fee_rpc
 from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
 from wayfinder_paths.core.utils.svm import solana_client_from_chain_id
 from wayfinder_paths.core.utils.transaction import (
@@ -124,24 +123,6 @@ async def confirm_solana_signature(
 # ---------------------------------------------------------------------------
 
 
-async def _quicknode_priority_fee(
-    rpc_url: str, percentile: int, floor: int, ceiling: int
-) -> int:
-    """Priority fee from QuikNode's ``qn_estimatePriorityFees`` percentiles."""
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "qn_estimatePriorityFees",
-        "params": {"last_n_blocks": 100},
-    }
-    async with httpx.AsyncClient(timeout=10) as http:
-        resp = await http.post(rpc_url, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-    fee = int(data["result"]["per_compute_unit"]["percentiles"][str(percentile)])
-    return max(floor, min(ceiling, fee))
-
-
 async def get_recent_priority_fee(
     writable_accounts: Sequence[str | Pubkey] | None = None,
     chain_id: int = CHAIN_ID_SOLANA,
@@ -155,23 +136,7 @@ async def get_recent_priority_fee(
     the NONZERO samples, clamped to ``[floor, ceiling]``. Zero-fee samples
     dominate the response on quiet slots and would peg the estimate to zero,
     so they are dropped; when every sample is zero the floor is returned.
-
-    When ``solana_priority_fee_rpc`` is configured (a QuikNode endpoint),
-    its ``qn_estimatePriorityFees`` percentiles are preferred; any failure
-    falls back to the generic path above.
     """
-    override_rpc = get_solana_priority_fee_rpc()
-    if override_rpc:
-        try:
-            return await _quicknode_priority_fee(
-                override_rpc, percentile, floor, ceiling
-            )
-        except Exception as exc:
-            logger.warning(
-                f"qn_estimatePriorityFees via {override_rpc} failed ({exc}); "
-                "falling back to getRecentPrioritizationFees"
-            )
-
     addresses = [
         Pubkey.from_string(a) if isinstance(a, str) else a
         for a in writable_accounts or []

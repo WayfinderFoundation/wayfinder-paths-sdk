@@ -188,15 +188,3 @@ def get_opencode_instance_id() -> str:
             "No OPENCODE_INSTANCE_ID set, this is unexpected as the caller assumes this is an OpenCode environment."
         )
     return instance_id
-
-
-def get_solana_priority_fee_rpc() -> str | None:
-    """Optional QuikNode endpoint serving ``qn_estimatePriorityFees``.
-
-    Escape hatch for the generic ``getRecentPrioritizationFees`` estimate —
-    the Wayfinder RPC proxy (dRPC) does not serve QuikNode's custom method.
-    """
-    rpc = CONFIG.get("strategy", {}).get("solana_priority_fee_rpc") or CONFIG.get(
-        "solana_priority_fee_rpc"
-    )
-    return str(rpc).strip() if rpc else None
