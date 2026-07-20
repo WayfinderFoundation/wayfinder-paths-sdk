@@ -201,6 +201,7 @@ async def apply_compute_budget(
             for ix in message.instructions
         ]
     else:
+        # Strip the builder's CU instructions — duplicate compute-budget ixs are rejected.
         instructions = [
             ix for ix in message.instructions if ix.program_id_index != cb_index
         ]
