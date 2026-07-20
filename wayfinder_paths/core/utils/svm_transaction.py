@@ -55,9 +55,8 @@ async def send_solana_transaction(
 ) -> str:
     """Broadcast a base64-encoded, fully signed transaction.
 
-    Accepts both legacy and versioned transactions (the wire encoding is
-    opaque to the RPC). Returns the base58 transaction signature — used
-    wherever EVM code passes ``tx_hash``.
+    Returns the base58 transaction signature — used wherever EVM code passes
+    ``tx_hash``.
 
     Preflight simulation is ON by default so simulation-detectable failures
     (insufficient funds, rent violations, program errors) surface as
@@ -155,10 +154,6 @@ async def get_recent_priority_fee(
 # ---------------------------------------------------------------------------
 
 
-def _shifted(index: int, inserted_at: int) -> int:
-    return index + 1 if index >= inserted_at else index
-
-
 async def apply_compute_budget(
     tx: VersionedTransaction,
     chain_id: int = CHAIN_ID_SOLANA,
@@ -192,11 +187,14 @@ async def apply_compute_budget(
         account_keys.append(COMPUTE_BUDGET_PROGRAM_ID)
         cb_index = len(account_keys) - 1
         num_readonly_unsigned += 1
+        # Appending the program to the static keys pushes the address-table-lookup
+        # region up by one; shift ALT account refs to match (program ids are always
+        # static, so program_id_index never moves).
         instructions = [
             CompiledInstruction(
-                program_id_index=_shifted(ix.program_id_index, cb_index),
+                program_id_index=ix.program_id_index,
                 data=ix.data,
-                accounts=bytes(_shifted(a, cb_index) for a in ix.accounts),
+                accounts=bytes(a + 1 if a >= cb_index else a for a in ix.accounts),
             )
             for ix in message.instructions
         ]
@@ -307,18 +305,15 @@ async def send_solana_versioned_transaction(
 ) -> str:
     """Sign and broadcast a v0 transaction; returns the base58 signature.
 
-    Remote wallets with sponsorship enabled route through the backend's
-    sponsored broadcast (the backend signs, broadcasts, and covers fees);
-    a refused submission falls back to the local path: compute-budget
-    surgery, sign via callback, broadcast, and (optionally) confirmation.
-    Every sign callback carries ``wallet_address`` (None for local keys) —
-    see the factories in ``core/utils/wallets.py``.
+    With sponsorship enabled the backend signs, broadcasts, and covers fees;
+    a refused submission falls back to compute-budget surgery + sign callback
+    + local broadcast + (optional) confirmation.
     """
     if sign_callback is None:
         raise ValueError("sign_callback must be provided to send transaction")
 
     signature = None
-    if sign_callback.wallet_address and await sponsorship_enabled():
+    if await sponsorship_enabled():
         try:
             signature = await _send_sponsored_solana_transaction(
                 sign_callback.wallet_address, tx, chain_id
@@ -333,7 +328,7 @@ async def send_solana_versioned_transaction(
         )
         signed_bytes = await sign_callback(budgeted)
         signature = await send_solana_transaction(
-            base64.b64encode(bytes(signed_bytes)).decode(), chain_id=chain_id
+            base64.b64encode(signed_bytes).decode(), chain_id=chain_id
         )
     logger.info(f"Solana transaction broadcasted: {signature}")
     if wait_for_confirmation:
