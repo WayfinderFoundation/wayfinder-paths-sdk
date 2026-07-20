@@ -32,8 +32,8 @@ CHAIN_TYPE_SOLANA = "solana"
 
 
 def wallet_chain_type(wallet: dict[str, Any]) -> str:
-    chain_type = str(wallet.get("chain_type") or "").strip().lower()
-    return chain_type or CHAIN_TYPE_ETHEREUM
+    # Legacy local config.json wallets predate chain_type — default them to EVM.
+    return wallet.get("chain_type") or CHAIN_TYPE_ETHEREUM
 
 
 # ---------------------------------------------------------------------------
