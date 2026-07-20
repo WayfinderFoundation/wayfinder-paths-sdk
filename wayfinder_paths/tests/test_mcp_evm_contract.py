@@ -510,3 +510,138 @@ async def test_contracts_get_falls_back_to_proxy_abi_when_impl_fetch_fails():
     result = out["result"]
     assert result["source"] == "etherscan_v2"
     assert result["abi"] == proxy_abi
+
+
+_TRANSFER_ABI = [
+    {
+        "type": "function",
+        "name": "transfer",
+        "stateMutability": "nonpayable",
+        "inputs": [
+            {"name": "to", "type": "address"},
+            {"name": "amount", "type": "uint256"},
+        ],
+        "outputs": [{"name": "", "type": "bool"}],
+    }
+]
+_WALLET = {"address": "0x" + "aa" * 20, "private_key_hex": "0x" + "11" * 32}
+
+
+@pytest.mark.asyncio
+async def test_contract_execute_refuses_transfer_to_contract():
+    token = "0x" + "12" * 20
+    pool = "0x" + "cc" * 20
+    fake_encode = AsyncMock()
+    fake_send = AsyncMock()
+
+    with (
+        patch(
+            "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
+            return_value=_WALLET,
+        ),
+        patch(
+            "wayfinder_paths.core.utils.web3.is_contract",
+            AsyncMock(return_value=True),
+        ),
+        patch("wayfinder_paths.mcp.tools.evm_contract.encode_call", fake_encode),
+        patch("wayfinder_paths.mcp.tools.evm_contract.send_transaction", fake_send),
+    ):
+        out = await contracts_execute(
+            wallet_label="main",
+            chain_id=1,
+            contract_address=token,
+            function_name="transfer",
+            args=f'["{pool}", "1000"]',
+            abi=_TRANSFER_ABI,
+        )
+
+    assert out["ok"] is False, out
+    assert out["error"]["code"] == "raw_transfer_to_contract"
+    fake_encode.assert_not_awaited()
+    fake_send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_contract_execute_allows_transfer_to_eoa():
+    token = "0x" + "12" * 20
+    recipient = "0x" + "bb" * 20
+    fake_send = AsyncMock(return_value="0x" + "99" * 32)
+
+    with (
+        patch(
+            "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
+            return_value=_WALLET,
+        ),
+        patch(
+            "wayfinder_paths.core.utils.web3.is_contract",
+            AsyncMock(return_value=False),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.evm_contract.WalletProfileStore.default",
+            return_value=Mock(annotate_safe=Mock()),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.evm_contract.encode_call",
+            AsyncMock(return_value={"to": token, "data": "0xdeadbeef"}),
+        ),
+        patch("wayfinder_paths.mcp.tools.evm_contract.send_transaction", fake_send),
+        patch(
+            "wayfinder_paths.mcp.tools.evm_contract.get_etherscan_transaction_link",
+            return_value="https://example.invalid/tx",
+        ),
+    ):
+        out = await contracts_execute(
+            wallet_label="main",
+            chain_id=1,
+            contract_address=token,
+            function_name="transfer",
+            args=f'["{recipient}", "1000"]',
+            abi=_TRANSFER_ABI,
+            wait_for_receipt=False,
+        )
+
+    assert out["ok"] is True, out
+    fake_send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_contract_execute_transfer_to_contract_override_bypasses():
+    token = "0x" + "12" * 20
+    pool = "0x" + "cc" * 20
+    fake_is_contract = AsyncMock(return_value=True)
+    fake_send = AsyncMock(return_value="0x" + "99" * 32)
+
+    with (
+        patch(
+            "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
+            return_value=_WALLET,
+        ),
+        patch("wayfinder_paths.core.utils.web3.is_contract", fake_is_contract),
+        patch(
+            "wayfinder_paths.mcp.tools.evm_contract.WalletProfileStore.default",
+            return_value=Mock(annotate_safe=Mock()),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.evm_contract.encode_call",
+            AsyncMock(return_value={"to": token, "data": "0xdeadbeef"}),
+        ),
+        patch("wayfinder_paths.mcp.tools.evm_contract.send_transaction", fake_send),
+        patch(
+            "wayfinder_paths.mcp.tools.evm_contract.get_etherscan_transaction_link",
+            return_value="https://example.invalid/tx",
+        ),
+    ):
+        out = await contracts_execute(
+            wallet_label="main",
+            chain_id=1,
+            contract_address=token,
+            function_name="transfer",
+            args=f'["{pool}", "1000"]',
+            abi=_TRANSFER_ABI,
+            wait_for_receipt=False,
+            override=True,
+        )
+
+    assert out["ok"] is True, out
+    fake_send.assert_awaited_once()
+    fake_is_contract.assert_not_awaited()

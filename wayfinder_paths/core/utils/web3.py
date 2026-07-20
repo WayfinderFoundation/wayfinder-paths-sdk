@@ -169,3 +169,9 @@ async def web3_from_chain_id(chain_id: int):
         yield web3s[0]
     finally:
         await web3s[0].provider.disconnect()
+
+
+async def is_contract(chain_id: int, address: str) -> bool:
+    async with web3_from_chain_id(int(chain_id)) as w3:
+        code = await w3.eth.get_code(AsyncWeb3.to_checksum_address(address))
+    return len(code) > 0
