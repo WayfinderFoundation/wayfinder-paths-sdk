@@ -6,9 +6,6 @@ from typing import Any
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 from loguru import logger
-from solders.keypair import Keypair
-from solders.message import to_bytes_versioned
-from solders.transaction import Transaction as SoldersLegacyTransaction
 from solders.transaction import VersionedTransaction
 
 from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
@@ -29,11 +26,6 @@ Account.enable_unaudited_hdwallet_features()
 
 CHAIN_TYPE_ETHEREUM = "ethereum"
 CHAIN_TYPE_SOLANA = "solana"
-
-# Solana has two real transaction types with different signing APIs; the sign
-# callbacks dispatch on them (VersionedTransaction.populate vs legacy
-# Transaction.partial_sign). Both serialize to bytes for the remote/Privy path.
-SolanaTransaction = VersionedTransaction | SoldersLegacyTransaction
 
 
 def wallet_chain_type(wallet: dict[str, Any]) -> str:
@@ -220,39 +212,10 @@ def get_remote_sign_callback(wallet_address: str):
     return sign_callback
 
 
-def _sign_versioned_transaction(
-    tx: VersionedTransaction, keypair: Keypair
-) -> VersionedTransaction:
-    # A populated v0 tx already carries one signature slot per required signer;
-    # fill this keypair's slot, leaving any co-signer slots untouched.
-    message = tx.message
-    signer_keys = list(message.account_keys)[: message.header.num_required_signatures]
-    signatures = list(tx.signatures)
-    signatures[signer_keys.index(keypair.pubkey())] = keypair.sign_message(
-        to_bytes_versioned(message)
-    )
-    return VersionedTransaction.populate(message, signatures)
-
-
-def get_local_solana_sign_callback(private_key: str):
-    """Sign a local Solana wallet's tx (base58 key); returns signed bytes."""
-    keypair = Keypair.from_base58_string(private_key.strip())
-
-    async def sign_callback(tx: SolanaTransaction) -> bytes:
-        if isinstance(tx, VersionedTransaction):
-            return bytes(_sign_versioned_transaction(tx, keypair))
-        tx.partial_sign([keypair], tx.message.recent_blockhash)
-        return bytes(tx)
-
-    sign_callback.wallet_address = None
-    sign_callback.chain_type = CHAIN_TYPE_SOLANA
-    return sign_callback
-
-
 def get_remote_solana_sign_callback(wallet_address: str):
     """Sign a remote (Privy-backed) Solana wallet's tx via the backend."""
 
-    async def sign_callback(tx: SolanaTransaction) -> bytes:
+    async def sign_callback(tx: VersionedTransaction) -> bytes:
         signed_b64 = await WALLET_CLIENT.sign_solana_transaction(
             wallet_address, base64.b64encode(bytes(tx)).decode()
         )
@@ -309,12 +272,8 @@ def _require_wallet_address(wallet: dict[str, Any], label: str) -> str:
 def _build_signing_callback(wallet: dict[str, Any], label: str):
     address = _require_wallet_address(wallet, label)
     if wallet_chain_type(wallet) == CHAIN_TYPE_SOLANA:
-        if wallet.get("type") == "remote":
-            return get_remote_solana_sign_callback(address), address
-        pk = get_private_key(wallet)
-        if not pk:
-            raise ValueError(f"Wallet '{label}' is missing private_key.")
-        return get_local_solana_sign_callback(pk), address
+        # Solana agent wallets are always Privy-managed (remote) — no local keys.
+        return get_remote_solana_sign_callback(address), address
     if wallet.get("type") == "remote":
         return get_remote_sign_callback(address), address
     pk = get_private_key(wallet)
