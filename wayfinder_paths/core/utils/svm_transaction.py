@@ -213,12 +213,11 @@ async def apply_compute_budget(
             f"Solana transaction simulation failed: {sim.value.err}; "
             f"logs: {sim.value.logs}"
         )
-    units_consumed = sim.value.units_consumed
-    if not units_consumed:
+    if not sim.value.units_consumed:
         raise RuntimeError("Solana transaction simulation returned no compute units")
 
     cu_limit = min(
-        int(units_consumed * cu_limit_multiplier) + COMPUTE_BUDGET_IX_UNITS,
+        int(sim.value.units_consumed * cu_limit_multiplier) + COMPUTE_BUDGET_IX_UNITS,
         MAX_COMPUTE_UNIT_LIMIT,
     )
     if priority_fee_micro_lamports is None:
