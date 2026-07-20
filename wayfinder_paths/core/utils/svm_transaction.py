@@ -42,6 +42,10 @@ COMPUTE_BUDGET_PROGRAM_ID = Pubkey.from_string(
 )
 # Protocol-level hard cap on compute units per transaction.
 MAX_COMPUTE_UNIT_LIMIT = 1_400_000
+# Our two ComputeBudget instructions aren't in the measured (pre-surgery)
+# simulation, so add their cost — otherwise a tight multiplier on a small tx
+# sets the limit below actual consumption once they run.
+COMPUTE_BUDGET_IX_UNITS = 300
 
 
 async def send_solana_transaction(
@@ -212,7 +216,10 @@ async def apply_compute_budget(
     if not units_consumed:
         raise RuntimeError("Solana transaction simulation returned no compute units")
 
-    cu_limit = min(int(units_consumed * cu_limit_multiplier), MAX_COMPUTE_UNIT_LIMIT)
+    cu_limit = min(
+        int(units_consumed * cu_limit_multiplier) + COMPUTE_BUDGET_IX_UNITS,
+        MAX_COMPUTE_UNIT_LIMIT,
+    )
     if priority_fee_micro_lamports is None:
         priority_fee_micro_lamports = await get_recent_priority_fee(chain_id=chain_id)
 

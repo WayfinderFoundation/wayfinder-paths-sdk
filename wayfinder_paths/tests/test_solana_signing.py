@@ -6,10 +6,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from solders.hash import Hash
 from solders.keypair import Keypair
+from solders.message import Message as LegacyMessage
 from solders.message import MessageV0
 from solders.pubkey import Pubkey
 from solders.signature import Signature
 from solders.system_program import TransferParams, transfer
+from solders.transaction import Transaction as LegacyTransaction
 from solders.transaction import VersionedTransaction
 
 from wayfinder_paths.core.utils.wallets import (
@@ -65,3 +67,18 @@ def test_wallet_chain_type_defaults_to_ethereum():
     assert wallet_chain_type({"chain_type": "solana"}) == "solana"
     assert wallet_chain_type({}) == "ethereum"
     assert wallet_chain_type({"chain_type": None}) == "ethereum"
+
+
+def _unsigned_legacy_tx(payer: Pubkey) -> LegacyTransaction:
+    ix = transfer(TransferParams(from_pubkey=payer, to_pubkey=payer, lamports=1))
+    msg = LegacyMessage.new_with_blockhash([ix], payer, Hash.default())
+    return LegacyTransaction.new_unsigned(msg)
+
+
+@pytest.mark.asyncio
+async def test_local_solana_callback_signs_legacy_tx():
+    keypair = Keypair()
+    tx = _unsigned_legacy_tx(keypair.pubkey())
+    signed = await get_local_solana_sign_callback(str(keypair))(tx)
+    # Round-trips back to a legacy tx carrying the payer's real signature.
+    assert LegacyTransaction.from_bytes(signed).signatures[0] != Signature.default()

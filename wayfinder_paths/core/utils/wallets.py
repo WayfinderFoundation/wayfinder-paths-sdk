@@ -9,6 +9,7 @@ from loguru import logger
 from solders.keypair import Keypair
 from solders.message import to_bytes_versioned
 from solders.signature import Signature
+from solders.transaction import Transaction as SoldersLegacyTransaction
 from solders.transaction import VersionedTransaction
 
 from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
@@ -29,6 +30,11 @@ Account.enable_unaudited_hdwallet_features()
 
 CHAIN_TYPE_ETHEREUM = "ethereum"
 CHAIN_TYPE_SOLANA = "solana"
+
+# Solana has two real transaction types with different signing APIs; the sign
+# callbacks dispatch on them (VersionedTransaction.populate vs legacy
+# Transaction.partial_sign). Both serialize to bytes for the remote/Privy path.
+SolanaTransaction = VersionedTransaction | SoldersLegacyTransaction
 
 
 def wallet_chain_type(wallet: dict[str, Any]) -> str:
@@ -242,11 +248,14 @@ def _sign_versioned_transaction(
 
 
 def get_local_solana_sign_callback(private_key: str):
-    """Sign a local Solana wallet's v0 tx (base58 key); returns signed bytes."""
+    """Sign a local Solana wallet's tx (base58 key); returns signed bytes."""
     keypair = solana_keypair_from_base58(private_key)
 
-    async def sign_callback(tx: VersionedTransaction) -> bytes:
-        return bytes(_sign_versioned_transaction(tx, keypair))
+    async def sign_callback(tx: SolanaTransaction) -> bytes:
+        if isinstance(tx, VersionedTransaction):
+            return bytes(_sign_versioned_transaction(tx, keypair))
+        tx.partial_sign([keypair], tx.message.recent_blockhash)
+        return bytes(tx)
 
     sign_callback.wallet_address = None
     sign_callback.chain_type = CHAIN_TYPE_SOLANA
@@ -254,9 +263,9 @@ def get_local_solana_sign_callback(private_key: str):
 
 
 def get_remote_solana_sign_callback(wallet_address: str):
-    """Sign a remote (Privy-backed) Solana wallet's v0 tx via the backend."""
+    """Sign a remote (Privy-backed) Solana wallet's tx via the backend."""
 
-    async def sign_callback(tx: VersionedTransaction) -> bytes:
+    async def sign_callback(tx: SolanaTransaction) -> bytes:
         signed_b64 = await WALLET_CLIENT.sign_solana_transaction(
             wallet_address, base64.b64encode(bytes(tx)).decode()
         )
