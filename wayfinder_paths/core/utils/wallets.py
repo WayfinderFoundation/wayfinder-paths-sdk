@@ -8,7 +8,6 @@ from eth_account.messages import encode_typed_data
 from loguru import logger
 from solders.keypair import Keypair
 from solders.message import to_bytes_versioned
-from solders.signature import Signature
 from solders.transaction import Transaction as SoldersLegacyTransaction
 from solders.transaction import VersionedTransaction
 
@@ -221,35 +220,23 @@ def get_remote_sign_callback(wallet_address: str):
     return sign_callback
 
 
-def solana_keypair_from_base58(private_key: str) -> Keypair:
-    return Keypair.from_base58_string(str(private_key).strip())
-
-
 def _sign_versioned_transaction(
     tx: VersionedTransaction, keypair: Keypair
 ) -> VersionedTransaction:
+    # A populated v0 tx already carries one signature slot per required signer;
+    # fill this keypair's slot, leaving any co-signer slots untouched.
     message = tx.message
-    signature = keypair.sign_message(to_bytes_versioned(message))
-    num_required = message.header.num_required_signatures
-    signer_keys = list(message.account_keys)[:num_required]
-    try:
-        signer_index = signer_keys.index(keypair.pubkey())
-    except ValueError as exc:
-        raise ValueError(
-            f"Wallet {keypair.pubkey()} is not a required signer for this transaction"
-        ) from exc
-    existing = list(tx.signatures)
-    signatures = [
-        existing[i] if i < len(existing) else Signature.default()
-        for i in range(num_required)
-    ]
-    signatures[signer_index] = signature
+    signer_keys = list(message.account_keys)[: message.header.num_required_signatures]
+    signatures = list(tx.signatures)
+    signatures[signer_keys.index(keypair.pubkey())] = keypair.sign_message(
+        to_bytes_versioned(message)
+    )
     return VersionedTransaction.populate(message, signatures)
 
 
 def get_local_solana_sign_callback(private_key: str):
     """Sign a local Solana wallet's tx (base58 key); returns signed bytes."""
-    keypair = solana_keypair_from_base58(private_key)
+    keypair = Keypair.from_base58_string(private_key.strip())
 
     async def sign_callback(tx: SolanaTransaction) -> bytes:
         if isinstance(tx, VersionedTransaction):
