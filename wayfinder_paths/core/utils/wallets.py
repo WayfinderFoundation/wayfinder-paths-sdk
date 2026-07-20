@@ -234,7 +234,9 @@ def _coerce_solana_transaction(
             return VersionedTransaction.from_bytes(raw)
         except Exception:
             return SoldersLegacyTransaction.from_bytes(raw)
-    raise TypeError(f"Unsupported Solana transaction type: {type(transaction).__name__}")
+    raise TypeError(
+        f"Unsupported Solana transaction type: {type(transaction).__name__}"
+    )
 
 
 def _sign_versioned_transaction(
