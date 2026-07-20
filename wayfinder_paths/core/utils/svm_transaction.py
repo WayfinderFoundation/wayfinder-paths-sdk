@@ -156,27 +156,12 @@ async def get_recent_priority_fee(
 # ---------------------------------------------------------------------------
 
 
-def _coerce_versioned_transaction(
-    transaction: VersionedTransaction | str | bytes,
-) -> VersionedTransaction:
-    """Accept a solders ``VersionedTransaction``, raw bytes, or base64 string."""
-    if isinstance(transaction, VersionedTransaction):
-        return transaction
-    if isinstance(transaction, str):
-        transaction = base64.b64decode(transaction)
-    if isinstance(transaction, (bytes, bytearray)):
-        return VersionedTransaction.from_bytes(bytes(transaction))
-    raise TypeError(
-        f"Unsupported Solana transaction type: {type(transaction).__name__}"
-    )
-
-
 def _shifted(index: int, inserted_at: int) -> int:
     return index + 1 if index >= inserted_at else index
 
 
 async def apply_compute_budget(
-    transaction: VersionedTransaction | str,
+    tx: VersionedTransaction,
     chain_id: int = CHAIN_ID_SOLANA,
     cu_limit_multiplier: float = 1.2,
     priority_fee_micro_lamports: int | None = None,
@@ -196,14 +181,7 @@ async def apply_compute_budget(
     Address table lookups, the blockhash, and signature placeholders are all
     preserved.
     """
-    tx = _coerce_versioned_transaction(transaction)
     message = tx.message
-    if not isinstance(message, MessageV0):
-        raise TypeError(
-            "apply_compute_budget requires a v0 transaction message, "
-            f"got {type(message).__name__}"
-        )
-
     account_keys = list(message.account_keys)
     num_readonly_unsigned = message.header.num_readonly_unsigned_accounts
     cb_index = next(
@@ -319,7 +297,7 @@ async def _send_sponsored_solana_transaction(
 
 
 async def send_solana_versioned_transaction(
-    transaction: VersionedTransaction | str,
+    tx: VersionedTransaction,
     sign_callback: Callable,
     chain_id: int = CHAIN_ID_SOLANA,
     wait_for_confirmation: bool = True,
@@ -337,7 +315,6 @@ async def send_solana_versioned_transaction(
     if sign_callback is None:
         raise ValueError("sign_callback must be provided to send transaction")
 
-    tx = _coerce_versioned_transaction(transaction)
     signature = None
     if getattr(sign_callback, "wallet_address", None) and await sponsorship_enabled():
         try:
