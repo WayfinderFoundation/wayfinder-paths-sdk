@@ -9,8 +9,9 @@ from wayfinder_paths.core.constants.uniswap_v3_abi import (
     NONFUNGIBLE_POSITION_MANAGER_ABI,
     UNISWAP_V3_FACTORY_ABI,
 )
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.tokens import ensure_allowance
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     PositionData,
     collect_params,
@@ -21,7 +22,6 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
     round_tick_to_spacing,
     slippage_min,
 )
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 TICK_SPACING: dict[int, int] = {100: 1, 500: 10, 3000: 60, 10000: 200}
 

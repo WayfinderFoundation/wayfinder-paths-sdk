@@ -42,8 +42,8 @@ from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
 )
+from wayfinder_paths.core.utils.evm_transaction import send_transaction
 from wayfinder_paths.core.utils.tokens import build_send_transaction
-from wayfinder_paths.core.utils.transaction import send_transaction
 
 ARBITRUM_CHAIN_ID = "0xa4b1"
 MAINNET = "Mainnet"

@@ -10,7 +10,8 @@ from wayfinder_paths.core.constants.base import (
     SUGGESTED_GAS_PRICE_MULTIPLIER,
     SUGGESTED_PRIORITY_FEE_MULTIPLIER,
 )
-from wayfinder_paths.core.utils.transaction import (
+from wayfinder_paths.core.utils.evm_client import get_transaction_chain_id
+from wayfinder_paths.core.utils.evm_transaction import (
     PRE_EIP_1559_CHAIN_IDS,
     SponsorshipUnavailableError,
     TransactionRevertedError,
@@ -21,7 +22,6 @@ from wayfinder_paths.core.utils.transaction import (
     send_sponsored_transaction,
     send_transaction,
 )
-from wayfinder_paths.core.utils.web3 import get_transaction_chain_id
 
 RANDOM_USER_0 = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
 
@@ -78,7 +78,7 @@ class TestNonceTransaction:
         web3.eth.get_transaction_count = AsyncMock()
         return web3
 
-    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    @patch("wayfinder_paths.core.utils.evm_transaction.web3s_from_chain_id")
     async def test_noncing_on_mainnet(self, mock_web3s_context, mock_web3):
         mock_web3.eth.get_transaction_count.return_value = 1
         mock_web3.provider.disconnect = AsyncMock()
@@ -91,7 +91,7 @@ class TestNonceTransaction:
         result = await nonce_transaction(transaction)
         assert result["nonce"] == 1
 
-    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    @patch("wayfinder_paths.core.utils.evm_transaction.web3s_from_chain_id")
     async def test_noncing_on_all_chains(self, mock_web3s_context, mock_web3):
         mock_web3.eth.get_transaction_count.return_value = 7
         mock_web3.provider.disconnect = AsyncMock()
@@ -106,7 +106,7 @@ class TestNonceTransaction:
             assert "nonce" in result
             assert result["nonce"] == 7
 
-    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    @patch("wayfinder_paths.core.utils.evm_transaction.web3s_from_chain_id")
     async def test_multiple_web3s_returns_max_nonce(self, mock_web3s_context):
         mock_web3_1 = MagicMock()
         mock_web3_1.eth = MagicMock()
@@ -141,7 +141,7 @@ class TestNonceTransaction:
         mock_web3_2.eth.get_transaction_count.assert_called_once()
         mock_web3_3.eth.get_transaction_count.assert_called_once()
 
-    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    @patch("wayfinder_paths.core.utils.evm_transaction.web3s_from_chain_id")
     async def test_preserves_all_existing_fields(self, mock_web3s_context, mock_web3):
         mock_web3.eth.get_transaction_count.return_value = 5
         mock_web3.provider.disconnect = AsyncMock()
@@ -171,7 +171,7 @@ class TestNonceTransaction:
 
 @pytest.mark.asyncio
 class TestGasPriceTransaction:
-    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    @patch("wayfinder_paths.core.utils.evm_transaction.web3s_from_chain_id")
     async def test_pricing_on_all_chains(self, mock_web3s_context):
         mock_block = {"baseFeePerGas": 10_000_000_000}
         mock_fee_history = {"reward": [[1_000_000_000] for _ in range(10)]}
@@ -206,7 +206,7 @@ class TestGasPriceTransaction:
                 assert result["maxFeePerGas"] > 0
                 assert result["maxPriorityFeePerGas"] > 0
 
-    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    @patch("wayfinder_paths.core.utils.evm_transaction.web3s_from_chain_id")
     async def test_pre_eip1559_strips_eip1559_fields(self, mock_web3s_context):
         mock_web3 = MagicMock()
         mock_web3.eth = MagicMock()
@@ -226,7 +226,7 @@ class TestGasPriceTransaction:
         assert "maxPriorityFeePerGas" not in result
         assert result["gasPrice"] > 0
 
-    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    @patch("wayfinder_paths.core.utils.evm_transaction.web3s_from_chain_id")
     async def test_eip1559_strips_legacy_gas_price(self, mock_web3s_context):
         mock_block = {"baseFeePerGas": 10_000_000_000}
         mock_fee_history = {"reward": [[1_000_000_000] for _ in range(10)]}
@@ -249,7 +249,7 @@ class TestGasPriceTransaction:
         assert result["maxFeePerGas"] > 0
         assert result["maxPriorityFeePerGas"] > 0
 
-    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    @patch("wayfinder_paths.core.utils.evm_transaction.web3s_from_chain_id")
     async def test_eip1559_max_aggregation(self, mock_web3s_context):
         # Mock multiple web3 instances with different base fees and priority fees
         mock_block_1 = {"baseFeePerGas": 30_000_000_000}
@@ -299,7 +299,7 @@ class TestGasPriceTransaction:
         assert result["maxFeePerGas"] == expected_max_fee
         assert "gasPrice" not in result
 
-    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    @patch("wayfinder_paths.core.utils.evm_transaction.web3s_from_chain_id")
     async def test_polygon_priority_fee_floor(self, mock_web3s_context):
         # Polygon's bor node rejects tips < 25 gwei. Suggested = 1 gwei * 1.5 = 1.5 gwei,
         # below the floor — must be clamped up to 25 gwei.
@@ -317,7 +317,7 @@ class TestGasPriceTransaction:
         assert result["maxPriorityFeePerGas"] == 25_000_000_000
         assert result["maxFeePerGas"] == 30_000_000_000 * 2 + 25_000_000_000
 
-    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    @patch("wayfinder_paths.core.utils.evm_transaction.web3s_from_chain_id")
     async def test_non_eip1559_max_aggregation(self, mock_web3s_context):
         # Mock multiple web3 instances with different gas prices
         # gas_price is an awaitable property, so we need to make it a coroutine
@@ -356,7 +356,7 @@ class TestGasPriceTransaction:
 
 @pytest.mark.asyncio
 class TestGasLimitTransaction:
-    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    @patch("wayfinder_paths.core.utils.evm_transaction.web3s_from_chain_id")
     async def test_gas_limit_on_all_chains(self, mock_web3s_context):
         mock_web3 = MagicMock()
         mock_web3.eth = MagicMock()
@@ -373,7 +373,7 @@ class TestGasLimitTransaction:
             assert "gas" in result
             assert result["gas"] > 0
 
-    @patch("wayfinder_paths.core.utils.transaction.web3s_from_chain_id")
+    @patch("wayfinder_paths.core.utils.evm_transaction.web3s_from_chain_id")
     async def test_all_rpcs_failed_error_includes_rpc_errors(self, mock_web3s_context):
         rpc_a = MagicMock()
         rpc_a.eth = MagicMock()
@@ -400,11 +400,11 @@ class TestGasLimitTransaction:
 
 @pytest.mark.asyncio
 class TestSendTransaction:
-    @patch("wayfinder_paths.core.utils.transaction.wait_for_transaction_receipt")
-    @patch("wayfinder_paths.core.utils.transaction.broadcast_transaction")
-    @patch("wayfinder_paths.core.utils.transaction.gas_price_transaction")
-    @patch("wayfinder_paths.core.utils.transaction.nonce_transaction")
-    @patch("wayfinder_paths.core.utils.transaction.gas_limit_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction.wait_for_transaction_receipt")
+    @patch("wayfinder_paths.core.utils.evm_transaction.broadcast_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction.gas_price_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction.nonce_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction.gas_limit_transaction")
     async def test_raises_on_revert(
         self,
         mock_gas_limit,
@@ -446,11 +446,11 @@ class TestSendTransaction:
                 wait_for_receipt=True,
             )
 
-    @patch("wayfinder_paths.core.utils.transaction.wait_for_transaction_receipt")
-    @patch("wayfinder_paths.core.utils.transaction.broadcast_transaction")
-    @patch("wayfinder_paths.core.utils.transaction.gas_price_transaction")
-    @patch("wayfinder_paths.core.utils.transaction.nonce_transaction")
-    @patch("wayfinder_paths.core.utils.transaction.gas_limit_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction.wait_for_transaction_receipt")
+    @patch("wayfinder_paths.core.utils.evm_transaction.broadcast_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction.gas_price_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction.nonce_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction.gas_limit_transaction")
     async def test_returns_hash_on_success(
         self,
         mock_gas_limit,
@@ -492,13 +492,13 @@ class TestSendTransaction:
         )
         assert txn_hash == "0xabc"
 
-    @patch("wayfinder_paths.core.utils.transaction.wait_for_transaction_receipt")
-    @patch("wayfinder_paths.core.utils.transaction.broadcast_transaction")
-    @patch("wayfinder_paths.core.utils.transaction.gas_price_transaction")
-    @patch("wayfinder_paths.core.utils.transaction.nonce_transaction")
-    @patch("wayfinder_paths.core.utils.transaction.gas_limit_transaction")
-    @patch("wayfinder_paths.core.utils.transaction.send_sponsored_transaction")
-    @patch("wayfinder_paths.core.utils.transaction.sponsorship_enabled")
+    @patch("wayfinder_paths.core.utils.evm_transaction.wait_for_transaction_receipt")
+    @patch("wayfinder_paths.core.utils.evm_transaction.broadcast_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction.gas_price_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction.nonce_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction.gas_limit_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction.send_sponsored_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction.sponsorship_enabled")
     async def test_falls_back_to_local_broadcast_when_sponsorship_unavailable(
         self,
         mock_sponsorship_enabled,
@@ -549,7 +549,7 @@ def _http_status_error(status: int) -> httpx.HTTPStatusError:
 @pytest.mark.asyncio
 class TestSendSponsoredTransaction:
     @pytest.mark.parametrize("status", [400, 402, 403, 429])
-    @patch("wayfinder_paths.core.utils.transaction.WALLET_CLIENT")
+    @patch("wayfinder_paths.core.utils.evm_transaction.WALLET_CLIENT")
     async def test_rejection_maps_to_fallback(self, mock_client, status):
         mock_client.send_privy_transaction_sponsored = AsyncMock(
             side_effect=_http_status_error(status)
@@ -559,7 +559,7 @@ class TestSendSponsoredTransaction:
                 RANDOM_USER_0, {"chainId": 1, "to": RANDOM_USER_0}
             )
 
-    @patch("wayfinder_paths.core.utils.transaction.WALLET_CLIENT")
+    @patch("wayfinder_paths.core.utils.evm_transaction.WALLET_CLIENT")
     async def test_server_error_stays_fatal(self, mock_client):
         mock_client.send_privy_transaction_sponsored = AsyncMock(
             side_effect=_http_status_error(502)

@@ -92,9 +92,9 @@ async def test_web3s_fallback_to_rpc_proxy(
         }
     )
 
-    import wayfinder_paths.core.utils.web3 as web3_utils
+    import wayfinder_paths.core.utils.evm_client as web3_utils
     from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE, CHAIN_ID_HYPEREVM
-    from wayfinder_paths.core.utils.web3 import web3s_from_chain_id
+    from wayfinder_paths.core.utils.evm_client import web3s_from_chain_id
 
     monkeypatch.setattr(web3_utils, "_fetch_pool_size", lambda _chain_id: 0)
 
@@ -127,9 +127,9 @@ async def test_user_rpcs_override_proxy(
         }
     )
 
-    import wayfinder_paths.core.utils.web3 as web3_utils
+    import wayfinder_paths.core.utils.evm_client as web3_utils
     from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM, CHAIN_ID_BASE
-    from wayfinder_paths.core.utils.web3 import web3s_from_chain_id
+    from wayfinder_paths.core.utils.evm_client import web3s_from_chain_id
 
     monkeypatch.setattr(web3_utils, "_fetch_pool_size", lambda _chain_id: 0)
 
@@ -160,9 +160,9 @@ async def test_web3s_uses_indexed_rpc_proxy_pool(
         }
     )
 
-    import wayfinder_paths.core.utils.web3 as web3_utils
+    import wayfinder_paths.core.utils.evm_client as web3_utils
     from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
-    from wayfinder_paths.core.utils.web3 import web3s_from_chain_id
+    from wayfinder_paths.core.utils.evm_client import web3s_from_chain_id
 
     monkeypatch.setattr(web3_utils, "_fetch_pool_size", lambda _chain_id: 2)
 
@@ -178,7 +178,7 @@ def test_web3s_accept_int_rpc_url_keys(restore_global_config: None) -> None:
     config.set_config({"strategy": {"rpc_urls": {8453: "https://example.invalid"}}})
 
     from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
-    from wayfinder_paths.core.utils.web3 import get_web3s_from_chain_id
+    from wayfinder_paths.core.utils.evm_client import get_web3s_from_chain_id
 
     w3 = get_web3s_from_chain_id(CHAIN_ID_BASE)[0]
     assert w3.provider.endpoint_uri == "https://example.invalid"

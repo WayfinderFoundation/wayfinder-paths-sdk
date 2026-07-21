@@ -15,7 +15,7 @@ from wayfinder_paths.core.constants.etherfi_abi import (
     ETHERFI_WITHDRAW_REQUEST_NFT_ABI,
 )
 from wayfinder_paths.core.constants.etherfi_contracts import ETHERFI_BY_CHAIN
-from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils import evm_client as web3_utils
 from wayfinder_paths.core.utils.tokens import get_token_balance
 from wayfinder_paths.testing.gorlami import gorlami_configured
 

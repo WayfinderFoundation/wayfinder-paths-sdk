@@ -28,6 +28,12 @@ from wayfinder_paths.core.constants.projectx_abi import (
 from wayfinder_paths.core.constants.uniswap_v3_abi import (
     NONFUNGIBLE_POSITION_MANAGER_ABI,
 )
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
+from wayfinder_paths.core.utils.evm_transaction import (
+    encode_call,
+    send_transaction,
+    wait_for_transaction_receipt,
+)
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
@@ -36,11 +42,6 @@ from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     get_token_balance,
     is_native_token,
-)
-from wayfinder_paths.core.utils.transaction import (
-    encode_call,
-    send_transaction,
-    wait_for_transaction_receipt,
 )
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     MASK_256,
@@ -57,7 +58,6 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
     tick_from_sqrt_price_x96,
 )
 from wayfinder_paths.core.utils.units import from_erc20_raw
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 MINT_POLL_ATTEMPTS = 6
 INITIAL_MINT_DELAY_SECONDS = 2

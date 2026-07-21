@@ -11,7 +11,7 @@ from wayfinder_paths.core.config import (
     get_rpc_urls,
     set_rpc_urls,
 )
-from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils import evm_client as web3_utils
 
 
 def gorlami_configured() -> bool:
@@ -60,11 +60,11 @@ async def gorlami():
     try:
         with (
             patch(
-                "wayfinder_paths.core.utils.web3.web3_from_chain_id",
+                "wayfinder_paths.core.utils.evm_client.web3_from_chain_id",
                 patched_web3_from_chain_id,
             ),
             patch(
-                "wayfinder_paths.core.utils.web3.web3s_from_chain_id",
+                "wayfinder_paths.core.utils.evm_client.web3s_from_chain_id",
                 patched_web3s_from_chain_id,
             ),
         ):

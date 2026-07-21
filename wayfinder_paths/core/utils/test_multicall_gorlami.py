@@ -7,11 +7,11 @@ from wayfinder_paths.adapters.multicall_adapter.adapter import MulticallAdapter
 from wayfinder_paths.core.constants.contracts import KHYPE_ADDRESS, MULTICALL3_ADDRESS
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils import multicall as multicall_mod
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(

@@ -17,13 +17,13 @@ from wayfinder_paths.core.constants.lido_abi import (
     WSTETH_ABI,
 )
 from wayfinder_paths.core.constants.lido_contracts import LIDO_BY_CHAIN
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 WITHDRAWAL_MIN_WEI = 100
 WITHDRAWAL_MAX_WEI = 1000 * 10**18

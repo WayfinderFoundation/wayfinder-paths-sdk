@@ -23,7 +23,7 @@ from wayfinder_paths.core.constants.aerodrome_slipstream_contracts import (
 )
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC
-from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils import evm_client as web3_utils
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     ceil_tick_to_spacing,
     round_tick_to_spacing,

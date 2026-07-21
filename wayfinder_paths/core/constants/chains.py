@@ -37,7 +37,7 @@ CHAIN_CODE_TO_ID = {
 # SVM (Solana Virtual Machine) chains. Deliberately kept OUT of the EVM-only
 # sets below (SUPPORTED_CHAINS, GAS_SPONSORED_CHAIN_IDS, POA/pre-1559 sets):
 # those gate EVM code paths (nonce/gas handling, middleware). Solana flows go
-# through wayfinder_paths.core.utils.svm instead.
+# through wayfinder_paths.core.utils.svm_client instead.
 SVM_CHAIN_IDS: set[int] = {CHAIN_ID_SOLANA}
 
 CHAIN_ID_TO_CODE: dict[int, str] = {

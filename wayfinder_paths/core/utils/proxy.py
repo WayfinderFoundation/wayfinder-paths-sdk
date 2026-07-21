@@ -3,7 +3,7 @@ from __future__ import annotations
 from web3 import AsyncWeb3
 
 from wayfinder_paths.core.constants.eip897_abi import EIP897_ABI
-from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils import evm_client as web3_utils
 
 EIP1967_IMPLEMENTATION_SLOT = (
     "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"

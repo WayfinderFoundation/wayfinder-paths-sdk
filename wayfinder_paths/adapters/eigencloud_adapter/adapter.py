@@ -27,9 +27,9 @@ from wayfinder_paths.core.constants.eigencloud_abi import (
     ISTRATEGY_ABI,
     ISTRATEGY_MANAGER_ABI,
 )
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_erc20_metadata
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 _SLASHING_WITHDRAWAL_QUEUED_EVENT_ABI = next(
     i

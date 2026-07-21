@@ -17,7 +17,7 @@ from wayfinder_paths.core.constants.aerodrome_abi import (
 from wayfinder_paths.core.constants.aerodrome_contracts import AERODROME_BY_CHAIN
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_WETH
-from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils import evm_client as web3_utils
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 EPOCH_SPECIAL_WINDOW_SECONDS = aerodrome_common_module.EPOCH_SPECIAL_WINDOW_SECONDS

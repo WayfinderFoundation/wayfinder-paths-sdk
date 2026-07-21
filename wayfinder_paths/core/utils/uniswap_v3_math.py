@@ -16,7 +16,7 @@ from eth_utils import to_checksum_address
 
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.uniswap_v3_abi import UNISWAP_V3_POOL_ABI
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
 
 getcontext().prec = 64
 

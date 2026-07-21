@@ -30,13 +30,13 @@ from solders.transaction_status import TransactionConfirmationStatus
 
 from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
-from wayfinder_paths.core.utils.svm import solana_client_from_chain_id
-from wayfinder_paths.core.utils.transaction import (
+from wayfinder_paths.core.utils.evm_transaction import (
     SponsorshipUnavailableError,
     TransactionRevertedError,
     sponsorship_enabled,
     wait_for_sponsored_transaction,
 )
+from wayfinder_paths.core.utils.svm_client import solana_client_from_chain_id
 
 COMPUTE_BUDGET_PROGRAM_ID = Pubkey.from_string(
     "ComputeBudget111111111111111111111111111111"

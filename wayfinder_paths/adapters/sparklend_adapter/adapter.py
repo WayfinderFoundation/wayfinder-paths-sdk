@@ -16,14 +16,14 @@ from wayfinder_paths.core.constants.sparklend_abi import (
     WETH_GATEWAY_ABI,
 )
 from wayfinder_paths.core.constants.sparklend_contracts import SPARKLEND_BY_CHAIN
-from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils import evm_client as web3_utils
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.interest import apr_to_apy, ray_to_apr
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 
 VARIABLE_RATE_MODE = 2
 STABLE_RATE_MODE = 1

@@ -11,11 +11,11 @@ from wayfinder_paths.core.adapters.models import SWAP
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.clients.LedgerClient import TransactionRecord
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
+from wayfinder_paths.core.utils.evm_transaction import send_transaction
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     is_native_token,
 )
-from wayfinder_paths.core.utils.transaction import send_transaction
 
 
 class BRAPAdapter(BaseAdapter):

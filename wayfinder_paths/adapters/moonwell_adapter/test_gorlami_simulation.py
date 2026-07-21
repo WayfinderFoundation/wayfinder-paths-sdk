@@ -11,7 +11,7 @@ from wayfinder_paths.core.constants.contracts import (
     MOONWELL_M_USDC,
     MOONWELL_M_WETH,
 )
-from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils import evm_client as web3_utils
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(

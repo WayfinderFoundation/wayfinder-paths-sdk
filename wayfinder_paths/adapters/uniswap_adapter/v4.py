@@ -31,9 +31,9 @@ from wayfinder_paths.core.constants.uniswap_v4_abi import (
     PERMIT2_ABI,
     UNIVERSAL_ROUTER_ABI,
 )
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
+from wayfinder_paths.core.utils.evm_transaction import send_transaction
 from wayfinder_paths.core.utils.tokens import ensure_allowance, is_native_token
-from wayfinder_paths.core.utils.transaction import send_transaction
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 NATIVE_ADDRESS = "0x0000000000000000000000000000000000000000"
 

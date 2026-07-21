@@ -6,7 +6,7 @@ from eth_account import Account
 from wayfinder_paths.adapters.eigencloud_adapter.adapter import EigenCloudAdapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
 from wayfinder_paths.core.constants.contracts import EIGENCLOUD_STRATEGIES
-from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils import evm_client as web3_utils
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(

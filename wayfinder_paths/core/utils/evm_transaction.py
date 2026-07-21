@@ -21,13 +21,13 @@ from wayfinder_paths.core.constants.chains import (
     MIN_PRIORITY_FEE_BY_CHAIN_ID,
     PRE_EIP_1559_CHAIN_IDS,
 )
-from wayfinder_paths.core.utils.wallets import _prepare_tx_for_privy
-from wayfinder_paths.core.utils.web3 import (
+from wayfinder_paths.core.utils.evm_client import (
     _is_gorlami_fork_rpc,
     get_transaction_chain_id,
     web3_from_chain_id,
     web3s_from_chain_id,
 )
+from wayfinder_paths.core.utils.wallets import _prepare_tx_for_privy
 
 _DEFAULT_CONFIRMATIONS = 3
 

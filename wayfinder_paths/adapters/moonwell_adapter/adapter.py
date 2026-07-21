@@ -25,17 +25,17 @@ from wayfinder_paths.core.constants.moonwell_contracts import (
     MOONWELL_CORE_MARKETS_BY_MTOKEN,
     ZERO_ADDRESS,
 )
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
+from wayfinder_paths.core.utils.evm_transaction import (
+    _is_gorlami_fork_chain,
+    encode_call,
+    send_transaction,
+)
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
 from wayfinder_paths.core.utils.tokens import ensure_allowance
-from wayfinder_paths.core.utils.transaction import (
-    _is_gorlami_fork_chain,
-    encode_call,
-    send_transaction,
-)
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 CHAIN_NAME = "base"
 

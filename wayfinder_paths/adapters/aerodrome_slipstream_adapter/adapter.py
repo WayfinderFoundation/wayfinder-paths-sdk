@@ -30,12 +30,13 @@ from wayfinder_paths.core.constants.aerodrome_slipstream_contracts import (
 from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
 )
 from wayfinder_paths.core.utils.tokens import ensure_allowance
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     MAX_UINT128,
     amounts_for_liq_inrange,
@@ -48,7 +49,6 @@ from wayfinder_paths.core.utils.uniswap_v3_math import (
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     deadline as default_deadline,
 )
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 SLIPSTREAM_SWAP_TOPIC0 = (
     "0x"

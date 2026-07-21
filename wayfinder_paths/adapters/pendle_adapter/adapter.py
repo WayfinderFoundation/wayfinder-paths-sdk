@@ -15,12 +15,12 @@ from wayfinder_paths.core.constants.pendle_abi import (
     PENDLE_LIMIT_ROUTER_ABI,
     PENDLE_ROUTER_STATIC_ABI,
 )
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
+from wayfinder_paths.core.utils.evm_transaction import send_transaction
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     get_token_balance,
 )
-from wayfinder_paths.core.utils.transaction import send_transaction
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 # Available fields for historical data endpoint
 PENDLE_HISTORY_FIELDS = [

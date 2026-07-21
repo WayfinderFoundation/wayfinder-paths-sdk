@@ -19,10 +19,10 @@ from wayfinder_paths.core.constants.euler_v2_abi import (
     VAULT_LENS_ABI,
 )
 from wayfinder_paths.core.constants.euler_v2_contracts import EULER_V2_BY_CHAIN
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.interest import RAY
 from wayfinder_paths.core.utils.tokens import ensure_allowance
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 
 def _tuple_to_dict(value: Any, keys: list[str]) -> dict[str, Any]:

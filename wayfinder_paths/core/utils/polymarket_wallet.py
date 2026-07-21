@@ -30,7 +30,7 @@ from wayfinder_paths.core.constants.polymarket import (
     derive_legacy_deposit_wallet,
     polymarket_deposit_wallet_id,
 )
-from wayfinder_paths.core.utils.web3 import (
+from wayfinder_paths.core.utils.evm_client import (
     _get_rpcs_for_chain_id,
     _wayfinder_auth_headers,
 )

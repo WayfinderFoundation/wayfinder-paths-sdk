@@ -21,9 +21,9 @@ from wayfinder_paths.core.constants.morpho_constants import (
 from wayfinder_paths.core.constants.morpho_contracts import MORPHO_BY_CHAIN
 from wayfinder_paths.core.constants.public_allocator_abi import PUBLIC_ALLOCATOR_ABI
 from wayfinder_paths.core.constants.rewards_abi import MERKL_DISTRIBUTOR_ABI
-from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils import evm_client as web3_utils
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.tokens import ensure_allowance
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 
 MarketParamsTuple = tuple[str, str, str, str, int]
 

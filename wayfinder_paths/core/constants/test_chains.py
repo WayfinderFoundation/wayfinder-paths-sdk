@@ -67,7 +67,7 @@ if os.getenv("RUN_NEW_CHAIN_LIVE_TESTS", "").lower() not in ("1", "true", "yes")
         allow_module_level=True,
     )
 
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id  # noqa: E402
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id  # noqa: E402
 
 
 @pytest.mark.asyncio

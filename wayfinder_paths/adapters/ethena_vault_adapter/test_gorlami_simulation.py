@@ -10,7 +10,7 @@ from wayfinder_paths.core.constants.ethena_contracts import (
     ETHENA_SUSDE_VAULT_MAINNET,
     ETHENA_USDE_MAINNET,
 )
-from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils import evm_client as web3_utils
 from wayfinder_paths.core.utils.tokens import get_token_balance, get_token_decimals
 from wayfinder_paths.testing.gorlami import gorlami_configured
 

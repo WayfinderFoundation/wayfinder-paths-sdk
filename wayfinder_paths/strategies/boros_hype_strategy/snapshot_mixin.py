@@ -12,7 +12,7 @@ from typing import Any
 import aiohttp
 from loguru import logger
 
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
 
 from .constants import (
     BOROS_HYPE_TOKEN_ID,

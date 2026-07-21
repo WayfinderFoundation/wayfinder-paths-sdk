@@ -5,7 +5,7 @@ from eth_account import Account
 
 from wayfinder_paths.adapters.euler_v2_adapter.adapter import EulerV2Adapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
-from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils import evm_client as web3_utils
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(

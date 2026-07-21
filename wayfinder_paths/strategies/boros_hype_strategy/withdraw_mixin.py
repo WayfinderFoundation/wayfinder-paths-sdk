@@ -18,7 +18,7 @@ from wayfinder_paths.adapters.hyperliquid_adapter.paired_filler import (
     PairedFiller,
 )
 from wayfinder_paths.core.strategies.Strategy import StatusTuple
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
 
 from .constants import (
     ARBITRUM_CHAIN_ID,

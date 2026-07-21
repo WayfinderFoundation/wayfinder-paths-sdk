@@ -16,7 +16,10 @@ from solana.rpc.commitment import Commitment, Confirmed
 
 from wayfinder_paths.core.config import get_api_key
 from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
-from wayfinder_paths.core.utils.web3 import _get_rpcs_for_chain_id, _is_wayfinder_rpc
+from wayfinder_paths.core.utils.evm_client import (
+    _get_rpcs_for_chain_id,
+    _is_wayfinder_rpc,
+)
 
 
 @asynccontextmanager

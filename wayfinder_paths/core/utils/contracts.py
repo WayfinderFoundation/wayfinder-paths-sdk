@@ -21,14 +21,14 @@ from wayfinder_paths.core.config import get_etherscan_api_key
 from wayfinder_paths.core.constants.chains import ETHERSCAN_V2_API_URL
 from wayfinder_paths.core.utils.abi_caster import cast_args, get_constructor_inputs
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
+from wayfinder_paths.core.utils.evm_transaction import send_transaction
 from wayfinder_paths.core.utils.retry import exponential_backoff_s
 from wayfinder_paths.core.utils.solidity import (
     SOLC_VERSION,
     compile_solidity_standard_json,
     extract_abi_and_bytecode,
 )
-from wayfinder_paths.core.utils.transaction import send_transaction
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 
 async def build_deploy_transaction(

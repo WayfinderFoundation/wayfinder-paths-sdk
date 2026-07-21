@@ -7,14 +7,14 @@ from typing import Any
 from loguru import logger
 from web3 import AsyncWeb3
 
-from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils import evm_client as web3_utils
 from wayfinder_paths.core.utils.abi_caster import cast_args
 from wayfinder_paths.core.utils.etherscan import (
     fetch_contract_abi,
     get_etherscan_transaction_link,
 )
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.proxy import resolve_proxy_implementation
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore

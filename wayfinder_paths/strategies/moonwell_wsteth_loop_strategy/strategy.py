@@ -31,8 +31,8 @@ from wayfinder_paths.core.strategies.descriptors import (
     Volatility,
 )
 from wayfinder_paths.core.strategies.Strategy import StatusDict, StatusTuple, Strategy
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
 from wayfinder_paths.core.utils.tokens import get_token_balance
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 from wayfinder_paths.policies.enso import ENSO_ROUTER, enso_swap
 from wayfinder_paths.policies.erc20 import erc20_spender_for_any_token
 from wayfinder_paths.policies.moonwell import (

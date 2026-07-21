@@ -30,8 +30,8 @@ from wayfinder_paths.core.constants.hyperliquid import (
     WITHDRAW_FEE_USD,
     HyperliquidMarketType,
 )
+from wayfinder_paths.core.utils.evm_transaction import send_transaction
 from wayfinder_paths.core.utils.tokens import build_send_transaction
-from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.mcp.arg_validation import optional_int
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore

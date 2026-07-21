@@ -20,6 +20,8 @@ from wayfinder_paths.core.constants.aerodrome_abi import (
 )
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.erc721_abi import ERC721_TRANSFER_EVENT_ABI
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
@@ -29,8 +31,6 @@ from wayfinder_paths.core.utils.tokens import (
     get_erc20_metadata,
     get_token_decimals,
 )
-from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 WEEK_SECONDS = 7 * 24 * 60 * 60
 EPOCH_SPECIAL_WINDOW_SECONDS = 60 * 60

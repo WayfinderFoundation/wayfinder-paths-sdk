@@ -5,7 +5,7 @@ from eth_account import Account
 
 from wayfinder_paths.adapters.boros_adapter import BorosAdapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ARBITRUM
-from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils import evm_client as web3_utils
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 ARBITRUM_USDT = "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9"

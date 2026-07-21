@@ -6,7 +6,7 @@ from eth_account import Account
 from wayfinder_paths.adapters.lido_adapter.adapter import LidoAdapter
 from wayfinder_paths.core.constants.chains import CHAIN_ID_ETHEREUM
 from wayfinder_paths.core.constants.lido_contracts import LIDO_BY_CHAIN
-from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils import evm_client as web3_utils
 from wayfinder_paths.core.utils.tokens import get_token_balance
 from wayfinder_paths.testing.gorlami import gorlami_configured
 

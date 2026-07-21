@@ -13,7 +13,7 @@ from wayfinder_paths.core.constants.contracts import (
     BASE_WETH,
 )
 from wayfinder_paths.core.constants.morpho_abi import MORPHO_BLUE_ABI
-from wayfinder_paths.core.utils import web3 as web3_utils
+from wayfinder_paths.core.utils import evm_client as web3_utils
 from wayfinder_paths.testing.gorlami import gorlami_configured
 
 pytestmark = pytest.mark.skipif(

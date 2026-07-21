@@ -10,8 +10,8 @@ from wayfinder_paths.core.clients.TokenClient import (
     TokenDetails,
 )
 from wayfinder_paths.core.constants.chains import CHAIN_ID_TO_CODE
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
 from wayfinder_paths.core.utils.tokens import get_erc20_metadata
-from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 
 class TokenAdapter(BaseAdapter):
