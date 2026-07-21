@@ -173,7 +173,7 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
             new=AsyncMock(side_effect=fake_ensure_allowance),
         ),
         patch(
-            "wayfinder_paths.mcp.tools.execute.send_transaction",
+            "wayfinder_paths.mcp.tools.execute.send_evm_transaction",
             new_callable=AsyncMock,
             return_value="0xtx",
         ) as send_transaction_mock,
@@ -287,7 +287,7 @@ async def test_execute_cross_chain_swap_waits_for_bridge(tmp_path: Path, monkeyp
             new=AsyncMock(side_effect=fake_ensure_allowance),
         ),
         patch(
-            "wayfinder_paths.mcp.tools.execute.send_transaction",
+            "wayfinder_paths.mcp.tools.execute.send_evm_transaction",
             new_callable=AsyncMock,
             return_value="0xsrctx",
         ),
@@ -382,7 +382,7 @@ async def test_execute_cross_chain_swap_failed_bridge_marks_failed(
             new=AsyncMock(side_effect=fake_ensure_allowance),
         ),
         patch(
-            "wayfinder_paths.mcp.tools.execute.send_transaction",
+            "wayfinder_paths.mcp.tools.execute.send_evm_transaction",
             new_callable=AsyncMock,
             return_value="0xsrctx",
         ),
@@ -463,7 +463,7 @@ async def test_execute_swap_prefers_quote_approval_address(tmp_path: Path, monke
         patch("wayfinder_paths.mcp.tools.execute.BRAP_CLIENT", fake_brap),
         patch("wayfinder_paths.mcp.tools.execute.ensure_allowance", ensure_mock),
         patch(
-            "wayfinder_paths.mcp.tools.execute.send_transaction",
+            "wayfinder_paths.mcp.tools.execute.send_evm_transaction",
             new_callable=AsyncMock,
             return_value="0xtx",
         ),

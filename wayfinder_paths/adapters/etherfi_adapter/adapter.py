@@ -22,7 +22,7 @@ from wayfinder_paths.core.constants.etherfi_contracts import (
     ETHERFI_BY_CHAIN,
 )
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
@@ -241,7 +241,7 @@ class EtherfiAdapter(BaseAdapter):
                 chain_id=chain_id,
                 value=amount_wei,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -281,7 +281,7 @@ class EtherfiAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -310,7 +310,7 @@ class EtherfiAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -336,7 +336,7 @@ class EtherfiAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -383,7 +383,7 @@ class EtherfiAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
 
             request_id: int | None = None
             if include_request_id:
@@ -438,7 +438,7 @@ class EtherfiAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
 
             request_id: int | None = None
             if include_request_id:
@@ -481,7 +481,7 @@ class EtherfiAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)

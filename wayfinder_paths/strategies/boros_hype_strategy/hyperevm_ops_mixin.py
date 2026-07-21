@@ -11,7 +11,7 @@ from typing import Any
 
 from loguru import logger
 
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 
 from .constants import (
     HYPE_NATIVE,
@@ -55,7 +55,7 @@ class BorosHypeHyperEvmOpsMixin:
                         from_address=address,
                         chain_id=HYPEREVM_CHAIN_ID,
                     )
-                    tx_hash = await send_transaction(
+                    tx_hash = await send_evm_transaction(
                         tx, self._sign_callback, wait_for_receipt=True
                     )
                     await asyncio.sleep(2)

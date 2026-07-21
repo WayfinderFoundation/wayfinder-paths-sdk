@@ -18,7 +18,7 @@ from wayfinder_paths.adapters.hyperliquid_adapter.paired_filler import (
     PairedFiller,
 )
 from wayfinder_paths.core.strategies.Strategy import StatusTuple
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 
 from .constants import (
     ARBITRUM_CHAIN_ID,
@@ -1210,7 +1210,7 @@ class BorosHypeWithdrawMixin:
                 chain_id=HYPEREVM_CHAIN_ID,
             )
 
-            txn_hash = await send_transaction(
+            txn_hash = await send_evm_transaction(
                 tx, self._sign_callback, wait_for_receipt=True
             )
             return True, txn_hash

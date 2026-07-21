@@ -14,7 +14,7 @@ from wayfinder_paths.core.constants.erc20_abi import (
 )
 from wayfinder_paths.core.constants.erc1155_abi import ERC1155_APPROVAL_ABI
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 
 NATIVE_TOKEN_ADDRESSES: set = {
     "0x0000000000000000000000000000000000000000",
@@ -286,7 +286,7 @@ async def ensure_erc1155_approval(
         from_address=owner,
         chain_id=chain_id,
     )
-    tx_hash = await send_transaction(tx, signing_callback)
+    tx_hash = await send_evm_transaction(tx, signing_callback)
     return True, tx_hash
 
 
@@ -316,7 +316,7 @@ async def ensure_allowance(
             spender_address=spender,
             amount=0,
         )
-        await send_transaction(
+        await send_evm_transaction(
             clear_transaction, signing_callback, confirmations=confirmations
         )
 
@@ -327,7 +327,7 @@ async def ensure_allowance(
         spender_address=spender,
         amount=approval_amount if approval_amount is not None else amount,
     )
-    txn_hash = await send_transaction(
+    txn_hash = await send_evm_transaction(
         approve_tx, signing_callback, confirmations=confirmations
     )
 

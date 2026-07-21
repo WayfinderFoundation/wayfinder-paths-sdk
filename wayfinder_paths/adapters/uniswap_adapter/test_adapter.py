@@ -130,7 +130,7 @@ class TestAddLiquidity:
                 return_value={"data": "0x"},
             ) as mock_encode,
             patch(
-                f"{BASE_MODULE}.send_transaction",
+                f"{BASE_MODULE}.send_evm_transaction",
                 new_callable=AsyncMock,
                 return_value="0xtxhash",
             ) as mock_send,
@@ -155,7 +155,7 @@ class TestAddLiquidity:
                 return_value={"data": "0x"},
             ) as mock_encode,
             patch(
-                f"{BASE_MODULE}.send_transaction",
+                f"{BASE_MODULE}.send_evm_transaction",
                 new_callable=AsyncMock,
                 return_value="0xtx",
             ),
@@ -176,7 +176,7 @@ class TestAddLiquidity:
                 return_value={"data": "0x"},
             ) as mock_encode,
             patch(
-                f"{BASE_MODULE}.send_transaction",
+                f"{BASE_MODULE}.send_evm_transaction",
                 new_callable=AsyncMock,
                 return_value="0xtx",
             ),
@@ -208,7 +208,7 @@ class TestIncreaseLiquidity:
                 return_value={"data": "0x"},
             ),
             patch(
-                f"{BASE_MODULE}.send_transaction",
+                f"{BASE_MODULE}.send_evm_transaction",
                 new_callable=AsyncMock,
                 return_value="0xtx_inc",
             ),
@@ -236,7 +236,7 @@ class TestRemoveLiquidity:
                 return_value={"data": "0x"},
             ) as mock_encode,
             patch(
-                f"{BASE_MODULE}.send_transaction",
+                f"{BASE_MODULE}.send_evm_transaction",
                 new_callable=AsyncMock,
                 return_value="0xtx_rm",
             ),
@@ -260,7 +260,7 @@ class TestCollectFees:
                 return_value={"data": "0x"},
             ) as mock_encode,
             patch(
-                f"{BASE_MODULE}.send_transaction",
+                f"{BASE_MODULE}.send_evm_transaction",
                 new_callable=AsyncMock,
                 return_value="0xtx_col",
             ),

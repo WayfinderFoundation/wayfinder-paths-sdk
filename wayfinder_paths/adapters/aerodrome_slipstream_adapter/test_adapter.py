@@ -891,7 +891,7 @@ async def test_ensure_erc721_approval_skips_tx_when_operator_already_approved(
         patch.object(slipstream_module, "web3_from_chain_id", _web3_ctx(mock_web3)),
         patch.object(slipstream_module, "encode_call", new=AsyncMock()) as mock_encode,
         patch.object(
-            slipstream_module, "send_transaction", new=AsyncMock()
+            slipstream_module, "send_evm_transaction", new=AsyncMock()
         ) as mock_send,
     ):
         ok, result = await adapter_with_signer._ensure_erc721_approval(
@@ -992,7 +992,7 @@ async def test_claim_fees_auto_discovers_reward_tokens(adapter_with_signer):
         ) as mock_encode,
         patch.object(
             aerodrome_common_module,
-            "send_transaction",
+            "send_evm_transaction",
             new=AsyncMock(return_value="0xtxhash"),
         ),
     ):
@@ -1216,7 +1216,7 @@ async def test_mint_position_uses_derived_mins_when_omitted(adapter_with_signer)
         ) as mock_encode,
         patch.object(
             slipstream_module,
-            "send_transaction",
+            "send_evm_transaction",
             new=AsyncMock(return_value="0xtxhash"),
         ),
         patch.object(
@@ -1289,7 +1289,7 @@ async def test_increase_liquidity_uses_derived_mins_when_omitted(adapter_with_si
         ) as mock_encode,
         patch.object(
             slipstream_module,
-            "send_transaction",
+            "send_evm_transaction",
             new=AsyncMock(return_value="0xtxhash"),
         ),
     ):
@@ -1347,7 +1347,7 @@ async def test_decrease_liquidity_uses_derived_mins_when_omitted(adapter_with_si
         ) as mock_encode,
         patch.object(
             slipstream_module,
-            "send_transaction",
+            "send_evm_transaction",
             new=AsyncMock(return_value="0xtxhash"),
         ),
     ):
@@ -1382,7 +1382,7 @@ async def test_mint_position_preserves_explicit_zero_mins(adapter_with_signer):
         ) as mock_encode,
         patch.object(
             slipstream_module,
-            "send_transaction",
+            "send_evm_transaction",
             new=AsyncMock(return_value="0xtxhash"),
         ),
         patch.object(

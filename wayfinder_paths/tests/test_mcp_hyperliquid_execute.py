@@ -368,7 +368,7 @@ def _deposit_patches(wallet, *, wait_result, ensure_mock):
             new=AsyncMock(return_value={"to": "0xbridge"}),
         ),
         patch(
-            "wayfinder_paths.mcp.tools.hyperliquid.send_transaction",
+            "wayfinder_paths.mcp.tools.hyperliquid.send_evm_transaction",
             new=AsyncMock(return_value="0x" + "ab" * 32),
         ),
         patch(

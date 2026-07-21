@@ -9,7 +9,7 @@ from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants.erc20_abi import ERC20_ABI
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
 from wayfinder_paths.core.utils.evm_helpers import resolve_chain_id
-from wayfinder_paths.core.utils.evm_transaction import send_transaction
+from wayfinder_paths.core.utils.evm_transaction import send_evm_transaction
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
@@ -219,7 +219,7 @@ class BalanceAdapter(BaseAdapter):
             chain_id=chain_id,
             amount=amount,
         )
-        tx_hash = await send_transaction(tx, signing_callback)
+        tx_hash = await send_evm_transaction(tx, signing_callback)
         return True, tx_hash
 
     async def _move_between_wallets(
@@ -254,7 +254,7 @@ class BalanceAdapter(BaseAdapter):
             and from_address.lower() == self.main_wallet_address.lower()
             else self.strategy_sign_callback
         )
-        tx_hash = await send_transaction(transaction, callback)
+        tx_hash = await send_evm_transaction(transaction, callback)
 
         if ledger_method:
             wallet_for_ledger = from_address if ledger_wallet == "from" else to_address

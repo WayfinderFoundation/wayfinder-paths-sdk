@@ -1045,7 +1045,7 @@ class TestPendleAdapter:
                 return_value=(True, "0xapprovehash"),
             ),
             patch(
-                "wayfinder_paths.adapters.pendle_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.pendle_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
                 return_value="0xtxhash123",
             ) as mock_send,

@@ -16,7 +16,7 @@ from wayfinder_paths.core.constants.pendle_abi import (
     PENDLE_ROUTER_STATIC_ABI,
 )
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import send_transaction
+from wayfinder_paths.core.utils.evm_transaction import send_evm_transaction
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     get_token_balance,
@@ -309,7 +309,7 @@ class PendleAdapter(BaseAdapter):
     async def _send_tx(self, tx: dict[str, Any]) -> tuple[bool, Any]:
         if self.sign_callback is None:
             raise ValueError("sign_callback is required for tx execution")
-        txn_hash = await send_transaction(tx, self.sign_callback)
+        txn_hash = await send_evm_transaction(tx, self.sign_callback)
         return True, txn_hash
 
     # ---------------------------

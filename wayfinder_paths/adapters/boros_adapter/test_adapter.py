@@ -905,7 +905,7 @@ class TestBorosAdapter:
                 ),
             ),
             patch(
-                "wayfinder_paths.adapters.boros_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.boros_adapter.adapter.send_evm_transaction",
                 new=AsyncMock(return_value="0xapprove"),
             ),
             patch.object(
@@ -986,7 +986,7 @@ class TestBorosAdapter:
                 ),
             ),
             patch(
-                "wayfinder_paths.adapters.boros_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.boros_adapter.adapter.send_evm_transaction",
                 new=AsyncMock(return_value="0xapprove"),
             ),
             patch.object(
@@ -1215,7 +1215,7 @@ class TestBorosAdapter:
                 ),
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.boros_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.boros_adapter.adapter.send_evm_transaction",
                 new=AsyncMock(return_value="0xadd"),
             ),
         ):
@@ -1254,7 +1254,7 @@ class TestBorosAdapter:
                 ),
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.boros_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.boros_adapter.adapter.send_evm_transaction",
                 new=AsyncMock(return_value="0xremove"),
             ),
         ):
@@ -1354,7 +1354,7 @@ class TestBorosAdapter:
                 new=AsyncMock(return_value={"chainId": 999}),
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.boros_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.boros_adapter.adapter.send_evm_transaction",
                 new=AsyncMock(return_value="0xtx"),
             ),
         ):
@@ -1412,7 +1412,7 @@ class TestBorosAdapter:
                 new=AsyncMock(return_value={"chainId": 42161}),
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.boros_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.boros_adapter.adapter.send_evm_transaction",
                 new=AsyncMock(return_value="0xtx"),
             ),
         ):

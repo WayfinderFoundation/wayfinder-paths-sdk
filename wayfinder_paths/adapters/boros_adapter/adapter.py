@@ -26,7 +26,7 @@ from wayfinder_paths.core.constants.contracts import (
 )
 from wayfinder_paths.core.constants.hype_oft_abi import HYPE_OFT_ABI
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
@@ -513,7 +513,7 @@ class BorosAdapter(BaseAdapter):
                     f"Broadcasting calldata {i + 1}/{len(calldatas)} to {tx.get('to')}"
                 )
                 try:
-                    tx_hash = await send_transaction(
+                    tx_hash = await send_evm_transaction(
                         tx, self.sign_callback, wait_for_receipt=True
                     )
                     results.append({"ok": True, "res": {"tx_hash": tx_hash}})
@@ -540,7 +540,7 @@ class BorosAdapter(BaseAdapter):
                 calldata, from_address=self.wallet_address
             )
             try:
-                tx_hash = await send_transaction(
+                tx_hash = await send_evm_transaction(
                     tx, self.sign_callback, wait_for_receipt=True
                 )
                 return True, {
@@ -3030,7 +3030,7 @@ class BorosAdapter(BaseAdapter):
                     spender_address=to_checksum_address(spender),
                     amount=int(amount_wei),
                 )
-                approve_hash = await send_transaction(
+                approve_hash = await send_evm_transaction(
                     approve_tx, self.sign_callback, wait_for_receipt=True
                 )
                 approve_res = {"tx_hash": approve_hash}
@@ -3331,7 +3331,7 @@ class BorosAdapter(BaseAdapter):
                     from_address=self.wallet_address,
                     chain_id=self.chain_id,
                 )
-                tx_hash = await send_transaction(
+                tx_hash = await send_evm_transaction(
                     tx, self.sign_callback, wait_for_receipt=True
                 )
                 self._invalidate_lp_cache()
@@ -3402,7 +3402,7 @@ class BorosAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(
+            tx_hash = await send_evm_transaction(
                 tx, self.sign_callback, wait_for_receipt=True
             )
             self._invalidate_lp_cache()
@@ -3603,7 +3603,7 @@ class BorosAdapter(BaseAdapter):
         )
 
         try:
-            tx_hash = await send_transaction(
+            tx_hash = await send_evm_transaction(
                 tx, self.sign_callback, wait_for_receipt=True
             )
             return True, {
@@ -3724,7 +3724,7 @@ class BorosAdapter(BaseAdapter):
                 chain_id=CHAIN_ID_HYPEREVM,
                 value=int(total_value_wei),
             )
-            tx_hash = await send_transaction(
+            tx_hash = await send_evm_transaction(
                 tx, self.sign_callback, wait_for_receipt=True
             )
             return True, {
@@ -3832,7 +3832,7 @@ class BorosAdapter(BaseAdapter):
                 chain_id=int(self.chain_id),
                 value=int(native_fee_wei),
             )
-            tx_hash = await send_transaction(
+            tx_hash = await send_evm_transaction(
                 tx, self.sign_callback, wait_for_receipt=True
             )
             return True, {
@@ -4186,7 +4186,7 @@ class BorosAdapter(BaseAdapter):
             }
 
             try:
-                tx_hash = await send_transaction(
+                tx_hash = await send_evm_transaction(
                     tx, self.sign_callback, wait_for_receipt=True
                 )
                 self._invalidate_lp_cache()

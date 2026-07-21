@@ -21,7 +21,7 @@ from wayfinder_paths.core.constants.aerodrome_abi import (
 from wayfinder_paths.core.constants.base import MAX_UINT256
 from wayfinder_paths.core.constants.erc721_abi import ERC721_TRANSFER_EVENT_ABI
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
@@ -392,7 +392,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -476,7 +476,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             token_id = await self._minted_erc721_token_id(
                 nft_contract=self.core_contracts["voting_escrow"],
                 tx_hash=tx_hash,
@@ -524,7 +524,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             token_id = await self._minted_erc721_token_id(
                 nft_contract=self.core_contracts["voting_escrow"],
                 tx_hash=tx_hash,
@@ -568,7 +568,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -593,7 +593,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -615,7 +615,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -637,7 +637,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -659,7 +659,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -698,7 +698,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -726,7 +726,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -1045,7 +1045,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -1093,7 +1093,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -1148,7 +1148,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -1172,7 +1172,7 @@ class AerodromeVotingRewardsMixin:
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)

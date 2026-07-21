@@ -42,7 +42,7 @@ from wayfinder_paths.core.constants.hyperliquid import (
     DEFAULT_HYPERLIQUID_BUILDER_FEE_TENTHS_BP,
     HYPE_FEE_WALLET,
 )
-from wayfinder_paths.core.utils.evm_transaction import send_transaction
+from wayfinder_paths.core.utils.evm_transaction import send_evm_transaction
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 
 ARBITRUM_CHAIN_ID = "0xa4b1"
@@ -1809,7 +1809,7 @@ class HyperliquidAdapter(BaseAdapter):
             )
 
         try:
-            tx_hash = await send_transaction(
+            tx_hash = await send_evm_transaction(
                 tx, self.sign_callback, wait_for_receipt=True
             )
             return True, tx_hash

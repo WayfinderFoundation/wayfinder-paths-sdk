@@ -353,7 +353,7 @@ class TestAaveV3Adapter:
                 AsyncMock(return_value={"data": "0xdeadbeef"}),
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_evm_transaction",
                 AsyncMock(return_value="0xtx"),
             ),
         ):
@@ -365,7 +365,7 @@ class TestAaveV3Adapter:
 
     @pytest.mark.asyncio
     @patch(
-        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_transaction",
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_evm_transaction",
         new_callable=AsyncMock,
         return_value="0xabc",
     )
@@ -443,7 +443,7 @@ class TestAaveV3Adapter:
 
     @pytest.mark.asyncio
     @patch(
-        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_transaction",
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_evm_transaction",
         new_callable=AsyncMock,
         return_value="0xabc",
     )
@@ -470,7 +470,7 @@ class TestAaveV3Adapter:
 
     @pytest.mark.asyncio
     @patch(
-        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_transaction",
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_evm_transaction",
         new_callable=AsyncMock,
         return_value="0xabc",
     )
@@ -496,7 +496,7 @@ class TestAaveV3Adapter:
 
     @pytest.mark.asyncio
     @patch(
-        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_transaction",
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_evm_transaction",
         new_callable=AsyncMock,
         return_value="0xabc",
     )
@@ -518,7 +518,7 @@ class TestAaveV3Adapter:
 
     @pytest.mark.asyncio
     @patch(
-        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_transaction",
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_evm_transaction",
         new_callable=AsyncMock,
         return_value="0xabc",
     )

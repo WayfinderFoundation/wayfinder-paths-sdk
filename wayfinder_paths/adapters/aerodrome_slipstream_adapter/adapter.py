@@ -31,7 +31,7 @@ from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
@@ -455,7 +455,7 @@ class AerodromeSlipstreamAdapter(
             from_address=owner,
             chain_id=CHAIN_ID_BASE,
         )
-        tx_hash = await send_transaction(tx, self.sign_callback)
+        tx_hash = await send_evm_transaction(tx, self.sign_callback)
         return True, tx_hash
 
     async def _pool_and_gauge_for_position(
@@ -1810,7 +1810,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=owner,
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             token_id = await self._minted_erc721_token_id(
                 nft_contract=npm_address,
                 tx_hash=tx_hash,
@@ -1918,7 +1918,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=wallet,
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, {
                 "tx": tx_hash,
                 "deployment_variant": variant,
@@ -1998,7 +1998,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=wallet,
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, {
                 "tx": tx_hash,
                 "deployment_variant": variant,
@@ -2044,7 +2044,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=wallet,
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, {
                 "tx": tx_hash,
                 "deployment_variant": variant,
@@ -2080,7 +2080,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=wallet,
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, {
                 "tx": tx_hash,
                 "deployment_variant": variant,
@@ -2149,7 +2149,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=wallet,
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -2172,7 +2172,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -2195,7 +2195,7 @@ class AerodromeSlipstreamAdapter(
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)

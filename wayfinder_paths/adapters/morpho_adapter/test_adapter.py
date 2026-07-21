@@ -111,7 +111,7 @@ async def test_lend_encodes_supply(adapter):
             new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
         ) as mock_encode,
         patch(
-            "wayfinder_paths.adapters.morpho_adapter.adapter.send_transaction",
+            "wayfinder_paths.adapters.morpho_adapter.adapter.send_evm_transaction",
             new=AsyncMock(return_value="0xabc"),
         ),
     ):
@@ -147,7 +147,7 @@ async def test_supply_collateral_uses_collateral_token(adapter):
             new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
         ),
         patch(
-            "wayfinder_paths.adapters.morpho_adapter.adapter.send_transaction",
+            "wayfinder_paths.adapters.morpho_adapter.adapter.send_evm_transaction",
             new=AsyncMock(return_value="0xabc"),
         ),
     ):
@@ -186,7 +186,7 @@ async def test_repay_full_uses_shares(adapter):
             new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
         ) as mock_encode,
         patch(
-            "wayfinder_paths.adapters.morpho_adapter.adapter.send_transaction",
+            "wayfinder_paths.adapters.morpho_adapter.adapter.send_evm_transaction",
             new=AsyncMock(return_value="0xabc"),
         ),
     ):
@@ -224,7 +224,7 @@ async def test_withdraw_full_uses_shares(adapter):
             new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
         ) as mock_encode,
         patch(
-            "wayfinder_paths.adapters.morpho_adapter.adapter.send_transaction",
+            "wayfinder_paths.adapters.morpho_adapter.adapter.send_evm_transaction",
             new=AsyncMock(return_value="0xabc"),
         ),
     ):
@@ -326,7 +326,7 @@ async def test_claim_merkl_rewards_noop_when_none(adapter):
             new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
         ) as mock_encode,
         patch(
-            "wayfinder_paths.adapters.morpho_adapter.adapter.send_transaction",
+            "wayfinder_paths.adapters.morpho_adapter.adapter.send_evm_transaction",
             new=AsyncMock(return_value="0xabc"),
         ) as mock_send,
     ):
@@ -370,7 +370,7 @@ async def test_claim_merkl_rewards_encodes_claim(adapter):
             new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
         ) as mock_encode,
         patch(
-            "wayfinder_paths.adapters.morpho_adapter.adapter.send_transaction",
+            "wayfinder_paths.adapters.morpho_adapter.adapter.send_evm_transaction",
             new=AsyncMock(return_value="0xabc"),
         ),
     ):
@@ -413,7 +413,7 @@ async def test_claim_urd_rewards_sends_tx_data(adapter):
             new=AsyncMock(return_value=dists),
         ),
         patch(
-            "wayfinder_paths.adapters.morpho_adapter.adapter.send_transaction",
+            "wayfinder_paths.adapters.morpho_adapter.adapter.send_evm_transaction",
             new=AsyncMock(return_value="0xaaa"),
         ) as mock_send,
     ):
@@ -613,7 +613,7 @@ async def test_vault_deposit_approves_asset_and_calls_deposit(adapter):
             new=AsyncMock(return_value={"chainId": CHAIN_ID_BASE}),
         ) as mock_encode,
         patch(
-            "wayfinder_paths.adapters.morpho_adapter.adapter.send_transaction",
+            "wayfinder_paths.adapters.morpho_adapter.adapter.send_evm_transaction",
             new=AsyncMock(return_value="0xabc"),
         ),
     ):

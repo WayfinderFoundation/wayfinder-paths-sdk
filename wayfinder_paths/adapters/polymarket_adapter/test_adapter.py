@@ -78,7 +78,9 @@ class TestPolymarketAdapter:
         monkeypatch.setattr(
             polymarket_adapter_module, "build_send_transaction", fake_build
         )
-        monkeypatch.setattr(polymarket_adapter_module, "send_transaction", fake_send)
+        monkeypatch.setattr(
+            polymarket_adapter_module, "send_evm_transaction", fake_send
+        )
 
         ok, out = await adapter.fund_deposit_wallet(amount_raw=1_000_000)
         assert ok is True
@@ -966,7 +968,7 @@ class TestPolymarketAdapter:
         )
         monkeypatch.setattr(
             polymarket_adapter_module,
-            "send_transaction",
+            "send_evm_transaction",
             AsyncMock(return_value="0xtransfer"),
         )
 
@@ -1020,7 +1022,7 @@ class TestPolymarketAdapter:
         )
         monkeypatch.setattr(
             polymarket_adapter_module,
-            "send_transaction",
+            "send_evm_transaction",
             AsyncMock(return_value="0xtransfer"),
         )
 
@@ -1340,7 +1342,7 @@ class TestPolymarketAdapter:
         )
         monkeypatch.setattr(
             polymarket_adapter_module,
-            "send_transaction",
+            "send_evm_transaction",
             AsyncMock(return_value="0xtransfer"),
         )
 

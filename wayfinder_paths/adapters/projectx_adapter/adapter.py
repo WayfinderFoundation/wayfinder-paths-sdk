@@ -31,7 +31,7 @@ from wayfinder_paths.core.constants.uniswap_v3_abi import (
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
 from wayfinder_paths.core.utils.evm_transaction import (
     encode_call,
-    send_transaction,
+    send_evm_transaction,
     wait_for_evm_transaction,
 )
 from wayfinder_paths.core.utils.multicall import (
@@ -859,7 +859,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
                 from_address=self.owner,
                 chain_id=PROJECTX_CHAIN_ID,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, str(tx_hash)
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)

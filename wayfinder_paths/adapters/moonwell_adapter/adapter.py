@@ -29,7 +29,7 @@ from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
 from wayfinder_paths.core.utils.evm_transaction import (
     _is_gorlami_fork_chain,
     encode_call,
-    send_transaction,
+    send_evm_transaction,
 )
 from wayfinder_paths.core.utils.multicall import (
     Call,
@@ -228,7 +228,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=cid,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_evm_transaction(transaction, self.sign_callback)
         return (True, txn_hash)
 
     async def unlend(
@@ -257,7 +257,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=cid,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_evm_transaction(transaction, self.sign_callback)
         return (True, txn_hash)
 
     async def borrow(
@@ -286,7 +286,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=cid,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_evm_transaction(transaction, self.sign_callback)
         return (True, txn_hash)
 
     async def repay(
@@ -333,7 +333,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=cid,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_evm_transaction(transaction, self.sign_callback)
         return (True, txn_hash)
 
     async def set_collateral(
@@ -357,7 +357,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=cid,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_evm_transaction(transaction, self.sign_callback)
 
         try:
             async with web3_from_chain_id(cid) as web3:
@@ -429,7 +429,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=cid,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_evm_transaction(transaction, self.sign_callback)
         return (True, txn_hash)
 
     async def claim_rewards(
@@ -471,7 +471,7 @@ class MoonwellAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=cid,
         )
-        await send_transaction(transaction, self.sign_callback)
+        await send_evm_transaction(transaction, self.sign_callback)
         return True, rewards
 
     async def _can_claim_rewards_on_fork(
@@ -1930,5 +1930,5 @@ class MoonwellAdapter(BaseAdapter):
             chain_id=cid,
             value=amount,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_evm_transaction(transaction, self.sign_callback)
         return (True, txn_hash)

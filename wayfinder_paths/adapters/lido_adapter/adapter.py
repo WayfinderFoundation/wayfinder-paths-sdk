@@ -18,7 +18,7 @@ from wayfinder_paths.core.constants.lido_abi import (
 )
 from wayfinder_paths.core.constants.lido_contracts import LIDO_BY_CHAIN
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
@@ -151,7 +151,7 @@ class LidoAdapter(BaseAdapter):
                     chain_id=chain_id,
                     value=amount_wei,
                 )
-                tx_hash = await send_transaction(tx, self.sign_callback)
+                tx_hash = await send_evm_transaction(tx, self.sign_callback)
                 return True, tx_hash
 
             if receive != "wstETH":
@@ -173,7 +173,7 @@ class LidoAdapter(BaseAdapter):
                 chain_id=chain_id,
                 value=amount_wei,
             )
-            stake_hash = await send_transaction(stake_tx, self.sign_callback)
+            stake_hash = await send_evm_transaction(stake_tx, self.sign_callback)
 
             try:
                 after = await get_token_balance(
@@ -209,7 +209,7 @@ class LidoAdapter(BaseAdapter):
                     from_address=self.wallet_address,
                     chain_id=chain_id,
                 )
-                wrap_hash = await send_transaction(wrap_tx, self.sign_callback)
+                wrap_hash = await send_evm_transaction(wrap_tx, self.sign_callback)
                 return True, {
                     "stake_tx": stake_hash,
                     "wrap_tx": wrap_hash,
@@ -255,7 +255,7 @@ class LidoAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -280,7 +280,7 @@ class LidoAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -339,7 +339,7 @@ class LidoAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, {
                 "tx": tx_hash,
                 "asset": asset,
@@ -418,7 +418,7 @@ class LidoAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)

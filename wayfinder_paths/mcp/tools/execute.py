@@ -7,7 +7,7 @@ from eth_utils import to_checksum_address
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
-from wayfinder_paths.core.utils.evm_transaction import send_transaction
+from wayfinder_paths.core.utils.evm_transaction import send_evm_transaction
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
@@ -107,7 +107,7 @@ async def _broadcast(
     confirmations: int = 0,
 ) -> tuple[bool, dict[str, Any]]:
     try:
-        txn_hash = await send_transaction(
+        txn_hash = await send_evm_transaction(
             tx,
             sign_callback,
             wait_for_receipt=wait_for_receipt,

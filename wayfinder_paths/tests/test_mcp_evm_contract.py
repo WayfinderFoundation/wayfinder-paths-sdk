@@ -348,7 +348,7 @@ async def test_contract_execute_encodes_sends_and_annotates():
             fake_encode,
         ),
         patch(
-            "wayfinder_paths.mcp.tools.evm_contract.send_transaction",
+            "wayfinder_paths.mcp.tools.evm_contract.send_evm_transaction",
             fake_send,
         ),
         patch(

@@ -20,7 +20,7 @@ from wayfinder_paths.core.utils.evm_transaction import (
     _get_transaction_from_address,
     _nonce_transaction,
     _send_sponsored_transaction,
-    send_transaction,
+    send_evm_transaction,
 )
 
 RANDOM_USER_0 = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed"
@@ -440,7 +440,7 @@ class TestSendTransaction:
 
         sign_callback.wallet_address = None
         with pytest.raises(TransactionRevertedError, match="Transaction reverted"):
-            await send_transaction(
+            await send_evm_transaction(
                 {"from": RANDOM_USER_0, "chainId": 1},
                 sign_callback,
                 wait_for_receipt=True,
@@ -485,7 +485,7 @@ class TestSendTransaction:
             return b"\x00"
 
         sign_callback.wallet_address = None
-        txn_hash = await send_transaction(
+        txn_hash = await send_evm_transaction(
             {"from": RANDOM_USER_0, "chainId": 1},
             sign_callback,
             wait_for_receipt=True,
@@ -529,7 +529,7 @@ class TestSendTransaction:
             return b"\x00"
 
         sign_callback.wallet_address = RANDOM_USER_0
-        txn_hash = await send_transaction(
+        txn_hash = await send_evm_transaction(
             {"from": RANDOM_USER_0, "chainId": 1},
             sign_callback,
             wait_for_receipt=True,

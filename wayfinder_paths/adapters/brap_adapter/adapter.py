@@ -11,7 +11,7 @@ from wayfinder_paths.core.adapters.models import SWAP
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.clients.LedgerClient import TransactionRecord
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
-from wayfinder_paths.core.utils.evm_transaction import send_transaction
+from wayfinder_paths.core.utils.evm_transaction import send_evm_transaction
 from wayfinder_paths.core.utils.tokens import (
     ensure_allowance,
     is_native_token,
@@ -195,7 +195,7 @@ class BRAPAdapter(BaseAdapter):
                 signing_callback=self.sign_callback,
             )
 
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_evm_transaction(transaction, self.sign_callback)
         self.logger.info(f"Swap broadcast: tx={txn_hash}")
 
         try:

@@ -2,7 +2,7 @@
 
 Built on the ``AsyncClient`` lifecycle in ``svm_client.py``. Kept separate from
 the balance/ATA read helpers so the send/confirm surface — the fund-moving part
-— stays isolated. ``send_svm_transaction`` mirrors the EVM ``send_transaction``
+— stays isolated. ``send_svm_transaction`` mirrors the EVM ``send_evm_transaction``
 flow: sponsored backend broadcast for remote wallets when enabled, otherwise
 compute-budget surgery + sign callback + local broadcast + confirmation.
 
@@ -257,7 +257,7 @@ async def wait_for_svm_transaction(
 
 
 # ---------------------------------------------------------------------------
-# Send flow (mirrors evm_transaction.py::send_transaction)
+# Send flow (mirrors evm_transaction.py::send_evm_transaction)
 # ---------------------------------------------------------------------------
 
 
@@ -306,7 +306,7 @@ async def send_svm_transaction(
     if sign_callback is None:
         raise ValueError("sign_callback must be provided to send transaction")
 
-    # Mirrors evm_transaction.send_transaction: remote wallets let the backend
+    # Mirrors evm_transaction.send_evm_transaction: remote wallets let the backend
     # sign, broadcast, and cover gas. Every sign callback carries
     # `wallet_address` (None for local keys). EVM also gates on
     # `chain_id in GAS_SPONSORED_CHAIN_IDS and not fork`; SVM has a single

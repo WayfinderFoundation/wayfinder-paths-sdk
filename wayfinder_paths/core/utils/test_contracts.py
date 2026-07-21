@@ -64,7 +64,7 @@ async def test_deploy_contract_extracts_constructor_args_from_tx_data():
             new=AsyncMock(return_value={"data": "0x6060deadbeef"}),
         ),
         patch(
-            "wayfinder_paths.core.utils.contracts.send_transaction",
+            "wayfinder_paths.core.utils.contracts.send_evm_transaction",
             new=AsyncMock(return_value=tx_hash),
         ),
         patch(
@@ -136,7 +136,7 @@ async def test_deploy_contract_verification_failure_is_nonfatal():
             new=AsyncMock(return_value={"data": "0x6060"}),
         ),
         patch(
-            "wayfinder_paths.core.utils.contracts.send_transaction",
+            "wayfinder_paths.core.utils.contracts.send_evm_transaction",
             new=AsyncMock(return_value=tx_hash),
         ),
         patch(

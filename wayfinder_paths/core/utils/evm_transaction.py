@@ -352,7 +352,7 @@ async def wait_for_evm_transaction(
         return receipt
 
 
-async def send_transaction(
+async def send_evm_transaction(
     transaction: dict,
     sign_callback: Callable,
     wait_for_receipt: bool = True,

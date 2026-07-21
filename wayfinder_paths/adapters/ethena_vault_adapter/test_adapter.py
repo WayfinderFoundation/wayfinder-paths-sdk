@@ -375,7 +375,7 @@ class TestEthenaVaultAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                f"{ADAPTER_MODULE}.send_transaction",
+                f"{ADAPTER_MODULE}.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
         ):
@@ -430,7 +430,7 @@ class TestEthenaVaultAdapter:
                 f"{ADAPTER_MODULE}.encode_call", new_callable=AsyncMock
             ) as mock_encode,
             patch(
-                f"{ADAPTER_MODULE}.send_transaction", new_callable=AsyncMock
+                f"{ADAPTER_MODULE}.send_evm_transaction", new_callable=AsyncMock
             ) as mock_send,
         ):
             mock_encode.return_value = {
@@ -466,7 +466,7 @@ class TestEthenaVaultAdapter:
                 f"{ADAPTER_MODULE}.encode_call", new_callable=AsyncMock
             ) as mock_encode,
             patch(
-                f"{ADAPTER_MODULE}.send_transaction", new_callable=AsyncMock
+                f"{ADAPTER_MODULE}.send_evm_transaction", new_callable=AsyncMock
             ) as mock_send,
         ):
             mock_encode.return_value = {
@@ -514,7 +514,7 @@ class TestEthenaVaultAdapter:
                 f"{ADAPTER_MODULE}.encode_call", new_callable=AsyncMock
             ) as mock_encode,
             patch(
-                f"{ADAPTER_MODULE}.send_transaction", new_callable=AsyncMock
+                f"{ADAPTER_MODULE}.send_evm_transaction", new_callable=AsyncMock
             ) as mock_send,
         ):
             mock_encode.return_value = {

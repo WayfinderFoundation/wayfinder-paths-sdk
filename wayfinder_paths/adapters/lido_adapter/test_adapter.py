@@ -85,7 +85,7 @@ async def test_stake_eth_receive_steth_calls_submit():
             return_value={"to": entry["steth"], "data": "0x"},
         ) as mock_encode,
         patch(
-            "wayfinder_paths.adapters.lido_adapter.adapter.send_transaction",
+            "wayfinder_paths.adapters.lido_adapter.adapter.send_evm_transaction",
             new_callable=AsyncMock,
             return_value="0xstake",
         ) as mock_send,
@@ -137,7 +137,7 @@ async def test_stake_eth_receive_wsteth_stakes_then_wraps_delta():
             side_effect=[{"tx": "stake"}, {"tx": "wrap"}],
         ) as mock_encode,
         patch(
-            "wayfinder_paths.adapters.lido_adapter.adapter.send_transaction",
+            "wayfinder_paths.adapters.lido_adapter.adapter.send_evm_transaction",
             new_callable=AsyncMock,
             side_effect=["0xstake", "0xwrap"],
         ) as mock_send,
@@ -182,7 +182,7 @@ async def test_request_withdrawal_steth_splits_and_calls_queue():
             return_value={"tx": "req"},
         ) as mock_encode,
         patch(
-            "wayfinder_paths.adapters.lido_adapter.adapter.send_transaction",
+            "wayfinder_paths.adapters.lido_adapter.adapter.send_evm_transaction",
             new_callable=AsyncMock,
             return_value="0xreq",
         ),
@@ -231,7 +231,7 @@ async def test_claim_withdrawals_sorts_and_dedupes_ids():
             return_value={"tx": "claim"},
         ) as mock_encode,
         patch(
-            "wayfinder_paths.adapters.lido_adapter.adapter.send_transaction",
+            "wayfinder_paths.adapters.lido_adapter.adapter.send_evm_transaction",
             new_callable=AsyncMock,
             return_value="0xclaim",
         ),

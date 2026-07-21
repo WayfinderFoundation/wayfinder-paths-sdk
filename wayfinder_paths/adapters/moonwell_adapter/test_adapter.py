@@ -497,7 +497,7 @@ class TestMoonwellAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
         ):
@@ -527,7 +527,7 @@ class TestMoonwellAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
         ):
@@ -568,7 +568,7 @@ class TestMoonwellAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
         ):
@@ -602,7 +602,7 @@ class TestMoonwellAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
         ):
@@ -629,7 +629,7 @@ class TestMoonwellAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
         ):
@@ -668,7 +668,7 @@ class TestMoonwellAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
             patch(
@@ -710,7 +710,7 @@ class TestMoonwellAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
         ):
@@ -1180,7 +1180,7 @@ class TestMoonwellAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.moonwell_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
         ):

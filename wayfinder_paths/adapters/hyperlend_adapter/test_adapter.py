@@ -543,7 +543,7 @@ class TestHyperlendAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
             patch.object(
@@ -579,7 +579,7 @@ class TestHyperlendAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
             patch.object(
@@ -615,7 +615,7 @@ class TestHyperlendAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
         ):
@@ -648,7 +648,7 @@ class TestHyperlendAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
         ):
@@ -694,7 +694,7 @@ class TestHyperlendAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
         ):
@@ -733,7 +733,7 @@ class TestHyperlendAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
         ):
@@ -796,7 +796,7 @@ class TestHyperlendAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
         ):
@@ -861,7 +861,7 @@ class TestHyperlendAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
         ):
@@ -917,7 +917,7 @@ class TestHyperlendAdapter:
                 new_callable=AsyncMock,
             ) as mock_encode,
             patch(
-                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_transaction",
+                "wayfinder_paths.adapters.hyperlend_adapter.adapter.send_evm_transaction",
                 new_callable=AsyncMock,
             ) as mock_send,
         ):

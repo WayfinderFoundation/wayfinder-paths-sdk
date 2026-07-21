@@ -60,7 +60,7 @@ from wayfinder_paths.core.constants.polymarket_abi import (
     TOKEN_UNWRAP_ABI,
 )
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import send_transaction
+from wayfinder_paths.core.utils.evm_transaction import send_evm_transaction
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
@@ -1219,7 +1219,7 @@ class PolymarketAdapter(BaseAdapter):
             chain_id=from_chain_id,
             amount=base_units,
         )
-        tx_hash = await send_transaction(tx, sign_cb)
+        tx_hash = await send_evm_transaction(tx, sign_cb)
 
         return True, {
             "method": "polymarket_bridge",
@@ -1352,7 +1352,7 @@ class PolymarketAdapter(BaseAdapter):
             chain_id=POLYGON_CHAIN_ID,
             amount=base_units,
         )
-        tx_hash = await send_transaction(tx, sign_cb)
+        tx_hash = await send_evm_transaction(tx, sign_cb)
 
         return True, {
             "method": "polymarket_bridge",
@@ -1554,7 +1554,7 @@ class PolymarketAdapter(BaseAdapter):
                 chain_id=POLYGON_CHAIN_ID,
                 amount=amount_raw,
             )
-            tx_hash = await send_transaction(tx, sign_cb, confirmations=1)
+            tx_hash = await send_evm_transaction(tx, sign_cb, confirmations=1)
             return True, {
                 "deposit_wallet": deposit_wallet,
                 "amount_raw": amount_raw,

@@ -392,7 +392,7 @@ async def test_claim_pool_fees_unstaked_reads_pending_claimables(adapter_with_si
         ) as mock_encode,
         patch.object(
             aerodrome_adapter_module,
-            "send_transaction",
+            "send_evm_transaction",
             new=AsyncMock(return_value="0xtxhash"),
         ),
     ):
@@ -664,7 +664,7 @@ async def test_create_lock_for_uses_receiver_for_minted_token_lookup(
         ) as mock_encode,
         patch.object(
             aerodrome_common_module,
-            "send_transaction",
+            "send_evm_transaction",
             new=AsyncMock(return_value="0xtxhash"),
         ),
         patch.object(
@@ -713,7 +713,7 @@ async def test_increase_unlock_time_encodes_expected_call(adapter_with_signer):
         ) as mock_encode,
         patch.object(
             aerodrome_common_module,
-            "send_transaction",
+            "send_evm_transaction",
             new=AsyncMock(return_value="0xtxhash"),
         ),
     ):
@@ -750,7 +750,7 @@ async def test_lock_management_methods_encode_expected_call(
         ) as mock_encode,
         patch.object(
             aerodrome_common_module,
-            "send_transaction",
+            "send_evm_transaction",
             new=AsyncMock(return_value="0xtxhash"),
         ),
     ):
@@ -789,7 +789,7 @@ async def test_vote_skips_window_check_when_disabled(adapter_with_signer):
         ) as mock_encode,
         patch.object(
             aerodrome_common_module,
-            "send_transaction",
+            "send_evm_transaction",
             new=AsyncMock(return_value="0xtxhash"),
         ),
     ):
@@ -842,7 +842,7 @@ async def test_claim_bribes_auto_discovers_reward_tokens(adapter_with_signer):
         ) as mock_encode,
         patch.object(
             aerodrome_common_module,
-            "send_transaction",
+            "send_evm_transaction",
             new=AsyncMock(return_value="0xtxhash"),
         ),
     ):
@@ -888,7 +888,7 @@ async def test_claim_fees_uses_explicit_token_lists_without_lookup(adapter_with_
         ) as mock_encode,
         patch.object(
             aerodrome_common_module,
-            "send_transaction",
+            "send_evm_transaction",
             new=AsyncMock(return_value="0xtxhash"),
         ),
     ):

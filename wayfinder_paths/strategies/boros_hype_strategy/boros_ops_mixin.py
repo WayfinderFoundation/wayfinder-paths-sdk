@@ -12,7 +12,7 @@ from typing import Any
 
 from loguru import logger
 
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 
 from .constants import (
     BOROS_HYPE_MARKET_ID,
@@ -155,7 +155,7 @@ class BorosHypeBorosOpsMixin:
                             from_address=wallet_address,
                             chain_id=HYPEREVM_CHAIN_ID,
                         )
-                        tx_hash = await send_transaction(
+                        tx_hash = await send_evm_transaction(
                             tx, self._sign_callback, wait_for_receipt=True
                         )
                         logger.info(f"WHYPE unwrap tx={tx_hash}")

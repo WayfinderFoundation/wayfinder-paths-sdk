@@ -189,7 +189,7 @@ async def test_mint_from_balances_adjusts_ticks_and_uses_int_min_amounts(monkeyp
     mock_encode_call = AsyncMock(return_value={"chainId": 8453, "data": "0x"})
     monkeypatch.setattr(uniswap_base_module, "encode_call", mock_encode_call)
     monkeypatch.setattr(
-        uniswap_base_module, "send_transaction", AsyncMock(return_value="0xtxhash")
+        uniswap_base_module, "send_evm_transaction", AsyncMock(return_value="0xtxhash")
     )
 
     token_id, tx_hash, spent = await adapter._mint_from_balances_once(

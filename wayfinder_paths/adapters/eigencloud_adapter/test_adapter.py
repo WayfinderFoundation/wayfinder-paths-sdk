@@ -150,7 +150,7 @@ async def test_deposit_discovers_underlying_and_approves_strategy_manager(
             return_value={"to": "0x", "from": FAKE_WALLET, "data": "0x"},
         ),
         patch(
-            "wayfinder_paths.adapters.eigencloud_adapter.adapter.send_transaction",
+            "wayfinder_paths.adapters.eigencloud_adapter.adapter.send_evm_transaction",
             new_callable=AsyncMock,
             return_value="0xtx",
         ),
@@ -184,7 +184,7 @@ async def test_queue_withdrawals_includes_withdrawal_roots(adapter_with_signer):
             return_value={"to": "0x", "from": FAKE_WALLET, "data": "0x"},
         ),
         patch(
-            "wayfinder_paths.adapters.eigencloud_adapter.adapter.send_transaction",
+            "wayfinder_paths.adapters.eigencloud_adapter.adapter.send_evm_transaction",
             new_callable=AsyncMock,
             return_value="0xtx",
         ),
@@ -326,7 +326,7 @@ async def test_complete_withdrawal_builds_tokens_list(adapter_with_signer):
             side_effect=_encode_call,
         ),
         patch(
-            "wayfinder_paths.adapters.eigencloud_adapter.adapter.send_transaction",
+            "wayfinder_paths.adapters.eigencloud_adapter.adapter.send_evm_transaction",
             new_callable=AsyncMock,
             return_value="0xtx",
         ),

@@ -28,7 +28,7 @@ from wayfinder_paths.core.constants.eigencloud_abi import (
     ISTRATEGY_MANAGER_ABI,
 )
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_erc20_metadata
 
 _SLASHING_WITHDRAWAL_QUEUED_EVENT_ABI = next(
@@ -260,7 +260,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, {
                 "tx_hash": tx_hash,
                 "approve_tx_hash": approve_tx_hash,
@@ -341,7 +341,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -368,7 +368,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             payload: dict[str, Any] = {"tx_hash": tx_hash}
             if include_withdrawal_roots:
                 ok, roots = await self.get_withdrawal_roots_from_tx_hash(
@@ -407,7 +407,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             payload: dict[str, Any] = {"tx_hash": tx_hash}
             if include_withdrawal_roots:
                 ok, roots = await self.get_withdrawal_roots_from_tx_hash(
@@ -451,7 +451,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             payload: dict[str, Any] = {"tx_hash": tx_hash}
             if include_withdrawal_roots:
                 ok, roots = await self.get_withdrawal_roots_from_tx_hash(
@@ -622,7 +622,7 @@ class EigenCloudAdapter(BaseAdapter):
                     from_address=self.wallet_address,
                     chain_id=CHAIN_ID_ETHEREUM,
                 )
-                tx_hash = await send_transaction(tx, self.sign_callback)
+                tx_hash = await send_evm_transaction(tx, self.sign_callback)
                 return True, {
                     "tx_hash": tx_hash,
                     "withdrawal_root": root_hex,
@@ -697,7 +697,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -740,7 +740,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -768,7 +768,7 @@ class EigenCloudAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -802,7 +802,7 @@ class EigenCloudAdapter(BaseAdapter):
                 "data": "0x" + data.hex(),
                 "value": value,
             }
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)

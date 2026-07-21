@@ -28,7 +28,7 @@ from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC, BASE_WETH
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,
@@ -1099,7 +1099,7 @@ class AerodromeAdapter(
                     chain_id=CHAIN_ID_BASE,
                     value=eth_amt,
                 )
-                tx_hash = await send_transaction(tx, self.sign_callback)
+                tx_hash = await send_evm_transaction(tx, self.sign_callback)
                 return True, tx_hash
 
             # ERC20-ERC20 path
@@ -1172,7 +1172,7 @@ class AerodromeAdapter(
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -1336,7 +1336,7 @@ class AerodromeAdapter(
                     from_address=to_checksum_address(self.wallet_address),
                     chain_id=CHAIN_ID_BASE,
                 )
-                tx_hash = await send_transaction(tx, self.sign_callback)
+                tx_hash = await send_evm_transaction(tx, self.sign_callback)
                 return True, tx_hash
 
             ok_q, q = await self.quote_remove_liquidity(
@@ -1376,7 +1376,7 @@ class AerodromeAdapter(
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -1414,7 +1414,7 @@ class AerodromeAdapter(
                 from_address=acct,
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, {"tx": tx_hash, "claimable0": c0, "claimable1": c1}
         except Exception as exc:
             return False, str(exc)
@@ -1483,7 +1483,7 @@ class AerodromeAdapter(
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)
@@ -1518,7 +1518,7 @@ class AerodromeAdapter(
                 from_address=to_checksum_address(self.wallet_address),
                 chain_id=CHAIN_ID_BASE,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:
             return False, str(exc)

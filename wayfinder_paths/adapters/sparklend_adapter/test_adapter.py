@@ -89,7 +89,7 @@ class TestSparkLendAdapter:
 
     @pytest.mark.asyncio
     @patch(
-        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_transaction",
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_evm_transaction",
         new_callable=AsyncMock,
         return_value="0xabc",
     )
@@ -116,7 +116,7 @@ class TestSparkLendAdapter:
 
     @pytest.mark.asyncio
     @patch(
-        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_transaction",
+        "wayfinder_paths.adapters.aave_v3_adapter.adapter.send_evm_transaction",
         new_callable=AsyncMock,
         return_value="0xabc",
     )
@@ -254,7 +254,7 @@ class TestSparkLendAdapter:
 
     @pytest.mark.asyncio
     @patch(
-        "wayfinder_paths.adapters.sparklend_adapter.adapter.send_transaction",
+        "wayfinder_paths.adapters.sparklend_adapter.adapter.send_evm_transaction",
         new_callable=AsyncMock,
         return_value="0xabc",
     )

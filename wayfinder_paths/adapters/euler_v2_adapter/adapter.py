@@ -20,7 +20,7 @@ from wayfinder_paths.core.constants.euler_v2_abi import (
 )
 from wayfinder_paths.core.constants.euler_v2_contracts import EULER_V2_BY_CHAIN
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 from wayfinder_paths.core.utils.interest import RAY
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 
@@ -439,7 +439,9 @@ class EulerV2Adapter(BaseAdapter):
                 chain_id=int(chain_id),
                 value=total_value,
             )
-            txn_hash = await send_transaction(tx, self.strategy_wallet_signing_callback)
+            txn_hash = await send_evm_transaction(
+                tx, self.strategy_wallet_signing_callback
+            )
         except Exception as e:
             return False, str(e)
         return True, txn_hash

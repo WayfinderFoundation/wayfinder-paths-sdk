@@ -32,7 +32,7 @@ from wayfinder_paths.core.constants.uniswap_v4_abi import (
     UNIVERSAL_ROUTER_ABI,
 )
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import send_transaction
+from wayfinder_paths.core.utils.evm_transaction import send_evm_transaction
 from wayfinder_paths.core.utils.tokens import ensure_allowance, is_native_token
 
 NATIVE_ADDRESS = "0x0000000000000000000000000000000000000000"
@@ -387,7 +387,7 @@ class UniswapV4SwapMixin:
                 "value": int(amount_in) if native_in else 0,
                 "nonce": nonce,
             }
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, {
                 "tx_hash": tx_hash,
                 "pool_id": pool.key.pool_id,
@@ -423,7 +423,7 @@ class UniswapV4SwapMixin:
             "value": 0,
             "nonce": nonce,
         }
-        await send_transaction(tx, self.sign_callback)
+        await send_evm_transaction(tx, self.sign_callback)
 
     @staticmethod
     async def _chain_deadline(chain_id: int, deadline_seconds: int) -> int:

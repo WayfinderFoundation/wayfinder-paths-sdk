@@ -61,7 +61,7 @@ SUPPORTED_CHAINS = [
 
 # Chains where remote-wallet transactions are gas-sponsored: the backend
 # broadcasts them and gas is covered, so local nonce/gas handling and the
-# raw broadcast are skipped (see send_transaction).
+# raw broadcast are skipped (see send_evm_transaction).
 GAS_SPONSORED_CHAIN_IDS: set[int] = {
     CHAIN_ID_ETHEREUM,
     CHAIN_ID_BASE,

@@ -13,7 +13,7 @@ from wayfinder_paths.core.utils.etherscan import (
     fetch_contract_abi,
     get_etherscan_transaction_link,
 )
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 from wayfinder_paths.core.utils.proxy import resolve_proxy_implementation
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore
@@ -591,7 +591,7 @@ async def contracts_execute(
         return err("encode_failed", str(exc))
 
     try:
-        txn_hash = await send_transaction(
+        txn_hash = await send_evm_transaction(
             tx, sign_callback, wait_for_receipt=bool(wait_for_receipt)
         )
     except Exception as exc:

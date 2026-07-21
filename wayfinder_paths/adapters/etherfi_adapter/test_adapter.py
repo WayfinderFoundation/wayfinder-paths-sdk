@@ -264,7 +264,9 @@ async def test_claim_withdraw_allows_zero_token_id(adapter):
     """Token ID 0 is valid (the first minted NFT)."""
     with (
         patch(f"{PATCH_PREFIX}.encode_call", new_callable=AsyncMock) as mock_encode,
-        patch(f"{PATCH_PREFIX}.send_transaction", new_callable=AsyncMock) as mock_send,
+        patch(
+            f"{PATCH_PREFIX}.send_evm_transaction", new_callable=AsyncMock
+        ) as mock_send,
     ):
         mock_encode.return_value = {"to": ENTRY["withdraw_request_nft"], "data": "0x"}
         mock_send.return_value = "0x" + "ab" * 32
@@ -462,7 +464,9 @@ async def test_stake_skips_pause_check_when_disabled(adapter):
     with (
         patch.object(adapter, "_is_paused", new_callable=AsyncMock) as mock_paused,
         patch(f"{PATCH_PREFIX}.encode_call", new_callable=AsyncMock) as mock_encode,
-        patch(f"{PATCH_PREFIX}.send_transaction", new_callable=AsyncMock) as mock_send,
+        patch(
+            f"{PATCH_PREFIX}.send_evm_transaction", new_callable=AsyncMock
+        ) as mock_send,
     ):
         mock_encode.return_value = {"to": ENTRY["liquidity_pool"], "data": "0x"}
         mock_send.return_value = "0xhash"
@@ -477,7 +481,9 @@ async def test_stake_without_referral_uses_deposit_no_args(adapter):
     with (
         patch.object(adapter, "_is_paused", new_callable=AsyncMock, return_value=False),
         patch(f"{PATCH_PREFIX}.encode_call", new_callable=AsyncMock) as mock_encode,
-        patch(f"{PATCH_PREFIX}.send_transaction", new_callable=AsyncMock) as mock_send,
+        patch(
+            f"{PATCH_PREFIX}.send_evm_transaction", new_callable=AsyncMock
+        ) as mock_send,
     ):
         mock_encode.return_value = {"to": ENTRY["liquidity_pool"], "data": "0x"}
         mock_send.return_value = "0xhash"
@@ -496,7 +502,9 @@ async def test_stake_with_referral_uses_deposit_address(adapter):
     with (
         patch.object(adapter, "_is_paused", new_callable=AsyncMock, return_value=False),
         patch(f"{PATCH_PREFIX}.encode_call", new_callable=AsyncMock) as mock_encode,
-        patch(f"{PATCH_PREFIX}.send_transaction", new_callable=AsyncMock) as mock_send,
+        patch(
+            f"{PATCH_PREFIX}.send_evm_transaction", new_callable=AsyncMock
+        ) as mock_send,
     ):
         mock_encode.return_value = {"to": ENTRY["liquidity_pool"], "data": "0x"}
         mock_send.return_value = "0xhash"
@@ -518,7 +526,9 @@ async def test_wrap_eeth_calls_ensure_allowance_then_wrap(adapter):
     with (
         patch(f"{PATCH_PREFIX}.ensure_allowance", new_callable=AsyncMock) as mock_allow,
         patch(f"{PATCH_PREFIX}.encode_call", new_callable=AsyncMock) as mock_encode,
-        patch(f"{PATCH_PREFIX}.send_transaction", new_callable=AsyncMock) as mock_send,
+        patch(
+            f"{PATCH_PREFIX}.send_evm_transaction", new_callable=AsyncMock
+        ) as mock_send,
     ):
         mock_allow.return_value = (True, "0xapproval")
         mock_encode.return_value = {"to": ENTRY["weeth"], "data": "0x"}
@@ -563,7 +573,9 @@ async def test_wrap_eeth_returns_false_when_allowance_fails(adapter):
 async def test_unwrap_weeth_targets_weeth_contract(adapter):
     with (
         patch(f"{PATCH_PREFIX}.encode_call", new_callable=AsyncMock) as mock_encode,
-        patch(f"{PATCH_PREFIX}.send_transaction", new_callable=AsyncMock) as mock_send,
+        patch(
+            f"{PATCH_PREFIX}.send_evm_transaction", new_callable=AsyncMock
+        ) as mock_send,
     ):
         mock_encode.return_value = {"to": ENTRY["weeth"], "data": "0x"}
         mock_send.return_value = "0xunwrap_hash"
@@ -586,7 +598,9 @@ async def test_request_withdraw_calls_liquidity_pool(adapter):
     with (
         patch(f"{PATCH_PREFIX}.ensure_allowance", new_callable=AsyncMock) as mock_allow,
         patch(f"{PATCH_PREFIX}.encode_call", new_callable=AsyncMock) as mock_encode,
-        patch(f"{PATCH_PREFIX}.send_transaction", new_callable=AsyncMock) as mock_send,
+        patch(
+            f"{PATCH_PREFIX}.send_evm_transaction", new_callable=AsyncMock
+        ) as mock_send,
         patch.object(
             adapter, "_parse_request_id_from_receipt", new_callable=AsyncMock
         ) as mock_parse,
@@ -621,7 +635,9 @@ async def test_request_withdraw_custom_recipient(adapter):
     with (
         patch(f"{PATCH_PREFIX}.ensure_allowance", new_callable=AsyncMock) as mock_allow,
         patch(f"{PATCH_PREFIX}.encode_call", new_callable=AsyncMock) as mock_encode,
-        patch(f"{PATCH_PREFIX}.send_transaction", new_callable=AsyncMock) as mock_send,
+        patch(
+            f"{PATCH_PREFIX}.send_evm_transaction", new_callable=AsyncMock
+        ) as mock_send,
         patch.object(adapter, "_parse_request_id_from_receipt", new_callable=AsyncMock),
     ):
         mock_allow.return_value = (True, "0x")
@@ -643,7 +659,9 @@ async def test_request_withdraw_skip_request_id(adapter):
     with (
         patch(f"{PATCH_PREFIX}.ensure_allowance", new_callable=AsyncMock) as mock_allow,
         patch(f"{PATCH_PREFIX}.encode_call", new_callable=AsyncMock) as mock_encode,
-        patch(f"{PATCH_PREFIX}.send_transaction", new_callable=AsyncMock) as mock_send,
+        patch(
+            f"{PATCH_PREFIX}.send_evm_transaction", new_callable=AsyncMock
+        ) as mock_send,
         patch.object(
             adapter, "_parse_request_id_from_receipt", new_callable=AsyncMock
         ) as mock_parse,

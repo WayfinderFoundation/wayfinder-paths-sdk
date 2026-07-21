@@ -17,7 +17,7 @@ from wayfinder_paths.core.constants.sparklend_abi import (
 )
 from wayfinder_paths.core.constants.sparklend_contracts import SPARKLEND_BY_CHAIN
 from wayfinder_paths.core.utils import evm_client as web3_utils
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 from wayfinder_paths.core.utils.interest import apr_to_apy, ray_to_apr
 from wayfinder_paths.core.utils.multicall import (
     Call,
@@ -182,7 +182,7 @@ class SparkLendAdapter(AaveV3Adapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)
@@ -240,7 +240,7 @@ class SparkLendAdapter(AaveV3Adapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)
@@ -325,7 +325,7 @@ class SparkLendAdapter(AaveV3Adapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)
@@ -722,7 +722,7 @@ class SparkLendAdapter(AaveV3Adapter):
                 from_address=self.wallet_address,
                 chain_id=chain_id,
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)
@@ -808,7 +808,7 @@ class SparkLendAdapter(AaveV3Adapter):
                 chain_id=chain_id,
                 value=value,
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)

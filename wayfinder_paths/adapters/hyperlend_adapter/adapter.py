@@ -32,7 +32,7 @@ from wayfinder_paths.core.constants.hyperlend_abi import (
     WRAPPED_TOKEN_GATEWAY_ABI,
 )
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 from wayfinder_paths.core.utils.interest import RAY, apr_to_apy, ray_to_apr
 from wayfinder_paths.core.utils.symbols import is_stable_symbol, normalize_symbol
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance
@@ -381,7 +381,7 @@ class HyperlendAdapter(BaseAdapter):
                 chain_id=chain_id,
             )
 
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_evm_transaction(transaction, self.sign_callback)
 
         await self._record_pool_op(
             token_address=token_addr,
@@ -431,7 +431,7 @@ class HyperlendAdapter(BaseAdapter):
                 chain_id=chain_id,
             )
 
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_evm_transaction(transaction, self.sign_callback)
         await self._record_pool_op(
             token_address=token_addr,
             amount=qty,
@@ -468,7 +468,7 @@ class HyperlendAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=chain_id,
             )
-            borrow_tx_hash = await send_transaction(borrow_tx, self.sign_callback)
+            borrow_tx_hash = await send_evm_transaction(borrow_tx, self.sign_callback)
 
             unwrap_tx = await encode_call(
                 target=asset,
@@ -478,7 +478,7 @@ class HyperlendAdapter(BaseAdapter):
                 from_address=strategy,
                 chain_id=chain_id,
             )
-            unwrap_tx_hash = await send_transaction(unwrap_tx, self.sign_callback)
+            unwrap_tx_hash = await send_evm_transaction(unwrap_tx, self.sign_callback)
             return True, {"borrow_tx": borrow_tx_hash, "unwrap_tx": unwrap_tx_hash}
         else:
             asset = to_checksum_address(underlying_token)
@@ -491,7 +491,7 @@ class HyperlendAdapter(BaseAdapter):
                 chain_id=chain_id,
             )
 
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_evm_transaction(transaction, self.sign_callback)
         return True, txn_hash
 
     async def repay(
@@ -620,7 +620,7 @@ class HyperlendAdapter(BaseAdapter):
                 chain_id=chain_id,
             )
 
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_evm_transaction(transaction, self.sign_callback)
         return True, txn_hash
 
     async def set_collateral(
@@ -642,7 +642,7 @@ class HyperlendAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=chain_id,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_evm_transaction(transaction, self.sign_callback)
         return True, txn_hash
 
     async def remove_collateral(
@@ -664,7 +664,7 @@ class HyperlendAdapter(BaseAdapter):
             from_address=strategy,
             chain_id=chain_id,
         )
-        txn_hash = await send_transaction(transaction, self.sign_callback)
+        txn_hash = await send_evm_transaction(transaction, self.sign_callback)
         return True, txn_hash
 
     async def _record_pool_op(

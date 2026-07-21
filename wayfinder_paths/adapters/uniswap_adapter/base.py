@@ -10,7 +10,7 @@ from wayfinder_paths.core.constants.uniswap_v3_abi import (
     UNISWAP_V3_FACTORY_ABI,
 )
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 from wayfinder_paths.core.utils.tokens import ensure_allowance
 from wayfinder_paths.core.utils.uniswap_v3_math import (
     PositionData,
@@ -125,7 +125,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 from_address=self.owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -182,7 +182,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 from_address=self.owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -241,7 +241,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 from_address=self.owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -256,7 +256,7 @@ class UniswapV3BaseAdapter(BaseAdapter):
                 from_address=self.owner,
                 chain_id=self.chain_id,
             )
-            tx_hash = await send_transaction(tx, self.sign_callback)
+            tx_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, tx_hash
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)

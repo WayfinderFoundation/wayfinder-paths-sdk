@@ -30,7 +30,7 @@ from wayfinder_paths.core.constants.hyperliquid import (
     WITHDRAW_FEE_USD,
     HyperliquidMarketType,
 )
-from wayfinder_paths.core.utils.evm_transaction import send_transaction
+from wayfinder_paths.core.utils.evm_transaction import send_evm_transaction
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.mcp.arg_validation import optional_int
 from wayfinder_paths.mcp.scripting import get_adapter
@@ -1168,7 +1168,7 @@ async def hyperliquid_deposit_usdc(
         amount=int(parse_amount_to_raw(str(amt), 6)),
     )
     try:
-        tx_hash = await send_transaction(
+        tx_hash = await send_evm_transaction(
             transaction, adapter.sign_callback, wait_for_receipt=True
         )
         sent_ok = True

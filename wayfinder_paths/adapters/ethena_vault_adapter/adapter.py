@@ -17,7 +17,7 @@ from wayfinder_paths.core.constants.ethena_contracts import (
     ethena_tokens_by_chain_id,
 )
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_transaction
+from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
 from wayfinder_paths.core.utils.interest import apr_to_apy
 from wayfinder_paths.core.utils.multicall import (
     Call,
@@ -351,7 +351,7 @@ class EthenaVaultAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)
@@ -374,7 +374,7 @@ class EthenaVaultAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)
@@ -397,7 +397,7 @@ class EthenaVaultAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)
@@ -441,7 +441,7 @@ class EthenaVaultAdapter(BaseAdapter):
                 from_address=self.wallet_address,
                 chain_id=CHAIN_ID_ETHEREUM,
             )
-            txn_hash = await send_transaction(tx, self.sign_callback)
+            txn_hash = await send_evm_transaction(tx, self.sign_callback)
             return True, txn_hash
         except Exception as exc:
             return False, str(exc)
