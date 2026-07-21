@@ -18,6 +18,7 @@ from typing import Any
 
 import httpx
 from loguru import logger
+from solana.rpc.async_api import AsyncClient
 from solana.rpc.commitment import Confirmed
 from solana.rpc.models import TxOpts
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
@@ -30,7 +31,10 @@ from solders.transaction_status import TransactionConfirmationStatus
 
 from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
-from wayfinder_paths.core.utils.svm import solana_client_from_chain_id
+from wayfinder_paths.core.utils.svm import (
+    solana_client_from_chain_id,
+    solana_clients_from_chain_id,
+)
 from wayfinder_paths.core.utils.transaction import (
     SponsorshipUnavailableError,
     TransactionRevertedError,
@@ -140,19 +144,31 @@ async def get_recent_priority_fee(
 ) -> int:
     """Recent priority fee in micro-lamports per compute unit.
 
-    Uses ``getRecentPrioritizationFees`` and takes the given percentile of
-    the NONZERO samples, clamped to ``[floor, ceiling]``. Zero-fee samples
-    dominate the response on quiet slots and would peg the estimate to zero,
-    so they are dropped; when every sample is zero the floor is returned.
+    Fanned out across every resolved RPC and reduced with ``max`` — mirroring
+    the EVM nonce fan-out — so a node lagging on recent-fee data can't drag the
+    estimate down and leave the transaction stuck behind higher-paying ones.
+
+    Per node: ``getRecentPrioritizationFees`` and the given percentile of the
+    NONZERO samples. Zero-fee samples dominate quiet slots and would peg the
+    estimate to zero, so they are dropped; a node seeing only zeros contributes
+    the floor. The max across nodes is clamped to ``[floor, ceiling]``.
     """
-    async with solana_client_from_chain_id(chain_id) as client:
+
+    async def _get_priority_fee(client: AsyncClient) -> int:
         resp = await client.get_recent_prioritization_fees()
-    fees = sorted(f.prioritization_fee for f in resp.value if f.prioritization_fee > 0)
-    if not fees:
-        return floor
-    # Nearest-rank percentile over the nonzero samples.
-    fee = fees[max(0, math.ceil(percentile / 100 * len(fees)) - 1)]
-    return max(floor, min(ceiling, fee))
+        fees = sorted(
+            f.prioritization_fee for f in resp.value if f.prioritization_fee > 0
+        )
+        if not fees:
+            return floor
+        # Nearest-rank percentile over the nonzero samples.
+        return fees[max(0, math.ceil(percentile / 100 * len(fees)) - 1)]
+
+    async with solana_clients_from_chain_id(chain_id) as clients:
+        priority_fees = await asyncio.gather(
+            *[_get_priority_fee(client) for client in clients]
+        )
+    return max(floor, min(ceiling, max(priority_fees)))
 
 
 # ---------------------------------------------------------------------------
