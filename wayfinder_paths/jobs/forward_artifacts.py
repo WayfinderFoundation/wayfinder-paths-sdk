@@ -55,7 +55,13 @@ def forward_open_position(
     if not ticks:
         return None
     tick = ticks[-1]
-    positions = (tick.get("ledger") or {}).get("positions") or {}
+    # Skipped ticks (no_new_bar) record an empty top-level ledger; the real
+    # unchanged state lives in engine_state_pre. Without this fallback the
+    # open position vanishes from the snapshot on every between-bar tick.
+    ledger = tick.get("ledger") or (
+        (tick.get("engine_state_pre") or {}).get("ledger") or {}
+    )
+    positions = ledger.get("positions") or {}
     for symbol, position in positions.items():
         side = str(position.get("side") or "")
         size = float(position.get("size") or 0.0)

@@ -186,6 +186,43 @@ def test_open_position_reported(tmp_path: Path) -> None:
     assert position["mode"] == "live"
 
 
+def test_open_position_survives_skipped_tick(tmp_path: Path) -> None:
+    """Skipped ticks (no_new_bar) record an empty top-level ledger with the
+    unchanged state under engine_state_pre — the open position must not vanish
+    from the snapshot between bars."""
+    store = _seed_job(tmp_path)
+    forward = store.job_dir("carry") / "results" / "forward"
+    skipped = {
+        "kind": "tick",
+        "bar_ts": "2026-07-16T09:00:00+00:00",
+        "mode": "live",
+        "skipped": True,
+        "skip_reason": "no_new_bar",
+        "ledger": {},
+        "engine_state_pre": {
+            "ledger": {
+                "realized_pnl": 0.7,
+                "positions": {
+                    "IMX": {
+                        "side": "short",
+                        "size": 500.0,
+                        "avg_price": 0.124,
+                        "opened_at": "2026-07-16T12:00:00+00:00",
+                    }
+                },
+            }
+        },
+    }
+    with (forward / "ticks.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(skipped) + "\n")
+
+    result = load_forward_view("carry", store=store, include_prices=False)
+    position = result["summary"]["open_position"]
+    assert position["symbol"] == "IMX"
+    assert position["side"] == "short"
+    assert position["size"] == 500.0
+
+
 def test_downsampling_caps_points(tmp_path: Path) -> None:
     store = _seed_job(tmp_path)
     forward = store.job_dir("carry") / "results" / "forward"
