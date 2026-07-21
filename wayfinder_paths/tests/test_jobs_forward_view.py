@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from wayfinder_paths.jobs.forward import load_forward_snapshot
 from wayfinder_paths.jobs.forward_artifacts import forward_events, load_forward_view
 from wayfinder_paths.jobs.models import WayfinderJob
@@ -271,6 +273,62 @@ def test_downsampling_caps_points(tmp_path: Path) -> None:
     # First and last points survive the stride.
     assert equity["points"][0]["realized_pnl"] == 0.0
     assert equity["points"][-1]["realized_pnl"] == 599.0
+
+
+def test_price_series_tagged_with_venue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Market-price series carry the venue whose feed produced their bars so
+    the UI can swap the static payload for that venue's live chart."""
+    import wayfinder_paths.jobs.execution.venues as venues_module
+    from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+
+    store = _seed_job(tmp_path)
+    spec_path = store.job_dir("carry") / "execution_spec.json"
+    spec_path.write_text(
+        json.dumps(
+            {
+                "data_contract": {
+                    "bar_interval": "1h",
+                    "symbols": ["IMX"],
+                    "market_kind": "swap",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _Feed:
+        async def get_completed_bars(
+            self, symbols: list[str], interval: str, **_: object
+        ) -> CompletedBarsView:
+            return CompletedBarsView.from_rows(
+                [
+                    {
+                        "timestamp": "2026-07-14T00:00:00+00:00",
+                        "symbol": symbol,
+                        "open": 0.13,
+                        "high": 0.14,
+                        "low": 0.12,
+                        "close": 0.13,
+                    }
+                    for symbol in symbols
+                ]
+            )
+
+    class _Adapter:
+        feed = _Feed()
+
+    monkeypatch.setattr(
+        venues_module, "build_adapter", lambda *args, **kwargs: _Adapter()
+    )
+
+    result = load_forward_view("carry", store=store, include_prices=True)
+    price = next(
+        s for s in result["visualization"]["series"] if s["kind"] == "market_price"
+    )
+    assert price["symbol"] == "IMX"
+    assert price["venue"] == "hyperliquid"
 
 
 def test_price_fetch_failure_degrades_with_note(tmp_path: Path) -> None:
