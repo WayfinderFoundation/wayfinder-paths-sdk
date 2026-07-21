@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from wayfinder_paths.jobs.backtest_artifacts import VIEW_KINDS, _in_range, _parse_ts
+from wayfinder_paths.jobs.backtest_artifacts import (
+    VIEW_KINDS,
+    _in_range,
+    _parse_ts,
+    order_series_for_display,
+)
 from wayfinder_paths.jobs.forward import default_forward_summary
 from wayfinder_paths.jobs.models import (
     DEFAULT_FORWARD_FILLS,
@@ -195,7 +200,7 @@ def load_forward_view(
                     if entry.get("symbol") is not None
                 }
             ),
-            "series": selected_series,
+            "series": order_series_for_display(selected_series, selected_markers),
             "markers": selected_markers,
             "events": events,
         },

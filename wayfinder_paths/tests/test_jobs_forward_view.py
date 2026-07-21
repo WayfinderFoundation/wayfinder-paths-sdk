@@ -223,6 +223,28 @@ def test_open_position_survives_skipped_tick(tmp_path: Path) -> None:
     assert position["size"] == 500.0
 
 
+def test_series_order_puts_marked_symbol_first(tmp_path: Path) -> None:
+    """With a multi-symbol data contract only the traded symbol carries
+    markers; it must sort ahead of the equity curve and untraded siblings so
+    UIs that render the first couple of series show the markers."""
+    from wayfinder_paths.jobs.backtest_artifacts import order_series_for_display
+
+    series = [
+        {"name": "equity", "kind": "equity_curve", "symbol": None},
+        {"name": "CL_price", "kind": "market_price", "symbol": "xyz:CL"},
+        {"name": "MU_price", "kind": "market_price", "symbol": "xyz:MU"},
+        {"name": "SNDK_price", "kind": "market_price", "symbol": "xyz:SNDK"},
+    ]
+    markers = [{"symbol": "xyz:SNDK", "kind": "entry"}]
+    ordered = order_series_for_display(series, markers)
+    assert [entry["name"] for entry in ordered] == [
+        "SNDK_price",
+        "equity",
+        "CL_price",
+        "MU_price",
+    ]
+
+
 def test_downsampling_caps_points(tmp_path: Path) -> None:
     store = _seed_job(tmp_path)
     forward = store.job_dir("carry") / "results" / "forward"
