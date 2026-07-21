@@ -170,6 +170,11 @@ def load_forward_view(
         if _in_range(_parse_ts(marker["timestamp"]), start, end)
         and (view != "legs" or not symbols or str(marker["symbol"]) in symbols)
     ]
+    events = [
+        event
+        for event in forward_events(ticks, proposals=store.proposals(job_id))
+        if _in_range(_parse_ts(event["timestamp"]), start, end)
+    ]
     return {
         "available": True,
         "view": view,
@@ -186,9 +191,84 @@ def load_forward_view(
             ),
             "series": selected_series,
             "markers": selected_markers,
+            "events": events,
         },
         "trades": _tail_jsonl(forward_dir / Path(DEFAULT_FORWARD_TRADES).name, 50),
     }
+
+
+def forward_events(
+    ticks: list[dict[str, Any]],
+    *,
+    proposals: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Lifecycle annotations for the forward chart, derived from the ticks.
+
+    Every tick records the mode and revision it executed under, so transitions
+    between consecutive ticks ARE the job's history: paper<->live flips, a new
+    strategy version taking effect (labeled with the applied proposal's summary
+    when one matches the revision), and halts engaging. The chart draws these
+    as vertical event lines.
+    """
+    summary_by_revision: dict[str, str] = {}
+    for proposal in proposals or []:
+        proposal_revision = str(
+            (proposal.get("candidate_report") or {}).get("revision")
+            or proposal.get("candidate_revision")
+            or ""
+        )
+        proposal_summary = str(proposal.get("summary") or "").strip()
+        if proposal_revision and proposal_summary:
+            summary_by_revision[proposal_revision] = proposal_summary
+
+    events: list[dict[str, Any]] = []
+    previous_mode: str | None = None
+    previous_revision: str | None = None
+    previous_halted = False
+    for tick in ticks:
+        timestamp = tick.get("bar_ts") or tick.get("ts")
+        if not timestamp:
+            continue
+        mode = str(tick.get("mode") or "") or None
+        revision = str(tick.get("revision") or "") or None
+        if previous_mode is not None and mode and mode != previous_mode:
+            events.append(
+                {
+                    "timestamp": str(timestamp),
+                    "kind": "mode_flip",
+                    "mode": mode,
+                    "label": f"→ {mode.upper()}",
+                }
+            )
+        if previous_revision is not None and revision and revision != previous_revision:
+            summary = summary_by_revision.get(revision)
+            events.append(
+                {
+                    "timestamp": str(timestamp),
+                    "kind": "revision",
+                    "revision": revision,
+                    "label": (summary[:60] if summary else f"update {revision[:8]}"),
+                }
+            )
+        guards = {str(guard.get("kind")) for guard in tick.get("guard_events") or []}
+        halted = bool(guards & {"risk_halt", "manual_halt"})
+        if halted and not previous_halted:
+            reasons = [
+                str(guard.get("reason") or "")
+                for guard in tick.get("guard_events") or []
+                if str(guard.get("kind")) in {"risk_halt", "manual_halt"}
+            ]
+            events.append(
+                {
+                    "timestamp": str(timestamp),
+                    "kind": "halt",
+                    "label": (reasons[0][:60] if reasons and reasons[0] else "halted"),
+                }
+            )
+        previous_mode = mode or previous_mode
+        previous_revision = revision or previous_revision
+        previous_halted = halted
+    return events
 
 
 def _fill_markers(fills: list[dict[str, Any]]) -> list[dict[str, Any]]:
