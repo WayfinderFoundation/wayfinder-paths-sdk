@@ -344,6 +344,24 @@ def test_close_stop_check_still_fires_in_code(tmp_path: Path) -> None:
     assert _check(report, "no_close_only_stop_tp")["passed"] is False
 
 
+def test_close_stop_check_allows_bracket_delegation(tmp_path: Path) -> None:
+    """An intent bracket ({"bracket": {"stop_loss": ...}}) delegates stop
+    evaluation to the engine's ohlc_rules path — pricing the level off a close
+    is correct there, not a close-only stop (the xyz-scalp-lab false positive
+    that made the worker propose a cosmetic line split)."""
+    report = _close_stop_report(
+        tmp_path,
+        "def decide(ctx):\n"
+        "    current_close = 10.0\n"
+        "    return [{\n"
+        "        'action': 'OPEN',\n"
+        "        'bracket': {'stop_loss': current_close * 0.98},\n"
+        "    }]\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    assert _check(report, "no_close_only_stop_tp")["passed"] is True
+
+
 def test_bracket_escape_hatch_must_be_code_not_comment(tmp_path: Path) -> None:
     report = _close_stop_report(
         tmp_path,

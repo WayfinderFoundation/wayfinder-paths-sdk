@@ -572,12 +572,19 @@ def _script_static_checks(
     close_stop_pattern = re.search(
         r"(stop|take_profit|tp).*close", code_text, re.IGNORECASE
     )
+    # Intent bracket dicts ({"bracket": {"stop_loss": ...}}) delegate stop
+    # evaluation to the engine, which honors ohlc_rules (intrabar highs/lows)
+    # — pricing the level off a close is then correct, not a close-only stop.
+    # Without this escape hatch `"stop_loss": current_close * 0.98` inside a
+    # bracket trips the regex and agents contort strategy code to appease it.
+    bracket_delegation = re.search(r"[\"']bracket[\"']\s*:", code_text)
     checks.append(
         {
             "name": "no_close_only_stop_tp",
             "passed": close_stop_pattern is None
             or "BracketEngine" in code_text
-            or "ohlc_" in code_text,
+            or "ohlc_" in code_text
+            or bracket_delegation is not None,
         }
     )
     return checks
