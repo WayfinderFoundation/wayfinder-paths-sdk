@@ -37,6 +37,7 @@ from wayfinder_paths.jobs.execution.reconcile import reconcile_job
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.execution.walk_forward import format_fold_table
 from wayfinder_paths.jobs.features import append_feature, list_features
+from wayfinder_paths.jobs.forward_artifacts import load_forward_view
 from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
 from wayfinder_paths.jobs.ledger import append_ledger_row, tail_ledger
@@ -843,6 +844,51 @@ def backtest_view_cmd(
         to_ts=to_ts,
         max_points=max_points,
         proposal_id=proposal_id,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="forward-view",
+    help="Bounded forward (paper/live) visualization payload: price series, "
+    "PnL curve, and entry/exit markers tagged with the mode they executed in.",
+)
+@click.argument("job_id")
+@click.option(
+    "--view",
+    type=click.Choice(["all", "legs", "spread", "equity", "drawdown", "performance"]),
+    default="all",
+    show_default=True,
+)
+@click.option("--series", "series_names", multiple=True)
+@click.option("--from", "from_ts", default=None)
+@click.option("--to", "to_ts", default=None)
+@click.option("--max-points", type=int, default=1500, show_default=True)
+@click.option(
+    "--no-prices",
+    is_flag=True,
+    default=False,
+    help="Skip the on-demand candle fetch (markers + PnL curve only).",
+)
+def forward_view_cmd(
+    job_id: str,
+    view: str,
+    series_names: tuple[str, ...],
+    from_ts: str | None,
+    to_ts: str | None,
+    max_points: int,
+    no_prices: bool,
+) -> None:
+    store = JobStore()
+    result = load_forward_view(
+        job_id,
+        store=store,
+        view=view,
+        series_names=list(series_names),
+        from_ts=from_ts,
+        to_ts=to_ts,
+        max_points=max_points,
+        include_prices=not no_prices,
     )
     _echo_json({"ok": True, "result": result})
 
