@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 from loguru import logger
+from solana.rpc.commitment import Confirmed
 from solana.rpc.models import TxOpts
 from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
 from solders.instruction import CompiledInstruction
@@ -63,11 +64,16 @@ async def send_solana_transaction(
     immediate RPC errors instead of confirmation timeouts. Pass
     ``skip_preflight=True`` to opt out (e.g. latency-sensitive sends where
     the transaction was already simulated).
+
+    Preflight runs at ``Confirmed`` — the node default is ``Finalized``, which
+    lags ~32 slots and rejects a just-fetched blockhash (as aggregators like
+    Li.Fi/Jupiter return) with a misleading ``BlockhashNotFound``.
     """
     raw = base64.b64decode(serialized_b64)
     async with solana_client_from_chain_id(chain_id) as client:
         resp = await client.send_raw_transaction(
-            raw, opts=TxOpts(skip_preflight=skip_preflight)
+            raw,
+            opts=TxOpts(skip_preflight=skip_preflight, preflight_commitment=Confirmed),
         )
         return str(resp.value)
 
