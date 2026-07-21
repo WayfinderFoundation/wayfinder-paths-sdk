@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from eth_utils import to_checksum_address
+from loguru import logger
 
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
@@ -125,6 +126,71 @@ async def _broadcast(
         return True, result
     except Exception as e:
         return False, {"error": sanitize_for_json(str(e)), "chain_id": chain_id}
+
+
+def _swap_history_payload(
+    *,
+    tx_hash: str,
+    status: str,
+    sender: str,
+    recipient: str,
+    from_chain_id: int,
+    to_chain_id: int,
+    from_meta: dict[str, Any],
+    to_meta: dict[str, Any],
+    amount: str,
+    best_quote: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the brap-transactions/create payload for an executed swap.
+
+    Mirrors the frontend swap flow's history record: the backend derives
+    per-token PnL basis entirely from these records, so agent-executed swaps
+    must land here too or their positions show no cost basis.
+    """
+    record_status = {"confirmed": "CONFIRMED", "failed": "FAILED"}.get(
+        status, "PENDING"
+    )
+    output_raw = best_quote.get("output_amount")
+    to_amount: str | None = None
+    if output_raw is not None:
+        try:
+            to_decimals = int(to_meta.get("decimals") or 18)
+            to_amount = str(
+                from_erc20_raw(int(str(output_raw).split(".")[0]), to_decimals)
+            )
+        except (TypeError, ValueError):
+            to_amount = None
+    fee_total = (best_quote.get("fee_estimate") or {}).get("fee_total_usd")
+    return {
+        "tx_hash": tx_hash,
+        "chain_id": int(from_chain_id),
+        "to_chain_id": int(to_chain_id),
+        "from_address": sender,
+        "to_address": recipient,
+        "from_token_address": str(from_meta.get("address") or ""),
+        "from_token_symbol": str(from_meta.get("symbol") or "")[:20],
+        "from_amount": amount,
+        "from_amount_usd": best_quote.get("input_amount_usd"),
+        "to_token_address": str(to_meta.get("address") or ""),
+        "to_token_symbol": str(to_meta.get("symbol") or "")[:20],
+        "to_amount": to_amount,
+        "to_amount_usd": best_quote.get("output_amount_usd"),
+        "quote_provider": str(best_quote.get("provider") or "brap"),
+        "fee_total_usd": fee_total,
+        "bridge_tracking": best_quote.get("bridge_tracking"),
+        "metadata": {"source": "agent_onchain_swap"},
+        "status": record_status,
+        "confirmations": 1 if record_status == "CONFIRMED" else 0,
+    }
+
+
+async def _record_swap_history(payload: dict[str, Any]) -> None:
+    """Best-effort history write — a recording failure must never fail the
+    swap itself (same posture as the frontend flow)."""
+    try:
+        await BRAP_CLIENT.record_swap_transaction(payload)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Swap executed but history record failed: {}", exc)
 
 
 async def _ensure_allowance(
@@ -382,6 +448,26 @@ async def onchain_swap(
 
     response["status"] = status
     response["raw"] = _compact_quote(quote_data, best_quote)
+
+    # Record the executed swap into backend history — per-token PnL basis is
+    # derived from these records, so without this an agent-bought position
+    # shows no cost basis in the UI. Best-effort; requires a broadcast hash.
+    tx_hash = sent.get("txn_hash") if isinstance(sent, dict) else None
+    if tx_hash:
+        await _record_swap_history(
+            _swap_history_payload(
+                tx_hash=tx_hash,
+                status=status,
+                sender=sender,
+                recipient=rcpt,
+                from_chain_id=int(from_chain_id),
+                to_chain_id=int(to_chain_id),
+                from_meta=from_meta,
+                to_meta=to_meta,
+                amount=amount,
+                best_quote=best_quote,
+            )
+        )
 
     _annotate_profile(
         address=sender,

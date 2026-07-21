@@ -196,8 +196,20 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
         send_transaction_mock.assert_awaited_once()
         assert send_transaction_mock.await_args.kwargs["wait_for_receipt"] is True
         assert send_transaction_mock.await_args.kwargs["confirmations"] == 0
+        # The executed swap must land in backend history — per-token PnL basis
+        # is derived from these records server-side.
+        fake_brap.record_swap_transaction.assert_awaited_once()
+        record = fake_brap.record_swap_transaction.await_args.args[0]
+        assert record["tx_hash"] == "0xtx"
+        assert record["status"] == "CONFIRMED"
+        assert record["from_token_address"] == from_meta["address"]
+        assert record["to_token_address"] == to_meta["address"]
+        assert record["from_amount"] == "1.0"
+        assert record["quote_provider"] == "brap_best"
+        assert record["metadata"] == {"source": "agent_onchain_swap"}
 
         send_transaction_mock.reset_mock()
+        fake_brap.record_swap_transaction.reset_mock()
 
         out2 = await onchain_swap(
             wallet_label="main",
@@ -213,6 +225,11 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
         assert send_transaction_mock.await_args.kwargs["wait_for_receipt"] is False
         assert send_transaction_mock.await_args.kwargs["confirmations"] == 0
         fake_brap.wait_for_bridge_execution.assert_not_awaited()
+        # Fire-and-forget broadcast still records history, as PENDING.
+        fake_brap.record_swap_transaction.assert_awaited_once()
+        assert (
+            fake_brap.record_swap_transaction.await_args.args[0]["status"] == "PENDING"
+        )
 
 
 @pytest.mark.asyncio
@@ -482,3 +499,71 @@ async def test_execute_swap_prefers_quote_approval_address(tmp_path: Path, monke
     assert out["ok"] is True
     assert out["result"]["status"] == "confirmed"
     assert ensure_mock.await_args.kwargs["spender"] == "0x" + "44" * 20
+
+
+def test_swap_history_payload_maps_quote_fields():
+    """Payload construction pinned against a real BRAP/LiFi quote shape (the
+    GME-on-robinhood purchase that exposed the missing-basis bug)."""
+    from wayfinder_paths.mcp.tools.execute import _swap_history_payload
+
+    best_quote = {
+        "provider": "lifi",
+        "input_amount": 3000000000000000,
+        "output_amount": 1681709558498559701890,
+        "input_amount_usd": 5.20944,
+        "output_amount_usd": 4.730682622247619,
+        "fee_estimate": {"fee_total_usd": 0.013},
+        "bridge_tracking": None,
+    }
+    payload = _swap_history_payload(
+        tx_hash="0xhash",
+        status="confirmed",
+        sender="0xsender",
+        recipient="0xsender",
+        from_chain_id=4663,
+        to_chain_id=4663,
+        from_meta={"address": "0x" + "0" * 40, "symbol": "ETH", "decimals": 18},
+        to_meta={
+            "address": "0x7e86381a763f0ecca2bdf27c54eac403ddd48123",
+            "symbol": "GME",
+            "decimals": 18,
+        },
+        amount="0.003",
+        best_quote=best_quote,
+    )
+    assert payload["status"] == "CONFIRMED"
+    assert payload["confirmations"] == 1
+    assert payload["from_amount"] == "0.003"
+    assert payload["from_amount_usd"] == 5.20944
+    assert float(payload["to_amount"]) == pytest.approx(1681.7095584986, rel=1e-9)
+    assert payload["to_amount_usd"] == 4.730682622247619
+    assert payload["quote_provider"] == "lifi"
+    assert payload["fee_total_usd"] == 0.013
+
+    # Failed swaps record FAILED; unknown output tolerated as null.
+    failed = _swap_history_payload(
+        tx_hash="0xhash",
+        status="failed",
+        sender="0xsender",
+        recipient="0xsender",
+        from_chain_id=4663,
+        to_chain_id=4663,
+        from_meta={"address": "0x" + "0" * 40, "symbol": "ETH"},
+        to_meta={"address": "0xabc", "symbol": "GME"},
+        amount="0.003",
+        best_quote={"provider": "lifi"},
+    )
+    assert failed["status"] == "FAILED"
+    assert failed["to_amount"] is None
+    assert failed["confirmations"] == 0
+
+
+@pytest.mark.asyncio
+async def test_record_swap_history_swallows_errors():
+    from wayfinder_paths.mcp.tools.execute import _record_swap_history
+
+    boom = AsyncMock()
+    boom.record_swap_transaction = AsyncMock(side_effect=RuntimeError("backend down"))
+    with patch("wayfinder_paths.mcp.tools.execute.BRAP_CLIENT", boom):
+        await _record_swap_history({"tx_hash": "0x1"})  # must not raise
+    boom.record_swap_transaction.assert_awaited_once()

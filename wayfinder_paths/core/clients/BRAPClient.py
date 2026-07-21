@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any, NotRequired, Required, TypedDict
 
+import httpx
 from loguru import logger
 
 from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
@@ -140,6 +141,19 @@ class BRAPClient(WayfinderClient):
             headers={},
             timeout=timeout_seconds + 30.0,
         )
+        return response.json()
+
+    async def record_swap_transaction(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Persist an executed swap into the backend's transaction history —
+        the record per-token PnL basis is derived from server-side. A 409
+        (already recorded, e.g. duplicate tx hash) is treated as success."""
+        url = f"{get_api_base_url()}/vaults/brap-transactions/create/"
+        try:
+            response = await self._authed_request("POST", url, json=payload)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 409:
+                return exc.response.json()
+            raise
         return response.json()
 
 
