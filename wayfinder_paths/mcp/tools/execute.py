@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import base64
 from typing import Any
 
 from eth_utils import to_checksum_address
+from solders.transaction import VersionedTransaction
 
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
+from wayfinder_paths.core.utils.svm import is_solana_chain
+from wayfinder_paths.core.utils.svm_tokens import (
+    build_solana_send_transaction,
+    get_solana_token_balance,
+)
+from wayfinder_paths.core.utils.svm_transaction import send_svm_versioned_transaction
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
@@ -125,6 +133,47 @@ async def _broadcast(
         return True, result
     except Exception as e:
         return False, {"error": sanitize_for_json(str(e)), "chain_id": chain_id}
+
+
+async def _broadcast_svm(
+    sign_callback,
+    serialized_transaction: str,
+    *,
+    chain_id: int,
+    wait_for_confirmation: bool,
+) -> tuple[bool, dict[str, Any]]:
+    """Decode an unsigned base64 v0 tx envelope and broadcast it on Solana.
+
+    Mirrors ``_broadcast``'s (ok, result) contract so the tools stay
+    branch-symmetric. No allowance, no checksum — SPL transfers are
+    authorized by the transaction signature itself and addresses are base58.
+    """
+    try:
+        vt = VersionedTransaction.from_bytes(base64.b64decode(serialized_transaction))
+        signature = await send_svm_versioned_transaction(
+            vt,
+            sign_callback,
+            chain_id=chain_id,
+            wait_for_confirmation=wait_for_confirmation,
+        )
+        return True, {
+            "txn_hash": signature,
+            "chain_id": chain_id,
+            "confirmation_waited": wait_for_confirmation,
+        }
+    except Exception as e:
+        return False, {"error": sanitize_for_json(str(e)), "chain_id": chain_id}
+
+
+async def _token_balance(token_address: str, chain_id: int, wallet_address: str) -> int:
+    """Raw token balance, dispatched to the SVM reader on Solana chains.
+
+    ``tokens.get_token_balance`` is EVM-only (checksums the address); Solana
+    balances go through the base58-native SPL/SOL reader.
+    """
+    if is_solana_chain(chain_id):
+        return await get_solana_token_balance(wallet_address, token_address, chain_id)
+    return await get_token_balance(token_address, chain_id, wallet_address)
 
 
 async def _ensure_allowance(
@@ -258,7 +307,7 @@ async def onchain_swap(
     except ValueError as exc:
         return err("invalid_amount", str(exc))
 
-    balance = await get_token_balance(from_token_addr, int(from_chain_id), sender)
+    balance = await _token_balance(from_token_addr, int(from_chain_id), sender)
     if balance < amount_raw:
         symbol = from_meta["symbol"] or "tokens"
         return err(
@@ -308,77 +357,103 @@ async def onchain_swap(
             "quote_error", "best_quote missing calldata", {"best_quote": best_quote}
         )
 
-    swap_tx = dict(calldata)
-    swap_tx["chainId"] = int(from_chain_id)
-    swap_tx["from"] = to_checksum_address(sender)
-    if "value" in swap_tx:
-        swap_tx["value"] = int(swap_tx["value"])
-
-    spender = (
-        best_quote.get("approvalAddress")
-        or best_quote.get("approval_address")
-        or swap_tx.get("to")
-    )
-    approve_amount = (
-        best_quote.get("input_amount")
-        or best_quote.get("inputAmount")
-        or best_quote.get("amount1")
-        or best_quote.get("amount")
+    # Solana routes carry a pre-built, unsigned v0 tx envelope (base58 addresses,
+    # no approvals) instead of EVM calldata — decode + broadcast via the SVM path
+    # and skip the checksum/allowance/bridge-tracking EVM flow entirely.
+    is_solana_route = calldata.get("chainType") == "solana" or is_solana_chain(
+        from_chain_id
     )
 
-    if (
-        from_token_addr.lower() != ZERO_ADDRESS.lower()
-        and spender
-        and approve_amount is not None
-    ):
-        try:
-            need = int(approve_amount)
-        except Exception:
-            need = int(amount_raw)
-        ok_allow, approval_tx = await _ensure_allowance(
-            sign_callback=sign_callback,
-            chain_id=int(from_chain_id),
-            token_address=from_token_addr,
-            owner=to_checksum_address(sender),
-            spender=to_checksum_address(str(spender)),
-            amount=need,
-        )
-        if approval_tx:
-            response["effects"]["approval"] = approval_tx
-        if not ok_allow:
-            response["status"] = "failed"
-            response["raw"] = _compact_quote(quote_data, None)
-            return ok(response)
-
-    sent_ok, sent = await _broadcast(
-        sign_callback,
-        swap_tx,
-        chain_id=int(from_chain_id),
-        wait_for_receipt=wait_for_receipt,
-        confirmations=receipt_confirmations,
-    )
-    response["effects"]["swap"] = sent
-
-    status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
-    if not sent_ok:
-        status = "failed"
-
-    bridge_tracking = best_quote.get("bridge_tracking")
-    if sent_ok and wait_for_receipt and bridge_tracking:
-        try:
-            bridge_result = await BRAP_CLIENT.wait_for_bridge_execution(
-                bridge_tracking=bridge_tracking,
-                tx_hash=sent["txn_hash"],
+    if is_solana_route:
+        serialized = calldata.get("serializedTransaction")
+        if not serialized:
+            return err(
+                "quote_error",
+                "solana best_quote missing serializedTransaction",
+                {"best_quote": best_quote},
             )
-            response["effects"]["bridge"] = bridge_result
-            if not bridge_result.get("is_success"):
-                status = "failed"
-        except Exception as exc:  # noqa: BLE001
-            response["effects"]["bridge"] = {
-                "state": "pending",
-                "error": sanitize_for_json(str(exc)),
-            }
-            status = "submitted"
+        sent_ok, sent = await _broadcast_svm(
+            sign_callback,
+            serialized,
+            chain_id=int(from_chain_id),
+            wait_for_confirmation=wait_for_receipt,
+        )
+        response["effects"]["swap"] = sent
+        status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
+        if not sent_ok:
+            status = "failed"
+    else:
+        swap_tx = dict(calldata)
+        swap_tx["chainId"] = int(from_chain_id)
+        swap_tx["from"] = to_checksum_address(sender)
+        if "value" in swap_tx:
+            swap_tx["value"] = int(swap_tx["value"])
+
+        spender = (
+            best_quote.get("approvalAddress")
+            or best_quote.get("approval_address")
+            or swap_tx.get("to")
+        )
+        approve_amount = (
+            best_quote.get("input_amount")
+            or best_quote.get("inputAmount")
+            or best_quote.get("amount1")
+            or best_quote.get("amount")
+        )
+
+        if (
+            from_token_addr.lower() != ZERO_ADDRESS.lower()
+            and spender
+            and approve_amount is not None
+        ):
+            try:
+                need = int(approve_amount)
+            except Exception:
+                need = int(amount_raw)
+            ok_allow, approval_tx = await _ensure_allowance(
+                sign_callback=sign_callback,
+                chain_id=int(from_chain_id),
+                token_address=from_token_addr,
+                owner=to_checksum_address(sender),
+                spender=to_checksum_address(str(spender)),
+                amount=need,
+            )
+            if approval_tx:
+                response["effects"]["approval"] = approval_tx
+            if not ok_allow:
+                response["status"] = "failed"
+                response["raw"] = _compact_quote(quote_data, None)
+                return ok(response)
+
+        sent_ok, sent = await _broadcast(
+            sign_callback,
+            swap_tx,
+            chain_id=int(from_chain_id),
+            wait_for_receipt=wait_for_receipt,
+            confirmations=receipt_confirmations,
+        )
+        response["effects"]["swap"] = sent
+
+        status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
+        if not sent_ok:
+            status = "failed"
+
+        bridge_tracking = best_quote.get("bridge_tracking")
+        if sent_ok and wait_for_receipt and bridge_tracking:
+            try:
+                bridge_result = await BRAP_CLIENT.wait_for_bridge_execution(
+                    bridge_tracking=bridge_tracking,
+                    tx_hash=sent["txn_hash"],
+                )
+                response["effects"]["bridge"] = bridge_result
+                if not bridge_result.get("is_success"):
+                    status = "failed"
+            except Exception as exc:  # noqa: BLE001
+                response["effects"]["bridge"] = {
+                    "state": "pending",
+                    "error": sanitize_for_json(str(exc)),
+                }
+                status = "submitted"
 
     response["status"] = status
     response["raw"] = _compact_quote(quote_data, best_quote)
@@ -472,7 +547,7 @@ async def onchain_send(
     except ValueError as exc:
         return err("invalid_amount", str(exc))
 
-    balance = await get_token_balance(token_address, int(resolved_chain_id), sender)
+    balance = await _token_balance(token_address, int(resolved_chain_id), sender)
     if balance < amount_raw:
         symbol = token_meta["symbol"] or "tokens"
         return err(
@@ -487,6 +562,42 @@ async def onchain_send(
                 "need_raw": amount_raw,
             },
         )
+
+    if is_solana_chain(int(resolved_chain_id)):
+        # Solana transfer envelope: base58 recipient/mint (never checksummed),
+        # decode + broadcast through the SVM path.
+        envelope = await build_solana_send_transaction(
+            from_address=sender,
+            to_address=rcpt,
+            token_address=token_address,
+            amount=int(amount_raw),
+            chain_id=int(resolved_chain_id),
+        )
+        transaction = envelope
+        sent_ok, sent = await _broadcast_svm(
+            sign_callback,
+            envelope["serializedTransaction"],
+            chain_id=int(resolved_chain_id),
+            wait_for_confirmation=wait_for_receipt,
+        )
+        label = "send_native" if is_native else "send_erc20"
+        response["effects"][label] = sent
+        status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
+        if not sent_ok:
+            status = "failed"
+        response["status"] = status
+        response["raw"] = {"transaction": transaction, "token": token_meta}
+        _annotate_profile(
+            address=sender,
+            label=wallet_label,
+            protocol="balance",
+            action=label,
+            tool="onchain_send",
+            status=status,
+            chain_id=int(resolved_chain_id),
+            details={"recipient": rcpt, "amount": amount, "token": token_q},
+        )
+        return ok(response)
 
     transaction = await build_send_transaction(
         from_address=sender,
