@@ -954,9 +954,7 @@ def test_mcp_create_defaults_to_jobs_v1(tmp_path: Path, monkeypatch) -> None:
     # Create tells the agent exactly where the strategy module lives —
     # layout guessing cost real tool calls in live sessions.
     # The scaffold pins the module inside the versioned workspace.
-    assert result["result"]["script_entrypoint"].endswith(
-        "workspace/src/strategy.py"
-    )
+    assert result["result"]["script_entrypoint"].endswith("workspace/src/strategy.py")
     assert "workspace/src/" in result["result"]["hint"]
 
 
@@ -1075,9 +1073,7 @@ def test_create_job_copies_external_script_into_workspace_src(
     external.parent.mkdir(parents=True)
     external.write_text("def decide(ctx):\n    return []\n", encoding="utf-8")
     store = JobStore(repo_root=tmp_path)
-    job = WayfinderJob.new(
-        "scaffold-copy", script=str(external), interval_seconds=3600
-    )
+    job = WayfinderJob.new("scaffold-copy", script=str(external), interval_seconds=3600)
     store.create_job(job)
 
     assert job.script_loop.entrypoint == "workspace/src/momo.py"
@@ -1103,9 +1099,7 @@ def test_create_job_defaults_missing_script_to_workspace_src(
     assert job.script_loop.entrypoint == "workspace/src/strategy.py"
     # No stub: execution_script_exists must stay honest until the agent
     # writes the real module.
-    assert not (
-        store.job_dir(job.id) / "workspace" / "src" / "strategy.py"
-    ).exists()
+    assert not (store.job_dir(job.id) / "workspace" / "src" / "strategy.py").exists()
 
 
 def test_create_job_keeps_workspace_relative_entrypoint(tmp_path: Path) -> None:
@@ -1127,9 +1121,7 @@ def test_compiler_journals_entrypoint_outside_workspace(
     store = JobStore(repo_root=tmp_path)
     rogue = tmp_path / "rogue.py"
     rogue.write_text("def decide(ctx):\n    return []\n", encoding="utf-8")
-    job = WayfinderJob.new(
-        "rogue-entrypoint", script=str(rogue), interval_seconds=3600
-    )
+    job = WayfinderJob.new("rogue-entrypoint", script=str(rogue), interval_seconds=3600)
     # Raw save (no scaffold) mirrors the legacy jobs already on disk.
     store.save(job)
 
@@ -1168,6 +1160,10 @@ def test_worker_prompt_intervene_ladder_and_retry_budget(tmp_path: Path) -> None
     assert "Wake priority ladder" in prompt
     assert "healthy, no change warranted" in prompt
     assert "after 2 failed propose attempts in a wake" in prompt
+    # The exploration lane: sub-floor forward samples gate exploitation, not
+    # research-side analysis.
+    assert "Exploration vs exploitation" in prompt
+    assert "gates EXPLOITATION only" in prompt
     # The ladder is intervene/monitor task guidance, not part of the apply wake.
     apply_prompt = _build_worker_prompt_sections(
         store=store,
