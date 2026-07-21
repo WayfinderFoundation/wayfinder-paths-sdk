@@ -18,7 +18,8 @@ from wayfinder_paths.core.constants.aave_v3_contracts import AAVE_V3_BY_CHAIN
 from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.contracts import ZERO_ADDRESS
 from wayfinder_paths.core.utils import evm_client as web3_utils
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
+from wayfinder_paths.core.utils.evm_helpers import encode_call
+from wayfinder_paths.core.utils.evm_transaction import send_evm_transaction
 from wayfinder_paths.core.utils.interest import RAY, apr_to_apy, ray_to_apr
 from wayfinder_paths.core.utils.symbols import is_stable_symbol, normalize_symbol
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance

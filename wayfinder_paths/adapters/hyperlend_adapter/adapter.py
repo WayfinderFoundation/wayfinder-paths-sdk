@@ -32,7 +32,8 @@ from wayfinder_paths.core.constants.hyperlend_abi import (
     WRAPPED_TOKEN_GATEWAY_ABI,
 )
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
+from wayfinder_paths.core.utils.evm_helpers import encode_call
+from wayfinder_paths.core.utils.evm_transaction import send_evm_transaction
 from wayfinder_paths.core.utils.interest import RAY, apr_to_apy, ray_to_apr
 from wayfinder_paths.core.utils.symbols import is_stable_symbol, normalize_symbol
 from wayfinder_paths.core.utils.tokens import ensure_allowance, get_token_balance

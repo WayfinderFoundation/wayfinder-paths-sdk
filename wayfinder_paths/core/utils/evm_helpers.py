@@ -2,7 +2,10 @@ import json
 import os
 from typing import Any
 
+from web3 import AsyncWeb3
+
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID
+from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
 
 
 def resolve_chain_id(token_info: dict[str, Any]) -> int | None:
@@ -71,3 +74,32 @@ async def get_abi_filtered(
         if item.get("type") == "function" and item.get("name") in function_names
     ]
     return filtered_abi
+
+
+async def encode_call(
+    *,
+    target: str,
+    abi: list[dict[str, Any]],
+    fn_name: str,
+    args: list[Any],
+    from_address: str,
+    chain_id: int,
+    value: int = 0,
+) -> dict[str, Any]:
+    async with web3_from_chain_id(chain_id) as web3:
+        try:
+            contract = web3.eth.contract(
+                address=web3.to_checksum_address(target),
+                abi=abi,
+            )
+            data = contract.encode_abi(fn_name, args)
+        except (ValueError, TypeError) as exc:
+            raise ValueError(f"Failed to encode {fn_name}: {exc}") from exc
+
+        return {
+            "chainId": int(chain_id),
+            "from": AsyncWeb3.to_checksum_address(from_address),
+            "to": AsyncWeb3.to_checksum_address(target),
+            "data": data,
+            "value": int(value),
+        }

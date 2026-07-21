@@ -31,7 +31,8 @@ from wayfinder_paths.core.constants.base import MAX_UINT256, SECONDS_PER_YEAR
 from wayfinder_paths.core.constants.chains import CHAIN_ID_BASE
 from wayfinder_paths.core.constants.contracts import BASE_USDC
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
+from wayfinder_paths.core.utils.evm_helpers import encode_call
+from wayfinder_paths.core.utils.evm_transaction import send_evm_transaction
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,

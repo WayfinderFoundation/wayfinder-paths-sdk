@@ -26,7 +26,8 @@ from wayfinder_paths.core.constants.contracts import (
 )
 from wayfinder_paths.core.constants.hype_oft_abi import HYPE_OFT_ABI
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
+from wayfinder_paths.core.utils.evm_helpers import encode_call
+from wayfinder_paths.core.utils.evm_transaction import send_evm_transaction
 from wayfinder_paths.core.utils.multicall import (
     Call,
     read_only_calls_multicall_or_gather,

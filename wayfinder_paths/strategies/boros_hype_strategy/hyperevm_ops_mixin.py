@@ -11,7 +11,8 @@ from typing import Any
 
 from loguru import logger
 
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
+from wayfinder_paths.core.utils.evm_helpers import encode_call
+from wayfinder_paths.core.utils.evm_transaction import send_evm_transaction
 
 from .constants import (
     HYPE_NATIVE,

@@ -13,7 +13,8 @@ from wayfinder_paths.core.utils.etherscan import (
     fetch_contract_abi,
     get_etherscan_transaction_link,
 )
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
+from wayfinder_paths.core.utils.evm_helpers import encode_call
+from wayfinder_paths.core.utils.evm_transaction import send_evm_transaction
 from wayfinder_paths.core.utils.proxy import resolve_proxy_implementation
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
 from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore

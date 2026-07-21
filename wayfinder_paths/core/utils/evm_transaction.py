@@ -399,35 +399,3 @@ async def send_evm_transaction(
         if status is not None and int(status) == 0:
             _raise_revert_error(txn_hash, receipt, transaction)
     return txn_hash
-
-
-async def encode_call(
-    *,
-    target: str,
-    abi: list[dict[str, Any]],
-    fn_name: str,
-    args: list[Any],
-    from_address: str,
-    chain_id: int,
-    value: int = 0,
-) -> dict[str, Any]:
-    async with web3_from_chain_id(chain_id) as web3:
-        try:
-            contract = web3.eth.contract(
-                address=web3.to_checksum_address(target),
-                abi=abi,
-            )
-            data = contract.encode_abi(fn_name, args)
-        except (ValueError, TypeError) as exc:
-            raise ValueError(f"Failed to encode {fn_name}: {exc}") from exc
-
-        return {
-            "chainId": int(chain_id),
-            "from": AsyncWeb3.to_checksum_address(from_address),
-            "to": AsyncWeb3.to_checksum_address(target),
-            "data": data,
-            "value": int(value),
-        }
-
-
-# TODO: HypeEVM Big Blocks: Setting and detecting

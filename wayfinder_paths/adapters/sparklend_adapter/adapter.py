@@ -17,7 +17,8 @@ from wayfinder_paths.core.constants.sparklend_abi import (
 )
 from wayfinder_paths.core.constants.sparklend_contracts import SPARKLEND_BY_CHAIN
 from wayfinder_paths.core.utils import evm_client as web3_utils
-from wayfinder_paths.core.utils.evm_transaction import encode_call, send_evm_transaction
+from wayfinder_paths.core.utils.evm_helpers import encode_call
+from wayfinder_paths.core.utils.evm_transaction import send_evm_transaction
 from wayfinder_paths.core.utils.interest import apr_to_apy, ray_to_apr
 from wayfinder_paths.core.utils.multicall import (
     Call,

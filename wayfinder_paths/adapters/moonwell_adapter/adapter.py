@@ -26,9 +26,9 @@ from wayfinder_paths.core.constants.moonwell_contracts import (
     ZERO_ADDRESS,
 )
 from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
+from wayfinder_paths.core.utils.evm_helpers import encode_call
 from wayfinder_paths.core.utils.evm_transaction import (
     _is_gorlami_fork_chain,
-    encode_call,
     send_evm_transaction,
 )
 from wayfinder_paths.core.utils.multicall import (
