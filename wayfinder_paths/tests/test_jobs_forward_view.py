@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 
 from wayfinder_paths.jobs.forward import load_forward_snapshot
-from wayfinder_paths.jobs.forward_artifacts import load_forward_view
+from wayfinder_paths.jobs.forward_artifacts import forward_events, load_forward_view
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
 
@@ -249,3 +249,68 @@ def test_snapshot_summary_includes_split_and_position(tmp_path: Path) -> None:
     assert summary["pnl_by_mode"] == {"paper": 1.4, "live": -0.7}
     assert summary["trades_by_mode"] == {"paper": 1, "live": 1}
     assert summary["open_position"]["symbol"] == "IMX"
+
+
+def test_forward_events_annotate_lifecycle(tmp_path: Path) -> None:
+    """Mode flips, revision changes (labeled from the matching proposal), and
+    halt engagements become chart events; steady-state ticks emit nothing."""
+    ticks = [
+        {"bar_ts": "2026-07-14T00:00:00+00:00", "mode": "paper", "revision": "aaa111"},
+        {"bar_ts": "2026-07-14T01:00:00+00:00", "mode": "paper", "revision": "aaa111"},
+        {"bar_ts": "2026-07-14T02:00:00+00:00", "mode": "live", "revision": "aaa111"},
+        {"bar_ts": "2026-07-14T03:00:00+00:00", "mode": "live", "revision": "bbb222"},
+        {
+            "bar_ts": "2026-07-14T04:00:00+00:00",
+            "mode": "live",
+            "revision": "bbb222",
+            "guard_events": [{"kind": "manual_halt", "reason": "fat finger"}],
+        },
+        {  # halt persists -> no second event
+            "bar_ts": "2026-07-14T05:00:00+00:00",
+            "mode": "live",
+            "revision": "bbb222",
+            "guard_events": [{"kind": "manual_halt", "reason": "fat finger"}],
+        },
+    ]
+    proposals = [
+        {
+            "summary": "Widen the stop to 9%",
+            "candidate_report": {"revision": "bbb222"},
+        }
+    ]
+    events = forward_events(ticks, proposals=proposals)
+    assert [(e["kind"], e["timestamp"][11:13]) for e in events] == [
+        ("mode_flip", "02"),
+        ("revision", "03"),
+        ("halt", "04"),
+    ]
+    assert events[0]["label"] == "\u2192 LIVE"
+    assert events[1]["label"] == "Widen the stop to 9%"
+    assert events[2]["label"] == "fat finger"
+
+
+def test_forward_view_includes_events(tmp_path: Path) -> None:
+    store = _seed_job(tmp_path)
+    forward = store.job_dir("carry") / "results" / "forward"
+    rows = [
+        {
+            "kind": "tick",
+            "bar_ts": "2026-07-14T00:00:00+00:00",
+            "mode": "paper",
+            "revision": "aaa111",
+            "ledger": {"realized_pnl": 0.0, "positions": {}},
+        },
+        {
+            "kind": "tick",
+            "bar_ts": "2026-07-14T01:00:00+00:00",
+            "mode": "live",
+            "revision": "aaa111",
+            "ledger": {"realized_pnl": 0.0, "positions": {}},
+        },
+    ]
+    (forward / "ticks.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8"
+    )
+    result = load_forward_view("carry", store=store, include_prices=False)
+    events = result["visualization"]["events"]
+    assert [(e["kind"], e["mode"]) for e in events] == [("mode_flip", "live")]
