@@ -74,6 +74,30 @@ def summarize_backtest_artifacts(
     }
 
 
+def order_series_for_display(
+    series: list[dict[str, Any]], markers: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Marker-bearing price series first, then equity curves, then the rest.
+
+    The jobs UI renders only the first couple of series — with a multi-symbol
+    data contract the traded symbol's chart (the one with entry/exit markers)
+    must sort ahead of untraded siblings or the markers are never visible.
+    Stable within ranks, so single-symbol payloads are unchanged.
+    """
+    marked = {
+        str(marker["symbol"]) for marker in markers if marker.get("symbol") is not None
+    }
+
+    def rank(entry: dict[str, Any]) -> int:
+        if entry.get("symbol") is not None and str(entry["symbol"]) in marked:
+            return 0
+        if entry.get("kind") == "equity_curve":
+            return 1
+        return 2
+
+    return sorted(series, key=rank)
+
+
 def load_backtest_view(
     job_id: str,
     *,
@@ -146,7 +170,10 @@ def load_backtest_view(
             for key, value in visualization.items()
             if key not in {"series", "markers"}
         }
-        | {"series": selected_series, "markers": markers},
+        | {
+            "series": order_series_for_display(selected_series, markers),
+            "markers": markers,
+        },
         "trades": latest["trades"] if latest else [],
     }
 

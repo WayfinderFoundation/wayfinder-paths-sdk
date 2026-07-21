@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from wayfinder_paths.jobs.backtest_artifacts import VIEW_KINDS, _in_range, _parse_ts
+from wayfinder_paths.jobs.backtest_artifacts import (
+    VIEW_KINDS,
+    _in_range,
+    _parse_ts,
+    order_series_for_display,
+)
 from wayfinder_paths.jobs.forward import default_forward_summary
 from wayfinder_paths.jobs.models import (
     DEFAULT_FORWARD_FILLS,
@@ -55,7 +60,13 @@ def forward_open_position(
     if not ticks:
         return None
     tick = ticks[-1]
-    positions = (tick.get("ledger") or {}).get("positions") or {}
+    # Skipped ticks (no_new_bar) record an empty top-level ledger; the real
+    # unchanged state lives in engine_state_pre. Without this fallback the
+    # open position vanishes from the snapshot on every between-bar tick.
+    ledger = tick.get("ledger") or (
+        (tick.get("engine_state_pre") or {}).get("ledger") or {}
+    )
+    positions = ledger.get("positions") or {}
     for symbol, position in positions.items():
         side = str(position.get("side") or "")
         size = float(position.get("size") or 0.0)
@@ -189,7 +200,7 @@ def load_forward_view(
                     if entry.get("symbol") is not None
                 }
             ),
-            "series": selected_series,
+            "series": order_series_for_display(selected_series, selected_markers),
             "markers": selected_markers,
             "events": events,
         },
