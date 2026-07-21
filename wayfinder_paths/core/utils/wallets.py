@@ -1,3 +1,4 @@
+import base64
 import json
 from pathlib import Path
 from typing import Any
@@ -5,6 +6,7 @@ from typing import Any
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 from loguru import logger
+from solders.transaction import VersionedTransaction
 
 from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.config import (
@@ -21,6 +23,14 @@ from wayfinder_paths.policies.session import build_session_policy, build_strateg
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 
 Account.enable_unaudited_hdwallet_features()
+
+CHAIN_TYPE_ETHEREUM = "ethereum"
+CHAIN_TYPE_SOLANA = "solana"
+
+
+def wallet_chain_type(wallet: dict[str, Any]) -> str:
+    # Legacy local config.json wallets predate chain_type — default them to EVM.
+    return wallet.get("chain_type") or CHAIN_TYPE_ETHEREUM
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +135,7 @@ def get_local_sign_callback(private_key: str):
     # None means local key — send_transaction() never routes it through the
     # sponsored backend broadcast.
     sign_callback.wallet_address = None
+    sign_callback.chain_type = CHAIN_TYPE_ETHEREUM
     return sign_callback
 
 
@@ -197,6 +208,21 @@ def get_remote_sign_callback(wallet_address: str):
     # Sign-callback contract: send_transaction() reads this to route
     # gas-sponsored chains through the backend broadcast.
     sign_callback.wallet_address = wallet_address
+    sign_callback.chain_type = CHAIN_TYPE_ETHEREUM
+    return sign_callback
+
+
+def get_remote_svm_sign_callback(wallet_address: str):
+    """Sign a remote (Privy-backed) Solana wallet's tx via the backend."""
+
+    async def sign_callback(tx: VersionedTransaction) -> bytes:
+        signed_b64 = await WALLET_CLIENT.sign_svm_transaction(
+            wallet_address, base64.b64encode(bytes(tx)).decode()
+        )
+        return base64.b64decode(signed_b64)
+
+    sign_callback.wallet_address = wallet_address
+    sign_callback.chain_type = CHAIN_TYPE_SOLANA
     return sign_callback
 
 
@@ -245,13 +271,15 @@ def _require_wallet_address(wallet: dict[str, Any], label: str) -> str:
 
 def _build_signing_callback(wallet: dict[str, Any], label: str):
     address = _require_wallet_address(wallet, label)
+    if wallet_chain_type(wallet) == CHAIN_TYPE_SOLANA:
+        # Solana agent wallets are always Privy-managed (remote) — no local keys.
+        return get_remote_svm_sign_callback(address), address
     if wallet.get("type") == "remote":
         return get_remote_sign_callback(address), address
-    else:
-        pk = get_private_key(wallet)
-        if not pk:
-            raise ValueError(f"Wallet '{label}' is missing private_key_hex.")
-        return get_local_sign_callback(pk), address
+    pk = get_private_key(wallet)
+    if not pk:
+        raise ValueError(f"Wallet '{label}' is missing private_key_hex.")
+    return get_local_sign_callback(pk), address
 
 
 def _build_typed_data_callback(wallet: dict[str, Any], label: str):

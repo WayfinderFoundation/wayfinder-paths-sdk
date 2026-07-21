@@ -253,6 +253,39 @@ async def sponsorship_enabled() -> bool:
         return False
 
 
+async def wait_for_sponsored_transaction(
+    wallet_address: str, result: dict, timeout: int = 120
+) -> str:
+    """Poll a sponsored submission until it yields an on-chain hash/signature.
+
+    Sponsored sends confirm asynchronously: the broadcaster returns a
+    ``transaction_id`` and the hash lags the submit, so poll until it lands. A
+    ``failed`` status is pre-broadcast (nothing reached the chain), raised as
+    sponsorship-unavailable so callers can fall back to a normal broadcast; an
+    on-chain revert still yields a hash and is caught by the later confirmation
+    wait. Shared by the EVM and SVM sponsored paths — only the submit envelope
+    differs, this wait is identical.
+    """
+    txn_hash = result["hash"]
+    deadline = time.monotonic() + timeout
+    while not txn_hash:
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"Sponsored transaction {result['transaction_id']} has no hash "
+                f"after {timeout}s"
+            )
+        await asyncio.sleep(2)
+        status = await WALLET_CLIENT.get_privy_transaction_status(
+            wallet_address, result["transaction_id"]
+        )
+        if status["status"] == "failed":
+            raise SponsorshipUnavailableError(
+                f"Sponsored transaction {result['transaction_id']} failed before broadcast"
+            )
+        txn_hash = status["hash"]
+    return txn_hash
+
+
 async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> str:
     """Submit via the backend's sponsored broadcast and return the tx hash.
 
@@ -276,26 +309,7 @@ async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> 
                 f"Sponsored send rejected with {exc.response.status_code}"
             ) from exc
         raise
-    txn_hash = result["hash"]
-    deadline = time.monotonic() + 120
-    while not txn_hash:
-        if time.monotonic() > deadline:
-            raise TimeoutError(
-                f"Sponsored transaction {result['transaction_id']} has no hash "
-                f"after 120s"
-            )
-        await asyncio.sleep(2)
-        status = await WALLET_CLIENT.get_privy_transaction_status(
-            wallet_address, result["transaction_id"]
-        )
-        # "failed" is pre-broadcast (no hash will ever land); an on-chain
-        # revert still yields a hash and is caught by the receipt wait.
-        if status["status"] == "failed":
-            raise SponsorshipUnavailableError(
-                f"Sponsored transaction {result['transaction_id']} failed before broadcast"
-            )
-        txn_hash = status["hash"]
-    return txn_hash
+    return await wait_for_sponsored_transaction(wallet_address, result)
 
 
 async def wait_for_transaction_receipt(
