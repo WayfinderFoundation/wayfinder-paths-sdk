@@ -35,7 +35,6 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
 from wayfinder_paths.core.utils.evm_transaction import (
     SponsorshipUnavailableError,
     TransactionRevertedError,
-    sponsorship_enabled,
     wait_for_sponsored_transaction,
 )
 from wayfinder_paths.core.utils.svm_client import solana_client_from_chain_id
@@ -312,7 +311,7 @@ async def send_svm_transaction(
     # `chain_id in GAS_SPONSORED_CHAIN_IDS and not fork`; SVM has a single
     # always-sponsored chain and no fork, so those guards collapse away.
     signature = None
-    if sign_callback.wallet_address and await sponsorship_enabled():
+    if sign_callback.wallet_address and await WALLET_CLIENT.sponsorship_enabled():
         try:
             signature = await _send_sponsored_svm_transaction(
                 sign_callback.wallet_address, tx, chain_id

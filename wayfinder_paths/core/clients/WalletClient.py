@@ -14,6 +14,14 @@ class WalletClient(WayfinderClient):
         resp = await self._authed_request("GET", url)
         return resp.json()
 
+    async def sponsorship_enabled(self) -> bool:
+        # Fetch failure falls back to the local sign-and-broadcast path.
+        try:
+            features = await self.get_features()
+            return "privy_gas_sponsorship_enabled" in features["enabledSwitches"]
+        except Exception:
+            return False
+
     async def list_wallet_rings(
         self, instance_id: str | None = None
     ) -> list[dict[str, Any]]:

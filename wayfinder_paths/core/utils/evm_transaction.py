@@ -244,15 +244,6 @@ async def _broadcast_transaction(chain_id, signed_transaction: bytes) -> str:
         return tx_hash.hex()
 
 
-async def sponsorship_enabled() -> bool:
-    # Fetch failure falls back to the local sign-and-broadcast path.
-    try:
-        features = await WALLET_CLIENT.get_features()
-        return "privy_gas_sponsorship_enabled" in features["enabledSwitches"]
-    except Exception:
-        return False
-
-
 async def wait_for_sponsored_transaction(
     wallet_address: str, result: dict, timeout: int = 120
 ) -> str:
@@ -377,7 +368,7 @@ async def send_evm_transaction(
         sign_callback.wallet_address
         and chain_id in GAS_SPONSORED_CHAIN_IDS
         and not _is_gorlami_fork_chain(chain_id)
-        and await sponsorship_enabled()
+        and await WALLET_CLIENT.sponsorship_enabled()
     ):
         try:
             txn_hash = await _send_sponsored_transaction(

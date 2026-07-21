@@ -498,7 +498,9 @@ class TestSendTransaction:
     @patch("wayfinder_paths.core.utils.evm_transaction._nonce_transaction")
     @patch("wayfinder_paths.core.utils.evm_transaction._gas_limit_transaction")
     @patch("wayfinder_paths.core.utils.evm_transaction._send_sponsored_transaction")
-    @patch("wayfinder_paths.core.utils.evm_transaction.sponsorship_enabled")
+    @patch(
+        "wayfinder_paths.core.utils.evm_transaction.WALLET_CLIENT.sponsorship_enabled"
+    )
     async def test_falls_back_to_local_broadcast_when_sponsorship_unavailable(
         self,
         mock_sponsorship_enabled,
