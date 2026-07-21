@@ -61,10 +61,10 @@ class WalletClient(WayfinderClient):
             logger.error(f"sign_transaction failed for {wallet_address}: {exc}")
             raise
 
-    async def sign_solana_transaction(
+    async def sign_svm_transaction(
         self, wallet_address: str, serialized_transaction: str
     ) -> str:
-        url = f"{get_api_base_url()}/wallets/{wallet_address}/sign-solana-transaction/"
+        url = f"{get_api_base_url()}/wallets/{wallet_address}/sign-svm-transaction/"
         try:
             resp = await self._authed_request(
                 "POST",
@@ -73,7 +73,7 @@ class WalletClient(WayfinderClient):
             )
             return resp.json()["signed_transaction"]
         except Exception as exc:
-            logger.error(f"sign_solana_transaction failed for {wallet_address}: {exc}")
+            logger.error(f"sign_svm_transaction failed for {wallet_address}: {exc}")
             raise
 
     async def send_privy_transaction_sponsored(

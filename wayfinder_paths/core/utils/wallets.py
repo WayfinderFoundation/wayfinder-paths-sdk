@@ -212,11 +212,11 @@ def get_remote_sign_callback(wallet_address: str):
     return sign_callback
 
 
-def get_remote_solana_sign_callback(wallet_address: str):
+def get_remote_svm_sign_callback(wallet_address: str):
     """Sign a remote (Privy-backed) Solana wallet's tx via the backend."""
 
     async def sign_callback(tx: VersionedTransaction) -> bytes:
-        signed_b64 = await WALLET_CLIENT.sign_solana_transaction(
+        signed_b64 = await WALLET_CLIENT.sign_svm_transaction(
             wallet_address, base64.b64encode(bytes(tx)).decode()
         )
         return base64.b64decode(signed_b64)
@@ -273,7 +273,7 @@ def _build_signing_callback(wallet: dict[str, Any], label: str):
     address = _require_wallet_address(wallet, label)
     if wallet_chain_type(wallet) == CHAIN_TYPE_SOLANA:
         # Solana agent wallets are always Privy-managed (remote) — no local keys.
-        return get_remote_solana_sign_callback(address), address
+        return get_remote_svm_sign_callback(address), address
     if wallet.get("type") == "remote":
         return get_remote_sign_callback(address), address
     pk = get_private_key(wallet)

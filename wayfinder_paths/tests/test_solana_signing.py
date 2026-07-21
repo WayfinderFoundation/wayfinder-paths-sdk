@@ -33,7 +33,7 @@ async def test_remote_solana_callback_calls_backend():
 
     wallet = {"address": "Sol1111", "type": "remote", "chain_type": "solana"}
     with patch(
-        "wayfinder_paths.core.utils.wallets.WALLET_CLIENT.sign_solana_transaction",
+        "wayfinder_paths.core.utils.wallets.WALLET_CLIENT.sign_svm_transaction",
         new=AsyncMock(return_value=base64.b64encode(signed).decode()),
     ) as mock_sign:
         callback, address = _build_signing_callback(wallet, "sol")
