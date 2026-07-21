@@ -32,7 +32,7 @@ from wayfinder_paths.core.utils.evm_client import web3_from_chain_id
 from wayfinder_paths.core.utils.evm_transaction import (
     encode_call,
     send_transaction,
-    wait_for_transaction_receipt,
+    wait_for_evm_transaction,
 )
 from wayfinder_paths.core.utils.multicall import (
     Call,
@@ -1125,7 +1125,7 @@ class ProjectXLiquidityAdapter(UniswapV3BaseAdapter):
 
     async def _extract_token_id_from_receipt(self, tx_hash: str) -> int | None:
         try:
-            receipt = await wait_for_transaction_receipt(PROJECTX_CHAIN_ID, tx_hash)
+            receipt = await wait_for_evm_transaction(PROJECTX_CHAIN_ID, tx_hash)
         except Exception:
             return None
 

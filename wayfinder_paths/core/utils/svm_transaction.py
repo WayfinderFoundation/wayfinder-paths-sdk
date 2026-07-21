@@ -207,7 +207,7 @@ async def _broadcast_svm_transaction(
         return str(resp.value)
 
 
-async def confirm_svm_signature(
+async def wait_for_svm_transaction(
     signature: str,
     chain_id: int = CHAIN_ID_SOLANA,
     timeout_s: float = 60,
@@ -331,7 +331,7 @@ async def send_svm_transaction(
         )
     logger.info(f"Solana transaction broadcasted: {signature}")
     if wait_for_confirmation:
-        status = await confirm_svm_signature(signature, chain_id=chain_id)
+        status = await wait_for_svm_transaction(signature, chain_id=chain_id)
         if not status["confirmed"]:
             raise TransactionRevertedError(
                 signature,

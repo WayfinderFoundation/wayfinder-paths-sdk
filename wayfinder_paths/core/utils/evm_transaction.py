@@ -312,7 +312,7 @@ async def _send_sponsored_transaction(wallet_address: str, transaction: dict) ->
     return await wait_for_sponsored_transaction(wallet_address, result)
 
 
-async def wait_for_transaction_receipt(
+async def wait_for_evm_transaction(
     chain_id: int,
     txn_hash: str,
     poll_interval: float = 0.1,
@@ -323,7 +323,7 @@ async def wait_for_transaction_receipt(
         txn_hash = f"0x{txn_hash}"
 
     async def _wait_for_receipt(web3: AsyncWeb3, tx_hash: str) -> dict[str, Any]:
-        receipt = await web3.eth.wait_for_transaction_receipt(
+        receipt = await web3.eth.wait_for_evm_transaction(
             tx_hash, poll_latency=poll_interval, timeout=timeout
         )
         return cast(dict[str, Any], receipt)
@@ -398,7 +398,7 @@ async def send_transaction(
     logger.info(f"Transaction broadcasted: {txn_hash}")
     if wait_for_receipt:
         try:
-            receipt = await wait_for_transaction_receipt(
+            receipt = await wait_for_evm_transaction(
                 chain_id, txn_hash, confirmations=confirmations
             )
         except TransactionRevertedError as exc:

@@ -400,7 +400,7 @@ class TestGasLimitTransaction:
 
 @pytest.mark.asyncio
 class TestSendTransaction:
-    @patch("wayfinder_paths.core.utils.evm_transaction.wait_for_transaction_receipt")
+    @patch("wayfinder_paths.core.utils.evm_transaction.wait_for_evm_transaction")
     @patch("wayfinder_paths.core.utils.evm_transaction._broadcast_transaction")
     @patch("wayfinder_paths.core.utils.evm_transaction._gas_price_transaction")
     @patch("wayfinder_paths.core.utils.evm_transaction._nonce_transaction")
@@ -446,7 +446,7 @@ class TestSendTransaction:
                 wait_for_receipt=True,
             )
 
-    @patch("wayfinder_paths.core.utils.evm_transaction.wait_for_transaction_receipt")
+    @patch("wayfinder_paths.core.utils.evm_transaction.wait_for_evm_transaction")
     @patch("wayfinder_paths.core.utils.evm_transaction._broadcast_transaction")
     @patch("wayfinder_paths.core.utils.evm_transaction._gas_price_transaction")
     @patch("wayfinder_paths.core.utils.evm_transaction._nonce_transaction")
@@ -492,7 +492,7 @@ class TestSendTransaction:
         )
         assert txn_hash == "0xabc"
 
-    @patch("wayfinder_paths.core.utils.evm_transaction.wait_for_transaction_receipt")
+    @patch("wayfinder_paths.core.utils.evm_transaction.wait_for_evm_transaction")
     @patch("wayfinder_paths.core.utils.evm_transaction._broadcast_transaction")
     @patch("wayfinder_paths.core.utils.evm_transaction._gas_price_transaction")
     @patch("wayfinder_paths.core.utils.evm_transaction._nonce_transaction")
