@@ -2,7 +2,7 @@
 
 Built on the ``AsyncClient`` lifecycle in ``svm.py``. Kept separate from the
 balance/ATA read helpers so the send/confirm surface — the fund-moving part —
-stays isolated. ``send_svm_versioned_transaction`` mirrors the EVM
+stays isolated. ``send_svm_transaction`` mirrors the EVM
 ``send_transaction`` flow: sponsored backend broadcast for remote wallets
 when enabled, otherwise compute-budget surgery + sign callback + local
 broadcast + confirmation.
@@ -49,7 +49,7 @@ MAX_COMPUTE_UNIT_LIMIT = 1_400_000
 COMPUTE_BUDGET_IX_UNITS = 300
 
 
-async def send_svm_transaction(
+async def broadcast_svm_transaction(
     serialized_b64: str,
     chain_id: int = CHAIN_ID_SOLANA,
     skip_preflight: bool = False,
@@ -250,7 +250,7 @@ async def apply_compute_budget(
 
 
 # ---------------------------------------------------------------------------
-# Send flow (mirrors transaction.py::send_transaction)
+# Send flow (mirrors evm_transaction.py::send_transaction)
 # ---------------------------------------------------------------------------
 
 
@@ -283,7 +283,7 @@ async def _send_sponsored_svm_transaction(
     return await wait_for_sponsored_transaction(wallet_address, result)
 
 
-async def send_svm_versioned_transaction(
+async def send_svm_transaction(
     tx: VersionedTransaction,
     sign_callback: Callable,
     chain_id: int = CHAIN_ID_SOLANA,
@@ -314,7 +314,7 @@ async def send_svm_versioned_transaction(
             tx, chain_id=chain_id, cu_limit_multiplier=cu_limit_multiplier
         )
         signed_bytes = await sign_callback(budgeted)
-        signature = await send_svm_transaction(
+        signature = await broadcast_svm_transaction(
             base64.b64encode(signed_bytes).decode(), chain_id=chain_id
         )
     logger.info(f"Solana transaction broadcasted: {signature}")
