@@ -49,7 +49,7 @@ MAX_COMPUTE_UNIT_LIMIT = 1_400_000
 COMPUTE_BUDGET_IX_UNITS = 300
 
 
-async def broadcast_svm_transaction(
+async def _broadcast_svm_transaction(
     serialized_b64: str,
     chain_id: int = CHAIN_ID_SOLANA,
     skip_preflight: bool = False,
@@ -132,7 +132,7 @@ async def confirm_svm_signature(
 # ---------------------------------------------------------------------------
 
 
-async def get_recent_priority_fee(
+async def _get_recent_priority_fee(
     chain_id: int = CHAIN_ID_SOLANA,
     percentile: int = 85,
     floor: int = 1_000,
@@ -160,7 +160,7 @@ async def get_recent_priority_fee(
 # ---------------------------------------------------------------------------
 
 
-async def apply_compute_budget(
+async def _apply_compute_budget(
     tx: VersionedTransaction,
     chain_id: int = CHAIN_ID_SOLANA,
     cu_limit_multiplier: float = 1.2,
@@ -225,7 +225,7 @@ async def apply_compute_budget(
         MAX_COMPUTE_UNIT_LIMIT,
     )
     if priority_fee_micro_lamports is None:
-        priority_fee_micro_lamports = await get_recent_priority_fee(chain_id=chain_id)
+        priority_fee_micro_lamports = await _get_recent_priority_fee(chain_id=chain_id)
 
     budget_instructions = [
         CompiledInstruction(program_id_index=cb_index, data=ix.data, accounts=b"")
@@ -259,7 +259,7 @@ async def _send_sponsored_svm_transaction(
 ) -> str:
     """Submit via the backend's sponsored broadcast and return the signature.
 
-    Mirrors the EVM ``send_sponsored_transaction``: a 4xx means the
+    Mirrors the EVM ``_send_sponsored_transaction``: a 4xx means the
     broadcaster refused the submission and nothing reached the chain, so it
     is safe to fall back to a local broadcast. 5xx/timeouts are ambiguous —
     the transaction may have been accepted — and stay fatal. The signature
@@ -310,11 +310,11 @@ async def send_svm_transaction(
                 f"Sponsored send unavailable, falling back to local broadcast: {exc}"
             )
     if signature is None:
-        budgeted = await apply_compute_budget(
+        budgeted = await _apply_compute_budget(
             tx, chain_id=chain_id, cu_limit_multiplier=cu_limit_multiplier
         )
         signed_bytes = await sign_callback(budgeted)
-        signature = await broadcast_svm_transaction(
+        signature = await _broadcast_svm_transaction(
             base64.b64encode(signed_bytes).decode(), chain_id=chain_id
         )
     logger.info(f"Solana transaction broadcasted: {signature}")

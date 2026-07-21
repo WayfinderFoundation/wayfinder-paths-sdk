@@ -15,11 +15,11 @@ from wayfinder_paths.core.utils.evm_transaction import (
     PRE_EIP_1559_CHAIN_IDS,
     SponsorshipUnavailableError,
     TransactionRevertedError,
+    _gas_limit_transaction,
+    _gas_price_transaction,
     _get_transaction_from_address,
-    gas_limit_transaction,
-    gas_price_transaction,
-    nonce_transaction,
-    send_sponsored_transaction,
+    _nonce_transaction,
+    _send_sponsored_transaction,
     send_transaction,
 )
 
@@ -88,7 +88,7 @@ class TestNonceTransaction:
             "from": RANDOM_USER_0,
             "chainId": 1,
         }
-        result = await nonce_transaction(transaction)
+        result = await _nonce_transaction(transaction)
         assert result["nonce"] == 1
 
     @patch("wayfinder_paths.core.utils.evm_transaction.web3s_from_chain_id")
@@ -102,7 +102,7 @@ class TestNonceTransaction:
                 "from": RANDOM_USER_0,
                 "chainId": chain_id,
             }
-            result = await nonce_transaction(transaction)
+            result = await _nonce_transaction(transaction)
             assert "nonce" in result
             assert result["nonce"] == 7
 
@@ -134,7 +134,7 @@ class TestNonceTransaction:
             "chainId": 1,
         }
 
-        result = await nonce_transaction(transaction)
+        result = await _nonce_transaction(transaction)
 
         assert result["nonce"] == 8
         mock_web3_1.eth.get_transaction_count.assert_called_once()
@@ -157,7 +157,7 @@ class TestNonceTransaction:
             "data": "0xabcd",
         }
 
-        result = await nonce_transaction(transaction)
+        result = await _nonce_transaction(transaction)
 
         assert result["nonce"] == 5
         assert result["from"] == transaction["from"]
@@ -196,7 +196,7 @@ class TestGasPriceTransaction:
             transaction = {
                 "chainId": chain_id,
             }
-            result = await gas_price_transaction(transaction)
+            result = await _gas_price_transaction(transaction)
             if chain_id in PRE_EIP_1559_CHAIN_IDS:
                 assert "maxFeePerGas" not in result
                 assert "maxPriorityFeePerGas" not in result
@@ -220,7 +220,7 @@ class TestGasPriceTransaction:
             "maxPriorityFeePerGas": 1,
         }
 
-        result = await gas_price_transaction(transaction)
+        result = await _gas_price_transaction(transaction)
 
         assert "maxFeePerGas" not in result
         assert "maxPriorityFeePerGas" not in result
@@ -243,7 +243,7 @@ class TestGasPriceTransaction:
             "gasPrice": 1,
         }
 
-        result = await gas_price_transaction(transaction)
+        result = await _gas_price_transaction(transaction)
 
         assert "gasPrice" not in result
         assert result["maxFeePerGas"] > 0
@@ -285,7 +285,7 @@ class TestGasPriceTransaction:
 
         transaction = {"chainId": 1}
 
-        result = await gas_price_transaction(transaction)
+        result = await _gas_price_transaction(transaction)
 
         # Should use max base fee (35 gwei) and max priority fee (3 gwei)
         expected_max_priority_fee = int(
@@ -312,7 +312,7 @@ class TestGasPriceTransaction:
         mock_web3.provider.disconnect = AsyncMock()
         mock_web3s_context.return_value.__aenter__.return_value = [mock_web3]
 
-        result = await gas_price_transaction({"chainId": 137})
+        result = await _gas_price_transaction({"chainId": 137})
 
         assert result["maxPriorityFeePerGas"] == 25_000_000_000
         assert result["maxFeePerGas"] == 30_000_000_000 * 2 + 25_000_000_000
@@ -344,7 +344,7 @@ class TestGasPriceTransaction:
 
         transaction = {"chainId": 56}
 
-        result = await gas_price_transaction(transaction)
+        result = await _gas_price_transaction(transaction)
 
         # Should use max gas price (8 gwei) * multiplier
         expected_gas_price = int(8_000_000_000 * SUGGESTED_GAS_PRICE_MULTIPLIER)
@@ -369,7 +369,7 @@ class TestGasLimitTransaction:
             transaction = {
                 "chainId": chain_id,
             }
-            result = await gas_limit_transaction(transaction)
+            result = await _gas_limit_transaction(transaction)
             assert "gas" in result
             assert result["gas"] > 0
 
@@ -390,7 +390,7 @@ class TestGasLimitTransaction:
         mock_web3s_context.return_value.__aenter__.return_value = [rpc_a, rpc_b]
 
         with pytest.raises(Exception) as excinfo:
-            await gas_limit_transaction({"chainId": 137})
+            await _gas_limit_transaction({"chainId": 137})
 
         msg = str(excinfo.value)
         assert "Gas estimation failed on all RPCs" in msg
@@ -401,10 +401,10 @@ class TestGasLimitTransaction:
 @pytest.mark.asyncio
 class TestSendTransaction:
     @patch("wayfinder_paths.core.utils.evm_transaction.wait_for_transaction_receipt")
-    @patch("wayfinder_paths.core.utils.evm_transaction.broadcast_transaction")
-    @patch("wayfinder_paths.core.utils.evm_transaction.gas_price_transaction")
-    @patch("wayfinder_paths.core.utils.evm_transaction.nonce_transaction")
-    @patch("wayfinder_paths.core.utils.evm_transaction.gas_limit_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction._broadcast_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction._gas_price_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction._nonce_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction._gas_limit_transaction")
     async def test_raises_on_revert(
         self,
         mock_gas_limit,
@@ -447,10 +447,10 @@ class TestSendTransaction:
             )
 
     @patch("wayfinder_paths.core.utils.evm_transaction.wait_for_transaction_receipt")
-    @patch("wayfinder_paths.core.utils.evm_transaction.broadcast_transaction")
-    @patch("wayfinder_paths.core.utils.evm_transaction.gas_price_transaction")
-    @patch("wayfinder_paths.core.utils.evm_transaction.nonce_transaction")
-    @patch("wayfinder_paths.core.utils.evm_transaction.gas_limit_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction._broadcast_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction._gas_price_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction._nonce_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction._gas_limit_transaction")
     async def test_returns_hash_on_success(
         self,
         mock_gas_limit,
@@ -493,11 +493,11 @@ class TestSendTransaction:
         assert txn_hash == "0xabc"
 
     @patch("wayfinder_paths.core.utils.evm_transaction.wait_for_transaction_receipt")
-    @patch("wayfinder_paths.core.utils.evm_transaction.broadcast_transaction")
-    @patch("wayfinder_paths.core.utils.evm_transaction.gas_price_transaction")
-    @patch("wayfinder_paths.core.utils.evm_transaction.nonce_transaction")
-    @patch("wayfinder_paths.core.utils.evm_transaction.gas_limit_transaction")
-    @patch("wayfinder_paths.core.utils.evm_transaction.send_sponsored_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction._broadcast_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction._gas_price_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction._nonce_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction._gas_limit_transaction")
+    @patch("wayfinder_paths.core.utils.evm_transaction._send_sponsored_transaction")
     @patch("wayfinder_paths.core.utils.evm_transaction.sponsorship_enabled")
     async def test_falls_back_to_local_broadcast_when_sponsorship_unavailable(
         self,
@@ -555,7 +555,7 @@ class TestSendSponsoredTransaction:
             side_effect=_http_status_error(status)
         )
         with pytest.raises(SponsorshipUnavailableError):
-            await send_sponsored_transaction(
+            await _send_sponsored_transaction(
                 RANDOM_USER_0, {"chainId": 1, "to": RANDOM_USER_0}
             )
 
@@ -565,6 +565,6 @@ class TestSendSponsoredTransaction:
             side_effect=_http_status_error(502)
         )
         with pytest.raises(httpx.HTTPStatusError):
-            await send_sponsored_transaction(
+            await _send_sponsored_transaction(
                 RANDOM_USER_0, {"chainId": 1, "to": RANDOM_USER_0}
             )

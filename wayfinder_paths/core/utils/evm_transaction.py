@@ -88,7 +88,7 @@ def _get_transaction_from_address(transaction: dict) -> str:
     return AsyncWeb3.to_checksum_address(transaction["from"])
 
 
-async def nonce_transaction(transaction: dict):
+async def _nonce_transaction(transaction: dict):
     transaction = transaction.copy()
 
     from_address = _get_transaction_from_address(transaction)
@@ -107,7 +107,7 @@ async def nonce_transaction(transaction: dict):
     return transaction
 
 
-async def gas_price_transaction(transaction: dict):
+async def _gas_price_transaction(transaction: dict):
     transaction = transaction.copy()
 
     async def _get_gas_price(web3: AsyncWeb3) -> int:
@@ -164,7 +164,7 @@ async def gas_price_transaction(transaction: dict):
     return transaction
 
 
-async def gas_limit_transaction(transaction: dict):
+async def _gas_limit_transaction(transaction: dict):
     transaction = transaction.copy()
 
     # prevents RPCs from taking this as a serious limit
@@ -238,7 +238,7 @@ async def gas_limit_transaction(transaction: dict):
     return transaction
 
 
-async def broadcast_transaction(chain_id, signed_transaction: bytes) -> str:
+async def _broadcast_transaction(chain_id, signed_transaction: bytes) -> str:
     async with web3_from_chain_id(chain_id) as web3:
         tx_hash = await web3.eth.send_raw_transaction(signed_transaction)
         return tx_hash.hex()
@@ -286,7 +286,7 @@ async def wait_for_sponsored_transaction(
     return txn_hash
 
 
-async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> str:
+async def _send_sponsored_transaction(wallet_address: str, transaction: dict) -> str:
     """Submit via the backend's sponsored broadcast and return the tx hash.
 
     Nonce, gas, and fees are resolved by the broadcaster, and the hash can lag
@@ -380,7 +380,7 @@ async def send_transaction(
         and await sponsorship_enabled()
     ):
         try:
-            txn_hash = await send_sponsored_transaction(
+            txn_hash = await _send_sponsored_transaction(
                 sign_callback.wallet_address, transaction
             )
         except SponsorshipUnavailableError as exc:
@@ -388,11 +388,11 @@ async def send_transaction(
                 f"Sponsored send unavailable, falling back to local broadcast: {exc}"
             )
     if txn_hash is None:
-        transaction = await gas_limit_transaction(transaction)
-        transaction = await nonce_transaction(transaction)
-        transaction = await gas_price_transaction(transaction)
+        transaction = await _gas_limit_transaction(transaction)
+        transaction = await _nonce_transaction(transaction)
+        transaction = await _gas_price_transaction(transaction)
         signed_transaction = await sign_callback(transaction)
-        txn_hash = await broadcast_transaction(chain_id, signed_transaction)
+        txn_hash = await _broadcast_transaction(chain_id, signed_transaction)
     if isinstance(txn_hash, str) and not txn_hash.startswith("0x"):
         txn_hash = f"0x{txn_hash}"
     logger.info(f"Transaction broadcasted: {txn_hash}")
