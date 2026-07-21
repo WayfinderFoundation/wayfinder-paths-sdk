@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import math
-import time
 from collections.abc import Callable
 from typing import Any
 
@@ -36,6 +35,7 @@ from wayfinder_paths.core.utils.transaction import (
     SponsorshipUnavailableError,
     TransactionRevertedError,
     sponsorship_enabled,
+    wait_for_sponsored_transaction,
 )
 
 COMPUTE_BUDGET_PROGRAM_ID = Pubkey.from_string(
@@ -280,26 +280,7 @@ async def _send_sponsored_svm_transaction(
                 f"Sponsored send rejected with {exc.response.status_code}"
             ) from exc
         raise
-    txn_hash = result["hash"]
-    deadline = time.monotonic() + 120
-    while not txn_hash:
-        if time.monotonic() > deadline:
-            raise TimeoutError(
-                f"Sponsored transaction {result['transaction_id']} has no hash "
-                f"after 120s"
-            )
-        await asyncio.sleep(2)
-        status = await WALLET_CLIENT.get_privy_transaction_status(
-            wallet_address, result["transaction_id"]
-        )
-        # "failed" is pre-broadcast (no signature will ever land); an on-chain
-        # failure still yields a signature and is caught by confirmation.
-        if status["status"] == "failed":
-            raise SponsorshipUnavailableError(
-                f"Sponsored transaction {result['transaction_id']} failed before broadcast"
-            )
-        txn_hash = status["hash"]
-    return txn_hash
+    return await wait_for_sponsored_transaction(wallet_address, result)
 
 
 async def send_svm_versioned_transaction(
