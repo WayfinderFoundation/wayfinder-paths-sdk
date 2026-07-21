@@ -65,6 +65,9 @@ permission:
   # (last-match-wins) silently removes the tools. Burned a live run.
   wayfinder_sports_snapshot: allow
   wayfinder_sports_backtest_state: allow
+  # paste_* — Paste trade-idea research MCP; reads are free, source ingestion is gated
+  paste_*: allow
+  paste_run_paste_trade: ask
 ---
 
 # Wayfinder
