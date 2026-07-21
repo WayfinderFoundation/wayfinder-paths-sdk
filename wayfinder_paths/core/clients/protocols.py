@@ -74,7 +74,13 @@ class HyperliquidDataClientProtocol(Protocol):
     ) -> list[FundingHistoryEntry]: ...
 
     async def get_candles(
-        self, coin: str, start_ms: int, end_ms: int, interval: str = "1h"
+        self,
+        coin: str,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        interval: str = "1h",
+        *,
+        lookback_hours: int | None = None,
     ) -> list[CandleEntry]: ...
 
 
@@ -194,6 +200,7 @@ class HyperliquidExecutorProtocol(Protocol):
         trigger_price: float,
         size: float,
         address: str,
+        cloid: str | None = None,
     ) -> dict[str, Any]: ...
 
     async def place_limit_order(

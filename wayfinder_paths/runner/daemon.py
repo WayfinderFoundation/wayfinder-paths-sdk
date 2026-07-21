@@ -337,6 +337,11 @@ class RunnerDaemon:
                 ),
             )
 
+        # Refresh the wayfinder-jobs backend after every run so the Strategies
+        # UI (conversations, proposals, reconciled mode) tracks activity instead
+        # of only updating on ~hourly/4-hourly agent wakes.
+        self._sync_to_backend_async()
+
     def _run_side_effect(self, label: str, callback: Callable[[], None]) -> None:
         def _target() -> None:
             try:
@@ -404,27 +409,20 @@ class RunnerDaemon:
             return
 
         def _sync() -> None:
-            jobs = []
-            for j in self._db.list_jobs():
-                result = self._db.get_job(name=j["name"])
-                if not result:
-                    continue
-                job, state = result
-                jobs.append(
-                    {
-                        "job_name": job.name,
-                        "job_type": job.type,
-                        "status": state.status,
-                        "interval_seconds": job.interval_seconds,
-                        "schedule_kind": job.schedule_kind,
-                        "cron_expr": job.cron_expr,
-                        "timezone": job.timezone,
-                        "payload": job.payload,
-                    }
-                )
-            SCHEDULED_JOBS_CLIENT.bulk_sync(jobs)
+            # Push the wayfinder-jobs snapshot (per-mode session ids for the
+            # Conversations panel, proposals, and the reconciled scorecard/mode)
+            # so the Strategies UI reflects runtime state. This is the daemon's
+            # periodic refresh: the event-driven paths (agent wakes, propose,
+            # MCP core_jobs) already call sync_all_jobs, but between them the UI
+            # went stale — the daemon's push had been left on the removed legacy
+            # `/jobs/sync/` endpoint (404). Lazy-imported to avoid any import
+            # cycle with the jobs package at daemon startup.
+            from wayfinder_paths.jobs.store import JobStore
+            from wayfinder_paths.jobs.sync import sync_all_jobs
 
-        self._run_side_effect("bulk-sync", _sync)
+            sync_all_jobs(store=JobStore(repo_root=self._paths.repo_root))
+
+        self._run_side_effect("wayfinder-sync", _sync)
 
     def _notify_session(
         self,

@@ -33,6 +33,16 @@ packaging = "^25.0"
 py-clob-client-v2-felix = "1.0.2"
 croniter = "^6.0.0"
 
+# Optional ML stack for model-as-indicator training and Optuna search.
+# Core stays numpy/pandas-only; install with: poetry install --with ml
+[tool.poetry.group.ml]
+optional = true
+
+[tool.poetry.group.ml.dependencies]
+scikit-learn = "^1.5"
+joblib = "^1.4"
+optuna = "^4.0"
+
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.2"
 pytest-asyncio = "^0.21.0"

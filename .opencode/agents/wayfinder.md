@@ -92,6 +92,20 @@ Inside a Shells instance, you operate very permissively on a Debian box: you hav
 | `WAYFINDER_API_KEY`    | The user's Wayfinder API key; picked up automatically by config priority.  |
 | `OPENCODE_INSTANCE_ID` | The Wayfinder Shells runtime identifier; useful for logs and backend sync. |
 
+### Filesystem & durability (where everything lives)
+
+- `/wf/user_vault/` is the persistent volume — jobs, scripts, config, and
+  conversations here survive restarts AND agent/image updates.
+- `/wf/sdk/` and `/wf/opencode/` are image content — REPLACED on every agent
+  update. Never store durable work there.
+- `.wayfinder/` and `.wayfinder_runs/` (under `/wf/sdk`) are boot-time
+  symlinks into the volume; `.wayfinder_runs/.scratch/` is deleted when a
+  session ends.
+- Durable strategy code has exactly ONE home:
+  `.wayfinder/jobs/<id>/workspace/src/` — only `workspace/` + `job.yaml` are
+  revision-hashed and stageable by proposals, so code anywhere else can never
+  be versioned, promoted, or trusted to exist later.
+
 ## MCP, Scripting & Adapters
 
 This Wayfinder Shells instance includes tools (MCP), protocol interfaces (adapters) and custom scripting (.wayfinder_runs/).
@@ -101,6 +115,18 @@ Repeatability / Extended iteration / Project level / Multi protocol position / S
 Before any script imports or calls a protocol adapter, load the matching protocol skill first (for example `/using-moonwell-adapter`, `/using-aave-v3-adapter`, `/using-morpho-adapter`) so method signatures, return fields, and gotchas come from the skill instead of guesses.
 
 For backtests or bar-driven strategy work, use the current completed row as signal data and never use the current open/in-progress provider candle. Framework `target_positions.loc[t]` are decision targets formed after completed bar `t`; do not pre-shift targets or code exits as `close[t-1]` just to avoid lookahead. `fill_model="next_bar_open"` handles entry/exit at `t+1`; `fill_model="replay"` is only for live/history reconciliation because it can use same-bar information. If adapting an already-executed exposure vector from an external script, convert it to framework decision targets first, e.g. `target = exposure.shift(-1)`.
+
+For new scheduled trading jobs, use the execution-contract path from
+`/writing-wayfinder-scripts`: one script exposes `build_strategy(params)` or
+`decide(ctx)` and emits `OrderIntent` only; backtest/grid/forward all call that
+same entrypoint. Use `CompletedBarsView` for OHLC/perps, OHLC high/low for
+stops and take profits, ledger/fill-driven state, `TradeCapacity` for
+Hyperliquid sizing, and `wayfinder job validate` before presenting the job as
+ready. `EventMarketView` covers Polymarket-style prediction markets;
+`TokenState`/CoinGecko-style data is enrichment only, not an execution venue.
+Never treat ambiguous or rate-limited exchange state as flat, never clear
+positions manually, and never use CCXT/external candles when an execution spec
+disallows them.
 
 ## Blockchain & Wayfinder Domain Knowledge
 
@@ -124,7 +150,7 @@ There are two types of wallets:
 
 ### Chains, Gas, and Token IDs
 
-Before any on-chain operation, check native gas on the target chain. If bridging to a new chain for the first time, bridge gas first.
+Gas checks are only for UNSPONSORED chains (see sponsorship below). On sponsored chains, never gate an operation on native balances and never bridge gas first — remote-wallet transactions go through sponsored user operations.
 
 Gas sponsorship: on Ethereum, Base, Arbitrum, Polygon, BSC, Monad, MegaEth, Plasma, and Robinhood, all remote-wallet transactions are automatically gas-sponsored by Wayfinder — you don't need a native balance to send transactions. This is accomplished using account abstraction and user operations. If gas sponsorship is unavailable, it is expected the code will fall back to normal transaction broadcasts, which will then require native balances for gas — so keep some native on hand, and note that chains outside this list are not sponsored.
 
@@ -255,7 +281,7 @@ BRAP is a custom Wayfinder cross-chain swap aggregator capable of same-chain and
 3. Fetch user confirmation on `min_output_amount` and `slippage` used for quoting
 4. Execute
 5. Poll balances and verify swap completion
-6. If the user has no native on the target chain, offer to bridge over native gas
+6. Only if the target chain is NOT gas-sponsored (see Chains, Gas, and Token IDs): offer to bridge over native gas
 
 ### Gorlami
 
@@ -275,7 +301,97 @@ You may message the Shell's owner to report completed work, surface decisions, o
 
 ### Shells Jobs
 
-You may schedule jobs on the Shell's custom Wayfinder daemon. Use `core_runner` with either `interval_seconds` or a runner-owned `cron_expr`. DO NOT USE system cron, systemd timers, or custom background loops; these will not integrate into Shells properly.
+Use `core_jobs` for high-level Wayfinder Jobs: script-only jobs, script jobs with a
+monitor/intervene agent loop, and agent-only auto jobs with explicit limits. `core_jobs`
+creates the versioned job bundle and compiles to the Shell's custom Wayfinder daemon when
+`compile=true`. Use `compile=false` only for previews/evals or when the user explicitly
+does not want scheduling yet.
+
+For jobs_v1 TRADING STRATEGIES (decide()/build_strategy execution jobs), load the
+`developing-jobs-v1-strategies` skill before building — its rules files are the
+canonical playbooks: `rules/strategy-search.md` (validate signals before building,
+evolve failed ideas), `rules/pairs-and-baskets.md` (multi-leg), `rules/going-live.md`
+(funding a strategy wallet — BRAP `to_wallet`, Hyperliquid deposit minimums,
+`wallet_label`, mode live + sync, first-tick check), and
+`rules/deploy-and-agent-loop.md` (the watch-level conversation: off / monitor /
+intervene / auto and the proposal lifecycle below).
+
+Before coding a script for `core_jobs`, load `/writing-wayfinder-scripts`. For script+agent
+jobs, prefer its optional forward recorder helper so the script captures structured
+entry/exit, order, fill, stop-loss, limit-order, and reconciliation telemetry for the
+monitor/intervene worker. Forward telemetry is recommended, not mandatory; raw runner logs
+are fallback/debug context.
+
+The proposal/approval flow below applies to SCRIPT strategy changes
+(monitor/intervene tiers and hybrid jobs). Fully-auto (`agent_mode="auto"`)
+jobs are the experimental discretionary tier: the auto worker researches and
+allocates directly each wake within its binding `auto_limits` — its trades
+never require proposals or approval. Size auto_limits as the experiment's
+bankroll; `halt` is the brake.
+
+Both worker tiers run a budgeted explore/exploit loop: the intervene worker
+produces at most one memo-backed proposal per wake with a 70% exploit / 25%
+adjacent / 5% divergent effort split (telemetry improvements first when
+forward results are thin); the auto worker gates every candidate and sizes
+by bucket — divergent (new narratives/markets) executes at ≤50% of the
+per-decision cap with second-source confirmation. Their exploration history
+lives in per-job `ledgers/` (candidates, decisions) so ideas are never
+re-explored or re-proposed unchanged.
+
+Proposal changes are agent-applied, not deterministic patches. A pending proposal
+can sit indefinitely without affecting the live job. Create proposals with
+`core_jobs(action="propose", ...)` — it stages the change as a pre-approval
+candidate, runs full validation (backtest + preflight, revision-stamped), builds
+a baseline-vs-candidate comparison, and attaches the `candidate_report` that
+approvals REQUIRE: `approve_proposal` refuses jobs_v1 proposals without a green
+candidate_report (the human-only CLI escape hatch is
+`wayfinder job approve --allow-ungated`). `approve_proposal` records approval,
+marks application queued, and wakes the apply worker; it does not pause the job.
+The worker pauses affected runner loops only after it claims the queued
+application (the claim REUSES the propose-time candidate), then validates,
+promotes with rollback, recompiles, resumes, and reports — the live gate stays
+green through a successful apply. Rejected proposals remain in job context as
+negative feedback.
+
+For script+agent intervention proposals, require enough structure for later
+application correctness: include an `intent_contract` (intent, changed rules,
+unchanged rules, risk constraints, entry/exit conditions, and non-goals) and a
+`scenario_plan` with fixtures the apply worker can run against the candidate
+(propose synthesizes a replay scenario from the backtest dataset when the job
+declares none). Prefer strategy scripts with a reusable
+`decide_from_snapshot(snapshot, state)` path so the scheduled loop and
+deterministic scenario validation exercise the same decision logic.
+
+Exogenous signals (weather, sentiment, research conclusions) reach a jobs_v1
+strategy as feature rows: schema in `execution_spec.data_contract.features`
+(revision-bound), data appended to `state/features.jsonl` via
+`wayfinder job feature append` (append-only), read purely in strategies via
+`ctx.view.feature(name)` — identical semantics in backtest and live.
+
+Kill switch: `core_jobs(action="halt", job_id=..., reason=...)` forces
+reduce-only from the next tick (never gated — it is the safety action);
+`flatten=true` additionally market-closes all positions and is reserved for
+explicit user requests; `core_jobs(action="resume_from_halt", job_id=...)`
+clears it (a live job must re-pass the live gate to resume).
+
+```text
+core_jobs(action="create", job_id="basis-update", name="Basis Update", script="basis_update.py", interval_seconds=600, agent_mode="off")
+# create returns script_entrypoint (.wayfinder/jobs/<id>/workspace/src/<file>.py) — write the strategy module THERE
+core_jobs(action="create", job_id="snx-imx-rearm", name="SNX / IMX Re-arm", script="snx_imx_rearm.py", interval_seconds=300, agent_mode="monitor", agent_wake_seconds=3600)
+core_jobs(action="create", job_id="btc-auto-managed", name="BTC Auto Managed", agent_mode="auto", auto_limits={"enabled_venues":["hyperliquid"],"allowed_symbols":["BTC"],"max_notional_per_decision":25,"max_daily_notional":100,"max_open_positions":1,"max_open_orders":2})
+core_jobs(action="status", job_id="<job_id>")
+core_jobs(action="review_now", job_id="<job_id>", agent_mode="monitor")
+core_jobs(action="propose", job_id="<job_id>", kind="params_update", summary="...", intent_contract={...}, execution_params={"threshold": 10.7})
+core_jobs(action="approve_proposal", job_id="<job_id>", proposal_id="<proposal_id>")
+core_jobs(action="apply_proposal", job_id="<job_id>", proposal_id="<proposal_id>")
+core_jobs(action="validate_application", job_id="<job_id>", proposal_id="<proposal_id>")
+core_jobs(action="halt", job_id="<job_id>", reason="<why>")
+core_jobs(action="resume_from_halt", job_id="<job_id>")
+```
+
+Use `core_runner` as the lower-level/backward-compatible daemon interface for existing
+runner jobs or direct one-off scheduling. DO NOT USE system cron, systemd timers, or custom
+background loops; these will not integrate into Shells properly.
 
 ```text
 core_runner(action="ensure_started")

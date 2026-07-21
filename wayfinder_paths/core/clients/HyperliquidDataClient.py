@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import NotRequired, Required, TypedDict
 
 from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
@@ -43,14 +44,39 @@ class HyperliquidDataClient(WayfinderClient):
         return resp.json()
 
     async def get_candles(
-        self, coin: str, start_ms: int, end_ms: int, interval: str = "1h"
+        self,
+        coin: str,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        interval: str = "1h",
+        *,
+        lookback_hours: int | None = None,
     ) -> list[CandleEntry]:
-        data = await self.get_candles_response(coin, start_ms, end_ms, interval)
+        data = await self.get_candles_response(
+            coin,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            interval=interval,
+            lookback_hours=lookback_hours,
+        )
         return data.get("rows", [])
 
     async def get_candles_response(
-        self, coin: str, start_ms: int, end_ms: int, interval: str = "1h"
+        self,
+        coin: str,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        interval: str = "1h",
+        *,
+        lookback_hours: int | None = None,
     ) -> dict:
+        if start_ms is None or end_ms is None:
+            if lookback_hours is None:
+                raise TypeError(
+                    "get_candles requires start_ms/end_ms or lookback_hours"
+                )
+            end_ms = int(time.time() * 1000)
+            start_ms = end_ms - int(lookback_hours) * 60 * 60 * 1000
         url = f"{self.api_base_url}/candles/"
         params = {
             "coin": coin,

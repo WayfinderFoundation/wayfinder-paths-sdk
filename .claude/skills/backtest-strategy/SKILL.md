@@ -18,6 +18,14 @@ Use this skill when you are:
 
 **First, determine if you're backtesting an existing strategy or a new idea:**
 
+If the output is intended to become a scheduled Wayfinder Job, also load
+`/writing-wayfinder-scripts` and use the execution-contract job path there:
+one strategy entrypoint, `CompletedBarsView`, `OrderIntent`, ledger-driven
+state, OHLC bracket exits, `simulate_execution(...)`, `run_execution_grid(...)`,
+and `wayfinder job validate`. The legacy helpers below are still valid for
+research and existing strategy analysis, but they are not enough by themselves
+to prove a new job-grade strategy will execute the same way in forward runs.
+
 ### Backtesting an existing strategy (from `wayfinder_paths/strategies/`)
 
 Load these rules:
