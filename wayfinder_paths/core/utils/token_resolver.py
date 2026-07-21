@@ -9,6 +9,7 @@ from wayfinder_paths.core.constants.base import NATIVE_COINGECKO_IDS, NATIVE_GAS
 from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID, CHAIN_ID_TO_CODE
 from wayfinder_paths.core.utils.token_refs import (
     looks_like_evm_address,
+    looks_like_solana_address,
     parse_token_id_to_chain_and_address,
 )
 from wayfinder_paths.core.utils.tokens import get_token_decimals, is_native_token
@@ -213,6 +214,11 @@ class TokenResolver:
             if not addr:
                 raise ValueError(f"Cannot resolve token: {query}")
             return chain_id_i, addr
+
+        # A base58 mint is a Solana address — return it as-is (case-sensitive,
+        # never checksummed) with the caller-supplied chain hint.
+        if looks_like_solana_address(q_raw):
+            return cls._validate_chain_id_hint(chain_id, query=q_raw), q_raw
 
         q = _normalize_token_query(q_raw)
         meta: dict[str, Any] | None = None
