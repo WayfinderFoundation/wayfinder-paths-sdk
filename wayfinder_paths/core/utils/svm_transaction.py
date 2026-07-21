@@ -299,8 +299,13 @@ async def send_svm_transaction(
     if sign_callback is None:
         raise ValueError("sign_callback must be provided to send transaction")
 
+    # Mirrors evm_transaction.send_transaction: remote wallets let the backend
+    # sign, broadcast, and cover gas. Every sign callback carries
+    # `wallet_address` (None for local keys). EVM also gates on
+    # `chain_id in GAS_SPONSORED_CHAIN_IDS and not fork`; SVM has a single
+    # always-sponsored chain and no fork, so those guards collapse away.
     signature = None
-    if await sponsorship_enabled():
+    if sign_callback.wallet_address and await sponsorship_enabled():
         try:
             signature = await _send_sponsored_svm_transaction(
                 sign_callback.wallet_address, tx, chain_id
