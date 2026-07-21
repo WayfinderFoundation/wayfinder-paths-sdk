@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
+from wayfinder_paths.core.utils.swap_safety import effective_slippage_bps
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.mcp.utils import (
     catch_errors,
@@ -16,7 +17,7 @@ from wayfinder_paths.mcp.utils import (
 
 
 def _slippage_float(slippage_bps: int) -> float:
-    return max(0.0, float(int(slippage_bps)) / 10_000.0)
+    return float(effective_slippage_bps(slippage_bps)) / 10_000.0
 
 
 def _unwrap_brap_quote_response(
@@ -50,10 +51,13 @@ def _unwrap_brap_quote_response(
         best_out = best if isinstance(best, dict) else None
 
         quote_count = raw_quotes.get("quote_count")
-        try:
-            quote_count_i = int(quote_count)
-        except (TypeError, ValueError):
+        if quote_count is None:
             quote_count_i = len(all_quotes)
+        else:
+            try:
+                quote_count_i = int(quote_count)
+            except (TypeError, ValueError):
+                quote_count_i = len(all_quotes)
 
         return all_quotes, best_out, quote_count_i
 
@@ -99,6 +103,8 @@ async def onchain_quote_swap(
     sender = normalize_address(w.get("address"))
     if not sender:
         return err("invalid_wallet", f"Wallet {wallet_label} missing address")
+    if slippage_bps < 0:
+        return err("invalid_request", "slippage_bps must be >= 0")
 
     try:
         from_meta, to_meta = await asyncio.gather(
@@ -143,11 +149,22 @@ async def onchain_quote_swap(
             from_wallet=sender,
             from_amount=str(amount_raw),
             slippage=slip,
+            to_wallet=rcpt,
         )
     except Exception as exc:  # noqa: BLE001
         return err("quote_error", str(exc))
 
     all_quotes, best_quote, quote_count = _unwrap_brap_quote_response(data)
+    quote_id = data.get("quote_id") if isinstance(data, dict) else None
+    expires_at = data.get("expires_at") if isinstance(data, dict) else None
+    if not quote_id:
+        return err("quote_error", "Backend did not return a bound quote_id")
+    backend_slippage_bps = data.get("effective_slippage_bps")
+    applied_slippage_bps = (
+        int(backend_slippage_bps)
+        if backend_slippage_bps is not None
+        else effective_slippage_bps(slippage_bps)
+    )
 
     providers: list[str] = []
     seen: set[str] = set()
@@ -218,14 +235,18 @@ async def onchain_quote_swap(
         "from_token": from_meta.get("symbol"),
         "to_token": to_meta.get("symbol"),
         "amount": str(amount),
-        "slippage_bps": int(slippage_bps),
+        "quote_id": quote_id,
+        "quote_expires_at": expires_at,
+        "requested_slippage_bps": int(slippage_bps),
+        "slippage_bps": applied_slippage_bps,
         "suggested_swap_request": {
             "wallet_label": wallet_label,
             "from_token": from_token_id,
             "to_token": to_token_id,
             "amount": str(amount),
-            "slippage_bps": int(slippage_bps),
+            "slippage_bps": applied_slippage_bps,
             "recipient": rcpt,
+            "quote_id": quote_id,
         },
     }
 

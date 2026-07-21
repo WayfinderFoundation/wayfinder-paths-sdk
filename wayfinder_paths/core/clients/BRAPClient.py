@@ -43,29 +43,43 @@ class FeeEstimate(TypedDict):
 class Calldata(TypedDict, total=False):
     data: str
     to: str
-    value: str
+    value: int | str
     chainId: int
 
 
-class BRAPQuoteEntry(TypedDict):
+class BRAPQuoteEntry(TypedDict, total=False):
     provider: Required[str]
-    quote: Required[QuoteData]
-    calldata: Required[Calldata]
-    output_amount: Required[int]
-    input_amount: Required[int]
+    quote: QuoteData | dict[str, Any]
+    calldata: Calldata
+    output_amount: int
+    input_amount: int
     gas_estimate: NotRequired[int | None]
     error: NotRequired[str | None]
-    input_amount_usd: Required[float]
-    output_amount_usd: Required[float]
-    fee_estimate: Required[FeeEstimate]
+    input_amount_usd: float
+    output_amount_usd: float
+    fee_estimate: FeeEstimate
     wrap_transaction: NotRequired[dict[str, Any] | None]
     unwrap_transaction: NotRequired[dict[str, Any] | None]
-    native_input: Required[bool]
-    native_output: Required[bool]
+    native_input: bool
+    native_output: bool
+    prerequisite_transactions: list[dict[str, Any]] | None
+    bridge_tracking: dict[str, Any] | None
+    approvalAddress: str | None
+    approval_address: str | None
 
 
 class BRAPQuoteResponse(TypedDict):
     quotes: Required[list[BRAPQuoteEntry]]
+    best_quote: Required[BRAPQuoteEntry]
+    quote_id: NotRequired[str]
+    expires_at: NotRequired[int]
+    effective_slippage_bps: NotRequired[int]
+
+
+class BRAPQuoteIntentResponse(TypedDict):
+    quote_id: Required[str]
+    expires_at: Required[int]
+    request: Required[dict[str, Any]]
     best_quote: Required[BRAPQuoteEntry]
 
 
@@ -116,6 +130,18 @@ class BRAPClient(WayfinderClient):
             elapsed = time.time() - start_time
             logger.error(f"BRAP quote request failed after {elapsed:.2f}s: {e}")
             raise
+
+    async def get_quote_intent(self, quote_id: str) -> BRAPQuoteIntentResponse:
+        url = f"{get_api_base_url()}/blockchain/braps/quote-intent/"
+        response = await self._authed_request(
+            "GET",
+            url,
+            params={"quote_id": quote_id},
+            headers={},
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get("data", data)
 
     async def wait_for_bridge_execution(
         self,

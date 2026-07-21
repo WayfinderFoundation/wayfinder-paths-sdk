@@ -7,6 +7,7 @@ from eth_utils import to_checksum_address
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
+from wayfinder_paths.core.utils.swap_safety import effective_slippage_bps
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
@@ -185,6 +186,7 @@ async def onchain_swap(
     from_token: str,
     to_token: str,
     amount: str,
+    quote_id: str,
     slippage_bps: int = 50,
     recipient: str | None = None,
     wait_for_receipt: bool = True,
@@ -205,16 +207,20 @@ async def onchain_swap(
         amount: Decimal human-units string (e.g. "1000.0" or "0.5"), not wei.
             Must include a decimal point; integer-looking strings like "1000"
             are rejected.
+        quote_id: Bound quote id returned by `onchain_quote_swap`.
         slippage_bps: Slippage cap in basis points (50 = 0.5%, default).
         recipient: Destination address (defaults to sender).
         wait_for_receipt: Synchronous receipt wait. Default true.
         receipt_confirmations: Confirmations to wait for when `wait_for_receipt=true`.
 
     Returns:
-        `{status: "submitted"|"confirmed"|"failed", sender, recipient, effects: {approval?, swap}, raw}`.
+        `{status: "submitted"|"confirmed"|"failed", sender, recipient,
+        effects: {prerequisites?, approval?, swap}, raw}`.
     """
     if not wallet_label.strip():
         return err("invalid_request", "wallet_label is required")
+    if not quote_id:
+        return err("quote_required", "Call onchain_quote_swap and pass its quote_id")
     if slippage_bps < 0:
         return err("invalid_request", "slippage_bps must be >= 0")
 
@@ -274,62 +280,125 @@ async def onchain_swap(
             },
         )
 
-    slippage = max(0.0, float(int(slippage_bps)) / 10_000.0)
     try:
-        quote_data = await BRAP_CLIENT.get_quote(
-            from_token=from_token_addr,
-            to_token=to_token_addr,
-            from_chain=from_chain_id,
-            to_chain=to_chain_id,
-            from_wallet=sender,
-            from_amount=str(amount_raw),
-            slippage=slippage,
-        )
+        intent_data = await BRAP_CLIENT.get_quote_intent(quote_id)
     except Exception as exc:  # noqa: BLE001
-        return err("quote_error", str(exc))
+        return err("quote_expired", f"Bound quote is unavailable: {exc}")
 
-    best_quote = None
-    if isinstance(quote_data, dict):
-        if isinstance(quote_data.get("best_quote"), dict):
-            best_quote = quote_data.get("best_quote")
-        else:
-            quotes_block = quote_data.get("quotes")
-            if isinstance(quotes_block, dict) and isinstance(
-                quotes_block.get("best_quote"), dict
-            ):
-                best_quote = quotes_block.get("best_quote")
+    intent_request = intent_data.get("request")
+    best_quote = intent_data.get("best_quote")
+    if not isinstance(intent_request, dict):
+        return err("quote_error", "Bound quote is missing its request")
+
+    applied_slippage_bps = effective_slippage_bps(slippage_bps)
+    bound_slippage_bps = int(round(float(intent_request.get("slippage") or 0) * 10_000))
+    expected = {
+        "from_wallet": sender.lower(),
+        "to_wallet": rcpt.lower(),
+        "from_token": from_token_addr.lower(),
+        "to_token": to_token_addr.lower(),
+        "from_chain": int(from_chain_id),
+        "to_chain": int(to_chain_id),
+        "from_amount": int(amount_raw),
+        "slippage_bps": applied_slippage_bps,
+    }
+    actual = {
+        "from_wallet": str(intent_request.get("from_wallet") or "").lower(),
+        "to_wallet": str(intent_request.get("to_wallet") or "").lower(),
+        "from_token": str(intent_request.get("from_token") or "").lower(),
+        "to_token": str(intent_request.get("to_token") or "").lower(),
+        "from_chain": int(intent_request.get("from_chain") or 0),
+        "to_chain": int(intent_request.get("to_chain") or 0),
+        "from_amount": int(intent_request.get("from_amount") or 0),
+        "slippage_bps": bound_slippage_bps,
+    }
+    mismatches = {
+        key: {"expected": expected[key], "quoted": actual[key]}
+        for key in expected
+        if expected[key] != actual[key]
+    }
+    if mismatches:
+        return err(
+            "quote_mismatch",
+            "Swap request does not match the bound quote; request a new quote",
+            mismatches,
+        )
 
     if not isinstance(best_quote, dict):
-        return err("quote_error", "No best_quote returned", {"quote": quote_data})
+        return err("quote_error", "No best_quote returned", {"quote": intent_data})
+    best_quote_payload: dict[str, Any] = dict(best_quote)
 
-    calldata = best_quote.get("calldata") or {}
+    quote_data: dict[str, Any] = {
+        "quotes": [best_quote_payload],
+        "best_quote": best_quote_payload,
+        "quote_id": quote_id,
+        "expires_at": intent_data.get("expires_at"),
+    }
+
+    calldata = best_quote_payload.get("calldata") or {}
     if not isinstance(calldata, dict) or not calldata:
         return err(
-            "quote_error", "best_quote missing calldata", {"best_quote": best_quote}
+            "quote_error",
+            "best_quote missing calldata",
+            {"best_quote": best_quote_payload},
         )
 
-    swap_tx = dict(calldata)
+    swap_tx: dict[str, Any] = dict(calldata)
     swap_tx["chainId"] = int(from_chain_id)
     swap_tx["from"] = to_checksum_address(sender)
     if "value" in swap_tx:
         swap_tx["value"] = int(swap_tx["value"])
 
+    prerequisite_transactions = best_quote_payload.get("prerequisite_transactions")
+    if isinstance(prerequisite_transactions, list) and prerequisite_transactions:
+        prerequisite_results: list[dict[str, Any]] = []
+        for prerequisite in prerequisite_transactions:
+            if not isinstance(prerequisite, dict):
+                return err("quote_error", "Invalid prerequisite transaction")
+            prerequisite_tx: dict[str, Any] = dict(prerequisite)
+            prerequisite_tx.pop("description", None)
+            prerequisite_tx["chainId"] = int(from_chain_id)
+            prerequisite_tx["from"] = to_checksum_address(sender)
+            value = prerequisite_tx.get("value", 0)
+            prerequisite_tx["value"] = (
+                int(value, 0) if isinstance(value, str) else int(value)
+            )
+            sent_ok, sent = await _broadcast(
+                sign_callback,
+                prerequisite_tx,
+                chain_id=int(from_chain_id),
+                wait_for_receipt=True,
+                confirmations=receipt_confirmations,
+            )
+            prerequisite_results.append(sent)
+            if not sent_ok:
+                response["effects"]["prerequisites"] = prerequisite_results
+                response["status"] = "failed"
+                response["raw"] = _compact_quote(quote_data, best_quote_payload)
+                return ok(response)
+        response["effects"]["prerequisites"] = prerequisite_results
+
+    quote_inner = best_quote_payload.get("quote")
+    route = quote_inner.get("route") if isinstance(quote_inner, dict) else None
+    is_in_house_uniswap = route in {"uniswap_v3", "uniswap_v4"}
+
     spender = (
-        best_quote.get("approvalAddress")
-        or best_quote.get("approval_address")
+        best_quote_payload.get("approvalAddress")
+        or best_quote_payload.get("approval_address")
         or swap_tx.get("to")
     )
     approve_amount = (
-        best_quote.get("input_amount")
-        or best_quote.get("inputAmount")
-        or best_quote.get("amount1")
-        or best_quote.get("amount")
+        best_quote_payload.get("input_amount")
+        or best_quote_payload.get("inputAmount")
+        or best_quote_payload.get("amount1")
+        or best_quote_payload.get("amount")
     )
 
     if (
         from_token_addr.lower() != ZERO_ADDRESS.lower()
         and spender
         and approve_amount is not None
+        and not is_in_house_uniswap
     ):
         try:
             need = int(approve_amount)
@@ -363,7 +432,7 @@ async def onchain_swap(
     if not sent_ok:
         status = "failed"
 
-    bridge_tracking = best_quote.get("bridge_tracking")
+    bridge_tracking = best_quote_payload.get("bridge_tracking")
     if sent_ok and wait_for_receipt and bridge_tracking:
         try:
             bridge_result = await BRAP_CLIENT.wait_for_bridge_execution(
@@ -381,7 +450,7 @@ async def onchain_swap(
             status = "submitted"
 
     response["status"] = status
-    response["raw"] = _compact_quote(quote_data, best_quote)
+    response["raw"] = _compact_quote(quote_data, best_quote_payload)
 
     _annotate_profile(
         address=sender,

@@ -38,6 +38,9 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
     calldata = {"data": "0x" + ("ab" * 4096)}
     fake_brap.get_quote = AsyncMock(
         return_value={
+            "quote_id": "quote-1234567890123456",
+            "expires_at": 1_800_000_000,
+            "effective_slippage_bps": 50,
             "quotes": {
                 "quote_count": 3,
                 "best_quote": {
@@ -59,7 +62,7 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
                     {"provider": "brap_alt"},
                     {"provider": "brap_alt"},
                 ],
-            }
+            },
         }
     )
 
@@ -127,6 +130,9 @@ async def test_quote_swap_can_include_calldata_when_requested():
     fake_brap = AsyncMock()
     fake_brap.get_quote = AsyncMock(
         return_value={
+            "quote_id": "quote-1234567890123456",
+            "expires_at": 1_800_000_000,
+            "effective_slippage_bps": 50,
             "quotes": {
                 "quote_count": 1,
                 "best_quote": {
@@ -135,7 +141,7 @@ async def test_quote_swap_can_include_calldata_when_requested():
                     "calldata": calldata,
                 },
                 "all_quotes": [{"provider": "brap_best"}],
-            }
+            },
         }
     )
 
@@ -195,6 +201,9 @@ async def test_quote_swap_accepts_top_level_brap_shape():
     fake_brap = AsyncMock()
     fake_brap.get_quote = AsyncMock(
         return_value={
+            "quote_id": "quote-1234567890123456",
+            "expires_at": 1_800_000_000,
+            "effective_slippage_bps": 50,
             "quotes": [{"provider": "brap_best"}, {"provider": "brap_alt"}],
             "best_quote": {
                 "provider": "brap_best",
@@ -226,3 +235,63 @@ async def test_quote_swap_accepts_top_level_brap_shape():
     assert out["ok"] is True
     assert out["result"]["quote"]["quote_count"] == 2
     assert out["result"]["quote"]["providers"] == ["brap_best", "brap_alt"]
+
+
+@pytest.mark.asyncio
+async def test_quote_swap_caps_requested_slippage_at_twenty_percent():
+    fake_wallet = {"address": "0x000000000000000000000000000000000000dEaD"}
+    from_meta = {
+        "token_id": "from",
+        "symbol": "FROM",
+        "decimals": 6,
+        "chain_id": 42161,
+        "address": "0x1111111111111111111111111111111111111111",
+    }
+    to_meta = {
+        "token_id": "to",
+        "symbol": "TO",
+        "decimals": 6,
+        "chain_id": 42161,
+        "address": "0x2222222222222222222222222222222222222222",
+    }
+    fake_brap = AsyncMock()
+    fake_brap.get_quote = AsyncMock(
+        return_value={
+            "quote_id": "quote-1234567890123456",
+            "expires_at": 1_800_000_000,
+            "effective_slippage_bps": 2_000,
+            "quotes": [{"provider": "lifi"}],
+            "best_quote": {
+                "provider": "lifi",
+                "output_amount": "1",
+                "calldata": {"data": "0xabc"},
+            },
+        }
+    )
+
+    with (
+        patch(
+            "wayfinder_paths.mcp.tools.quotes.find_wallet_by_label",
+            return_value=fake_wallet,
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.quotes.TokenResolver.resolve_token_meta",
+            new_callable=AsyncMock,
+            side_effect=[from_meta, to_meta],
+        ),
+        patch("wayfinder_paths.mcp.tools.quotes.BRAP_CLIENT", fake_brap),
+    ):
+        out = await onchain_quote_swap(
+            wallet_label="main",
+            from_token="from",
+            to_token="to",
+            amount="1.0",
+            slippage_bps=3_000,
+        )
+
+    assert out["ok"] is True
+    result = out["result"]
+    assert result["requested_slippage_bps"] == 3_000
+    assert result["slippage_bps"] == 2_000
+    assert result["suggested_swap_request"]["slippage_bps"] == 2_000
+    assert fake_brap.get_quote.await_args.kwargs["slippage"] == 0.2

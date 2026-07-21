@@ -3,16 +3,14 @@
 Aggregators (LiFi/BRAP) have no v4 coverage on newer chains like Robinhood,
 so v4-only tokens either don't quote or route through dust pools at a huge
 markup — the INDEX/ETH 1% pool ($87.5k) quotes ~24% more direct than the
-aggregator's dust fallback. This module discovers a token pair's v4 pools
-from PoolManager Initialize events, ranks them by live liquidity (StateView),
-quotes via the V4Quoter, and executes through the Universal Router.
-
-Pool selection is by liquidity, never fee tier: v4 lets anyone open a pool at
-any fee, so the 10/20/50% "pools" are traps with dust in them.
+aggregator's dust fallback. This module discovers a token pair's v4 pools,
+rejects unsafe fee/hook configurations, quotes every candidate, and executes
+the best output with acceptable price impact through the Universal Router.
 """
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,11 +29,27 @@ from wayfinder_paths.core.constants.uniswap_v4_abi import (
     PERMIT2_ABI,
     UNIVERSAL_ROUTER_ABI,
 )
+from wayfinder_paths.core.utils.swap_safety import (
+    MAX_PRICE_IMPACT_BPS,
+    MAX_UNISWAP_FEE,
+    calculate_price_impact_bps,
+    effective_slippage_bps,
+)
 from wayfinder_paths.core.utils.tokens import ensure_allowance, is_native_token
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.web3 import web3_from_chain_id
 
 NATIVE_ADDRESS = "0x0000000000000000000000000000000000000000"
+
+_ALLOWED_HOOKS: dict[int, frozenset[str]] = {
+    4663: frozenset(
+        {
+            NATIVE_ADDRESS,
+            # Live Robinhood INDEX/ETH launch pool.
+            "0x2cd91bd228ff4c537031d6b8204782090c84c0cc",
+        }
+    ),
+}
 
 # PoolManager.Initialize(bytes32 indexed id, address indexed currency0,
 #   address indexed currency1, uint24 fee, int24 tickSpacing, address hooks,
@@ -121,6 +135,20 @@ class V4Pool:
     liquidity: int
 
 
+@dataclass(frozen=True)
+class V4PoolQuote:
+    pool: V4Pool
+    amount_out: int
+    price_impact_bps: int
+
+
+def _is_safe_pool(chain_id: int, pool: V4Pool) -> bool:
+    if pool.key.fee < 0 or pool.key.fee > MAX_UNISWAP_FEE:
+        return False
+    allowed = _ALLOWED_HOOKS.get(chain_id, frozenset({NATIVE_ADDRESS}))
+    return pool.key.hooks.lower() in allowed
+
+
 def _normalize_currency(address: str | None) -> str:
     if address is None or is_native_token(address):
         return NATIVE_ADDRESS
@@ -204,8 +232,9 @@ async def find_pools(chain_id: int, token_a: str, token_b: str) -> list[V4Pool]:
                 if liquidity > 0:
                     pools.append(V4Pool(key=key, liquidity=liquidity))
 
-    pools.sort(key=lambda p: p.liquidity, reverse=True)
-    return pools
+    safe_pools = [pool for pool in pools if _is_safe_pool(chain_id, pool)]
+    safe_pools.sort(key=lambda p: p.liquidity, reverse=True)
+    return safe_pools
 
 
 async def best_pool(chain_id: int, token_a: str, token_b: str) -> V4Pool | None:
@@ -232,6 +261,53 @@ async def quote_exact_in(
         )
     amount_out, _gas = abi_decode(["uint256", "uint256"], bytes.fromhex(result))
     return int(amount_out)
+
+
+async def _quote_pool_candidate(
+    chain_id: int,
+    pool: V4Pool,
+    token_in: str,
+    amount_in: int,
+) -> V4PoolQuote | None:
+    if not _is_safe_pool(chain_id, pool):
+        return None
+    probe_amount = max(1, int(amount_in) // 100)
+    try:
+        amount_out, probe_amount_out = await asyncio.gather(
+            quote_exact_in(chain_id, pool.key, token_in, int(amount_in)),
+            quote_exact_in(chain_id, pool.key, token_in, probe_amount),
+        )
+    except Exception:  # noqa: BLE001 — a broken pool must not hide healthy candidates
+        return None
+    if amount_out <= 0 or probe_amount_out <= 0:
+        return None
+    price_impact_bps = calculate_price_impact_bps(
+        int(amount_in), amount_out, probe_amount, probe_amount_out
+    )
+    if price_impact_bps > MAX_PRICE_IMPACT_BPS:
+        return None
+    return V4PoolQuote(
+        pool=pool,
+        amount_out=amount_out,
+        price_impact_bps=price_impact_bps,
+    )
+
+
+async def quote_best_pool(
+    chain_id: int,
+    token_in: str,
+    token_out: str,
+    amount_in: int,
+) -> V4PoolQuote | None:
+    pools = await find_pools(chain_id, token_in, token_out)
+    results = await asyncio.gather(
+        *(
+            _quote_pool_candidate(chain_id, pool, token_in, int(amount_in))
+            for pool in pools
+        )
+    )
+    valid = [result for result in results if result is not None]
+    return max(valid, key=lambda result: result.amount_out) if valid else None
 
 
 def _encode_swap_inputs(
@@ -283,7 +359,7 @@ class UniswapV4SwapMixin:
                     "fee": p.key.fee,
                     "tick_spacing": p.key.tick_spacing,
                     "hooks": p.key.hooks,
-                    "liquidity": p.liquidity,
+                    "liquidity_raw": p.liquidity,
                 }
                 for p in pools
             ]
@@ -294,17 +370,17 @@ class UniswapV4SwapMixin:
         self, token_in: str, token_out: str, amount_in: int
     ) -> tuple[bool, Any]:
         try:
-            pool = await best_pool(self.chain_id, token_in, token_out)
-            if pool is None:
-                return False, "No v4 pool with liquidity for this pair"
-            amount_out = await quote_exact_in(
-                self.chain_id, pool.key, token_in, int(amount_in)
+            selected = await quote_best_pool(
+                self.chain_id, token_in, token_out, int(amount_in)
             )
+            if selected is None:
+                return False, "No safe v4 pool can quote this trade"
             return True, {
-                "amount_out": amount_out,
-                "pool_id": pool.key.pool_id,
-                "fee": pool.key.fee,
-                "liquidity": pool.liquidity,
+                "amount_out": selected.amount_out,
+                "pool_id": selected.pool.key.pool_id,
+                "fee": selected.pool.key.fee,
+                "liquidity_raw": selected.pool.liquidity,
+                "price_impact_bps": selected.price_impact_bps,
             }
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
@@ -328,17 +404,18 @@ class UniswapV4SwapMixin:
             chain_id = self.chain_id
             if chain_id not in UNISWAP_V4_UNIVERSAL_ROUTER:
                 return False, f"Uniswap v4 not configured for chain {chain_id}"
+            if slippage_bps < 0:
+                return False, "slippage_bps must be >= 0"
 
-            pool = await best_pool(chain_id, token_in, token_out)
-            if pool is None:
-                return False, "No v4 pool with liquidity for this pair"
-
-            amount_out = await quote_exact_in(
-                chain_id, pool.key, token_in, int(amount_in)
+            selected = await quote_best_pool(
+                chain_id, token_in, token_out, int(amount_in)
             )
-            if amount_out <= 0:
-                return False, "Quoter returned zero output"
-            min_out = amount_out * (10_000 - int(slippage_bps)) // 10_000
+            if selected is None:
+                return False, "No safe v4 pool can quote this trade"
+            pool = selected.pool
+            amount_out = selected.amount_out
+            applied_slippage_bps = effective_slippage_bps(slippage_bps)
+            min_out = amount_out * (10_000 - applied_slippage_bps) // 10_000
 
             input_currency = _normalize_currency(token_in)
             output_currency = _normalize_currency(token_out)
@@ -394,6 +471,8 @@ class UniswapV4SwapMixin:
                 "amount_in": int(amount_in),
                 "expected_out": amount_out,
                 "min_out": min_out,
+                "slippage_bps": applied_slippage_bps,
+                "price_impact_bps": selected.price_impact_bps,
             }
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)
