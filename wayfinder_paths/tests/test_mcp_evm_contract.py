@@ -540,11 +540,11 @@ async def test_contract_execute_refuses_transfer_to_contract():
             return_value=_WALLET,
         ),
         patch(
-            "wayfinder_paths.core.utils.web3.is_contract",
+            "wayfinder_paths.core.utils.evm_client.is_contract",
             AsyncMock(return_value=True),
         ),
         patch("wayfinder_paths.mcp.tools.evm_contract.encode_call", fake_encode),
-        patch("wayfinder_paths.mcp.tools.evm_contract.send_transaction", fake_send),
+        patch("wayfinder_paths.mcp.tools.evm_contract.send_evm_transaction", fake_send),
     ):
         out = await contracts_execute(
             wallet_label="main",
@@ -573,7 +573,7 @@ async def test_contract_execute_allows_transfer_to_eoa():
             return_value=_WALLET,
         ),
         patch(
-            "wayfinder_paths.core.utils.web3.is_contract",
+            "wayfinder_paths.core.utils.evm_client.is_contract",
             AsyncMock(return_value=False),
         ),
         patch(
@@ -584,7 +584,7 @@ async def test_contract_execute_allows_transfer_to_eoa():
             "wayfinder_paths.mcp.tools.evm_contract.encode_call",
             AsyncMock(return_value={"to": token, "data": "0xdeadbeef"}),
         ),
-        patch("wayfinder_paths.mcp.tools.evm_contract.send_transaction", fake_send),
+        patch("wayfinder_paths.mcp.tools.evm_contract.send_evm_transaction", fake_send),
         patch(
             "wayfinder_paths.mcp.tools.evm_contract.get_etherscan_transaction_link",
             return_value="https://example.invalid/tx",
@@ -616,7 +616,7 @@ async def test_contract_execute_transfer_to_contract_override_bypasses():
             "wayfinder_paths.core.utils.wallets.find_wallet_by_label",
             return_value=_WALLET,
         ),
-        patch("wayfinder_paths.core.utils.web3.is_contract", fake_is_contract),
+        patch("wayfinder_paths.core.utils.evm_client.is_contract", fake_is_contract),
         patch(
             "wayfinder_paths.mcp.tools.evm_contract.WalletProfileStore.default",
             return_value=Mock(annotate_safe=Mock()),
@@ -625,7 +625,7 @@ async def test_contract_execute_transfer_to_contract_override_bypasses():
             "wayfinder_paths.mcp.tools.evm_contract.encode_call",
             AsyncMock(return_value={"to": token, "data": "0xdeadbeef"}),
         ),
-        patch("wayfinder_paths.mcp.tools.evm_contract.send_transaction", fake_send),
+        patch("wayfinder_paths.mcp.tools.evm_contract.send_evm_transaction", fake_send),
         patch(
             "wayfinder_paths.mcp.tools.evm_contract.get_etherscan_transaction_link",
             return_value="https://example.invalid/tx",
