@@ -340,12 +340,26 @@ def load_forward_snapshot(
     store: Any | None = None,
     limit: int = 25,
 ) -> dict[str, Any]:
+    # Local import: forward_artifacts imports this module for summary defaults.
+    from wayfinder_paths.jobs.forward_artifacts import (
+        forward_open_position,
+        forward_pnl_breakdown,
+    )
+
     root = job_dir or (store.job_dir(job_id) if store is not None else None)
     if root is None:
         root = Path.cwd() / ".wayfinder" / "jobs" / safe_job_id(job_id)
     forward_dir = root / "results" / "forward"
     summary_path = forward_dir / Path(DEFAULT_FORWARD_SUMMARY).name
     summary = _read_json(summary_path, default_forward_summary(job_id))
+    # Enrich the snapshot copy (never the recorder-owned summary.json) with the
+    # paper-vs-live split and any open position — the jobs UI reads these from
+    # the synced snapshot for its PnL headline.
+    summary = {
+        **summary,
+        **forward_pnl_breakdown(forward_dir),
+        "open_position": forward_open_position(forward_dir),
+    }
     return {
         "summary": summary,
         # System-owned forward-performance line (from live transactions) that the
