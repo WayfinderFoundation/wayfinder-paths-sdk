@@ -11,6 +11,7 @@ from wayfinder_paths.jobs.application import (
     ensure_jobs_v1_contract,
     validate_application_candidate,
 )
+from wayfinder_paths.jobs.apply_launcher import launch_application
 from wayfinder_paths.jobs.backtest_artifacts import diagnose_backtest
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.experiments import list_experiments
@@ -529,11 +530,18 @@ async def core_jobs(
                 if action == "approve_proposal"
                 else store.queue_proposal_application(job_id, proposal_id)
             )
-            wakeup = run_job_worker(
-                job_id, mode="intervene", apply_proposal_id=proposal_id
-            )
+            # Deterministic apply: gated proposals claim + spawn a detached
+            # completer child; only ungated/legacy proposals fall back to an
+            # agent wake (and that wake claims for itself).
+            application = launch_application(store, job_id, proposal_id)
             sync_all_jobs(store=store)
-            return ok({"proposal": proposal, "wakeup": wakeup})
+            return ok(
+                {
+                    "proposal": proposal,
+                    "application": application,
+                    "wakeup": application.get("wakeup"),
+                }
+            )
         if action == "reject_proposal":
             proposal = store.reject_proposal(job_id, proposal_id)
             sync_all_jobs(store=store)

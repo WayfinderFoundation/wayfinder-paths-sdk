@@ -1,0 +1,469 @@
+"""Deterministic apply + application watchdog: no proposal apply may stall a
+job. Covers the launcher (claim + detached completer, spawn-failure safety),
+the watchdog recovery matrix (applying/queued x deterministic/agent-owned x
+completer liveness), the torn-workspace backup preservation, and the removal
+of the worker's claim-before-prompt path."""
+
+from __future__ import annotations
+
+import json
+import os
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+import pytest
+
+from wayfinder_paths.jobs.application import claim_application, complete_application
+from wayfinder_paths.jobs.apply_launcher import launch_application, start_application
+from wayfinder_paths.jobs.models import WayfinderJob, utc_now_iso
+from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.watchdog import (
+    WATCHDOG_RUNNER_JOB_NAME,
+    ensure_application_watchdog,
+    recover_stalled_applications,
+)
+from wayfinder_paths.jobs.worker import run_job_worker
+from wayfinder_paths.tests.test_wayfinder_jobs import (
+    _intent_contract,
+    _prepare_candidate_script,
+    _scenario_plan,
+)
+
+
+def _patch_runner(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    calls: list[tuple[str, str]] = []
+
+    class FakeBridge:
+        def __init__(self, *, repo_root=None):  # noqa: ANN001
+            self.repo_root = repo_root
+
+        def pause(self, name: str) -> dict:
+            calls.append(("pause", name))
+            return {"ok": True}
+
+        def resume(self, name: str) -> dict:
+            calls.append(("resume", name))
+            return {"ok": True}
+
+        def add_or_update_script_job(self, **kwargs):  # noqa: ANN003
+            calls.append(("ensure_watchdog", kwargs["name"]))
+            return {"ok": True}
+
+    class FakeCompiler:
+        def __init__(self, *, store=None):  # noqa: ANN001
+            self.store = store
+
+        def compile(self, job):  # noqa: ANN001
+            calls.append(("compile", job.id))
+            return {"job_id": job.id, "jobs": []}
+
+    monkeypatch.setattr("wayfinder_paths.jobs.application.RunnerBridge", FakeBridge)
+    monkeypatch.setattr("wayfinder_paths.jobs.application.JobCompiler", FakeCompiler)
+    monkeypatch.setattr("wayfinder_paths.jobs.watchdog.RunnerBridge", FakeBridge)
+    return calls
+
+
+def _make_job(store: JobStore, job_id: str) -> WayfinderJob:
+    job = WayfinderJob.new(
+        job_id,
+        script=".wayfinder_runs/demo.py",
+        interval_seconds=60,
+        agent_mode="intervene",
+    )
+    store.save(job)
+    return job
+
+
+def _write_proposal(
+    store: JobStore,
+    job_id: str,
+    proposal_id: str,
+    *,
+    status: str = "approved",
+    application: dict | None = None,
+    candidate_report: dict | None = None,
+) -> None:
+    proposal = {
+        "proposal_id": proposal_id,
+        "job_id": job_id,
+        "status": status,
+        "application": application or {"status": "queued"},
+        "proposed_change": {"summary": "Tighten the entry guard."},
+        "intent_contract": _intent_contract(),
+        "scenario_plan": _scenario_plan(),
+    }
+    if candidate_report is not None:
+        proposal["candidate_report"] = candidate_report
+    store.write_proposal(job_id, proposal)
+
+
+def _journal_types(store: JobStore, job_id: str) -> list[str]:
+    path = store.job_dir(job_id) / "journal.jsonl"
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)["type"]
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+
+
+def _iso_ago(minutes: float) -> str:
+    return (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
+
+
+def test_start_application_claims_spawns_and_records_pid(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "spawn-demo")
+    _write_proposal(store, job.id, "prop_spawn", candidate_report={"gate": "green"})
+
+    spawned: list[dict] = []
+
+    def fake_spawn(*, job_id, proposal_id, store):  # noqa: ANN001
+        spawned.append({"job_id": job_id, "proposal_id": proposal_id})
+        return 4242
+
+    result = start_application(store, job.id, "prop_spawn", spawn=fake_spawn)
+
+    assert result["spawned"] is True
+    assert spawned == [{"job_id": job.id, "proposal_id": "prop_spawn"}]
+    proposal = store.load_proposal(job.id, "prop_spawn")
+    assert proposal["application"]["status"] == "applying"
+    assert proposal["application"]["apply_worker"]["pid"] == 4242
+    assert ("pause", "spawn-demo-script") in calls
+    assert ("pause", "spawn-demo-agent") in calls
+    assert "application_apply_spawned" in _journal_types(store, job.id)
+
+
+def test_start_application_spawn_failure_fails_and_resumes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "spawn-fail-demo")
+    _write_proposal(store, job.id, "prop_boom", candidate_report={"gate": "green"})
+
+    def broken_spawn(**_kwargs):  # noqa: ANN003
+        raise OSError("fork bomb prevention")
+
+    result = start_application(store, job.id, "prop_boom", spawn=broken_spawn)
+
+    assert result["spawned"] is False
+    proposal = store.load_proposal(job.id, "prop_boom")
+    assert proposal["application"]["status"] == "failed"
+    assert ("resume", "spawn-fail-demo-script") in calls
+    assert ("resume", "spawn-fail-demo-agent") in calls
+
+
+def test_launch_application_routes_by_candidate_report(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "route-demo")
+
+    wakes: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.run_job_worker",
+        lambda job_id, mode="monitor", *, apply_proposal_id=None: wakes.append(
+            apply_proposal_id
+        )
+        or {"status": "green"},
+    )
+
+    _write_proposal(store, job.id, "prop_ungated")
+    ungated = launch_application(store, job.id, "prop_ungated")
+
+    assert ungated["mode"] == "agent_wake"
+    assert wakes == ["prop_ungated"]
+    # The ungated path must NOT claim: loops keep running, status stays queued.
+    assert (
+        store.load_proposal(job.id, "prop_ungated")["application"]["status"] == "queued"
+    )
+    assert ("pause", "route-demo-script") not in calls
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.apply_launcher._default_spawn",
+        lambda *, job_id, proposal_id, store: 4243,
+    )
+    _write_proposal(store, job.id, "prop_gated", candidate_report={"gate": "green"})
+    gated = launch_application(store, job.id, "prop_gated")
+    assert gated["mode"] == "deterministic"
+    assert gated["spawned"] is True
+    assert ("pause", "route-demo-script") in calls
+
+
+def test_watchdog_recovers_stalled_deterministic_applying(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "wd-det-demo")
+    _write_proposal(
+        store,
+        job.id,
+        "prop_stalled",
+        application={"status": "applying", "started_at": _iso_ago(30)},
+        candidate_report={"gate": "green"},
+    )
+
+    completions: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.watchdog.complete_application",
+        lambda store, job_id, proposal_id, *, status, **kw: completions.append(
+            (job_id, proposal_id, status)
+        )
+        or {},
+    )
+
+    report = recover_stalled_applications(store=store)
+
+    assert completions == [(job.id, "prop_stalled", "applied")]
+    assert report["errors"] == []
+    assert len(report["recovered"]) == 1
+    assert "application_watchdog_recovered" in _journal_types(store, job.id)
+
+
+def test_watchdog_fails_stalled_agent_owned_applying(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "wd-agent-demo")
+
+    completions: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.watchdog.complete_application",
+        lambda store, job_id, proposal_id, *, status, **kw: completions.append(
+            (proposal_id, status)
+        )
+        or {},
+    )
+
+    # Inside the agent window: untouched.
+    _write_proposal(
+        store,
+        job.id,
+        "prop_agent_fresh",
+        application={"status": "applying", "started_at": _iso_ago(30)},
+    )
+    recover_stalled_applications(store=store)
+    assert completions == []
+
+    # Past the agent window: failed so loops resume; claim can retry later.
+    _write_proposal(
+        store,
+        job.id,
+        "prop_agent_stale",
+        application={"status": "applying", "started_at": _iso_ago(90)},
+    )
+    recover_stalled_applications(store=store)
+    assert completions == [("prop_agent_stale", "failed")]
+
+
+def test_watchdog_skips_live_completer(tmp_path: Path, monkeypatch) -> None:
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "wd-live-demo")
+    _write_proposal(
+        store,
+        job.id,
+        "prop_live",
+        application={
+            "status": "applying",
+            "started_at": _iso_ago(20),
+            "apply_worker": {"pid": os.getpid(), "spawned_at": utc_now_iso()},
+        },
+        candidate_report={"gate": "green"},
+    )
+
+    completions: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.watchdog.complete_application",
+        lambda *a, **kw: completions.append("called") or {},
+    )
+
+    report = recover_stalled_applications(store=store)
+
+    assert completions == []
+    assert report["recovered"] == []
+
+
+def test_watchdog_recovers_queued_approved_with_candidate_report(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "wd-queued-demo")
+
+    started: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.apply_launcher.start_application",
+        lambda store, job_id, proposal_id, **kw: started.append(proposal_id) or {},
+    )
+
+    # Ungated queued: agent-owned, loops running — never touched.
+    _write_proposal(
+        store,
+        job.id,
+        "prop_q_ungated",
+        application={"status": "queued", "requested_at": _iso_ago(30)},
+    )
+    # Gated queued, fresh: inside the window — untouched.
+    _write_proposal(
+        store,
+        job.id,
+        "prop_q_fresh",
+        application={"status": "queued", "requested_at": _iso_ago(2)},
+        candidate_report={"gate": "green"},
+    )
+    # Gated queued, stale: approve→spawn crash window — recovered.
+    _write_proposal(
+        store,
+        job.id,
+        "prop_q_stale",
+        application={"status": "queued", "requested_at": _iso_ago(30)},
+        candidate_report={"gate": "green"},
+    )
+
+    recover_stalled_applications(store=store)
+
+    assert started == ["prop_q_stale"]
+
+
+def test_watchdog_race_already_completed_is_skipped(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "wd-race-demo")
+    _write_proposal(
+        store,
+        job.id,
+        "prop_race",
+        application={"status": "applying", "started_at": _iso_ago(30)},
+        candidate_report={"gate": "green"},
+    )
+
+    def losing_complete(*_a, **_kw):
+        raise ValueError("Proposal application is not applying")
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.watchdog.complete_application", losing_complete
+    )
+
+    report = recover_stalled_applications(store=store)
+
+    assert report["errors"] == []
+    assert report["recovered"] == []
+    assert "application_watchdog_skipped" in _journal_types(store, job.id)
+
+
+def test_torn_workspace_backup_preserved(tmp_path: Path, monkeypatch) -> None:
+    """Crash between rmtree(active) and copytree(candidate): the re-run must
+    not rebuild the backup from the missing active tree — the old backup is
+    the only copy of the pre-apply workspace."""
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "torn-demo")
+    _write_proposal(store, job.id, "prop_torn")
+
+    claim_application(store, job.id, "prop_torn")
+    _prepare_candidate_script(
+        store,
+        job.id,
+        "prop_torn",
+        rearm_reason="rearm_guard: SNX still below SMA50.",
+    )
+
+    root = store.job_dir(job.id)
+    backup_dir = root / "applications" / "prop_torn" / "backup"
+    (backup_dir / "workspace").mkdir(parents=True)
+    (backup_dir / "workspace" / "ORIGINAL.md").write_text(
+        "pre-apply state", encoding="utf-8"
+    )
+    (backup_dir / "job.yaml").write_text(
+        (root / "job.yaml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    # Simulate the torn state: active workspace is gone.
+    import shutil
+
+    shutil.rmtree(root / "workspace")
+
+    completed = complete_application(
+        store,
+        job.id,
+        "prop_torn",
+        status="applied",
+        changed_files=["workspace/src/fast_loop.py"],
+        allow_legacy=True,
+    )
+
+    assert completed["proposal"]["application"]["status"] == "applied"
+    # The pre-apply backup survived the re-run…
+    assert (backup_dir / "workspace" / "ORIGINAL.md").read_text(
+        encoding="utf-8"
+    ) == "pre-apply state"
+    # …and the active workspace was restored from the candidate.
+    assert (root / "workspace" / "src" / "fast_loop.py").exists()
+
+
+def test_run_job_worker_apply_does_not_claim(tmp_path: Path, monkeypatch) -> None:
+    calls = _patch_runner(monkeypatch)
+
+    class FakeOpenCodeClient:
+        def healthy(self) -> bool:
+            return True
+
+        def find_child_session(self, *, parent_id, title):  # noqa: ANN001
+            return None
+
+        def create_session(self, *, parent_id=None, title=None, agent=None):  # noqa: ANN001
+            return "session-no-claim"
+
+        def prompt_async(self, session_id: str, text: str, *, agent=None) -> bool:  # noqa: ANN001
+            return True
+
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "no-claim-demo")
+    _write_proposal(store, job.id, "prop_noclaim", candidate_report={"gate": "green"})
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.JobStore", lambda: store)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.OPENCODE_CLIENT", FakeOpenCodeClient()
+    )
+
+    report = run_job_worker(job.id, mode="intervene", apply_proposal_id="prop_noclaim")
+
+    assert report["status"] == "green"
+    assert (
+        store.load_proposal(job.id, "prop_noclaim")["application"]["status"] == "queued"
+    )
+    assert not any(call for call in calls if call[0] == "pause")
+
+
+def test_ensure_application_watchdog_idempotent(tmp_path: Path, monkeypatch) -> None:
+    registrations: list[dict] = []
+
+    class FakeBridge:
+        def __init__(self, *, repo_root=None):  # noqa: ANN001
+            self.repo_root = repo_root
+
+        def add_or_update_script_job(self, **kwargs):  # noqa: ANN003
+            registrations.append(kwargs)
+            return {"ok": True}
+
+    store = JobStore(repo_root=tmp_path)
+    bridge = FakeBridge(repo_root=tmp_path)
+
+    first = ensure_application_watchdog(store=store, bridge=bridge)
+    second = ensure_application_watchdog(store=store, bridge=bridge)
+
+    assert first["runner_job_name"] == WATCHDOG_RUNNER_JOB_NAME
+    assert second["runner_job_name"] == WATCHDOG_RUNNER_JOB_NAME
+    assert len(registrations) == 2
+    assert all(r["name"] == WATCHDOG_RUNNER_JOB_NAME for r in registrations)
+    driver = store.runs_jobs_dir / "application_watchdog.py"
+    assert driver.exists()
+    assert "recover_stalled_applications" in driver.read_text(encoding="utf-8")

@@ -415,7 +415,9 @@ def test_worker_prompt_includes_apply_lifecycle(tmp_path: Path) -> None:
     )["prompt"]
 
     assert "Apply approved proposal `prop_001`" in prompt
-    assert "if it is applying, do not claim again" in prompt
+    assert "if it is already applying, do not claim again" in prompt
+    assert "claim it yourself" in prompt
+    assert "watchdog clock" in prompt
     assert 'core_jobs(action="claim_application"' in prompt
     assert 'core_jobs(action="validate_application"' in prompt
     assert 'core_jobs(action="complete_application"' in prompt

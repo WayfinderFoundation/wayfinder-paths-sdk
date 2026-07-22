@@ -28,6 +28,16 @@ class JobCompiler:
         job_env = self._job_env(job, root)
         if start_daemon:
             self.bridge.ensure_started()
+            # Every job that can ever carry a proposal registers the
+            # application watchdog. Best-effort — a down runner or a test
+            # FakeBridge without add_or_update_script_job must not break
+            # compile. Lazy import: watchdog -> application -> compiler.
+            try:
+                from wayfinder_paths.jobs.watchdog import ensure_application_watchdog
+
+                ensure_application_watchdog(store=self.store, bridge=self.bridge)
+            except Exception:
+                pass
 
         linked: list[dict[str, Any]] = []
         if job.script_loop.enabled:

@@ -13,6 +13,7 @@ from wayfinder_paths.jobs.application import (
     ensure_jobs_v1_contract,
     validate_application_candidate,
 )
+from wayfinder_paths.jobs.apply_launcher import launch_application
 from wayfinder_paths.jobs.backtest_artifacts import (
     diagnose_backtest,
     load_backtest_view,
@@ -1019,12 +1020,23 @@ def proposals_cmd(job_id: str) -> None:
     _echo_json({"ok": True, "result": store.proposals(job_id)})
 
 
-def _wakeup_with_proposal(
+def _launch_with_proposal(
     store: JobStore, job_id: str, proposal_id: str, proposal: dict[str, Any]
 ) -> None:
-    wakeup = run_job_worker(job_id, mode="intervene", apply_proposal_id=proposal_id)
+    # Deterministic apply for gated proposals (claim + detached completer);
+    # ungated proposals fall back to an agent wake that claims for itself.
+    application = launch_application(store, job_id, proposal_id)
     sync_all_jobs(store=store)
-    _echo_json({"ok": True, "result": {"proposal": proposal, "wakeup": wakeup}})
+    _echo_json(
+        {
+            "ok": True,
+            "result": {
+                "proposal": proposal,
+                "application": application,
+                "wakeup": application.get("wakeup"),
+            },
+        }
+    )
 
 
 @job_cli.command(name="approve", help="Approve a pending proposal.")
@@ -1058,7 +1070,7 @@ def approve_cmd(
         raise click.ClickException(
             "legacy jobs cannot enter the versioned-change flow"
         ) from exc
-    _wakeup_with_proposal(
+    _launch_with_proposal(
         store,
         job_id,
         proposal_id,
@@ -1147,7 +1159,7 @@ def reject_cmd(job_id: str, proposal_id: str) -> None:
 @click.argument("proposal_id")
 def apply_proposal_cmd(job_id: str, proposal_id: str) -> None:
     store = JobStore()
-    _wakeup_with_proposal(
+    _launch_with_proposal(
         store,
         job_id,
         proposal_id,
@@ -1212,6 +1224,19 @@ def complete_application_cmd(
             ),
         }
     )
+
+
+@job_cli.command(
+    name="recover-stalled-applications",
+    help="Scan every job for stalled proposal applications (applying with a "
+    "dead completer, or approved+queued with no spawn) and drive them to a "
+    "terminal status, resuming paused runner loops. Same primitive the "
+    "runner watchdog job runs every few minutes.",
+)
+def recover_stalled_applications_cmd() -> None:
+    from wayfinder_paths.jobs.watchdog import recover_stalled_applications
+
+    _echo_json({"ok": True, "result": recover_stalled_applications()})
 
 
 def _pause_resume_loops(job_id: str, action: Literal["pause", "resume"]) -> None:
