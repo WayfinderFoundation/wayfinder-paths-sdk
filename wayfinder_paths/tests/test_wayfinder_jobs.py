@@ -1164,6 +1164,24 @@ def test_worker_prompt_intervene_ladder_and_retry_budget(tmp_path: Path) -> None
     # research-side analysis.
     assert "Exploration vs exploitation" in prompt
     assert "gates EXPLOITATION only" in prompt
+    # The ideation cadence rung + the agenda bootstrap marker (no agenda file
+    # exists in this fixture).
+    assert "Ideation cadence" in prompt
+    assert "bootstrap it on the next healthy ideation wake" in prompt
+
+    # A seeded agenda is embedded verbatim in the dynamic context.
+    agenda_dir = store.job_dir(job.id) / "research"
+    agenda_dir.mkdir(parents=True, exist_ok=True)
+    (agenda_dir / "agenda.md").write_text(
+        "# Research agenda\nLast ideation session: 2026-07-22T00:00:00Z\n"
+    )
+    seeded = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job),
+    )["prompt"]
+    assert "Last ideation session: 2026-07-22T00:00:00Z" in seeded
     # The ladder is intervene/monitor task guidance, not part of the apply wake.
     apply_prompt = _build_worker_prompt_sections(
         store=store,
