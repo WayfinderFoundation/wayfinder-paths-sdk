@@ -21,7 +21,7 @@ changes past values) is pinned by tests.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -373,11 +373,16 @@ SIGNAL_LIBRARY: tuple[SignalDef, ...] = (
 )
 
 
-def build_signal_frame(frame: pd.DataFrame) -> pd.DataFrame:
+def build_signal_frame(
+    frame: pd.DataFrame, extra_signals: Sequence[SignalDef] = ()
+) -> pd.DataFrame:
     """All library signals for one symbol's OHLCV frame, as boolean columns
-    row-aligned with the input. NaN warmup rows resolve to False."""
+    row-aligned with the input. NaN warmup rows resolve to False.
+
+    `extra_signals` (validated workspace defs) are materialized after the
+    canonical library so the scan sweeps both under one test family."""
     out = pd.DataFrame(index=frame.index)
-    for spec in SIGNAL_LIBRARY:
+    for spec in (*SIGNAL_LIBRARY, *extra_signals):
         out[spec.name] = (
             spec.build(frame).fillna(False).astype(bool)
             if len(frame) >= spec.min_bars
