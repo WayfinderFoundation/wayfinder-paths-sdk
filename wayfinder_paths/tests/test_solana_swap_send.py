@@ -70,7 +70,6 @@ def _unsigned_v0_b64(payer: str, to: str, lamports: int = 1_000) -> str:
 
 @pytest.mark.asyncio
 async def test_swap_solana_route_broadcasts_via_svm_and_skips_allowance():
-    """A solana-route quote is decoded + broadcast via SVM, not the EVM path."""
     from_meta = {
         "symbol": "USDC",
         "decimals": 6,
@@ -86,7 +85,6 @@ async def test_swap_solana_route_broadcasts_via_svm_and_skips_allowance():
     serialized = _unsigned_v0_b64(SENDER, RECIPIENT)
 
     async def fake_resolve(query: str, *, chain_id: int | None = None):
-        _ = chain_id
         return from_meta if query == "from" else to_meta
 
     fake_brap = AsyncMock()
@@ -159,7 +157,6 @@ async def test_swap_solana_route_broadcasts_via_svm_and_skips_allowance():
 
 @pytest.mark.asyncio
 async def test_swap_solana_route_detected_by_chain_id_without_chaintype():
-    """Falls back to chain-id detection when calldata omits chainType."""
     meta = {
         "symbol": "USDC",
         "decimals": 6,
@@ -345,7 +342,6 @@ async def test_send_solana_spl_builds_envelope_and_broadcasts_via_svm():
 
 @pytest.mark.asyncio
 async def test_send_solana_native_sol_uses_native_label():
-    """Native SOL resolves to ZERO_ADDRESS → send_native label + native envelope."""
     token_meta = {
         "symbol": "SOL",
         "decimals": 9,

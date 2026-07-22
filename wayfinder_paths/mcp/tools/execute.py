@@ -142,16 +142,9 @@ async def _broadcast_svm(
     chain_id: int,
     wait_for_confirmation: bool,
 ) -> tuple[bool, dict[str, Any]]:
-    """Decode an unsigned base64 v0 tx envelope and broadcast it on Solana.
-
-    Mirrors ``_broadcast``'s (ok, result) contract so the tools stay
-    branch-symmetric. No allowance, no checksum — SPL transfers are
-    authorized by the transaction signature itself and addresses are base58.
-    """
     try:
-        vt = VersionedTransaction.from_bytes(base64.b64decode(serialized_transaction))
         signature = await send_svm_versioned_transaction(
-            vt,
+            VersionedTransaction.from_bytes(base64.b64decode(serialized_transaction)),
             sign_callback,
             chain_id=chain_id,
             wait_for_confirmation=wait_for_confirmation,
@@ -166,11 +159,7 @@ async def _broadcast_svm(
 
 
 async def _token_balance(token_address: str, chain_id: int, wallet_address: str) -> int:
-    """Raw token balance, dispatched to the SVM reader on Solana chains.
-
-    ``tokens.get_token_balance`` is EVM-only (checksums the address); Solana
-    balances go through the base58-native SPL/SOL reader.
-    """
+    # get_token_balance is EVM-only (checksums the address); Solana is base58.
     if is_solana_chain(chain_id):
         return await get_solana_token_balance(wallet_address, token_address, chain_id)
     return await get_token_balance(token_address, chain_id, wallet_address)
@@ -357,14 +346,9 @@ async def onchain_swap(
             "quote_error", "best_quote missing calldata", {"best_quote": best_quote}
         )
 
-    # Solana routes carry a pre-built, unsigned v0 tx envelope (base58 addresses,
-    # no approvals) instead of EVM calldata — decode + broadcast via the SVM path
-    # and skip the checksum/allowance/bridge-tracking EVM flow entirely.
-    is_solana_route = calldata.get("chainType") == "solana" or is_solana_chain(
-        from_chain_id
-    )
-
-    if is_solana_route:
+    # Solana routes carry a pre-built, unsigned v0 tx envelope instead of EVM
+    # calldata — broadcast via SVM and skip checksum/allowance/bridge-tracking.
+    if calldata.get("chainType") == "solana" or is_solana_chain(from_chain_id):
         serialized = calldata.get("serializedTransaction")
         if not serialized:
             return err(
@@ -564,8 +548,7 @@ async def onchain_send(
         )
 
     if is_solana_chain(int(resolved_chain_id)):
-        # Solana transfer envelope: base58 recipient/mint (never checksummed),
-        # decode + broadcast through the SVM path.
+        # Solana transfer envelope: base58 recipient/mint (never checksummed).
         envelope = await build_solana_send_transaction(
             from_address=sender,
             to_address=rcpt,
@@ -573,7 +556,6 @@ async def onchain_send(
             amount=int(amount_raw),
             chain_id=int(resolved_chain_id),
         )
-        transaction = envelope
         sent_ok, sent = await _broadcast_svm(
             sign_callback,
             envelope["serializedTransaction"],
@@ -586,7 +568,7 @@ async def onchain_send(
         if not sent_ok:
             status = "failed"
         response["status"] = status
-        response["raw"] = {"transaction": transaction, "token": token_meta}
+        response["raw"] = {"transaction": envelope, "token": token_meta}
         _annotate_profile(
             address=sender,
             label=wallet_label,
