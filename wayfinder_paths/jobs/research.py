@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -48,6 +48,7 @@ import pandas as pd
 
 from wayfinder_paths.jobs.signal_library import (
     SIGNAL_LIBRARY,
+    SignalDef,
     build_signal_frame,
     signal_defs,
     wilder_atr,
@@ -464,16 +465,32 @@ def resample_ohlcv(
     source bar lands exactly on its label (an in-progress bucket is not a
     completed bar). Both dataset feeds label bars by CLOSE time; an
     open-labeled source would silently leak one bar — keep it that way.
+
+    Non-OHLCV columns (merged feature columns like `funding`) are carried
+    with last-value aggregation — the value as-of the bucket close, matching
+    merge_asof(direction="backward") semantics — and coerced to numeric:
+    merge_features emits object dtype with Nones, and builders must see the
+    same dtype whether or not the timeframe resamples (identity path too).
+    Flow-like features wanting `sum` aggregation are not supported.
     """
     if rule_seconds <= 0 or bar_seconds <= 0 or rule_seconds % bar_seconds != 0:
         raise ValueError(
             f"rule_seconds ({rule_seconds}) must be a positive multiple of "
             f"bar_seconds ({bar_seconds})"
         )
+    bar_columns = ["timestamp", "symbol", "open", "high", "low", "close", "volume"]
+    extras = [c for c in frame.columns if c not in bar_columns]
     if rule_seconds == bar_seconds:
-        return frame.reset_index(drop=True)
+        out = frame.reset_index(drop=True)
+        if extras:
+            out = out.copy()
+            for column in extras:
+                out[column] = pd.to_numeric(out[column], errors="coerce")
+        return out
     symbol = str(frame["symbol"].iloc[0]) if len(frame) else ""
     indexed = frame.set_index(pd.to_datetime(frame["timestamp"], utc=True))
+    for column in extras:
+        indexed[column] = pd.to_numeric(indexed[column], errors="coerce")
     resampled = indexed.resample(f"{rule_seconds}s", closed="right", label="right").agg(
         {
             "open": "first",
@@ -482,6 +499,7 @@ def resample_ohlcv(
             "close": "last",
             "volume": "sum",
         }
+        | dict.fromkeys(extras, "last")
     )
     resampled = resampled.dropna(subset=["close"])
     if len(resampled) and len(indexed):
@@ -490,7 +508,7 @@ def resample_ohlcv(
             resampled = resampled.iloc[:-1]
     out = resampled.reset_index().rename(columns={"index": "timestamp"})
     out["symbol"] = symbol
-    return out[["timestamp", "symbol", "open", "high", "low", "close", "volume"]]
+    return out[bar_columns + extras]
 
 
 def bh_qvalues(pvalues: Sequence[float]) -> list[float]:
@@ -690,19 +708,22 @@ def holdout_event_study(
     timeframe_seconds: int | None = None,
     min_events: int = 10,
     t_threshold: float = 1.0,
+    extra_defs: Mapping[str, SignalDef] | None = None,
 ) -> dict[str, Any]:
     """One pre-registered confirmation of a FROZEN scan candidate on the
     reserved holdout tail. The bar is deliberately lower than the scan's
     q-gate (directional t >= 1, n >= 10) because this is a single declared
     test, not a search — and it is spendable ONCE per candidate (the scan
-    ledger remembers).
+    ledger remembers). `extra_defs` extends the lookup to validated
+    workspace signals so composed candidates confirm the same way.
 
     The signal is computed over the FULL series so holdout events get proper
     indicator warmup; the causal prefix property means this cannot leak."""
-    defs = signal_defs()
+    defs = {**signal_defs(), **(extra_defs or {})}
     if signal not in defs:
         raise KeyError(
-            f"signal {signal!r} not in the canonical library; available: {sorted(defs)}"
+            f"signal {signal!r} not in the canonical library or workspace "
+            f"signals; available: {sorted(defs)}"
         )
     if direction not in {"long", "short"}:
         raise ValueError(
@@ -822,10 +843,14 @@ def scan_signals(
     q_threshold: float = 0.10,
     fee_bps: float = 5.0,
     slippage_bps: float = 3.5,
+    extra_signals: Sequence[SignalDef] = (),
 ) -> dict[str, Any]:
     """Event-study EVERY canonical library trigger against one symbol's bars
     — across timeframes, in a single pass — the breadth tool that replaces
-    hand-rewriting `precompute()` once per trigger idea.
+    hand-rewriting `precompute()` once per trigger idea. `extra_signals`
+    (validated workspace defs) join the sweep as first-class family members:
+    same decimation, same folds, same pooled BH — composed trials pay the
+    same multiple-testing bill as canonical ones.
 
     Discipline built in:
     - A holdout tail (`holdout_fraction`, default the final 15%) is reserved
@@ -863,6 +888,7 @@ def scan_signals(
             )
             continue
         tf_specs.append((str(tf), seconds))
+    extra_names = {spec.name for spec in extra_signals}
     rows: list[dict[str, Any]] = []
     tests_run = 0
     tests_skipped = 0
@@ -874,7 +900,7 @@ def scan_signals(
         frames_by_tf[tf_name] = bars
         close = bars["close"].astype(float).to_numpy()
         n = len(close)
-        signals = build_signal_frame(bars)
+        signals = build_signal_frame(bars, extra_signals)
         tf_horizons = sorted(
             {int(h) for h in horizons}
             if horizons
@@ -891,7 +917,7 @@ def scan_signals(
                 continue
             fwd = np.log(close[h:] / close[:-h])
             drift = float(fwd.mean())
-            for spec in SIGNAL_LIBRARY:
+            for spec in (*SIGNAL_LIBRARY, *extra_signals):
                 sig = signals[spec.name].to_numpy()
                 events = _decimate_events(sig[: n - h], h)
                 n_events = int(events.sum())
@@ -917,6 +943,9 @@ def scan_signals(
                     {
                         "signal": spec.name,
                         "family": spec.family,
+                        "library": (
+                            "workspace" if spec.name in extra_names else "canonical"
+                        ),
                         "description": spec.description,
                         "timeframe": tf_name,
                         "horizon": h,
@@ -963,7 +992,8 @@ def scan_signals(
     promoted = [r for r in rows if r["verdict"] == "promote"]
     expected_lucky = round(tests_run * 0.05, 1)
     return {
-        "signals_tested": len(SIGNAL_LIBRARY),
+        "signals_tested": len(SIGNAL_LIBRARY) + len(extra_signals),
+        "workspace_signals": sorted(extra_names),
         "timeframes": [name for name, _ in tf_specs],
         "timeframes_skipped": timeframes_skipped,
         "horizons": horizons_used,
@@ -1596,6 +1626,7 @@ def signal_scan_job(
     horizons: list[int] | None = None,
     timeframes: list[str] | None = None,
     holdout_fraction: float = 0.15,
+    include_workspace: bool = True,
     store: Any | None = None,
 ) -> dict[str, Any]:
     """Scan the ENTIRE canonical trigger library against the job's dataset —
@@ -1616,6 +1647,10 @@ def signal_scan_job(
     from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
     from wayfinder_paths.jobs.models import utc_now_iso
     from wayfinder_paths.jobs.store import JobStore
+    from wayfinder_paths.jobs.workspace_signals import (
+        load_workspace_signals,
+        validate_workspace_signals,
+    )
 
     store = store or JobStore()
     root = store.job_dir(job_id)
@@ -1635,6 +1670,16 @@ def signal_scan_job(
         raise ValueError(
             f"symbols {missing} not in the job dataset; available: {available}"
         )
+    workspace = load_workspace_signals(root) if include_workspace else None
+    if workspace is not None:
+        # Validation reads only pass/fail causality on the full frame — no
+        # statistic escapes, so touching the tail here is not snooping.
+        for symbol in targets:
+            validate_workspace_signals(
+                workspace.defs,
+                frame[frame["symbol"] == symbol].reset_index(drop=True),
+            )
+    extra_signals = workspace.defs if workspace is not None else ()
     per_symbol = {
         symbol: scan_signals(
             frame[frame["symbol"] == symbol].reset_index(drop=True),
@@ -1644,6 +1689,7 @@ def signal_scan_job(
             holdout_fraction=holdout_fraction,
             fee_bps=fee_bps,
             slippage_bps=slippage_bps,
+            extra_signals=extra_signals,
         )
         for symbol in targets
     }
@@ -1674,6 +1720,8 @@ def signal_scan_job(
             "cutoff_ts": {
                 sym: scan["holdout"]["cutoff_ts"] for sym, scan in per_symbol.items()
             },
+            "workspace_signals": [spec.name for spec in extra_signals],
+            "workspace_signals_sha": workspace.sha if workspace else None,
         }
     ]
     # EVERY executed test is a recorded trial — not just the survivors.
@@ -1695,12 +1743,14 @@ def signal_scan_job(
                     "q": row.get("q_value"),
                     "folds_agreeing": row.get("folds_agreeing"),
                     "verdict": row.get("verdict"),
+                    "library": row.get("library"),
                 }
             )
     _append_scan_ledger(root, ledger_rows)
     cumulative_tests = prior_tests + sum(s["tests_run"] for s in per_symbol.values())
     result: dict[str, Any] = {
         "per_symbol": per_symbol,
+        "workspace_signals": [spec.name for spec in extra_signals],
         "holdout": {
             "fraction": holdout_fraction,
             "cutoff_ts_per_symbol": {
@@ -1754,6 +1804,10 @@ def holdout_check_job(
     )
     from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
     from wayfinder_paths.jobs.store import JobStore
+    from wayfinder_paths.jobs.workspace_signals import (
+        load_workspace_signals,
+        validate_workspace_signals,
+    )
 
     store = store or JobStore()
     root = store.job_dir(job_id)
@@ -1769,6 +1823,26 @@ def holdout_check_job(
     frame = dataset.bars.to_frame()
     available = sorted(frame["symbol"].astype(str).unique())
     targets = [str(s) for s in symbols] if symbols else available
+    workspace = load_workspace_signals(root)
+    extra_defs: dict[str, SignalDef] = {}
+    workspace_changed_since_scan = False
+    if workspace is not None and signal not in signal_defs():
+        # Highest-stakes read of a workspace def: re-run the causality gate,
+        # and compare the code sha against the scan that nominated it — a
+        # holdout on edited code is confirming something the scan never saw.
+        for symbol in targets:
+            validate_workspace_signals(
+                workspace.defs,
+                frame[frame["symbol"] == symbol].reset_index(drop=True),
+            )
+        extra_defs = {spec_.name: spec_ for spec_ in workspace.defs}
+        scanned_shas = [
+            row.get("workspace_signals_sha")
+            for row in _read_scan_ledger(root)
+            if row.get("kind") == "scan_meta" and row.get("workspace_signals_sha")
+        ]
+        if scanned_shas and scanned_shas[-1] != workspace.sha:
+            workspace_changed_since_scan = True
     scan_path = _scan_dir(root) / "scan.json"
     recorded_cutoffs: dict[str, Any] = {}
     if scan_path.exists():
@@ -1809,6 +1883,7 @@ def holdout_check_job(
             cutoff_ts=cutoff,
             bar_seconds=bar_seconds,
             timeframe_seconds=tf_seconds,
+            extra_defs=extra_defs,
         )
         if cutoff_note:
             report["cutoff_note"] = cutoff_note
@@ -1837,6 +1912,12 @@ def holdout_check_job(
         "per_symbol": per_symbol,
         "already_spent": already_spent,
     }
+    if workspace_changed_since_scan:
+        result["workspace_signals_changed_since_scan"] = True
+        result["workspace_warning"] = (
+            "workspace/src/signals.py changed since the last recorded scan — "
+            "this holdout is confirming code the scan never tested"
+        )
     if already_spent:
         result["read"] = (
             "this tail has already been used to confirm this candidate — a "

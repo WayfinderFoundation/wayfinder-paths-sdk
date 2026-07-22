@@ -668,12 +668,20 @@ def signal_check_cmd(
     help="Final fraction of history the scan NEVER sees — reserved for one "
     "holdout-check per frozen candidate. 0 disables (exploratory only).",
 )
+@click.option(
+    "--no-workspace-signals",
+    is_flag=True,
+    default=False,
+    help="Skip the job's workspace/src/signals.py defs and sweep the "
+    "canonical library only.",
+)
 def signal_scan_cmd(
     job_id: str,
     symbols: str | None,
     horizons: str | None,
     timeframes: str | None,
     holdout_fraction: float,
+    no_workspace_signals: bool,
 ) -> None:
     store = JobStore()
     result = signal_scan_job(
@@ -682,6 +690,7 @@ def signal_scan_cmd(
         horizons=[int(h) for h in horizons.split(",")] if horizons else None,
         timeframes=[t.strip() for t in timeframes.split(",")] if timeframes else None,
         holdout_fraction=holdout_fraction,
+        include_workspace=not no_workspace_signals,
         store=store,
     )
     _echo_json({"ok": True, "result": result})
@@ -694,7 +703,11 @@ def signal_scan_cmd(
     "it once per candidate — the trial ledger remembers repeat looks.",
 )
 @click.argument("job_id")
-@click.option("--signal", required=True, help="Canonical library signal name.")
+@click.option(
+    "--signal",
+    required=True,
+    help="Canonical library or workspace (workspace/src/signals.py) signal name.",
+)
 @click.option("--horizon", type=int, required=True, help="Forward horizon in bars.")
 @click.option(
     "--direction",
