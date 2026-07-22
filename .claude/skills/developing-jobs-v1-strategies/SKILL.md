@@ -26,7 +26,7 @@ wayfinder job fetch-dataset <id> --days 720 --source ccxt --exchange binance
 wayfinder job signal-scan <id> --timeframes 1h,4h,1d         # the WHOLE canonical trigger library, both directions, BH q-gate + folds, reserves a 15% holdout — run FIRST
 wayfinder job strategy-library                               # shipped reference strategies (ports of live bots) — check before re-implementing one
 wayfinder job pair-check <id> --symbols ETH,SOL --days 720    # any pair/long-short idea: the admission gate
-wayfinder job signal-check <id> --column entry_signal --direction short  # a custom entry the library doesn't cover — DECLARE the side (short edges have negative t)
+wayfinder job signal-check <id> --column entry_signal --direction short  # ONE custom entry — DECLARE the side; for MULTIPLE composed ideas use workspace signals + signal-scan instead (pooled BH; serial one-off checks are p-hacking)
 wayfinder job rank-check <id> --column mom_score             # any basket ranking: does it order forward returns?
 wayfinder job holdout-check <id> --signal new_low_5 --horizon 24 --direction short  # ONE confirmation of a FROZEN candidate on the reserved tail
 wayfinder job backtest <id> --quick 1000      # fast iteration: last 1000 bars, ~2 KB summary
@@ -167,6 +167,27 @@ def build_strategy(params: dict | None = None):
 ```
 
 Cross-symbol features (pair z-scores, spreads) read several input frames and attach to the traded symbol's rows. FUNDING RATES are first-class: `wayfinder job fetch-funding <id> --days 60 --exchange binance` (or `hyperliquid`) pulls history into the feature store and declares the feature — bars then carry a `funding` column in backtest AND live. Long-history candles: `wayfinder job fetch-dataset <id> --days 365 --source ccxt --exchange binance`. Other exogenous series follow the same shape: declare under `execution_spec.data_contract.features`, append rows to `state/features.jsonl` (`{timestamp, name, value, symbol}`).
+
+## Compose your own triggers: workspace signals (swept by signal-scan)
+
+When the canonical library exhausts on a series, the next move is COMPOSITION, not resignation — but composed trials must ride the same multiple-testing discipline. Declare up to 12 `SignalDef`s in `workspace/src/signals.py` and rerun `signal-scan`: they sweep alongside the canonical library under ONE pooled BH family, the same decimation/fold-stability, the same reserved holdout, and `holdout-check` confirms them by name like any canonical trigger.
+
+```python
+from wayfinder_paths.jobs.signal_library import SignalDef
+
+WORKSPACE_SIGNALS = (
+    SignalDef(
+        "funding_neg_new_high_5",
+        "workspace",
+        "fresh 5-bar high while funding is negative",
+        9,
+        lambda f: (f["close"] > f["close"].shift(1).rolling(5).max())
+        & (f["funding"] < 0),
+    ),
+)
+```
+
+Builders see the bars WITH merged feature columns (funding etc.) at every scanned timeframe. Validation is fail-loud and automated: boolean output, name disjoint from the canonical library, and a causality gate (prefix truncation + tail perturbation) that rejects `shift(-1)` lookaheads and full-frame statistics before any statistic is computed. Rules that keep it honest: every def must cite a HYPOTHESIS (a fingerprint quadrant, path_stats shape, or a failure-table row — never blind permutation); more defs raise the promote bar for the whole scan (breadth costs power); the scan ledger records the file sha, so renaming a def to relaunch it is visible snooping.
 
 ## Rules (these are the mistakes to avoid)
 

@@ -174,7 +174,15 @@ every wake.
    - ADJACENT (semi-explore): parameter/threshold/timing shifts, regime
      tweaks, and "do less" filters that remove bad trades.
    - DIVERGENT (explore): new assets, new signals or feature sources, new
-     data sources, alternative strategy families.
+     data sources, alternative strategy families. When the canonical
+     signal-scan library exhausts, the composition lane IS the divergent
+     bucket: hypothesis-driven `SignalDef`s in `workspace/src/signals.py`
+     (cap 12, one scan per wake) swept by `signal-scan` under the pooled BH
+     family — never a serial one-off `signal-check` mining loop. Sanctioned
+     external axes: funding (`job fetch-funding`), session/time-of-day
+     (canonical session triggers), cross-asset via the multi-symbol view and
+     `rank-check`. Open interest is DEFERRED — no history source exists yet;
+     do not improvise one.
 
 3. SCORE each candidate: expected edge, evidence strength, overfit risk,
    complexity, reversibility, risk impact. Check the candidates ledger and
@@ -231,6 +239,14 @@ semantics. The feature SCHEMA lives in `execution_spec.data_contract.features`
 and is revision-bound — schema changes must ride a proposal. Model artifacts
 belong in `workspace/models/` (see `wayfinder_paths.jobs.strategies.models`)
 and also ship via proposals.
+
+Feature columns flow into RESEARCH too: `signal-scan` merges declared
+features onto the bars at every scanned timeframe, so workspace signals can
+condition on them (`funding < 0`, session windows, cross-symbol context).
+Composed defs must each cite a hypothesis (fingerprint quadrant, path_stats
+shape, or a failure-table row from strategy-search §2b) — breadth inflates
+the BH denominator for the whole family, so twelve strong hypotheses beat
+fifty permutations arithmetically.
 
 ## Kill switch
 

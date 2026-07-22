@@ -105,6 +105,33 @@ a failure: it just saved days of tuning a spread that does not mean-revert.
 Multiple-testing honesty: if you signal-check many candidate columns, expect
 ~1 in 20 to clear t≈2 by luck. Scan wide, but demand the q-gate and fold
 stability before building on a marginal pass — `signal-scan` computes both.
+
+**Composition (workspace signals).** When the canonical library exhausts on a
+series, compose — but through the scan, never around it. Declare up to 12
+`SignalDef`s in `workspace/src/signals.py` (indicator combos, feature-
+conditioned triggers, session-windowed variants) and rerun `signal-scan`:
+they join the canonical sweep under ONE pooled BH family with the same
+decimation, folds, and reserved holdout, and `holdout-check` confirms them by
+name. The discipline that makes this expansion honest:
+
+- **Hypothesis-driven only.** Every def cites its reason for existing — a
+  fingerprint quadrant (e.g. vr24 continuation), a `path_stats` shape, or a
+  §2b failure-table row. Blind permutation of indicators is not research;
+  it inflates the family and buries the real candidates.
+- **Breadth costs power.** Every added def raises the promote bar for the
+  WHOLE scan — the q-gate divides by the family size. Twelve strong
+  hypotheses beat fifty permutations arithmetically, not just aesthetically.
+- **No serial one-off `signal-check` mining.** A loop of single checks on
+  hand-rolled columns has no multiple-testing control; that is p-hacking
+  with extra steps. `signal-check` is for ONE declared custom entry.
+- **The ledger sees the code.** Scans record the signals-file sha; renaming
+  a def to relaunch it shows up in audit as the same code. Holdout stays
+  one-shot per candidate regardless of provenance.
+- **New information beats new transforms.** Funding (`job fetch-funding`),
+  session structure (canonical session triggers), and cross-asset context
+  (the multi-symbol view; `rank-check` for continuous rankings) add signal
+  the closes alone cannot carry — reach for a new data axis before the
+  fifteenth reshuffle of the same prices.
 Deferred rigor (recorded, deliberately not built yet): HAC/bootstrap standard
 errors, Deflated Sharpe / PBO overfit stats, BTC/ETH market-relative
 controls. If a result only matters under those corrections, it was too
@@ -150,7 +177,9 @@ the user's goal — different families, not different parameters:
 - cross-sectional (rank a universe, trade the extremes)
 
 One `signal-scan` covers the trigger families for the job's symbols in a
-single call; signal-check any custom sketches it doesn't cover. Build only
+single call (canonical + workspace defs); signal-check a single custom
+sketch it doesn't cover, `rank-check` a cross-sectional ranking over the
+job's multi-symbol view. Build only
 the most promising. One structural idea
 failing does not mean "tune it harder" — it means try the next branch. The
 best strategy for the user is usually in a different family than the first
@@ -185,6 +214,8 @@ your job, not the user's homework:
 | One leg carries the losses | hedge-ratio sizing; widen the universe |
 | Edge exists but decays OOS | slower bars, longer formation window, fewer rebalances |
 | Shorts drag in a narrow universe | widen the universe so "weakest" means something |
+| Canonical scan exhausted (0 promotions across symbols/timeframes) | composition lane: hypothesis-driven workspace signals (feature-conditioned, session-windowed) swept by the next scan |
+| Composed family ALSO exhausted | new data axis (funding, sessions, cross-asset rank) — or accept "no standalone timing alpha" and let the SYSTEM (gates + exits + regime) carry it; "signal mining exhausted" is terminal only after both families fail |
 
 Rules of evolution: preserve the user's *intent* (their assets, their thesis
 direction, their risk appetite) while changing the *mechanism*; one structural
