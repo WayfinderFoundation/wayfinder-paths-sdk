@@ -1,9 +1,11 @@
-"""The runner daemon keeps the wayfinder-jobs backend fresh.
+"""The runner daemon keeps the backend fresh with TWO pushes per sync.
 
-The event-driven paths (agent wakes, propose, MCP core_jobs) already call
-sync_all_jobs; the daemon adds the periodic/after-run push so the Strategies UI
-(conversations, proposals, reconciled mode) doesn't go stale between wakes. This
-replaced the daemon's dead legacy `/jobs/sync/` push (ScheduledJobsClient).
+1. Scheduled-jobs registry (ScheduledJobsClient.bulk_sync): registers each
+   runner job so the backend accepts its per-run reports — report_run 404s for
+   unregistered jobs, which empties the Strategies UI Activity tab. (#520
+   removed this push believing /jobs/sync/ was dead; the endpoint is alive.)
+2. Wayfinder-jobs snapshot (sync_all_jobs): conversations, proposals, and the
+   reconciled scorecard/mode, so the UI doesn't go stale between agent wakes.
 """
 
 from __future__ import annotations
@@ -42,16 +44,23 @@ def _add_local(daemon: RunnerDaemon, name: str) -> None:
     )
 
 
-def test_sync_pushes_wayfinder_snapshot(
+def test_sync_pushes_registry_and_wayfinder_snapshot(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("OPENCODE_INSTANCE_ID", "inst-xyz")
     daemon = RunnerDaemon(paths=_paths(tmp_path))
+    _add_local(daemon, "job-a")
+    _add_local(daemon, "job-b")
 
     stores: list[object] = []
     monkeypatch.setattr(
         "wayfinder_paths.jobs.sync.sync_all_jobs",
         lambda *, store: stores.append(store),
+    )
+    registries: list[list[dict]] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.runner.daemon.SCHEDULED_JOBS_CLIENT.bulk_sync",
+        lambda jobs: registries.append(jobs),
     )
     # Run the side-effect callback inline so the assertion is deterministic.
     monkeypatch.setattr(daemon, "_run_side_effect", lambda _label, cb: cb())
@@ -61,6 +70,14 @@ def test_sync_pushes_wayfinder_snapshot(
     assert len(stores) == 1
     # The store is rooted at the daemon's repo_root so it resolves the job dirs.
     assert stores[0].repo_root == tmp_path.resolve()
+    # Registry push carries every local runner job so subsequent report_run
+    # calls do not 404 (the Activity-tab regression from #520).
+    assert len(registries) == 1
+    assert {j["job_name"] for j in registries[0]} == {"job-a", "job-b"}
+    sample = next(j for j in registries[0] if j["job_name"] == "job-a")
+    assert sample["job_type"] == JOB_TYPE_SCRIPT
+    assert sample["interval_seconds"] == 60
+    assert sample["payload"] == {"script_path": "x.py"}
 
 
 def test_sync_noop_when_not_opencode(
@@ -68,17 +85,24 @@ def test_sync_noop_when_not_opencode(
 ) -> None:
     monkeypatch.delenv("OPENCODE_INSTANCE_ID", raising=False)
     daemon = RunnerDaemon(paths=_paths(tmp_path))
+    _add_local(daemon, "job-a")
 
     stores: list[object] = []
     monkeypatch.setattr(
         "wayfinder_paths.jobs.sync.sync_all_jobs",
         lambda *, store: stores.append(store),
     )
+    registries: list[list[dict]] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.runner.daemon.SCHEDULED_JOBS_CLIENT.bulk_sync",
+        lambda jobs: registries.append(jobs),
+    )
     monkeypatch.setattr(daemon, "_run_side_effect", lambda _label, cb: cb())
 
     daemon._sync_to_backend_async()
 
     assert stores == []
+    assert registries == []
 
 
 def test_finish_run_triggers_backend_sync(

@@ -409,14 +409,36 @@ class RunnerDaemon:
             return
 
         def _sync() -> None:
-            # Push the wayfinder-jobs snapshot (per-mode session ids for the
-            # Conversations panel, proposals, and the reconciled scorecard/mode)
-            # so the Strategies UI reflects runtime state. This is the daemon's
-            # periodic refresh: the event-driven paths (agent wakes, propose,
-            # MCP core_jobs) already call sync_all_jobs, but between them the UI
-            # went stale — the daemon's push had been left on the removed legacy
-            # `/jobs/sync/` endpoint (404). Lazy-imported to avoid any import
-            # cycle with the jobs package at daemon startup.
+            # Two backend pushes, both required:
+            #
+            # 1. Scheduled-jobs registry (bulk_sync): registers each runner job
+            #    so the backend accepts its per-run reports — report_run 404s
+            #    for any job the backend has never seen, which empties the
+            #    Strategies UI Activity tab. #520 dropped this push believing
+            #    the /jobs/sync/ endpoint was dead; it is alive, and without
+            #    the registration every run report for jobs created since then
+            #    404'd (observed: 345 straight failures on the jobs dev box).
+            registry = []
+            for listed in self._db.list_jobs():
+                try:
+                    job, state = self._db.get_job(name=listed["name"])
+                except KeyError:
+                    continue
+                registry.append(
+                    {
+                        "job_name": job.name,
+                        "job_type": job.type,
+                        "status": state.status,
+                        "interval_seconds": job.interval_seconds,
+                        "payload": job.payload,
+                    }
+                )
+            SCHEDULED_JOBS_CLIENT.bulk_sync(registry)
+
+            # 2. Wayfinder-jobs snapshot (per-mode session ids for the
+            #    Conversations panel, proposals, and the reconciled
+            #    scorecard/mode). Lazy-imported to avoid any import cycle with
+            #    the jobs package at daemon startup.
             from wayfinder_paths.jobs.store import JobStore
             from wayfinder_paths.jobs.sync import sync_all_jobs
 
