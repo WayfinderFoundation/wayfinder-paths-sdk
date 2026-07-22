@@ -159,11 +159,56 @@ def _sma_cross(frame: pd.DataFrame, direction: int) -> pd.Series:
     return _cross(close, close.rolling(20).mean(), direction)
 
 
-def _ema_cross(frame: pd.DataFrame, direction: int) -> pd.Series:
+def _ema_cross(
+    frame: pd.DataFrame, direction: int, fast: int = 9, slow: int = 50
+) -> pd.Series:
     close = _close(frame)
-    fast = close.ewm(span=9, adjust=False).mean()
-    slow = close.ewm(span=50, adjust=False).mean()
-    return _cross(fast, slow, direction)
+    fast_ema = close.ewm(span=fast, adjust=False).mean()
+    slow_ema = close.ewm(span=slow, adjust=False).mean()
+    return _cross(fast_ema, slow_ema, direction)
+
+
+def _macd_cross(frame: pd.DataFrame, direction: int) -> pd.Series:
+    close = _close(frame)
+    macd = (
+        close.ewm(span=12, adjust=False).mean()
+        - close.ewm(span=26, adjust=False).mean()
+    )
+    signal = macd.ewm(span=9, adjust=False).mean()
+    return _cross(macd, signal, direction)
+
+
+def _rsi_cross(frame: pd.DataFrame, level: float, direction: int) -> pd.Series:
+    rsi = _wilder_rsi(_close(frame))
+    if direction > 0:
+        return (rsi > level) & (rsi.shift(1) <= level)
+    return (rsi < level) & (rsi.shift(1) >= level)
+
+
+def _et_stamps(frame: pd.DataFrame) -> pd.Series:
+    # DST-correct wall-clock in New York — the market whose hours shape
+    # tokenized-equity perp flow.
+    return pd.to_datetime(frame["timestamp"], utc=True).dt.tz_convert(
+        "America/New_York"
+    )
+
+
+def _session_window(
+    frame: pd.DataFrame, start_minute: int, end_minute: int
+) -> pd.Series:
+    """Bars whose CLOSE lands in (start, end] ET wall-clock, Mon-Fri.
+
+    Bars are close-labeled, so the half-open window on the close timestamp is
+    what keeps pre-window data out: a 15m bar labeled 09:30 holds 09:15-09:30
+    (pre-open) trade — the first open-hour bar is the one closing 09:45."""
+    stamps = _et_stamps(frame)
+    minutes = stamps.dt.hour * 60 + stamps.dt.minute
+    weekday = stamps.dt.dayofweek < 5
+    return weekday & (minutes > start_minute) & (minutes <= end_minute)
+
+
+def _weekend(frame: pd.DataFrame) -> pd.Series:
+    return _et_stamps(frame).dt.dayofweek >= 5
 
 
 def _trend_gated_extreme(frame: pd.DataFrame, direction: int) -> pd.Series:
@@ -369,6 +414,71 @@ SIGNAL_LIBRARY: tuple[SignalDef, ...] = (
         "staircase rally (24h and 72h up) making a fresh 12-bar high",
         85,
         lambda f: _extended(f, +1),
+    ),
+    SignalDef(
+        "macd_cross_up_12_26_9",
+        "trend",
+        "MACD(12,26) line crossed above its 9-EMA signal line this bar",
+        37,
+        lambda f: _macd_cross(f, +1),
+    ),
+    SignalDef(
+        "macd_cross_dn_12_26_9",
+        "trend",
+        "MACD(12,26) line crossed below its 9-EMA signal line this bar",
+        37,
+        lambda f: _macd_cross(f, -1),
+    ),
+    SignalDef(
+        "ema_cross_up_9_21",
+        "trend",
+        "9-EMA crossed above 21-EMA this bar (fast variant of 9/50)",
+        23,
+        lambda f: _ema_cross(f, +1, fast=9, slow=21),
+    ),
+    SignalDef(
+        "ema_cross_dn_9_21",
+        "trend",
+        "9-EMA crossed below 21-EMA this bar (fast variant of 9/50)",
+        23,
+        lambda f: _ema_cross(f, -1, fast=9, slow=21),
+    ),
+    SignalDef(
+        "rsi14_cross_up_50",
+        "momentum",
+        "Wilder RSI(14) crossed above 50 this bar (regime flip, not extreme)",
+        31,
+        lambda f: _rsi_cross(f, 50.0, +1),
+    ),
+    SignalDef(
+        "rsi14_cross_dn_50",
+        "momentum",
+        "Wilder RSI(14) crossed below 50 this bar (regime flip, not extreme)",
+        31,
+        lambda f: _rsi_cross(f, 50.0, -1),
+    ),
+    SignalDef(
+        "us_open_hour",
+        "session",
+        "bar CLOSED in the first US cash hour — (09:30, 10:30] ET, Mon-Fri "
+        "(never fires on 1d bars; dropped by the min-events gate there)",
+        2,
+        lambda f: _session_window(f, 9 * 60 + 30, 10 * 60 + 30),
+    ),
+    SignalDef(
+        "us_close_hour",
+        "session",
+        "bar CLOSED in the last US cash hour — (15:00, 16:00] ET, Mon-Fri "
+        "(never fires on 1d bars; dropped by the min-events gate there)",
+        2,
+        lambda f: _session_window(f, 15 * 60, 16 * 60),
+    ),
+    SignalDef(
+        "weekend",
+        "session",
+        "bar closed on Saturday or Sunday, New York time",
+        2,
+        lambda f: _weekend(f),
     ),
 )
 

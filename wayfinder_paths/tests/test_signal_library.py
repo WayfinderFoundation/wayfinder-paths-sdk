@@ -363,6 +363,57 @@ class TestScanJobLedger:
         assert "data snooping" in respent["read"]
 
 
+class TestSessionAndIndicatorAdditions:
+    def test_session_windows_across_dst_boundary(self):
+        # US spring-forward is 2026-03-08. Before it, 10:00 ET = 15:00 UTC;
+        # after it, 10:00 ET = 14:00 UTC. Hourly bars spanning the boundary
+        # must fire us_open_hour at the WALL-CLOCK hour on both sides.
+        n = 6 * 24
+        frame = _bars(_wavy_closes(n))
+        frame["timestamp"] = pd.date_range("2026-03-05", periods=n, freq="1h", tz="UTC")
+        signals = build_signal_frame(frame)
+        stamps = frame["timestamp"]
+        fri_open = signals["us_open_hour"] & (
+            stamps == pd.Timestamp("2026-03-06 15:00", tz="UTC")
+        )
+        mon_open = signals["us_open_hour"] & (
+            stamps == pd.Timestamp("2026-03-09 14:00", tz="UTC")
+        )
+        assert fri_open.any(), "pre-DST 10:00 ET close missed"
+        assert mon_open.any(), "post-DST 10:00 ET close missed"
+        # Half-open window on the close label: the 09:30 ET close (bar holding
+        # 08:30-09:30 pre-open data) must NOT count as the open hour... but on
+        # hourly bars closes land on :00, so assert the 15:00-pre-DST close is
+        # in and the 14:00 close that same pre-DST day (09:00 ET) is out.
+        pre_dst_nine_et = signals["us_open_hour"] & (
+            stamps == pd.Timestamp("2026-03-06 14:00", tz="UTC")
+        )
+        assert not pre_dst_nine_et.any()
+        # Weekend flags Saturday and Sunday ET; the DST-transition Sunday
+        # (Mar 8) is a weekend bar, never a session bar.
+        sunday = stamps.dt.tz_convert("America/New_York").dt.dayofweek == 6
+        assert (signals["weekend"] & sunday.to_numpy()).any()
+        assert not (signals["us_open_hour"] & sunday.to_numpy()).any()
+
+    def test_directional_indicator_pairs_are_distinct(self):
+        frame = _bars(_wavy_closes(500))
+        signals = build_signal_frame(frame)
+        for up, dn in [
+            ("macd_cross_up_12_26_9", "macd_cross_dn_12_26_9"),
+            ("ema_cross_up_9_21", "ema_cross_dn_9_21"),
+            ("rsi14_cross_up_50", "rsi14_cross_dn_50"),
+        ]:
+            assert signals[up].any() and signals[dn].any(), (up, dn)
+            assert not (signals[up] & signals[dn]).any(), (up, dn)
+
+    def test_session_families_and_counts(self):
+        defs = signal_defs()
+        assert len(SIGNAL_LIBRARY) == 37
+        assert defs["us_open_hour"].family == "session"
+        assert defs["macd_cross_up_12_26_9"].family == "trend"
+        assert defs["rsi14_cross_dn_50"].family == "momentum"
+
+
 class TestStrategyCatalog:
     def test_catalog_lists_ported_live_strategies(self):
         catalog = {entry["name"]: entry for entry in library_catalog()}
