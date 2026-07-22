@@ -184,6 +184,11 @@ every wake.
      `rank-check`. Open interest is DEFERRED — no history source exists yet;
      do not improvise one.
 
+2b. CONSULT the research agenda (`research/agenda.md`) before generating
+   ideas: Dead-map entries are settled (reopening requires NAMED new
+   evidence), Starved entries wake up only when their unlock condition is
+   met, Open entries are the queue — verify those before inventing new ones.
+
 3. SCORE each candidate: expected edge, evidence strength, overfit risk,
    complexity, reversibility, risk impact. Check the candidates ledger and
    rejected proposals FIRST — never re-explore a candidate family already
@@ -247,6 +252,41 @@ Composed defs must each cite a hypothesis (fingerprint quadrant, path_stats
 shape, or a failure-table row from strategy-search §2b) — breadth inflates
 the BH denominator for the whole family, so twelve strong hypotheses beat
 fifty permutations arithmetically.
+
+## Research agenda — cumulative exploration state
+
+`research/agenda.md` is the job's living research map. The ledger tails in
+your context show only the last 20 rows — the agenda is the COMPACTED view
+that keeps ideation cumulative instead of amnesiac. You maintain it; never
+restart it. Format (keep under ~150 lines total, compact in place):
+
+```markdown
+# Research agenda — <job_id>
+Last ideation session: <ISO timestamp>
+
+## Dead map (refuted — reopening requires NAMED new evidence)
+- <hypothesis>: <one line of evidence, e.g. "best t=-2.35, q~0.999 over 462 trials">
+
+## Open hypotheses (ranked; each cites its evidence)
+1. <hypothesis> — evidence: <fingerprint quadrant / path_stats / world fact>
+   next: <the concrete test — scan def, rank-check column, feature to fetch>
+
+## Starved (insufficient data — each with an explicit unlock condition)
+- <hypothesis>: revisit when <condition, e.g. ">40 funding-positive events"
+  or "60d of history" or "next earnings date">
+```
+
+IDEATION sessions (the wake-ladder cadence rung): start from the agenda plus
+the durable-memory asset dossier; pull world context with the research tools
+— what the assets ARE (sector siblings, earnings calendar, index membership,
+who trades them and when) is evidence, not trivia. Generate structurally
+different hypotheses, RANK them, append the best 1-3 as Open entries with
+their next concrete test, and move settled ones to Dead/Starved with their
+one-line verdicts. An ideation session that concludes "nothing new, agenda
+stands" is a valid outcome — say so and stamp the timestamp. Statuses flow:
+Open -> (tested) -> Dead with evidence | Starved with unlock | promoted into
+a candidate/proposal. Never delete Dead entries to make room — summarize
+whole families into one line instead.
 
 ## Kill switch
 

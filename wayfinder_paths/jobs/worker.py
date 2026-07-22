@@ -72,6 +72,10 @@ def _build_worker_prompt_sections(
     memory_md = _read_text(root / "memory.md", max_chars=6000)
     memory_json = store.read_json(job_id, "memory.json", default={}) or {}
     recent_journal = _read_text(root / "journal.jsonl", max_chars=4000)
+    # The cumulative research state — a curated map (dead hypotheses, open
+    # ones, starved ones with unlock conditions), NOT a scrolling log. The
+    # 20-row ledger tails forget; this is what makes ideation build on itself.
+    research_agenda = _read_text(root / "research" / "agenda.md", max_chars=5000)
     stable_payload = {
         "job": _drop_volatile_stable_keys(snapshot["job"]),
         "memory_json": _drop_volatile_stable_keys(memory_json),
@@ -260,6 +264,21 @@ def _build_worker_prompt_sections(
             "only: no workspace/ or job.yaml edits, and no proposals whose "
             "evidence is the sub-floor forward sample. Monitor-mode wakes stay "
             "read-only.\n"
+            "- Ideation cadence: research/agenda.md is the cumulative "
+            "research state — sections: Dead map (refuted, one line of "
+            "evidence each), Open hypotheses (ranked, each citing its "
+            "evidence), Starved (insufficient data, each with an explicit "
+            "unlock condition), and a Last-ideation timestamp. If that "
+            "timestamp is older than ~24h and operations are healthy, spend "
+            "THIS wake as an IDEATION session: start from the agenda plus "
+            "the durable-memory asset dossier, pull world context with the "
+            "research tools (what these assets ARE — sector links, earnings "
+            "calendar, market structure — is evidence), generate and RANK "
+            "structurally different hypotheses, append the best as Open "
+            "entries, and retire or starve stale ones. Reopening a refuted "
+            "hypothesis requires NAMED new evidence. Keep the agenda compact "
+            "(~150 lines): it is a curated map, not a log — compact it in "
+            "place as part of updating it.\n"
             "- If propose returns a failed validation, read ALL failed check "
             "names and fix them in ONE follow-up propose; after 2 failed propose "
             "attempts in a wake, stop and report the blocker instead of "
@@ -270,6 +289,9 @@ def _build_worker_prompt_sections(
         f"{DYNAMIC_CONTEXT_MARKER}\n"
         "Current snapshot:\n"
         f"{_canonical_json(dynamic_payload, max_chars=12000)}\n\n"
+        "Research agenda (research/agenda.md — cumulative exploration "
+        "state; maintain it, do not restart it):\n"
+        f"{research_agenda or '(none yet — bootstrap it on the next healthy ideation wake)'}\n\n"
         "Recent journal:\n"
         f"{recent_journal}\n\n"
         "Task:\n"
