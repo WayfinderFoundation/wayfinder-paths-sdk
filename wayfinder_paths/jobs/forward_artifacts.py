@@ -391,6 +391,8 @@ def _fetch_price_series(
         window_bars = _MAX_PRICE_BARS
     lookback_bars = min(max(window_bars + _WARMUP_BARS, _WARMUP_BARS), _MAX_PRICE_BARS)
 
+    venue_by_symbol: dict[str, str] = {}
+
     async def _fetch() -> CompletedBarsView:
         rows: list[Mapping[str, Any]] = []
         # mode="paper" builds the read-only market-data side; no signing/keys.
@@ -399,7 +401,10 @@ def _fetch_price_series(
             view = await adapter.feed.get_completed_bars(
                 symbols, str(bar_interval), lookback_bars=lookback_bars, as_of=now
             )
-            rows.extend(view.to_rows())
+            venue_rows = view.to_rows()
+            for row in venue_rows:
+                venue_by_symbol.setdefault(str(row["symbol"]), str(venue))
+            rows.extend(venue_rows)
         if not rows:
             raise RuntimeError("no completed bars returned by any venue feed")
         return CompletedBarsView.from_rows(rows)
@@ -427,6 +432,9 @@ def _fetch_price_series(
                 "name": f"{symbol}_price",
                 "kind": "market_price",
                 "symbol": symbol,
+                # The venue whose feed produced these bars — lets the UI swap
+                # the static payload for that venue's live streaming chart.
+                "venue": venue_by_symbol.get(symbol),
                 "points": points,
             }
         )
