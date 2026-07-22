@@ -9,7 +9,6 @@ from typing import Any
 from loguru import logger
 
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
-from wayfinder_paths.jobs.application import claim_application, complete_application
 from wayfinder_paths.jobs.forward import is_forward_empty
 from wayfinder_paths.jobs.ledger import tail_ledger
 from wayfinder_paths.jobs.memory_hygiene import sanitize_job_memory
@@ -175,11 +174,14 @@ def _build_worker_prompt_sections(
         f"{STABLE_PREFIX_END_MARKER}\n"
     )
     task_line = (
-        f"- Apply approved proposal `{apply_proposal_id}`. The SDK wake path may "
-        "have already claimed it, so check `proposal_queue`/proposal application "
-        "status first. If it is still queued, call "
+        f"- Apply approved proposal `{apply_proposal_id}`. Check "
+        "`proposal_queue`/proposal application status first: if it is queued, "
+        "claim it yourself with "
         '`core_jobs(action="claim_application", job_id=..., proposal_id=...)`; '
-        "if it is applying, do not claim again. Apply edits in the candidate "
+        "if it is already applying, do not claim again. Claiming pauses the "
+        "runner loops and starts a watchdog clock: complete the application "
+        "(applied or failed) within ~60 minutes or the SDK will fail it and "
+        "resume the loops without you. Apply edits in the candidate "
         "workspace recorded on the proposal application, not the active workspace. "
         'Proposals created via `core_jobs(action="propose")` stage their change '
         "in the candidate at propose time and the claim REUSES that candidate — "
@@ -315,9 +317,14 @@ def prepare_job_worker_prompt(
     job_id: str,
     mode: str,
     apply_proposal_id: str | None = None,
-    claim_application_before_prompt: bool = False,
 ) -> dict[str, Any]:
-    """Prepare the exact prompt payload used for a job worker wakeup."""
+    """Prepare the exact prompt payload used for a job worker wakeup.
+
+    Never claims the application: claiming pauses the runner loops, and prompt
+    delivery to an LLM session is not guaranteed — a dropped prompt after a
+    claim stalls the job (2026-07-22 incident). Deterministic applies claim in
+    apply_launcher; agent-owned applies claim from inside the live session.
+    """
     job = store.load(job_id)
     mode = normalize_agent_mode(mode) if mode else job.agent_loop.mode
     if mode == "off":
@@ -325,15 +332,6 @@ def prepare_job_worker_prompt(
     mode_typed: AgentMode = mode
 
     snapshot = snapshot_job(job.id, store=store)
-    application_claim: dict[str, Any] | None = None
-    if apply_proposal_id and claim_application_before_prompt:
-        proposal = store.load_proposal(job.id, apply_proposal_id)
-        application_claim = (
-            {"proposal": proposal, "already_claimed": True}
-            if proposal["application"]["status"] == "applying"
-            else claim_application(store, job.id, apply_proposal_id)
-        )
-        snapshot = snapshot_job(job.id, store=store)
 
     # Deterministic memory hygiene: on a wake with no forward telemetry, strip
     # unsupported performance claims from durable memory before the agent reads
@@ -351,7 +349,6 @@ def prepare_job_worker_prompt(
         **prompt_sections,
         "job_id": job.id,
         "mode": mode_typed,
-        "application_claim": application_claim,
     }
 
 
@@ -405,30 +402,12 @@ def run_job_worker(
     session_id = _ensure_worker_session(job.id, mode_typed)
     queued = False
     error: str | None = None
-    application_claim: dict[str, Any] | None = None
-    prompt_sections: dict[str, Any] | None = None
-    if session_id and apply_proposal_id:
-        try:
-            prompt_sections = prepare_job_worker_prompt(
-                store=store,
-                job_id=job.id,
-                mode=mode_typed,
-                apply_proposal_id=apply_proposal_id,
-                claim_application_before_prompt=True,
-            )
-            application_claim = prompt_sections["application_claim"]
-        except Exception as exc:
-            error = f"Application claim failed: {exc}"
-            session_id = None
-
-    if prompt_sections is None:
-        prompt_sections = prepare_job_worker_prompt(
-            store=store,
-            job_id=job.id,
-            mode=mode_typed,
-            apply_proposal_id=apply_proposal_id,
-            claim_application_before_prompt=False,
-        )
+    prompt_sections = prepare_job_worker_prompt(
+        store=store,
+        job_id=job.id,
+        mode=mode_typed,
+        apply_proposal_id=apply_proposal_id,
+    )
     prompt = prompt_sections["prompt"]
 
     if session_id:
@@ -440,17 +419,11 @@ def run_job_worker(
             else JOB_WORKER_AGENT_NAME,
         )
         if not queued:
+            # No cleanup needed: the wake never claims, so a dropped prompt
+            # leaves the application queued with the runner loops running.
             error = "OpenCode prompt_async failed"
-            if apply_proposal_id and application_claim:
-                complete_application(
-                    store,
-                    job.id,
-                    apply_proposal_id,
-                    status="failed",
-                    error=error,
-                )
     else:
-        error = error or "OpenCode server unavailable"
+        error = "OpenCode server unavailable"
 
     report = _write_report(
         store=store,

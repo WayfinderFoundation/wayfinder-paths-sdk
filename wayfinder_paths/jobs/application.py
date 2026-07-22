@@ -68,6 +68,18 @@ def claim_application(store: JobStore, job_id: str, proposal_id: str) -> dict[st
         raise ValueError(
             f"Proposal application is not queued: {proposal_id} ({application_status})"
         )
+    # Claiming pauses the job's loops — make sure the recovery owner exists
+    # before entering the risk window. Best-effort: registration failure must
+    # never block an apply. Lazy import: watchdog imports this module.
+    try:
+        from wayfinder_paths.jobs.watchdog import ensure_application_watchdog
+
+        ensure_application_watchdog(store=store)
+    except Exception as exc:
+        store.append_journal(
+            job_id,
+            {"type": "application_watchdog_ensure_failed", "error": str(exc)},
+        )
     paused = pause_job_loops(store, job_id)
     try:
         candidate = _prepare_candidate_workspace(
@@ -264,12 +276,18 @@ def _complete_applied_application(
 
     root = store.job_dir(job_id)
     backup_dir = root / "applications" / proposal_id / "backup"
-    if backup_dir.exists():
+    active_workspace = root / "workspace"
+    # Rebuild the backup only while the active workspace exists. After a crash
+    # mid-promotion the active workspace may be gone and the existing backup is
+    # the ONLY copy of the pre-apply state — rebuilding from the torn tree
+    # would destroy it and leave rollback with nothing to restore.
+    if backup_dir.exists() and active_workspace.exists():
         shutil.rmtree(backup_dir)
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    if (root / "workspace").exists():
-        shutil.copytree(root / "workspace", backup_dir / "workspace")
-    shutil.copy2(root / "job.yaml", backup_dir / "job.yaml")
+    if not backup_dir.exists():
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        if active_workspace.exists():
+            shutil.copytree(active_workspace, backup_dir / "workspace")
+        shutil.copy2(root / "job.yaml", backup_dir / "job.yaml")
 
     outcome = _ApplicationOutcome(
         final_status="applied",
