@@ -44,6 +44,8 @@ JobAction = Literal[
     "pair_check",
     "signal_check",
     "signal_scan",
+    "chart",
+    "analogs",
     "holdout_check",
     "rank_check",
     "strategy_library",
@@ -165,6 +167,14 @@ async def core_jobs(
     holdout_fraction: float = 0.15,
     signal: str | None = None,
     horizon: int | None = None,
+    symbol: str | None = None,
+    timeframe: str | None = None,
+    bars: int = 96,
+    indicators: list[str] | None = None,
+    around_trade: str | None = None,
+    window: int = 24,
+    at: str | None = None,
+    top: int = 15,
 ) -> dict[str, Any]:
     """Manage high-level Wayfinder jobs.
 
@@ -392,6 +402,33 @@ async def core_jobs(
                 "horizons": horizons,
                 "timeframes": timeframes,
                 "holdout_fraction": holdout_fraction,
+            },
+        )
+
+    if action == "chart":
+        return await _run_job_op(
+            "chart",
+            {
+                "job_id": job_id,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "bars": bars,
+                "indicators": indicators,
+                "around_trade": around_trade,
+            },
+        )
+
+    if action == "analogs":
+        return await _run_job_op(
+            "analogs",
+            {
+                "job_id": job_id,
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "window": window,
+                "at": at,
+                "top": top,
+                "horizon": horizon if horizon is not None else 12,
             },
         )
 

@@ -199,6 +199,11 @@ def forensics_for_closed_trades(
         row["symbol"] = symbol
         row["entry_reason"] = entry_meta.get("entry_reason")
         row["net_pnl"] = trade.get("net_pnl") or trade.get("realized_pnl_delta")
+        # Market-state tags at entry (trend vs SMA50, vol percentile, session)
+        # so regime patterns across winners/losers are visible at a glance.
+        from wayfinder_paths.jobs.indicators import regime_snapshot
+
+        row["regime_at_entry"] = regime_snapshot(bars, entry_ts)
         rows.append(row)
     return rows
 

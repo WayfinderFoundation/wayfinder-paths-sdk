@@ -324,6 +324,20 @@ def _build_worker_prompt_sections(
             "grid+WF-validated exit change motivated by them is a legitimate "
             "proposal even below the forward-sample floor, because its "
             "evidence is the backtest population, not the forward sample.\n"
+            "- Chart lenses (LOOK before hypothesizing): "
+            '`core_jobs(action="chart", job_id=..., symbol=..., '
+            'timeframe="30m", indicators=["ema:9","ema:50","rsi:14"], '
+            'around_trade="last")` renders the bars around any trade (or the '
+            "latest window) as per-bar rows with whatever indicator columns "
+            "you request, forward entries/exits annotated, plus a regime "
+            'header. `core_jobs(action="analogs", job_id=..., symbol=..., '
+            "window=24, horizon=12)` finds the nearest historical analogs of "
+            "the recent window and reports what followed them. Use chart to "
+            "eyeball every loser before proposing anything about exits; use "
+            "analogs when a pattern 'looks familiar'. Both are OBSERVATION "
+            "tools — no multiplicity control — so what they suggest becomes a "
+            "workspace SignalDef or grid hypothesis for the scan/holdout "
+            "gate, never direct evidence.\n"
             "- Ideation cadence: research/agenda.md is the cumulative "
             "research state — sections: Dead map (refuted, one line of "
             "evidence each), Open hypotheses (ranked, each citing its "
