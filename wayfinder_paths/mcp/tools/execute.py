@@ -27,7 +27,8 @@ from wayfinder_paths.core.utils.tokens import (
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.units import from_erc20_raw
 from wayfinder_paths.core.utils.wallets import (
-    get_wallet_signing_callback,
+    find_wallet_leg_for_chain,
+    get_wallet_signing_callback_for_chain,
     is_solana_enabled,
 )
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
@@ -270,14 +271,6 @@ async def onchain_swap(
     if slippage_bps < 0:
         return err("invalid_request", "slippage_bps must be >= 0")
 
-    sign_callback, sender = await get_wallet_signing_callback(wallet_label)
-    rcpt = normalize_address(recipient) or sender
-    response: dict[str, Any] = {
-        "sender": sender,
-        "recipient": rcpt,
-        "effects": {},
-    }
-
     try:
         from_meta = await TokenResolver.resolve_token_meta(from_token)
         to_meta = await TokenResolver.resolve_token_meta(to_token)
@@ -294,8 +287,25 @@ async def onchain_swap(
             "Could not resolve chain_id for one or more tokens",
             {"from_chain_id": from_chain_id, "to_chain_id": to_chain_id},
         )
-    if is_solana_chain(from_chain_id) and not await is_solana_enabled():
+    if (
+        is_solana_chain(from_chain_id) or is_solana_chain(to_chain_id)
+    ) and not await is_solana_enabled():
         return err("solana_disabled", "Solana is not enabled for this account.")
+
+    # Sign the source tx with the source-chain leg; default the recipient to the
+    # ring's destination-chain leg (cross-chain lands on the paired leg).
+    sign_callback, sender = await get_wallet_signing_callback_for_chain(
+        wallet_label, from_chain_id
+    )
+    to_leg = await find_wallet_leg_for_chain(wallet_label, to_chain_id)
+    dest_default = normalize_address(to_leg.get("address")) if to_leg else sender
+    rcpt = normalize_address(recipient) or dest_default
+    response: dict[str, Any] = {
+        "sender": sender,
+        "recipient": rcpt,
+        "effects": {},
+    }
+
     if not from_token_addr or not to_token_addr:
         return err(
             "invalid_token",
@@ -530,16 +540,9 @@ async def onchain_send(
     if token_q.lower() == "native" and chain_id is None:
         return err("invalid_request", "chain_id is required when token='native'")
 
-    sign_callback, sender = await get_wallet_signing_callback(wallet_label)
     rcpt = normalize_address(recipient)
     if not rcpt:
         return err("invalid_request", "recipient address is required")
-
-    response: dict[str, Any] = {
-        "sender": sender,
-        "recipient": rcpt,
-        "effects": {},
-    }
 
     try:
         token_meta = await TokenResolver.resolve_token_meta(token_q, chain_id=chain_id)
@@ -559,6 +562,16 @@ async def onchain_send(
 
     if is_solana_chain(int(resolved_chain_id)) and not await is_solana_enabled():
         return err("solana_disabled", "Solana is not enabled for this account.")
+
+    # Sign with the leg for the resolved chain (SVM sends sign with the SVM leg).
+    sign_callback, sender = await get_wallet_signing_callback_for_chain(
+        wallet_label, int(resolved_chain_id)
+    )
+    response: dict[str, Any] = {
+        "sender": sender,
+        "recipient": rcpt,
+        "effects": {},
+    }
 
     try:
         amount_raw = parse_amount_to_raw(amount, decimals)

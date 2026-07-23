@@ -18,6 +18,7 @@ from wayfinder_paths.core.config import (
     load_wallet_mnemonic,
     write_wallet_mnemonic,
 )
+from wayfinder_paths.core.constants.chains import SVM_CHAIN_IDS
 from wayfinder_paths.policies.session import build_session_policy, build_strategy_policy
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
@@ -119,6 +120,32 @@ async def find_wallet_by_label(label: str) -> dict[str, Any] | None:
         if str(w.get("label", "")).strip() == want:
             return w
     return None
+
+
+async def load_wallet_ring(label: str) -> list[dict[str, Any]]:
+    """All legs (EVM + SVM) of the wallet ring sharing ``label``, loaded once."""
+    want = str(label).strip()
+    return [w for w in await load_wallets() if str(w.get("label", "")).strip() == want]
+
+
+def leg_for_chain(ring: list[dict[str, Any]], chain_id: int) -> dict[str, Any] | None:
+    """Pick the ring leg that transacts on ``chain_id`` (SVM vs EVM), or None.
+
+    A wallet ring shares one label across its EVM and SVM legs; a cross-chain
+    swap sends from the source-chain leg and lands on the destination-chain leg.
+    """
+    want_type = (
+        CHAIN_TYPE_SOLANA if int(chain_id) in SVM_CHAIN_IDS else CHAIN_TYPE_ETHEREUM
+    )
+    for w in ring:
+        if wallet_chain_type(w) == want_type:
+            return w
+    return None
+
+
+async def find_wallet_leg_for_chain(label: str, chain_id: int) -> dict[str, Any] | None:
+    """Resolve the ring leg (by label) that transacts on ``chain_id``."""
+    return leg_for_chain(await load_wallet_ring(label), chain_id)
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +362,20 @@ async def get_wallet_signing_callback(label: str):
     wallet = await find_wallet_by_label(label)
     if not wallet:
         raise ValueError(f"Wallet '{label}' not found.")
+    return _build_signing_callback(wallet, label)
+
+
+async def get_wallet_signing_callback_for_chain(label: str, chain_id: int):
+    """Async — resolve the ring leg that signs on ``chain_id`` and return
+    (sign_callback, address).
+
+    A source tx is signed by its own chain's leg: EVM legs sign EVM txs, the SVM
+    leg signs Solana txs. Falls back to the default label lookup when no leg for
+    that chain family is loaded, preserving legacy single-leg behavior.
+    """
+    wallet = await find_wallet_leg_for_chain(label, chain_id)
+    if not wallet:
+        return await get_wallet_signing_callback(label)
     return _build_signing_callback(wallet, label)
 
 

@@ -116,7 +116,7 @@ async def test_swap_solana_route_broadcasts_via_svm_and_skips_allowance():
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback",
+            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback_for_chain",
             new=AsyncMock(return_value=(_svm_callback(), SENDER)),
         ),
         patch(
@@ -194,7 +194,7 @@ async def test_swap_solana_route_detected_by_chain_id_without_chaintype():
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback",
+            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback_for_chain",
             new=AsyncMock(return_value=(_svm_callback(), SENDER)),
         ),
         patch(
@@ -248,7 +248,7 @@ async def test_swap_solana_route_missing_serialized_tx_errors():
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback",
+            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback_for_chain",
             new=AsyncMock(return_value=(_svm_callback(), SENDER)),
         ),
         patch(
@@ -298,7 +298,7 @@ async def test_send_solana_spl_builds_envelope_and_broadcasts_via_svm():
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback",
+            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback_for_chain",
             new=AsyncMock(return_value=(_svm_callback(), SENDER)),
         ),
         patch(
@@ -372,7 +372,7 @@ async def test_send_solana_native_sol_uses_native_label():
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback",
+            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback_for_chain",
             new=AsyncMock(return_value=(_svm_callback(), SENDER)),
         ),
         patch(
@@ -421,7 +421,7 @@ async def test_send_solana_insufficient_balance_short_circuits_before_build():
     }
     with (
         patch(
-            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback",
+            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback_for_chain",
             new=AsyncMock(return_value=(_svm_callback(), SENDER)),
         ),
         patch(
@@ -475,7 +475,7 @@ async def test_swap_solana_blocked_when_flag_disabled():
             return_value=False,
         ),
         patch(
-            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback",
+            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback_for_chain",
             new=AsyncMock(return_value=(_svm_callback(), SENDER)),
         ),
         patch(
@@ -512,7 +512,7 @@ async def test_send_solana_blocked_when_flag_disabled():
             return_value=False,
         ),
         patch(
-            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback",
+            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback_for_chain",
             new=AsyncMock(return_value=(_svm_callback(), SENDER)),
         ),
         patch(
