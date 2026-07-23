@@ -77,11 +77,15 @@ def _trade_forensics_block(root: Path) -> dict[str, Any]:
             "Exit-quality path metrics, bps of entry price, positive = in the "
             "trade's favor. hold_mae/mfe = worst/best excursion DURING the "
             "hold; post_exit_favorable = move in the trade's direction AFTER "
-            "the exit (what a later exit would have captured); stop_survives "
-            "= whether that stop width would have held. Forward rows are "
-            "single-trade ANECDOTES — hypothesis fuel only. Adjudicate any "
-            "exit tweak on backtest_aggregate + an experiments grid over the "
-            "exit params with walk-forward before proposing."
+            "the exit (what a later exit would have captured); "
+            "exit_reason 'bracket_stop' = the protective stop fired (bracket "
+            "fills carry no strategy label); stop_survives = that stop width "
+            "was never breached — for bracket_stop trades the scan extends "
+            "through the post-exit window (the hypothetical wider-stop hold "
+            "continues), for labeled exits it covers the actual hold. Forward "
+            "rows are single-trade ANECDOTES — hypothesis fuel only. "
+            "Adjudicate any exit tweak on backtest_aggregate + an experiments "
+            "grid over the exit params with walk-forward before proposing."
         )
     return block
 
