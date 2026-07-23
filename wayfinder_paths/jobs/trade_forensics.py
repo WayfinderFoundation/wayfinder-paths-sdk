@@ -26,6 +26,9 @@ import pandas as pd
 
 POST_BARS = (4, 8, 16)
 STOP_GRID = (0.02, 0.025, 0.03, 0.035)
+# The engine's bracket fills carry no intent metadata — a close without an
+# exit_reason IS the protective stop (strategy closes always label themselves).
+BRACKET_EXIT_REASON = "bracket_stop"
 
 
 def _bps(value: float, entry_price: float) -> float:
@@ -61,6 +64,24 @@ def match_entry_fill(
         if best_ts is None or ts > best_ts:
             best, best_ts = fill, ts
     return best
+
+
+def _closing_fill_reason(
+    fills: Iterable[Mapping[str, Any]],
+    *,
+    symbol: str,
+    exit_ts: pd.Timestamp,
+) -> str | None:
+    for fill in fills:
+        if str(fill.get("symbol")) != symbol or not fill.get("reduce_only"):
+            continue
+        ts = pd.Timestamp(str(fill.get("timestamp")))
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        if ts == exit_ts:
+            meta = (fill.get("raw") or {}).get("intent_metadata") or {}
+            return meta.get("exit_reason") or None
+    return None
 
 
 def compute_trade_forensics(
@@ -126,8 +147,31 @@ def compute_trade_forensics(
         post_best_bps = None
         reentered = None
 
+    # Only bracket (stop) closes lack an exit_reason: strategy closes carry
+    # intent metadata, the engine's bracket fills do not. Label them instead
+    # of leaking None/"unknown" into the aggregate.
+    reason = exit_reason or BRACKET_EXIT_REASON
+
+    # Wider-stop counterfactual. For a stop-out the hypothetical wider-stop
+    # hold CONTINUES past the actual exit, so the adverse scan must extend
+    # through the post window too — scanning only the truncated hold would
+    # overstate survival. Time/signal exits end the position regardless of
+    # stop width, so their scan is exactly the hold.
+    if reason == BRACKET_EXIT_REASON and len(post_close):
+        adverse_scan_high = pd.concat([hold_high, post_high])
+        adverse_scan_low = pd.concat([hold_low, post_low])
+    else:
+        adverse_scan_high, adverse_scan_low = hold_high, hold_low
+    if len(adverse_scan_high):
+        scan_adverse = (
+            adverse_scan_low.min() if side == "long" else adverse_scan_high.max()
+        )
+        scan_mae_bps = _bps(direction * (entry_price - scan_adverse), entry_price)
+    else:
+        scan_mae_bps = None
     stop_survival = {
-        f"{pct:g}": (mae_bps is not None and mae_bps < pct * 1e4) for pct in stop_grid
+        f"{pct:g}": (scan_mae_bps is not None and scan_mae_bps < pct * 1e4)
+        for pct in stop_grid
     }
 
     return {
@@ -136,7 +180,7 @@ def compute_trade_forensics(
         "exit_ts": exit_ts.isoformat(),
         "entry_price": entry_price,
         "exit_price": exit_price,
-        "exit_reason": exit_reason,
+        "exit_reason": reason,
         "realized_bps": realized_bps,
         "hold_mfe_bps": mfe_bps,
         "hold_mae_bps": mae_bps,
@@ -185,6 +229,11 @@ def forensics_for_closed_trades(
         meta = raw.get("intent_metadata") or {}
         entry_raw = entry.get("raw") or {}
         entry_meta = entry_raw.get("intent_metadata") or {}
+        exit_reason = meta.get("exit_reason") or trade.get("exit_reason")
+        if not exit_reason:
+            # Forward trade-close rows carry no intent metadata — the reason
+            # lives on the CLOSING fill (same symbol/timestamp, reduce_only).
+            exit_reason = _closing_fill_reason(fills, symbol=symbol, exit_ts=exit_ts)
         row = compute_trade_forensics(
             bars,
             side=position_side_of_close(str(trade.get("side"))),
@@ -192,7 +241,7 @@ def forensics_for_closed_trades(
             entry_price=float(entry.get("avg_price") or 0.0),
             exit_ts=exit_ts,
             exit_price=float(trade.get("price") or trade.get("avg_price") or 0.0),
-            exit_reason=meta.get("exit_reason") or trade.get("exit_reason"),
+            exit_reason=exit_reason,
             post_bars=post_bars,
             stop_grid=stop_grid,
         )

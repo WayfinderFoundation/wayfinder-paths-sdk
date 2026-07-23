@@ -63,10 +63,11 @@ def test_short_stop_out_with_post_exit_collapse() -> None:
         entry_price=100.0,
         exit_ts=_ts(2),
         exit_price=103.0,
-        exit_reason="stop_loss",
+        exit_reason=None,  # bracket fills carry no strategy label
         post_bars=(2, 4),
         stop_grid=(0.025, 0.035),
     )
+    assert row["exit_reason"] == "bracket_stop"
     assert row["realized_bps"] == -300.0
     # Hold covers bars 1-2: adverse extreme high=103 -> MAE 300bps; the
     # favorable extreme low=99.9 -> MFE 1bps... low is 99.9 in bar1, 101.0 in
@@ -105,6 +106,7 @@ def test_long_winner_with_truncated_post_window() -> None:
         post_bars=(2, 4),
         stop_grid=(0.02,),
     )
+    assert row["exit_reason"] == "time_exit"
     assert row["realized_bps"] == 300.0
     assert row["hold_mfe_bps"] == 350.0  # high 103.5
     assert row["hold_mae_bps"] == 20.0  # low 99.8
@@ -112,6 +114,51 @@ def test_long_winner_with_truncated_post_window() -> None:
     assert row["post_exit_best_bps"] == 20.0  # high 103.2 vs exit 103.0
     assert row["stop_survives"] == {"0.02": True}
     assert row["coverage"]["post_bars"] == 1
+
+
+def test_bracket_stop_survival_scans_post_window() -> None:
+    # Short stopped at 103; the post window squeezes HIGHER to 104.5 before
+    # reversing. A 3.5% stop survives the truncated hold (MAE 300bps) but NOT
+    # the continued hypothetical hold (450bps) — the extended scan must catch
+    # that, or the counterfactual overstates survival.
+    bars = _bars(
+        [
+            (100, 100.5, 99.5, 100.0),
+            (100, 103.0, 99.9, 102.8),  # stop hit
+            (102.8, 104.5, 102.5, 104.0),  # post: squeeze continues
+            (104.0, 104.2, 101.0, 101.5),
+            (101.5, 101.6, 99.0, 99.5),
+        ]
+    )
+    row = compute_trade_forensics(
+        bars,
+        side="short",
+        entry_ts=_ts(0),
+        entry_price=100.0,
+        exit_ts=_ts(1),
+        exit_price=103.0,
+        exit_reason=None,
+        post_bars=(2,),
+        stop_grid=(0.035, 0.05),
+    )
+    assert row["exit_reason"] == "bracket_stop"
+    assert row["hold_mae_bps"] == 300.0  # truncated-hold MAE alone
+    assert row["stop_survives"] == {"0.035": False, "0.05": True}
+
+    # The same path with a LABELED exit scans only the actual hold: the
+    # position would not exist post-exit under any stop width.
+    labeled = compute_trade_forensics(
+        bars,
+        side="short",
+        entry_ts=_ts(0),
+        entry_price=100.0,
+        exit_ts=_ts(1),
+        exit_price=103.0,
+        exit_reason="time_exit",
+        post_bars=(2,),
+        stop_grid=(0.035, 0.05),
+    )
+    assert labeled["stop_survives"] == {"0.035": True, "0.05": True}
 
 
 def test_match_entry_fill_and_close_side() -> None:
@@ -184,6 +231,51 @@ def test_forensics_for_closed_trades_end_to_end() -> None:
     assert row["exit_reason"] == "stop_loss"
     assert row["realized_bps"] == -300.0
     assert row["net_pnl"] == -0.64
+
+
+def test_exit_reason_falls_back_to_closing_fill() -> None:
+    # Forward trade-close rows carry no intent metadata: the reason lives on
+    # the closing fill. An unlabeled closing fill means the bracket fired.
+    bars = _bars(
+        [
+            (100, 100.5, 99.5, 100.0),
+            (100, 101, 99, 100.5),
+            (100.5, 101, 99, 100.0),
+            (100, 101, 99, 100.2),
+        ]
+    )
+    fills = [
+        {
+            "symbol": "LIT",
+            "side": "sell",
+            "reduce_only": False,
+            "timestamp": _ts(0).isoformat(),
+            "avg_price": 100.0,
+        },
+        {
+            "symbol": "LIT",
+            "side": "buy",
+            "reduce_only": True,
+            "timestamp": _ts(2).isoformat(),
+            "avg_price": 100.0,
+            "raw": {"intent_metadata": {"exit_reason": "time_exit"}},
+        },
+    ]
+    trades = [
+        {
+            "symbol": "LIT",
+            "side": "buy",
+            "price": 100.0,
+            "closed_at": _ts(2).isoformat(),
+        },
+    ]
+    rows = forensics_for_closed_trades({"LIT": bars}, trades, fills, post_bars=(1,))
+    assert rows[0]["exit_reason"] == "time_exit"
+
+    # Same trade but the closing fill has no label -> bracket_stop.
+    fills[1]["raw"] = {"intent_metadata": {"exit_reason": ""}}
+    rows = forensics_for_closed_trades({"LIT": bars}, trades, fills, post_bars=(1,))
+    assert rows[0]["exit_reason"] == "bracket_stop"
 
 
 def test_aggregate_groups_by_exit_reason() -> None:
