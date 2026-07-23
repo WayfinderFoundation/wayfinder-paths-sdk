@@ -82,6 +82,18 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
         return []
 
 
+async def is_solana_enabled() -> bool:
+    """Whether the solana_enabled switch is on for this instance's account.
+
+    Solana agent wallets are remote-only, so off-instance callers are never
+    Solana-enabled and skip the features fetch.
+    """
+    if not get_api_key() or not is_opencode_instance():
+        return False
+    features = await WALLET_CLIENT.get_features()
+    return "solana_enabled" in features["enabledSwitches"]
+
+
 async def load_wallets() -> list[dict[str, Any]]:
     """Load local + remote wallets."""
     local = _load_local_wallets()

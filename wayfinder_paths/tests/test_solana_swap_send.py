@@ -36,6 +36,17 @@ def _tmp_state(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(tmp_path / "runs"))
 
 
+@pytest.fixture(autouse=True)
+def _solana_enabled():
+    # Default the flag on; the flag-off tests re-patch it to False.
+    with patch(
+        "wayfinder_paths.mcp.tools.execute.is_solana_enabled",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        yield
+
+
 def _svm_callback():
     cb = AsyncMock()
     cb.wallet_address = SENDER
@@ -440,5 +451,89 @@ async def test_send_solana_insufficient_balance_short_circuits_before_build():
 
     assert out["ok"] is False
     assert out["error"]["code"] == "insufficient_balance"
+    build_svm.assert_not_awaited()
+    svm_send.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# solana_enabled guard
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_swap_solana_blocked_when_flag_disabled():
+    meta = {
+        "symbol": "USDC",
+        "decimals": 6,
+        "chain_id": CHAIN_ID_SOLANA,
+        "address": USDC_MINT,
+    }
+    with (
+        patch(
+            "wayfinder_paths.mcp.tools.execute.is_solana_enabled",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback",
+            new=AsyncMock(return_value=(_svm_callback(), SENDER)),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.TokenResolver.resolve_token_meta",
+            new_callable=AsyncMock,
+            return_value=meta,
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
+            new_callable=AsyncMock,
+        ) as svm_send,
+    ):
+        out = await onchain_swap(
+            wallet_label="main", from_token="from", to_token="to", amount="1.0"
+        )
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "solana_disabled"
+    svm_send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_solana_blocked_when_flag_disabled():
+    token_meta = {
+        "symbol": "USDC",
+        "decimals": 6,
+        "chain_id": CHAIN_ID_SOLANA,
+        "address": USDC_MINT,
+    }
+    with (
+        patch(
+            "wayfinder_paths.mcp.tools.execute.is_solana_enabled",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback",
+            new=AsyncMock(return_value=(_svm_callback(), SENDER)),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.TokenResolver.resolve_token_meta",
+            new_callable=AsyncMock,
+            return_value=token_meta,
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.build_solana_send_transaction",
+            new_callable=AsyncMock,
+        ) as build_svm,
+        patch(
+            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
+            new_callable=AsyncMock,
+        ) as svm_send,
+    ):
+        out = await onchain_send(
+            wallet_label="main", token="usdc", recipient=RECIPIENT, amount="1.0"
+        )
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "solana_disabled"
     build_svm.assert_not_awaited()
     svm_send.assert_not_awaited()

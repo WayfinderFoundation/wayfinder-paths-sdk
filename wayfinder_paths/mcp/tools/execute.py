@@ -26,7 +26,10 @@ from wayfinder_paths.core.utils.tokens import (
 )
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.units import from_erc20_raw
-from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
+from wayfinder_paths.core.utils.wallets import (
+    get_wallet_signing_callback,
+    is_solana_enabled,
+)
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     catch_errors,
@@ -291,6 +294,8 @@ async def onchain_swap(
             "Could not resolve chain_id for one or more tokens",
             {"from_chain_id": from_chain_id, "to_chain_id": to_chain_id},
         )
+    if is_solana_chain(from_chain_id) and not await is_solana_enabled():
+        return err("solana_disabled", "Solana is not enabled for this account.")
     if not from_token_addr or not to_token_addr:
         return err(
             "invalid_token",
@@ -551,6 +556,9 @@ async def onchain_send(
         )
     decimals = int(token_meta.get("decimals") or 18)
     is_native = token_address.lower() == ZERO_ADDRESS.lower()
+
+    if is_solana_chain(int(resolved_chain_id)) and not await is_solana_enabled():
+        return err("solana_disabled", "Solana is not enabled for this account.")
 
     try:
         amount_raw = parse_amount_to_raw(amount, decimals)
