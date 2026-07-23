@@ -35,23 +35,6 @@ WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112"
 SOL_DECIMALS = 9
 
 
-def get_associated_token_address(
-    owner: Pubkey, mint: Pubkey, program_id: Pubkey | None = None
-) -> Pubkey:
-    """Derive the associated token account address for ``owner``/``mint``.
-
-    ``program_id`` selects the owning token program (classic SPL Token by
-    default, pass ``TOKEN_2022_PROGRAM_ID`` for Token-2022 mints).
-    """
-    if program_id is None:
-        program_id = TOKEN_PROGRAM_ID
-    key, _ = Pubkey.find_program_address(
-        seeds=[bytes(owner), bytes(program_id), bytes(mint)],
-        program_id=ASSOCIATED_TOKEN_PROGRAM_ID,
-    )
-    return key
-
-
 async def _get_mint_account(client: AsyncClient, mint: Pubkey):
     info = (await client.get_account_info(mint)).value
     if info is None:
@@ -66,6 +49,56 @@ async def _resolve_token_program_id(client: AsyncClient, mint: Pubkey) -> Pubkey
         if info.owner == TOKEN_2022_PROGRAM_ID
         else TOKEN_PROGRAM_ID
     )
+
+
+async def _get_mint_decimals(client: AsyncClient, mint: Pubkey) -> int:
+    info = await _get_mint_account(client, mint)
+    data = bytes(info.data)
+    if len(data) < MINT_LAYOUT.sizeof():
+        raise ValueError(f"Account {mint} does not look like an SPL mint")
+    return int(MINT_LAYOUT.parse(data).decimals)
+
+
+def get_associated_token_address(
+    owner: Pubkey, mint: Pubkey, program_id: Pubkey
+) -> Pubkey:
+    """Derive the associated token account address for ``owner``/``mint``.
+
+    ``program_id`` is the owning token program (``TOKEN_PROGRAM_ID`` or
+    ``TOKEN_2022_PROGRAM_ID``), resolved from the mint account's owner.
+    """
+    key, _ = Pubkey.find_program_address(
+        seeds=[bytes(owner), bytes(program_id), bytes(mint)],
+        program_id=ASSOCIATED_TOKEN_PROGRAM_ID,
+    )
+    return key
+
+
+def _create_ata_idempotent_instruction(
+    payer: Pubkey, owner: Pubkey, mint: Pubkey, token_program_id: Pubkey
+) -> Instruction:
+    """CreateIdempotent variant of the associated-token-account instruction.
+
+    The installed spl helper only emits plain Create (empty instruction data),
+    which fails if the account already exists. CreateIdempotent (discriminator
+    ``1``) is a no-op in that case, so a transfer built while the recipient's
+    ATA was missing cannot be raced by a concurrent ATA creation.
+    """
+    base = create_associated_token_account(
+        payer=payer, owner=owner, mint=mint, token_program_id=token_program_id
+    )
+    return Instruction(
+        program_id=base.program_id, data=bytes([1]), accounts=base.accounts
+    )
+
+
+def _serialize_unsigned(message: MessageV0) -> str:
+    """Serialize a compiled message as an unsigned VersionedTransaction (base64)."""
+    placeholder_signatures = [
+        Signature.default() for _ in range(message.header.num_required_signatures)
+    ]
+    tx = VersionedTransaction.populate(message, placeholder_signatures)
+    return base64.b64encode(bytes(tx)).decode("ascii")
 
 
 async def get_sol_balance(wallet_address: str, chain_id: int = CHAIN_ID_SOLANA) -> int:
@@ -104,14 +137,6 @@ async def get_solana_token_balance(
     return await get_spl_token_balance(wallet_address, token_address, chain_id)
 
 
-async def _get_mint_decimals(client: AsyncClient, mint: Pubkey) -> int:
-    info = await _get_mint_account(client, mint)
-    data = bytes(info.data)
-    if len(data) < MINT_LAYOUT.sizeof():
-        raise ValueError(f"Account {mint} does not look like an SPL mint")
-    return int(MINT_LAYOUT.parse(data).decimals)
-
-
 async def get_spl_mint_decimals(
     mint: str | None, chain_id: int = CHAIN_ID_SOLANA
 ) -> int:
@@ -121,33 +146,6 @@ async def get_spl_mint_decimals(
     assert mint is not None  # is_native_token(None) is True
     async with solana_client_from_chain_id(chain_id) as client:
         return await _get_mint_decimals(client, Pubkey.from_string(mint))
-
-
-def _serialize_unsigned(message: MessageV0) -> str:
-    """Serialize a compiled message as an unsigned VersionedTransaction (base64)."""
-    placeholder_signatures = [
-        Signature.default() for _ in range(message.header.num_required_signatures)
-    ]
-    tx = VersionedTransaction.populate(message, placeholder_signatures)
-    return base64.b64encode(bytes(tx)).decode("ascii")
-
-
-def _create_ata_idempotent_instruction(
-    payer: Pubkey, owner: Pubkey, mint: Pubkey, token_program_id: Pubkey
-) -> Instruction:
-    """CreateIdempotent variant of the associated-token-account instruction.
-
-    The installed spl helper only emits plain Create (empty instruction data),
-    which fails if the account already exists. CreateIdempotent (discriminator
-    ``1``) is a no-op in that case, so a transfer built while the recipient's
-    ATA was missing cannot be raced by a concurrent ATA creation.
-    """
-    base = create_associated_token_account(
-        payer=payer, owner=owner, mint=mint, token_program_id=token_program_id
-    )
-    return Instruction(
-        program_id=base.program_id, data=bytes([1]), accounts=base.accounts
-    )
 
 
 async def build_solana_send_transaction(

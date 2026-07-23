@@ -143,8 +143,9 @@ async def _broadcast_svm(
     wait_for_confirmation: bool,
 ) -> tuple[bool, dict[str, Any]]:
     try:
+        tx = VersionedTransaction.from_bytes(base64.b64decode(serialized_transaction))
         signature = await send_svm_versioned_transaction(
-            VersionedTransaction.from_bytes(base64.b64decode(serialized_transaction)),
+            tx,
             sign_callback,
             chain_id=chain_id,
             wait_for_confirmation=wait_for_confirmation,
@@ -346,6 +347,8 @@ async def onchain_swap(
             "quote_error", "best_quote missing calldata", {"best_quote": best_quote}
         )
 
+    compact_quote = _compact_quote(quote_data, best_quote)
+
     # Solana routes carry a pre-built, unsigned v0 tx envelope instead of EVM
     # calldata — broadcast via SVM and skip checksum/allowance/bridge-tracking.
     if calldata.get("chainType") == "solana" or is_solana_chain(from_chain_id):
@@ -366,81 +369,98 @@ async def onchain_swap(
         status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
         if not sent_ok:
             status = "failed"
-    else:
-        swap_tx = dict(calldata)
-        swap_tx["chainId"] = int(from_chain_id)
-        swap_tx["from"] = to_checksum_address(sender)
-        if "value" in swap_tx:
-            swap_tx["value"] = int(swap_tx["value"])
-
-        spender = (
-            best_quote.get("approvalAddress")
-            or best_quote.get("approval_address")
-            or swap_tx.get("to")
-        )
-        approve_amount = (
-            best_quote.get("input_amount")
-            or best_quote.get("inputAmount")
-            or best_quote.get("amount1")
-            or best_quote.get("amount")
-        )
-
-        if (
-            from_token_addr.lower() != ZERO_ADDRESS.lower()
-            and spender
-            and approve_amount is not None
-        ):
-            try:
-                need = int(approve_amount)
-            except Exception:
-                need = int(amount_raw)
-            ok_allow, approval_tx = await _ensure_allowance(
-                sign_callback=sign_callback,
-                chain_id=int(from_chain_id),
-                token_address=from_token_addr,
-                owner=to_checksum_address(sender),
-                spender=to_checksum_address(str(spender)),
-                amount=need,
-            )
-            if approval_tx:
-                response["effects"]["approval"] = approval_tx
-            if not ok_allow:
-                response["status"] = "failed"
-                response["raw"] = _compact_quote(quote_data, None)
-                return ok(response)
-
-        sent_ok, sent = await _broadcast(
-            sign_callback,
-            swap_tx,
+        response["status"] = status
+        response["raw"] = compact_quote
+        _annotate_profile(
+            address=sender,
+            label=wallet_label,
+            protocol="brap",
+            action="swap",
+            tool="onchain_swap",
+            status=status,
             chain_id=int(from_chain_id),
-            wait_for_receipt=wait_for_receipt,
-            confirmations=receipt_confirmations,
+            details={
+                "from_token": from_token,
+                "to_token": to_token,
+                "amount": amount,
+            },
         )
-        response["effects"]["swap"] = sent
+        return ok(response)
 
-        status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
-        if not sent_ok:
-            status = "failed"
+    swap_tx = dict(calldata)
+    swap_tx["chainId"] = int(from_chain_id)
+    swap_tx["from"] = to_checksum_address(sender)
+    if "value" in swap_tx:
+        swap_tx["value"] = int(swap_tx["value"])
 
-        bridge_tracking = best_quote.get("bridge_tracking")
-        if sent_ok and wait_for_receipt and bridge_tracking:
-            try:
-                bridge_result = await BRAP_CLIENT.wait_for_bridge_execution(
-                    bridge_tracking=bridge_tracking,
-                    tx_hash=sent["txn_hash"],
-                )
-                response["effects"]["bridge"] = bridge_result
-                if not bridge_result.get("is_success"):
-                    status = "failed"
-            except Exception as exc:  # noqa: BLE001
-                response["effects"]["bridge"] = {
-                    "state": "pending",
-                    "error": sanitize_for_json(str(exc)),
-                }
-                status = "submitted"
+    spender = (
+        best_quote.get("approvalAddress")
+        or best_quote.get("approval_address")
+        or swap_tx.get("to")
+    )
+    approve_amount = (
+        best_quote.get("input_amount")
+        or best_quote.get("inputAmount")
+        or best_quote.get("amount1")
+        or best_quote.get("amount")
+    )
+
+    if (
+        from_token_addr.lower() != ZERO_ADDRESS.lower()
+        and spender
+        and approve_amount is not None
+    ):
+        try:
+            need = int(approve_amount)
+        except Exception:
+            need = int(amount_raw)
+        ok_allow, approval_tx = await _ensure_allowance(
+            sign_callback=sign_callback,
+            chain_id=int(from_chain_id),
+            token_address=from_token_addr,
+            owner=to_checksum_address(sender),
+            spender=to_checksum_address(str(spender)),
+            amount=need,
+        )
+        if approval_tx:
+            response["effects"]["approval"] = approval_tx
+        if not ok_allow:
+            response["status"] = "failed"
+            response["raw"] = _compact_quote(quote_data, None)
+            return ok(response)
+
+    sent_ok, sent = await _broadcast(
+        sign_callback,
+        swap_tx,
+        chain_id=int(from_chain_id),
+        wait_for_receipt=wait_for_receipt,
+        confirmations=receipt_confirmations,
+    )
+    response["effects"]["swap"] = sent
+
+    status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
+    if not sent_ok:
+        status = "failed"
+
+    bridge_tracking = best_quote.get("bridge_tracking")
+    if sent_ok and wait_for_receipt and bridge_tracking:
+        try:
+            bridge_result = await BRAP_CLIENT.wait_for_bridge_execution(
+                bridge_tracking=bridge_tracking,
+                tx_hash=sent["txn_hash"],
+            )
+            response["effects"]["bridge"] = bridge_result
+            if not bridge_result.get("is_success"):
+                status = "failed"
+        except Exception as exc:  # noqa: BLE001
+            response["effects"]["bridge"] = {
+                "state": "pending",
+                "error": sanitize_for_json(str(exc)),
+            }
+            status = "submitted"
 
     response["status"] = status
-    response["raw"] = _compact_quote(quote_data, best_quote)
+    response["raw"] = compact_quote
 
     _annotate_profile(
         address=sender,
