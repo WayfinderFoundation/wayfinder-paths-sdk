@@ -698,6 +698,88 @@ def signal_scan_cmd(
 
 
 @job_cli.command(
+    name="chart",
+    help="Text chart lens: per-bar OHLCV + requested indicator columns with "
+    "forward trades annotated inline and a regime header. The numeric "
+    "equivalent of dragging indicators onto the chart and zooming into the "
+    "hours around a trade.",
+)
+@click.argument("job_id")
+@click.option("--symbol", default=None, help="Symbol (default: first in dataset).")
+@click.option("--timeframe", default=None, help="Resample: 5m/15m/30m/1h/4h/1d.")
+@click.option("--bars", type=int, default=96, show_default=True)
+@click.option(
+    "--indicators",
+    default=None,
+    help="Comma-separated specs, e.g. ema:9,ema:50,rsi:14,bb:20:2,atr:14,"
+    "macd:12:26:9,don:20,vwap,volpct:14 (default ema:9,ema:50).",
+)
+@click.option(
+    "--around-trade",
+    "around_trade",
+    default=None,
+    help="'last' or a close timestamp — center the window on that forward trade.",
+)
+def chart_cmd(
+    job_id: str,
+    symbol: str | None,
+    timeframe: str | None,
+    bars: int,
+    indicators: str | None,
+    around_trade: str | None,
+) -> None:
+    from wayfinder_paths.jobs.chart import chart_job
+
+    result = chart_job(
+        job_id,
+        symbol=symbol,
+        timeframe=timeframe,
+        bars=bars,
+        indicators=[i.strip() for i in indicators.split(",")] if indicators else None,
+        around_trade=around_trade,
+        store=JobStore(),
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="analogs",
+    help="Historical analog search: z-score a recent close window, find the "
+    "nearest non-overlapping analogs in history, report the forward-outcome "
+    "distribution. EXPLORATORY — hypothesis fuel for the scan pipeline.",
+)
+@click.argument("job_id")
+@click.option("--symbol", default=None)
+@click.option("--timeframe", default=None)
+@click.option("--window", type=int, default=24, show_default=True)
+@click.option("--at", default=None, help="Query window end (default: latest bar).")
+@click.option("--top", type=int, default=15, show_default=True)
+@click.option("--horizon", type=int, default=12, show_default=True)
+def analogs_cmd(
+    job_id: str,
+    symbol: str | None,
+    timeframe: str | None,
+    window: int,
+    at: str | None,
+    top: int,
+    horizon: int,
+) -> None:
+    from wayfinder_paths.jobs.chart import analogs_job
+
+    result = analogs_job(
+        job_id,
+        symbol=symbol,
+        timeframe=timeframe,
+        window=window,
+        at=at,
+        top=top,
+        horizon=horizon,
+        store=JobStore(),
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
     name="holdout-check",
     help="One-shot confirmation of a FROZEN scan candidate (signal + "
     "timeframe + horizon + direction) on the reserved holdout tail. Spend "
