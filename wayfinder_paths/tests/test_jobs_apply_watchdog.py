@@ -467,3 +467,24 @@ def test_ensure_application_watchdog_idempotent(tmp_path: Path, monkeypatch) -> 
     driver = store.runs_jobs_dir / "application_watchdog.py"
     assert driver.exists()
     assert "recover_stalled_applications" in driver.read_text(encoding="utf-8")
+
+
+def test_claim_survives_sync_failure(tmp_path: Path, monkeypatch) -> None:
+    # The post-claim backend sync is telemetry: a backend hiccup there must
+    # not sever the claim->spawn chain (2026-07-23 incident: claim stood,
+    # completer never spawned, job dark until watchdog recovery).
+    calls = _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "sync-fail-demo")
+    _write_proposal(store, job.id, "prop_syncfail", candidate_report={"gate": "ok"})
+
+    def broken_sync(*, store):  # noqa: ANN001
+        raise RuntimeError("backend 502")
+
+    monkeypatch.setattr("wayfinder_paths.jobs.application.sync_all_jobs", broken_sync)
+
+    claimed = claim_application(store, job.id, "prop_syncfail")
+
+    assert claimed["proposal"]["application"]["status"] == "applying"
+    assert ("pause", "sync-fail-demo-script") in calls
+    assert "claim_sync_failed" in _journal_types(store, job.id)

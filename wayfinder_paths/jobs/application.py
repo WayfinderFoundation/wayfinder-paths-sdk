@@ -94,7 +94,17 @@ def claim_application(store: JobStore, job_id: str, proposal_id: str) -> dict[st
     except Exception:
         resume_job_loops(store, job_id)
         raise
-    sync_all_jobs(store=store)
+    # Best-effort: this sync is UI telemetry, but it sits between the claim
+    # (loops now paused) and the caller spawning the completer. A backend
+    # hiccup here severed that chain in production (2026-07-23): the claim
+    # stood, the completer never spawned, and the job sat dark until the
+    # watchdog's 15-minute recovery. Telemetry must never strand a claim.
+    try:
+        sync_all_jobs(store=store)
+    except Exception as exc:  # noqa: BLE001
+        store.append_journal(
+            job_id, {"type": "claim_sync_failed", "error": str(exc)[:300]}
+        )
     return {"proposal": proposal, "paused_runner_jobs": paused, "candidate": candidate}
 
 
