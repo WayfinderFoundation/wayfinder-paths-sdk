@@ -45,6 +45,47 @@ def _canonical_json(data: Any, *, max_chars: int | None = None) -> str:
     return text
 
 
+def _trade_forensics_block(root: Path) -> dict[str, Any]:
+    """Compact exit-quality context: per-trade path metrics the agent cannot
+    read off PnL rows (MAE/MFE during the hold, post-exit excursion, stop
+    survival) plus the backtest-population aggregate that adjudicates them."""
+    block: dict[str, Any] = {}
+    forward_path = root / "results" / "forward" / "trade_forensics.jsonl"
+    if forward_path.exists():
+        rows = []
+        for line in forward_path.read_text(encoding="utf-8").splitlines()[-5:]:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                row.pop("coverage", None)
+                rows.append(row)
+        if rows:
+            block["recent_forward_trades"] = rows
+    backtest_path = root / "results" / "backtest" / "trade_forensics.json"
+    if backtest_path.exists():
+        try:
+            doc = json.loads(backtest_path.read_text(encoding="utf-8"))
+        except ValueError:
+            doc = {}
+        aggregate = doc.get("aggregate")
+        if aggregate:
+            block["backtest_aggregate"] = aggregate
+    if block:
+        block["_basis"] = (
+            "Exit-quality path metrics, bps of entry price, positive = in the "
+            "trade's favor. hold_mae/mfe = worst/best excursion DURING the "
+            "hold; post_exit_favorable = move in the trade's direction AFTER "
+            "the exit (what a later exit would have captured); stop_survives "
+            "= whether that stop width would have held. Forward rows are "
+            "single-trade ANECDOTES — hypothesis fuel only. Adjudicate any "
+            "exit tweak on backtest_aggregate + an experiments grid over the "
+            "exit params with walk-forward before proposing."
+        )
+    return block
+
+
 def _drop_volatile_stable_keys(value: Any) -> Any:
     match value:
         case dict():
@@ -125,6 +166,7 @@ def _build_worker_prompt_sections(
             "candidates": tail_ledger(store, job_id, "candidates", limit=20),
             "decisions": tail_ledger(store, job_id, "decisions", limit=20),
         },
+        "trade_forensics": _trade_forensics_block(root),
     }
 
     stable_prefix = (
@@ -266,6 +308,22 @@ def _build_worker_prompt_sections(
             "only: no workspace/ or job.yaml edits, and no proposals whose "
             "evidence is the sub-floor forward sample. Monitor-mode wakes stay "
             "read-only.\n"
+            "- Exit-quality lane: `trade_forensics` in the dynamic context "
+            "shows each closed trade's PATH — hold MAE/MFE, post-exit "
+            "favorable excursion (what a later exit would have captured), "
+            "stop-survival counterfactuals — plus the backtest-population "
+            "aggregate by exit reason. When forward trades show a pattern "
+            "(e.g. stop-outs where price then runs far in the trade's favor, "
+            "or time-exits leaving large post-exit moves), treat it as a "
+            "HYPOTHESIS about the exit params, then adjudicate on the "
+            "population: run an experiments grid over the pre-registered exit "
+            "params (e.g. hold_scale, stop_pct) with walk-forward, require "
+            "the improvement to hold in OOS folds and across neighbor cells "
+            "(plateau), and only then propose. A handful of forward "
+            "anecdotes NEVER justifies a retune directly — but a "
+            "grid+WF-validated exit change motivated by them is a legitimate "
+            "proposal even below the forward-sample floor, because its "
+            "evidence is the backtest population, not the forward sample.\n"
             "- Ideation cadence: research/agenda.md is the cumulative "
             "research state — sections: Dead map (refuted, one line of "
             "evidence each), Open hypotheses (ranked, each citing its "
