@@ -24,7 +24,10 @@
 
 import type { Plugin } from "@opencode-ai/plugin"
 
-export const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
+// NOT exported: opencode's plugin loader calls every module export as a plugin
+// factory (packages/opencode/src/plugin/index.ts iterates Object.entries(mod)),
+// so a non-function export throws and drops the entire plugin.
+const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
 <template>
 ## Objective
 - [one or two brief sentences describing what the user is trying to accomplish]
