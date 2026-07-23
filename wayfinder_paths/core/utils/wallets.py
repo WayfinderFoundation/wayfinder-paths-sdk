@@ -122,27 +122,30 @@ async def find_wallet_by_label(label: str) -> dict[str, Any] | None:
     return None
 
 
-async def find_wallet_leg_for_chain(label: str, chain_id: int) -> dict[str, Any] | None:
-    """Resolve the ring leg (by label) that transacts on ``chain_id``.
+async def load_wallet_ring(label: str) -> list[dict[str, Any]]:
+    """All legs (EVM + SVM) of the wallet ring sharing ``label``, loaded once."""
+    want = str(label).strip()
+    return [w for w in await load_wallets() if str(w.get("label", "")).strip() == want]
+
+
+def leg_for_chain(ring: list[dict[str, Any]], chain_id: int) -> dict[str, Any] | None:
+    """Pick the ring leg that transacts on ``chain_id`` (SVM vs EVM), or None.
 
     A wallet ring shares one label across its EVM and SVM legs; a cross-chain
-    swap sends from the source-chain leg and receives on the destination-chain
-    leg. Returns ``None`` when no leg for that chain family is loaded (e.g. the
-    SVM leg is absent because Solana is disabled).
+    swap sends from the source-chain leg and lands on the destination-chain leg.
     """
-    want = str(label).strip()
-    if not want:
-        return None
     want_type = (
         CHAIN_TYPE_SOLANA if int(chain_id) in SVM_CHAIN_IDS else CHAIN_TYPE_ETHEREUM
     )
-    for w in await load_wallets():
-        if (
-            str(w.get("label", "")).strip() == want
-            and wallet_chain_type(w) == want_type
-        ):
+    for w in ring:
+        if wallet_chain_type(w) == want_type:
             return w
     return None
+
+
+async def find_wallet_leg_for_chain(label: str, chain_id: int) -> dict[str, Any] | None:
+    """Resolve the ring leg (by label) that transacts on ``chain_id``."""
+    return leg_for_chain(await load_wallet_ring(label), chain_id)
 
 
 # ---------------------------------------------------------------------------

@@ -6,6 +6,7 @@ from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
 from wayfinder_paths.core.utils.wallets import (
     find_wallet_leg_for_chain,
     get_wallet_signing_callback_for_chain,
+    leg_for_chain,
 )
 
 EVM_ADDR = "0x000000000000000000000000000000000000dEaD"
@@ -23,6 +24,13 @@ def _patch_wallets(wallets):
         "wayfinder_paths.core.utils.wallets.load_wallets",
         new=AsyncMock(return_value=wallets),
     )
+
+
+def test_leg_for_chain_picks_by_chain_family():
+    assert leg_for_chain(RING, ARBITRUM)["address"] == EVM_ADDR
+    assert leg_for_chain(RING, CHAIN_ID_SOLANA)["address"] == SVM_ADDR
+    assert leg_for_chain([RING[0]], CHAIN_ID_SOLANA) is None
+    assert leg_for_chain([], ARBITRUM) is None
 
 
 @pytest.mark.asyncio

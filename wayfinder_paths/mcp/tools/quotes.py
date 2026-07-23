@@ -8,8 +8,8 @@ from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
-    find_wallet_by_label,
-    find_wallet_leg_for_chain,
+    leg_for_chain,
+    load_wallet_ring,
     normalize_address,
     ok,
     parse_amount_to_raw,
@@ -94,8 +94,8 @@ async def onchain_quote_swap(
         `{preview, quote: {best_quote, quote_count, providers}, suggested_swap_request, ...}`.
         `preview` flags `⚠ RECIPIENT DIFFERS FROM SENDER` when applicable.
     """
-    w = await find_wallet_by_label(wallet_label)
-    if not w:
+    ring = await load_wallet_ring(wallet_label)
+    if not ring:
         return err("not_found", f"Unknown wallet_label: {wallet_label}")
 
     try:
@@ -133,8 +133,8 @@ async def onchain_quote_swap(
     # destination-chain leg of the same wallet ring (e.g. EVM→Solana pays out to
     # the ring's SVM address). Same-chain swaps resolve both to the one leg;
     # missing a chain-specific leg falls back to the default (EVM) leg.
-    from_leg = await find_wallet_leg_for_chain(wallet_label, from_chain_id) or w
-    to_leg = await find_wallet_leg_for_chain(wallet_label, to_chain_id) or w
+    from_leg = leg_for_chain(ring, from_chain_id) or ring[0]
+    to_leg = leg_for_chain(ring, to_chain_id) or ring[0]
     sender = normalize_address(from_leg.get("address"))
     if not sender:
         return err("invalid_wallet", f"Wallet {wallet_label} missing address")
