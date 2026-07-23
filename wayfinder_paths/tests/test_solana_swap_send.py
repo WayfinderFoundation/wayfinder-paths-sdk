@@ -142,6 +142,10 @@ async def test_swap_solana_route_broadcasts_via_svm_and_skips_allowance():
     assert out["ok"] is True
     assert out["result"]["status"] == "confirmed"
     assert out["result"]["effects"]["swap"]["txn_hash"] == SOL_SIG
+    assert (
+        out["result"]["effects"]["swap"]["explorer_url"]
+        == f"https://solscan.io/tx/{SOL_SIG}"
+    )
     # No approval on Solana, and the EVM broadcast must never fire.
     assert "approval" not in out["result"]["effects"]
     evm_send.assert_not_awaited()

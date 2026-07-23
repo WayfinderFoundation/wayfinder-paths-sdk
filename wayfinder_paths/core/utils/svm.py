@@ -23,6 +23,10 @@ def is_solana_chain(chain_id: int | str) -> bool:
     return int(chain_id) in SVM_CHAIN_IDS
 
 
+def get_solana_explorer_link(signature: str) -> str:
+    return f"https://solscan.io/tx/{signature}"
+
+
 def _get_solana_client(rpc: str, commitment: Commitment | None) -> AsyncClient:
     api_key = get_api_key() if _is_wayfinder_rpc(rpc) else None
     headers = {"X-API-KEY": api_key} if api_key else None

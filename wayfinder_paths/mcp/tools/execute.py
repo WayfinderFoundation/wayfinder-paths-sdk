@@ -9,7 +9,10 @@ from solders.transaction import VersionedTransaction
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
-from wayfinder_paths.core.utils.svm import is_solana_chain
+from wayfinder_paths.core.utils.svm import (
+    get_solana_explorer_link,
+    is_solana_chain,
+)
 from wayfinder_paths.core.utils.svm_tokens import (
     build_solana_send_transaction,
     get_solana_token_balance,
@@ -154,9 +157,16 @@ async def _broadcast_svm(
             "txn_hash": signature,
             "chain_id": chain_id,
             "confirmation_waited": wait_for_confirmation,
+            "explorer_url": get_solana_explorer_link(signature),
         }
     except Exception as e:
         return False, {"error": sanitize_for_json(str(e)), "chain_id": chain_id}
+
+
+def _tx_status(sent_ok: bool, waited: bool) -> str:
+    if not sent_ok:
+        return "failed"
+    return "confirmed" if waited else "submitted"
 
 
 async def _token_balance(token_address: str, chain_id: int, wallet_address: str) -> int:
@@ -351,7 +361,7 @@ async def onchain_swap(
 
     # Solana routes carry a pre-built, unsigned v0 tx envelope instead of EVM
     # calldata — broadcast via SVM and skip checksum/allowance/bridge-tracking.
-    if calldata.get("chainType") == "solana" or is_solana_chain(from_chain_id):
+    if is_solana_chain(from_chain_id):
         serialized = calldata.get("serializedTransaction")
         if not serialized:
             return err(
@@ -366,9 +376,7 @@ async def onchain_swap(
             wait_for_confirmation=wait_for_receipt,
         )
         response["effects"]["swap"] = sent
-        status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
-        if not sent_ok:
-            status = "failed"
+        status = _tx_status(sent_ok, wait_for_receipt)
         response["status"] = status
         response["raw"] = compact_quote
         _annotate_profile(
@@ -438,9 +446,7 @@ async def onchain_swap(
     )
     response["effects"]["swap"] = sent
 
-    status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
-    if not sent_ok:
-        status = "failed"
+    status = _tx_status(sent_ok, wait_for_receipt)
 
     bridge_tracking = best_quote.get("bridge_tracking")
     if sent_ok and wait_for_receipt and bridge_tracking:
@@ -567,6 +573,8 @@ async def onchain_send(
             },
         )
 
+    label = "send_native" if is_native else "send_erc20"
+
     if is_solana_chain(int(resolved_chain_id)):
         # Solana transfer envelope: base58 recipient/mint (never checksummed).
         envelope = await build_solana_send_transaction(
@@ -582,11 +590,8 @@ async def onchain_send(
             chain_id=int(resolved_chain_id),
             wait_for_confirmation=wait_for_receipt,
         )
-        label = "send_native" if is_native else "send_erc20"
         response["effects"][label] = sent
-        status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
-        if not sent_ok:
-            status = "failed"
+        status = _tx_status(sent_ok, wait_for_receipt)
         response["status"] = status
         response["raw"] = {"transaction": envelope, "token": token_meta}
         _annotate_profile(
@@ -616,12 +621,9 @@ async def onchain_send(
         wait_for_receipt=wait_for_receipt,
         confirmations=receipt_confirmations,
     )
-    label = "send_native" if is_native else "send_erc20"
     response["effects"][label] = sent
 
-    status = "confirmed" if sent_ok and wait_for_receipt else "submitted"
-    if not sent_ok:
-        status = "failed"
+    status = _tx_status(sent_ok, wait_for_receipt)
     response["status"] = status
     response["raw"] = {"transaction": transaction, "token": token_meta}
 
