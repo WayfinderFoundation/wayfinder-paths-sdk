@@ -16,10 +16,12 @@ import yaml
 from wayfinder_paths.core.clients.MetricsClient import METRICS_CLIENT
 from wayfinder_paths.core.utils.wallets import (  # noqa: F401
     find_wallet_by_label,
+    find_wallet_leg_for_chain,
     get_local_sign_typed_data_callback,
     get_private_key,
     get_wallet_sign_typed_data_callback,
     get_wallet_signing_callback,
+    get_wallet_signing_callback_for_chain,
     load_wallets,
     resolve_wallet,
 )
