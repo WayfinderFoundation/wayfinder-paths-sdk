@@ -250,6 +250,11 @@ def test_job_backtest_and_validate_write_artifacts(tmp_path: Path) -> None:
     assert (root / "results" / "backtest" / "visualization.json").exists()
     assert validation["status"] == "passed"
     assert (root / "reports" / "validation" / "latest.json").exists()
+    forensics_path = root / "results" / "backtest" / "trade_forensics.json"
+    assert forensics_path.exists()
+    forensics = json.loads(forensics_path.read_text(encoding="utf-8"))
+    assert "aggregate" in forensics and "trades" in forensics
+    assert forensics["aggregate"]["trades"] == len(forensics["trades"])
 
 
 def test_backtest_artifact_summary_and_view_are_bounded(tmp_path: Path) -> None:

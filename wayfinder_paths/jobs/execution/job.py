@@ -199,6 +199,9 @@ def backtest_execution_job(
         params = job_data.get("execution_params") or {}
         result = simulate_execution(script, dataset, spec, params)
         artifacts = write_backtest_artifacts(result, output_dir, extra=stamp)
+        artifacts["trade_forensics"] = _write_trade_forensics(
+            result, dataset, output_dir, stamp=stamp
+        )
         payload = {
             "type": "single",
             "result": result.to_dict(),
@@ -208,6 +211,65 @@ def backtest_execution_job(
     validation = validate_execution_job(job_id, store=store)
     payload["validation"] = validation
     return payload
+
+
+_FORENSICS_MAX_TRADES = 120
+
+
+def _write_trade_forensics(
+    result: Any,
+    dataset: PreparedExecutionDataset,
+    output_dir: Path,
+    *,
+    stamp: Mapping[str, Any],
+) -> str | None:
+    """Per-trade path forensics + population aggregate for the baseline run.
+
+    The aggregate (by exit reason: MAE/MFE, post-exit excursion, stop-survival
+    rates) is the statistically meaningful exit-quality view the intervention
+    agent reasons from; forward per-trade rows are only hypothesis fuel.
+    Best-effort: a forensics failure must not fail the backtest.
+    """
+    try:
+        from wayfinder_paths.jobs.trade_forensics import (
+            aggregate_trade_forensics,
+            forensics_for_closed_trades,
+        )
+
+        trades = list(result.trades or [])
+        # A backtest close row keys prices under avg_price/timestamp; align
+        # copies with the forward trade-close shape the shared helper expects
+        # (copies: result.trades feeds payload["result"] afterwards).
+        closes = [
+            {
+                **row,
+                "price": row.get("avg_price"),
+                "closed_at": row.get("timestamp"),
+                "net_pnl": row.get("realized_pnl_delta"),
+            }
+            for row in trades
+            if row.get("reduce_only")
+        ][-_FORENSICS_MAX_TRADES:]
+        view = dataset.bars
+        bars_by_symbol = {symbol: view.symbol_frame(symbol) for symbol in view.symbols}
+        rows = forensics_for_closed_trades(bars_by_symbol, closes, trades)
+        path = Path(output_dir) / "trade_forensics.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "aggregate": aggregate_trade_forensics(rows),
+                    "trades": rows,
+                    **dict(stamp),
+                },
+                indent=2,
+                default=str,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return str(path)
+    except Exception:  # noqa: BLE001 — telemetry must never fail a backtest
+        return None
 
 
 def _load_job_yaml(root: Path) -> dict[str, Any]:

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from loguru import logger
 
 from wayfinder_paths.jobs.execution.engine import (
     EngineState,
@@ -364,6 +365,10 @@ async def tick_job(
         now=now,
         engine_state_pre=engine_state_pre,
     )
+    try:
+        _record_pending_trade_forensics(root, view)
+    except Exception as exc:  # noqa: BLE001 — telemetry must never fail a tick
+        logger.debug(f"trade forensics skipped: {exc}")
     for note in mode_notes:
         store.append_journal(
             job.id,
@@ -562,3 +567,74 @@ def _record(
 def view_hash(view: CompletedBarsView) -> str:
     encoded = json.dumps(view.to_rows(), sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+FORENSICS_POST_BARS = 16
+_FORENSICS_SCAN_TRADES = 40
+_FORENSICS_SCAN_FILLS = 400
+
+
+def _read_jsonl_tail(path: Path, limit: int) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-limit:]:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _record_pending_trade_forensics(root: Path, view: CompletedBarsView) -> int:
+    """Lazily append path forensics for closed trades once the bars window
+    covers their post-exit horizon.
+
+    Post-exit excursion needs FUTURE bars, so forensics for a trade land
+    ~FORENSICS_POST_BARS bars after its close — computed from the live view
+    already in memory (no extra fetches), keyed by (symbol, exit ts) so each
+    trade is written exactly once.
+    """
+    from wayfinder_paths.jobs.trade_forensics import forensics_for_closed_trades
+
+    trades_path = root / "results" / "forward" / "trades.jsonl"
+    out_path = root / "results" / "forward" / "trade_forensics.jsonl"
+    trades = _read_jsonl_tail(trades_path, _FORENSICS_SCAN_TRADES)
+    if not trades:
+        return 0
+    done = {
+        (str(row.get("symbol")), str(row.get("exit_ts")))
+        for row in _read_jsonl_tail(out_path, _FORENSICS_SCAN_TRADES * 2)
+    }
+    timestamps = view.timestamps
+    if not timestamps:
+        return 0
+
+    pending: list[dict[str, Any]] = []
+    for trade in trades:
+        exit_ts = pd.Timestamp(str(trade.get("closed_at") or trade.get("timestamp")))
+        if exit_ts.tzinfo is None:
+            exit_ts = exit_ts.tz_localize("UTC")
+        if (str(trade.get("symbol")), exit_ts.isoformat()) in done:
+            continue
+        post_available = sum(1 for ts in timestamps if ts > exit_ts)
+        if post_available < FORENSICS_POST_BARS:
+            continue
+        pending.append(trade)
+    if not pending:
+        return 0
+
+    fills = _read_jsonl_tail(
+        root / "results" / "forward" / "fills.jsonl", _FORENSICS_SCAN_FILLS
+    )
+    bars_by_symbol = {symbol: view.symbol_frame(symbol) for symbol in view.symbols}
+    rows = forensics_for_closed_trades(bars_by_symbol, pending, fills)
+    if not rows:
+        return 0
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+    return len(rows)
