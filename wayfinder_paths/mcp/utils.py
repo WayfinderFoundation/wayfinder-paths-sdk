@@ -20,6 +20,8 @@ from wayfinder_paths.core.utils.wallets import (  # noqa: F401
     get_private_key,
     get_wallet_sign_typed_data_callback,
     get_wallet_signing_callback,
+    leg_for_chain,
+    load_wallet_ring,
     load_wallets,
     resolve_wallet,
 )

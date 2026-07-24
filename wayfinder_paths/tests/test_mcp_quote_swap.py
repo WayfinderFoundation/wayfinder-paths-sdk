@@ -65,8 +65,8 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.quotes.find_wallet_by_label",
-            return_value=fake_wallet,
+            "wayfinder_paths.mcp.tools.quotes.load_wallet_ring",
+            return_value=[fake_wallet],
         ),
         patch(
             "wayfinder_paths.mcp.tools.quotes.TokenResolver.resolve_token_meta",
@@ -141,8 +141,8 @@ async def test_quote_swap_can_include_calldata_when_requested():
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.quotes.find_wallet_by_label",
-            return_value=fake_wallet,
+            "wayfinder_paths.mcp.tools.quotes.load_wallet_ring",
+            return_value=[fake_wallet],
         ),
         patch(
             "wayfinder_paths.mcp.tools.quotes.TokenResolver.resolve_token_meta",
@@ -206,8 +206,8 @@ async def test_quote_swap_accepts_top_level_brap_shape():
 
     with (
         patch(
-            "wayfinder_paths.mcp.tools.quotes.find_wallet_by_label",
-            return_value=fake_wallet,
+            "wayfinder_paths.mcp.tools.quotes.load_wallet_ring",
+            return_value=[fake_wallet],
         ),
         patch(
             "wayfinder_paths.mcp.tools.quotes.TokenResolver.resolve_token_meta",
