@@ -131,6 +131,31 @@ async def confirm_svm_signature(
             await asyncio.sleep(1)
 
 
+async def get_svm_transaction_fee_lamports(
+    signature: str,
+    chain_id: int = CHAIN_ID_SOLANA,
+    timeout_s: float = 15,
+) -> int | None:
+    """Return the confirmed transaction fee once RPC metadata is indexed."""
+    sig = Signature.from_string(signature)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    async with solana_client_from_chain_id(chain_id) as client:
+        while True:
+            response = await client.get_transaction(
+                sig,
+                encoding="json",
+                commitment=Confirmed,
+                max_supported_transaction_version=0,
+            )
+            transaction = response.value
+            if transaction is not None and transaction.transaction.meta is not None:
+                return int(transaction.transaction.meta.fee)
+            if loop.time() >= deadline:
+                return None
+            await asyncio.sleep(0.5)
+
+
 # ---------------------------------------------------------------------------
 # Priority fees
 # ---------------------------------------------------------------------------
@@ -271,7 +296,11 @@ async def apply_compute_budget(
 
 
 async def _send_sponsored_svm_transaction(
-    wallet_address: str, transaction: VersionedTransaction, chain_id: int
+    wallet_address: str,
+    transaction: VersionedTransaction,
+    chain_id: int,
+    *,
+    allow_fee_payer_replacement: bool,
 ) -> str:
     """Submit via the backend's sponsored broadcast and return the signature.
 
@@ -285,6 +314,7 @@ async def _send_sponsored_svm_transaction(
         "chainId": int(chain_id),
         "chainType": "solana",
         "serializedTransaction": base64.b64encode(bytes(transaction)).decode(),
+        "allowFeePayerReplacement": allow_fee_payer_replacement,
     }
     try:
         result = await WALLET_CLIENT.send_privy_transaction_sponsored(
@@ -305,21 +335,28 @@ async def send_svm_versioned_transaction(
     chain_id: int = CHAIN_ID_SOLANA,
     wait_for_confirmation: bool = True,
     cu_limit_multiplier: float = 1.2,
-) -> str:
-    """Sign and broadcast a v0 transaction; returns the base58 signature.
+    allow_sponsorship: bool = True,
+    return_details: bool = False,
+) -> str | dict[str, Any]:
+    """Sign and broadcast a v0 transaction.
 
     With sponsorship enabled the backend signs, broadcasts, and covers fees;
     a refused submission falls back to compute-budget surgery + sign callback
-    + local broadcast + (optional) confirmation.
+    + local broadcast + (optional) confirmation. By default this returns the
+    legacy base58 signature string; ``return_details=True`` also returns
+    confirmation and best-effort on-chain fee metadata.
     """
     if sign_callback is None:
         raise ValueError("sign_callback must be provided to send transaction")
 
     signature = None
-    if await sponsorship_enabled():
+    if allow_sponsorship and await sponsorship_enabled():
         try:
             signature = await _send_sponsored_svm_transaction(
-                sign_callback.wallet_address, tx, chain_id
+                sign_callback.wallet_address,
+                tx,
+                chain_id,
+                allow_fee_payer_replacement=True,
             )
         except SponsorshipUnavailableError as exc:
             logger.warning(
@@ -334,12 +371,37 @@ async def send_svm_versioned_transaction(
             base64.b64encode(signed_bytes).decode(), chain_id=chain_id
         )
     logger.info(f"Solana transaction broadcasted: {signature}")
+    confirmation_status: dict[str, Any] | None = None
     if wait_for_confirmation:
-        status = await confirm_svm_signature(signature, chain_id=chain_id)
-        if not status["confirmed"]:
+        confirmation_status = await confirm_svm_signature(signature, chain_id=chain_id)
+        if not confirmation_status["confirmed"]:
             raise TransactionRevertedError(
                 signature,
-                status,
-                message=f"Solana transaction failed: {signature} err={status['err']}",
+                confirmation_status,
+                message=(
+                    f"Solana transaction failed: {signature} "
+                    f"err={confirmation_status['err']}"
+                ),
             )
+    if return_details:
+        fee_lamports = None
+        if wait_for_confirmation:
+            try:
+                fee_lamports = await get_svm_transaction_fee_lamports(
+                    signature, chain_id=chain_id
+                )
+            except Exception as exc:
+                # Fee metadata can lag confirmation or be unavailable on a
+                # particular RPC. A successfully confirmed transaction must
+                # never be downgraded because this optional enrichment failed.
+                logger.warning(
+                    "Could not read Solana transaction fee for {}: {}",
+                    signature,
+                    exc,
+                )
+        return {
+            "signature": signature,
+            "fee_lamports": fee_lamports,
+            "confirmation": confirmation_status,
+        }
     return signature

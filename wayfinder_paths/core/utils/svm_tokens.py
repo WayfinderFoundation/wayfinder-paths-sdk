@@ -184,11 +184,19 @@ async def build_solana_send_transaction(
 
     from_pubkey = Pubkey.from_string(from_address)
     to_pubkey = Pubkey.from_string(to_address)
+    native_transfer = is_native_token(token_address)
+    transfer_metadata: dict[str, str | bool] = {
+        # Privy's Solana sponsorship rewrites account-key index 0 (the fee
+        # payer). Native SOL transfers also use that account as their source,
+        # so replacing it would make the sponsor pay the principal. SPL
+        # transfers debit an ATA instead and remain safe to sponsor.
+        "allowFeePayerReplacement": not native_transfer,
+    }
 
     async with solana_client_from_chain_id(chain_id) as client:
         instructions: list[Instruction] = []
 
-        if is_native_token(token_address):
+        if native_transfer:
             instructions.append(
                 transfer(
                     TransferParams(
@@ -206,6 +214,7 @@ async def build_solana_send_transaction(
             dest_ata = get_associated_token_address(to_pubkey, mint, program_id)
 
             dest_info = (await client.get_account_info(dest_ata)).value
+            recipient_ata_created = dest_info is None
             if dest_info is None:
                 # Recipient has no associated token account yet — the sender
                 # pays rent to create it as part of the same transaction.
@@ -219,6 +228,14 @@ async def build_solana_send_transaction(
                 )
 
             decimals = await _get_mint_decimals(client, mint)
+            transfer_metadata.update(
+                {
+                    "tokenProgram": str(program_id),
+                    "sourceTokenAccount": str(source_ata),
+                    "destinationTokenAccount": str(dest_ata),
+                    "recipientTokenAccountCreated": recipient_ata_created,
+                }
+            )
             instructions.append(
                 transfer_checked(
                     TransferCheckedParams(
@@ -249,4 +266,5 @@ async def build_solana_send_transaction(
         "chainId": int(chain_id),
         "serializedTransaction": _serialize_unsigned(message),
         "lastValidBlockHeight": last_valid_block_height,
+        **transfer_metadata,
     }
