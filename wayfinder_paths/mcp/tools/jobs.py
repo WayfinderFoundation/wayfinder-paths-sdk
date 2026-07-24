@@ -580,7 +580,18 @@ async def core_jobs(
                 }
             )
         if action == "reject_proposal":
-            proposal = store.reject_proposal(job_id, proposal_id)
+            # Attribution default: worker self-rejections are REQUIRED to
+            # carry a reason memo (superseded/stale housekeeping); the owner
+            # UI passes none today. A reasoned rejection without explicit
+            # attribution is therefore the agent's own housekeeping, a bare
+            # one is an owner veto — which binds the worker (no equivalent
+            # re-proposal without named new evidence).
+            proposal = store.reject_proposal(
+                job_id,
+                proposal_id,
+                reason=reason,
+                rejected_by="agent" if reason else "owner",
+            )
             sync_all_jobs(store=store)
             return ok(proposal)
         if action == "claim_application":

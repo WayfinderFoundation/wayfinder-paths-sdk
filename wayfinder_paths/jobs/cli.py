@@ -1229,9 +1229,22 @@ def propose_cmd(
 @job_cli.command(name="reject", help="Reject a pending proposal.")
 @click.argument("job_id")
 @click.argument("proposal_id")
-def reject_cmd(job_id: str, proposal_id: str) -> None:
+@click.option("--reason", default=None, help="Why (recorded on the proposal).")
+@click.option(
+    "--by",
+    "rejected_by",
+    type=click.Choice(["owner", "agent"]),
+    default="owner",
+    show_default=True,
+    help="Who is rejecting: owner vetoes bind the worker; agent = housekeeping.",
+)
+def reject_cmd(
+    job_id: str, proposal_id: str, reason: str | None, rejected_by: str
+) -> None:
     store = JobStore()
-    proposal = store.reject_proposal(job_id, proposal_id)
+    proposal = store.reject_proposal(
+        job_id, proposal_id, reason=reason, rejected_by=rejected_by
+    )
     sync_all_jobs(store=store)
     _echo_json({"ok": True, "result": proposal})
 

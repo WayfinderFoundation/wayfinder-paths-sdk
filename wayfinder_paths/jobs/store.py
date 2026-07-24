@@ -465,7 +465,14 @@ class JobStore:
         self.refresh_scorecard(job_id)
         return proposal
 
-    def reject_proposal(self, job_id: str, proposal_id: str) -> dict[str, Any]:
+    def reject_proposal(
+        self,
+        job_id: str,
+        proposal_id: str,
+        *,
+        reason: str | None = None,
+        rejected_by: str | None = None,
+    ) -> dict[str, Any]:
         proposal = self.load_proposal(job_id, proposal_id)
         application_status = proposal["application"]["status"]
         if application_status in {"applying", "applied"}:
@@ -475,6 +482,16 @@ class JobStore:
             )
         proposal["status"] = "rejected"
         proposal["approval"]["status"] = "rejected"
+        # Provenance is the difference between "the owner said no" (binding —
+        # the worker must not re-propose an equivalent change without named
+        # new evidence) and the worker's own superseded-draft housekeeping
+        # (retry expected). Without it both rejections looked identical and
+        # the worker re-proposed owner-vetoed changes.
+        proposal["rejection"] = {
+            "reason": reason,
+            "by": rejected_by or "owner",
+            "ts": utc_now_iso(),
+        }
         if application_status == "queued":
             self._set_application_status(proposal, "canceled")
         proposal["updated_at"] = utc_now_iso()
@@ -485,6 +502,8 @@ class JobStore:
                 "type": "proposal_rejected",
                 "proposal_id": proposal_id,
                 "application_status": proposal["application"]["status"],
+                "rejected_by": proposal["rejection"]["by"],
+                "reason": reason,
             },
         )
         self.refresh_scorecard(job_id)
