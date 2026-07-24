@@ -1193,3 +1193,36 @@ def test_worker_prompt_intervene_ladder_and_retry_budget(tmp_path: Path) -> None
         apply_proposal_id="prop_x",
     )["prompt"]
     assert "Wake priority ladder" not in apply_prompt
+
+
+def test_reject_proposal_records_provenance(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("reject-demo", agent_mode="intervene")
+    store.save(job)
+    for pid in ("prop_owner", "prop_agent"):
+        store.write_proposal(
+            job.id,
+            {
+                "proposal_id": pid,
+                "job_id": job.id,
+                "status": "pending",
+                "proposed_change": {"summary": "x"},
+                "approval": {"required": True, "status": "pending"},
+            },
+        )
+
+    owner = store.reject_proposal(job.id, "prop_owner")
+    assert owner["rejection"]["by"] == "owner"
+    assert owner["rejection"]["reason"] is None
+
+    agent = store.reject_proposal(
+        job.id, "prop_agent", reason="superseded by v2", rejected_by="agent"
+    )
+    assert agent["rejection"] == {
+        "reason": "superseded by v2",
+        "by": "agent",
+        "ts": agent["rejection"]["ts"],
+    }
+    journal = (store.job_dir(job.id) / "journal.jsonl").read_text()
+    assert '"rejected_by": "owner"' in journal
+    assert '"rejected_by": "agent"' in journal
