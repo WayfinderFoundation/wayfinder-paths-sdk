@@ -18,6 +18,7 @@ from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.mcp.tools.execute import onchain_send, onchain_swap
 
 SENDER = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"
+EVM_DESTINATION = "0x000000000000000000000000000000000000dEaD"
 # Mixed-case base58 (case-sensitive) — lets us assert it is never checksummed/lowered.
 RECIPIENT = "8uqKmV5bMcoGw2AxoEMkseHF78ZDrAWpACvfUhxwmqqT"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
@@ -168,6 +169,103 @@ async def test_swap_solana_route_broadcasts_via_svm_and_skips_allowance():
     assert isinstance(vt_arg, VersionedTransaction)
     assert svm_send.await_args.kwargs["chain_id"] == CHAIN_ID_SOLANA
     assert svm_send.await_args.kwargs["wait_for_confirmation"] is True
+
+
+@pytest.mark.asyncio
+async def test_swap_solana_to_evm_uses_ring_destination_and_waits_for_bridge():
+    from_meta = {
+        "symbol": "USDC",
+        "decimals": 6,
+        "chain_id": CHAIN_ID_SOLANA,
+        "address": USDC_MINT,
+    }
+    to_meta = {
+        "symbol": "USDC",
+        "decimals": 6,
+        "chain_id": 8453,
+        "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    }
+    serialized = _unsigned_v0_b64(SENDER, RECIPIENT)
+    bridge_tracking = {
+        "provider": "lifi",
+        "from_chain": CHAIN_ID_SOLANA,
+        "to_chain": 8453,
+        "requires_source_tx_hash": True,
+    }
+
+    async def fake_resolve(query: str, *, chain_id: int | None = None):
+        _ = chain_id
+        return from_meta if query == "from" else to_meta
+
+    fake_brap = AsyncMock()
+    fake_brap.get_quote = AsyncMock(
+        return_value={
+            "quotes": [{"provider": "lifi"}],
+            "best_quote": {
+                "provider": "lifi",
+                "input_amount": "1000000",
+                "bridge_tracking": bridge_tracking,
+                "calldata": {
+                    "chainType": "solana",
+                    "chainId": CHAIN_ID_SOLANA,
+                    "serializedTransaction": serialized,
+                },
+            },
+        }
+    )
+    fake_brap.wait_for_bridge_execution = AsyncMock(
+        return_value={"is_success": True, "state": "completed"}
+    )
+
+    with (
+        patch(
+            "wayfinder_paths.mcp.tools.execute.get_wallet_signing_callback_for_chain",
+            new=AsyncMock(return_value=(_svm_callback(), SENDER)),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.find_wallet_leg_for_chain",
+            new=AsyncMock(
+                return_value={
+                    "address": EVM_DESTINATION,
+                    "label": "main",
+                    "type": "remote",
+                    "chain_type": "ethereum",
+                }
+            ),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.TokenResolver.resolve_token_meta",
+            new_callable=AsyncMock,
+            side_effect=fake_resolve,
+        ),
+        patch("wayfinder_paths.mcp.tools.execute.BRAP_CLIENT", fake_brap),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.get_solana_token_balance",
+            new=AsyncMock(return_value=10**9),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
+            new_callable=AsyncMock,
+            return_value=SOL_SIG,
+        ),
+    ):
+        out = await onchain_swap(
+            wallet_label="main",
+            from_token="from",
+            to_token="to",
+            amount="1.0",
+        )
+
+    assert out["ok"] is True
+    assert out["result"]["recipient"] == EVM_DESTINATION
+    assert out["result"]["status"] == "confirmed"
+    assert out["result"]["effects"]["bridge"]["state"] == "completed"
+    assert fake_brap.get_quote.await_args.kwargs["from_wallet"] == SENDER
+    assert fake_brap.get_quote.await_args.kwargs["to_wallet"] == EVM_DESTINATION
+    fake_brap.wait_for_bridge_execution.assert_awaited_once_with(
+        bridge_tracking=bridge_tracking,
+        tx_hash=SOL_SIG,
+    )
 
 
 @pytest.mark.asyncio

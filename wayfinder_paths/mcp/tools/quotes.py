@@ -86,7 +86,8 @@ async def onchain_quote_swap(
             not wei. Must include a decimal point; integer-looking strings like
             "1000" are rejected.
         slippage_bps: Slippage cap in basis points (50 = 0.50%).
-        recipient: Destination address (defaults to sender).
+        recipient: Optional destination override. Defaults to the destination-chain
+            leg of the same wallet ring.
         include_calldata: Include the raw tx calldata in the response (off by default to keep
             payload small; only the `len` is reported when false).
 
@@ -149,6 +150,7 @@ async def onchain_quote_swap(
             from_chain=from_chain_id,
             to_chain=to_chain_id,
             from_wallet=sender,
+            to_wallet=rcpt,
             from_amount=str(amount_raw),
             slippage=slip,
         )

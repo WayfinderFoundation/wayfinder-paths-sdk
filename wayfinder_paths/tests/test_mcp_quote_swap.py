@@ -6,6 +6,9 @@ import pytest
 
 from wayfinder_paths.mcp.tools.quotes import onchain_quote_swap
 
+EVM_ADDRESS = "0x000000000000000000000000000000000000dEaD"
+SVM_ADDRESS = "BTXGZD6APaEPLUnELUT3Q1HWUYaWatu42WXT3YCU1vxY"
+
 
 @pytest.mark.asyncio
 async def test_quote_swap_returns_compact_best_quote_by_default():
@@ -226,3 +229,75 @@ async def test_quote_swap_accepts_top_level_brap_shape():
     assert out["ok"] is True
     assert out["result"]["quote"]["quote_count"] == 2
     assert out["result"]["quote"]["providers"] == ["brap_best", "brap_alt"]
+
+
+@pytest.mark.asyncio
+async def test_quote_swap_passes_destination_ring_leg_to_brap():
+    ring = [
+        {
+            "address": EVM_ADDRESS,
+            "label": "main",
+            "type": "remote",
+            "chain_type": "ethereum",
+        },
+        {
+            "address": SVM_ADDRESS,
+            "label": "main",
+            "type": "remote",
+            "chain_type": "solana",
+        },
+    ]
+    from_meta = {
+        "token_id": "usd-coin-base",
+        "symbol": "USDC",
+        "decimals": 6,
+        "chain_id": 8453,
+        "address": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    }
+    to_meta = {
+        "token_id": "solana_EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        "symbol": "USDC",
+        "decimals": 6,
+        "chain_id": 900,
+        "address": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    }
+
+    async def fake_resolve(query: str, *, chain_id: int | None = None):
+        _ = chain_id
+        return from_meta if query == "from" else to_meta
+
+    fake_brap = AsyncMock()
+    fake_brap.get_quote = AsyncMock(
+        return_value={
+            "quotes": [{"provider": "lifi"}],
+            "best_quote": {
+                "provider": "lifi",
+                "output_amount": "990000",
+                "calldata": {"data": "0xabc"},
+            },
+        }
+    )
+
+    with (
+        patch(
+            "wayfinder_paths.mcp.tools.quotes.load_wallet_ring",
+            new=AsyncMock(return_value=ring),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.quotes.TokenResolver.resolve_token_meta",
+            new_callable=AsyncMock,
+            side_effect=fake_resolve,
+        ),
+        patch("wayfinder_paths.mcp.tools.quotes.BRAP_CLIENT", fake_brap),
+    ):
+        out = await onchain_quote_swap(
+            wallet_label="main",
+            from_token="from",
+            to_token="to",
+            amount="1.0",
+        )
+
+    assert out["ok"] is True
+    assert out["result"]["suggested_swap_request"]["recipient"] == SVM_ADDRESS
+    assert fake_brap.get_quote.await_args.kwargs["from_wallet"] == EVM_ADDRESS
+    assert fake_brap.get_quote.await_args.kwargs["to_wallet"] == SVM_ADDRESS

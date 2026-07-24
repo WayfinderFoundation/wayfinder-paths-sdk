@@ -259,7 +259,8 @@ async def onchain_swap(
             Must include a decimal point; integer-looking strings like "1000"
             are rejected.
         slippage_bps: Slippage cap in basis points (50 = 0.5%, default).
-        recipient: Destination address (defaults to sender).
+        recipient: Optional destination override. Defaults to the destination-chain
+            leg of the same wallet ring.
         wait_for_receipt: Synchronous receipt wait. Default true.
         receipt_confirmations: Confirmations to wait for when `wait_for_receipt=true`.
 
@@ -346,6 +347,7 @@ async def onchain_swap(
             from_chain=from_chain_id,
             to_chain=to_chain_id,
             from_wallet=sender,
+            to_wallet=rcpt,
             from_amount=str(amount_raw),
             slippage=slippage,
         )
@@ -374,8 +376,9 @@ async def onchain_swap(
 
     compact_quote = _compact_quote(quote_data, best_quote)
 
-    # Solana routes carry a pre-built, unsigned v0 tx envelope instead of EVM
-    # calldata — broadcast via SVM and skip checksum/allowance/bridge-tracking.
+    # Solana-source routes carry a pre-built, unsigned v0 tx envelope instead of
+    # EVM calldata — broadcast via SVM and skip checksum/allowance. Cross-chain
+    # routes still wait for the destination bridge leg just like the EVM path.
     if is_solana_chain(from_chain_id):
         serialized = calldata.get("serializedTransaction")
         if not serialized:
@@ -392,6 +395,24 @@ async def onchain_swap(
         )
         response["effects"]["swap"] = sent
         status = _tx_status(sent_ok, wait_for_receipt)
+
+        bridge_tracking = best_quote.get("bridge_tracking")
+        if sent_ok and wait_for_receipt and bridge_tracking:
+            try:
+                bridge_result = await BRAP_CLIENT.wait_for_bridge_execution(
+                    bridge_tracking=bridge_tracking,
+                    tx_hash=sent["txn_hash"],
+                )
+                response["effects"]["bridge"] = bridge_result
+                if not bridge_result.get("is_success"):
+                    status = "failed"
+            except Exception as exc:  # noqa: BLE001
+                response["effects"]["bridge"] = {
+                    "state": "pending",
+                    "error": sanitize_for_json(str(exc)),
+                }
+                status = "submitted"
+
         response["status"] = status
         response["raw"] = compact_quote
         _annotate_profile(
