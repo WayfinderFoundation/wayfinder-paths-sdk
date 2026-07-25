@@ -676,6 +676,12 @@ def signal_check_cmd(
     help="Skip the job's workspace/src/signals.py defs and sweep the "
     "canonical library only.",
 )
+@click.option(
+    "--campaign",
+    default=None,
+    help="Declared campaign name: scan ONLY workspace defs as their own BH "
+    "family (canonical library untaxed). Recorded in the trial ledger.",
+)
 def signal_scan_cmd(
     job_id: str,
     symbols: str | None,
@@ -683,10 +689,12 @@ def signal_scan_cmd(
     timeframes: str | None,
     holdout_fraction: float,
     no_workspace_signals: bool,
+    campaign: str | None,
 ) -> None:
     store = JobStore()
     result = signal_scan_job(
         job_id,
+        campaign=campaign,
         symbols=[s.strip() for s in symbols.split(",")] if symbols else None,
         horizons=[int(h) for h in horizons.split(",")] if horizons else None,
         timeframes=[t.strip() for t in timeframes.split(",")] if timeframes else None,
@@ -774,6 +782,31 @@ def analogs_cmd(
         at=at,
         top=top,
         horizon=horizon,
+        store=JobStore(),
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="derive-features",
+    help="Append cross-symbol/exogenous/venue derived feature rows to the "
+    "feature store (research-side; coarse cadence; execution contract "
+    "untouched). Sets: cross, exog, venue.",
+)
+@click.argument("job_id")
+@click.option("--sets", default="cross,exog", show_default=True)
+@click.option("--exog-symbols", default="BTC", show_default=True)
+@click.option("--every-bars", type=int, default=12, show_default=True)
+def derive_features_cmd(
+    job_id: str, sets: str, exog_symbols: str, every_bars: int
+) -> None:
+    from wayfinder_paths.jobs.derived_features import derive_features_job
+
+    result = derive_features_job(
+        job_id,
+        sets=tuple(s.strip() for s in sets.split(",") if s.strip()),
+        exog_symbols=tuple(s.strip() for s in exog_symbols.split(",") if s.strip()),
+        every_bars=every_bars,
         store=JobStore(),
     )
     _echo_json({"ok": True, "result": result})
