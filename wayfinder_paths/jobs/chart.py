@@ -151,6 +151,17 @@ def chart_job(
         exit_ts = pd.Timestamp(str(trade.get("closed_at")))
         if exit_ts.tzinfo is None:
             exit_ts = exit_ts.tz_localize("UTC")
+        last_stamp = stamps.iloc[-1]
+        if exit_ts > last_stamp:
+            # The dataset is refreshed by fetch_dataset/backtests, not by live
+            # ticks — a trade newer than the last dataset bar would silently
+            # chart the wrong window. Fail loud with the fix instead.
+            raise ValueError(
+                f"trade closed {exit_ts.isoformat()} is BEYOND the dataset "
+                f"end ({last_stamp.isoformat()}) — refresh first with "
+                'core_jobs(action="fetch_dataset", job_id=...) or '
+                "`wayfinder job fetch-dataset`, then re-chart"
+            )
         center = int((stamps <= exit_ts).sum()) - 1
         lo = max(0, center - bars // 2)
         window = frame.iloc[lo : lo + bars]
@@ -202,6 +213,10 @@ def chart_job(
         "regime_at_end": regime_snapshot(frame, last_ts),
         "window_note": window_note,
         "marks": sum(len(v) for v in marks.values()),
+        # Data recency, always visible: the dataset is refreshed by
+        # fetch_dataset/backtests, not live ticks — stale data silently
+        # invalidates chart-based reasoning about recent trades.
+        "dataset_end": (stamps.iloc[-1].isoformat() if len(stamps) else None),
     }
     return {
         "header": header,

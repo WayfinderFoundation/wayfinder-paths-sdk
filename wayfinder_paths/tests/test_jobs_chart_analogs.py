@@ -214,3 +214,29 @@ def test_forensics_rows_carry_regime_tags() -> None:
     regime = rows[0]["regime_at_entry"]
     assert regime.get("trend") in {"up", "down"}
     assert regime.get("session") in {"asia", "europe", "us", "late"}
+
+
+def test_chart_around_trade_beyond_dataset_end_fails_loud(tmp_path: Path) -> None:
+    frame = _wavy_frame(280)
+    store, job_id = _make_chart_job(tmp_path, frame)
+    forward = store.job_dir(job_id) / "results" / "forward"
+    forward.mkdir(parents=True, exist_ok=True)
+    beyond = (
+        pd.Timestamp(frame["timestamp"].iloc[-1]) + pd.Timedelta(hours=6)
+    ).isoformat()
+    (forward / "trades.jsonl").write_text(
+        json.dumps({"symbol": "LIT", "side": "buy", "price": 99.0, "closed_at": beyond})
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="BEYOND the dataset end"):
+        chart_job(job_id, around_trade="last", store=store)
+
+
+def test_chart_header_reports_dataset_end(tmp_path: Path) -> None:
+    frame = _wavy_frame(120)
+    store, job_id = _make_chart_job(tmp_path, frame)
+    result = chart_job(job_id, bars=20, store=store)
+    assert pd.Timestamp(result["header"]["dataset_end"]) == pd.Timestamp(
+        frame["timestamp"].iloc[-1]
+    )
