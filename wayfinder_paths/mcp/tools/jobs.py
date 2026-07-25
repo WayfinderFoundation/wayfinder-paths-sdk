@@ -170,6 +170,7 @@ async def core_jobs(
     signal: str | None = None,
     horizon: int | None = None,
     symbol: str | None = None,
+    campaign: str | None = None,
     timeframe: str | None = None,
     bars: int = 96,
     indicators: list[str] | None = None,
@@ -404,6 +405,7 @@ async def core_jobs(
                 "horizons": horizons,
                 "timeframes": timeframes,
                 "holdout_fraction": holdout_fraction,
+                "campaign": campaign,
             },
         )
 

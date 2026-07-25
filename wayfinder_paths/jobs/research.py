@@ -844,6 +844,7 @@ def scan_signals(
     fee_bps: float = 5.0,
     slippage_bps: float = 3.5,
     extra_signals: Sequence[SignalDef] = (),
+    include_canonical: bool = True,
 ) -> dict[str, Any]:
     """Event-study EVERY canonical library trigger against one symbol's bars
     — across timeframes, in a single pass — the breadth tool that replaces
@@ -900,7 +901,9 @@ def scan_signals(
         frames_by_tf[tf_name] = bars
         close = bars["close"].astype(float).to_numpy()
         n = len(close)
-        signals = build_signal_frame(bars, extra_signals)
+        signals = build_signal_frame(
+            bars, extra_signals, include_canonical=include_canonical
+        )
         tf_horizons = sorted(
             {int(h) for h in horizons}
             if horizons
@@ -1627,6 +1630,7 @@ def signal_scan_job(
     timeframes: list[str] | None = None,
     holdout_fraction: float = 0.15,
     include_workspace: bool = True,
+    campaign: str | None = None,
     store: Any | None = None,
 ) -> dict[str, Any]:
     """Scan the ENTIRE canonical trigger library against the job's dataset —
@@ -1680,6 +1684,19 @@ def signal_scan_job(
                 frame[frame["symbol"] == symbol].reset_index(drop=True),
             )
     extra_signals = workspace.defs if workspace is not None else ()
+    # A campaign is its own declared BH family: workspace defs only, pooled
+    # only with each other — the canonical library neither taxes nor is taxed
+    # by the campaign. Provenance (name + defs sha) lands in the ledger so a
+    # renamed re-run is visible snooping, exactly like workspace sha tracking.
+    if campaign is not None:
+        if not extra_signals:
+            raise ValueError(
+                "a campaign scan needs workspace signals — declare the "
+                "campaign's defs in workspace/src/signals.py first"
+            )
+        if not str(campaign).strip():
+            raise ValueError("campaign name must be non-empty")
+    include_canonical = campaign is None
     per_symbol = {
         symbol: scan_signals(
             frame[frame["symbol"] == symbol].reset_index(drop=True),
@@ -1690,6 +1707,7 @@ def signal_scan_job(
             fee_bps=fee_bps,
             slippage_bps=slippage_bps,
             extra_signals=extra_signals,
+            include_canonical=include_canonical,
         )
         for symbol in targets
     }
@@ -1722,6 +1740,7 @@ def signal_scan_job(
             },
             "workspace_signals": [spec.name for spec in extra_signals],
             "workspace_signals_sha": workspace.sha if workspace else None,
+            "campaign": campaign,
         }
     ]
     # EVERY executed test is a recorded trial — not just the survivors.
@@ -1744,12 +1763,14 @@ def signal_scan_job(
                     "folds_agreeing": row.get("folds_agreeing"),
                     "verdict": row.get("verdict"),
                     "library": row.get("library"),
+                    "campaign": campaign,
                 }
             )
     _append_scan_ledger(root, ledger_rows)
     cumulative_tests = prior_tests + sum(s["tests_run"] for s in per_symbol.values())
     result: dict[str, Any] = {
         "per_symbol": per_symbol,
+        "campaign": campaign,
         "workspace_signals": [spec.name for spec in extra_signals],
         "holdout": {
             "fraction": holdout_fraction,
