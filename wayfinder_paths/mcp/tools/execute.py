@@ -280,6 +280,7 @@ async def onchain_swap(
     amount: str,
     slippage_bps: int = 50,
     recipient: str | None = None,
+    minimum_output_amount_raw: int | None = None,
     wait_for_receipt: bool = True,
     receipt_confirmations: int = 0,
 ) -> dict[str, Any]:
@@ -301,6 +302,9 @@ async def onchain_swap(
         slippage_bps: Slippage cap in basis points (50 = 0.5%, default).
         recipient: Optional destination override. Defaults to the destination-chain
             leg of the same wallet ring.
+        minimum_output_amount_raw: Optional raw-unit output floor from
+            `onchain_quote_swap.suggested_swap_request`. Execution aborts before
+            signing if the refreshed quote falls below it.
         wait_for_receipt: Synchronous receipt wait. Default true.
         receipt_confirmations: Confirmations to wait for when `wait_for_receipt=true`.
 
@@ -311,6 +315,8 @@ async def onchain_swap(
         return err("invalid_request", "wallet_label is required")
     if slippage_bps < 0:
         return err("invalid_request", "slippage_bps must be >= 0")
+    if minimum_output_amount_raw is not None and minimum_output_amount_raw < 0:
+        return err("invalid_request", "minimum_output_amount_raw must be >= 0")
 
     try:
         from_meta = await TokenResolver.resolve_token_meta(from_token)
@@ -412,6 +418,27 @@ async def onchain_swap(
 
     if not isinstance(best_quote, dict):
         return err("quote_error", "No best_quote returned", {"quote": quote_data})
+
+    if minimum_output_amount_raw is not None:
+        try:
+            refreshed_output_raw = int(best_quote.get("output_amount"))
+        except (TypeError, ValueError):
+            return err(
+                "quote_error",
+                "best_quote missing a numeric output_amount required by "
+                "minimum_output_amount_raw",
+            )
+        if refreshed_output_raw < int(minimum_output_amount_raw):
+            return err(
+                "quote_deteriorated",
+                "Refreshed quote output is below the quoted minimum; "
+                "request a new preview before executing.",
+                {
+                    "minimum_output_amount_raw": int(minimum_output_amount_raw),
+                    "refreshed_output_amount_raw": refreshed_output_raw,
+                    "provider": best_quote.get("provider"),
+                },
+            )
 
     calldata = best_quote.get("calldata") or {}
     if not isinstance(calldata, dict) or not calldata:

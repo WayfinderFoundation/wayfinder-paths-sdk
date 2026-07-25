@@ -145,6 +145,7 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
             "best_quote": {
                 "provider": "brap_best",
                 "input_amount": "1000000",
+                "output_amount": "900000",
                 "calldata": {
                     "to": "0x" + "33" * 20,
                     "data": "0xdeadbeef",
@@ -213,6 +214,25 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
         assert send_transaction_mock.await_args.kwargs["wait_for_receipt"] is False
         assert send_transaction_mock.await_args.kwargs["confirmations"] == 0
         fake_brap.wait_for_bridge_execution.assert_not_awaited()
+
+        send_transaction_mock.reset_mock()
+
+        out3 = await onchain_swap(
+            wallet_label="main",
+            from_token="from",
+            to_token="to",
+            amount="1.0",
+            slippage_bps=50,
+            minimum_output_amount_raw=950_000,
+        )
+        assert out3["ok"] is False
+        assert out3["error"]["code"] == "quote_deteriorated"
+        assert out3["error"]["details"] == {
+            "minimum_output_amount_raw": 950_000,
+            "refreshed_output_amount_raw": 900_000,
+            "provider": "brap_best",
+        }
+        send_transaction_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

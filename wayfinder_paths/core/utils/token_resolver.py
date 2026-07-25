@@ -6,7 +6,12 @@ from typing import Any, cast
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.base import NATIVE_COINGECKO_IDS, NATIVE_GAS_SYMBOLS
-from wayfinder_paths.core.constants.chains import CHAIN_CODE_TO_ID, CHAIN_ID_TO_CODE
+from wayfinder_paths.core.constants.chains import (
+    CHAIN_CODE_TO_ID,
+    CHAIN_ID_SOLANA,
+    CHAIN_ID_TO_CODE,
+)
+from wayfinder_paths.core.utils.svm_tokens import get_spl_mint_decimals
 from wayfinder_paths.core.utils.token_refs import (
     looks_like_evm_address,
     looks_like_solana_address,
@@ -123,6 +128,12 @@ def _normalize_token_address(token_address: str | None) -> str | None:
     if not addr:
         return None
     return ZERO_ADDRESS if is_native_token(addr) else addr
+
+
+async def _get_address_decimals(address: str, chain_id: int) -> int:
+    if int(chain_id) == CHAIN_ID_SOLANA:
+        return await get_spl_mint_decimals(address, int(chain_id))
+    return await get_token_decimals(address, int(chain_id))
 
 
 def _select_chain_and_address(
@@ -267,7 +278,7 @@ class TokenResolver:
             addr = _normalize_token_address(parsed_address)
             if not addr:
                 raise ValueError(f"Cannot resolve token: {query}")
-            decimals = await get_token_decimals(addr, int(parsed_chain_id))
+            decimals = await _get_address_decimals(addr, int(parsed_chain_id))
             return {
                 "token_id": q_raw,
                 "symbol": q_raw,
@@ -289,6 +300,22 @@ class TokenResolver:
                 "decimals": int(decimals),
                 "chain_id": int(chain_id_i),
                 "address": addr,
+                "metadata": {"source": "address"},
+            }
+
+        if looks_like_solana_address(q_raw):
+            chain_id_i = cls._validate_chain_id_hint(chain_id, query=q_raw)
+            if chain_id_i != CHAIN_ID_SOLANA:
+                raise ValueError(
+                    f"Solana mint requires chain_id {CHAIN_ID_SOLANA}: {query}"
+                )
+            decimals = await _get_address_decimals(q_raw, chain_id_i)
+            return {
+                "token_id": q_raw,
+                "symbol": q_raw,
+                "decimals": int(decimals),
+                "chain_id": chain_id_i,
+                "address": q_raw,
                 "metadata": {"source": "address"},
             }
 
