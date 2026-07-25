@@ -105,3 +105,19 @@ def test_factor_attribution_marginals_and_interaction() -> None:
 
     # No swept axis -> None
     assert grid_factor_attribution(rows, {"gate": [True]}, rank_by="net_return") is None
+
+
+def test_worker_prompt_carries_priors_and_quant_loop(tmp_path: Path) -> None:
+    from wayfinder_paths.jobs.worker import prepare_job_worker_prompt
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("prompt-demo", agent_mode="intervene")
+    store.save(job)
+    sections = prepare_job_worker_prompt(store=store, job_id=job.id, mode="intervene")
+    stable, prompt = sections["stable_prefix"], sections["prompt"]
+    assert "Research prior library" in stable  # cached, not dynamic-budget
+    assert "sweep-and-reclaim" in stable
+    assert "Quant loop (diagnose -> design -> ablate -> propose)" in prompt
+    assert "signal-scan --campaign" in prompt
+    assert "factor_attribution" in prompt
+    assert "pre-registered kill/re-arm threshold" in prompt
