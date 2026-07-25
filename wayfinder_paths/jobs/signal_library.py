@@ -484,15 +484,21 @@ SIGNAL_LIBRARY: tuple[SignalDef, ...] = (
 
 
 def build_signal_frame(
-    frame: pd.DataFrame, extra_signals: Sequence[SignalDef] = ()
+    frame: pd.DataFrame,
+    extra_signals: Sequence[SignalDef] = (),
+    *,
+    include_canonical: bool = True,
 ) -> pd.DataFrame:
     """All library signals for one symbol's OHLCV frame, as boolean columns
     row-aligned with the input. NaN warmup rows resolve to False.
 
     `extra_signals` (validated workspace defs) are materialized after the
-    canonical library so the scan sweeps both under one test family."""
+    canonical library so the scan sweeps both under one test family. A
+    CAMPAIGN scan sets include_canonical=False: its declared defs are their
+    own family and must not tax (or be taxed by) the canonical library."""
     out = pd.DataFrame(index=frame.index)
-    for spec in (*SIGNAL_LIBRARY, *extra_signals):
+    library = SIGNAL_LIBRARY if include_canonical else ()
+    for spec in (*library, *extra_signals):
         out[spec.name] = (
             spec.build(frame).fillna(False).astype(bool)
             if len(frame) >= spec.min_bars

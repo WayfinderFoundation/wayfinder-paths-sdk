@@ -90,6 +90,10 @@ class ExecutionGridResult:
     # the search settings when not an exhaustive grid.
     optimizer: str = "grid"
     search: dict[str, Any] | None = None
+    # Additive: per-factor marginal effects + interaction checks over a
+    # factorial grid (grid_factor_attribution) — the ablation summary a
+    # compound proposal must cite.
+    factor_attribution: dict[str, Any] | None = None
     # Additive: neighbor-robustness of the top cell (grid_plateau) — only for
     # exhaustive dict-of-lists grids; None for optuna and list-of-dicts.
     plateau: dict[str, Any] | None = None
@@ -598,6 +602,93 @@ def grid_plateau(
     return result
 
 
+def grid_factor_attribution(
+    run_rows: list[dict[str, Any]],
+    param_grid: Mapping[str, list[Any]],
+    *,
+    rank_by: str,
+) -> dict[str, Any] | None:
+    """Per-factor marginal effects over a factorial grid — the ablation
+    summary a compound proposal must cite.
+
+    Treats every swept axis as a factor: per-level means of the rank_by
+    metric across ALL cells, the marginal effect for 2-level factors
+    (mean(on) - mean(off)), and a pairwise interaction check for 2-level
+    factors (does A's effect flip sign conditional on B's level). This is
+    how "the improvement is mostly the exit change; the volume gate only
+    helps when the MTF filter is on" becomes a stated, checkable claim
+    instead of a guess about the winning cell."""
+    valid = [row for row in run_rows if row["validation"]["execution_valid"]]
+    axes = {key: list(values) for key, values in param_grid.items() if len(values) > 1}
+    if not valid or not axes:
+        return None
+
+    def metric(row: dict[str, Any]) -> float:
+        return float(row.get(rank_by) or 0.0)
+
+    def mean_where(predicate: Any) -> float | None:
+        rows = [metric(r) for r in valid if predicate(r)]
+        return round(sum(rows) / len(rows), 6) if rows else None
+
+    factors: dict[str, Any] = {}
+    for axis, levels in axes.items():
+        level_means = {
+            str(level): mean_where(lambda r, a=axis, v=level: r["params"].get(a) == v)
+            for level in levels
+        }
+        entry: dict[str, Any] = {"levels": level_means}
+        if len(levels) == 2:
+            low, high = level_means[str(levels[0])], level_means[str(levels[1])]
+            if low is not None and high is not None:
+                entry["marginal_effect"] = round(high - low, 6)
+        factors[axis] = entry
+
+    interactions: list[dict[str, Any]] = []
+    two_level = [axis for axis, levels in axes.items() if len(levels) == 2]
+    for i, a in enumerate(two_level):
+        for b in two_level[i + 1 :]:
+            effects = []
+            for b_level in axes[b]:
+                on = mean_where(
+                    lambda r, a=a, b=b, bl=b_level: r["params"].get(a) == axes[a][1]
+                    and r["params"].get(b) == bl
+                )
+                off = mean_where(
+                    lambda r, a=a, b=b, bl=b_level: r["params"].get(a) == axes[a][0]
+                    and r["params"].get(b) == bl
+                )
+                effects.append(
+                    round(on - off, 6) if on is not None and off is not None else None
+                )
+            known = [e for e in effects if e is not None]
+            sign_flip = len(known) == 2 and (known[0] > 0) != (known[1] > 0)
+            interactions.append(
+                {
+                    "factor": a,
+                    "conditioner": b,
+                    "effect_by_conditioner_level": dict(
+                        zip((str(v) for v in axes[b]), effects, strict=True)
+                    ),
+                    "sign_flip": sign_flip,
+                }
+            )
+
+    top = max(valid, key=metric)
+    return {
+        "rank_by": rank_by,
+        "factors": factors,
+        "interactions": interactions,
+        "top_params": top["params"],
+        "top_metric": round(metric(top), 6),
+        "read": (
+            "Marginal effects are averaged across ALL cells (not just the "
+            "winner); a compound proposal must cite them, and a factor whose "
+            "marginal effect is negative does not ship unless a documented "
+            "sign_flip interaction is the finding itself."
+        ),
+    }
+
+
 def available_cpu_count() -> int:
     """Usable CPUs for backtest fan-out. Respects a cgroup CPU quota (Fly
     machines are quota-limited, and os.cpu_count() reports the host's cores,
@@ -716,6 +807,11 @@ def run_execution_grid(
         },
         plateau=(
             grid_plateau(run_rows, param_grid, rank_by=rank_by)
+            if isinstance(param_grid, Mapping)
+            else None
+        ),
+        factor_attribution=(
+            grid_factor_attribution(run_rows, param_grid, rank_by=rank_by)
             if isinstance(param_grid, Mapping)
             else None
         ),

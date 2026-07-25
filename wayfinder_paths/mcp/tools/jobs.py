@@ -47,6 +47,7 @@ JobAction = Literal[
     "chart",
     "analogs",
     "attribution",
+    "derive_features",
     "holdout_check",
     "rank_check",
     "strategy_library",
@@ -169,6 +170,7 @@ async def core_jobs(
     signal: str | None = None,
     horizon: int | None = None,
     symbol: str | None = None,
+    campaign: str | None = None,
     timeframe: str | None = None,
     bars: int = 96,
     indicators: list[str] | None = None,
@@ -403,8 +405,12 @@ async def core_jobs(
                 "horizons": horizons,
                 "timeframes": timeframes,
                 "holdout_fraction": holdout_fraction,
+                "campaign": campaign,
             },
         )
+
+    if action == "derive_features":
+        return await _run_job_op("derive_features", {"job_id": job_id})
 
     if action == "attribution":
         return await _run_job_op("attribution", {"job_id": job_id})

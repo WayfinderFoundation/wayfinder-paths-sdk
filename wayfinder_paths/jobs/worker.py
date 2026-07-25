@@ -142,6 +142,12 @@ def _build_worker_prompt_sections(
 ) -> dict[str, str]:
     root = store.job_dir(job_id)
     memory_md = _read_text(root / "memory.md", max_chars=6000)
+    # The research prior library: idea families, prior strengths, archetype
+    # mapping, and test paths. Lives in the STABLE prefix so it prompt-caches
+    # across wakes instead of taxing the dynamic budget.
+    research_priors = _read_text(
+        Path(__file__).parent / "prompts" / "research_priors.md", max_chars=7000
+    )
     memory_json = store.read_json(job_id, "memory.json", default={}) or {}
     recent_journal = _read_text(root / "journal.jsonl", max_chars=4000)
     # The cumulative research state — a curated map (dead hypotheses, open
@@ -254,6 +260,9 @@ def _build_worker_prompt_sections(
         "- Always write/return a compact structured finding.\n\n"
         "Stable job spec:\n"
         f"{_canonical_json(stable_payload, max_chars=12000)}\n\n"
+        "Research prior library (idea families -> priors -> archetypes -> "
+        "test paths — pick treatments from here):\n"
+        f"{research_priors}\n\n"
         "Durable job memory:\n"
         f"{memory_md}\n\n"
         f"{STABLE_PREFIX_END_MARKER}\n"
@@ -367,6 +376,26 @@ def _build_worker_prompt_sections(
             "grid+WF-validated exit change motivated by them is a legitimate "
             "proposal even below the forward-sample floor, because its "
             "evidence is the backtest population, not the forward sample.\n"
+            "- Quant loop (diagnose -> design -> ablate -> propose): start "
+            "from the `attribution` block — archetype counts name the "
+            "dominant failure mode; expectation_deltas name where forward "
+            "deviates from the model's own backtest. Every new hypothesis "
+            "cites the slice/archetype it treats or is labeled a prior-driven "
+            "bet from the Research prior library. Triage by prior x symptom "
+            "x cost; each ideation runs a PORTFOLIO (>=1 cheap, >=1 "
+            "structural, <=1 moonshot, >=1 family not in the dead map). "
+            "New-def sweeps go through `signal-scan --campaign NAME` (your "
+            "own BH family — the canonical library is untaxed, so "
+            "speculative campaigns are affordable; declare the campaign in "
+            "the agenda first). Multi-intervention treatments: 2-4 "
+            "pre-registered factors, two-stage factorial (screen "
+            "--workers 1 --quick 10000, then full-history+WF on the winner "
+            "and its one-factor neighbors), and the proposal must cite "
+            "factor_attribution. Every proposal carries a pre-mortem (its "
+            "expected new failure mode) and a pre-registered kill/re-arm "
+            "threshold. Dead-map scope: dead = the tested claim, never the "
+            "asset or family. Cross-symbol rank-check and derive-features "
+            "are RESEARCH — never gated by the forward-trade floor.\n"
             "- Chart lenses (LOOK before hypothesizing): "
             '`core_jobs(action="chart", job_id=..., symbol=..., '
             'timeframe="30m", indicators=["ema:9","ema:50","rsi:14"], '
