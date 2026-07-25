@@ -59,6 +59,10 @@ def _run(op: str, kwargs: dict[str, Any]) -> Any:
         from wayfinder_paths.jobs.chart import analogs_job
 
         return analogs_job(kwargs.pop("job_id"), **kwargs)
+    if op == "derive_features":
+        from wayfinder_paths.jobs.derived_features import derive_features_job
+
+        return derive_features_job(kwargs.pop("job_id"), **kwargs)
     if op == "attribution":
         from wayfinder_paths.jobs.attribution import attribution_job
 
