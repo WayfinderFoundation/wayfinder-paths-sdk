@@ -47,6 +47,7 @@ JobAction = Literal[
     "chart",
     "analogs",
     "attribution",
+    "derive_features",
     "holdout_check",
     "rank_check",
     "strategy_library",
@@ -405,6 +406,9 @@ async def core_jobs(
                 "holdout_fraction": holdout_fraction,
             },
         )
+
+    if action == "derive_features":
+        return await _run_job_op("derive_features", {"job_id": job_id})
 
     if action == "attribution":
         return await _run_job_op("attribution", {"job_id": job_id})
