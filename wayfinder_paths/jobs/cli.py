@@ -780,6 +780,19 @@ def analogs_cmd(
 
 
 @job_cli.command(
+    name="attribution",
+    help="PnL attribution: backtest + forward decomposed by symbol/reason/"
+    "session/regime/archetype/hold-bucket, with forward-vs-backtest "
+    "expectation deltas ranked by anomaly size. The diagnosis artifact.",
+)
+@click.argument("job_id")
+def attribution_cmd(job_id: str) -> None:
+    from wayfinder_paths.jobs.attribution import attribution_job
+
+    _echo_json({"ok": True, "result": attribution_job(job_id, store=JobStore())})
+
+
+@job_cli.command(
     name="holdout-check",
     help="One-shot confirmation of a FROZEN scan candidate (signal + "
     "timeframe + horizon + direction) on the reserved holdout tail. Spend "

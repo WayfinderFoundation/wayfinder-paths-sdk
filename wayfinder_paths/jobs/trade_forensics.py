@@ -253,8 +253,52 @@ def forensics_for_closed_trades(
         from wayfinder_paths.jobs.indicators import regime_snapshot
 
         row["regime_at_entry"] = regime_snapshot(bars, entry_ts)
+        row["archetype"] = classify_trade_archetype(row)
         rows.append(row)
     return rows
+
+
+# Named loss/win archetypes — the human quant's failure taxonomy. Counting
+# these across the population is the DIAGNOSIS that selects a treatment
+# family (a book bleeding noise_stopouts wants different medicine than one
+# full of adverse_entries). Thresholds are deliberately coarse: archetypes
+# are buckets for triage, not statistics.
+_MFE_NEGLIGIBLE_BPS = 20.0
+_EARLY_EXIT_MISSED_BPS = 50.0
+
+
+def classify_trade_archetype(row: Mapping[str, Any]) -> str:
+    """Deterministic archetype from a forensics row's path facts.
+
+    - noise_stopout: the stop fired, then price came back through entry with
+      meaningful favorable follow-through — the stop was clipped by noise.
+    - trend_fight: never meaningfully in favor during the hold — the entry
+      fought the prevailing move (stop or not).
+    - adverse_entry: labeled-exit loss that was underwater from the start.
+    - early_exit: exited (win or small loss) leaving a post-exit favorable
+      move larger than what was captured.
+    - clean_win / clean_loss: the path matched the design.
+    """
+    realized = float(row.get("realized_bps") or 0.0)
+    mfe = row.get("hold_mfe_bps")
+    post_best = row.get("post_exit_best_bps")
+    through = row.get("post_exit_through_entry")
+    stopped = row.get("exit_reason") == BRACKET_EXIT_REASON
+
+    never_in_favor = mfe is not None and float(mfe) < _MFE_NEGLIGIBLE_BPS
+    missed = post_best is not None and float(post_best) > max(
+        realized, _EARLY_EXIT_MISSED_BPS
+    )
+
+    if stopped:
+        if through and post_best is not None and float(post_best) > 0:
+            return "noise_stopout"
+        return "trend_fight" if never_in_favor else "clean_loss"
+    if realized > 0:
+        return "early_exit" if missed else "clean_win"
+    if never_in_favor:
+        return "adverse_entry"
+    return "early_exit" if missed else "clean_loss"
 
 
 def aggregate_trade_forensics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -315,4 +359,16 @@ def aggregate_trade_forensics(rows: Sequence[Mapping[str, Any]]) -> dict[str, An
                 else None
             ),
         }
-    return {"trades": len(rows), "by_exit_reason": groups}
+    archetypes: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        name = str(row.get("archetype") or classify_trade_archetype(row))
+        bucket = archetypes.setdefault(name, {"count": 0, "total_realized_bps": 0.0})
+        bucket["count"] += 1
+        bucket["total_realized_bps"] = round(
+            bucket["total_realized_bps"] + float(row.get("realized_bps") or 0.0), 1
+        )
+    return {
+        "trades": len(rows),
+        "by_exit_reason": groups,
+        "by_archetype": dict(sorted(archetypes.items())),
+    }

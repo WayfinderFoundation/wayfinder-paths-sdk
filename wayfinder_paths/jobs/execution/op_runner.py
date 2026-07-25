@@ -59,6 +59,10 @@ def _run(op: str, kwargs: dict[str, Any]) -> Any:
         from wayfinder_paths.jobs.chart import analogs_job
 
         return analogs_job(kwargs.pop("job_id"), **kwargs)
+    if op == "attribution":
+        from wayfinder_paths.jobs.attribution import attribution_job
+
+        return attribution_job(kwargs.pop("job_id"), **kwargs)
     if op == "holdout_check":
         from wayfinder_paths.jobs.research import holdout_check_job
 

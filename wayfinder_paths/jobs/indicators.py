@@ -39,7 +39,12 @@ def _spec_error(spec: str, reason: str) -> ValueError:
         f"bad indicator spec {spec!r}: {reason}. Known specs: sma:N, ema:N, "
         "rsi:N, atr:N, bb:N:K (bollinger %B and bandwidth), macd:F:S:SIG, "
         "don:N (donchian position), vwap, vr:N (variance ratio), "
-        "volpct:N (ATR percentile)"
+        "volpct:N (ATR percentile), clv (close location in bar range), "
+        "wickratio:N (upper/lower wick share, N-bar mean), volz:N (volume "
+        "z-score), vwapdist (bps from session VWAP), daylevel (bps to prior "
+        "UTC-day high/low), rvratio:N:M (short-vs-long realized vol), "
+        "sigmabars:K (bars since last K-sigma move), fundclock (bars "
+        "since/until the 8h funding settlement)"
     )
 
 
@@ -120,6 +125,86 @@ def compute_indicator(frame: pd.DataFrame, spec: str) -> dict[str, pd.Series]:
             n = _one(14)
             series = atr(frame, n) / close
             return {f"volpct{n}": series.expanding(min_periods=n).rank(pct=True) * 100}
+        case "clv":
+            if nums:
+                raise _spec_error(spec, "clv takes no parameters")
+            high = frame["high"].astype(float)
+            low = frame["low"].astype(float)
+            bar_range = (high - low).replace(0.0, np.nan)
+            # 0 = closed on the low, 1 = closed on the high: rejection measure.
+            return {"clv": (close - low) / bar_range}
+        case "wickratio":
+            n = _one(1)
+            high = frame["high"].astype(float)
+            low = frame["low"].astype(float)
+            open_ = frame["open"].astype(float)
+            bar_range = (high - low).replace(0.0, np.nan)
+            upper = (high - pd.concat([open_, close], axis=1).max(axis=1)) / bar_range
+            lower = (pd.concat([open_, close], axis=1).min(axis=1) - low) / bar_range
+            if n > 1:
+                upper, lower = upper.rolling(n).mean(), lower.rolling(n).mean()
+            suffix = "" if n == 1 else str(n)
+            return {f"uwick{suffix}": upper, f"lwick{suffix}": lower}
+        case "volz":
+            n = _one(20)
+            volume = frame["volume"].astype(float)
+            mean = volume.rolling(n).mean()
+            std = volume.rolling(n).std().replace(0.0, np.nan)
+            return {f"volz{n}": (volume - mean) / std}
+        case "vwapdist":
+            if nums:
+                raise _spec_error(spec, "vwapdist takes no parameters")
+            stamps = pd.to_datetime(frame["timestamp"], utc=True)
+            day = stamps.dt.floor("D")
+            typical = (
+                frame["high"].astype(float) + frame["low"].astype(float) + close
+            ) / 3
+            volume = frame["volume"].astype(float)
+            pv = (typical * volume).groupby(day).cumsum()
+            cum_volume = volume.groupby(day).cumsum().replace(0.0, np.nan)
+            session_vwap = pv / cum_volume
+            return {"vwapdist_bps": (close / session_vwap - 1) * 1e4}
+        case "daylevel":
+            if nums:
+                raise _spec_error(spec, "daylevel takes no parameters")
+            stamps = pd.to_datetime(frame["timestamp"], utc=True)
+            day = stamps.dt.floor("D")
+            prev_high = frame["high"].astype(float).groupby(day).max().shift(1)
+            prev_low = frame["low"].astype(float).groupby(day).min().shift(1)
+            high_map = day.map(prev_high)
+            low_map = day.map(prev_low)
+            return {
+                "pdh_dist_bps": (close / high_map - 1) * 1e4,
+                "pdl_dist_bps": (close / low_map - 1) * 1e4,
+            }
+        case "rvratio":
+            if nums and len(nums) != 2:
+                raise _spec_error(spec, "expected rvratio:SHORT:LONG")
+            short_n, long_n = (int(x) for x in (nums or [12, 288]))
+            returns = close.pct_change()
+            short_vol = returns.rolling(short_n).std()
+            long_vol = returns.rolling(long_n).std().replace(0.0, np.nan)
+            return {f"rvratio{short_n}_{long_n}": short_vol / long_vol}
+        case "sigmabars":
+            k = _one(2)
+            returns = close.pct_change()
+            sigma = returns.rolling(100).std()
+            shock = (returns.abs() > k * sigma).astype(int)
+            groups = shock.cumsum()
+            return {f"sigmabars{k}": shock.groupby(groups).cumcount()}
+        case "fundclock":
+            if nums:
+                raise _spec_error(spec, "fundclock takes no parameters")
+            stamps = pd.to_datetime(frame["timestamp"], utc=True)
+            seconds_into = (
+                (stamps.dt.hour % 8) * 3600 + stamps.dt.minute * 60 + stamps.dt.second
+            )
+            bar_seconds = (
+                stamps.diff().median().total_seconds() if len(stamps) > 1 else 300
+            )
+            # Bars since the last 00/08/16 UTC settlement (0 = the bar that
+            # closed ON the boundary).
+            return {"fundclock": (seconds_into / bar_seconds).round()}
         case _:
             raise _spec_error(spec, "unknown indicator")
 
