@@ -90,6 +90,34 @@ def _trade_forensics_block(root: Path) -> dict[str, Any]:
     return block
 
 
+def _attribution_block(root: Path) -> dict[str, Any]:
+    """Compact diagnosis context: archetype counts + the top expectation
+    deltas from results/research/attribution.json (refreshed on demand via
+    core_jobs(action="attribution")). Capped hard — this rides the 12k
+    dynamic budget."""
+    path = root / "results" / "research" / "attribution.json"
+    if not path.exists():
+        return {}
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return {}
+    deltas = [d for d in doc.get("expectation_deltas") or [] if not d.get("small_n")]
+    block: dict[str, Any] = {
+        "forward_trades": doc.get("forward_trades"),
+        "archetypes_forward": (doc.get("forward") or {}).get("archetype") or {},
+        "top_expectation_deltas": deltas[:5],
+        "_basis": (
+            "Diagnosis artifact: archetype counts name the dominant failure "
+            "mode; expectation_deltas are slices where the forward book "
+            "deviates most from the SAME slice in the backtest (adequately "
+            "sampled only). Start treatment design here. Refresh with "
+            'core_jobs(action="attribution", job_id=...).'
+        ),
+    }
+    return block
+
+
 def _drop_volatile_stable_keys(value: Any) -> Any:
     match value:
         case dict():
@@ -171,6 +199,7 @@ def _build_worker_prompt_sections(
             "decisions": tail_ledger(store, job_id, "decisions", limit=20),
         },
         "trade_forensics": _trade_forensics_block(root),
+        "attribution": _attribution_block(root),
     }
 
     stable_prefix = (
