@@ -118,6 +118,34 @@ def _attribution_block(root: Path) -> dict[str, Any]:
     return block
 
 
+def _counterfactual_block(store: JobStore, job_id: str) -> dict[str, Any]:
+    """Mechanical post-apply A/B: the pre-apply strategy (rollback backup)
+    replayed over the forward bars since apply, diffed against the actual
+    book. Computed here (cached, ~6h refresh) so the evidence EXISTS every
+    wake — the agent reads it, it never reconstructs counterfactuals."""
+    from wayfinder_paths.jobs.counterfactual import counterfactual_job
+
+    try:
+        doc = counterfactual_job(job_id, store=store)
+    except Exception as exc:  # noqa: BLE001 — wake context must not die on this
+        return {"_status": f"unavailable: {exc}"}
+    if not doc.get("available"):
+        return {"_status": str(doc.get("reason") or "unavailable")}
+    keys = (
+        "proposal_id",
+        "applied_at",
+        "window",
+        "actual",
+        "shadow",
+        "delta_net_pnl",
+        "by_symbol",
+        "entries_skipped_by_change",
+        "entries_added_by_change",
+        "_basis",
+    )
+    return {key: doc[key] for key in keys if key in doc}
+
+
 def _drop_volatile_stable_keys(value: Any) -> Any:
     match value:
         case dict():
@@ -206,6 +234,7 @@ def _build_worker_prompt_sections(
         },
         "trade_forensics": _trade_forensics_block(root),
         "attribution": _attribution_block(root),
+        "post_apply_shadow": _counterfactual_block(store, job_id),
     }
 
     stable_prefix = (
@@ -376,6 +405,19 @@ def _build_worker_prompt_sections(
             "grid+WF-validated exit change motivated by them is a legitimate "
             "proposal even below the forward-sample floor, because its "
             "evidence is the backtest population, not the forward sample.\n"
+            "- Post-apply shadow lane: `post_apply_shadow` in the dynamic "
+            "context is a MECHANICAL A/B — the pre-apply strategy (rollback "
+            "backup) replayed over the forward bars since apply, diffed "
+            "against the actual book. Read it on every wake while a change "
+            "is live; never hand-recompute counterfactuals. If the shadow "
+            "outperforms the active book by a meaningful sustained margin "
+            "(>=14 days of divergence, or entries_skipped_by_change whose "
+            "shadow outcomes are clearly positive), that is first-class "
+            "evidence for a revert/adjust proposal — cite the block. If the "
+            "active book leads, record that in the decisions ledger as the "
+            "change's forward validation. This is how entry-gating changes "
+            "(filters) are adjudicated: their cost never prints in the live "
+            "book, only here.\n"
             "- EVIDENCE TIERS: verdict 'promote' (unchanged full gates) -> "
             "full-size leg. Verdict 'probation' (near-miss alive NOW, "
             "regime-conditional edge in the CURRENT regime, or a declared "
