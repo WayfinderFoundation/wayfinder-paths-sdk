@@ -121,3 +121,50 @@ def test_worker_prompt_carries_priors_and_quant_loop(tmp_path: Path) -> None:
     assert "signal-scan --campaign" in prompt
     assert "factor_attribution" in prompt
     assert "pre-registered kill/re-arm threshold" in prompt
+
+
+def test_campaign_scan_scores_only_workspace_defs() -> None:
+    # The live KeyError: a campaign frame has only workspace columns, so the
+    # scan loop must iterate the same def set the frame was built from.
+    from wayfinder_paths.jobs.research import scan_signals
+
+    frame = _frame(600)
+    extra = [
+        SignalDef(
+            name="camp_dip",
+            family="campaign",
+            description="close below 20-bar mean",
+            min_bars=20,
+            build=lambda f: f["close"].astype(float)
+            < f["close"].astype(float).rolling(20).mean(),
+        )
+    ]
+    result = scan_signals(
+        frame,
+        bar_seconds=300,
+        extra_signals=extra,
+        include_canonical=False,
+        min_events=5,
+        holdout_fraction=0.1,
+    )
+    assert result["tests_run"] > 0
+    tested = {row["signal"] for row in result["_all_rows"]}
+    assert tested == {"camp_dip"}
+
+
+def test_workspace_module_may_use_dataclasses(tmp_path: Path) -> None:
+    # The live AttributeError: a module loaded outside sys.modules cannot
+    # define dataclasses (stdlib resolves cls.__module__ via sys.modules).
+    from wayfinder_paths.jobs.execution.primitives import _load_module_from_path
+
+    module_path = tmp_path / "signals.py"
+    module_path.write_text(
+        "from dataclasses import dataclass\n"
+        "@dataclass\n"
+        "class Config:\n"
+        "    span: int = 9\n"
+        "CONFIG = Config()\n",
+        encoding="utf-8",
+    )
+    module = _load_module_from_path(module_path)
+    assert module.CONFIG.span == 9
