@@ -1526,7 +1526,7 @@ def signal_check_job(
     params = dict(job_data.get("execution_params") or {})
     script = store.resolve_script_entrypoint(job_id, job_data)
     strategy = _load_strategy(script, params)
-    dataset = _load_dataset(root, spec, job_data)
+    dataset = _load_dataset(root, spec, job_data, include_store_features=True)
     view = apply_precompute(strategy, dataset.bars)
     frame = view.to_frame()
     results: dict[str, Any] = {}
@@ -1665,7 +1665,7 @@ def signal_scan_job(
     bar_seconds = bar_interval_seconds(spec.data_contract.get("bar_interval")) or 3600
     fee_bps = float(params.get("fee_bps") or 5.0)
     slippage_bps = float(params.get("slippage_bps") or 3.5)
-    dataset = _load_dataset(root, spec, job_data)
+    dataset = _load_dataset(root, spec, job_data, include_store_features=True)
     frame = dataset.bars.to_frame()
     available = sorted(frame["symbol"].astype(str).unique())
     targets = [str(s) for s in symbols] if symbols else available
@@ -1840,7 +1840,7 @@ def holdout_check_job(
     tf_seconds = bar_interval_seconds(tf_name)
     if not tf_seconds:
         raise ValueError(f"unparseable timeframe {tf_name!r}")
-    dataset = _load_dataset(root, spec, job_data)
+    dataset = _load_dataset(root, spec, job_data, include_store_features=True)
     frame = dataset.bars.to_frame()
     available = sorted(frame["symbol"].astype(str).unique())
     targets = [str(s) for s in symbols] if symbols else available
@@ -1978,7 +1978,7 @@ def rank_check_job(
     params = dict(job_data.get("execution_params") or {})
     script = store.resolve_script_entrypoint(job_id, job_data)
     strategy = _load_strategy(script, params)
-    dataset = _load_dataset(root, spec, job_data)
+    dataset = _load_dataset(root, spec, job_data, include_store_features=True)
     view = apply_precompute(strategy, dataset.bars)
     frame = view.to_frame()
     symbols = sorted(frame["symbol"].astype(str).unique())
