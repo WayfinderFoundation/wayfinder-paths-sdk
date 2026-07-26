@@ -920,7 +920,11 @@ def scan_signals(
                 continue
             fwd = np.log(close[h:] / close[:-h])
             drift = float(fwd.mean())
-            for spec in (*SIGNAL_LIBRARY, *extra_signals):
+            # Iterate the SAME def set the frame was built from: a campaign
+            # frame has only workspace columns, so scoring the canonical
+            # library against it would KeyError (hit live 2026-07-26).
+            library = SIGNAL_LIBRARY if include_canonical else ()
+            for spec in (*library, *extra_signals):
                 sig = signals[spec.name].to_numpy()
                 events = _decimate_events(sig[: n - h], h)
                 n_events = int(events.sum())

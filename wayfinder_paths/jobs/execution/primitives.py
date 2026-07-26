@@ -703,9 +703,17 @@ def _load_module_from_path(path: Path) -> ModuleType:
         raise ValueError(f"Cannot load strategy script: {path}")
     module = importlib.util.module_from_spec(spec)
     old_path = list(sys.path)
+    # Register BEFORE exec: stdlib machinery resolves cls.__module__ through
+    # sys.modules — without this, a @dataclass defined in a workspace module
+    # dies inside dataclasses._process_class (hit live: an agent's signals.py
+    # using a dataclass crashed the campaign scan).
+    sys.modules[module_name] = module
     try:
         sys.path.insert(0, str(path.parent))
         spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
     finally:
         sys.path = old_path
     return module
