@@ -283,17 +283,49 @@ def _load_job_yaml(root: Path) -> dict[str, Any]:
             raise ValueError(f"Invalid job.yaml: {path}")
 
 
+def _store_feature_specs(roots: tuple[Path, ...], declared: set[str]) -> list[Any]:
+    """FeatureSpecs for every feature-store name NOT in the data contract.
+
+    Research loaders merge these so undeclared research-side columns
+    (derive-features output) are visible to rank-check/--column/workspace
+    defs; execution paths never call this — the contract still governs what
+    a LIVE strategy may consume."""
+    from wayfinder_paths.jobs.execution.features import (
+        DEFAULT_FEATURES_PATH,
+        FeatureSpec,
+    )
+
+    names: set[str] = set()
+    for root in roots:
+        path = root / DEFAULT_FEATURES_PATH
+        if not path.exists():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("name"):
+                names.add(str(row["name"]))
+    return [FeatureSpec(name=name) for name in sorted(names - declared)]
+
+
 def _load_dataset(
     root: Path,
     spec: ExecutionSpec,
     job_data: dict[str, Any],
     *,
     feature_roots: tuple[Path, ...] | None = None,
+    include_store_features: bool = False,
 ) -> PreparedExecutionDataset:
     dataset = _resolve_dataset(root, spec, job_data)
     # Same feature merge the live driver applies per tick (as-of, backward):
     # backtest/live parity for exogenous data holds by construction.
     specs = parse_feature_specs(spec)
+    if include_store_features:
+        specs = specs + _store_feature_specs(
+            tuple(feature_roots or (root,)), {item.name for item in specs}
+        )
     if specs:
         frames = load_feature_rows(list(feature_roots or (root,)), specs)
         dataset = PreparedExecutionDataset(

@@ -48,7 +48,7 @@ def _load_symbol_frame(
     job_data = _load_job_yaml(root)
     spec_data, _ = resolve_execution_spec(root, job_data)
     spec = ExecutionSpec.from_dict(spec_data)
-    dataset = _load_dataset(root, spec, job_data)
+    dataset = _load_dataset(root, spec, job_data, include_store_features=True)
     frame = dataset.bars.to_frame()
     symbols = sorted(frame["symbol"].astype(str).unique())
     if symbol is None:

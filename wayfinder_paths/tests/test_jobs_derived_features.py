@@ -116,3 +116,29 @@ def test_venue_basis_per_symbol(tmp_path: Path) -> None:
         job_id, sets=("venue",), store=store, fetch_closes=fetch
     )
     assert result["per_feature"].get("venue_basis_bps", 0) > 0
+
+
+def test_derived_columns_reach_research_frames(tmp_path: Path) -> None:
+    # The bug the watcher hit live: derive-features wrote rows, but research
+    # frames only merged CONTRACT-declared features -> "available non-bar
+    # columns: []". Research loaders must merge store features too.
+    from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
+    from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+
+    store, job_id = _make_job(tmp_path)
+    derive_features_job(
+        job_id, sets=("cross", "exog"), store=store, fetch_closes=_fake_fetch
+    )
+    root = store.job_dir(job_id)
+    job_data = _load_job_yaml(root)
+    spec_data, _ = resolve_execution_spec(root, job_data)
+    spec = ExecutionSpec.from_dict(spec_data)
+
+    research = _load_dataset(root, spec, job_data, include_store_features=True)
+    frame = research.bars.to_frame()
+    assert "btc_trend" in frame.columns
+    assert "breadth_sma50" in frame.columns
+
+    # Execution path unchanged: undeclared features stay out of live frames.
+    execution = _load_dataset(root, spec, job_data)
+    assert "btc_trend" not in execution.bars.to_frame().columns
