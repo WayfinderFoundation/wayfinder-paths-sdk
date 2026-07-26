@@ -246,3 +246,69 @@ def test_probation_registry_lifecycle(tmp_path) -> None:
     journal = (store.job_dir(job.id) / "journal.jsonl").read_text()
     assert "probation_leg_opened" in journal
     assert "probation_leg_killed" in journal
+
+
+def test_forward_view_trades_and_marker_directions(tmp_path) -> None:
+    import json as _json
+
+    from wayfinder_paths.jobs.forward_artifacts import load_forward_view
+    from wayfinder_paths.jobs.models import WayfinderJob
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("view-demo", agent_mode="intervene")
+    store.save(job)
+    forward = store.job_dir(job.id) / "results" / "forward"
+    forward.mkdir(parents=True, exist_ok=True)
+    fills = [
+        {
+            "symbol": "LIT",
+            "side": "sell",
+            "reduce_only": False,
+            "status": "filled",
+            "timestamp": "2026-07-22T15:05:00+00:00",
+            "avg_price": 2.3308,
+            "raw": {"intent_metadata": {"entry_reason": "fade"}},
+        },
+        {
+            "symbol": "LIT",
+            "side": "buy",
+            "reduce_only": True,
+            "status": "filled",
+            "timestamp": "2026-07-22T16:05:00+00:00",
+            "avg_price": 2.3908,
+            "raw": {"intent_metadata": {"exit_reason": ""}},
+        },
+    ]
+    (forward / "fills.jsonl").write_text(
+        "\n".join(_json.dumps(f) for f in fills) + "\n", encoding="utf-8"
+    )
+    (forward / "trades.jsonl").write_text(
+        _json.dumps(
+            {
+                "symbol": "LIT",
+                "side": "buy",
+                "price": 2.3908,
+                "net_pnl": -0.644,
+                "closed_at": "2026-07-22T16:05:00+00:00",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (forward / "ticks.jsonl").write_text("", encoding="utf-8")
+
+    view = load_forward_view(job.id, store=store, include_prices=False)
+    # Markers say LONG/SHORT, not buy/sell: a sell entry is a SHORT entry
+    # and the buy that closes it is a SHORT exit.
+    entry, exit_ = view["visualization"]["markers"]
+    assert entry["direction"] == "short" and entry["kind"] == "entry"
+    assert exit_["direction"] == "short" and exit_["kind"] == "exit"
+    assert "short entry" in entry["label"]
+    # Full trades list: entry-joined with direction and duration.
+    trade = view["trades"][0]
+    assert trade["direction"] == "short"
+    assert trade["entry_price"] == 2.3308 and trade["exit_price"] == 2.3908
+    assert trade["duration_minutes"] == 60
+    assert trade["entry_reason"] == "fade"
+    assert trade["exit_reason"] == "bracket_stop"
