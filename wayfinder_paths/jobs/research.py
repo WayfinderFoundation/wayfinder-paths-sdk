@@ -694,7 +694,35 @@ def apply_bh_verdicts(
             and bool(row.get("fold_stable"))
             and int(row.get("folds_agreeing") or 0) >= min_folds_agree
         )
-        row["verdict"] = "promote" if promote else "candidate" if abs(t) >= 2 else None
+        # Short-window families cap at probation: fewer events by construction
+        # means the same q is weaker evidence — forward paper adjudicates.
+        if row.get("window_days"):
+            promote = False
+        # PROBATION: eligibility for reduced-size paper deployment with
+        # pre-registered kill/graduate criteria. Forward paper is the honest
+        # holdout — that is why this tier is allowed to be looser. Paths:
+        # (a) near-miss whose edge is alive NOW; (b) regime-conditional edge
+        # in the CURRENT regime; (c) declared recent-window survivor.
+        t_recent = row.get("t_recent")
+        alive_now = t_recent is not None and abs(t_recent) >= 2 and t_recent * t > 0
+        probation = not promote and (
+            (q <= 0.20 and int(row.get("folds_agreeing") or 0) >= 2 and alive_now)
+            or (
+                bool(row.get("in_current_regime"))
+                and q <= 0.15
+                and int(row.get("n") or 0) >= 20
+            )
+            or (bool(row.get("window_days")) and q <= q_threshold)
+        )
+        row["verdict"] = (
+            "promote"
+            if promote
+            else "probation"
+            if probation
+            else "candidate"
+            if abs(t) >= 2
+            else None
+        )
 
 
 def holdout_event_study(
@@ -845,6 +873,7 @@ def scan_signals(
     slippage_bps: float = 3.5,
     extra_signals: Sequence[SignalDef] = (),
     include_canonical: bool = True,
+    condition_regime: bool = False,
 ) -> dict[str, Any]:
     """Event-study EVERY canonical library trigger against one symbol's bars
     — across timeframes, in a single pass — the breadth tool that replaces
@@ -896,9 +925,22 @@ def scan_signals(
     horizons_used: dict[str, list[int]] = {}
     frames_by_tf: dict[str, pd.DataFrame] = {}
     events_cache: dict[tuple[str, str, int], np.ndarray] = {}
+    regime_arrays: dict[str, Any] = {}
+    regime_now: str | None = None
     for tf_name, tf_seconds in tf_specs:
         bars = resample_ohlcv(base, tf_seconds, bar_seconds=bar_seconds)
         frames_by_tf[tf_name] = bars
+        if condition_regime:
+            from wayfinder_paths.jobs.indicators import (
+                REGIME_LABELS,
+                classify_regimes,
+            )
+
+            labels = classify_regimes(bars)
+            regime_arrays[tf_name] = labels.to_numpy()
+            tail = labels.dropna()
+            if regime_now is None and len(tail):
+                regime_now = str(tail.iloc[-1])
         close = bars["close"].astype(float).to_numpy()
         n = len(close)
         signals = build_signal_frame(
@@ -920,23 +962,27 @@ def scan_signals(
                 continue
             fwd = np.log(close[h:] / close[:-h])
             drift = float(fwd.mean())
-            # Iterate the SAME def set the frame was built from: a campaign
-            # frame has only workspace columns, so scoring the canonical
-            # library against it would KeyError (hit live 2026-07-26).
-            library = SIGNAL_LIBRARY if include_canonical else ()
-            for spec in (*library, *extra_signals):
-                sig = signals[spec.name].to_numpy()
-                events = _decimate_events(sig[: n - h], h)
+
+            def _stats_row(
+                events: np.ndarray,
+                spec: SignalDef,
+                *,
+                h: int = h,
+                fwd: np.ndarray = fwd,
+                drift: float = drift,
+                n: int = n,
+                cell_min_events: int = min_events,
+                tf_name: str = tf_name,
+                extra: dict[str, Any] | None = None,
+            ) -> dict[str, Any] | None:
                 n_events = int(events.sum())
-                n_raw = int(sig[: n - h].sum())
-                if n_events < min_events:
-                    continue
-                tests_run += 1
+                if n_events < cell_min_events:
+                    return None
                 event_returns = fwd[events]
                 mean_r = float(event_returns.mean())
                 std_r = float(event_returns.std(ddof=1))
                 if std_r <= 0:
-                    continue
+                    return None
                 t = (mean_r - drift) / (std_r / math.sqrt(n_events))
                 fold_deltas, agreeing, measurable = _fold_stability(
                     events,
@@ -945,37 +991,102 @@ def scan_signals(
                     folds=folds,
                     min_fold_events=min_fold_events,
                 )
+                # Recency diagnostics: same t construction on each half of the
+                # sample. No gate reads these except the probation tier — they
+                # exist so a live edge and a decayed one stop looking alike.
+                mid = (n - h) // 2
+                halves: dict[str, float | None] = {"t_early": None, "t_recent": None}
+                for key, half in (
+                    ("t_early", events[:mid]),
+                    ("t_recent", events[mid:]),
+                ):
+                    half_returns = (
+                        fwd[:mid][half] if key == "t_early" else fwd[mid:][half]
+                    )
+                    if len(half_returns) >= max(8, cell_min_events // 3):
+                        h_std = float(half_returns.std(ddof=1))
+                        if h_std > 0:
+                            halves[key] = float(
+                                (float(half_returns.mean()) - drift)
+                                / (h_std / math.sqrt(len(half_returns)))
+                            )
+                sign = float(np.sign(t)) or 1.0
+                if halves["t_early"] is None or halves["t_recent"] is None:
+                    recency_trend = None
+                else:
+                    delta = sign * (halves["t_recent"] - halves["t_early"])
+                    recency_trend = (
+                        "strengthening"
+                        if delta >= 0.75
+                        else "decaying"
+                        if delta <= -0.75
+                        else "stable"
+                    )
+                return {
+                    "signal": spec.name,
+                    "family": spec.family,
+                    "library": (
+                        "workspace" if spec.name in extra_names else "canonical"
+                    ),
+                    "description": spec.description,
+                    "timeframe": tf_name,
+                    "horizon": h,
+                    "n": n_events,
+                    "mean_fwd_return": mean_r,
+                    "drift_baseline": drift,
+                    "t_stat_vs_drift": float(t),
+                    "p_value": _t_to_pvalue(float(t)),
+                    "direction": ("short" if t <= -2 else "long" if t >= 2 else None),
+                    "fold_deltas": fold_deltas,
+                    "folds_agreeing": agreeing,
+                    "fold_stable": bool(measurable and agreeing >= min_folds_agree),
+                    "t_early": halves["t_early"],
+                    "t_recent": halves["t_recent"],
+                    "recency_trend": recency_trend,
+                    **(extra or {}),
+                }
+
+            # Iterate the SAME def set the frame was built from: a campaign
+            # frame has only workspace columns, so scoring the canonical
+            # library against it would KeyError (hit live 2026-07-26).
+            library = SIGNAL_LIBRARY if include_canonical else ()
+            for spec in (*library, *extra_signals):
+                sig = signals[spec.name].to_numpy()
+                events = _decimate_events(sig[: n - h], h)
+                n_raw = int(sig[: n - h].sum())
+                row = _stats_row(events, spec)
+                if row is None:
+                    if int(events.sum()) >= min_events:
+                        continue  # zero-variance cell
+                    continue
+                tests_run += 1
+                row["n_raw"] = n_raw
                 events_cache[(tf_name, spec.name, h)] = events
-                rows.append(
-                    {
-                        "signal": spec.name,
-                        "family": spec.family,
-                        "library": (
-                            "workspace" if spec.name in extra_names else "canonical"
-                        ),
-                        "description": spec.description,
-                        "timeframe": tf_name,
-                        "horizon": h,
-                        "n": n_events,
-                        "n_raw": n_raw,
-                        "mean_fwd_return": mean_r,
-                        "drift_baseline": drift,
-                        "t_stat_vs_drift": float(t),
-                        "p_value": _t_to_pvalue(float(t)),
-                        "direction": (
-                            "short" if t <= -2 else "long" if t >= 2 else None
-                        ),
-                        "fold_deltas": fold_deltas,
-                        "folds_agreeing": agreeing,
-                        "fold_stable": bool(measurable and agreeing >= min_folds_agree),
-                    }
-                )
+                rows.append(row)
+                if condition_regime and regime_arrays.get(tf_name) is not None:
+                    labels_arr = regime_arrays[tf_name]
+                    for label in REGIME_LABELS:
+                        mask = labels_arr[: n - h] == label
+                        r_events = _decimate_events(sig[: n - h] & mask, h)
+                        r_row = _stats_row(
+                            r_events,
+                            spec,
+                            cell_min_events=max(15, min_events // 2),
+                            extra={
+                                "regime": label,
+                                "in_current_regime": label == regime_now,
+                            },
+                        )
+                        if r_row is None:
+                            continue
+                        tests_run += 1
+                        rows.append(r_row)
     apply_bh_verdicts(rows, q_threshold=q_threshold, min_folds_agree=min_folds_agree)
     # Path stats for every |t|>=2 candidate (not just promoted): pooled
     # multi-symbol BH in signal_scan_job can shift verdicts after this
     # returns, and the set is small enough to be cheap.
     for row in rows:
-        if not row["direction"]:
+        if not row["direction"] or row.get("regime"):
             continue
         direction = row["direction"]
         row["path_stats"] = event_path_stats(
@@ -993,6 +1104,7 @@ def scan_signals(
             for sibling in rows
             if sibling["signal"] == row["signal"]
             and sibling["timeframe"] == row["timeframe"]
+            and not sibling.get("regime")
         }
     rows.sort(key=lambda r: -abs(r["t_stat_vs_drift"]))
     candidates = [r for r in rows if r["direction"]]
@@ -1006,6 +1118,7 @@ def scan_signals(
         "horizons": horizons_used,
         "tests_run": tests_run,
         "tests_skipped_insufficient_data": tests_skipped,
+        "current_regime": regime_now,
         "expected_lucky_passes": expected_lucky,
         "candidates": candidates,
         "promoted": promoted,
@@ -1635,6 +1748,8 @@ def signal_scan_job(
     holdout_fraction: float = 0.15,
     include_workspace: bool = True,
     campaign: str | None = None,
+    condition_regime: bool = False,
+    window_days: int | None = None,
     store: Any | None = None,
 ) -> dict[str, Any]:
     """Scan the ENTIRE canonical trigger library against the job's dataset —
@@ -1701,6 +1816,15 @@ def signal_scan_job(
         if not str(campaign).strip():
             raise ValueError("campaign name must be non-empty")
     include_canonical = campaign is None
+    if window_days is not None:
+        if window_days < 7:
+            raise ValueError("window_days must be >= 7")
+        # Declared recent-window family: trailing window only, ledger-tagged.
+        # Survivors cap at PROBATION (short window = weaker stats by
+        # construction); forward paper adjudicates.
+        stamps_all = pd.to_datetime(frame["timestamp"], utc=True)
+        cutoff = stamps_all.max() - pd.Timedelta(days=window_days)
+        frame = frame[stamps_all >= cutoff].reset_index(drop=True)
     per_symbol = {
         symbol: scan_signals(
             frame[frame["symbol"] == symbol].reset_index(drop=True),
@@ -1712,6 +1836,7 @@ def signal_scan_job(
             slippage_bps=slippage_bps,
             extra_signals=extra_signals,
             include_canonical=include_canonical,
+            condition_regime=condition_regime,
         )
         for symbol in targets
     }
@@ -1720,10 +1845,18 @@ def signal_scan_job(
     all_rows_by_symbol = {
         symbol: scan.pop("_all_rows") for symbol, scan in per_symbol.items()
     }
+    if window_days is not None:
+        for rows_ in all_rows_by_symbol.values():
+            for row in rows_:
+                row["window_days"] = window_days
     apply_bh_verdicts([row for rows in all_rows_by_symbol.values() for row in rows])
-    for scan in per_symbol.values():
+    for symbol, scan in per_symbol.items():
+        pooled_rows = all_rows_by_symbol[symbol]
         scan["promoted"] = [
-            row for row in scan["candidates"] if row.get("verdict") == "promote"
+            row for row in pooled_rows if row.get("verdict") == "promote"
+        ]
+        scan["probation"] = [
+            row for row in pooled_rows if row.get("verdict") == "probation"
         ]
     prior = _read_scan_ledger(root)
     prior_scans = sum(1 for row in prior if row.get("kind") == "scan_meta")
@@ -1745,6 +1878,8 @@ def signal_scan_job(
             "workspace_signals": [spec.name for spec in extra_signals],
             "workspace_signals_sha": workspace.sha if workspace else None,
             "campaign": campaign,
+            "condition_regime": condition_regime,
+            "window_days": window_days,
         }
     ]
     # EVERY executed test is a recorded trial — not just the survivors.
@@ -1753,8 +1888,15 @@ def signal_scan_job(
             ledger_rows.append(
                 {
                     "kind": "scan_test",
+                    # Regime-conditional and windowed cells are DISTINCT
+                    # trials — they must not collide with the base row's hash.
                     "hash": _trial_hash(
-                        symbol, row["signal"], row["timeframe"], row["horizon"]
+                        symbol,
+                        row["signal"]
+                        + (f"|{row['regime']}" if row.get("regime") else "")
+                        + (f"|w{window_days}" if window_days else ""),
+                        row["timeframe"],
+                        row["horizon"],
                     ),
                     "symbol": symbol,
                     "signal": row["signal"],
@@ -1768,6 +1910,8 @@ def signal_scan_job(
                     "verdict": row.get("verdict"),
                     "library": row.get("library"),
                     "campaign": campaign,
+                    "regime": row.get("regime"),
+                    "recency_trend": row.get("recency_trend"),
                 }
             )
     _append_scan_ledger(root, ledger_rows)

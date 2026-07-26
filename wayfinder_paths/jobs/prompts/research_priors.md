@@ -23,6 +23,23 @@ block's archetype counts and pick the family that treats YOUR disease.
 | Sizing overlays: vol-scaled legs, signal-strength scaling, regime-conditional size — pre-registered params | MODERATE | drawdown-shape anomalies | factorial grid + WF |
 | Event-aftermath / analogs-of-losers: what do the nearest analogs of each loser's pre-entry window share? | SPECULATIVE (ideation fuel) | any clustered archetype | `analogs` + `chart` lenses → then a campaign def |
 
+## Evidence tiers
+
+- **Tier 1 — promote** (gates unchanged: pooled q<=0.10 + 3/4 folds +
+  one-shot holdout): full-size leg, and the only tier eligible for any
+  future LIVE promotion.
+- **Tier 2 — probation** (any of: q<=0.20 + 2/4 folds + edge alive in the
+  recent half; regime-conditional q<=0.15 with n>=20 in the CURRENT regime;
+  recent-window family survivor at q<=0.10): deployable at <=50% leg size
+  with PRE-REGISTERED graduate + kill criteria. Paper forward is the
+  holdout — the tier exists because a paper false positive costs nothing
+  but attention, while burying every conditional edge costs the book its
+  reason to exist. Max 2 concurrent probation legs per job; regime flip =
+  kill trigger; graduation from FORWARD trades only.
+- Everything else stays research. Prefer testing `signal | regime`
+  (`--condition-regime`) over demanding all-history stationarity; use
+  `--window-days N` for declared recent-window families.
+
 ## Protocol reminders
 
 - **Diagnose before treating**: every hypothesis cites the attribution slice

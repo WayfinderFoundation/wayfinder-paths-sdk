@@ -171,6 +171,8 @@ async def core_jobs(
     horizon: int | None = None,
     symbol: str | None = None,
     campaign: str | None = None,
+    condition_regime: bool = False,
+    window_days: int | None = None,
     timeframe: str | None = None,
     bars: int = 96,
     indicators: list[str] | None = None,
@@ -406,6 +408,8 @@ async def core_jobs(
                 "timeframes": timeframes,
                 "holdout_fraction": holdout_fraction,
                 "campaign": campaign,
+                "condition_regime": condition_regime,
+                "window_days": window_days,
             },
         )
 

@@ -70,7 +70,7 @@ def derive_features_job(
     fetch_closes: Callable[[str, int, int], pd.Series] | None = None,
 ) -> dict[str, Any]:
     """Compute and append derived feature rows. Sets: cross, exog, venue."""
-    unknown = set(sets) - {"cross", "exog", "venue"}
+    unknown = set(sets) - {"cross", "exog", "venue", "regime"}
     if unknown:
         raise ValueError(f"unknown feature sets: {sorted(unknown)}")
     store = store or JobStore()
@@ -114,6 +114,26 @@ def derive_features_job(
         above = (closes > closes.rolling(BREADTH_SMA).mean()).sum(axis=1)
         _add(f"breadth_sma{BREADTH_SMA}", above.astype(float))
         _add("panelret_lag1", returns.mean(axis=1).shift(1))
+
+    if "regime" in sets:
+        from wayfinder_paths.jobs.indicators import REGIME_LABELS, classify_regimes
+
+        # Integer-coded (the feature store is numeric): index into
+        # REGIME_LABELS — 0=up_lowvol 1=up_highvol 2=down_lowvol 3=down_highvol.
+        code_by_label = {label: float(i) for i, label in enumerate(REGIME_LABELS)}
+        regime_wide = pd.DataFrame(index=closes.index)
+        for symbol in symbols:
+            sym_frame = (
+                frame[frame["symbol"].astype(str) == symbol]
+                .sort_values("timestamp")
+                .reset_index(drop=True)
+            )
+            labels = classify_regimes(sym_frame).map(code_by_label)
+            regime_wide[symbol] = pd.Series(
+                labels.to_numpy(),
+                index=pd.to_datetime(sym_frame["timestamp"], utc=True),
+            ).reindex(closes.index)
+        columns["regime_code"] = regime_wide
 
     if "exog" in sets or "venue" in sets:
         start_ms = int(closes.index[0].timestamp() * 1000)

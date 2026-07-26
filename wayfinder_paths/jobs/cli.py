@@ -682,6 +682,23 @@ def signal_check_cmd(
     help="Declared campaign name: scan ONLY workspace defs as their own BH "
     "family (canonical library untaxed). Recorded in the trial ledger.",
 )
+@click.option(
+    "--condition-regime",
+    "condition_regime",
+    is_flag=True,
+    default=False,
+    help="Also compute per-regime rows (trend x vol 2x2) and report the "
+    "CURRENT regime — regime-conditional edges in the current regime are "
+    "probation-eligible.",
+)
+@click.option(
+    "--window-days",
+    "window_days",
+    type=int,
+    default=None,
+    help="Declared recent-window family: scan only the trailing N days. "
+    "Survivors cap at PROBATION (forward paper adjudicates).",
+)
 def signal_scan_cmd(
     job_id: str,
     symbols: str | None,
@@ -690,11 +707,15 @@ def signal_scan_cmd(
     holdout_fraction: float,
     no_workspace_signals: bool,
     campaign: str | None,
+    condition_regime: bool,
+    window_days: int | None,
 ) -> None:
     store = JobStore()
     result = signal_scan_job(
         job_id,
         campaign=campaign,
+        condition_regime=condition_regime,
+        window_days=window_days,
         symbols=[s.strip() for s in symbols.split(",")] if symbols else None,
         horizons=[int(h) for h in horizons.split(",")] if horizons else None,
         timeframes=[t.strip() for t in timeframes.split(",")] if timeframes else None,
