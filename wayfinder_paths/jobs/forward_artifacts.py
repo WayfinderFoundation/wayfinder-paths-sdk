@@ -120,6 +120,7 @@ def load_forward_view(
         return {"available": False}
 
     markers = _fill_markers(fills)
+    trades = _closed_trades(forward_dir, fills)
     series: list[dict[str, Any]] = [_pnl_series(job_id, ticks, store=store)]
 
     price_note: str | None = None
@@ -204,7 +205,9 @@ def load_forward_view(
             "markers": selected_markers,
             "events": events,
         },
-        "trades": _tail_jsonl(forward_dir / Path(DEFAULT_FORWARD_TRADES).name, 50),
+        # Full entry-joined trade record (direction, duration, reasons) —
+        # replaces the raw 50-row tail the UI could not interpret.
+        "trades": trades,
     }
 
 
@@ -295,19 +298,85 @@ def _fill_markers(fills: list[dict[str, Any]]) -> list[dict[str, Any]]:
         raw = fill.get("raw") or {}
         meta = raw.get("intent_metadata") or {}
         reason = meta.get("entry_reason") or meta.get("exit_reason")
+        # POSITION direction, not fill side: a buy that reduces closes a
+        # SHORT. The chart should say long/short — buy/sell is ambiguous.
+        fill_side = str(fill.get("side") or "").lower()
+        if kind == "entry":
+            direction = "long" if fill_side == "buy" else "short"
+        else:
+            direction = "short" if fill_side == "buy" else "long"
         markers.append(
             {
                 "timestamp": str(timestamp),
                 "symbol": str(fill.get("symbol") or ""),
                 "side": fill.get("side"),
+                "direction": direction,
                 "price": fill.get("avg_price"),
                 "kind": kind,
                 "mode": mode,
-                "label": f"{mode} {kind}" + (f": {reason}" if reason else ""),
+                "label": f"{mode} {direction} {kind}"
+                + (f": {reason}" if reason else ""),
             }
         )
     markers.sort(key=lambda marker: str(marker["timestamp"]))
     return markers
+
+
+def _closed_trades(
+    forward_dir: Path, fills: list[dict[str, Any]], *, limit: int = 500
+) -> list[dict[str, Any]]:
+    """Every closed trade, entry-joined: direction, entry/exit ts+px,
+    duration, reasons. The snapshot's recent_trades tail is for the wake
+    prompt; this is the owner's full record."""
+    import pandas as pd
+
+    from wayfinder_paths.jobs.trade_forensics import (
+        _closing_fill_reason,
+        match_entry_fill,
+        position_side_of_close,
+    )
+
+    rows = _read_jsonl(forward_dir / Path(DEFAULT_FORWARD_TRADES).name)[-limit:]
+    trades: list[dict[str, Any]] = []
+    for trade in rows:
+        symbol = str(trade.get("symbol") or "")
+        exit_raw = trade.get("closed_at") or trade.get("timestamp")
+        if not exit_raw:
+            continue
+        exit_ts = pd.Timestamp(str(exit_raw))
+        if exit_ts.tzinfo is None:
+            exit_ts = exit_ts.tz_localize("UTC")
+        entry = match_entry_fill(fills, symbol=symbol, exit_ts=exit_ts)
+        entry_ts = None
+        if entry is not None:
+            entry_ts = pd.Timestamp(str(entry.get("timestamp")))
+            if entry_ts.tzinfo is None:
+                entry_ts = entry_ts.tz_localize("UTC")
+        entry_meta = ((entry or {}).get("raw") or {}).get("intent_metadata") or {}
+        trades.append(
+            {
+                "symbol": symbol,
+                "direction": position_side_of_close(str(trade.get("side"))),
+                "entry_ts": entry_ts.isoformat() if entry_ts is not None else None,
+                "entry_price": (entry or {}).get("avg_price"),
+                "exit_ts": exit_ts.isoformat(),
+                "exit_price": trade.get("price") or trade.get("avg_price"),
+                "duration_minutes": (
+                    round((exit_ts - entry_ts).total_seconds() / 60)
+                    if entry_ts is not None
+                    else None
+                ),
+                "net_pnl": trade.get("net_pnl"),
+                "entry_reason": entry_meta.get("entry_reason"),
+                "exit_reason": _closing_fill_reason(
+                    fills, symbol=symbol, exit_ts=exit_ts
+                )
+                or "bracket_stop",
+                "mode": str(trade.get("mode") or "paper"),
+            }
+        )
+    trades.sort(key=lambda t: str(t["exit_ts"]), reverse=True)
+    return trades
 
 
 def _pnl_series(
