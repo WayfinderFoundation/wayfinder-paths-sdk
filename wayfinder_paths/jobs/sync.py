@@ -196,6 +196,7 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         "forward": load_forward_snapshot(job_id, store=store, limit=25),
         "runner_links": runner_links,
         "proposals": store.proposals(job_id),
+        "probation": store.read_json(job_id, "probation.json", default={"legs": []}),
         "proposal_queue": store.proposal_queue(job_id),
         "reports": {
             "monitor": latest_monitor,

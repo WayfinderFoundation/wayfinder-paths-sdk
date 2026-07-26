@@ -155,3 +155,94 @@ def test_probation_verdict_paths_and_tier1_unchanged() -> None:
     assert verdicts[4] == "candidate"  # wrong-regime conditional
     assert verdicts[5] == "probation"  # window survivor never Tier-1
     assert verdicts[6] is None
+
+
+def test_probation_registry_lifecycle(tmp_path) -> None:
+    import pytest
+
+    from wayfinder_paths.jobs.models import WayfinderJob
+    from wayfinder_paths.jobs.probation import (
+        load_probation,
+        record_probation_leg,
+        update_probation_leg,
+    )
+    from wayfinder_paths.jobs.store import JobStore
+    from wayfinder_paths.jobs.sync import snapshot_job
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("prob-demo", agent_mode="intervene")
+    store.save(job)
+
+    record_probation_leg(
+        store,
+        job.id,
+        name="lit_dt_short",
+        symbol="LIT",
+        size_fraction=0.5,
+        graduate_criterion=">=15 trades WR 45-65%",
+        kill_criterion="<=-250bps or regime flip",
+        proposal_id="prop-x",
+    )
+    with pytest.raises(ValueError, match="already exists"):
+        record_probation_leg(
+            store,
+            job.id,
+            name="lit_dt_short",
+            symbol="LIT",
+            size_fraction=0.4,
+            graduate_criterion="g",
+            kill_criterion="k",
+        )
+    with pytest.raises(ValueError, match="size_fraction"):
+        record_probation_leg(
+            store,
+            job.id,
+            name="oversize",
+            symbol="POL",
+            size_fraction=0.8,
+            graduate_criterion="g",
+            kill_criterion="k",
+        )
+    record_probation_leg(
+        store,
+        job.id,
+        name="leg2",
+        symbol="POL",
+        size_fraction=0.3,
+        graduate_criterion="g",
+        kill_criterion="k",
+    )
+    with pytest.raises(ValueError, match="max 2 concurrent"):
+        record_probation_leg(
+            store,
+            job.id,
+            name="leg3",
+            symbol="XRP",
+            size_fraction=0.3,
+            graduate_criterion="g",
+            kill_criterion="k",
+        )
+
+    update_probation_leg(
+        store,
+        job.id,
+        "lit_dt_short",
+        progress="7/15 trades, WR 57%",
+        kill_status="-80bps (ok)",
+    )
+    update_probation_leg(store, job.id, "leg2", status="killed")
+
+    doc = load_probation(store, job.id)
+    lit = next(leg for leg in doc["legs"] if leg["name"] == "lit_dt_short")
+    assert lit["graduate"]["progress"] == "7/15 trades, WR 57%"
+    assert (
+        next(leg for leg in doc["legs"] if leg["name"] == "leg2")["status"] == "killed"
+    )
+
+    # Registry rides the snapshot (and therefore the backend sync + UI).
+    snap = snapshot_job(job.id, store=store)
+    assert len(snap["probation"]["legs"]) == 2
+
+    journal = (store.job_dir(job.id) / "journal.jsonl").read_text()
+    assert "probation_leg_opened" in journal
+    assert "probation_leg_killed" in journal
