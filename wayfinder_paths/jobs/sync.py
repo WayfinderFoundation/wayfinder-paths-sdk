@@ -197,6 +197,7 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         "runner_links": runner_links,
         "proposals": store.proposals(job_id),
         "probation": store.read_json(job_id, "probation.json", default={"legs": []}),
+        "post_apply_shadow": _shadow_topline(store, job_id),
         "proposal_queue": store.proposal_queue(job_id),
         "reports": {
             "monitor": latest_monitor,
@@ -273,3 +274,15 @@ def apply_script_mode(
     result = JobCompiler(store=store).compile(job)
     sync_all_jobs(store=store)
     return {"job_id": job_id, "mode": mode, "compile": result}
+
+
+def _shadow_topline(store: JobStore, job_id: str) -> dict[str, Any]:
+    """Read-only topline of the post-apply counterfactual for the UI — the
+    artifact is computed on the wake path, never during sync."""
+    from wayfinder_paths.jobs.counterfactual import load_counterfactual
+
+    doc = load_counterfactual(store, job_id)
+    if not doc or not doc.get("available"):
+        return {}
+    keys = ("proposal_id", "applied_at", "window", "actual", "shadow", "delta_net_pnl")
+    return {key: doc[key] for key in keys if key in doc}

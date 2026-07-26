@@ -66,3 +66,5 @@ block's archetype counts and pick the family that treats YOUR disease.
   owner rejections bind on the change, not its neighborhood.
 - **Long runs via CLI in-session (detached with a log), never MCP ops** —
   the 300s op timeout cannot hold a grid.
+
+**Post-apply shadow (mechanical counterfactual).** After any applied proposal the harness replays the pre-apply strategy over the forward bars and diffs it against the actual book (`post_apply_shadow` in the wake context; `wayfinder job counterfactual <job_id>` on demand). Entry-gating changes are adjudicated HERE — a filter's cost is invisible in the live book because skipped trades never print. Shadow sustainably ahead => revert/adjust proposal citing the block; active ahead => log the forward validation in the decisions ledger. Never hand-recompute counterfactuals.

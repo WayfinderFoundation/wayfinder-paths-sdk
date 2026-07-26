@@ -19,6 +19,7 @@ from wayfinder_paths.jobs.backtest_artifacts import (
     load_backtest_view,
 )
 from wayfinder_paths.jobs.compiler import JobCompiler, compile_job
+from wayfinder_paths.jobs.counterfactual import counterfactual_job
 from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.experiments import (
     list_experiments,
@@ -1054,6 +1055,30 @@ def forward_view_cmd(
         include_prices=not no_prices,
     )
     _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="counterfactual",
+    help="Post-apply shadow A/B: replay the PRE-apply strategy (rollback "
+    "backup) over the forward bars since apply and diff it against the "
+    "actual book — skipped/added entries and net-PnL delta. This is how "
+    "entry-gating changes are adjudicated; their cost never prints in the "
+    "live book.",
+)
+@click.argument("job_id")
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Recompute even if the cached artifact is fresh.",
+)
+def counterfactual_cmd(job_id: str, force: bool) -> None:
+    _echo_json(
+        {
+            "ok": True,
+            "result": counterfactual_job(job_id, store=JobStore(), force=force),
+        }
+    )
 
 
 @job_cli.command(
