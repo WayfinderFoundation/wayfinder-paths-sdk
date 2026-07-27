@@ -565,6 +565,18 @@ def test_primary_agent_warns_against_silent_similar_token_substitution() -> None
     assert "fresh quote and explicit user confirmation" in text
 
 
+def test_core_agent_prompts_include_solana_execution_guidance() -> None:
+    for filename in ("wayfinder.md", "wayfinder-baseline.md"):
+        text = (SDK_ROOT / ".opencode" / "agents" / filename).read_text(
+            encoding="utf-8"
+        )
+
+        assert 'onchain_list_tokens(chain_code="solana"' in text
+        assert "Solana remote-wallet swaps and sends are also sponsored" in text
+        assert "| Solana    |   900 | `solana`" in text
+        assert "wallet ring with an EVM leg" in text
+
+
 def test_stable_apy_research_and_adapter_docs_are_current() -> None:
     delta_high_value = (
         SDK_ROOT
