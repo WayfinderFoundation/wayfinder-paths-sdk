@@ -92,38 +92,11 @@ async def sports_snapshot(
 ) -> dict[str, Any]:
     """Live sports snapshot (bounded reads, normalized cards).
 
-    Resources are canonical across leagues: player_lookup returns players, fighters, or
-    drivers depending on the sport; scoreboard returns games, matches, events, or sessions.
-    Availability varies by league (e.g. season_averages/standings exist for NBA but not
-    tennis) -- an unsupported action returns code `resource_unavailable_for_league` with the
-    leagues that do support it.
-
-    Args:
-        action: scoreboard | game | standings | team_lookup | player_lookup | injuries |
-            season_averages | stats | leaders | odds | futures | player_props | results.
-        sport: League code, e.g. nba, nfl, mlb, nhl, epl, mma, f1, atp, pga, ...
-        event_id: Preferred canonical event id for games, matches, fights, tournaments,
-            sessions, or races. Legacy game_id also works.
-        game_id: Backward-compatible alias for event_id on game-shaped sports.
-        match_id: Explicit soccer/tennis match id when known.
-        fight_id: Explicit MMA fight id when known.
-        tournament_id: Explicit PGA/tennis tournament id when known.
-        competitor_id: Generic player/fighter/driver id filter.
-        competitor_ids: Generic competitor id list filter; comma-separated strings work.
-        player_id: Provider-compatible player id alias for competitor_id.
-        player_ids: Provider-compatible player id list filter; comma-separated strings work.
-        team_id: Team/club/constructor id filter when supported.
-        search: Name query for team_lookup / player_lookup.
-        date: Optional ISO date (YYYY-MM-DD) for scoreboard/odds.
-        timezone: Optional IANA timezone for interpreting scoreboard dates, e.g.
-            America/Toronto. If omitted, the backend defaults to UTC and warns.
-        season: Optional season/year filter.
-        prop_type: Optional prop type filter for player_props.
-        market_type: Optional market/futures type filter.
-        vendors: Optional comma-separated vendor filter.
-        limit: Max cards (1-50, default 10).
-        offset: Optional result offset for paged reads when the backend supports it.
-        sessionID: OpenCode session id, or "_" to resolve from the environment.
+    Actions: scoreboard, game, standings, team/player lookup, injuries,
+    season_averages, stats, leaders, odds, futures, player_props, or results.
+    Prefer canonical `event_id`; sport-specific ids remain accepted. Pass an IANA
+    timezone with dates or UTC is assumed. Unsupported league/action pairs return
+    the leagues that support the resource—do not retry the same pair.
     """
     parsed_limit = optional_int(limit, field_name="limit", min_value=1, max_value=50)
     parsed_offset = optional_int(offset, field_name="offset", min_value=0)
@@ -187,14 +160,10 @@ async def sports_backtest_state(
     limit: str | int = "_",
     sessionID: str = "_",
 ) -> dict[str, Any]:
-    """Monitor sports backtest runs (backend is canonical; SQLite mirror is offline fallback).
+    """Monitor sports backtests using backend state with a stale local fallback.
 
-    Args:
-        action: list_active | list_recent | get_run | refresh_run | refresh_all_active |
-            events | provider_status.
-        run_id: Required for get_run / refresh_run / events.
-        limit: Max runs for list_recent (1-50).
-        sessionID: OpenCode session id, or "_" to resolve from the environment.
+    Actions: list_active/recent, get_run, refresh_run/all_active, events, or
+    provider_status. get/refresh/events require `run_id`; list limits cap at 50.
     """
     parsed_limit = optional_int(limit, field_name="limit", min_value=1, max_value=50)
     parsed_run_id = optional_str(run_id, field_name="run_id")
@@ -254,20 +223,9 @@ async def sports_provider(
 ) -> dict[str, Any]:
     """Full provider facade -- hidden wayfinder-sports subagent only.
 
-    Calls an ALLOWLISTED endpoint by its generic endpoint_id (never an arbitrary URL).
-    Lab mutations are tracked as backend run/job state.
-
-    Args:
-        action: catalog | call.
-        endpoint_id: Allowlisted id for action=call (e.g. data.games.list, lab.models.create).
-            Run sports_provider(action="catalog") to list ids.
-        sport: League code; required for league/lab endpoints (lab gated to nba/nfl/nhl/mlb).
-        path_params: JSON object of path params, e.g. {"id": "..."}.
-        query: JSON object of query-string params.
-        body: JSON object request body (for POST/PATCH endpoints).
-        run_id: Existing run to attach a Lab mutation to (created if omitted).
-        title: Optional title when a run is created.
-        sessionID: OpenCode session id, or "_" to resolve from the environment.
+    Call `catalog` first, then `call` an allowlisted endpoint id—never a URL.
+    path_params/query/body are JSON object strings. Lab is limited to
+    nba/nfl/nhl/mlb; mutations attach to `run_id` or create a tracked run.
     """
     normalized_action = str(action).strip().lower()
     try:

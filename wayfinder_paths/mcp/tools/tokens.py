@@ -17,10 +17,8 @@ ALL_CHAINS = ("all", "_")
 async def onchain_resolve_token(query: str) -> dict[str, Any]:
     """Resolve a token by canonical id/address; chain-scoped shorthands are tolerated.
 
-    Args:
-        query: Prefer coingecko_id-chain_code or chain_code_address. Shorthands like
-            polygon_usdc or usdc-polygon can resolve, but use the returned canonical ID
-            for quotes, execution, and scripts.
+    Prefer `coingecko-id-chain` or `chain_address`. Shorthands may resolve, but
+    always use the returned canonical id for quotes and execution.
     """
     try:
         token = await TOKEN_CLIENT.get_token_details(query)
@@ -71,19 +69,11 @@ _LIST_DIMENSIONS = ("trending", "volume", "new", "active")
 async def onchain_list_tokens(
     chain_code: str, dimension: str = "trending", limit: int = 25
 ) -> dict[str, Any]:
-    """Browse a chain's top tokens — what's actually live and moving right now.
+    """Browse live tokens on one chain by trending, volume, new, or active rank.
 
-    Use this to see what exists on a chain when you have no name to search: it
-    surfaces the top tokens (including brand-new launches the standard catalog
-    hasn't indexed) with price, liquidity, 24h volume, FDV, pool age, and DEX.
-    To resolve one token by name/symbol/address instead, use
-    onchain_fuzzy_search_tokens / onchain_resolve_token.
-
-    Args:
-        chain_code: the chain to browse, e.g. robinhood, base, arbitrum.
-        dimension: ranking — "trending" (default), "volume" (24h), "new"
-            (recently launched), or "active" (most 24h transactions).
-        limit: max tokens to return (1-50, default 25).
+    Results include price, liquidity, volume, FDV, age, and DEX, including
+    launches absent from the standard catalog. Use token search when you already
+    know a name/address. Limit is 1–50.
     """
     if chain_code not in CHAIN_CODE_TO_ID:
         return err(

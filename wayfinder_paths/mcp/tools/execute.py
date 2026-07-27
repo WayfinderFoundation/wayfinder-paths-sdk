@@ -245,27 +245,10 @@ async def onchain_swap(
 ) -> dict[str, Any]:
     """Broadcast a cross-chain / cross-DEX swap via BRAP.
 
-    **Always quote first** — call `onchain_quote_swap` and confirm route + output with the
-    user before running this. Same-chain swaps wait for the source receipt; cross-chain
-    swaps additionally wait for the destination bridge leg to settle (via the
-    BRAP wait-bridge-execution endpoint). Pass `wait_for_receipt=False` for
-    fire-and-forget broadcast (skips both waits).
-
-    Args:
-        wallet_label: Wallet label.
-        from_token: Source token id, address-id, or symbol query.
-        to_token: Destination token id, address-id, or symbol query.
-        amount: Decimal human-units string (e.g. "1000.0" or "0.5"), not wei.
-            Must include a decimal point; integer-looking strings like "1000"
-            are rejected.
-        slippage_bps: Slippage cap in basis points (50 = 0.5%, default).
-        recipient: Optional destination override. Defaults to the destination-chain
-            leg of the same wallet ring.
-        wait_for_receipt: Synchronous receipt wait. Default true.
-        receipt_confirmations: Confirmations to wait for when `wait_for_receipt=true`.
-
-    Returns:
-        `{status: "submitted"|"confirmed"|"failed", sender, recipient, effects: {approval?, swap}, raw}`.
+    Quote and confirm first. `amount` is a decimal human-unit string with a
+    decimal point, never wei. Recipient defaults to the wallet's destination-chain
+    leg. Waiting covers the source receipt and any bridge leg; disable it only for
+    fire-and-forget submission.
     """
     if not wallet_label.strip():
         return err("invalid_request", "wallet_label is required")
@@ -535,23 +518,9 @@ async def onchain_send(
 ) -> dict[str, Any]:
     """Broadcast an ERC-20 or native token transfer.
 
-    Waits for the receipt by default and returns `status="confirmed"`; pass
-    `wait_for_receipt=False` for fire-and-forget broadcast on slow chains where the MCP
-    client may time out.
-
-    Args:
-        wallet_label: Wallet label.
-        token: Token id, address-id, symbol query, or `"native"`.
-        recipient: Destination address. Required.
-        amount: Decimal human-units string (e.g. "5.0" for 5 USDC), not wei.
-            Must include a decimal point; integer-looking strings like "5" are
-            rejected.
-        chain_id: Required when `token="native"`; ignored otherwise.
-        wait_for_receipt: Synchronous receipt wait. Default true.
-        receipt_confirmations: Confirmations to wait for when `wait_for_receipt=true`.
-
-    Returns:
-        `{status: "submitted"|"confirmed"|"failed", sender, recipient, effects: {send_native|send_erc20}, raw}`.
+    `amount` is a decimal human-unit string with a decimal point, never wei.
+    `token="native"` requires `chain_id`; token ids otherwise determine the
+    chain. Waiting is the default—disable it only for fire-and-forget submission.
     """
     if not wallet_label.strip():
         return err("invalid_request", "wallet_label is required")

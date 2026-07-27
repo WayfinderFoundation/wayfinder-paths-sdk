@@ -19,13 +19,9 @@ async def research_goldsky_graphql(
     query: str,
     variables: str = "{}",
 ) -> dict[str, Any]:
-    """Run a direct Goldsky GraphQL query from the OpenCode runtime.
+    """Run read-only GraphQL against a Goldsky public/private API endpoint.
 
-    Args:
-        endpoint: Goldsky GraphQL endpoint under https://api.goldsky.com/api/public/
-            or https://api.goldsky.com/api/private/.
-        query: Read-only GraphQL query. Mutations and subscriptions are blocked.
-        variables: JSON object string for GraphQL variables.
+    Mutations and subscriptions are blocked. `variables` must be a JSON object string.
     """
     try:
         parsed_variables = json.loads(variables or "{}")

@@ -443,10 +443,8 @@ async def polymarket_get_state(
 ) -> dict[str, Any]:
     """Full Polymarket account state — positions, optional orders / activity / trades.
 
-    With `wallet_label`, state is read from the derived deposit wallet. Without
-    `wallet_label`, pass `account` or `wallet_address` directly.
-    `include_orders` defaults to true; `include_activity` / `include_trades` default false
-    to keep payloads tight. Each `*_limit` caps its respective list.
+    `wallet_label` resolves its derived deposit wallet; otherwise pass an account
+    or address. Orders default on, activity/trades off. Keep list limits low.
     """
     waddr, want = await resolve_wallet_address(wallet_label=wallet_label)
     if want and not waddr:
@@ -547,37 +545,11 @@ async def polymarket_read(
 ) -> dict[str, Any]:
     """Read-only Polymarket queries: market discovery, prices, books, history.
 
-    For account state (positions / orders / activity / trades) call `polymarket_get_state`.
-
-    Actions:
-      - `search`: market search via vault-backend. Backend handles tag resolution, ticker
-        synonyms (BTC↔Bitcoin), duration intent ("5 min" → 5-minute markets), ranking by
-        relevance + activity + freshness. `sort`: trending|volume24h|liquidity|fresh.
-        `status`: active|closed|all.
-      - `trending`: list markets sorted by 24h volume (`limit`, `offset`).
-      - `get_market` / `get_event`: fetch by `market_slug` / `event_slug`.
-        These discovery actions return compact candidates by default; pass
-        `summary=False` only when debugging raw Gamma/backend payloads.
-      - `quote`: market-order quote. BUY needs `buy_amount_pusd`; SELL needs
-        `sell_amount_shares`. Results include a normalized execution summary.
-        Provide `market_slug`+`outcome` OR `token_id`.
-      - `price`: best `BUY`/`SELL` price. Prefer `token_id`; exact
-        `market_slug`+`outcome` is also resolved for read-only lookups.
-      - `order_book`: compact book summary. Prefer `token_id`; exact
-        `market_slug`+`outcome` is also resolved. Pass `summary=False`
-        for the raw full book.
-      - `price_history`: time series. `interval` ("1h"/"6h"/"1d"/"1w"/"max"), `start_ts`/`end_ts`
-        (unix sec), `fidelity` (denser sampling for tight buckets). Prefer
-        `token_id`; exact `market_slug`+`outcome` is also resolved.
-      - `bridge_status`: pUSD bridge state for an account.
-      - `open_orders`: requires Level-2 auth through the wallet hash-signing callback.
-
-    Args:
-        wallet_label / wallet_address / account: Target account; precedence is account >
-            wallet_address > wallet_label-resolved address.
-        outcome: "YES"/"NO" or numeric outcome index.
-        side: "BUY" or "SELL".
-        Other args: see action-specific descriptions above.
+    Search/trending discover markets; get_market/event hydrate exact slugs.
+    quote/price/book/history accept `token_id` or exact market_slug+outcome.
+    BUY quotes need pUSD spend; SELL quotes need share count. Summary mode is
+    compact—disable only for raw debugging. Account precedence is account,
+    wallet_address, then label; open_orders requires a label with hash signing.
     """
     waddr, want = await resolve_wallet_address(wallet_label=wallet_label)
 
@@ -929,13 +901,10 @@ async def polymarket_deposit_pusd(
     wallet_label: str,
     amount: float,
 ) -> dict[str, Any]:
-    """Move pUSD from the owner EOA into the derived Polymarket V2 deposit wallet.
+    """Deposit human-unit pUSD from the owner EOA into its Polymarket wallet.
 
-    Required before any trade — Polymarket settles from the deposit wallet, not the EOA. Direct Polygon ERC20 transfer; owner pays POL gas.
-
-    Args:
-        wallet_label: Owner EOA wallet.
-        amount: pUSD to deposit, in human units (e.g. 10.5).
+    Trading settles from the deposit wallet. This only transfers existing pUSD
+    on Polygon—it does not wrap USDC—and the owner pays POL gas.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     throw_if_none("amount is required", amount)
@@ -998,14 +967,9 @@ async def polymarket_withdraw_pusd(
     wallet_label: str,
     amount: float | None = None,
 ) -> dict[str, Any]:
-    """Pull pUSD from the deposit wallet back to the owner EOA via the Polymarket relayer.
+    """Withdraw human-unit pUSD from the deposit wallet to its owner via relayer.
 
-    Relayer-mediated batch — the owner EOA pays no gas. Omit `amount` to drain the
-    full deposit-wallet pUSD balance.
-
-    Args:
-        wallet_label: Owner EOA wallet.
-        amount: pUSD to withdraw, in human units. Omit to drain.
+    Omit `amount` to drain the balance; the owner EOA pays no gas.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     amt = (
@@ -1064,20 +1028,9 @@ async def polymarket_place_market_order(
 ) -> dict[str, Any]:
     """Place a Polymarket market order (FOK limit at a slippage-derived cap).
 
-    Provide `market_slug`+`outcome` OR `token_id`. BUY needs `buy_amount_pusd`;
-    SELL needs `sell_amount_shares`. The adapter quotes the book and signs an FOK limit at
-    `worst_price * (1 ± max_slippage_pct/100)` (default 2%) — order is killed if the
-    book moves past the cap.
-
-    Args:
-        wallet_label: Owner EOA wallet (deposit wallet must already be funded).
-        side: `"BUY"` or `"SELL"`.
-        market_slug: Polymarket market slug; used with `outcome` to resolve token_id.
-        outcome: `"YES"`/`"NO"` or numeric index (default `"YES"`).
-        token_id: Direct CLOB token id; alternative to market_slug + outcome.
-        buy_amount_pusd: pUSD to spend (required for BUY).
-        sell_amount_shares: Shares to sell (required for SELL).
-        max_slippage_pct: Slippage cap as a percent (e.g. 2.0). None = adapter default (2%).
+    Identify the token directly or by market_slug+outcome. BUY sizing is pUSD
+    spend; SELL sizing is shares—not interchangeable. The funded deposit wallet
+    signs an FOK limit at the slippage cap (default 2%); movement past it cancels.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     side = normalize_pm_side(side)
@@ -1193,18 +1146,8 @@ async def polymarket_place_limit_order(
 ) -> dict[str, Any]:
     """Place a Polymarket limit order.
 
-    Provide `market_slug`+`outcome` OR `token_id` (mirrors `polymarket_place_market_order`).
-    `post_only=True` enforces maker-only — the order is rejected if it would cross.
-
-    Args:
-        wallet_label: Owner EOA wallet (deposit wallet must already be funded).
-        side: `"BUY"` or `"SELL"`.
-        price: Limit price in [0, 1] (probability).
-        size: Shares.
-        market_slug: Polymarket market slug; used with `outcome` to resolve token_id.
-        outcome: `"YES"`/`"NO"` or numeric index (default `"YES"`).
-        token_id: Direct CLOB token id; alternative to market_slug + outcome.
-        post_only: Reject if order would cross the book.
+    Identify the token directly or by market_slug+outcome. `price` is probability
+    in [0,1] and `size` is shares. post_only rejects rather than crossing.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     side = normalize_pm_side(side)
@@ -1342,16 +1285,8 @@ async def polymarket_redeem_positions(
 ) -> dict[str, Any]:
     """Claim winnings on a resolved Polymarket market.
 
-    Any USDC.e proceeds are auto-wrapped 1:1 to pUSD via BRAP's polymarket_bridge solver
-    inside the deposit wallet, so the agent ends up holding pUSD. Neg-risk (WCOL)
-    payouts are unwrapped in the same transaction batch as the redeem. If nothing is
-    left to redeem but WCOL from a prior incomplete redemption is stranded in the
-    deposit wallet, the call recovers it (unwrap -> USDC.e -> pUSD) — so re-running
-    a redeem that didn't credit pUSD is safe and is the recovery path.
-
-    Args:
-        wallet_label: Owner EOA wallet that held the position.
-        condition_id: Market's CTF condition id (from Gamma).
+    Proceeds are normalized to pUSD, including neg-risk WCOL unwrapping. Re-run
+    safely to recover stranded WCOL from an incomplete prior redemption.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     cid = throw_if_empty_str("condition_id is required", condition_id)

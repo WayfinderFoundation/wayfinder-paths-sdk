@@ -140,15 +140,10 @@ async def _resolve_basis_root(symbol: str) -> str:
 async def research_get_basis_apy_sources(
     basis_symbol: str, lookback_days: str | int = "7", limit: str | int = "25"
 ) -> dict[str, Any]:
-    """Get top yield opportunities for a given asset across protocols.
+    """Rank cross-protocol yield opportunities for an asset basis.
 
-    Args:
-        basis_symbol: Root symbol (e.g., "BTC", "ETH", "HYPE")
-        lookback_days: Days to look back for averaging (default: "7", min: "1")
-        limit: Max opportunities to return (default: "25", max: "1000")
-
-    Returns:
-        Dict with basis info, opportunities grouped by LONG/SHORT, summary stats
+    Use an asset/root symbol such as BTC, ETH, or HYPE; symbols are uppercased
+    and resolved to their basis root. Results group LONG/SHORT opportunities.
     """
     lookback_int = normalize_int(lookback_days, field_name="lookback_days", min_value=1)
     limit_int = min(1000, normalize_int(limit, field_name="limit", min_value=1))
@@ -164,26 +159,13 @@ async def research_get_basis_apy_sources(
 
 @catch_errors
 async def research_get_basis_symbols() -> dict[str, Any]:
-    """Get list of available basis symbols.
-
-    Returns all available basis symbols in Delta Lab.
-
-    Returns:
-        Dict with symbols list and total count
-    """
+    """List every basis symbol currently available in Delta Lab."""
     return ok(await DELTA_LAB_CLIENT.get_basis_symbols(get_all=True))
 
 
 @catch_errors
 async def research_get_asset_basis_info(symbol: str) -> dict[str, Any]:
-    """Get basis group information for an asset.
-
-    Args:
-        symbol: Asset symbol (e.g., "ETH", "BTC")
-
-    Returns:
-        Dict with asset_id, symbol, and basis group information
-    """
+    """Resolve an asset symbol to its Delta Lab asset and basis group."""
     return ok(await DELTA_LAB_CLIENT.get_asset_basis(symbol=symbol.upper()))
 
 
@@ -191,16 +173,9 @@ async def research_get_asset_basis_info(symbol: str) -> dict[str, Any]:
 async def research_search_delta_lab_assets(
     query: str, chain: str | int = "all", limit: str | int = "25"
 ) -> dict[str, Any]:
-    """Search Delta Lab assets by symbol/name/address/coingecko_id.
+    """Search Delta Lab assets by symbol, name, address, CoinGecko id, or asset id.
 
-    Args:
-        query: Search term (symbol, name, address, coingecko_id, or numeric asset_id)
-        chain: Optional chain filter (chain ID like "8453" or chain code like "base").
-               Use "all" for no filter.
-        limit: Max results (default: "25", max: "200")
-
-    Returns:
-        Dict with "assets" list and "total_count"
+    `chain` accepts a canonical code, numeric chain id, or "all"; limit caps at 200.
     """
     return ok(
         await DELTA_LAB_CLIENT.search_assets(
@@ -223,14 +198,9 @@ async def research_search_delta_lab_markets(
 ) -> dict[str, Any]:
     """Search Delta Lab markets by venue, chain, type, asset id, or basis root.
 
-    Chain accepts "all", canonical chain codes, or numeric chain IDs as strings:
-    "arbitrum"/"42161", "base"/"8453", "plasma"/"9745", "sonic"/"146",
-    "ethereum"/"1", "hyperevm"/"999", and "bsc"/"56".
-
-    For Pendle stablecoin/PT yield ranking, prefer
-    `research_search_delta_lab_instruments(venue="pendle", basisRoot="USD", ...)`
-    first. Pendle market search can return sparse market IDs and is better
-    after instrument/basis discovery or for all-market volume analysis.
+    `chain` accepts a code, numeric id, or "all". For Pendle PT/yield discovery,
+    search instruments first; market rows can be sparse and are better for
+    follow-up hydration or volume analysis.
     """
     return ok(
         await DELTA_LAB_CLIENT.search_markets(
@@ -259,15 +229,9 @@ async def research_search_delta_lab_instruments(
 ) -> dict[str, Any]:
     """Search Delta Lab instruments, including Pendle PT instruments.
 
-    Chain accepts "all", canonical chain codes, or numeric chain IDs as strings:
-    "arbitrum"/"42161", "base"/"8453", "plasma"/"9745", "sonic"/"146",
-    "ethereum"/"1", "hyperevm"/"999", and "bsc"/"56".
-
-    For Pendle stablecoin yields, use `venue="pendle"`, the target `chain`,
-    and `basisRoot="USD"` first. Delta Lab models Pendle PTs as
-    `instrumentType="PENDLE_PT"`; bare `"PT"` is accepted as an alias.
-    Do not use bare `"YT"` unless backend docs or returned rows confirm a
-    matching instrument enum for the environment.
+    `chain` accepts a code, numeric id, or "all". For Pendle stablecoin yields,
+    start with venue=pendle and basisRoot=USD. PT aliases to PENDLE_PT; do not
+    assume YT is a supported instrument enum.
     """
     return ok(
         await DELTA_LAB_CLIENT.search_instruments(
@@ -317,17 +281,10 @@ async def research_get_top_apy(
     limit: str | int = "25",
     instrument_type: str | None = None,
 ) -> dict[str, Any]:
-    """Get top APY opportunities across all basis symbols.
+    """Rank APY opportunities across all basis symbols.
 
-    Without `instrument_type` the leaderboard is dominated by Aerodrome
-    Slipstream LPs (YIELD_TOKEN) with projected fee APRs in the hundreds of
-    percent — pass an instrument type for a useful per-category view.
-
-    Args:
-        lookback_days: Days to average over (default: "7", min: "1")
-        limit: Max opportunities to return (default: "25", max: "500")
-        instrument_type: Optional filter. One of "perp", "pendle_pt",
-            "boros_market", "boros_vault", "yield_token", "lending_supply".
+    Prefer `instrument_type` for useful category comparisons; unfiltered output
+    is often dominated by high projected-fee YIELD_TOKEN LPs.
     """
     lookback_int = normalize_int(lookback_days, field_name="lookback_days", min_value=1)
     limit_int = min(500, normalize_int(limit, field_name="limit", min_value=1))
@@ -346,21 +303,11 @@ async def research_search_price(
     limit: str | int = "25",
     basis: str = "all",
 ) -> dict[str, Any]:
-    """Screen assets by price features (returns, volatility, drawdowns).
+    """Screen price, return, volatility, or drawdown features.
 
-    Args:
-        sort: Column to sort by (default: "price_usd"). Options include:
-              price_usd, ret_1d, ret_7d, ret_30d, ret_90d,
-              vol_7d, vol_30d, vol_90d, mdd_30d, mdd_90d
-        limit: Max rows to return (default: "25", max: "1000"). Prefer the
-              default for exploratory scans; raise only after narrowing by
-              `basis` or another filter.
-        basis: Basis symbol or asset symbol to filter by (e.g. "ETH", "USDC").
-               Asset symbols are auto-resolved to their root basis (USDC -> USD).
-               Use "all" for no filter.
-
-    Returns:
-        Dict with data (list of price feature rows) and count
+    Sort with price_usd, ret_{1,7,30,90}d, vol_{7,30,90}d, or
+    mdd_{30,90}d. `basis` accepts an asset/root symbol or "all" and is
+    auto-resolved (for example USDC to USD). Keep broad scans near limit=25.
     """
     limit_int = min(1000, normalize_int(limit, field_name="limit", min_value=1))
     basis_param, asset_ids_param = await _screen_basis_filter(basis)
@@ -380,22 +327,11 @@ async def research_search_lending(
     limit: str | int = "25",
     basis: str = "all",
 ) -> dict[str, Any]:
-    """Screen lending markets by surface features (supply/borrow APRs, TVL).
+    """Screen non-frozen lending markets by APR, TVL, liquidity, or utilization.
 
-    Args:
-        sort: Column to sort by (default: "net_supply_apr_now"). Options include:
-              net_supply_apr_now, net_supply_mean_7d, net_supply_mean_30d,
-              combined_net_supply_apr_now, net_borrow_apr_now,
-              supply_tvl_usd, liquidity_usd, util_now, borrow_spike_score
-        limit: Max rows to return (default: "25", max: "1000"). Prefer the
-              default for exploratory scans; raise only after narrowing by
-              `basis` or another filter.
-        basis: Basis symbol or asset symbol to filter by (e.g. "ETH", "USDC").
-               Asset symbols are auto-resolved to their root basis (USDC -> USD).
-               Use "all" for no filter.
-
-    Returns:
-        Dict with data (list of lending surface feature rows) and count
+    Useful sorts include net_supply_apr_now, net_borrow_apr_now,
+    supply_tvl_usd, liquidity_usd, util_now, and borrow_spike_score.
+    `basis` accepts an asset/root symbol or "all"; keep broad scans near limit=25.
     """
     limit_int = min(1000, normalize_int(limit, field_name="limit", min_value=1))
     basis_param, asset_ids_param = await _screen_basis_filter(basis)
@@ -416,22 +352,11 @@ async def research_search_perp(
     limit: str | int = "25",
     basis: str = "all",
 ) -> dict[str, Any]:
-    """Screen perpetual markets by surface features (funding, basis, OI).
+    """Screen perpetuals by funding, basis, open interest, volume, or mark price.
 
-    Args:
-        sort: Column to sort by (default: "funding_now"). Options include:
-              funding_now, funding_mean_7d, funding_mean_30d,
-              basis_now, basis_mean_7d, basis_mean_30d,
-              oi_now, volume_24h, mark_price
-        limit: Max rows to return (default: "25", max: "1000"). Prefer the
-              default for exploratory scans; raise only after narrowing by
-              `basis` or another filter.
-        basis: Basis symbol or asset symbol to filter by (e.g. "ETH", "USDC").
-               Asset symbols are auto-resolved to their root basis (USDC -> USD).
-               Use "all" for no filter.
-
-    Returns:
-        Dict with data (list of perp surface feature rows) and count
+    Sort with funding/basis `_now` or `_mean_{7,30}d`, oi_now, volume_24h,
+    or mark_price. `basis` accepts an asset/root symbol or "all"; keep broad
+    scans near limit=25.
     """
     limit_int = min(1000, normalize_int(limit, field_name="limit", min_value=1))
     basis_param, asset_ids_param = await _screen_basis_filter(basis)
@@ -453,22 +378,11 @@ async def research_search_borrow_routes(
     borrow_basis: str = "all",
     chain_id: str | int = "all",
 ) -> dict[str, Any]:
-    """Screen borrow routes (collateral → borrow) by route configuration.
+    """Screen collateral-to-borrow routes by LTV and liquidation configuration.
 
-    Args:
-        sort: Column to sort by (default: "ltv_max"). Options include:
-              ltv_max, liq_threshold, liquidation_penalty, debt_ceiling_usd,
-              venue_name, market_label, created_at
-        limit: Max rows to return (default: "25", max: "1000"). Prefer the
-              default for exploratory scans; raise only after narrowing by
-              `basis`, `borrow_basis`, or `chain_id`.
-        basis: Collateral basis symbol to filter by (e.g. "ETH"). Use "all" for no filter.
-        borrow_basis: Borrow basis symbol to filter by (e.g. "USD"). Use "all" for no filter.
-        chain_id: Optional chain filter (chain ID like "8453" or chain code like "base").
-                 Use "all" for no filter.
-
-    Returns:
-        Dict with data (list of borrow route rows) and count
+    `basis` is collateral; `borrow_basis` is debt. Both accept asset/root
+    symbols or "all"; `chain_id` also accepts a chain code. Useful sorts include
+    ltv_max, liq_threshold, liquidation_penalty, and debt_ceiling_usd.
     """
     limit_int = min(1000, normalize_int(limit, field_name="limit", min_value=1))
     basis_param, asset_ids_param = await _screen_basis_filter(basis)

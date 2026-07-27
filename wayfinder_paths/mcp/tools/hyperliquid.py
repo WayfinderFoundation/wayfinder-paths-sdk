@@ -1142,15 +1142,9 @@ async def hyperliquid_deposit_usdc(
 ) -> dict[str, Any]:
     """Bridge USDC from Arbitrum into the Hyperliquid clearinghouse.
 
-    Deposits below 5 USDC are **permanently lost** by the bridge. Auto-waits for
-    the credit on Hyperliquid before returning, then enables unified-account
-    mode so the balance is withdrawable and shared across spot/perps. Status
-    `unconfirmed` means the bridge tx succeeded but the credit wasn't observed
-    yet — check hyperliquid_get_state before retrying.
-
-    Args:
-        wallet_label: Wallet to send Arbitrum USDC from.
-        amount_usdc: USDC to deposit (must be >= 5).
+    Minimum 5 USDC: smaller deposits are permanently lost. The call waits for
+    credit and enables unified mode. `unconfirmed` means the bridge submitted
+    but credit was not observed—check state before retrying.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     amt = throw_if_not_number("amount_usdc must be a number", amount_usdc)
@@ -1239,16 +1233,8 @@ async def hyperliquid_withdraw_usdc(
 ) -> dict[str, Any]:
     """Withdraw USDC from Hyperliquid back to Arbitrum.
 
-    `amount_usdc` is the **gross amount debited from the unified balance**.
-    Bridge2 takes a $1 USDC fee out of it, so the wallet receives
-    `amount_usdc - 1` USDC on Arbitrum. Minimum `amount_usdc` is `$2`
-    (anything smaller leaves nothing after the fee). Unified-account mode is
-    auto-enabled first so split-mode perp balances become withdrawable.
-
-    Args:
-        wallet_label: Wallet receiving the withdrawal on Arbitrum.
-        amount_usdc: USDC debited from the unified balance (must be >= 2).
-            Net delivered to Arbitrum = `amount_usdc - 1`.
+    `amount_usdc` is gross debit, minimum $2. Bridge2 deducts $1, so Arbitrum
+    receives amount minus one. Unified mode is enabled automatically.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     amt = throw_if_not_number("amount_usdc must be a number", amount_usdc)
@@ -1315,17 +1301,8 @@ async def hyperliquid_update_leverage(
 ) -> dict[str, Any]:
     """Set leverage and margin mode for a perp asset.
 
-    Leverage applies per-asset on Hyperliquid — setting it on BTC doesn't touch ETH.
-
-    HIP-3 perps (`xyz:`, `flx:`, `vntl:`, `hyna:`, `km:`, ...) only support
-    isolated margin; `is_cross=True` is silently overridden to `False` for them.
-
-    Args:
-        wallet_label: Wallet to update.
-        asset_name: Canonical perp identifier (`BTC-USDC`, `xyz:SP500`). Not for spot.
-        leverage: Positive integer; HL enforces a per-asset maximum.
-        is_cross: True for cross margin (default), False for isolated. Forced
-            to False on HIP-3 perps.
+    Settings are per asset and capped by that market. HIP-3 perps only support
+    isolated margin, so `is_cross=True` is forced false. Not valid for spot.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
@@ -1385,15 +1362,9 @@ async def hyperliquid_cancel_order(
     order_id: int | None = None,
     cancel_cloid: str | None = None,
 ) -> dict[str, Any]:
-    """Cancel a resting Hyperliquid order by `order_id` or by `cancel_cloid`.
+    """Cancel one resting order using exactly one of order_id or cancel_cloid.
 
-    Provide exactly one of `order_id` or `cancel_cloid`.
-
-    Args:
-        wallet_label: Wallet that owns the order.
-        asset_name: Canonical market the order lives on (`BTC-USDC`, `BTC/USDC`, `#40`, …).
-        order_id: Numeric on-chain order id.
-        cancel_cloid: Client-side order id that was supplied at placement.
+    `asset_name` must be the canonical market on which the order rests.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
@@ -1469,28 +1440,10 @@ async def hyperliquid_place_trigger_order(
 ) -> dict[str, Any]:
     """Place a perp take-profit / stop-loss trigger order.
 
-    Perp-only: spot and HIP-4 outcome markets are rejected up-front because
-    triggers act on an existing perp position, which those markets don't have.
-
-    Set `is_buy` to the side that **closes** your position (long → False, short → True).
-    A market trigger fills at market on touch; a limit trigger needs `price`.
-
-    Args:
-        wallet_label: Wallet owning the position.
-        asset_name: Perp identifier (`BTC-USDC`, `xyz:SP500`). Spot (`BTC/USDC`)
-            and HIP-4 outcomes (`#N`) are rejected.
-        tpsl: `"tp"` for take-profit, `"sl"` for stop-loss.
-        trigger_price: Mark price at which the order activates. Positive.
-        is_buy: Direction of the close — opposite of the open position's side.
-        size: Asset units to close. Rounded to the asset's lot size; rejects if it
-            rounds to zero.
-        is_market_trigger: Default True (market on touch). False = limit-on-touch.
-        price: Limit price; required only when `is_market_trigger=False`.
-        reduce_only: Default True — the trigger can only close, never open/flip a
-            position (HL cancels it at trigger time if there's nothing to reduce).
-            Set False for opening/scaling triggers (e.g. a stop-entry that adds
-            exposure on touch); the order then rests as a normal non-reduce-only
-            trigger.
+    Perp-only. For closing, `is_buy` is opposite the position: long→false,
+    short→true. Market triggers fill on touch; limit triggers require `price`.
+    Size rounds down to lot size. Keep reduce_only=true for TP/SL; false permits
+    opening or scaling exposure.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
@@ -1619,26 +1572,10 @@ async def hyperliquid_place_market_order(
 ) -> dict[str, Any]:
     """Place an IOC market order on a Hyperliquid perp / spot / HIP-4 market.
 
-    HIP-4 outcome markets (`#N` asset names) trade as integer contracts and
-    require a $10 USDC minimum order value — `usd_amount` is converted to
-    contracts at mid.
-
-    `usd_amount` is converted to asset units at the mid price, then **rounded
-    down to the asset's lot size** — actual notional can be a few % below the
-    requested USD.
-
-    For leverage / margin mode, call `hyperliquid_update_leverage` first.
-
-    Args:
-        wallet_label: Wallet placing the order.
-        asset_name: Canonical perp/spot/outcome identifier (`BTC-USDC`, `xyz:SP500`, `BTC/USDC`, `#N`).
-        is_buy: True to buy, False to sell.
-        size: Order size in asset units (or integer contracts for HIP-4).
-        usd_amount: USD notional alternative to `size`.
-        slippage: Slippage cap as a fraction (default 0.01 = 1%, max 0.25).
-        reduce_only: True to close-only (perp). Ignored for spot.
-        allow_flip: True only when the user explicitly asked to flip/open through an opposite position.
-        cloid: Client order id for later cancellation.
+    Pass size or USD notional; USD sizing rounds down to lot size. HIP-4 uses
+    integer contracts and a $10 minimum. Set leverage first for perps, use
+    reduce_only to close, and allow_flip only for an explicitly requested flip.
+    `slippage` is a fraction (0.01 = 1%).
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
@@ -1778,22 +1715,9 @@ async def hyperliquid_place_limit_order(
 ) -> dict[str, Any]:
     """Place a GTC limit order on a Hyperliquid perp / spot / HIP-4 market.
 
-    HIP-4 outcome markets (`#N` asset names) trade as integer contracts and
-    require a $10 USDC minimum order value. `usd_amount` sizing is not
-    supported for limit outcomes — pass an integer `size`.
-
-    For leverage / margin mode, call `hyperliquid_update_leverage` first.
-
-    Args:
-        wallet_label: Wallet placing the order.
-        asset_name: Canonical perp/spot/outcome identifier (`BTC-USDC`, `xyz:SP500`, `BTC/USDC`, `#N`).
-        is_buy: True to buy, False to sell.
-        price: Limit price (positive).
-        size: Order size in asset units (or integer contracts for HIP-4).
-        usd_amount: USD notional alternative to `size`; converted to size at `price`. Not supported for HIP-4.
-        reduce_only: True to close-only (perp). Ignored for spot.
-        allow_flip: True only when the user explicitly asked to flip/open through an opposite position.
-        cloid: Client order id for later cancellation.
+    Pass size or USD notional; USD sizing converts at `price`. HIP-4 requires
+    integer `size`, disallows USD sizing, and has a $10 minimum. Set leverage
+    first for perps, use reduce_only to close, and allow_flip only when explicit.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
@@ -2010,16 +1934,8 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
 async def hyperliquid_get_trade_asset(label: str, asset_name: str) -> dict[str, Any]:
     """Return selected perp/HIP-3 trade capacity from activeAssetData.
 
-    The response includes current account-side capacity (`long`/`short`), market
-    metadata (`max_leverage`, `compatible_margin_modes`, size decimals,
-    margin-table id), and live market context such as funding/open interest when
-    available from `metaAndAssetCtxs`.
-
-    Args:
-        label: Configured Wayfinder wallet label in the current runtime, such as
-            "main" or "free-seeking-moon primary wallet".
-        asset_name: Hyperliquid perp/HIP-3 market, such as "ETH-USDC",
-            "HYPE-USDC", or "xyz:NVDA".
+    Use its long/short capacity—not wallet balance—to size new risk. Also
+    returns leverage, margin modes, lot precision, funding, and open interest.
     """
     addr, _ = await resolve_wallet_address(wallet_label=label)
     if not addr:
@@ -2053,16 +1969,10 @@ async def hyperliquid_get_candles(
     end_ms: int | None = None,
     limit: int = 500,
 ) -> dict[str, Any]:
-    """
-    Fetch historical Hyperliquid perp candles from the backend time-series service.
+    """Fetch perp candles from the backend time-series service.
 
-    asset_name: Hyperliquid coin or canonical market name. Core perps may be
-        passed as "HYPE" or "HYPE-USDC"; HIP-3/dex perps require the dex prefix
-        such as "xyz:SPCX".
-    interval: Candle interval, e.g. "1m", "5m", "15m", "1h", "4h", "1d".
-    lookback_hours: Used when start_ms/end_ms are omitted.
-    start_ms/end_ms: Optional exact UTC millisecond range; provide both or neither.
-    limit: Max rows returned after backend fetch/resampling.
+    HIP-3 assets require their dex prefix. Supply both UTC `start_ms`/`end_ms`
+    or neither; otherwise `lookback_hours` is used. Keep `limit` modest.
     """
     asset = throw_if_empty_str("asset_name is required", asset_name)
     start, end = _time_range_ms(
@@ -2096,11 +2006,9 @@ async def hyperliquid_get_funding_history(
     end_ms: int | None = None,
     limit: int = 500,
 ) -> dict[str, Any]:
-    """
-    Fetch historical Hyperliquid perp funding rows from the backend time-series service.
+    """Fetch perp funding history; HIP-3 assets require their dex prefix.
 
-    asset_name accepts core coins like "HYPE" / "HYPE-USDC" and dex-prefixed
-    markets like "xyz:SPCX".
+    Supply both UTC start/end milliseconds or neither, and keep `limit` modest.
     """
     asset = throw_if_empty_str("asset_name is required", asset_name)
     start, end = _time_range_ms(
@@ -2126,14 +2034,10 @@ async def hyperliquid_get_funding_history(
 async def hyperliquid_search_mid_prices(
     asset_names: list[str] | None = None,
 ) -> dict[str, Any]:
-    """
-    Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets for current mid prices.
+    """Get current mids keyed by canonical perp/spot/HIP-3/HIP-4 market names.
 
-    Returned keys are always the canonical market paths (`BTC-USDC`, `HYPE/USDC`,
-    `xyz:NVDA`, `#40`) regardless of whether `asset_names` is provided.
-
-    asset_names: Canonical market paths to filter mid prices (e.g. "BTC-USDC", "xyz:NVDA",
-        "KNTQ/USDH", "#40"), get these from hyperliquid_search_market(). If omitted, returns every market's mid price. Prefer non empty asset_names for efficiency.
+    Pass names returned by market search; omitting `asset_names` returns every
+    market and can be large.
     """
     adapter = HyperliquidAdapter()
     success, prices = await adapter.get_all_mid_prices()
@@ -2181,15 +2085,10 @@ async def hyperliquid_search_market(
     limit: int = 10,
     market_type: HyperliquidMarketType | None = None,
 ) -> dict[str, Any]:
-    """
-    Search Hyperliquid perpetual, spot, hip3 perpetual and hip4 outcome markets by a simple query string. An empty
-    query returns the first `limit` items from each bucket unfiltered.
+    """Search perp, HIP-3, spot, and HIP-4 markets and return canonical names.
 
-    query: A simple string containing asset names, for example: btc, eth, oil. Prefer non empty queries for efficiency.
-    limit: Max number of results to return per category.
-    market_type: optional filter — "perp", "hip3", "spot", or "hip4". Buckets the caller filters out come back empty.
-
-    Returns a list of asset names to be used when executing Hyperliquid orders.
+    Prefer a non-empty query and optional market_type filter; an empty query
+    returns `limit` rows from every bucket.
     """
     adapter = HyperliquidAdapter()
     (
@@ -2541,16 +2440,10 @@ async def hyperliquid_search_hip4(
     limit: int = 15,
     include_details: bool = False,
 ) -> dict[str, Any]:
-    """
-    Search only Hyperliquid HIP-4 outcome markets by a simple query string.
+    """Search only HIP-4 outcome markets for sports or event questions.
 
-    Use this for sports, prediction markets, and "will X happen" searches. It
-    deliberately excludes perps, HIP-3 builder markets, and spot assets so broad
-    sports queries do not return large unrelated asset boards.
-
-    query: A simple string containing market text, for example: world cup, election, bitcoin above.
-    limit: Max HIP-4 outcome markets to return (1-20, default 15).
-    include_details: If true, return the richer market shape with long descriptions capped.
+    Limit is 1–20. Keep `include_details=False` for discovery; enable it only
+    when shortlisted resolution text is needed.
     """
     parsed_limit = (
         optional_int(limit, field_name="limit", min_value=1, max_value=20) or 15

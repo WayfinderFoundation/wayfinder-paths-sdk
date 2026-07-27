@@ -29,6 +29,21 @@ def test_build_mcp_registers_tools() -> None:
         assert required in names, f"missing tool: {required}"
 
 
+def test_mcp_tool_descriptions_stay_context_efficient() -> None:
+    from wayfinder_paths.mcp.server import build_mcp
+
+    tools = build_mcp()._tool_manager.list_tools()
+    descriptions = {tool.name: tool.description or "" for tool in tools}
+    oversized = {
+        name: len(description)
+        for name, description in descriptions.items()
+        if len(description) > 700
+    }
+
+    assert not oversized, f"tool descriptions exceed 700 characters: {oversized}"
+    assert sum(map(len, descriptions.values())) <= 25_000
+
+
 def test_mcp_server_starts_and_stays_alive() -> None:
     # `python -m wayfinder_paths.mcp.server` is the production entrypoint. Spawn it
     # and confirm it survives long enough to be serving on stdio — that proves

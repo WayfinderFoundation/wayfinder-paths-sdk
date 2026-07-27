@@ -92,54 +92,13 @@ async def core_runner(
     always_notify_session_on_job_completion: bool = False,
     debug: bool = False,
 ) -> dict[str, Any]:
-    """Control the local runner daemon — the only sanctioned scheduler for recurring jobs. All scheduled/recurring tasks MUST go through this tool. Don't use system cron, systemd timers,
-    or background loops. The daemon owns persistence, interval/cron scheduling,
-    failure tracking, timeouts, and (on Wayfinder Shells) backend job/run sync.
+    """Control the only supported scheduler; never use cron, systemd, or background loops.
 
-    To minimize conversation noise, use always_notify_session_on_job_completion=False. By default, failures always post to the chat session. Successes are silent unless
-    `always_notify_session_on_job_completion` is true or the script emits a
-    `WAYFINDER_JOB_RESULT {...}` line.
-
-    Lifecycle actions:
-      - `daemon_status`: lightweight probe — has the socket, is anyone listening.
-      - `ensure_started`: idempotent start. Safe to call before adding a job.
-      - `daemon_start` / `daemon_stop`: explicit lifecycle. `daemon_start` accepts
-        `tick_seconds`, `max_workers`, `max_failures`, `default_timeout_seconds`, `log_level`.
-
-    Job actions:
-      - `add_job`: schedule a recurring `name` with exactly one of
-        `interval_seconds` or `cron_expr` (`timezone` defaults to UTC). Two `type`s:
-          * `strategy` — pass `strategy`, `strategy_action`, optional `config`, `wallet_label`,
-            `timeout_seconds`. See `core_run_strategy` for action semantics.
-          * `script` — pass `script_path` (inside `.wayfinder_runs/`), optional `args`, `env`,
-            `timeout_seconds`.
-      - `update_job`: mutate an existing job's payload / schedule.
-      - `pause_job` / `resume_job` / `stop_job` / `delete_job`: by `name`.
-        `stop_job` sends `sig` (`TERM`, `INT`, or `KILL`) to a currently running worker.
-      - `run_once`: trigger an immediate run of `name` (off the schedule).
-
-    Inspection actions:
-      - `status`: daemon state + all jobs.
-      - `job_runs`: recent runs for a job (`name`, optional `limit`).
-      - `run_report`: detailed log for a single run (`run_id`, optional `tail_bytes`).
-
-    Safety notes for monitors and mutations:
-      - If `add_job`, `delete_job`, `update_job`, or `run_once` times out at the
-        caller, treat the mutation result as unknown and inspect `status`,
-        `job_runs`, or `run_report` before retrying.
-      - Generated monitor scripts should store durable state under the runner
-        directory or `.wayfinder_runs/state`. Do not store monitor state in
-        `/tmp`; restart-pruned state can duplicate alerts.
-      - First/seed runs should not send external alerts unless explicitly
-        requested. Position-bound monitors should verify live side, size,
-        leverage/mode, and notional before alerting.
-      - Fetch or notify failures should exit nonzero or emit a
-        `WAYFINDER_JOB_RESULT` handoff rather than looking like a healthy run.
-
-    Args:
-        sock_path: Override the daemon socket (default: standard runner location).
-        always_notify_session_on_job_completion: Additionally, all successful runs are sent into chat. Defaults false to keep routine scheduled checks quiet.
-        debug: Verbose response payload for troubleshooting.
+    Use ensure_started, then add/update/pause/resume/stop/delete/run_once by
+    job name. add_job needs exactly one of interval_seconds or cron_expr and
+    type=strategy or script. Read with status/job_runs/run_report. A timed-out
+    mutation has unknown outcome—inspect before retrying. Keep monitor state
+    durable, seed runs quiet, and routine successes unannounced.
     """
 
     client = _client(sock_path)
@@ -507,17 +466,10 @@ async def core_runner_status(
     run_id: int | None = None,
     tail_bytes: int | None = None,
 ) -> dict[str, Any]:
-    """Inspect runner daemon/job state without mutating scheduler state.
+    """Read runner state: daemon_status, status, job_runs, or run_report.
 
-    Use this for routine checks that should not require user approval:
-      - `daemon_status`: lightweight socket/listener probe.
-      - `status`: daemon state + all jobs.
-      - `job_runs`: recent runs for a job (`name`, optional `limit`).
-      - `run_report`: detailed log for a single run (`run_id`, optional `tail_bytes`).
-
-    Mutating scheduler actions such as `add_job`, `delete_job`, `run_once`,
-    `daemon_start`, and `daemon_stop` remain on `core_runner` and should stay
-    approval-gated.
+    Use `name` for job runs and `run_id` for a report. Mutations stay on
+    approval-gated `core_runner`.
     """
 
     return await core_runner(

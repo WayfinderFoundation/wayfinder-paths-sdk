@@ -27,16 +27,11 @@ async def research_search_alpha(
     created_before: str = "_",
     limit: str | int = "20",
 ) -> dict[str, Any]:
-    """Search Alpha Lab insights. Sorted by insightfulness score (highest first).
+    """Search Alpha Lab insights, highest insightfulness first.
 
-    Args:
-        query: Text search (case-insensitive). Use "_" for no filter.
-        scan_type: "twitter_post", "defi_llama_chain_flow", "defi_llama_overview",
-                  "defi_llama_protocol", "delta_lab_top_apy",
-                  "delta_lab_best_delta_neutral", or "all".
-        created_after: ISO 8601 datetime lower bound (e.g. "2026-03-06T00:00:00Z"). Use "_" to skip.
-        created_before: ISO 8601 datetime upper bound. Use "_" to skip.
-        limit: Max results (default "20", max "200").
+    Use "_" for omitted filters. `scan_type` accepts twitter_post,
+    defi_llama_chain_flow/overview/protocol, delta_lab_top_apy,
+    delta_lab_best_delta_neutral, or all. Date bounds are ISO-8601; limit caps at 200.
     """
     kwargs: dict[str, Any] = {
         "sort": "-insightfulness_score",

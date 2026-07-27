@@ -73,24 +73,10 @@ async def core_web_search(
 ) -> dict[str, Any]:
     """Search the public web through the Wayfinder Research Gateway.
 
-    Args:
-        query: Search query. Do not include secrets, tokens, or private URLs.
-        numResults: Max result count (default "8", range 1-100).
-        type: Search type: auto, fast, instant, deep-lite, deep, deep-reasoning, or neural.
-        category: Optional category: company, people, research paper, news,
-            personal site, financial report, or "_".
-        includeDomains: Optional comma/newline-separated domains to include.
-        excludeDomains: Optional comma/newline-separated domains to exclude.
-        startPublishedDate: Optional ISO datetime lower bound, or "_".
-        endPublishedDate: Optional ISO datetime upper bound, or "_".
-        maxAgeHours: Optional freshness window in hours, or "_".
-        additionalQueries: Optional comma/newline-separated deep-search expansions.
-        contentType: Result content mode: highlights, text, or summary.
-        livecrawl: Live crawl policy: "fallback" or "preferred".
-        contextMaxCharacters: Optional excerpt character cap (500-50000). Use "_"
-            to let the backend default apply.
-        sessionID: Optional OpenCode session id. Use "_" to resolve from the
-            runtime environment or SDK default.
+    Never include secrets or private URLs. `type` is auto/fast/instant/deep-lite/
+    deep/deep-reasoning/neural; content categories belong in `category`, not
+    `type`. Filters accept comma/newline lists and ISO dates. Prefer highlights
+    and a modest context cap; livecrawl is fallback or preferred.
     """
     search_type, category_value = _search_type_and_category(type, category)
     context_max = optional_int(
@@ -159,18 +145,9 @@ async def core_web_fetch(
 ) -> dict[str, Any]:
     """Fetch/crawl public URLs through the Wayfinder Research Gateway.
 
-    Args:
-        urls: One or more public http(s) URLs, comma- or newline-separated.
-        query: Optional highlight/summary query, or "_".
-        contentType: Result content mode: text, highlights, or summary.
-        livecrawl: Live crawl policy: "fallback" or "preferred".
-        maxAgeHours: Optional freshness window in hours, or "_".
-        subpages: Optional subpage count, or "_".
-        subpageTarget: Optional comma/newline-separated subpage target hints.
-        contextMaxCharacters: Optional excerpt character cap (500-50000). Use "_"
-            to let the backend default apply.
-        sessionID: Optional OpenCode session id. Use "_" to resolve from the
-            runtime environment or SDK default.
+    Accepts one or more public HTTP(S) URLs. Use `query` with highlights/summary
+    to keep output focused; raw text can be large. `subpages` caps at 10,
+    context at 50k characters, and livecrawl is fallback or preferred.
     """
     parsed_urls = split_values(urls, field_name="urls")
     if not parsed_urls:
@@ -228,15 +205,9 @@ async def research_social_x_search(
     toDate: str = "_",
     sessionID: str = "_",
 ) -> dict[str, Any]:
-    """Search X through the Wayfinder Research Gateway.
+    """Search X with optional handle allow/deny lists and YYYY-MM-DD bounds.
 
-    Args:
-        query: Social/X search query.
-        allowedXHandles: Optional comma/newline-separated handles to include.
-        excludedXHandles: Optional comma/newline-separated handles to exclude.
-        fromDate: Optional YYYY-MM-DD lower bound, or "_".
-        toDate: Optional YYYY-MM-DD upper bound, or "_".
-        sessionID: Optional OpenCode session id. Use "_" to resolve from runtime.
+    Handle lists accept comma/newline input and cap at 10 each; "_" omits a filter.
     """
     result = await RESEARCH_CLIENT.social_x_search(
         query=query,

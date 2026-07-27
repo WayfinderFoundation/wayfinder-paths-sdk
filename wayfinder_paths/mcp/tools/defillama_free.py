@@ -37,20 +37,12 @@ async def research_defillama_free(
     limit: str | int = "25",
     cursor: str = "_",
 ) -> dict[str, Any]:
-    """Call DeFiLlama free APIs directly from the OpenCode runtime.
+    """Read a free DeFiLlama dataset.
 
-    Args:
-        dataset: protocols, protocol_search, protocol, tvl, protocol_fees,
-            protocol_tvl_history, chains, stablecoins, yields_pools,
-            current_prices, dex_overview, fees_overview, or open_interest_overview.
-        protocolSlug: Required for protocol/tvl/protocol_fees/protocol_tvl_history.
-        chain: Optional for dex_overview and fees_overview.
-        coins: Required for current_prices, e.g. ethereum:0xa0b8...
-        query: Required for protocol_search.
-        dataType: For protocol_fees: dailyFees or dailyRevenue.
-        days: Lookback days for protocol_fees/protocol_tvl_history.
-        limit: Result cap for page-able collection datasets.
-        cursor: Page cursor returned by a prior response, or "_".
+    `dataset` selects protocols/search/detail/TVL/fees, chains, stablecoins,
+    yield pools, prices, DEX/fees, or open-interest data. Detail/TVL datasets
+    require `protocolSlug`; search requires `query`; prices require
+    `coins` such as `ethereum:0x...`. Use returned cursors for pagination.
     """
     normalized = normalize_enum(
         dataset,

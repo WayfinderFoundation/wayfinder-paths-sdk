@@ -74,26 +74,10 @@ async def onchain_quote_swap(
 ) -> dict[str, Any]:
     """Quote a BRAP cross-chain/cross-DEX swap without broadcasting.
 
-    Mandatory before `onchain_swap`: verifies the resolved token symbols, addresses, and
-    chains match intent, surfaces the best route, output, and fees, and returns a
-    ready-to-use `suggested_swap_request` payload.
-
-    Args:
-        wallet_label: Sender wallet (config.json label).
-        from_token / to_token: Token id (`<coingecko_id>-<chain_code>`), address id
-            (`<chain_code>_<address>`), or symbol query.
-        amount: Decimal human-units string (e.g. "1000.0" USDC or "0.5" ETH),
-            not wei. Must include a decimal point; integer-looking strings like
-            "1000" are rejected.
-        slippage_bps: Slippage cap in basis points (50 = 0.50%).
-        recipient: Optional destination override. Defaults to the destination-chain
-            leg of the same wallet ring.
-        include_calldata: Include the raw tx calldata in the response (off by default to keep
-            payload small; only the `len` is reported when false).
-
-    Returns:
-        `{preview, quote: {best_quote, quote_count, providers}, suggested_swap_request, ...}`.
-        `preview` flags `⚠ RECIPIENT DIFFERS FROM SENDER` when applicable.
+    Mandatory before swapping: verify resolved tokens/chains, route, output,
+    fees, and recipient. `amount` is a decimal human-unit string with a decimal
+    point, never wei. Recipient defaults to the destination-chain wallet leg.
+    Calldata is omitted unless requested to keep the response small.
     """
     ring = await load_wallet_ring(wallet_label)
     if not ring:

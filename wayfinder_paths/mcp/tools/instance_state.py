@@ -210,12 +210,10 @@ def _compact_preview_summary(resolved: dict[str, Any]) -> dict[str, Any]:
 
 @catch_errors
 async def visual_get_frontend_context(include_health: bool = False) -> dict[str, Any]:
-    """Read the current frontend UI state.
+    """Read the current UI state and chart workspace.
 
-    Returns what the user is currently viewing plus any chart workspace
-    created by agent tools. Set `include_health=True` when repairing or
-    auditing workspace chart sources; this adds bounded chart health warnings
-    and replacement candidates when the backend can validate them.
+    Use `include_health=True` only to audit or repair chart sources; it adds
+    bounded warnings and replacement candidates.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
@@ -233,17 +231,12 @@ async def visual_search_chart_series(
     market_type: str | None = None,
     limit: int = 20,
 ) -> dict[str, Any]:
-    """Search backend-supported chart datasets before creating a chart.
+    """Find backend-supported series for market, rate, and yield charts.
 
-    Use this first for charts that need market prices, funding rates, APYs,
-    lending rates, Boros/Pendle data, or DeFiLlama yield snapshots. Search by
-    natural intent/assets first, then inspect each result's `kind`, `shape`,
-    and `supported_chart_kinds` before choosing it. Do not pass `kind` unless
-    the user clearly requested a data family like funding/yield or you need to
-    narrow a large result set. For asset price/performance charts, prefer the
-    returned Hyperliquid perp datasets over spot/fallback sources unless the
-    user explicitly asks for spot. Returned results include the exact `source`
-    object and shape metadata for chart series specs.
+    Search by intent first; add `kind` only to narrow a known data family.
+    Inspect `shape` and `supported_chart_kinds`, then copy the returned
+    `source`. Prefer Hyperliquid perps for price performance unless spot was
+    requested.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
@@ -270,22 +263,12 @@ async def visual_set_active_market(
     market_type: str | None = None,
     chain_id: int | None = None,
 ) -> dict[str, Any]:
-    """Switch the default Shells chart and trading context to one market.
+    """Switch the live chart and trading panels to one tradable market.
 
-    Use this for requests like "show AAVE", "switch to PENGU perp", "chart
-    PROMPT", or "open this Polymarket market". This updates the live chart,
-    order book, trades, and trade ticket together. Prefer this over
-    `visual_create_chart` when the user wants a single tradable token, perp,
-    spot, or prediction market rather than a custom visual pane. For onchain
-    swap-token charts, pass market_type="onchain-spot" instead of searching
-    chart-series candidates.
-
-    Args:
-      query: Natural search text, e.g. "AAVE perp" or "Timberwolves".
-      market_id: Exact Shells market id if known, e.g. "hl-perp-btc".
-      market_type: Optional narrowing: hl-perp, hl-spot, onchain-spot,
-        polymarket.
-      chain_id: Optional EVM chain id for onchain spot resolution.
+    Prefer this over `visual_create_chart` for a single token, perp, spot, or
+    prediction market. Pass either natural `query` or exact `market_id`;
+    `market_type` may be hl-perp, hl-spot, onchain-spot, or polymarket. Onchain
+    tokens require onchain-spot and may need `chain_id`.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
@@ -313,20 +296,11 @@ async def visual_preview_series(
     lookback_days: int | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
-    """Dry-run resolve chart series and inspect the actual data before charting.
+    """Resolve chart data without saving and return compact value statistics.
 
-    Takes the same series/transforms shape as `visual_create_chart`, resolves
-    it server-side without saving anything, and returns a compact per-series
-    summary: point count, first/last timestamps, y_min/y_max/y_first/y_last,
-    unit, and a few head/tail sample points.
-
-    Use this before creating a chart when working with an unfamiliar dataset
-    or derived math (ratios, spreads, rebasing) to confirm the values are in
-    the range and unit you expect — e.g. that an APY series is percent not
-    decimal, or that a ratio needs a scale to be readable. The same display
-    normalization applied by `visual_create_chart` (auto percent-scaling of
-    known rate fields) is applied here, so the preview matches what the chart
-    would render.
+    Preview unfamiliar sources or derived math before charting. It uses the
+    same spec and automatic rate-to-percent normalization as
+    `visual_create_chart`, so inspect ranges and units here first.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
@@ -354,36 +328,13 @@ async def visual_set_chart_indicators(
     chart_id: str,
     indicators: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Set the TradingView indicators rendered on a chart (replace semantics).
+    """Replace a chart's TradingView indicators; pass `[]` to clear them.
 
-    Applies native TradingView studies to the live market chart or an
-    agent-created workspace chart. Use `visual_get_frontend_context()` to read
-    the current live chart id, or pass a workspace chart id. The full list
-    replaces whatever indicators the chart had; pass `[]` to clear.
-
-    Each indicator: {"name": "...", "inputs"?: {...}, "id"?: "...",
-    "forceOverlay"?: bool}.
-
-    Supported names (aliases, case-insensitive) and params (defaults):
-      - sma (price overlay): length (9), source ("close")
-      - ema (price overlay): length (9), source ("close")
-      - bollinger (price overlay): length (20), mult (2)
-      - supertrend (price overlay): length (10, ATR period), factor (3)
-      - vwap (price overlay): anchor ("Session"|"Week"|"Month"|"Quarter"|
-        "Year"), source ("hlc3")
-      - rsi (sub-pane): length (14)
-      - macd (sub-pane): fast (12), slow (26), signal (9)
-      - atr (sub-pane): length (14)
-      - stochastic (sub-pane): k_length (14), k_smoothing (1), d_smoothing (3)
-      - volume (sub-pane): ma_length (20), show_ma (false)
-
-    Use these friendly param names — the backend translates them to the
-    study's actual TradingView input ids. Omit `inputs` to use TradingView
-    defaults; prefer that unless the user asked for specific parameters.
-    Unknown indicator names are rejected with the supported list. Indicators
-    only render on TradingView-backed charts (the live market chart,
-    price_candle charts, and single-series time-series line charts);
-    bar/table/multi-series recharts panels do not support them.
+    Each item is `{name, inputs?, id?, forceOverlay?}`. Names: sma, ema,
+    bollinger, supertrend, vwap, rsi, macd, atr, stochastic, volume. Use
+    friendly inputs such as `length`, `source`, `mult`, `factor`, or
+    `fast`/`slow`/`signal`; omit inputs for defaults. Only live,
+    price_candle, and single-series time charts support indicators.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
@@ -429,69 +380,18 @@ async def visual_create_chart(
     context_market_id: str | None = None,
     indicators: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Create or replace a chart in the user's shell chart workspace.
+    """Create or replace a persistent workspace chart.
 
-    Use this when the user asks to show a market, compare assets, chart APYs,
-    or create another visual panel. The backend validates renderability before
-    saving; if this returns `ok: false`, revise the source/kind instead of
-    telling the user the chart is ready. The chart persists with the current
-    OpenCode shell until cleared.
+    Kinds: price_candle, line, bar, table. Prefer dataset_series from
+    `visual_search_chart_series`; market_price, inline, and legacy
+    delta_lab_asset also work. Transforms: filter, latest_by, top_n,
+    rebase, pct_change, scale, ratio, spread, and moving_average.
 
-    Supported chart kinds:
-      - price_candle: primary market price chart. Use source type
-        {"type": "market_price", "market_id": "..."} or a dataset_series
-        returned by `visual_search_chart_series` for Hyperliquid perp prices.
-      - line: one or more time series.
-      - bar: ranked/latest categorical values.
-      - table: tabular data.
-
-    Supported source types:
-      - market_price: {"type": "market_price", "market_id": "hl-perp-btc"}
-      - dataset_series: use `visual_search_chart_series` and copy the returned
-        source object. Preferred for assets, funding, APYs, Delta Lab registry
-        series, DeFiLlama snapshots, and CoinGecko fallback prices.
-      - delta_lab_asset: {"type": "delta_lab_asset", "symbol": "USDC",
-        "series": "lending", "venue"?: "...", "basis"?: true}. Legacy
-        fallback only; use the dataset_series result when search returns one.
-      - inline: {"type": "inline", "points": [{...}]}
-
-    Supported transforms:
-      filter, latest_by, top_n, rebase, pct_change, scale, multiply, ratio,
-      spread, moving_average. Prefer rebase(base=100) for relative performance.
-      Put transforms on a single series when only that data needs conversion,
-      and copy a registry item's `default_transforms` into the series-level
-      transforms before adding metric conversions. Delta Lab APY/rate fields are
-      decimal fractions, so `0.12` should be displayed as `12%` with
-      {"type": "scale", "factor": 100, "unit": "%", "label_suffix": "(%)"}.
-      Annualize hourly funding directly to percent with {"type": "scale",
-      "factor": 876000, "unit": "%", "label_suffix": "(annualized %)"}.
-      Chart-level transforms apply to every series unless scoped with
-      `series_ids: ["..."]`. To display a tiny ratio readably, put `scale`
-      on the ratio transform itself — {"type": "ratio", "left": "a",
-      "right": "b", "scale": 1000000, "label_suffix": "(×10⁶)"} — which
-      scales only the derived series; a chart-level scale would corrupt the
-      source series and cancel out of the ratio.
-
-    Series can include optional `axis` ("left" or "right") and `color`.
-    Keep comparable units on the same axis; use a right axis for unrelated
-    units only when the user asks to overlay them.
-
-    For tradable perp charts, set `context_market_id` (for example
-    "hl-perp-pengu"). The shell will keep the workspace chart active while
-    switching the order book, trades, and trade ticket to that market.
-
-    Use lookback_days for requested windows. Examples: 30 for one month,
-    90 for three months, 365 for one year.
-
-    Optional `indicators` applies TradingView studies to the chart after it
-    saves (same shape as `visual_set_chart_indicators`). Only TradingView-
-    backed charts render them (price_candle, single-series time lines).
-
-    The response is compact: the saved chart identity plus `chart_validation`
-    with per-series row/point counts, first/last timestamps, unit, and
-    y_first/y_last/y_min/y_max. Check those stats against the values you
-    expect — a ratio at 1e-6 or an APY at 0.05 instead of 5 means the scaling
-    is wrong; fix the transforms instead of reporting success.
+    Known rates auto-scale to percent; hourly funding auto-annualizes.
+    Chart transforms affect every series unless scoped by `series_ids`; scale
+    a derived ratio inside the ratio transform so its inputs stay unchanged.
+    `context_market_id` binds trading panels. Indicators require a
+    TradingView-backed chart. Revise failed validation or implausible ranges.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
@@ -534,12 +434,10 @@ async def visual_create_chart(
 
 @catch_errors
 async def visual_import_chart_spec(path: str) -> dict[str, Any]:
-    """Import a Shells workspace chart object from a local JSON artifact.
+    """Import one chart spec from `.wayfinder_runs/visual_specs/*.json`.
 
-    The artifact must live under `.wayfinder_runs/visual_specs/*.json` and must
-    contain a single chart object matching the `visual_create_chart` workspace
-    schema. This is for visual-agent scripts that generate renderable chart
-    specs without sending large JSON payloads through the model context.
+    Use this for script-generated specs too large to send through model
+    context. The JSON must match the `visual_create_chart` schema.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
@@ -635,31 +533,13 @@ async def visual_add_workspace_chart_annotation(
     config: dict[str, Any],
     annotation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Add a TradingView annotation to a workspace or default Shells chart.
+    """Add an annotation to a workspace or live chart.
 
-    Use `visual_get_frontend_context()` to read the current default chart id,
-    then pass that chart_id here. If chart_id matches an agent-created
-    workspace chart, the annotation attaches there. Otherwise it attaches to
-    the default live chart for that id.
-
-    For events, catalysts, news, or anything tied to a point in time, use
-    `vertical_line` — it draws a full-height event line at that timestamp,
-    which is the intended look for "show events on the chart". Do NOT use
-    `marker` for events: it renders a small price-anchored arrow, reserved for
-    flagging one specific price at one time (e.g. an entry/exit fill).
-
-    Supported annotation types:
-      - vertical_line: config = {time, color?, label?}
-        The event type. Use for catalysts/news/dated events. `time` may be
-        Unix seconds or an ISO date string like "2026-04-19".
-      - horizontal_line: config = {price, color?, label?}
-        A price-level line across all time (support/resistance/targets).
-      - marker: config = {time, price?, shape?, color?}
-        A small arrow at one (time, price). Only for flagging a specific price
-        point — not for events.
-      - range: config = {from_time?, to_time?, from_price, to_price, color?}
-      - text_label: config = {time, price, text, color?}
-      - trend: config = {from: {time, price}, to: {time, price}, color?, label?}
+    Types: vertical_line `{time, label?}`, horizontal_line `{price, label?}`,
+    marker `{time, price?, shape?}`, range, text_label, and trend. Use
+    vertical_line for dated events; marker is a price-anchored entry/exit
+    point, not an event line. Get the current live `chart_id` from
+    `visual_get_frontend_context`.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
@@ -683,11 +563,10 @@ async def visual_add_workspace_chart_overlay(
     chart_id: str,
     overlay: dict[str, Any],
 ) -> dict[str, Any]:
-    """Append a raw overlay or event marker set to a workspace or default chart.
+    """Append an overlay to a workspace or live chart.
 
-    For event marker sets, use overlay = {"type": "event_markers", "data": [...]}
-    with each event using {time, price?, label?/text?, color?}. The legacy
-    key "markers" is accepted and normalized to "data".
+    Event sets use `{type: "event_markers", data: [{time, price?, label?}]}`.
+    Legacy `markers` is accepted and normalized to `data`.
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)

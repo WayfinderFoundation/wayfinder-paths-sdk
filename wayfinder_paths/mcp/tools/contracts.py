@@ -242,13 +242,10 @@ async def contracts_get(
     *,
     resolve_proxy: bool = True,
 ) -> dict[str, Any]:
-    """Get ABI + metadata for a deployed contract.
+    """Get a contract ABI and metadata from local artifacts or Etherscan V2.
 
-    Resolution order:
-      1. Local artifact store (contracts deployed via `contracts_deploy`) — returns full
-         deployment metadata + ABI.
-      2. Etherscan V2 fetch — returns ABI only. If `resolve_proxy` is true and the address
-         is a proxy (EIP-1967 / ZeppelinOS / EIP-897), fetches the implementation's ABI.
+    With `resolve_proxy`, known proxy patterns return the implementation ABI.
+    Explorer fallback requires a configured Etherscan key and verified contract.
     """
     store = ContractArtifactStore.default()
     cid = int(chain_id)

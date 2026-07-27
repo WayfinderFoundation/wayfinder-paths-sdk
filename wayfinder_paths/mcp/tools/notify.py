@@ -14,15 +14,11 @@ MESSAGE_MAX = 20_000
 
 @catch_errors
 async def notification_send(title: str, message: str, delivery: str = "email") -> dict:
-    """Notify the OpenCode instance owner by email or SMS.
+    """Notify the instance owner by email or SMS.
 
-    Email requires a verified email address and renders Markdown into a themed
-    HTML email. SMS requires a verified phone number and sends plain text.
-
-    Args:
-        title: Short subject line (<= 200 chars).
-        message: Markdown body (<= 20 000 chars).
-        delivery: "email" (default), "sms", or "text".
+    `delivery` is email, sms, or text. Email renders Markdown; SMS is plain
+    text. The chosen destination must be verified. Limits: 200 title and
+    20,000 message characters.
     """
     title_s = throw_if_empty_str("title is required", title)
     if len(title_s) > TITLE_MAX:

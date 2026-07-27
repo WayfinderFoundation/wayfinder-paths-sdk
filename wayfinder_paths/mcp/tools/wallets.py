@@ -185,33 +185,10 @@ async def core_wallets(
 ) -> dict[str, Any]:
     """Create wallets, annotate wallet profiles, and discover cross-protocol portfolios.
 
-    Read wallets via `core_get_wallets` — don't grep `config.json`. On Wayfinder Shells
-    instances all wallets must be remote (`remote=True`); local wallets are rejected.
-
-    Actions:
-      - `create`: provision a new wallet under `label`. On Shells set `remote=True` and pick
-        `wallet_type` ("session" 1h-TTL recommended, or "strategy" 7d-TTL for unattended jobs).
-        Optional `policies` list shapes the remote signing policy. Off Shells, omits `remote`
-        for a local mnemonic-derived wallet written to `config.json`.
-      - `annotate`: attach a `protocol` + `annotate_action` + `tool` + `status` record to the
-        wallet profile so future `discover_portfolio` calls know where to look.
-      - `discover_portfolio`: query each protocol the wallet has touched (or filter via
-        `protocols=[...]`) and aggregate positions. Set `parallel=True` for concurrent fan-out;
-        ≥3 protocols requires `parallel=True` or returns `requires_confirmation`.
-
-    Args:
-        label / wallet_label / wallet_address: Identify the target wallet.
-        protocol: Protocol slug for `annotate` (e.g. "hyperliquid", "moonwell").
-        annotate_action / tool / status / chain_id / details: Profile annotation fields.
-        protocols: Filter list for `discover_portfolio` (defaults to all profile-tracked protocols).
-        parallel: Fan out adapter calls concurrently in `discover_portfolio`.
-        include_zero_positions: Include dust / closed positions in adapter responses.
-        remote: True → remote (managed) wallet on `create`. Required on Shells.
-        policies: Remote-wallet signing policies (passed through to the wallet service).
-        wallet_type: "session" or "strategy" — required when `remote=True`.
-
-    Supported protocols for `discover_portfolio`: hyperliquid, hyperlend, moonwell, morpho,
-    boros, pendle, polymarket, aave.
+    `create` needs a label; Shells requires `remote=True` plus wallet_type
+    session/policy/strategy. `annotate` records protocol/action/tool/status.
+    `discover_portfolio` reads touched or selected protocols; three or more
+    require `parallel=True`. Read wallets with `core_get_wallets`, not config files.
     """
     config_path = resolve_config_path()
     store = WalletProfileStore.default()
@@ -438,14 +415,8 @@ async def core_get_wallets(
 ) -> dict[str, Any]:
     """List configured wallets with profile + protocols + current balances.
 
-    No args → every wallet. Pass `label` to filter to a single wallet (returns the same
-    shape, list with one entry, or an `err(...)` response if not found).
-
-    Args:
-        label: Optional wallet label filter.
-        transactions_limit: Most-recent N entries to include in `profile.transactions`.
-            Defaults to 5 to keep the response compact (the store caps history at 100).
-            Bump higher for deeper audit; the agent should rarely need >20.
+    Omit `label` for all wallets. Balances are fetched live for each EVM/Solana
+    leg. `transactions_limit` defaults to 5; keep it under 20 unless auditing history.
     """
     store = WalletProfileStore.default()
     if label is not None:
@@ -492,14 +463,8 @@ async def onchain_get_wallet_activity(
 ) -> dict[str, Any]:
     """Return on-chain transactions for a wallet across supported chains.
 
-    Pass either a configured wallet label or a raw wallet address. To crawl
-    further back, pass the previous response's next_offset as offset.
-
-    Args:
-        label: Wallet label as configured in config.json, e.g. main.
-        wallet_address: Raw wallet address; takes precedence over label.
-        limit: Number of transactions to return (default 20).
-        offset: Pagination cursor from a prior response's next_offset.
+    Pass a label or raw address; address wins. Continue pagination with the
+    previous response's `next_offset`.
     """
     address, lbl = await resolve_wallet_address(
         wallet_label=label, wallet_address=wallet_address

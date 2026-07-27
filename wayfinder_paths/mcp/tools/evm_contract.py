@@ -398,10 +398,9 @@ async def contracts_call(
 ) -> dict[str, Any]:
     """Read from a deployed contract via eth_call.
 
-    - Provide either `abi` (inline list or JSON string) or `abi_path` (JSON file inside this repo).
-    - If neither is provided, this tool falls back to fetching the ABI from Etherscan V2
-      (requires `system.etherscan_api_key` or `ETHERSCAN_API_KEY`, and the contract must be verified).
-    - If the function is overloaded, pass `function_signature` like `deposit(uint256)`.
+    Supply inline `abi` or a repo-local `abi_path`; otherwise Etherscan fallback
+    requires a configured key and verified contract. For overloaded functions,
+    pass the exact signature such as `deposit(uint256)`.
     """
     loaded_abi = await _resolve_abi(
         chain_id=int(chain_id),
