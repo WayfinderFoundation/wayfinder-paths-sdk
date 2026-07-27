@@ -238,17 +238,4 @@ async def onchain_quote_swap(
             "recipient": rcpt,
         },
     }
-    if best_quote is not None and best_quote.get("output_amount") is not None:
-        try:
-            quoted_output_raw = int(best_quote["output_amount"])
-        except (TypeError, ValueError):
-            quoted_output_raw = None
-        if quoted_output_raw is not None:
-            min_output_raw = (
-                quoted_output_raw * max(0, 10_000 - int(slippage_bps)) // 10_000
-            )
-            result["suggested_swap_request"]["minimum_output_amount_raw"] = (
-                min_output_raw
-            )
-
     return ok(result)

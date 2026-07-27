@@ -97,7 +97,6 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
     assert "calldata" not in best
     assert res["quote"]["quote_count"] == 3
     assert res["quote"]["providers"] == ["brap_best", "brap_alt"]
-    assert res["suggested_swap_request"]["minimum_output_amount_raw"] == 1_228_394
 
 
 @pytest.mark.asyncio
