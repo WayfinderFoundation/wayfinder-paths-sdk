@@ -142,3 +142,44 @@ def test_derived_columns_reach_research_frames(tmp_path: Path) -> None:
     # Execution path unchanged: undeclared features stay out of live frames.
     execution = _load_dataset(root, spec, job_data)
     assert "btc_trend" not in execution.bars.to_frame().columns
+
+
+def test_refresh_if_stale_gates_and_journals(tmp_path) -> None:
+    from wayfinder_paths.jobs.derived_features import (
+        REFRESH_STAMP_PATH,
+        refresh_derived_features_if_stale,
+    )
+    from wayfinder_paths.jobs.models import WayfinderJob
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("refresh-demo", agent_mode="intervene")
+    store.save(job)
+
+    calls: list[str] = []
+
+    def fake_derive(job_id, **kwargs):
+        calls.append(job_id)
+        return {"rows_appended": 7, "sets": list(kwargs["sets"])}
+
+    # Stale (no stamp) -> derives and stamps.
+    first = refresh_derived_features_if_stale(job.id, store=store, derive=fake_derive)
+    assert first == {"refreshed": True, "rows_appended": 7}
+    assert calls == [job.id]
+    stamp = store.read_json(job.id, REFRESH_STAMP_PATH)
+    assert stamp["rows_appended"] == 7 and "regime" in stamp["sets"]
+
+    # Fresh stamp -> no second derive.
+    second = refresh_derived_features_if_stale(job.id, store=store, derive=fake_derive)
+    assert second["refreshed"] is False and calls == [job.id]
+
+    # Failure: journaled, degraded, no stamp update, never raises.
+    store.write_json(job.id, REFRESH_STAMP_PATH, {})
+
+    def boom(job_id, **kwargs):
+        raise RuntimeError("exog feed down")
+
+    degraded = refresh_derived_features_if_stale(job.id, store=store, derive=boom)
+    assert degraded["refreshed"] is False and "exog feed down" in degraded["reason"]
+    journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
+    assert "derived_features_refresh_failed" in journal

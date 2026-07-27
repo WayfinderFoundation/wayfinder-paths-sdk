@@ -218,3 +218,55 @@ def derive_features_job(
             "one in the LIVE strategy is a proposal-gated change."
         ),
     }
+
+
+REFRESH_STAMP_PATH = "results/research/derived_refresh.json"
+# Just under the hourly design cadence so a 30m wake rhythm refreshes every
+# other wake instead of aliasing to 90m.
+REFRESH_MAX_AGE_S = 3300
+_REFRESH_SETS = ("cross", "exog", "venue", "regime")
+
+
+def refresh_derived_features_if_stale(
+    job_id: str,
+    *,
+    store: JobStore | None = None,
+    max_age_seconds: int = REFRESH_MAX_AGE_S,
+    derive: Callable[..., dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Keep research-side derived features live from the wake path.
+
+    The derive op alone rots: a one-time backfill leaves btc_trend/cross
+    columns silently frozen (they merge cleanly into scans with stale
+    values). The consumer of these columns is the agent wake's research, so
+    the wake is the refresh point — stamp-gated to the design's hourly
+    cadence, and NEVER raising: a broken exog fetch degrades to a journaled
+    skip, not a dead wake."""
+    store = store or JobStore()
+    stamp = store.read_json(job_id, REFRESH_STAMP_PATH) or {}
+    refreshed_at = str(stamp.get("refreshed_at") or "")
+    if refreshed_at:
+        age = (
+            dt.datetime.now(dt.UTC) - dt.datetime.fromisoformat(refreshed_at)
+        ).total_seconds()
+        if age < max_age_seconds:
+            return {"refreshed": False, "reason": f"fresh ({int(age)}s old)"}
+    run = derive or derive_features_job
+    try:
+        result = run(job_id, sets=_REFRESH_SETS, store=store)
+    except Exception as exc:  # noqa: BLE001 — wake must not die on research prep
+        store.append_journal(
+            job_id,
+            {"type": "derived_features_refresh_failed", "error": str(exc)[:300]},
+        )
+        return {"refreshed": False, "reason": f"failed: {exc}"}
+    store.write_json(
+        job_id,
+        REFRESH_STAMP_PATH,
+        {
+            "refreshed_at": str(dt.datetime.now(dt.UTC)),
+            "rows_appended": result.get("rows_appended"),
+            "sets": result.get("sets"),
+        },
+    )
+    return {"refreshed": True, "rows_appended": result.get("rows_appended")}

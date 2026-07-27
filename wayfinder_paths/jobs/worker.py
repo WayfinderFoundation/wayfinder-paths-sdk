@@ -9,6 +9,7 @@ from typing import Any
 from loguru import logger
 
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
+from wayfinder_paths.jobs.derived_features import refresh_derived_features_if_stale
 from wayfinder_paths.jobs.forward import is_forward_empty
 from wayfinder_paths.jobs.ledger import tail_ledger
 from wayfinder_paths.jobs.memory_hygiene import sanitize_job_memory
@@ -543,6 +544,13 @@ def prepare_job_worker_prompt(
     # unsupported performance claims from durable memory before the agent reads
     # it, so a prior wake's confabulation cannot propagate. No-op otherwise.
     sanitize_job_memory(store, job.id, forward=snapshot.get("forward"))
+
+    # Research-side derived features (cross/exog/venue/regime) refresh here
+    # because THIS wake's scans are their consumer — a one-time backfill
+    # otherwise goes silently stale (btc_trend froze for 4 days while
+    # merging cleanly into every scan frame). Stamp-gated hourly; never
+    # raises.
+    refresh_derived_features_if_stale(job.id, store=store)
 
     prompt_sections = _build_worker_prompt_sections(
         store=store,
