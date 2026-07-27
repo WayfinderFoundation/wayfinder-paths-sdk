@@ -282,6 +282,24 @@ def _standing_checks_block(root: Path) -> dict[str, Any]:
                 for symbol, rows in sorted(funding.items())
                 if rows
             }
+    replication = None
+    rep_path = root / "results" / "backtest" / "replication.json"
+    if rep_path.exists():
+        try:
+            rep = json.loads(rep_path.read_text(encoding="utf-8"))
+        except ValueError:
+            rep = None
+        if isinstance(rep, dict) and rep.get("available"):
+            replication = {
+                "revision": rep.get("revision"),
+                "decayed": rep.get("decayed"),
+                "baseline_net_return": (rep.get("baseline") or {}).get("net_return"),
+                "current_net_return": (rep.get("current") or {}).get("net_return"),
+                "dataset_days": (rep.get("dataset") or {}).get("days_received")
+                or (rep.get("dataset") or {}).get("days"),
+            }
+    if replication:
+        block["backtest_replication"] = replication
     if block:
         block["_basis"] = (
             "Routine numbers computed mechanically THIS wake — never re-fetch "
@@ -290,7 +308,11 @@ def _standing_checks_block(root: Path) -> dict[str, Any]:
             "still closed, no new trades) is an ops note, NOT research: "
             "write it with family operations/monitoring/no_change and it "
             "lands in the ops ledger automatically. The candidates ledger "
-            "is for research verdicts only."
+            "is for research verdicts only. "
+            "backtest_replication.decayed=true means the ACTIVE revision's "
+            "deploy-time in-sample edge is not reproducing on refreshed data "
+            "— mechanical evidence of selection on window-local noise; treat "
+            "it as grounds for a revert/kill or re-validation proposal."
         )
     return block
 
@@ -706,6 +728,13 @@ def prepare_job_worker_prompt(
     # unsupported performance claims from durable memory before the agent reads
     # it, so a prior wake's confabulation cannot propagate. No-op otherwise.
     sanitize_job_memory(store, job.id, forward=snapshot.get("forward"))
+
+    # Backtest replication monitor: was the evidence that justified the
+    # active revision real? Stamp-gated daily; never raises. Runs before the
+    # standing-checks block so a fresh verdict is readable this wake.
+    from wayfinder_paths.jobs.replication import replication_job
+
+    replication_job(job.id, store=store)
 
     # Research-side derived features (cross/exog/venue/regime) refresh here
     # because THIS wake's scans are their consumer — a one-time backfill

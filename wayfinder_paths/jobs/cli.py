@@ -50,6 +50,7 @@ from wayfinder_paths.jobs.models import (
     normalize_agent_mode,
 )
 from wayfinder_paths.jobs.proposals import propose_change
+from wayfinder_paths.jobs.replication import replication_job
 from wayfinder_paths.jobs.research import (
     holdout_check_job,
     pair_check_job,
@@ -1079,6 +1080,21 @@ def counterfactual_cmd(job_id: str, force: bool) -> None:
             "ok": True,
             "result": counterfactual_job(job_id, store=JobStore(), force=force),
         }
+    )
+
+
+@job_cli.command(
+    name="replication",
+    help="Backtest replication monitor: re-run the ACTIVE strategy on the "
+    "refreshed dataset and compare against this revision's first run — "
+    "decayed=true means the deploy-time edge is not reproducing (selection "
+    "on window-local noise).",
+)
+@click.argument("job_id")
+@click.option("--force", is_flag=True, default=False)
+def replication_cmd(job_id: str, force: bool) -> None:
+    _echo_json(
+        {"ok": True, "result": replication_job(job_id, store=JobStore(), force=force)}
     )
 
 

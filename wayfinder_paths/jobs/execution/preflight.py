@@ -147,6 +147,18 @@ def build_live_dataset(
         }
     if not rows:
         raise RuntimeError("no bars returned while building live dataset")
+    # Requested-vs-received rides the persisted metadata: it is the PROOF the
+    # evidence-window gate accepts for "more history does not exist" (a short
+    # window is only excusable when the full target was requested and the
+    # source could not supply it).
+    stamps_all = sorted({str(row.get("timestamp")) for row in rows})
+    if stamps_all:
+        span_days = round(
+            (pd.Timestamp(stamps_all[-1]) - pd.Timestamp(stamps_all[0])).total_seconds()
+            / 86_400,
+            1,
+        )
+        metadata["days_received"] = span_days
     path = root / "results" / "backtest" / "input_bars.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
