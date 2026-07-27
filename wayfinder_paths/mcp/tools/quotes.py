@@ -238,7 +238,7 @@ async def onchain_quote_swap(
             "recipient": rcpt,
         },
     }
-    if isinstance(best_quote, dict) and best_quote.get("output_amount") is not None:
+    if best_quote is not None and best_quote.get("output_amount") is not None:
         try:
             quoted_output_raw = int(best_quote["output_amount"])
         except (TypeError, ValueError):

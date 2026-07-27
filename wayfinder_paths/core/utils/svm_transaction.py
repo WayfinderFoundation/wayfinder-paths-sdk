@@ -14,7 +14,7 @@ import asyncio
 import base64
 import math
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypedDict
 
 import httpx
 from loguru import logger
@@ -51,6 +51,11 @@ MAX_COMPUTE_UNIT_LIMIT = 1_400_000
 # simulation, so add their cost — otherwise a tight multiplier on a small tx
 # sets the limit below actual consumption once they run.
 COMPUTE_BUDGET_IX_UNITS = 300
+
+
+class SvmTransactionDetails(TypedDict):
+    signature: str
+    fee_lamports: int | None
 
 
 async def send_svm_transaction(
@@ -336,16 +341,8 @@ async def send_svm_versioned_transaction(
     wait_for_confirmation: bool = True,
     cu_limit_multiplier: float = 1.2,
     allow_sponsorship: bool = True,
-    return_details: bool = False,
-) -> str | dict[str, Any]:
-    """Sign and broadcast a v0 transaction.
-
-    With sponsorship enabled the backend signs, broadcasts, and covers fees;
-    a refused submission falls back to compute-budget surgery + sign callback
-    + local broadcast + (optional) confirmation. By default this returns the
-    legacy base58 signature string; ``return_details=True`` also returns
-    confirmation and best-effort on-chain fee metadata.
-    """
+) -> str:
+    """Sign and broadcast a v0 transaction; return its base58 signature."""
     if sign_callback is None:
         raise ValueError("sign_callback must be provided to send transaction")
 
@@ -383,25 +380,42 @@ async def send_svm_versioned_transaction(
                     f"err={confirmation_status['err']}"
                 ),
             )
-    if return_details:
-        fee_lamports = None
-        if wait_for_confirmation:
-            try:
-                fee_lamports = await get_svm_transaction_fee_lamports(
-                    signature, chain_id=chain_id
-                )
-            except Exception as exc:
-                # Fee metadata can lag confirmation or be unavailable on a
-                # particular RPC. A successfully confirmed transaction must
-                # never be downgraded because this optional enrichment failed.
-                logger.warning(
-                    "Could not read Solana transaction fee for {}: {}",
-                    signature,
-                    exc,
-                )
-        return {
-            "signature": signature,
-            "fee_lamports": fee_lamports,
-            "confirmation": confirmation_status,
-        }
     return signature
+
+
+async def send_svm_versioned_transaction_with_details(
+    tx: VersionedTransaction,
+    sign_callback: Callable,
+    chain_id: int = CHAIN_ID_SOLANA,
+    wait_for_confirmation: bool = True,
+    cu_limit_multiplier: float = 1.2,
+    allow_sponsorship: bool = True,
+) -> SvmTransactionDetails:
+    """Sign and broadcast a v0 transaction with typed confirmation/fee metadata."""
+    signature = await send_svm_versioned_transaction(
+        tx,
+        sign_callback,
+        chain_id=chain_id,
+        wait_for_confirmation=wait_for_confirmation,
+        cu_limit_multiplier=cu_limit_multiplier,
+        allow_sponsorship=allow_sponsorship,
+    )
+    fee_lamports = None
+    if wait_for_confirmation:
+        try:
+            fee_lamports = await get_svm_transaction_fee_lamports(
+                signature, chain_id=chain_id
+            )
+        except Exception as exc:
+            # Fee metadata can lag confirmation or be unavailable on a
+            # particular RPC. A successfully confirmed transaction must
+            # never be downgraded because this optional enrichment failed.
+            logger.warning(
+                "Could not read Solana transaction fee for {}: {}",
+                signature,
+                exc,
+            )
+    return {
+        "signature": signature,
+        "fee_lamports": fee_lamports,
+    }

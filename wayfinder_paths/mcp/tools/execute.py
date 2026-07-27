@@ -19,7 +19,9 @@ from wayfinder_paths.core.utils.svm_tokens import (
     build_solana_send_transaction,
     get_solana_token_balance,
 )
-from wayfinder_paths.core.utils.svm_transaction import send_svm_versioned_transaction
+from wayfinder_paths.core.utils.svm_transaction import (
+    send_svm_versioned_transaction_with_details,
+)
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
@@ -155,22 +157,15 @@ async def _broadcast_svm(
 ) -> tuple[bool, dict[str, Any]]:
     try:
         tx = VersionedTransaction.from_bytes(base64.b64decode(serialized_transaction))
-        send_result = await send_svm_versioned_transaction(
+        send_result = await send_svm_versioned_transaction_with_details(
             tx,
             sign_callback,
             chain_id=chain_id,
             wait_for_confirmation=wait_for_confirmation,
             allow_sponsorship=allow_fee_payer_replacement,
-            return_details=True,
         )
-        if isinstance(send_result, dict):
-            signature = str(send_result["signature"])
-            fee_lamports = send_result.get("fee_lamports")
-        else:
-            # Compatibility for alternate send implementations and tests that
-            # still return the legacy string-only result.
-            signature = str(send_result)
-            fee_lamports = None
+        signature = send_result["signature"]
+        fee_lamports = send_result["fee_lamports"]
         result: dict[str, Any] = {
             "txn_hash": signature,
             "chain_id": chain_id,

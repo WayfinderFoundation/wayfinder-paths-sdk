@@ -15,6 +15,7 @@ from solders.transaction import VersionedTransaction
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
 from wayfinder_paths.core.utils.svm_tokens import WRAPPED_SOL_MINT
+from wayfinder_paths.core.utils.svm_transaction import SvmTransactionDetails
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.mcp.tools.execute import onchain_send, onchain_swap
 
@@ -24,6 +25,13 @@ EVM_DESTINATION = "0x000000000000000000000000000000000000dEaD"
 RECIPIENT = "8uqKmV5bMcoGw2AxoEMkseHF78ZDrAWpACvfUhxwmqqT"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 SOL_SIG = "5" + "j" * 87  # base58-ish placeholder signature the SVM path returns
+
+
+def _svm_send_result(fee_lamports: int | None = None) -> SvmTransactionDetails:
+    return {
+        "signature": SOL_SIG,
+        "fee_lamports": fee_lamports,
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -132,9 +140,9 @@ async def test_swap_solana_route_broadcasts_via_svm_and_skips_allowance():
             new=AsyncMock(return_value=10**9),
         ),
         patch(
-            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
+            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction_with_details",
             new_callable=AsyncMock,
-            return_value=SOL_SIG,
+            return_value=_svm_send_result(),
         ) as svm_send,
         patch(
             "wayfinder_paths.mcp.tools.execute.send_transaction",
@@ -171,7 +179,6 @@ async def test_swap_solana_route_broadcasts_via_svm_and_skips_allowance():
     assert svm_send.await_args.kwargs["chain_id"] == CHAIN_ID_SOLANA
     assert svm_send.await_args.kwargs["wait_for_confirmation"] is True
     assert svm_send.await_args.kwargs["allow_sponsorship"] is True
-    assert svm_send.await_args.kwargs["return_details"] is True
 
 
 @pytest.mark.asyncio
@@ -247,9 +254,9 @@ async def test_swap_solana_to_evm_uses_ring_destination_and_waits_for_bridge():
             new=AsyncMock(return_value=10**9),
         ),
         patch(
-            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
+            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction_with_details",
             new_callable=AsyncMock,
-            return_value=SOL_SIG,
+            return_value=_svm_send_result(),
         ),
     ):
         out = await onchain_swap(
@@ -310,9 +317,9 @@ async def test_swap_solana_route_detected_by_chain_id_without_chaintype():
             new=AsyncMock(return_value=10**9),
         ) as get_balance,
         patch(
-            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
+            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction_with_details",
             new_callable=AsyncMock,
-            return_value=SOL_SIG,
+            return_value=_svm_send_result(),
         ) as svm_send,
         patch(
             "wayfinder_paths.mcp.tools.execute.send_transaction",
@@ -370,7 +377,7 @@ async def test_swap_solana_route_missing_serialized_tx_errors():
             new=AsyncMock(return_value=10**9),
         ),
         patch(
-            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
+            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction_with_details",
             new_callable=AsyncMock,
         ) as svm_send,
     ):
@@ -429,13 +436,9 @@ async def test_send_solana_spl_builds_envelope_and_broadcasts_via_svm():
             new_callable=AsyncMock,
         ) as build_evm,
         patch(
-            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
+            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction_with_details",
             new_callable=AsyncMock,
-            return_value={
-                "signature": SOL_SIG,
-                "fee_lamports": 10_000,
-                "confirmation": {"confirmed": True},
-            },
+            return_value=_svm_send_result(fee_lamports=10_000),
         ) as svm_send,
         patch(
             "wayfinder_paths.mcp.tools.execute.send_transaction",
@@ -469,7 +472,6 @@ async def test_send_solana_spl_builds_envelope_and_broadcasts_via_svm():
     vt_arg = svm_send.await_args.args[0]
     assert isinstance(vt_arg, VersionedTransaction)
     assert svm_send.await_args.kwargs["allow_sponsorship"] is True
-    assert svm_send.await_args.kwargs["return_details"] is True
 
 
 @pytest.mark.asyncio
@@ -510,9 +512,9 @@ async def test_send_solana_native_sol_uses_native_label():
             return_value=envelope,
         ) as build_svm,
         patch(
-            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
+            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction_with_details",
             new_callable=AsyncMock,
-            return_value=SOL_SIG,
+            return_value=_svm_send_result(),
         ) as svm_send,
     ):
         out = await onchain_send(
@@ -531,7 +533,6 @@ async def test_send_solana_native_sol_uses_native_label():
     assert build_svm.await_args.kwargs["amount"] == 500_000_000
     svm_send.assert_awaited_once()
     assert svm_send.await_args.kwargs["allow_sponsorship"] is False
-    assert svm_send.await_args.kwargs["return_details"] is True
 
 
 @pytest.mark.asyncio
@@ -561,7 +562,7 @@ async def test_send_solana_insufficient_balance_short_circuits_before_build():
             new_callable=AsyncMock,
         ) as build_svm,
         patch(
-            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
+            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction_with_details",
             new_callable=AsyncMock,
         ) as svm_send,
     ):
@@ -607,7 +608,7 @@ async def test_swap_solana_blocked_when_flag_disabled():
             return_value=meta,
         ),
         patch(
-            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
+            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction_with_details",
             new_callable=AsyncMock,
         ) as svm_send,
     ):
@@ -648,7 +649,7 @@ async def test_send_solana_blocked_when_flag_disabled():
             new_callable=AsyncMock,
         ) as build_svm,
         patch(
-            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
+            "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction_with_details",
             new_callable=AsyncMock,
         ) as svm_send,
     ):
