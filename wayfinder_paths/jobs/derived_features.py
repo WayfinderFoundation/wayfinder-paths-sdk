@@ -96,6 +96,17 @@ def derive_features_job(
 
     if "cross" in sets:
         returns = closes.pct_change()
+        # Basket-relative dislocation: each symbol's log price vs the
+        # equal-weight (geometric) basket, z-scored — varies cross-
+        # sectionally by construction, so it is the natural rank-IC input
+        # (pair-wise ratioz_<sym> columns have a self-hole and panel-wide
+        # exog columns are cross-sectionally constant; neither can rank).
+        log_closes = np.log(closes)
+        basket_spread = log_closes.sub(log_closes.mean(axis=1), axis=0)
+        basket_z = (
+            basket_spread - basket_spread.rolling(RATIO_Z_BARS).mean()
+        ) / basket_spread.rolling(RATIO_Z_BARS).std()
+        _add(f"ratioz_basket{RATIO_Z_BARS}", basket_z)
         for symbol in symbols:
             for sibling in symbols:
                 if sibling == symbol:

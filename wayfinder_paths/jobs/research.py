@@ -1181,6 +1181,30 @@ def rank_ic(
         sub = frame[["timestamp", column, "close"]].copy()
         sub["close"] = sub["close"].astype(float)
         aligned[symbol] = sub.set_index("timestamp")
+    # Fail loud on inputs where rank-IC is undefined by construction —
+    # the silent alternative is n=0 "no periods" that reads like a data
+    # problem and wedges lanes (2026-07-27: btc_trend is panel-wide, so
+    # three agent wakes chased a phantom merge bug).
+    all_nan = sorted(
+        symbol for symbol, sub in aligned.items() if sub[column].isna().all()
+    )
+    if all_nan:
+        raise ValueError(
+            f"column {column!r} is entirely NaN for {all_nan} — pair-wise "
+            "columns (ratioz_<sym>, corr_<sym>) have no self-value, so the "
+            "full cross-section can never rank. Use the basket-relative "
+            "column (ratioz_basket*) for rank-IC instead."
+        )
+    wide = pd.DataFrame({symbol: sub[column] for symbol, sub in aligned.items()})
+    varying = (wide.nunique(axis=1, dropna=True) > 1).sum()
+    if len(wide) > 0 and varying < max(4, 0.05 * len(wide)):
+        raise ValueError(
+            f"column {column!r} is cross-sectionally constant (same value "
+            "for every symbol per bar — a panel-wide/exogenous series like "
+            "btc_trend or breadth). Rank-IC is undefined for it. Test it as "
+            "a CONDITIONING variable instead: signal-scan --condition-regime "
+            "or event-study conditioned on its level."
+        )
     per_horizon = []
     any_edge = False
     for h in sorted({int(h) for h in horizons}):
