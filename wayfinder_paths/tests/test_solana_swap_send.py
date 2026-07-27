@@ -14,6 +14,8 @@ from solders.transaction import VersionedTransaction
 
 from wayfinder_paths.core.constants import ZERO_ADDRESS
 from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
+from wayfinder_paths.core.utils.svm_tokens import WRAPPED_SOL_MINT
+from wayfinder_paths.core.utils.svm_transaction import SvmTransactionDetails
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.mcp.tools.execute import onchain_send, onchain_swap
 
@@ -23,6 +25,13 @@ EVM_DESTINATION = "0x000000000000000000000000000000000000dEaD"
 RECIPIENT = "8uqKmV5bMcoGw2AxoEMkseHF78ZDrAWpACvfUhxwmqqT"
 USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 SOL_SIG = "5" + "j" * 87  # base58-ish placeholder signature the SVM path returns
+
+
+def _svm_send_result(fee_lamports: int | None = None) -> SvmTransactionDetails:
+    return {
+        "signature": SOL_SIG,
+        "fee_lamports": fee_lamports,
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -133,7 +142,7 @@ async def test_swap_solana_route_broadcasts_via_svm_and_skips_allowance():
         patch(
             "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
             new_callable=AsyncMock,
-            return_value=SOL_SIG,
+            return_value=_svm_send_result(),
         ) as svm_send,
         patch(
             "wayfinder_paths.mcp.tools.execute.send_transaction",
@@ -246,7 +255,7 @@ async def test_swap_solana_to_evm_uses_ring_destination_and_waits_for_bridge():
         patch(
             "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
             new_callable=AsyncMock,
-            return_value=SOL_SIG,
+            return_value=_svm_send_result(),
         ),
     ):
         out = await onchain_swap(
@@ -271,10 +280,10 @@ async def test_swap_solana_to_evm_uses_ring_destination_and_waits_for_bridge():
 @pytest.mark.asyncio
 async def test_swap_solana_route_detected_by_chain_id_without_chaintype():
     meta = {
-        "symbol": "USDC",
-        "decimals": 6,
+        "symbol": "SOL",
+        "decimals": 0,
         "chain_id": CHAIN_ID_SOLANA,
-        "address": USDC_MINT,
+        "address": WRAPPED_SOL_MINT,
     }
     serialized = _unsigned_v0_b64(SENDER, RECIPIENT)
 
@@ -284,7 +293,8 @@ async def test_swap_solana_route_detected_by_chain_id_without_chaintype():
             "quotes": [{"provider": "jupiter"}],
             "best_quote": {
                 "provider": "jupiter",
-                "input_amount": "1000000",
+                "input_amount": "100000",
+                "native_input": True,
                 "calldata": {"serializedTransaction": serialized},
             },
         }
@@ -304,11 +314,11 @@ async def test_swap_solana_route_detected_by_chain_id_without_chaintype():
         patch(
             "wayfinder_paths.mcp.tools.execute.get_solana_token_balance",
             new=AsyncMock(return_value=10**9),
-        ),
+        ) as get_balance,
         patch(
             "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
             new_callable=AsyncMock,
-            return_value=SOL_SIG,
+            return_value=_svm_send_result(),
         ) as svm_send,
         patch(
             "wayfinder_paths.mcp.tools.execute.send_transaction",
@@ -316,11 +326,16 @@ async def test_swap_solana_route_detected_by_chain_id_without_chaintype():
         ) as evm_send,
     ):
         out = await onchain_swap(
-            wallet_label="main", from_token="from", to_token="to", amount="1.0"
+            wallet_label="main",
+            from_token="from",
+            to_token="to",
+            amount="0.0001",
         )
 
     assert out["ok"] is True
     svm_send.assert_awaited_once()
+    assert fake_brap.get_quote.await_args.kwargs["from_amount"] == "100000"
+    get_balance.assert_awaited_once_with(SENDER, ZERO_ADDRESS, CHAIN_ID_SOLANA)
     evm_send.assert_not_awaited()
 
 
@@ -420,7 +435,7 @@ async def test_send_solana_spl_builds_envelope_and_broadcasts_via_svm():
         patch(
             "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
             new_callable=AsyncMock,
-            return_value=SOL_SIG,
+            return_value=_svm_send_result(fee_lamports=10_000),
         ) as svm_send,
         patch(
             "wayfinder_paths.mcp.tools.execute.send_transaction",
@@ -437,6 +452,8 @@ async def test_send_solana_spl_builds_envelope_and_broadcasts_via_svm():
     assert out["ok"] is True
     assert out["result"]["status"] == "confirmed"
     assert out["result"]["effects"]["send_erc20"]["txn_hash"] == SOL_SIG
+    assert out["result"]["effects"]["send_erc20"]["fee_lamports"] == 10_000
+    assert out["result"]["effects"]["send_erc20"]["fee_sol"] == 0.00001
     # Recipient passed through un-checksummed (base58 is case-sensitive).
     assert out["result"]["recipient"] == RECIPIENT
 
@@ -457,9 +474,11 @@ async def test_send_solana_spl_builds_envelope_and_broadcasts_via_svm():
 async def test_send_solana_native_sol_uses_native_label():
     token_meta = {
         "symbol": "SOL",
-        "decimals": 9,
+        # Discovery may represent native SOL using the wrapped-SOL mint and a
+        # missing/zero decimal field. Execution must still use lamports.
+        "decimals": 0,
         "chain_id": CHAIN_ID_SOLANA,
-        "address": ZERO_ADDRESS,
+        "address": WRAPPED_SOL_MINT,
     }
     envelope = {
         "chainType": "solana",
@@ -490,7 +509,7 @@ async def test_send_solana_native_sol_uses_native_label():
         patch(
             "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
             new_callable=AsyncMock,
-            return_value=SOL_SIG,
+            return_value=_svm_send_result(),
         ) as svm_send,
     ):
         out = await onchain_send(
@@ -506,6 +525,7 @@ async def test_send_solana_native_sol_uses_native_label():
     assert out["result"]["effects"]["send_native"]["txn_hash"] == SOL_SIG
     build_svm.assert_awaited_once()
     assert build_svm.await_args.kwargs["token_address"] == ZERO_ADDRESS
+    assert build_svm.await_args.kwargs["amount"] == 500_000_000
     svm_send.assert_awaited_once()
 
 

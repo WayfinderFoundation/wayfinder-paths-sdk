@@ -14,15 +14,20 @@ from wayfinder_paths.core.utils.svm import (
     is_solana_chain,
 )
 from wayfinder_paths.core.utils.svm_tokens import (
+    SOL_DECIMALS,
+    WRAPPED_SOL_MINT,
     build_solana_send_transaction,
     get_solana_token_balance,
 )
-from wayfinder_paths.core.utils.svm_transaction import send_svm_versioned_transaction
+from wayfinder_paths.core.utils.svm_transaction import (
+    send_svm_versioned_transaction,
+)
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.core.utils.tokens import (
     build_send_transaction,
     ensure_allowance,
     get_token_balance,
+    is_native_token,
 )
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.units import from_erc20_raw
@@ -158,18 +163,24 @@ async def _broadcast_svm(
 ) -> tuple[bool, dict[str, Any]]:
     try:
         tx = VersionedTransaction.from_bytes(base64.b64decode(serialized_transaction))
-        signature = await send_svm_versioned_transaction(
+        send_result = await send_svm_versioned_transaction(
             tx,
             sign_callback,
             chain_id=chain_id,
             wait_for_confirmation=wait_for_confirmation,
         )
-        return True, {
+        signature = send_result["signature"]
+        fee_lamports = send_result["fee_lamports"]
+        result: dict[str, Any] = {
             "txn_hash": signature,
             "chain_id": chain_id,
             "confirmation_waited": wait_for_confirmation,
             "explorer_url": get_solana_explorer_link(signature),
         }
+        if fee_lamports is not None:
+            result["fee_lamports"] = int(fee_lamports)
+            result["fee_sol"] = int(fee_lamports) / 10**SOL_DECIMALS
+        return True, result
     except Exception as e:
         return False, {"error": sanitize_for_json(str(e)), "chain_id": chain_id}
 
@@ -185,6 +196,28 @@ async def _token_balance(token_address: str, chain_id: int, wallet_address: str)
     if is_solana_chain(chain_id):
         return await get_solana_token_balance(wallet_address, token_address, chain_id)
     return await get_token_balance(token_address, chain_id, wallet_address)
+
+
+def _is_native_solana_asset(
+    token_meta: dict[str, Any], token_address: str, chain_id: int
+) -> bool:
+    if not is_solana_chain(chain_id):
+        return False
+    if is_native_token(token_address):
+        return True
+    return (
+        token_address == WRAPPED_SOL_MINT
+        and str(token_meta.get("symbol") or "").strip().upper() == "SOL"
+    )
+
+
+def _resolved_token_decimals(
+    token_meta: dict[str, Any], token_address: str, chain_id: int
+) -> int:
+    if _is_native_solana_asset(token_meta, token_address, chain_id):
+        return SOL_DECIMALS
+    decimals = token_meta.get("decimals")
+    return int(decimals) if decimals is not None else 18
 
 
 async def _ensure_allowance(
@@ -310,13 +343,18 @@ async def onchain_swap(
             },
         )
 
-    decimals = int(from_meta.get("decimals") or 18)
+    decimals = _resolved_token_decimals(from_meta, from_token_addr, int(from_chain_id))
     try:
         amount_raw = parse_amount_to_raw(amount, decimals)
     except ValueError as exc:
         return err("invalid_amount", str(exc))
 
-    balance = await _token_balance(from_token_addr, int(from_chain_id), sender)
+    balance_token_address = (
+        ZERO_ADDRESS
+        if _is_native_solana_asset(from_meta, from_token_addr, int(from_chain_id))
+        else from_token_addr
+    )
+    balance = await _token_balance(balance_token_address, int(from_chain_id), sender)
     if balance < amount_raw:
         symbol = from_meta["symbol"] or "tokens"
         return err(
@@ -560,8 +598,12 @@ async def onchain_send(
             "Token missing address/chain_id",
             {"token": token_meta},
         )
-    decimals = int(token_meta.get("decimals") or 18)
-    is_native = token_address.lower() == ZERO_ADDRESS.lower()
+    decimals = _resolved_token_decimals(
+        token_meta, token_address, int(resolved_chain_id)
+    )
+    is_native = is_native_token(token_address) or _is_native_solana_asset(
+        token_meta, token_address, int(resolved_chain_id)
+    )
 
     if is_solana_chain(int(resolved_chain_id)) and not await is_solana_enabled():
         return err("solana_disabled", "Solana is not enabled for this account.")
@@ -581,7 +623,14 @@ async def onchain_send(
     except ValueError as exc:
         return err("invalid_amount", str(exc))
 
-    balance = await _token_balance(token_address, int(resolved_chain_id), sender)
+    balance_token_address = (
+        ZERO_ADDRESS
+        if _is_native_solana_asset(token_meta, token_address, int(resolved_chain_id))
+        else token_address
+    )
+    balance = await _token_balance(
+        balance_token_address, int(resolved_chain_id), sender
+    )
     if balance < amount_raw:
         symbol = token_meta["symbol"] or "tokens"
         return err(
@@ -604,7 +653,7 @@ async def onchain_send(
         envelope = await build_solana_send_transaction(
             from_address=sender,
             to_address=rcpt,
-            token_address=token_address,
+            token_address=ZERO_ADDRESS if is_native else token_address,
             amount=int(amount_raw),
             chain_id=int(resolved_chain_id),
         )
