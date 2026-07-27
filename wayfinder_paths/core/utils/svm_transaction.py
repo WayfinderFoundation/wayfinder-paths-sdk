@@ -305,6 +305,10 @@ async def _send_sponsored_svm_transaction(
 ) -> str:
     """Submit via the backend's sponsored broadcast and return the signature.
 
+    Privy's managed sponsorship owns fee-payer and blockhash replacement. The
+    SDK sends the standard unsigned transaction without replacement hints, so
+    native SOL transfers retain the wallet as their instruction-level source.
+
     Mirrors the EVM ``send_sponsored_transaction``: a 4xx means the
     broadcaster refused the submission and nothing reached the chain, so it
     is safe to fall back to a local broadcast. 5xx/timeouts are ambiguous —

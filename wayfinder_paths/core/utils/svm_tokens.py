@@ -167,10 +167,15 @@ async def build_solana_send_transaction(
         }
 
     The transaction is serialized UNSIGNED (placeholder signatures) with the
-    sender as fee payer. Native SOL uses a system transfer; SPL tokens use
-    ``transfer_checked``, prepended with an idempotent ATA-create for the
-    recipient when their associated token account does not exist yet (rent
-    paid by the sender). Token-2022 aware via the mint account's owner.
+    sender as its initial fee payer. Privy's managed sponsorship replaces the
+    fee payer and recent blockhash at send time while preserving the sender as
+    the native SOL transfer source. The original payer remains valid for the
+    unsponsored fallback.
+
+    Native SOL uses a system transfer; SPL tokens use ``transfer_checked``,
+    prepended with an idempotent ATA-create for the recipient when their
+    associated token account does not exist yet. Token-2022 aware via the
+    mint account's owner.
 
     Args:
         from_address: Sender (and fee payer) base58 address.
