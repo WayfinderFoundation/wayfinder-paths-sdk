@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Literal
+import math
+from typing import Annotated, Any, Literal
+
+from pydantic import Field
 
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.engine.manifest import load_strategy_manifest
 from wayfinder_paths.core.engine.strategy_loader import load_strategy_module
 from wayfinder_paths.core.strategies.Strategy import Strategy
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
+from wayfinder_paths.mcp.arg_validation import MCPArgumentError
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
@@ -41,7 +45,10 @@ def _get_strategy_config(strategy_name: str) -> dict[str, Any]:
 @catch_errors
 async def core_run_strategy(
     *,
-    strategy: str,
+    strategy: Annotated[
+        str,
+        Field(description="Exact installed strategy name from discovery."),
+    ],
     action: Literal[
         "status",
         "analyze",
@@ -54,10 +61,26 @@ async def core_run_strategy(
         "exit",
         "reconcile",
     ],
-    amount_usdc: float = 1000.0,
-    main_token_amount: float | None = None,
-    gas_token_amount: float = 0.0,
-    amount: float | None = None,
+    amount_usdc: Annotated[
+        float,
+        Field(description="Hypothetical USDC amount for analyze/snapshot/quote."),
+    ] = 1000.0,
+    main_token_amount: Annotated[
+        float | None,
+        Field(description="Human-unit main asset amount; required for deposit."),
+    ] = None,
+    gas_token_amount: Annotated[
+        float,
+        Field(description="Optional human-unit native gas asset amount for deposit."),
+    ] = 0.0,
+    amount: Annotated[
+        float | None,
+        Field(
+            description=(
+                "Legacy deposit alias for main_token_amount; omit for withdraw/exit."
+            )
+        ),
+    ] = None,
     start: str | None = None,
     end: str | None = None,
     no_fills: bool = False,
@@ -71,6 +94,44 @@ async def core_run_strategy(
     is an ActivePerpsStrategy diagnostic and writes a report.
     """
     throw_if_empty_str("strategy is required", strategy)
+    if action in {"analyze", "snapshot", "quote"} and (
+        not math.isfinite(float(amount_usdc)) or float(amount_usdc) <= 0
+    ):
+        raise MCPArgumentError(
+            "amount_usdc must be a positive finite number for this read action",
+            field="amount_usdc",
+            received=amount_usdc,
+            suggested_arguments={"amount_usdc": 1000.0},
+        )
+    if action == "deposit":
+        if main_token_amount is None:
+            main_token_amount = amount
+        if main_token_amount is None:
+            raise MCPArgumentError(
+                "main_token_amount is required for deposit; amount is a legacy alias",
+                field="main_token_amount",
+                received=main_token_amount,
+                suggested_arguments={"main_token_amount": 1.0},
+            )
+        if not math.isfinite(float(main_token_amount)) or float(main_token_amount) <= 0:
+            raise MCPArgumentError(
+                "main_token_amount must be a positive finite human-unit amount",
+                field="main_token_amount",
+                received=main_token_amount,
+            )
+        if not math.isfinite(float(gas_token_amount)) or float(gas_token_amount) < 0:
+            raise MCPArgumentError(
+                "gas_token_amount must be a non-negative finite human-unit amount",
+                field="gas_token_amount",
+                received=gas_token_amount,
+                suggested_arguments={"gas_token_amount": 0.0},
+            )
+    if action == "withdraw" and amount is not None:
+        return err(
+            "not_supported",
+            "partial withdraw is not supported; omit amount, then use exit to "
+            "transfer from the strategy wallet to main",
+        )
 
     try:
         strategy_class, strategy_status = _load_strategy_class(strategy)
@@ -162,8 +223,6 @@ async def core_run_strategy(
         case "deposit":
             # Prefer the canonical strategy kwargs (main_token_amount + gas_token_amount).
             # Back-compat: allow callers to pass `amount` as the main token amount.
-            if main_token_amount is None:
-                main_token_amount = amount
             throw_if_none(
                 "main_token_amount required for deposit (optionally gas_token_amount)",
                 main_token_amount,
@@ -193,11 +252,6 @@ async def core_run_strategy(
             )
 
         case "withdraw":
-            if amount is not None:
-                return err(
-                    "not_supported",
-                    "partial withdraw is not supported; omit amount",
-                )
             success, msg = await strategy_obj.withdraw()
             return ok_with_warning(
                 {

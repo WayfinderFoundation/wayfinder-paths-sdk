@@ -12,6 +12,7 @@ from wayfinder_paths.mcp.arg_validation import (
     optional_int,
     optional_str,
 )
+from wayfinder_paths.mcp.tool_annotations import ChainFilter, DeltaInstrumentType
 from wayfinder_paths.mcp.utils import catch_errors, ok
 
 logger = logging.getLogger(__name__)
@@ -171,7 +172,7 @@ async def research_get_asset_basis_info(symbol: str) -> dict[str, Any]:
 
 @catch_errors
 async def research_search_delta_lab_assets(
-    query: str, chain: str | int = "all", limit: str | int = "25"
+    query: str, chain: ChainFilter = "all", limit: str | int = "25"
 ) -> dict[str, Any]:
     """Search Delta Lab assets by symbol, name, address, CoinGecko id, or asset id.
 
@@ -189,7 +190,7 @@ async def research_search_delta_lab_assets(
 @catch_errors
 async def research_search_delta_lab_markets(
     venue: str = "all",
-    chain: str | int = "all",
+    chain: ChainFilter = "all",
     marketType: str = "all",
     assetId: str | int = "_",
     basisRoot: str = "all",
@@ -217,10 +218,10 @@ async def research_search_delta_lab_markets(
 
 @catch_errors
 async def research_search_delta_lab_instruments(
-    instrumentType: str = "all",
+    instrumentType: DeltaInstrumentType = "all",
     basisRoot: str = "all",
     venue: str = "all",
-    chain: str | int = "all",
+    chain: ChainFilter = "all",
     quoteAssetId: str | int = "_",
     maturityAfter: str = "_",
     maturityBefore: str = "_",
@@ -376,7 +377,7 @@ async def research_search_borrow_routes(
     limit: str | int = "25",
     basis: str = "all",
     borrow_basis: str = "all",
-    chain_id: str | int = "all",
+    chain_id: ChainFilter = "all",
 ) -> dict[str, Any]:
     """Screen collateral-to-borrow routes by LTV and liquidation configuration.
 

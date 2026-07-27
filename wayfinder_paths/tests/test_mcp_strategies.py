@@ -258,8 +258,9 @@ async def test_deposit_missing_amount():
     with _patch_load(), _patch_config(), _patch_signing():
         out = await core_run_strategy(strategy="my_strat", action="deposit")
     assert out["ok"] is False
-    assert out["error"]["code"] == "error"
+    assert out["error"]["code"] == "invalid_argument"
     assert "main_token_amount" in out["error"]["message"]
+    assert out["error"]["details"]["suggested_arguments"] == {"main_token_amount": 1.0}
 
 
 @pytest.mark.asyncio

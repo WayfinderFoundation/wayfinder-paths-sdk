@@ -31,7 +31,14 @@ from wayfinder_paths.core.utils.wallets import (
     get_wallet_signing_callback_for_chain,
     is_solana_enabled,
 )
+from wayfinder_paths.mcp.arg_validation import normalize_human_amount
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
+from wayfinder_paths.mcp.tool_annotations import (
+    ChainRecipient,
+    HumanTokenAmount,
+    SlippageBps,
+    TokenQuery,
+)
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
@@ -235,10 +242,10 @@ def _annotate_profile(
 async def onchain_swap(
     *,
     wallet_label: str,
-    from_token: str,
-    to_token: str,
-    amount: str,
-    slippage_bps: int = 50,
+    from_token: TokenQuery,
+    to_token: TokenQuery,
+    amount: HumanTokenAmount,
+    slippage_bps: SlippageBps = 50,
     recipient: str | None = None,
     wait_for_receipt: bool = True,
     receipt_confirmations: int = 0,
@@ -252,8 +259,11 @@ async def onchain_swap(
     """
     if not wallet_label.strip():
         return err("invalid_request", "wallet_label is required")
+    amount = normalize_human_amount(amount)
     if slippage_bps < 0:
         return err("invalid_request", "slippage_bps must be >= 0")
+    if receipt_confirmations < 0:
+        return err("invalid_request", "receipt_confirmations must be >= 0")
 
     try:
         from_meta = await TokenResolver.resolve_token_meta(from_token)
@@ -509,9 +519,9 @@ async def onchain_swap(
 async def onchain_send(
     *,
     wallet_label: str,
-    token: str,
-    recipient: str,
-    amount: str,
+    token: TokenQuery,
+    recipient: ChainRecipient,
+    amount: HumanTokenAmount,
     chain_id: int | None = None,
     wait_for_receipt: bool = True,
     receipt_confirmations: int = 0,
@@ -524,6 +534,9 @@ async def onchain_send(
     """
     if not wallet_label.strip():
         return err("invalid_request", "wallet_label is required")
+    amount = normalize_human_amount(amount)
+    if receipt_confirmations < 0:
+        return err("invalid_request", "receipt_confirmations must be >= 0")
     token_q = token.strip()
     if not token_q:
         return err("invalid_request", "token is required")

@@ -32,9 +32,17 @@ from wayfinder_paths.core.constants.hyperliquid import (
 )
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
-from wayfinder_paths.mcp.arg_validation import optional_int
+from wayfinder_paths.mcp.arg_validation import MCPArgumentError, optional_int
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
+from wayfinder_paths.mcp.tool_annotations import (
+    HyperliquidAssetName,
+    HyperliquidIsBuy,
+    HyperliquidRequiredSize,
+    HyperliquidSize,
+    HyperliquidUsdAmount,
+    SlippageFraction,
+)
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
@@ -197,8 +205,11 @@ async def _resolve_perp_or_spot_size(
     the caller's limit price).
     """
     if size is not None and usd_amount is not None:
-        raise ValueError(
-            "Provide either size (asset units) or usd_amount (USD notional), not both"
+        raise MCPArgumentError(
+            "provide exactly one of size (asset units) or usd_amount (USD notional)",
+            field="size",
+            received={"size": size, "usd_amount": usd_amount},
+            suggested_arguments={"size": None, "usd_amount": 100.0},
         )
 
     if size is not None:
@@ -227,7 +238,12 @@ async def _resolve_perp_or_spot_size(
             except (TypeError, ValueError):
                 continue
         if mid is None or mid <= 0:
-            raise ValueError(f"Could not resolve mid price for {asset_name}")
+            raise MCPArgumentError(
+                f"could not resolve a mid price for {asset_name}; use explicit size",
+                field="usd_amount",
+                received=usd_amount,
+                suggested_arguments={"size": 0.01, "usd_amount": None},
+            )
         px_for_sizing = mid
 
     sz = float(usd_amt) / float(px_for_sizing)
@@ -253,9 +269,12 @@ def _validate_size_and_notional(
     if sz_valid <= 0:
         sz_decimals = adapter.get_sz_decimals(asset_id)
         min_tick = float(Decimal(10) ** (-sz_decimals))
-        raise ValueError(
+        raise MCPArgumentError(
             f"size {size_requested} rounds down to 0 — asset has szDecimals={sz_decimals} "
-            f"(lot size = {min_tick}). Try size={min_tick}."
+            f"(lot size = {min_tick})",
+            field="size",
+            received=size_requested,
+            suggested_arguments={"size": min_tick},
         )
     if sizing["source"] == "usd_amount" and px_for_sizing is not None:
         final_notional = float(sz_valid) * float(px_for_sizing)
@@ -273,9 +292,12 @@ def _validate_size_and_notional(
                 ):
                     break
                 ticks_needed += 1
-            raise ValueError(
+            raise MCPArgumentError(
                 f"After lot-size rounding, notional is ${final_notional:.4f} — HL "
-                f"requires >= ${MIN_ORDER_USD_NOTIONAL:.2f}. Try usd_amount={suggested_usd:.2f}."
+                f"requires >= ${MIN_ORDER_USD_NOTIONAL:.2f}",
+                field="usd_amount",
+                received=sizing.get("usd_amount"),
+                suggested_arguments={"usd_amount": suggested_usd},
             )
 
 
@@ -290,10 +312,61 @@ def _validate_price(
     if floored != float(price):
         price_decimals = adapter.get_price_decimals(asset_id)
         tick = float(Decimal(10) ** (-price_decimals))
-        raise ValueError(
+        raise MCPArgumentError(
             f"price {price} invalid — HL requires ≤ 5 sig figs and ≤ "
-            f"{price_decimals} decimals (tick = {tick}). Try price={floored}."
+            f"{price_decimals} decimals (tick = {tick})",
+            field="price",
+            received=price,
+            suggested_arguments={"price": floored},
         )
+
+
+def _validate_order_sizing_fields(
+    size: Any,
+    usd_amount: Any,
+) -> tuple[float | None, float | None]:
+    if (size is None) == (usd_amount is None):
+        raise MCPArgumentError(
+            "provide exactly one of size (asset units) or usd_amount (USD notional)",
+            field="size",
+            received={"size": size, "usd_amount": usd_amount},
+            suggested_arguments={"size": None, "usd_amount": 100.0},
+        )
+    field_name = "size" if size is not None else "usd_amount"
+    received = size if size is not None else usd_amount
+    try:
+        parsed = float(received)
+    except (TypeError, ValueError) as exc:
+        raise MCPArgumentError(
+            f"{field_name} must be a positive number",
+            field=field_name,
+            received=received,
+        ) from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise MCPArgumentError(
+            f"{field_name} must be a positive finite number",
+            field=field_name,
+            received=received,
+        )
+    return (parsed, None) if size is not None else (None, parsed)
+
+
+def _positive_float_argument(value: Any, *, field_name: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise MCPArgumentError(
+            f"{field_name} must be a positive number",
+            field=field_name,
+            received=value,
+        ) from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise MCPArgumentError(
+            f"{field_name} must be a positive finite number",
+            field=field_name,
+            received=value,
+        )
+    return parsed
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -1147,9 +1220,14 @@ async def hyperliquid_deposit_usdc(
     but credit was not observed—check state before retrying.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
-    amt = throw_if_not_number("amount_usdc must be a number", amount_usdc)
+    amt = _positive_float_argument(amount_usdc, field_name="amount_usdc")
     if amt < 5:
-        raise ValueError("amount_usdc must be >= 5 USDC (HL deposits below are lost)")
+        raise MCPArgumentError(
+            "amount_usdc must be >= 5 because smaller HL deposits are permanently lost",
+            field="amount_usdc",
+            received=amount_usdc,
+            suggested_arguments={"amount_usdc": 5.0},
+        )
 
     adapter, deposit_sender = await _make_hl_adapter(wallet_label)
 
@@ -1237,11 +1315,14 @@ async def hyperliquid_withdraw_usdc(
     receives amount minus one. Unified mode is enabled automatically.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
-    amt = throw_if_not_number("amount_usdc must be a number", amount_usdc)
+    amt = _positive_float_argument(amount_usdc, field_name="amount_usdc")
     if amt < MIN_WITHDRAW_USD:
-        raise ValueError(
+        raise MCPArgumentError(
             f"amount_usdc must be >= {MIN_WITHDRAW_USD:g} USDC "
-            f"(Bridge2 takes a ${WITHDRAW_FEE_USD:g} fee out of this amount)"
+            f"(Bridge2 takes a ${WITHDRAW_FEE_USD:g} fee out of this amount)",
+            field="amount_usdc",
+            received=amount_usdc,
+            suggested_arguments={"amount_usdc": MIN_WITHDRAW_USD},
         )
 
     adapter, sender = await _make_hl_adapter(wallet_label)
@@ -1295,7 +1376,7 @@ async def hyperliquid_withdraw_usdc(
 async def hyperliquid_update_leverage(
     *,
     wallet_label: str,
-    asset_name: str,
+    asset_name: HyperliquidAssetName,
     leverage: int,
     is_cross: bool = True,
 ) -> dict[str, Any]:
@@ -1308,7 +1389,12 @@ async def hyperliquid_update_leverage(
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
     lev = throw_if_not_int("leverage must be an int", leverage)
     if lev <= 0:
-        raise ValueError("leverage must be positive")
+        raise MCPArgumentError(
+            "leverage must be a positive integer",
+            field="leverage",
+            received=leverage,
+            suggested_arguments={"leverage": 1},
+        )
 
     try:
         adapter, sender = await _make_hl_adapter(wallet_label)
@@ -1358,7 +1444,7 @@ async def hyperliquid_update_leverage(
 async def hyperliquid_cancel_order(
     *,
     wallet_label: str,
-    asset_name: str,
+    asset_name: HyperliquidAssetName,
     order_id: int | None = None,
     cancel_cloid: str | None = None,
 ) -> dict[str, Any]:
@@ -1369,7 +1455,12 @@ async def hyperliquid_cancel_order(
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
     if (cancel_cloid is None) == (order_id is None):
-        raise ValueError("Provide exactly one of order_id or cancel_cloid")
+        raise MCPArgumentError(
+            "provide exactly one of order_id or cancel_cloid",
+            field="order_id",
+            received={"order_id": order_id, "cancel_cloid": cancel_cloid},
+            suggested_arguments={"order_id": 123, "cancel_cloid": None},
+        )
 
     try:
         adapter, sender = await _make_hl_adapter(wallet_label)
@@ -1429,11 +1520,11 @@ async def hyperliquid_cancel_order(
 async def hyperliquid_place_trigger_order(
     *,
     wallet_label: str,
-    asset_name: str,
+    asset_name: HyperliquidAssetName,
     tpsl: Literal["tp", "sl"],
     trigger_price: float,
-    is_buy: bool,
-    size: float,
+    is_buy: HyperliquidIsBuy,
+    size: HyperliquidRequiredSize,
     is_market_trigger: bool = True,
     price: float | None = None,
     reduce_only: bool = True,
@@ -1448,13 +1539,14 @@ async def hyperliquid_place_trigger_order(
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
     if tpsl not in ("tp", "sl"):
-        raise ValueError("tpsl must be 'tp' (take-profit) or 'sl' (stop-loss)")
-    tpx = throw_if_not_number("trigger_price must be a number", trigger_price)
-    if tpx <= 0:
-        raise ValueError("trigger_price must be positive")
-    sz = throw_if_not_number("size must be a number", size)
-    if sz <= 0:
-        raise ValueError("size must be positive")
+        raise MCPArgumentError(
+            "tpsl must be 'tp' (take-profit) or 'sl' (stop-loss)",
+            field="tpsl",
+            received=tpsl,
+            allowed_values={"tp", "sl"},
+        )
+    tpx = _positive_float_argument(trigger_price, field_name="trigger_price")
+    sz = _positive_float_argument(size, field_name="size")
 
     limit_px: float | None = None
     if not is_market_trigger:
@@ -1462,9 +1554,7 @@ async def hyperliquid_place_trigger_order(
             "price is required for limit trigger orders (is_market_trigger=False)",
             price,
         )
-        limit_px = throw_if_not_number("price must be a number", price)
-        if limit_px <= 0:
-            raise ValueError("price must be positive")
+        limit_px = _positive_float_argument(price, field_name="price")
 
     try:
         adapter, sender = await _make_hl_adapter(wallet_label)
@@ -1561,11 +1651,11 @@ async def hyperliquid_place_trigger_order(
 async def hyperliquid_place_market_order(
     *,
     wallet_label: str,
-    asset_name: str,
-    is_buy: bool,
-    size: float | None = None,
-    usd_amount: float | None = None,
-    slippage: float = 0.01,
+    asset_name: HyperliquidAssetName,
+    is_buy: HyperliquidIsBuy,
+    size: HyperliquidSize = None,
+    usd_amount: HyperliquidUsdAmount = None,
+    slippage: SlippageFraction = 0.01,
     reduce_only: bool = False,
     allow_flip: bool = False,
     cloid: str | None = None,
@@ -1580,11 +1670,22 @@ async def hyperliquid_place_market_order(
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
     throw_if_none("is_buy is required", is_buy)
+    size, usd_amount = _validate_order_sizing_fields(size, usd_amount)
     slip = throw_if_not_number("slippage must be a number", slippage)
     if slip < 0:
-        raise ValueError("slippage must be >= 0")
+        raise MCPArgumentError(
+            "slippage must be >= 0 as a decimal fraction",
+            field="slippage",
+            received=slippage,
+            suggested_arguments={"slippage": 0.01},
+        )
     if slip > 0.25:
-        raise ValueError("slippage > 0.25 is too risky")
+        raise MCPArgumentError(
+            "slippage must be <= 0.25; 0.01 means 1%",
+            field="slippage",
+            received=slippage,
+            suggested_arguments={"slippage": 0.01},
+        )
 
     try:
         adapter, sender = await _make_hl_adapter(wallet_label)
@@ -1704,11 +1805,11 @@ async def hyperliquid_place_market_order(
 async def hyperliquid_place_limit_order(
     *,
     wallet_label: str,
-    asset_name: str,
-    is_buy: bool,
+    asset_name: HyperliquidAssetName,
+    is_buy: HyperliquidIsBuy,
     price: float,
-    size: float | None = None,
-    usd_amount: float | None = None,
+    size: HyperliquidSize = None,
+    usd_amount: HyperliquidUsdAmount = None,
     reduce_only: bool = False,
     allow_flip: bool = False,
     cloid: str | None = None,
@@ -1722,9 +1823,8 @@ async def hyperliquid_place_limit_order(
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
     throw_if_none("is_buy is required", is_buy)
-    px = throw_if_not_number("price must be a number", price)
-    if px <= 0:
-        raise ValueError("price must be positive")
+    size, usd_amount = _validate_order_sizing_fields(size, usd_amount)
+    px = _positive_float_argument(price, field_name="price")
 
     try:
         adapter, sender = await _make_hl_adapter(wallet_label)

@@ -5,6 +5,13 @@ import time
 from pathlib import Path
 from typing import Any, Literal
 
+from wayfinder_paths.mcp.arg_validation import MCPArgumentError
+from wayfinder_paths.mcp.tool_annotations import (
+    CronExpression,
+    IanaTimezone,
+    RepoPythonScript,
+    RunnerJobType,
+)
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
@@ -42,6 +49,129 @@ def _paths_for_client(*, root: Path, client: RunnerControlClient) -> RunnerPaths
     )
 
 
+def _validate_runner_request(
+    *,
+    action: str,
+    name: str | None,
+    job_type: str | None,
+    payload: Any,
+    interval_seconds: int | None,
+    cron_expr: str | None,
+    timezone: str | None,
+    strategy: str | None,
+    script_path: str | None,
+    env: Any,
+    run_id: int | None,
+) -> None:
+    name_actions = {
+        "add_job",
+        "update_job",
+        "pause_job",
+        "resume_job",
+        "stop_job",
+        "delete_job",
+        "run_once",
+        "job_runs",
+    }
+    if action in name_actions and not str(name or "").strip():
+        raise MCPArgumentError(
+            f"name is required for action={action}",
+            field="name",
+            received=name,
+            suggested_arguments={"name": "my-job"},
+        )
+    if action == "run_report" and run_id is None:
+        raise MCPArgumentError(
+            "run_id is required for action=run_report; get it from job_runs",
+            field="run_id",
+            received=run_id,
+        )
+    if action == "add_job":
+        try:
+            schedule_request_params(
+                interval_seconds=interval_seconds,
+                cron_expr=cron_expr,
+                timezone=timezone,
+            )
+        except ValueError as exc:
+            raise MCPArgumentError(
+                str(exc),
+                field="cron_expr",
+                received={
+                    "interval_seconds": interval_seconds,
+                    "cron_expr": cron_expr,
+                    "timezone": timezone,
+                },
+                suggested_arguments={
+                    "interval_seconds": 3600,
+                    "cron_expr": None,
+                    "timezone": None,
+                },
+            ) from exc
+        normalized_type = str(job_type or JOB_TYPE_STRATEGY).strip().lower()
+        if normalized_type not in {JOB_TYPE_STRATEGY, JOB_TYPE_SCRIPT}:
+            raise MCPArgumentError(
+                "type must be strategy or script",
+                field="type",
+                received=job_type,
+                allowed_values={JOB_TYPE_STRATEGY, JOB_TYPE_SCRIPT},
+            )
+        if normalized_type == JOB_TYPE_STRATEGY and not str(strategy or "").strip():
+            raise MCPArgumentError(
+                "strategy is required when type=strategy",
+                field="strategy",
+                received=strategy,
+            )
+        if normalized_type == JOB_TYPE_SCRIPT:
+            script = str(script_path or "").strip()
+            if not script:
+                raise MCPArgumentError(
+                    "script_path is required when type=script",
+                    field="script_path",
+                    received=script_path,
+                    suggested_arguments={"script_path": ".wayfinder_runs/job.py"},
+                )
+            if not script.endswith(".py"):
+                raise MCPArgumentError(
+                    "script_path must point to a .py file",
+                    field="script_path",
+                    received=script_path,
+                    suggested_arguments={"script_path": ".wayfinder_runs/job.py"},
+                )
+        if env is not None and not isinstance(env, dict):
+            raise MCPArgumentError(
+                "env must be an object of string keys and values",
+                field="env",
+                received=env,
+                suggested_arguments={"env": {}},
+            )
+    if action == "update_job":
+        if payload is not None and not isinstance(payload, dict):
+            raise MCPArgumentError(
+                "payload must be an object",
+                field="payload",
+                received=payload,
+                suggested_arguments={"payload": {}},
+            )
+        if interval_seconds is not None or cron_expr is not None:
+            try:
+                schedule_request_params(
+                    interval_seconds=interval_seconds,
+                    cron_expr=cron_expr,
+                    timezone=timezone,
+                )
+            except ValueError as exc:
+                raise MCPArgumentError(
+                    str(exc),
+                    field="cron_expr",
+                    received={
+                        "interval_seconds": interval_seconds,
+                        "cron_expr": cron_expr,
+                        "timezone": timezone,
+                    },
+                ) from exc
+
+
 @catch_errors
 async def core_runner(
     action: Literal[
@@ -70,11 +200,11 @@ async def core_runner(
     log_level: str | None = None,
     # Job fields
     name: str | None = None,
-    type: str | None = None,  # noqa: A002 (matches CLI/API)
+    type: RunnerJobType = None,  # noqa: A002 (matches CLI/API)
     payload: dict[str, Any] | None = None,
     interval_seconds: int | None = None,
-    cron_expr: str | None = None,
-    timezone: str | None = None,
+    cron_expr: CronExpression = None,
+    timezone: IanaTimezone = None,
     limit: int | None = None,
     run_id: int | None = None,
     tail_bytes: int | None = None,
@@ -86,7 +216,7 @@ async def core_runner(
     wallet_label: str | None = None,
     timeout_seconds: int | None = None,
     # Script payload fields
-    script_path: str | None = None,
+    script_path: RepoPythonScript = None,
     args: list[str] | None = None,
     env: dict[str, str] | None = None,
     always_notify_session_on_job_completion: bool = False,
@@ -100,6 +230,19 @@ async def core_runner(
     mutation has unknown outcome—inspect before retrying. Keep monitor state
     durable, seed runs quiet, and routine successes unannounced.
     """
+    _validate_runner_request(
+        action=action,
+        name=name,
+        job_type=type,
+        payload=payload,
+        interval_seconds=interval_seconds,
+        cron_expr=cron_expr,
+        timezone=timezone,
+        strategy=strategy,
+        script_path=script_path,
+        env=env,
+        run_id=run_id,
+    )
 
     client = _client(sock_path)
 

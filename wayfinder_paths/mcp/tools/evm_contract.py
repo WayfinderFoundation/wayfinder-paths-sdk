@@ -16,8 +16,17 @@ from wayfinder_paths.core.utils.etherscan import (
 from wayfinder_paths.core.utils.proxy import resolve_proxy_implementation
 from wayfinder_paths.core.utils.transaction import encode_call, send_transaction
 from wayfinder_paths.core.utils.wallets import get_wallet_signing_callback
+from wayfinder_paths.mcp.arg_validation import MCPArgumentError
 from wayfinder_paths.mcp.state.contract_store import ContractArtifactStore
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
+from wayfinder_paths.mcp.tool_annotations import (
+    ContractAbi,
+    ContractAddress,
+    ContractArguments,
+    ContractFunctionSignature,
+    RepoJsonPath,
+    WeiValue,
+)
 from wayfinder_paths.mcp.utils import (
     abi_function_signature,
     catch_errors,
@@ -112,9 +121,25 @@ def _parse_json_list(raw: str, *, field_name: str) -> list[Any] | dict[str, Any]
         s = s.replace("'", '"')
         val = json.loads(s)
     except json.JSONDecodeError as exc:
-        return err("invalid_request", f"Invalid JSON in {field_name}: {exc}")
+        return err(
+            "invalid_argument",
+            f"{field_name} must be a valid JSON array: {exc}",
+            {
+                "field": field_name,
+                "received": raw,
+                "suggested_arguments": {field_name: []},
+            },
+        )
     if not isinstance(val, list):
-        return err("invalid_request", f"{field_name} must be a JSON array")
+        return err(
+            "invalid_argument",
+            f"{field_name} must be a JSON array, not {type(val).__name__}",
+            {
+                "field": field_name,
+                "received_type": type(val).__name__,
+                "suggested_arguments": {field_name: []},
+            },
+        )
     return val
 
 
@@ -136,6 +161,55 @@ def _parse_value_wei(value_wei: Any) -> int | dict[str, Any]:
     if value_i < 0:
         return err("invalid_request", "value_wei must be >= 0")
     return value_i
+
+
+def _validate_contract_target(
+    *,
+    chain_id: Any,
+    contract_address: Any,
+    function_name: Any,
+    function_signature: Any,
+) -> None:
+    if isinstance(chain_id, bool) or not isinstance(chain_id, int) or chain_id <= 0:
+        raise MCPArgumentError(
+            "chain_id must be a positive EVM chain id",
+            field="chain_id",
+            received=chain_id,
+            suggested_arguments={"chain_id": 1},
+        )
+    address = str(contract_address or "").strip()
+    if not AsyncWeb3.is_address(address):
+        raise MCPArgumentError(
+            "contract_address must be a 20-byte 0x-prefixed EVM address",
+            field="contract_address",
+            received=contract_address,
+            suggested_arguments={
+                "contract_address": "0x0000000000000000000000000000000000000000"
+            },
+        )
+    name = str(function_name or "").strip()
+    signature = _normalize_signature(str(function_signature or ""))
+    if bool(name) == bool(signature):
+        raise MCPArgumentError(
+            "provide exactly one of function_name or function_signature; use the "
+            "signature only for overloaded functions",
+            field="function_name",
+            received={
+                "function_name": function_name,
+                "function_signature": function_signature,
+            },
+            suggested_arguments={
+                "function_name": "balanceOf",
+                "function_signature": None,
+            },
+        )
+    if signature and ("(" not in signature or not signature.endswith(")")):
+        raise MCPArgumentError(
+            "function_signature must include ABI types, e.g. deposit(uint256)",
+            field="function_signature",
+            received=function_signature,
+            suggested_arguments={"function_signature": "deposit(uint256)"},
+        )
 
 
 def _load_json_inside_repo(path_raw: str) -> tuple[Path, str, Any] | dict[str, Any]:
@@ -386,15 +460,15 @@ def _annotate(
 async def contracts_call(
     *,
     chain_id: int,
-    contract_address: str,
+    contract_address: ContractAddress,
     function_name: str | None = None,
-    function_signature: str | None = None,
-    args: list[Any] | str | None = None,
-    value_wei: int = 0,
+    function_signature: ContractFunctionSignature = None,
+    args: ContractArguments = None,
+    value_wei: WeiValue = 0,
     from_address: str | None = None,
     wallet_label: str | None = None,
-    abi: list[dict[str, Any]] | str | None = None,
-    abi_path: str | None = None,
+    abi: ContractAbi = None,
+    abi_path: RepoJsonPath = None,
 ) -> dict[str, Any]:
     """Read from a deployed contract via eth_call.
 
@@ -402,6 +476,12 @@ async def contracts_call(
     requires a configured key and verified contract. For overloaded functions,
     pass the exact signature such as `deposit(uint256)`.
     """
+    _validate_contract_target(
+        chain_id=chain_id,
+        contract_address=contract_address,
+        function_name=function_name,
+        function_signature=function_signature,
+    )
     loaded_abi = await _resolve_abi(
         chain_id=int(chain_id),
         contract_address=contract_address,
@@ -495,13 +575,13 @@ async def contracts_execute(
     *,
     wallet_label: str,
     chain_id: int,
-    contract_address: str,
+    contract_address: ContractAddress,
     function_name: str | None = None,
-    function_signature: str | None = None,
-    args: list[Any] | str | None = None,
-    value_wei: int = 0,
-    abi: list[dict[str, Any]] | str | None = None,
-    abi_path: str | None = None,
+    function_signature: ContractFunctionSignature = None,
+    args: ContractArguments = None,
+    value_wei: WeiValue = 0,
+    abi: ContractAbi = None,
+    abi_path: RepoJsonPath = None,
     wait_for_receipt: bool = True,
     override: bool = False,
 ) -> dict[str, Any]:
@@ -509,6 +589,12 @@ async def contracts_execute(
 
     Use this for state-changing writes. For view/pure reads, use `contracts_call`.
     """
+    _validate_contract_target(
+        chain_id=chain_id,
+        contract_address=contract_address,
+        function_name=function_name,
+        function_signature=function_signature,
+    )
     sign_callback, sender = await get_wallet_signing_callback(wallet_label)
 
     loaded_abi = await _resolve_abi(

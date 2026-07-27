@@ -1110,8 +1110,11 @@ async def test_polymarket_quote_buy_requires_buy_amount_pusd():
     with patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}):
         out = await polymarket_read("quote", token_id="tok_yes", side="BUY")
         assert out["ok"] is False
-        assert out["error"]["code"] == "error"
+        assert out["error"]["code"] == "invalid_argument"
         assert "buy_amount_pusd" in out["error"]["message"]
+        assert out["error"]["details"]["suggested_arguments"] == {
+            "buy_amount_pusd": 10.0
+        }
 
 
 @pytest.mark.asyncio
@@ -1119,8 +1122,11 @@ async def test_polymarket_quote_sell_requires_sell_amount_shares():
     with patch("wayfinder_paths.mcp.tools.polymarket.CONFIG", {}):
         out = await polymarket_read("quote", token_id="tok_yes", side="SELL")
         assert out["ok"] is False
-        assert out["error"]["code"] == "error"
+        assert out["error"]["code"] == "invalid_argument"
         assert "sell_amount_shares" in out["error"]["message"]
+        assert out["error"]["details"]["suggested_arguments"] == {
+            "sell_amount_shares": 10.0
+        }
 
 
 @pytest.mark.asyncio

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import Field
 
 from wayfinder_paths.core.clients.direct.DefiLlamaFreeClient import (
     DEFILLAMA_FREE_CLIENT,
 )
-from wayfinder_paths.mcp.arg_validation import normalize_enum, normalize_int
+from wayfinder_paths.mcp.arg_validation import (
+    MCPArgumentError,
+    normalize_enum,
+    normalize_int,
+    optional_str,
+)
 from wayfinder_paths.mcp.utils import catch_errors, ok
 
 DATASETS = {
@@ -23,14 +30,58 @@ DATASETS = {
     "fees_overview",
     "open_interest_overview",
 }
+DefiLlamaDataset = Literal[
+    "protocols",
+    "protocol_search",
+    "protocol",
+    "tvl",
+    "protocol_fees",
+    "protocol_tvl_history",
+    "chains",
+    "stablecoins",
+    "yields_pools",
+    "current_prices",
+    "dex_overview",
+    "fees_overview",
+    "open_interest_overview",
+]
+
+
+def _require_dataset_argument(
+    value: Any,
+    *,
+    field_name: str,
+    dataset: str,
+    example: Any,
+) -> str:
+    parsed = optional_str(value, field_name=field_name)
+    if parsed is None:
+        raise MCPArgumentError(
+            f"{field_name} is required when dataset={dataset}",
+            field=field_name,
+            received=value,
+            suggested_arguments={"dataset": dataset, field_name: example},
+        )
+    return parsed
 
 
 @catch_errors
 async def research_defillama_free(
-    dataset: str,
-    protocolSlug: str = "_",
+    dataset: DefiLlamaDataset,
+    protocolSlug: Annotated[
+        str,
+        Field(description="Exact protocol slug; required by protocol/TVL datasets."),
+    ] = "_",
     chain: str = "_",
-    coins: str = "_",
+    coins: Annotated[
+        str,
+        Field(
+            description=(
+                "Comma-separated DefiLlama coin ids such as ethereum:0x...; "
+                "required for current_prices."
+            )
+        ),
+    ] = "_",
     query: str = "_",
     dataType: str = "dailyFees",
     days: str | int = "30",
@@ -60,35 +111,53 @@ async def research_defillama_free(
             )
         )
     if normalized == "protocol_search":
-        if query == "_":
-            raise ValueError("query is required for dataset=protocol_search")
-        return ok(await DEFILLAMA_FREE_CLIENT.protocol_search(query, page_limit))
+        search_query = _require_dataset_argument(
+            query,
+            field_name="query",
+            dataset=normalized,
+            example="aave",
+        )
+        return ok(await DEFILLAMA_FREE_CLIENT.protocol_search(search_query, page_limit))
     if normalized == "protocol":
-        if protocolSlug == "_":
-            raise ValueError("protocolSlug is required for dataset=protocol")
-        return ok(await DEFILLAMA_FREE_CLIENT.protocol(protocolSlug))
+        slug = _require_dataset_argument(
+            protocolSlug,
+            field_name="protocolSlug",
+            dataset=normalized,
+            example="aave",
+        )
+        return ok(await DEFILLAMA_FREE_CLIENT.protocol(slug))
     if normalized == "tvl":
-        if protocolSlug == "_":
-            raise ValueError("protocolSlug is required for dataset=tvl")
-        return ok(await DEFILLAMA_FREE_CLIENT.tvl(protocolSlug))
+        slug = _require_dataset_argument(
+            protocolSlug,
+            field_name="protocolSlug",
+            dataset=normalized,
+            example="aave",
+        )
+        return ok(await DEFILLAMA_FREE_CLIENT.tvl(slug))
     if normalized == "protocol_fees":
-        if protocolSlug == "_":
-            raise ValueError("protocolSlug is required for dataset=protocol_fees")
+        slug = _require_dataset_argument(
+            protocolSlug,
+            field_name="protocolSlug",
+            dataset=normalized,
+            example="aave",
+        )
         return ok(
             await DEFILLAMA_FREE_CLIENT.protocol_fees(
-                protocolSlug,
+                slug,
                 data_type=dataType,
                 days=normalize_int(days, field_name="days", min_value=1),
             )
         )
     if normalized == "protocol_tvl_history":
-        if protocolSlug == "_":
-            raise ValueError(
-                "protocolSlug is required for dataset=protocol_tvl_history"
-            )
+        slug = _require_dataset_argument(
+            protocolSlug,
+            field_name="protocolSlug",
+            dataset=normalized,
+            example="aave",
+        )
         return ok(
             await DEFILLAMA_FREE_CLIENT.protocol_tvl_history(
-                protocolSlug,
+                slug,
                 days=normalize_int(days, field_name="days", min_value=1),
             )
         )
@@ -114,9 +183,13 @@ async def research_defillama_free(
             )
         )
     if normalized == "current_prices":
-        if coins == "_":
-            raise ValueError("coins is required for dataset=current_prices")
-        return ok(await DEFILLAMA_FREE_CLIENT.current_prices(coins))
+        coin_ids = _require_dataset_argument(
+            coins,
+            field_name="coins",
+            dataset=normalized,
+            example="ethereum:0x0000000000000000000000000000000000000000",
+        )
+        return ok(await DEFILLAMA_FREE_CLIENT.current_prices(coin_ids))
     if normalized == "dex_overview":
         return ok(
             await DEFILLAMA_FREE_CLIENT.dex_overview(

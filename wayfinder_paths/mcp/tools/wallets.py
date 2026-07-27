@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import importlib
 import time
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
+
+from pydantic import Field
 
 from wayfinder_paths.core.clients.BalanceClient import BALANCE_CLIENT
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
@@ -17,6 +19,7 @@ from wayfinder_paths.core.utils.wallets import (
     make_local_wallet,
     write_wallet_to_json,
 )
+from wayfinder_paths.mcp.arg_validation import MCPArgumentError
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     catch_errors,
@@ -176,12 +179,23 @@ async def core_wallets(
     status: str | None = None,
     chain_id: int | None = None,
     details: dict[str, Any] | None = None,
-    protocols: list[str] | None = None,
+    protocols: Annotated[
+        list[str] | None,
+        Field(
+            description=(
+                "Portfolio protocols to query; omit for touched protocols. "
+                "Use parallel=true when selecting three or more."
+            )
+        ),
+    ] = None,
     parallel: bool = False,
     include_zero_positions: bool = False,
     remote: bool = False,
     policies: list[dict] = [],  # noqa: B006
-    wallet_type: str | None = None,
+    wallet_type: Annotated[
+        Literal["session", "policy", "strategy"] | None,
+        Field(description="Required for remote create: session, policy, or strategy."),
+    ] = None,
 ) -> dict[str, Any]:
     """Create wallets, annotate wallet profiles, and discover cross-protocol portfolios.
 
@@ -192,6 +206,23 @@ async def core_wallets(
     """
     config_path = resolve_config_path()
     store = WalletProfileStore.default()
+    if (
+        action == "create"
+        and remote
+        and wallet_type
+        not in {
+            "session",
+            "policy",
+            "strategy",
+        }
+    ):
+        raise MCPArgumentError(
+            "wallet_type is required for remote create and must be session, policy, or strategy",
+            field="wallet_type",
+            received=wallet_type,
+            allowed_values={"session", "policy", "strategy"},
+            suggested_arguments={"wallet_type": "session"},
+        )
 
     match action:
         case "create":

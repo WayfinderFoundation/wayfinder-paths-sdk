@@ -1,9 +1,15 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import Field
 
 from wayfinder_paths.core.clients.AlphaLabClient import ALPHA_LAB_CLIENT
-from wayfinder_paths.mcp.arg_validation import normalize_enum, normalize_int
+from wayfinder_paths.mcp.arg_validation import (
+    normalize_enum,
+    normalize_int,
+    optional_iso8601,
+)
 from wayfinder_paths.mcp.utils import catch_errors, ok
 
 SCAN_TYPES = {
@@ -17,14 +23,28 @@ SCAN_TYPES = {
     "_",
     "",
 }
+AlphaScanType = Literal[
+    "twitter_post",
+    "defi_llama_chain_flow",
+    "defi_llama_overview",
+    "defi_llama_protocol",
+    "delta_lab_top_apy",
+    "delta_lab_best_delta_neutral",
+    "all",
+    "_",
+]
+IsoDateFilter = Annotated[
+    str,
+    Field(description="ISO-8601 date/timestamp, or '_' to omit this bound."),
+]
 
 
 @catch_errors
 async def research_search_alpha(
     query: str = "_",
-    scan_type: str = "all",
-    created_after: str = "_",
-    created_before: str = "_",
+    scan_type: AlphaScanType = "all",
+    created_after: IsoDateFilter = "_",
+    created_before: IsoDateFilter = "_",
     limit: str | int = "20",
 ) -> dict[str, Any]:
     """Search Alpha Lab insights, highest insightfulness first.
@@ -47,11 +67,11 @@ async def research_search_alpha(
     search_value = query.strip()
     if search_value and search_value != "_":
         kwargs["search"] = search_value
-    after = created_after.strip()
-    if after and after != "_":
+    after = optional_iso8601(created_after, field_name="created_after")
+    if after:
         kwargs["created_after"] = after
-    before = created_before.strip()
-    if before and before != "_":
+    before = optional_iso8601(created_before, field_name="created_before")
+    if before:
         kwargs["created_before"] = before
     return ok(await ALPHA_LAB_CLIENT.search(**kwargs))
 

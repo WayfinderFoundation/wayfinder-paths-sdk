@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
+
+from pydantic import Field
 
 from wayfinder_paths.core.clients.ResearchClient import (
     RESEARCH_CLIENT,
@@ -14,10 +16,16 @@ from wayfinder_paths.mcp.arg_validation import (
     normalize_enum,
     normalize_int,
     optional_int,
+    optional_iso8601,
     optional_str,
     split_values,
 )
 from wayfinder_paths.mcp.utils import catch_errors, ok
+
+IsoDateFilter = Annotated[
+    str,
+    Field(description="ISO-8601 date/timestamp, or '_' to omit the bound."),
+]
 
 
 def _search_type_and_category(
@@ -62,8 +70,8 @@ async def core_web_search(
     category: str = "_",
     includeDomains: str | list[str] = "_",
     excludeDomains: str | list[str] = "_",
-    startPublishedDate: str = "_",
-    endPublishedDate: str = "_",
+    startPublishedDate: IsoDateFilter = "_",
+    endPublishedDate: IsoDateFilter = "_",
     maxAgeHours: str | int = "_",
     additionalQueries: str | list[str] = "_",
     contentType: str = "highlights",
@@ -97,11 +105,11 @@ async def core_web_search(
         category=category_value,  # type: ignore[arg-type]
         include_domains=split_values(includeDomains, field_name="includeDomains"),
         exclude_domains=split_values(excludeDomains, field_name="excludeDomains"),
-        start_published_date=optional_str(
+        start_published_date=optional_iso8601(
             startPublishedDate,
             field_name="startPublishedDate",
         ),
-        end_published_date=optional_str(
+        end_published_date=optional_iso8601(
             endPublishedDate,
             field_name="endPublishedDate",
         ),
@@ -201,8 +209,8 @@ async def research_social_x_search(
     query: str,
     allowedXHandles: str | list[str] = "_",
     excludedXHandles: str | list[str] = "_",
-    fromDate: str = "_",
-    toDate: str = "_",
+    fromDate: IsoDateFilter = "_",
+    toDate: IsoDateFilter = "_",
     sessionID: str = "_",
 ) -> dict[str, Any]:
     """Search X with optional handle allow/deny lists and YYYY-MM-DD bounds.
@@ -221,8 +229,8 @@ async def research_social_x_search(
             field_name="excludedXHandles",
             max_items=10,
         ),
-        from_date=optional_str(fromDate, field_name="fromDate"),
-        to_date=optional_str(toDate, field_name="toDate"),
+        from_date=optional_iso8601(fromDate, field_name="fromDate"),
+        to_date=optional_iso8601(toDate, field_name="toDate"),
         session_id=sessionID,
     )
     return ok(result)

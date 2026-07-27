@@ -26,8 +26,11 @@ async def test_defillama_accepts_int_limit_for_missing_required_dataset_arg() ->
     result = await research_defillama_free(dataset="current_prices", limit=5)
 
     assert result["ok"] is False
-    assert result["error"]["code"] == "error"
+    assert result["error"]["code"] == "invalid_argument"
     assert "coins is required" in result["error"]["message"]
+    assert result["error"]["details"]["suggested_arguments"]["coins"].startswith(
+        "ethereum:"
+    )
 
 
 @pytest.mark.asyncio

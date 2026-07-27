@@ -8,6 +8,14 @@ import httpx
 
 from wayfinder_paths.core.clients.InstanceStateClient import INSTANCE_STATE_CLIENT
 from wayfinder_paths.core.config import is_opencode_instance
+from wayfinder_paths.mcp.arg_validation import MCPArgumentError, normalize_enum
+from wayfinder_paths.mcp.tool_annotations import (
+    ChartIndicatorList,
+    ChartIndicators,
+    ChartKind,
+    ChartSeriesSpecs,
+    ChartTransforms,
+)
 from wayfinder_paths.mcp.utils import catch_errors, err, ok, repo_root
 
 _NOT_OPENCODE_ERR = ("not_opencode_instance", "Not running on an OpenCode instance")
@@ -25,6 +33,19 @@ _RATE_PERCENT_FIELDS = {
     "apy_base",
     "apy_base_7d",
     "reward_apr",
+}
+_CHART_KINDS = {"price_candle", "line", "bar", "table"}
+_INDICATOR_NAMES = {
+    "atr",
+    "bollinger",
+    "ema",
+    "macd",
+    "rsi",
+    "sma",
+    "stochastic",
+    "supertrend",
+    "volume",
+    "vwap",
 }
 
 
@@ -94,6 +115,100 @@ def _normalize_chart_series_for_display(
             item = {**item, "unit": "%", "transforms": transforms}
         normalized.append(item)
     return normalized
+
+
+def _validate_chart_series(series: Any) -> list[dict[str, Any]]:
+    if not isinstance(series, list) or not series:
+        raise MCPArgumentError(
+            "series must be a non-empty list of chart series specs",
+            field="series",
+            received=series,
+            suggested_arguments={
+                "series": [
+                    {
+                        "id": "series-1",
+                        "source": {"type": "inline", "points": []},
+                    }
+                ]
+            },
+        )
+    for index, item in enumerate(series):
+        field = f"series[{index}]"
+        if not isinstance(item, dict):
+            raise MCPArgumentError(
+                f"{field} must be an object",
+                field=field,
+                received=item,
+            )
+        if not str(item.get("id") or "").strip():
+            raise MCPArgumentError(
+                f"{field}.id is required",
+                field=f"{field}.id",
+                received=item.get("id"),
+                suggested_arguments={"id": f"series-{index + 1}"},
+            )
+        if not isinstance(item.get("source"), dict):
+            raise MCPArgumentError(
+                f"{field}.source must be an object copied from "
+                "visual_search_chart_series or an inline source",
+                field=f"{field}.source",
+                received=item.get("source"),
+                suggested_arguments={
+                    "source": {"type": "inline", "points": []},
+                },
+            )
+    return series
+
+
+def _validate_chart_transforms(
+    transforms: Any,
+    *,
+    field_name: str = "transforms",
+) -> None:
+    if transforms is None:
+        return
+    if not isinstance(transforms, list) or any(
+        not isinstance(item, dict) for item in transforms
+    ):
+        raise MCPArgumentError(
+            f"{field_name} must be a list of transform objects",
+            field=field_name,
+            received=transforms,
+            suggested_arguments={field_name: []},
+        )
+
+
+def _validate_indicators(indicators: Any) -> None:
+    if not isinstance(indicators, list):
+        raise MCPArgumentError(
+            "indicators must be a list; use [] to clear them",
+            field="indicators",
+            received=indicators,
+            suggested_arguments={"indicators": []},
+        )
+    for index, indicator in enumerate(indicators):
+        field = f"indicators[{index}]"
+        if not isinstance(indicator, dict):
+            raise MCPArgumentError(
+                f"{field} must be an object with name and optional inputs",
+                field=field,
+                received=indicator,
+            )
+        name = str(indicator.get("name") or "").strip().lower()
+        if name not in _INDICATOR_NAMES:
+            raise MCPArgumentError(
+                f"{field}.name is unsupported",
+                field=f"{field}.name",
+                received=indicator.get("name"),
+                allowed_values=_INDICATOR_NAMES,
+            )
+        if "inputs" in indicator and not isinstance(indicator["inputs"], dict):
+            raise MCPArgumentError(
+                f"{field}.inputs must be an object",
+                field=f"{field}.inputs",
+                received=indicator["inputs"],
+                suggested_arguments={"inputs": {}},
+            )
 
 
 def _resolve_visual_spec_path(path_raw: str) -> tuple[Path, str] | dict[str, Any]:
@@ -290,9 +405,9 @@ async def visual_set_active_market(
 
 @catch_errors
 async def visual_preview_series(
-    series: list[dict[str, Any]],
-    kind: str = "line",
-    transforms: list[dict[str, Any]] | None = None,
+    series: ChartSeriesSpecs,
+    kind: ChartKind = "line",
+    transforms: ChartTransforms = None,
     lookback_days: int | None = None,
     limit: int | None = None,
 ) -> dict[str, Any]:
@@ -304,6 +419,9 @@ async def visual_preview_series(
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
+    series = _validate_chart_series(series)
+    kind = normalize_enum(kind, field_name="kind", allowed_values=_CHART_KINDS)
+    _validate_chart_transforms(transforms)
     payload: dict[str, Any] = {
         "kind": kind,
         "series": _normalize_chart_series_for_display(series),
@@ -326,7 +444,7 @@ async def visual_preview_series(
 @catch_errors
 async def visual_set_chart_indicators(
     chart_id: str,
-    indicators: list[dict[str, Any]],
+    indicators: ChartIndicatorList,
 ) -> dict[str, Any]:
     """Replace a chart's TradingView indicators; pass `[]` to clear them.
 
@@ -338,6 +456,7 @@ async def visual_set_chart_indicators(
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
+    _validate_indicators(indicators)
     try:
         response = await INSTANCE_STATE_CLIENT.set_chart_indicators(
             chart_id, indicators
@@ -370,15 +489,15 @@ async def visual_set_chart_indicators(
 async def visual_create_chart(
     chart_id: str,
     title: str,
-    kind: str,
-    series: list[dict[str, Any]],
-    transforms: list[dict[str, Any]] | None = None,
+    kind: ChartKind,
+    series: ChartSeriesSpecs,
+    transforms: ChartTransforms = None,
     overlays: list[dict[str, Any]] | None = None,
     lookback_days: int | None = None,
     limit: int | None = None,
     layout: dict[str, Any] | None = None,
     context_market_id: str | None = None,
-    indicators: list[dict[str, Any]] | None = None,
+    indicators: ChartIndicators = None,
 ) -> dict[str, Any]:
     """Create or replace a persistent workspace chart.
 
@@ -395,6 +514,27 @@ async def visual_create_chart(
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
+    chart_id = str(chart_id or "").strip()
+    title = str(title or "").strip()
+    if not chart_id:
+        raise MCPArgumentError(
+            "chart_id is required; use a stable slug such as 'btc-funding'",
+            field="chart_id",
+            received=chart_id,
+            suggested_arguments={"chart_id": "market-metric"},
+        )
+    if not title:
+        raise MCPArgumentError(
+            "title is required",
+            field="title",
+            received=title,
+            suggested_arguments={"title": "Market metric"},
+        )
+    kind = normalize_enum(kind, field_name="kind", allowed_values=_CHART_KINDS)
+    series = _validate_chart_series(series)
+    _validate_chart_transforms(transforms)
+    if indicators is not None:
+        _validate_indicators(indicators)
     chart = {
         "id": chart_id,
         "title": title,

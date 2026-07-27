@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal, cast
 
+from wayfinder_paths.mcp.arg_validation import MCPArgumentError
 from wayfinder_paths.mcp.utils import throw_if_not_number
 
 
@@ -26,7 +27,12 @@ def first_present(source: Mapping[str, Any], *keys: str) -> Any:
 def normalize_pm_side(side: Any) -> Literal["BUY", "SELL"]:
     normalized = str(side or "").strip().upper()
     if normalized not in {"BUY", "SELL"}:
-        raise ValueError("side must be BUY or SELL")
+        raise MCPArgumentError(
+            "side must be BUY or SELL",
+            field="side",
+            received=side,
+            allowed_values={"BUY", "SELL"},
+        )
     return cast(Literal["BUY", "SELL"], normalized)
 
 
@@ -39,22 +45,48 @@ def validate_pm_market_order_size(
     has_buy = buy_amount_pusd is not None
     has_sell = sell_amount_shares is not None
     if has_buy and has_sell:
-        raise ValueError(
-            "Pass exactly one sizing field: buy_amount_pusd for BUY or "
-            "sell_amount_shares for SELL"
+        raise MCPArgumentError(
+            "pass exactly one sizing field: buy_amount_pusd for BUY or "
+            "sell_amount_shares for SELL",
+            field="side",
+            received={
+                "side": side,
+                "buy_amount_pusd": buy_amount_pusd,
+                "sell_amount_shares": sell_amount_shares,
+            },
+            suggested_arguments={
+                "side": side,
+                "buy_amount_pusd": 10.0 if side == "BUY" else None,
+                "sell_amount_shares": 10.0 if side == "SELL" else None,
+            },
         )
     if side == "BUY":
         if not has_buy:
             if has_sell:
-                raise ValueError(
-                    "BUY requires buy_amount_pusd; sell_amount_shares is only valid for SELL"
+                raise MCPArgumentError(
+                    "BUY requires buy_amount_pusd; sell_amount_shares is only for SELL",
+                    field="buy_amount_pusd",
+                    received=buy_amount_pusd,
+                    suggested_arguments={
+                        "buy_amount_pusd": sell_amount_shares,
+                        "sell_amount_shares": None,
+                    },
                 )
-            raise ValueError("BUY requires buy_amount_pusd")
+            raise MCPArgumentError(
+                "BUY requires buy_amount_pusd in pUSD collateral units",
+                field="buy_amount_pusd",
+                received=buy_amount_pusd,
+                suggested_arguments={"buy_amount_pusd": 10.0},
+            )
         amount = throw_if_not_number(
             "buy_amount_pusd must be a number", buy_amount_pusd
         )
         if amount <= 0:
-            raise ValueError("buy_amount_pusd must be positive")
+            raise MCPArgumentError(
+                "buy_amount_pusd must be positive",
+                field="buy_amount_pusd",
+                received=buy_amount_pusd,
+            )
         return {
             "sizing_kind": "buy_amount_pusd",
             "buy_amount_pusd": amount,
@@ -64,15 +96,30 @@ def validate_pm_market_order_size(
 
     if not has_sell:
         if has_buy:
-            raise ValueError(
-                "SELL requires sell_amount_shares; buy_amount_pusd is only valid for BUY"
+            raise MCPArgumentError(
+                "SELL requires sell_amount_shares; buy_amount_pusd is only for BUY",
+                field="sell_amount_shares",
+                received=sell_amount_shares,
+                suggested_arguments={
+                    "buy_amount_pusd": None,
+                    "sell_amount_shares": buy_amount_pusd,
+                },
             )
-        raise ValueError("SELL requires sell_amount_shares")
+        raise MCPArgumentError(
+            "SELL requires sell_amount_shares in outcome-share units",
+            field="sell_amount_shares",
+            received=sell_amount_shares,
+            suggested_arguments={"sell_amount_shares": 10.0},
+        )
     amount = throw_if_not_number(
         "sell_amount_shares must be a number", sell_amount_shares
     )
     if amount <= 0:
-        raise ValueError("sell_amount_shares must be positive")
+        raise MCPArgumentError(
+            "sell_amount_shares must be positive",
+            field="sell_amount_shares",
+            received=sell_amount_shares,
+        )
     return {
         "sizing_kind": "sell_amount_shares",
         "buy_amount_pusd": None,

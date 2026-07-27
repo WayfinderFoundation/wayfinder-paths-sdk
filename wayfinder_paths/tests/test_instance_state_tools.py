@@ -295,27 +295,20 @@ async def test_visual_create_chart_compacts_response_and_applies_indicators(
 
 
 @pytest.mark.asyncio
-async def test_visual_create_chart_surfaces_indicator_failure(monkeypatch) -> None:
+async def test_visual_create_chart_rejects_unknown_indicator_before_save(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(instance_state, "is_opencode_instance", lambda: True)
 
+    called = False
+
     async def fake_upsert(chart: dict[str, object]) -> dict[str, object]:
+        nonlocal called
+        called = True
         return {"chart_workspace": {"activeChartId": chart["id"], "version": 2}}
-
-    request = httpx.Request("PATCH", "http://backend/chart_workspace")
-    response = httpx.Response(
-        400,
-        json={"error": "unsupported indicator 'ichimoku'; supported: atr, bollinger"},
-        request=request,
-    )
-
-    async def fake_set(chart_id: str, indicators: list[dict[str, object]]):
-        raise httpx.HTTPStatusError("400", request=request, response=response)
 
     monkeypatch.setattr(
         instance_state.INSTANCE_STATE_CLIENT, "upsert_workspace_chart", fake_upsert
-    )
-    monkeypatch.setattr(
-        instance_state.INSTANCE_STATE_CLIENT, "set_chart_indicators", fake_set
     )
 
     result = await instance_state.visual_create_chart(
@@ -326,10 +319,11 @@ async def test_visual_create_chart_surfaces_indicator_failure(monkeypatch) -> No
         indicators=[{"name": "ichimoku"}],
     )
 
-    # Chart creation succeeded; the indicator failure is reported, not fatal.
-    assert result["ok"] is True
-    assert "unsupported indicator" in result["result"]["indicators_error"]["message"]
-    assert "indicators" not in result["result"]
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_argument"
+    assert result["error"]["details"]["field"] == "indicators[0].name"
+    assert "ema" in result["error"]["details"]["allowed_values"]
+    assert called is False
 
 
 @pytest.mark.asyncio

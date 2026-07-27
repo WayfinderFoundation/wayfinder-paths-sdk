@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 _DEFAULT_SKIP_VALUES = {"", "_", "none", "null"}
 
@@ -110,6 +113,38 @@ def optional_int(
     )
 
 
+def optional_iso8601(value: Any, *, field_name: str) -> str | None:
+    normalized = optional_str(value, field_name=field_name)
+    if normalized is None:
+        return None
+    try:
+        datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise MCPArgumentError(
+            f"{field_name} must be an ISO-8601 date or timestamp",
+            field=field_name,
+            received=value,
+            suggested_arguments={field_name: "2026-01-31T00:00:00Z"},
+        ) from exc
+    return normalized
+
+
+def optional_iana_timezone(value: Any, *, field_name: str = "timezone") -> str | None:
+    normalized = optional_str(value, field_name=field_name)
+    if normalized is None:
+        return None
+    try:
+        ZoneInfo(normalized)
+    except ZoneInfoNotFoundError as exc:
+        raise MCPArgumentError(
+            f"{field_name} must be an IANA timezone such as UTC or America/Toronto",
+            field=field_name,
+            received=value,
+            suggested_arguments={field_name: "UTC"},
+        ) from exc
+    return normalized
+
+
 def optional_json_object(
     value: Any,
     *,
@@ -130,12 +165,14 @@ def optional_json_object(
             f"{field_name} must be a JSON object",
             field=field_name,
             received=value,
+            suggested_arguments={field_name: {}},
         ) from exc
     if not isinstance(parsed, dict):
         raise MCPArgumentError(
             f"{field_name} must be a JSON object",
             field=field_name,
             received=value,
+            suggested_arguments={field_name: {}},
         )
     return parsed
 
@@ -159,6 +196,44 @@ def normalize_enum(
             allowed_values=allowed.values(),
         )
     return allowed[normalized]
+
+
+def normalize_human_amount(value: Any, *, field_name: str = "amount") -> str:
+    """Validate the MCP convention for decimal human-unit token amounts."""
+    if not isinstance(value, str):
+        raise MCPArgumentError(
+            f"{field_name} must be a decimal string such as '1.0', not "
+            f"{type(value).__name__}",
+            field=field_name,
+            received=value,
+            suggested_arguments={field_name: "1.0"},
+        )
+    normalized = value.strip()
+    if "." not in normalized:
+        raise MCPArgumentError(
+            f"{field_name} must include a decimal point because it is in token "
+            "units, not wei/base units",
+            field=field_name,
+            received=value,
+            suggested_arguments={field_name: f"{normalized or '1'}.0"},
+        )
+    try:
+        parsed = Decimal(normalized)
+    except InvalidOperation as exc:
+        raise MCPArgumentError(
+            f"{field_name} must be a decimal string such as '1.25'",
+            field=field_name,
+            received=value,
+            suggested_arguments={field_name: "1.0"},
+        ) from exc
+    if not parsed.is_finite() or parsed <= 0:
+        raise MCPArgumentError(
+            f"{field_name} must be a positive finite decimal amount",
+            field=field_name,
+            received=value,
+            suggested_arguments={field_name: "1.0"},
+        )
+    return normalized
 
 
 def split_values(

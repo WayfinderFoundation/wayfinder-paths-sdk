@@ -5,6 +5,12 @@ from typing import Any
 
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
+from wayfinder_paths.mcp.arg_validation import normalize_human_amount
+from wayfinder_paths.mcp.tool_annotations import (
+    HumanTokenAmount,
+    SlippageBps,
+    TokenQuery,
+)
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
@@ -65,10 +71,10 @@ def _unwrap_brap_quote_response(
 async def onchain_quote_swap(
     *,
     wallet_label: str,
-    from_token: str,
-    to_token: str,
-    amount: str,
-    slippage_bps: int = 50,
+    from_token: TokenQuery,
+    to_token: TokenQuery,
+    amount: HumanTokenAmount,
+    slippage_bps: SlippageBps = 50,
     recipient: str | None = None,
     include_calldata: bool = False,
 ) -> dict[str, Any]:
@@ -79,6 +85,10 @@ async def onchain_quote_swap(
     point, never wei. Recipient defaults to the destination-chain wallet leg.
     Calldata is omitted unless requested to keep the response small.
     """
+    amount = normalize_human_amount(amount)
+    if slippage_bps < 0:
+        return err("invalid_request", "slippage_bps must be >= 0")
+
     ring = await load_wallet_ring(wallet_label)
     if not ring:
         return err("not_found", f"Unknown wallet_label: {wallet_label}")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 from decimal import Decimal
 from typing import Any, Literal
@@ -21,6 +22,7 @@ from wayfinder_paths.core.utils.wallets import (
     get_wallet_sign_typed_data_callback,
     get_wallet_signing_callback,
 )
+from wayfinder_paths.mcp.arg_validation import MCPArgumentError
 from wayfinder_paths.mcp.polymarket_order import (
     normalize_pm_execution_summary,
     normalize_pm_side,
@@ -41,6 +43,16 @@ from wayfinder_paths.mcp.polymarket_summary import (
     next_suggested_calls,
 )
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
+from wayfinder_paths.mcp.tool_annotations import (
+    PolymarketBuyAmount,
+    PolymarketMarketSlug,
+    PolymarketOutcome,
+    PolymarketProbability,
+    PolymarketSellShares,
+    PolymarketShares,
+    PolymarketTokenId,
+    SlippagePercentPoints,
+)
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
@@ -49,7 +61,6 @@ from wayfinder_paths.mcp.utils import (
     resolve_wallet_address,
     throw_if_empty_str,
     throw_if_none,
-    throw_if_not_number,
 )
 
 
@@ -58,6 +69,57 @@ def _adapter_error(payload: Any) -> dict[str, Any]:
         message = str(payload.get("message") or payload.get("error") or payload)
         return err(str(payload.get("code") or "error"), message, payload)
     return err("error", str(payload))
+
+
+def _validate_market_reference(
+    *,
+    token_id: Any,
+    market_slug: Any,
+    event_slug: Any = None,
+    allow_event: bool = False,
+) -> None:
+    references = {
+        "token_id": str(token_id or "").strip(),
+        "market_slug": str(market_slug or "").strip(),
+    }
+    if allow_event:
+        references["event_slug"] = str(event_slug or "").strip()
+    provided = [field for field, value in references.items() if value]
+    if len(provided) == 1:
+        return
+    expected = (
+        "exactly one of token_id, market_slug, or event_slug"
+        if allow_event
+        else "exactly one of token_id or market_slug"
+    )
+    raise MCPArgumentError(
+        f"provide {expected}; market_slug must be paired with outcome",
+        field="token_id",
+        received={field: value or None for field, value in references.items()},
+        suggested_arguments={
+            "token_id": None,
+            "market_slug": "exact-market-slug",
+            "outcome": "YES",
+        },
+    )
+
+
+def _positive_pm_number(value: Any, *, field_name: str) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise MCPArgumentError(
+            f"{field_name} must be a positive number",
+            field=field_name,
+            received=value,
+        ) from exc
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise MCPArgumentError(
+            f"{field_name} must be positive",
+            field=field_name,
+            received=value,
+        )
+    return parsed
 
 
 def _normalize_pm_lookup_text(value: Any) -> str:
@@ -530,14 +592,14 @@ async def polymarket_read(
     summary: bool = True,
     candidate_limit: int = DEFAULT_CANDIDATE_LIMIT,
     # market/event
-    market_slug: str | None = None,
+    market_slug: PolymarketMarketSlug = None,
     event_slug: str | None = None,
-    outcome: str | int = "YES",
+    outcome: PolymarketOutcome = "YES",
     # clob data
-    token_id: str | None = None,
+    token_id: PolymarketTokenId = None,
     side: Literal["BUY", "SELL"] = "BUY",
-    buy_amount_pusd: float | None = None,
-    sell_amount_shares: float | None = None,
+    buy_amount_pusd: PolymarketBuyAmount = None,
+    sell_amount_shares: PolymarketSellShares = None,
     interval: str | None = "1d",
     start_ts: int | None = None,
     end_ts: int | None = None,
@@ -551,6 +613,22 @@ async def polymarket_read(
     compact—disable only for raw debugging. Account precedence is account,
     wallet_address, then label; open_orders requires a label with hash signing.
     """
+    if action == "quote":
+        _validate_market_reference(token_id=token_id, market_slug=market_slug)
+        normalized_side = normalize_pm_side(side)
+        validate_pm_market_order_size(
+            side=normalized_side,
+            buy_amount_pusd=buy_amount_pusd,
+            sell_amount_shares=sell_amount_shares,
+        )
+    elif action in {"price", "order_book", "price_history"}:
+        _validate_market_reference(
+            token_id=token_id,
+            market_slug=market_slug,
+            event_slug=event_slug,
+            allow_event=True,
+        )
+
     waddr, want = await resolve_wallet_address(wallet_label=wallet_label)
 
     acct = normalize_address(account) or normalize_address(wallet_address) or waddr
@@ -908,7 +986,7 @@ async def polymarket_deposit_pusd(
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     throw_if_none("amount is required", amount)
-    amt = throw_if_not_number("amount must be a number", amount)
+    amt = _positive_pm_number(amount, field_name="amount")
     adapter, sender = await _make_polymarket_adapter(wallet_label)
     try:
         amount_raw = int(Decimal(str(amt)) * Decimal(1_000_000))
@@ -973,9 +1051,7 @@ async def polymarket_withdraw_pusd(
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     amt = (
-        throw_if_not_number("amount must be a number", amount)
-        if amount is not None
-        else None
+        _positive_pm_number(amount, field_name="amount") if amount is not None else None
     )
     adapter, sender = await _make_polymarket_adapter(wallet_label)
     try:
@@ -1019,12 +1095,12 @@ async def polymarket_place_market_order(
     *,
     wallet_label: str,
     side: Literal["BUY", "SELL"] = "BUY",
-    market_slug: str | None = None,
-    outcome: str | int = "YES",
-    token_id: str | None = None,
-    buy_amount_pusd: float | None = None,
-    sell_amount_shares: float | None = None,
-    max_slippage_pct: float | None = None,
+    market_slug: PolymarketMarketSlug = None,
+    outcome: PolymarketOutcome = "YES",
+    token_id: PolymarketTokenId = None,
+    buy_amount_pusd: PolymarketBuyAmount = None,
+    sell_amount_shares: PolymarketSellShares = None,
+    max_slippage_pct: SlippagePercentPoints = None,
 ) -> dict[str, Any]:
     """Place a Polymarket market order (FOK limit at a slippage-derived cap).
 
@@ -1033,12 +1109,22 @@ async def polymarket_place_market_order(
     signs an FOK limit at the slippage cap (default 2%); movement past it cancels.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
+    _validate_market_reference(token_id=token_id, market_slug=market_slug)
     side = normalize_pm_side(side)
     sizing = validate_pm_market_order_size(
         side=side,
         buy_amount_pusd=buy_amount_pusd,
         sell_amount_shares=sell_amount_shares,
     )
+    if max_slippage_pct is not None:
+        slippage = float(max_slippage_pct)
+        if not math.isfinite(slippage) or slippage < 0 or slippage > 100:
+            raise MCPArgumentError(
+                "max_slippage_pct must be from 0 to 100; 2.0 means 2%",
+                field="max_slippage_pct",
+                received=max_slippage_pct,
+                suggested_arguments={"max_slippage_pct": 2.0},
+            )
 
     adapter, sender = await _make_polymarket_adapter(wallet_label)
     resolved_outcome = str(outcome) if market_slug else None
@@ -1137,11 +1223,11 @@ async def polymarket_place_limit_order(
     *,
     wallet_label: str,
     side: Literal["BUY", "SELL"],
-    price: float,
-    size: float,
-    market_slug: str | None = None,
-    outcome: str | int = "YES",
-    token_id: str | None = None,
+    price: PolymarketProbability,
+    size: PolymarketShares,
+    market_slug: PolymarketMarketSlug = None,
+    outcome: PolymarketOutcome = "YES",
+    token_id: PolymarketTokenId = None,
     post_only: bool = False,
 ) -> dict[str, Any]:
     """Place a Polymarket limit order.
@@ -1150,9 +1236,19 @@ async def polymarket_place_limit_order(
     in [0,1] and `size` is shares. post_only rejects rather than crossing.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
+    _validate_market_reference(token_id=token_id, market_slug=market_slug)
     side = normalize_pm_side(side)
     throw_if_none("price is required", price)
     throw_if_none("size is required", size)
+    px = float(price)
+    if not math.isfinite(px) or not 0 < px < 1:
+        raise MCPArgumentError(
+            "price must be a probability strictly between 0 and 1",
+            field="price",
+            received=price,
+            suggested_arguments={"price": 0.5},
+        )
+    shares = _positive_pm_number(size, field_name="size")
 
     adapter, sender = await _make_polymarket_adapter(wallet_label)
     resolved_outcome: str | None = None
@@ -1182,8 +1278,8 @@ async def polymarket_place_limit_order(
         ok_lo, res = await adapter.place_limit_order(
             token_id=tid,
             side=side,
-            price=float(price),
-            size=float(size),
+            price=px,
+            size=shares,
             post_only=bool(post_only),
         )
         effects = [
@@ -1206,8 +1302,8 @@ async def polymarket_place_limit_order(
                 "token_id": tid,
                 "outcome": resolved_outcome,
                 "side": side,
-                "price": float(price),
-                "size": float(size),
+                "price": px,
+                "size": shares,
                 "post_only": bool(post_only),
             },
         )

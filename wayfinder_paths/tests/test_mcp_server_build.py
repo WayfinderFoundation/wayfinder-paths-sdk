@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import time
@@ -42,6 +43,40 @@ def test_mcp_tool_descriptions_stay_context_efficient() -> None:
 
     assert not oversized, f"tool descriptions exceed 700 characters: {oversized}"
     assert sum(map(len, descriptions.values())) <= 25_000
+
+
+def test_non_obvious_parameters_include_schema_guidance(monkeypatch) -> None:
+    from wayfinder_paths.mcp import server as mcp_server
+
+    monkeypatch.setattr(mcp_server, "is_opencode_instance", lambda: True)
+    tools = {
+        tool.name: tool for tool in mcp_server.build_mcp()._tool_manager.list_tools()
+    }
+    guided_parameters = {
+        ("onchain_swap", "amount"): "never pass wei",
+        ("sports_provider", "path_params"): "JSON object",
+        ("contracts_call", "args"): "JSON array",
+        ("core_runner", "cron_expr"): "5-field cron",
+        ("hyperliquid_place_market_order", "asset_name"): "BTC-USDC",
+        ("polymarket_place_market_order", "max_slippage_pct"): "2.0 means 2%",
+        ("visual_create_chart", "series"): "visual_search_chart_series",
+    }
+
+    for (tool_name, parameter), expected in guided_parameters.items():
+        schema = tools[tool_name].parameters["properties"][parameter]
+        assert expected in schema.get("description", ""), (
+            f"{tool_name}.{parameter} lacks actionable format guidance"
+        )
+
+    manifest = [
+        {
+            "name": tool.name,
+            "description": tool.description,
+            "inputSchema": tool.parameters,
+        }
+        for tool in tools.values()
+    ]
+    assert len(json.dumps(manifest, separators=(",", ":"))) <= 80_000
 
 
 def test_mcp_server_starts_and_stays_alive() -> None:

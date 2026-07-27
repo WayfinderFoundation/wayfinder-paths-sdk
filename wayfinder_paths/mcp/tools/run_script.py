@@ -10,6 +10,7 @@ from typing import Any
 from wayfinder_paths.mcp.preview import build_run_script_preview
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.state.runs import runs_root
+from wayfinder_paths.mcp.tool_annotations import RunsPythonScript
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
@@ -42,6 +43,7 @@ def _resolve_script_path(script_path: str) -> tuple[bool, Path | dict[str, Any]]
                 "details": {
                     "runs_root": str(runs_root_path),
                     "script_path": str(resolved),
+                    "suggested_arguments": {"script_path": ".wayfinder_runs/script.py"},
                 },
             },
         )
@@ -62,7 +64,10 @@ def _resolve_script_path(script_path: str) -> tuple[bool, Path | dict[str, Any]]
             {
                 "code": "invalid_request",
                 "message": "Only .py scripts are supported",
-                "details": {"script_path": str(resolved)},
+                "details": {
+                    "script_path": str(resolved),
+                    "suggested_arguments": {"script_path": ".wayfinder_runs/script.py"},
+                },
             },
         )
 
@@ -138,7 +143,7 @@ async def _annotate_script_run(
 @catch_errors
 async def core_run_script(
     *,
-    script_path: str,
+    script_path: RunsPythonScript,
     args: list[str] | None = None,
     timeout_s: int = 600,
     env: dict[str, str] | None = None,
