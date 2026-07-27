@@ -389,7 +389,10 @@ def test_wayfinder_jobs_worker_prompts_scope_bash_fallback(tmp_path: Path) -> No
                 case.job_id,
                 module.SCRIPT_AGENT_PROPOSAL_ID,
             )
-            assert proposal["application"]["status"] == "applying"
+            # Post-#542 contract: preparing the prompt NEVER claims (a
+            # dropped prompt after a claim stalls the job) — the claim
+            # happens inside the live session, so it is still queued here.
+            assert proposal["application"]["status"] == "queued"
             assert "validate_application" in apply_prompt
             assert "failed checks" in apply_prompt
             assert "candidate workspace" in apply_prompt
