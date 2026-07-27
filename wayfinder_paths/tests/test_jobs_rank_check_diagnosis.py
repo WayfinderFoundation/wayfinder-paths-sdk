@@ -13,23 +13,31 @@ from wayfinder_paths.jobs.research import rank_ic
 _N = 120
 
 
-def _frame(values: np.ndarray) -> pd.DataFrame:
+def _frame(values: np.ndarray, *, seed: int = 0) -> pd.DataFrame:
     ts = pd.date_range("2026-06-01", periods=_N, freq="5min", tz="UTC")
-    return pd.DataFrame(
-        {"timestamp": ts, "col": values, "close": 100 + np.arange(_N) * 0.1}
-    )
+    # Per-symbol random-walk closes: identical close paths make forward-
+    # return ranks constant (degenerate IC), which is not what these tests
+    # probe.
+    walk = np.random.default_rng(seed).normal(0, 0.2, _N).cumsum()
+    return pd.DataFrame({"timestamp": ts, "col": values, "close": 100 + walk})
 
 
 def test_panel_wide_column_fails_loud() -> None:
     shared = np.sin(np.arange(_N))  # varies in time, constant across symbols
-    frames = {s: _frame(shared.copy()) for s in ("A", "B", "C", "D")}
+    frames = {
+        s: _frame(shared.copy(), seed=i)
+        for i, s in enumerate(("A", "B", "C", "D"))
+    }
     with pytest.raises(ValueError, match="cross-sectionally constant"):
         rank_ic(frames, "col")
 
 
 def test_self_hole_column_fails_loud() -> None:
     rng = np.random.default_rng(3)
-    frames = {s: _frame(rng.normal(size=_N)) for s in ("A", "B", "C", "D")}
+    frames = {
+        s: _frame(rng.normal(size=_N), seed=i)
+        for i, s in enumerate(("A", "B", "C", "D"))
+    }
     frames["A"]["col"] = np.nan  # pair-wise column's self-symbol hole
     with pytest.raises(ValueError, match="entirely NaN for \\['A'\\]"):
         rank_ic(frames, "col")
@@ -37,7 +45,10 @@ def test_self_hole_column_fails_loud() -> None:
 
 def test_varying_column_still_ranks() -> None:
     rng = np.random.default_rng(7)
-    frames = {s: _frame(rng.normal(size=_N)) for s in ("A", "B", "C", "D")}
+    frames = {
+        s: _frame(rng.normal(size=_N), seed=i)
+        for i, s in enumerate(("A", "B", "C", "D"))
+    }
     result = rank_ic(frames, "col")
     assert result["horizons"][0]["n"] > 0
 
