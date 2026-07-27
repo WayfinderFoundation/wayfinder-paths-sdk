@@ -238,5 +238,4 @@ async def onchain_quote_swap(
             "recipient": rcpt,
         },
     }
-
     return ok(result)

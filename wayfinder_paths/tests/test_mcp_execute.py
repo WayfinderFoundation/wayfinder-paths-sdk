@@ -145,6 +145,7 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
             "best_quote": {
                 "provider": "brap_best",
                 "input_amount": "1000000",
+                "output_amount": "900000",
                 "calldata": {
                     "to": "0x" + "33" * 20,
                     "data": "0xdeadbeef",
