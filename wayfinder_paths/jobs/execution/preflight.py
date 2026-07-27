@@ -175,6 +175,18 @@ def build_live_dataset(
                 "venue caps history. For longer windows use "
                 "dataset_source='ccxt' (exchange='binance')."
             )
+    # Derived research columns follow the dataset unconditionally — a fresh
+    # dataset with frozen btc_trend/cross columns is the silent-staleness bug
+    # (stale values merge cleanly into every scan frame, no error anywhere).
+    # force=0 bypasses the hourly stamp gate; the helper never raises and
+    # journals failures, so a broken exog feed cannot fail the dataset build.
+    from wayfinder_paths.jobs.derived_features import (
+        refresh_derived_features_if_stale,
+    )
+
+    result["derived_features"] = refresh_derived_features_if_stale(
+        job_id, store=store, max_age_seconds=0
+    )
     return result
 
 
