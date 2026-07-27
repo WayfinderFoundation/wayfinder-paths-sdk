@@ -153,8 +153,9 @@ def test_markers_carry_mode_and_kind(tmp_path: Path) -> None:
         ("entry", "live"),
         ("exit", "live"),
     ]
-    assert markers[0]["label"] == "paper entry: new_low_5"
-    assert markers[1]["label"] == "paper exit: sma50_floor"
+    assert markers[0]["label"] == "paper short entry: new_low_5"
+    assert markers[1]["label"] == "paper short exit: sma50_floor"
+    assert markers[0]["direction"] == "short"
 
 
 def test_pnl_by_mode_splits_paper_and_live(tmp_path: Path) -> None:
