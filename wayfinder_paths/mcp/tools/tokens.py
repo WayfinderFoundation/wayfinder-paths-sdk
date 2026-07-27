@@ -45,7 +45,8 @@ async def onchain_get_gas_token(chain_code: str) -> dict[str, Any]:
     """Return the native gas token for a chain, e.g. ETH for base, POL for polygon.
 
     Args:
-        chain_code: ethereum, base, arbitrum, polygon, bsc, avalanche, plasma, or hyperevm.
+        chain_code: ethereum, base, arbitrum, polygon, bsc, avalanche, plasma,
+            hyperevm, or solana.
     """
     token = await TOKEN_CLIENT.get_gas_token(chain_code)
     return ok(token)
@@ -56,7 +57,7 @@ async def onchain_fuzzy_search_tokens(chain_code: str, query: str) -> dict[str, 
     """Fuzzy-search tokens on a chain by symbol, name, or address — use when an exact id isn't known.
 
     Args:
-        chain_code: e.g. base. Pass all or _ to search across every chain.
+        chain_code: e.g. base or solana. Pass all or _ to search across every chain.
         query: name, symbol, or address. e.g. usdc, weth, wrapped eth, or 0x422...
     """
     chain = None if chain_code in ALL_CHAINS else chain_code
@@ -80,7 +81,8 @@ async def onchain_list_tokens(
     onchain_fuzzy_search_tokens / onchain_resolve_token.
 
     Args:
-        chain_code: the chain to browse, e.g. robinhood, base, arbitrum.
+        chain_code: the chain to browse, e.g. solana, robinhood, base, arbitrum.
+            Solana SPL and Token-2022 discovery is supported with "solana".
         dimension: ranking — "trending" (default), "volume" (24h), "new"
             (recently launched), or "active" (most 24h transactions).
         limit: max tokens to return (1-50, default 25).
