@@ -340,14 +340,14 @@ async def send_svm_versioned_transaction(
     chain_id: int = CHAIN_ID_SOLANA,
     wait_for_confirmation: bool = True,
     cu_limit_multiplier: float = 1.2,
-    allow_sponsorship: bool = True,
+    allow_fee_payer_replacement: bool = True,
 ) -> str:
     """Sign and broadcast a v0 transaction; return its base58 signature."""
     if sign_callback is None:
         raise ValueError("sign_callback must be provided to send transaction")
 
     signature = None
-    if allow_sponsorship and await sponsorship_enabled():
+    if allow_fee_payer_replacement and await sponsorship_enabled():
         try:
             signature = await _send_sponsored_svm_transaction(
                 sign_callback.wallet_address,
@@ -389,7 +389,7 @@ async def send_svm_versioned_transaction_with_details(
     chain_id: int = CHAIN_ID_SOLANA,
     wait_for_confirmation: bool = True,
     cu_limit_multiplier: float = 1.2,
-    allow_sponsorship: bool = True,
+    allow_fee_payer_replacement: bool = True,
 ) -> SvmTransactionDetails:
     """Sign and broadcast a v0 transaction with typed confirmation/fee metadata."""
     signature = await send_svm_versioned_transaction(
@@ -398,7 +398,7 @@ async def send_svm_versioned_transaction_with_details(
         chain_id=chain_id,
         wait_for_confirmation=wait_for_confirmation,
         cu_limit_multiplier=cu_limit_multiplier,
-        allow_sponsorship=allow_sponsorship,
+        allow_fee_payer_replacement=allow_fee_payer_replacement,
     )
     fee_lamports = None
     if wait_for_confirmation:

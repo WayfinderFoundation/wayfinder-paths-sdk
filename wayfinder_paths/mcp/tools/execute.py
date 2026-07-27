@@ -162,7 +162,7 @@ async def _broadcast_svm(
             sign_callback,
             chain_id=chain_id,
             wait_for_confirmation=wait_for_confirmation,
-            allow_sponsorship=allow_fee_payer_replacement,
+            allow_fee_payer_replacement=allow_fee_payer_replacement,
         )
         signature = send_result["signature"]
         fee_lamports = send_result["fee_lamports"]
