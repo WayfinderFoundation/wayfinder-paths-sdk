@@ -200,6 +200,101 @@ def _research_substrate_block(root: Path) -> dict[str, Any]:
     return block
 
 
+def _standing_checks_block(root: Path) -> dict[str, Any]:
+    """Mechanical routine numbers, computed by the harness each wake.
+
+    The audit found ~30 ledger entries re-deriving `funding_mean > 0` in LLM
+    sessions — threshold arithmetic done by the most expensive component in
+    the system. This block does the arithmetic mechanically; a wake READS the
+    numbers and compares them to its gates."""
+    block: dict[str, Any] = {}
+    trades_path = root / "results" / "forward" / "trades.jsonl"
+    if trades_path.exists():
+        per_symbol: dict[str, int] = {}
+        last_close = ""
+        for line in trades_path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            symbol = str(row.get("symbol") or "?")
+            per_symbol[symbol] = per_symbol.get(symbol, 0) + 1
+            last_close = max(last_close, str(row.get("closed_at") or ""))
+        if per_symbol:
+            block["closed_trades"] = {
+                "total": sum(per_symbol.values()),
+                "per_symbol": dict(sorted(per_symbol.items())),
+                "last_close_ts": last_close,
+            }
+    feats = root / "state" / "features.jsonl"
+    if feats.exists():
+        from wayfinder_paths.jobs.indicators import REGIME_LABELS
+
+        regime_newest: dict[str, tuple[str, float]] = {}
+        funding: dict[str, list[tuple[str, float]]] = {}
+        # Reverse scan with early exit: newest regime per symbol + a week of
+        # funding rows, without parsing the whole multi-MB store.
+        scanned = 0
+        for line in reversed(feats.read_text(encoding="utf-8").splitlines()):
+            scanned += 1
+            if scanned > 30_000:
+                break
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            name = str(row.get("name") or "")
+            symbol = str(row.get("symbol") or "")
+            ts = str(row.get("timestamp") or "")
+            if name == "regime_code":
+                if symbol not in regime_newest or ts > regime_newest[symbol][0]:
+                    try:
+                        regime_newest[symbol] = (ts, float(row.get("value")))
+                    except (TypeError, ValueError):
+                        pass
+            elif name == "funding":
+                rows = funding.setdefault(symbol, [])
+                if len(rows) < 42:  # ~7d of 4h readings
+                    try:
+                        rows.append((ts, float(row.get("value"))))
+                    except (TypeError, ValueError):
+                        pass
+        if regime_newest:
+            block["regime_now"] = {
+                symbol: {
+                    "label": REGIME_LABELS[int(code)]
+                    if 0 <= int(code) < len(REGIME_LABELS)
+                    else "unknown",
+                    "as_of": ts,
+                }
+                for symbol, (ts, code) in sorted(regime_newest.items())
+            }
+        if funding:
+            block["funding_recent"] = {
+                symbol: {
+                    "mean_1d": round(
+                        sum(v for _, v in rows[:6]) / max(len(rows[:6]), 1), 9
+                    ),
+                    "mean_7d": round(sum(v for _, v in rows) / len(rows), 9),
+                    "n": len(rows),
+                    "newest_ts": max(ts for ts, _ in rows),
+                }
+                for symbol, rows in sorted(funding.items())
+                if rows
+            }
+    if block:
+        block["_basis"] = (
+            "Routine numbers computed mechanically THIS wake — never re-fetch "
+            "or re-derive them in-session; compare them to your gates and "
+            "cite them. A pure status observation (runner healthy, gate "
+            "still closed, no new trades) is an ops note, NOT research: "
+            "write it with family operations/monitoring/no_change and it "
+            "lands in the ops ledger automatically. The candidates ledger "
+            "is for research verdicts only."
+        )
+    return block
+
+
 def _drop_volatile_stable_keys(value: Any) -> Any:
     match value:
         case dict():
@@ -290,6 +385,7 @@ def _build_worker_prompt_sections(
         "attribution": _attribution_block(root),
         "post_apply_shadow": _counterfactual_block(store, job_id),
         "research_substrate": _research_substrate_block(root),
+        "standing_checks": _standing_checks_block(root),
     }
 
     stable_prefix = (

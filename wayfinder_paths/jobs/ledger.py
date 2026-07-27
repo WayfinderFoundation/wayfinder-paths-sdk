@@ -29,6 +29,30 @@ from wayfinder_paths.jobs.store import JobStore
 LEDGER_DIR = "ledgers"
 _NAME_RE = re.compile(r"^[a-z0-9_-]+$")
 
+# Housekeeping families never belong in the research ledger: the candidates
+# tail rides the wake prompt, so process rows crowd research history out of
+# the agent's context (audit 2026-07-27: operations/monitoring/maintenance
+# were the TOP candidates families on both labs). Rows in these families are
+# rerouted to the `ops` ledger, which does not ride the research context.
+PROCESS_FAMILIES = {
+    "operations",
+    "operational",
+    "ops",
+    "monitoring",
+    "maintenance",
+    "infrastructure",
+    "housekeeping",
+    "health",
+    "no_change",
+    "status_quo",
+}
+OPS_LEDGER = "ops"
+RESEARCH_LEDGER = "candidates"
+
+
+def _family(row: dict[str, Any]) -> str:
+    return str(row.get("family") or "").strip().lower()
+
 
 def _ledger_path(store: JobStore, job_id: str, name: str):
     if not _NAME_RE.match(name or ""):
@@ -41,6 +65,9 @@ def append_ledger_row(
 ) -> dict[str, Any]:
     if not row:
         raise ValueError("ledger row must be a non-empty object")
+    if name == RESEARCH_LEDGER and _family(row) in PROCESS_FAMILIES:
+        name = OPS_LEDGER
+        row = {**row, "rerouted_from": RESEARCH_LEDGER}
     payload = {"ts": utc_now_iso(), **row}
     target = _ledger_path(store, job_id, name)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -67,4 +94,8 @@ def tail_ledger(
         match row:
             case dict():
                 rows.append(row)
+    if name == RESEARCH_LEDGER:
+        # Filter BEFORE slicing so process rows already in old files (written
+        # before rerouting existed) cannot eat the research tail budget.
+        rows = [row for row in rows if _family(row) not in PROCESS_FAMILIES]
     return rows[-max(int(limit), 1) :]
