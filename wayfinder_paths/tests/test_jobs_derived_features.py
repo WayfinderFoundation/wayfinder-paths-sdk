@@ -183,3 +183,43 @@ def test_refresh_if_stale_gates_and_journals(tmp_path) -> None:
     assert degraded["refreshed"] is False and "exog feed down" in degraded["reason"]
     journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
     assert "derived_features_refresh_failed" in journal
+
+
+def test_research_substrate_block_reads_disk(tmp_path) -> None:
+    import json as _json
+
+    from wayfinder_paths.jobs.models import WayfinderJob
+    from wayfinder_paths.jobs.store import JobStore
+    from wayfinder_paths.jobs.worker import _research_substrate_block
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("substrate-demo", agent_mode="intervene")
+    store.save(job)
+    root = store.job_dir(job.id)
+    (root / "results" / "backtest").mkdir(parents=True, exist_ok=True)
+    (root / "results" / "backtest" / "input_bars.json").write_text(
+        _json.dumps(
+            {
+                "bars": [],
+                "metadata": {"fetched_at": "2026-07-27T01:43:00+00:00", "days": 14},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "state").mkdir(exist_ok=True)
+    rows = [
+        {"timestamp": "2026-07-26T01:05:00+00:00", "name": "btc_trend"},
+        {"timestamp": "2026-07-27T00:50:00+00:00", "name": "btc_trend"},
+    ]
+    (root / "state" / "features.jsonl").write_text(
+        "\n".join(_json.dumps(r) for r in rows) + "\n", encoding="utf-8"
+    )
+    block = _research_substrate_block(root)
+    assert block["dataset_fetched_at"] == "2026-07-27T01:43:00+00:00"
+    assert block["derived_features_newest_ts"] == "2026-07-27T00:50:00+00:00"
+    assert "EVERY wake" in block["_basis"]
+
+    # Empty job -> empty block, no crash.
+    job2 = WayfinderJob.new("substrate-empty", agent_mode="intervene")
+    store.save(job2)
+    assert _research_substrate_block(store.job_dir(job2.id)) == {}

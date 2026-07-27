@@ -147,6 +147,59 @@ def _counterfactual_block(store: JobStore, job_id: str) -> dict[str, Any]:
     return {key: doc[key] for key in keys if key in doc}
 
 
+def _research_substrate_block(root: Path) -> dict[str, Any]:
+    """Freshness of the research substrate, computed from disk EVERY wake.
+
+    Staleness must be data the agent reads, not a memory it repeats: an
+    agenda entry that parked a lane as 'feed stale' otherwise outlives the
+    fix forever, because nothing in the context ever contradicts it (the
+    2026-07-27 BTC-exog wedge — columns were refreshed, three wakes kept
+    citing the old timestamps from the agenda)."""
+    block: dict[str, Any] = {}
+    bars_path = root / "results" / "backtest" / "input_bars.json"
+    if bars_path.exists():
+        try:
+            meta = (
+                json.loads(bars_path.read_text(encoding="utf-8")).get("metadata") or {}
+            )
+            block["dataset_fetched_at"] = meta.get("fetched_at")
+            block["dataset_days"] = meta.get("days")
+        except ValueError:
+            pass
+    feats = root / "state" / "features.jsonl"
+    if feats.exists():
+        newest = ""
+        # Appends are batched chronologically — the tail bounds the newest ts.
+        for line in feats.read_text(encoding="utf-8").splitlines()[-400:]:
+            try:
+                ts = str(json.loads(line).get("timestamp") or "")
+            except ValueError:
+                continue
+            newest = max(newest, ts)
+        if newest:
+            block["derived_features_newest_ts"] = newest
+    stamp_path = root / "results" / "research" / "derived_refresh.json"
+    if stamp_path.exists():
+        try:
+            block["derived_refresh_stamp"] = json.loads(
+                stamp_path.read_text(encoding="utf-8")
+            )
+        except ValueError:
+            pass
+    if block:
+        block["_basis"] = (
+            "Substrate freshness, read from disk THIS wake. Any agenda/"
+            "dead-map entry blocked on 'stale feed/columns' must be checked "
+            "against these timestamps EVERY wake: if they are current, the "
+            "blocker no longer exists — update the agenda and run the lane. "
+            "Never repeat a staleness claim from memory when this block "
+            "contradicts it. To advance the dataset yourself: "
+            "wayfinder job fetch-dataset (derived columns re-derive "
+            "automatically as part of the build)."
+        )
+    return block
+
+
 def _drop_volatile_stable_keys(value: Any) -> Any:
     match value:
         case dict():
@@ -236,6 +289,7 @@ def _build_worker_prompt_sections(
         "trade_forensics": _trade_forensics_block(root),
         "attribution": _attribution_block(root),
         "post_apply_shadow": _counterfactual_block(store, job_id),
+        "research_substrate": _research_substrate_block(root),
     }
 
     stable_prefix = (
