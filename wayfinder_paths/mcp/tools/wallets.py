@@ -21,7 +21,7 @@ from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
-    find_wallet_by_label,
+    load_wallet_ring,
     load_wallets,
     normalize_address,
     ok,
@@ -438,8 +438,8 @@ async def core_get_wallets(
 ) -> dict[str, Any]:
     """List configured wallets with profile + protocols + current balances.
 
-    No args → every wallet. Pass `label` to filter to a single wallet (returns the same
-    shape, list with one entry, or an `err(...)` response if not found).
+    No args → every wallet. Pass `label` to filter to one wallet ring (one entry per
+    available chain leg, or an `err(...)` response if not found).
 
     Args:
         label: Optional wallet label filter.
@@ -449,10 +449,9 @@ async def core_get_wallets(
     """
     store = WalletProfileStore.default()
     if label is not None:
-        w = await find_wallet_by_label(label)
-        if not w:
+        existing = await load_wallet_ring(label)
+        if not existing:
             return err("not_found", f"Wallet not found: {label}")
-        existing = [w]
     else:
         existing = await load_wallets()
 
