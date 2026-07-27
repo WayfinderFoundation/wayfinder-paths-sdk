@@ -710,13 +710,17 @@ def _merge_dataset_rows(
     days: int,
 ) -> list[dict[str, Any]]:
     """Union on (timestamp, symbol) — fresh rows win — trimmed to the
-    requested trailing window."""
-    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days)
+    trailing window anchored on the NEWEST bar (not the wall clock: a stale
+    source or clock skew must never trim the dataset to empty)."""
     merged: dict[tuple[str, str], dict[str, Any]] = {}
     for row in previous_rows:
         merged[(str(row.get("timestamp")), str(row.get("symbol")))] = row
     for row in new_rows:
         merged[(str(row.get("timestamp")), str(row.get("symbol")))] = row
+    newest = max(
+        pd.Timestamp(str(row.get("timestamp"))) for row in merged.values()
+    )
+    cutoff = newest - pd.Timedelta(days=days)
     kept = [
         row
         for row in merged.values()
