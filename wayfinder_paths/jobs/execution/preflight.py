@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import shutil
 from collections.abc import Sequence
 from pathlib import Path
@@ -57,6 +58,7 @@ def build_live_dataset(
     market_type: str = "swap",
     quote: str = "USDT",
     feed: Any | None = None,
+    incremental: bool = True,
 ) -> dict[str, Any]:
     """Fetch real candles and persist them as the job's backtest dataset
     (input_bars.json).
@@ -84,9 +86,28 @@ def build_live_dataset(
     if not symbols:
         raise ValueError("no symbols configured for dataset fetch")
 
+    # Incremental refresh: with 120d windows a full refetch re-downloads
+    # ~100k+ bars to add a few hours of tail. When the existing dataset has
+    # compatible provenance (same source/exchange/symbols/interval) and
+    # reaches back far enough for the requested window, fetch only the
+    # missing tail (+2-bar overlap) and merge; anything else falls back to a
+    # full fetch.
+    previous_rows: list[dict[str, Any]] = []
+    fetch_days: float = float(days)
+    if incremental:
+        previous_rows, fetch_days = _incremental_plan(
+            root,
+            source=source,
+            exchange=exchange,
+            symbols=symbols,
+            interval=str(bar_interval),
+            days=days,
+            bar_seconds=bar_seconds,
+        )
+
     if source == "ccxt":
         if feed is not None:
-            lookback_bars = max(2, int(days * 86_400 / bar_seconds))
+            lookback_bars = max(2, int(fetch_days * 86_400 / bar_seconds))
             view = asyncio.run(
                 feed.get_completed_bars(
                     symbols, str(bar_interval), lookback_bars=lookback_bars
@@ -105,7 +126,7 @@ def build_live_dataset(
                 fetch_ccxt_dataset_rows(
                     symbols,
                     str(bar_interval),
-                    days=days,
+                    days=max(1, math.ceil(fetch_days)),
                     exchange_id=exchange,
                     market_type=market_type,
                     quote=quote,
@@ -126,7 +147,7 @@ def build_live_dataset(
                 venue: build_adapter(venue, mode="paper", spec=spec, params=params)
                 for venue in (spec.venues or ["hyperliquid"])
             }
-        lookback_bars = max(2, int(days * 86_400 / bar_seconds))
+        lookback_bars = max(2, int(fetch_days * 86_400 / bar_seconds))
         rows = []
 
         async def _fetch() -> None:
@@ -145,8 +166,11 @@ def build_live_dataset(
             "days": days,
             "fetched_at": utc_now_iso(),
         }
-    if not rows:
+    if not rows and not previous_rows:
         raise RuntimeError("no bars returned while building live dataset")
+    if previous_rows:
+        rows = _merge_dataset_rows(previous_rows, rows, days=days)
+        metadata["incremental"] = True
     # Requested-vs-received rides the persisted metadata: it is the PROOF the
     # evidence-window gate accepts for "more history does not exist" (a short
     # window is only excusable when the full target was requested and the
@@ -631,6 +655,75 @@ def _write_report(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")
     return report
+
+
+def _incremental_plan(
+    root: Path,
+    *,
+    source: str,
+    exchange: str,
+    symbols: list[str],
+    interval: str,
+    days: int,
+    bar_seconds: int,
+) -> tuple[list[dict[str, Any]], float]:
+    """(previous_rows, fetch_days): reuse the on-disk dataset when provenance
+    matches and it reaches back far enough; otherwise ([], days) = full."""
+    path = root / "results" / "backtest" / "input_bars.json"
+    if not path.exists():
+        return [], float(days)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return [], float(days)
+    rows = doc.get("bars") if isinstance(doc, dict) else None
+    meta = doc.get("metadata") if isinstance(doc, dict) else None
+    if not isinstance(rows, list) or not rows or not isinstance(meta, dict):
+        return [], float(days)
+    if str(meta.get("source") or "") != source:
+        return [], float(days)
+    if source == "ccxt" and str(meta.get("exchange") or "") != exchange:
+        return [], float(days)
+    if str(meta.get("interval") or "") != interval:
+        return [], float(days)
+    if set(map(str, meta.get("symbols") or [])) != set(symbols):
+        return [], float(days)
+    stamps = sorted(str(row.get("timestamp")) for row in rows if row.get("timestamp"))
+    if not stamps:
+        return [], float(days)
+    now = pd.Timestamp.now(tz="UTC")
+    oldest = pd.Timestamp(stamps[0])
+    newest = pd.Timestamp(stamps[-1])
+    # The kept file must reach back far enough for the requested window —
+    # incremental fetching can only extend the tail, never backfill.
+    if oldest > now - pd.Timedelta(days=days) + pd.Timedelta(seconds=2 * bar_seconds):
+        return [], float(days)
+    gap_seconds = max((now - newest).total_seconds(), 0.0) + 2 * bar_seconds
+    fetch_days = min(float(days), gap_seconds / 86_400)
+    return list(rows), max(fetch_days, 2 * bar_seconds / 86_400)
+
+
+def _merge_dataset_rows(
+    previous_rows: list[dict[str, Any]],
+    new_rows: list[dict[str, Any]],
+    *,
+    days: int,
+) -> list[dict[str, Any]]:
+    """Union on (timestamp, symbol) — fresh rows win — trimmed to the
+    requested trailing window."""
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=days)
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in previous_rows:
+        merged[(str(row.get("timestamp")), str(row.get("symbol")))] = row
+    for row in new_rows:
+        merged[(str(row.get("timestamp")), str(row.get("symbol")))] = row
+    kept = [
+        row
+        for row in merged.values()
+        if pd.Timestamp(str(row.get("timestamp"))) >= cutoff
+    ]
+    kept.sort(key=lambda row: (str(row.get("timestamp")), str(row.get("symbol"))))
+    return kept
 
 
 def fetch_funding_features(

@@ -158,3 +158,111 @@ def test_replication_failure_degrades_and_journals(tmp_path, monkeypatch) -> Non
     assert doc["available"] is False
     journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
     assert "replication_failed" in journal
+
+
+def _mk_dataset_job(tmp_path, symbols=("SNX",)):
+    import yaml
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("inc-demo", agent_mode="intervene")
+    store.save(job)
+    root = store.job_dir(job.id)
+    (root / "job.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "id": job.id,
+                "execution_spec": {
+                    "data_contract": {"bar_interval": "1h", "symbols": list(symbols)}
+                },
+                "execution_params": {"symbols": list(symbols)},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return store, job.id, root
+
+
+class _CountingFeed:
+    """Fake venue feed: serves a continuous hourly series ending now and
+    records the lookback of every call."""
+
+    symbol_map = {"SNX": "SNX"}
+
+    def __init__(self):
+        self.lookbacks: list[int] = []
+
+    async def get_completed_bars(self, symbols, interval, *, lookback_bars, as_of=None):
+        import pandas as pd
+
+        from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+
+        self.lookbacks.append(lookback_bars)
+        end = pd.Timestamp.now(tz="UTC").floor("1h")
+        rows = []
+        for symbol in symbols:
+            for i in range(lookback_bars):
+                ts = end - pd.Timedelta(hours=lookback_bars - i)
+                price = 100 + (ts.value // 3_600_000_000_000) % 50
+                rows.append(
+                    {
+                        "timestamp": ts.isoformat(),
+                        "symbol": symbol,
+                        "open": price,
+                        "high": price + 1,
+                        "low": price - 1,
+                        "close": price,
+                        "volume": 3.0,
+                    }
+                )
+        return CompletedBarsView.from_rows(rows)
+
+
+def test_incremental_refresh_fetches_only_the_tail(tmp_path) -> None:
+    import json as _json
+
+    from wayfinder_paths.jobs.execution.preflight import build_live_dataset
+
+    store, job_id, root = _mk_dataset_job(tmp_path)
+    feed = _CountingFeed()
+
+    first = build_live_dataset(job_id, days=10, store=store, source="ccxt", feed=feed)
+    assert feed.lookbacks[0] == 240  # full 10d of hourly bars
+    bars_full = first["bars"]
+
+    second = build_live_dataset(job_id, days=10, store=store, source="ccxt", feed=feed)
+    # Tail-only: gap ~0 -> just the 2-bar overlap, not another 240.
+    assert feed.lookbacks[1] <= 4
+    assert second["metadata"]["incremental"] is True
+    assert abs(second["bars"] - bars_full) <= 3  # merged + trimmed, no dupes
+    doc = _json.loads((root / "results" / "backtest" / "input_bars.json").read_text())
+    keys = [(r["timestamp"], r["symbol"]) for r in doc["bars"]]
+    assert len(keys) == len(set(keys))
+
+    # Longer window than on disk -> cannot backfill incrementally -> full.
+    third = build_live_dataset(job_id, days=20, store=store, source="ccxt", feed=feed)
+    assert feed.lookbacks[2] == 480
+    assert "incremental" not in third["metadata"]
+
+    # --full escape hatch.
+    build_live_dataset(
+        job_id, days=10, store=store, source="ccxt", feed=feed, incremental=False
+    )
+    assert feed.lookbacks[3] == 240
+
+
+def test_incremental_provenance_mismatch_forces_full(tmp_path) -> None:
+    from wayfinder_paths.jobs.execution.preflight import build_live_dataset
+
+    store, job_id, root = _mk_dataset_job(tmp_path)
+    feed = _CountingFeed()
+    build_live_dataset(job_id, days=5, store=store, source="ccxt", feed=feed)
+
+    # Different exchange in stored metadata -> full refetch.
+    import json as _json
+
+    path = root / "results" / "backtest" / "input_bars.json"
+    doc = _json.loads(path.read_text())
+    doc["metadata"]["exchange"] = "bybit"
+    path.write_text(_json.dumps(doc), encoding="utf-8")
+    build_live_dataset(job_id, days=5, store=store, source="ccxt", feed=feed)
+    assert feed.lookbacks[1] == 120  # full 5d again

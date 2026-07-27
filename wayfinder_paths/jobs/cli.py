@@ -556,6 +556,12 @@ def reconcile_cmd(job_id: str, limit: int) -> None:
     show_default=True,
 )
 @click.option("--quote", default="USDT", show_default=True)
+@click.option(
+    "--full",
+    is_flag=True,
+    default=False,
+    help="Force a full refetch instead of the default incremental tail merge.",
+)
 def fetch_dataset_cmd(
     job_id: str,
     days: int,
@@ -563,6 +569,7 @@ def fetch_dataset_cmd(
     exchange: str,
     market_type: str,
     quote: str,
+    full: bool,
 ) -> None:
     store = JobStore()
     result = build_live_dataset(
@@ -573,6 +580,7 @@ def fetch_dataset_cmd(
         exchange=exchange,
         market_type=market_type,
         quote=quote,
+        incremental=not full,
     )
     _echo_json({"ok": True, "result": result})
 
