@@ -20,7 +20,7 @@ from wayfinder_paths.core.utils.svm_tokens import (
     get_solana_token_balance,
 )
 from wayfinder_paths.core.utils.svm_transaction import (
-    send_svm_versioned_transaction_with_details,
+    send_svm_versioned_transaction,
 )
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.core.utils.tokens import (
@@ -156,7 +156,7 @@ async def _broadcast_svm(
 ) -> tuple[bool, dict[str, Any]]:
     try:
         tx = VersionedTransaction.from_bytes(base64.b64decode(serialized_transaction))
-        send_result = await send_svm_versioned_transaction_with_details(
+        send_result = await send_svm_versioned_transaction(
             tx,
             sign_callback,
             chain_id=chain_id,

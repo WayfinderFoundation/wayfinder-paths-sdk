@@ -335,8 +335,8 @@ async def send_svm_versioned_transaction(
     chain_id: int = CHAIN_ID_SOLANA,
     wait_for_confirmation: bool = True,
     cu_limit_multiplier: float = 1.2,
-) -> str:
-    """Sign and broadcast a v0 transaction; return its base58 signature."""
+) -> SvmTransactionDetails:
+    """Sign and broadcast a v0 transaction with confirmation and fee metadata."""
     if sign_callback is None:
         raise ValueError("sign_callback must be provided to send transaction")
 
@@ -359,7 +359,6 @@ async def send_svm_versioned_transaction(
             base64.b64encode(signed_bytes).decode(), chain_id=chain_id
         )
     logger.info(f"Solana transaction broadcasted: {signature}")
-    confirmation_status: dict[str, Any] | None = None
     if wait_for_confirmation:
         confirmation_status = await confirm_svm_signature(signature, chain_id=chain_id)
         if not confirmation_status["confirmed"]:
@@ -371,24 +370,7 @@ async def send_svm_versioned_transaction(
                     f"err={confirmation_status['err']}"
                 ),
             )
-    return signature
 
-
-async def send_svm_versioned_transaction_with_details(
-    tx: VersionedTransaction,
-    sign_callback: Callable,
-    chain_id: int = CHAIN_ID_SOLANA,
-    wait_for_confirmation: bool = True,
-    cu_limit_multiplier: float = 1.2,
-) -> SvmTransactionDetails:
-    """Sign and broadcast a v0 transaction with typed confirmation/fee metadata."""
-    signature = await send_svm_versioned_transaction(
-        tx,
-        sign_callback,
-        chain_id=chain_id,
-        wait_for_confirmation=wait_for_confirmation,
-        cu_limit_multiplier=cu_limit_multiplier,
-    )
     fee_lamports = None
     if wait_for_confirmation:
         try:
