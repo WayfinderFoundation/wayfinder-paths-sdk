@@ -61,6 +61,7 @@ from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.strategies import library_catalog
 from wayfinder_paths.jobs.sync import apply_script_mode, snapshot_job, sync_all_jobs
+from wayfinder_paths.jobs.universe import universe_scan_job
 from wayfinder_paths.jobs.worker import run_job_worker
 
 
@@ -1077,6 +1078,37 @@ def counterfactual_cmd(job_id: str, force: bool) -> None:
         {
             "ok": True,
             "result": counterfactual_job(job_id, store=JobStore(), force=force),
+        }
+    )
+
+
+@job_cli.command(
+    name="universe-scan",
+    help="Screen the venue perp universe for candidate symbols: filter by "
+    "24h volume, run the canonical signal library with regime conditioning "
+    "over each candidate's recent bars, pool ALL rows into one BH family. "
+    "Output is a SHORTLIST for symbol-swap proposals — admitted symbols "
+    "must still earn deployment via their own on-job scans and probation.",
+)
+@click.argument("job_id")
+@click.option("--top", type=int, default=10, show_default=True)
+@click.option("--min-volume-usd", type=float, default=5_000_000, show_default=True)
+@click.option("--days", type=int, default=14, show_default=True)
+@click.option("--min-events", type=int, default=20, show_default=True)
+def universe_scan_cmd(
+    job_id: str, top: int, min_volume_usd: float, days: int, min_events: int
+) -> None:
+    _echo_json(
+        {
+            "ok": True,
+            "result": universe_scan_job(
+                job_id,
+                top=top,
+                min_volume_usd=min_volume_usd,
+                days=days,
+                min_events=min_events,
+                store=JobStore(),
+            ),
         }
     )
 
