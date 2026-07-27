@@ -185,13 +185,7 @@ async def build_solana_send_transaction(
     from_pubkey = Pubkey.from_string(from_address)
     to_pubkey = Pubkey.from_string(to_address)
     native_transfer = is_native_token(token_address)
-    transfer_metadata: dict[str, str | bool] = {
-        # Privy's Solana sponsorship rewrites account-key index 0 (the fee
-        # payer). Native SOL transfers also use that account as their source,
-        # so replacing it would make the sponsor pay the principal. SPL
-        # transfers debit an ATA instead and remain safe to sponsor.
-        "allowFeePayerReplacement": not native_transfer,
-    }
+    transfer_metadata: dict[str, str | bool] = {}
 
     async with solana_client_from_chain_id(chain_id) as client:
         instructions: list[Instruction] = []

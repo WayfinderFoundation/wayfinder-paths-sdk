@@ -301,11 +301,7 @@ async def apply_compute_budget(
 
 
 async def _send_sponsored_svm_transaction(
-    wallet_address: str,
-    transaction: VersionedTransaction,
-    chain_id: int,
-    *,
-    allow_fee_payer_replacement: bool,
+    wallet_address: str, transaction: VersionedTransaction, chain_id: int
 ) -> str:
     """Submit via the backend's sponsored broadcast and return the signature.
 
@@ -319,7 +315,6 @@ async def _send_sponsored_svm_transaction(
         "chainId": int(chain_id),
         "chainType": "solana",
         "serializedTransaction": base64.b64encode(bytes(transaction)).decode(),
-        "allowFeePayerReplacement": allow_fee_payer_replacement,
     }
     try:
         result = await WALLET_CLIENT.send_privy_transaction_sponsored(
@@ -340,20 +335,16 @@ async def send_svm_versioned_transaction(
     chain_id: int = CHAIN_ID_SOLANA,
     wait_for_confirmation: bool = True,
     cu_limit_multiplier: float = 1.2,
-    allow_fee_payer_replacement: bool = True,
 ) -> str:
     """Sign and broadcast a v0 transaction; return its base58 signature."""
     if sign_callback is None:
         raise ValueError("sign_callback must be provided to send transaction")
 
     signature = None
-    if allow_fee_payer_replacement and await sponsorship_enabled():
+    if await sponsorship_enabled():
         try:
             signature = await _send_sponsored_svm_transaction(
-                sign_callback.wallet_address,
-                tx,
-                chain_id,
-                allow_fee_payer_replacement=True,
+                sign_callback.wallet_address, tx, chain_id
             )
         except SponsorshipUnavailableError as exc:
             logger.warning(
@@ -389,7 +380,6 @@ async def send_svm_versioned_transaction_with_details(
     chain_id: int = CHAIN_ID_SOLANA,
     wait_for_confirmation: bool = True,
     cu_limit_multiplier: float = 1.2,
-    allow_fee_payer_replacement: bool = True,
 ) -> SvmTransactionDetails:
     """Sign and broadcast a v0 transaction with typed confirmation/fee metadata."""
     signature = await send_svm_versioned_transaction(
@@ -398,7 +388,6 @@ async def send_svm_versioned_transaction_with_details(
         chain_id=chain_id,
         wait_for_confirmation=wait_for_confirmation,
         cu_limit_multiplier=cu_limit_multiplier,
-        allow_fee_payer_replacement=allow_fee_payer_replacement,
     )
     fee_lamports = None
     if wait_for_confirmation:

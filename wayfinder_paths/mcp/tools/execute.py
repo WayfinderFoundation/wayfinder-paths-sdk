@@ -153,7 +153,6 @@ async def _broadcast_svm(
     *,
     chain_id: int,
     wait_for_confirmation: bool,
-    allow_fee_payer_replacement: bool = True,
 ) -> tuple[bool, dict[str, Any]]:
     try:
         tx = VersionedTransaction.from_bytes(base64.b64decode(serialized_transaction))
@@ -162,7 +161,6 @@ async def _broadcast_svm(
             sign_callback,
             chain_id=chain_id,
             wait_for_confirmation=wait_for_confirmation,
-            allow_fee_payer_replacement=allow_fee_payer_replacement,
         )
         signature = send_result["signature"]
         fee_lamports = send_result["fee_lamports"]
@@ -432,12 +430,6 @@ async def onchain_swap(
             serialized,
             chain_id=int(from_chain_id),
             wait_for_confirmation=wait_for_receipt,
-            allow_fee_payer_replacement=not (
-                bool(best_quote.get("native_input"))
-                or _is_native_solana_asset(
-                    from_meta, from_token_addr, int(from_chain_id)
-                )
-            ),
         )
         response["effects"]["swap"] = sent
         status = _tx_status(sent_ok, wait_for_receipt)
@@ -688,9 +680,6 @@ async def onchain_send(
             envelope["serializedTransaction"],
             chain_id=int(resolved_chain_id),
             wait_for_confirmation=wait_for_receipt,
-            allow_fee_payer_replacement=bool(
-                envelope.get("allowFeePayerReplacement", not is_native)
-            ),
         )
         response["effects"][label] = sent
         status = _tx_status(sent_ok, wait_for_receipt)

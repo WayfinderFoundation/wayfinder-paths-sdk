@@ -178,7 +178,6 @@ async def test_swap_solana_route_broadcasts_via_svm_and_skips_allowance():
     assert isinstance(vt_arg, VersionedTransaction)
     assert svm_send.await_args.kwargs["chain_id"] == CHAIN_ID_SOLANA
     assert svm_send.await_args.kwargs["wait_for_confirmation"] is True
-    assert svm_send.await_args.kwargs["allow_fee_payer_replacement"] is True
 
 
 @pytest.mark.asyncio
@@ -335,7 +334,6 @@ async def test_swap_solana_route_detected_by_chain_id_without_chaintype():
 
     assert out["ok"] is True
     svm_send.assert_awaited_once()
-    assert svm_send.await_args.kwargs["allow_fee_payer_replacement"] is False
     assert fake_brap.get_quote.await_args.kwargs["from_amount"] == "100000"
     get_balance.assert_awaited_once_with(SENDER, ZERO_ADDRESS, CHAIN_ID_SOLANA)
     evm_send.assert_not_awaited()
@@ -409,7 +407,6 @@ async def test_send_solana_spl_builds_envelope_and_broadcasts_via_svm():
         "chainId": CHAIN_ID_SOLANA,
         "serializedTransaction": serialized,
         "lastValidBlockHeight": 250_000_000,
-        "allowFeePayerReplacement": True,
     }
 
     with (
@@ -471,7 +468,6 @@ async def test_send_solana_spl_builds_envelope_and_broadcasts_via_svm():
     svm_send.assert_awaited_once()
     vt_arg = svm_send.await_args.args[0]
     assert isinstance(vt_arg, VersionedTransaction)
-    assert svm_send.await_args.kwargs["allow_fee_payer_replacement"] is True
 
 
 @pytest.mark.asyncio
@@ -489,7 +485,6 @@ async def test_send_solana_native_sol_uses_native_label():
         "chainId": CHAIN_ID_SOLANA,
         "serializedTransaction": _unsigned_v0_b64(SENDER, RECIPIENT),
         "lastValidBlockHeight": 250_000_000,
-        "allowFeePayerReplacement": False,
     }
 
     with (
@@ -532,7 +527,6 @@ async def test_send_solana_native_sol_uses_native_label():
     assert build_svm.await_args.kwargs["token_address"] == ZERO_ADDRESS
     assert build_svm.await_args.kwargs["amount"] == 500_000_000
     svm_send.assert_awaited_once()
-    assert svm_send.await_args.kwargs["allow_fee_payer_replacement"] is False
 
 
 @pytest.mark.asyncio
