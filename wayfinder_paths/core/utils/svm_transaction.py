@@ -56,6 +56,13 @@ COMPUTE_BUDGET_IX_UNITS = 300
 class SvmTransactionDetails(TypedDict):
     signature: str
     fee_lamports: int | None
+    fee_payer: str | None
+    sponsored: bool | None
+
+
+class SvmFeeMetadata(TypedDict):
+    fee_lamports: int
+    fee_payer: str | None
 
 
 async def send_svm_transaction(
@@ -136,12 +143,12 @@ async def confirm_svm_signature(
             await asyncio.sleep(1)
 
 
-async def get_svm_transaction_fee_lamports(
+async def get_svm_transaction_fee_metadata(
     signature: str,
     chain_id: int = CHAIN_ID_SOLANA,
     timeout_s: float = 15,
-) -> int | None:
-    """Return the confirmed transaction fee once RPC metadata is indexed."""
+) -> SvmFeeMetadata | None:
+    """Return the confirmed fee and actual fee payer once RPC metadata is indexed."""
     sig = Signature.from_string(signature)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
@@ -155,10 +162,28 @@ async def get_svm_transaction_fee_lamports(
             )
             transaction = response.value
             if transaction is not None and transaction.transaction.meta is not None:
-                return int(transaction.transaction.meta.fee)
+                message = transaction.transaction.transaction.message
+                account_keys = getattr(message, "account_keys", [])
+                fee_payer = str(account_keys[0]) if account_keys else None
+                return {
+                    "fee_lamports": int(transaction.transaction.meta.fee),
+                    "fee_payer": fee_payer,
+                }
             if loop.time() >= deadline:
                 return None
             await asyncio.sleep(0.5)
+
+
+async def get_svm_transaction_fee_lamports(
+    signature: str,
+    chain_id: int = CHAIN_ID_SOLANA,
+    timeout_s: float = 15,
+) -> int | None:
+    """Backward-compatible fee-only view of confirmed transaction metadata."""
+    metadata = await get_svm_transaction_fee_metadata(
+        signature, chain_id=chain_id, timeout_s=timeout_s
+    )
+    return metadata["fee_lamports"] if metadata else None
 
 
 # ---------------------------------------------------------------------------
@@ -206,11 +231,29 @@ async def get_recent_priority_fee(
 # ---------------------------------------------------------------------------
 
 
+async def simulate_svm_versioned_transaction(
+    tx: VersionedTransaction,
+    chain_id: int = CHAIN_ID_SOLANA,
+) -> int:
+    """Preflight a transaction and return its measured compute-unit usage."""
+    async with solana_client_from_chain_id(chain_id) as client:
+        sim = await client.simulate_transaction(tx, sig_verify=False)
+    if sim.value.err is not None:
+        raise RuntimeError(
+            f"Solana transaction simulation failed: {sim.value.err}; "
+            f"logs: {sim.value.logs}"
+        )
+    if not sim.value.units_consumed:
+        raise RuntimeError("Solana transaction simulation returned no compute units")
+    return int(sim.value.units_consumed)
+
+
 async def apply_compute_budget(
     tx: VersionedTransaction,
     chain_id: int = CHAIN_ID_SOLANA,
     cu_limit_multiplier: float = 1.2,
     priority_fee_micro_lamports: int | None = None,
+    simulated_units: int | None = None,
 ) -> VersionedTransaction:
     """Set an exact compute-unit limit and priority fee on a v0 transaction.
 
@@ -256,18 +299,12 @@ async def apply_compute_budget(
             ix for ix in message.instructions if ix.program_id_index != cb_index
         ]
 
-    async with solana_client_from_chain_id(chain_id) as client:
-        sim = await client.simulate_transaction(tx, sig_verify=False)
-    if sim.value.err is not None:
-        raise RuntimeError(
-            f"Solana transaction simulation failed: {sim.value.err}; "
-            f"logs: {sim.value.logs}"
-        )
-    if not sim.value.units_consumed:
-        raise RuntimeError("Solana transaction simulation returned no compute units")
+    units_consumed = simulated_units
+    if units_consumed is None:
+        units_consumed = await simulate_svm_versioned_transaction(tx, chain_id=chain_id)
 
     cu_limit = min(
-        int(sim.value.units_consumed * cu_limit_multiplier) + COMPUTE_BUDGET_IX_UNITS,
+        int(units_consumed * cu_limit_multiplier) + COMPUTE_BUDGET_IX_UNITS,
         MAX_COMPUTE_UNIT_LIMIT,
     )
     if priority_fee_micro_lamports is None:
@@ -340,6 +377,7 @@ async def send_svm_versioned_transaction(
     if sign_callback is None:
         raise ValueError("sign_callback must be provided to send transaction")
 
+    simulated_units = await simulate_svm_versioned_transaction(tx, chain_id=chain_id)
     signature = None
     if await sponsorship_enabled():
         try:
@@ -352,7 +390,10 @@ async def send_svm_versioned_transaction(
             )
     if signature is None:
         budgeted = await apply_compute_budget(
-            tx, chain_id=chain_id, cu_limit_multiplier=cu_limit_multiplier
+            tx,
+            chain_id=chain_id,
+            cu_limit_multiplier=cu_limit_multiplier,
+            simulated_units=simulated_units,
         )
         signed_bytes = await sign_callback(budgeted)
         signature = await send_svm_transaction(
@@ -372,11 +413,22 @@ async def send_svm_versioned_transaction(
             )
 
     fee_lamports = None
+    fee_payer = None
+    sponsored = None
     if wait_for_confirmation:
         try:
-            fee_lamports = await get_svm_transaction_fee_lamports(
+            fee_metadata = await get_svm_transaction_fee_metadata(
                 signature, chain_id=chain_id
             )
+            if fee_metadata:
+                fee_lamports = fee_metadata["fee_lamports"]
+                fee_payer = fee_metadata["fee_payer"]
+                expected_fee_payer = getattr(
+                    sign_callback, "wallet_address", None
+                ) or str(tx.message.account_keys[0])
+                sponsored = (
+                    fee_payer != expected_fee_payer if fee_payer is not None else None
+                )
         except Exception as exc:
             # Fee metadata can lag confirmation or be unavailable on a
             # particular RPC. A successfully confirmed transaction must
@@ -389,4 +441,6 @@ async def send_svm_versioned_transaction(
     return {
         "signature": signature,
         "fee_lamports": fee_lamports,
+        "fee_payer": fee_payer,
+        "sponsored": sponsored,
     }
