@@ -489,14 +489,18 @@ async def onchain_get_wallet_activity(
     limit: int = 20,
     offset: str | None = None,
 ) -> dict[str, Any]:
-    """Return on-chain transactions for a wallet across supported chains.
+    """Return indexed EVM transactions for a wallet.
 
-    Pass either a configured wallet label or a raw wallet address. To crawl
-    further back, pass the previous response's next_offset as offset.
+    Wallet labels resolve to their EVM leg. Solana addresses and SVM activity
+    are not supported by this endpoint yet. To crawl further back, pass the
+    previous response's next_offset as offset.
+
+    TODO: Add Solana activity indexing and resolve wallet labels to both ring
+    legs once the backend exposes an SVM activity source.
 
     Args:
         label: Wallet label as configured in config.json, e.g. main.
-        wallet_address: Raw wallet address; takes precedence over label.
+        wallet_address: Raw EVM wallet address; takes precedence over label.
         limit: Number of transactions to return (default 20).
         offset: Pagination cursor from a prior response's next_offset.
     """
