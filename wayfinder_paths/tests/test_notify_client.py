@@ -68,7 +68,7 @@ async def test_notify_client_text_alias_requests_sms(
 
 
 @pytest.mark.asyncio
-async def test_notify_client_linq_adds_idempotency_key(
+async def test_notify_client_requests_linq(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -79,18 +79,12 @@ async def test_notify_client_linq_adds_idempotency_key(
     client = NotifyClient()
     client._authed_request = AsyncMock(return_value=_Response({"sent": True}))  # type: ignore[method-assign]
 
-    await client.notify(
-        title="Alert",
-        message="Body",
-        delivery="linq",
-        idempotency_key="job:monitor:123",
-    )
+    await client.notify(title="Alert", message="Body", delivery="linq")
 
     assert client._authed_request.await_args.kwargs["json"] == {
         "title": "Alert",
         "message": "Body",
         "delivery": "linq",
-        "idempotency_key": "job:monitor:123",
     }
 
 
