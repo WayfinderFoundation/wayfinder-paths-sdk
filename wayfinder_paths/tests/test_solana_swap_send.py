@@ -451,9 +451,9 @@ async def test_send_solana_spl_builds_envelope_and_broadcasts_via_svm():
 
     assert out["ok"] is True
     assert out["result"]["status"] == "confirmed"
-    assert out["result"]["effects"]["send_erc20"]["txn_hash"] == SOL_SIG
-    assert out["result"]["effects"]["send_erc20"]["fee_lamports"] == 10_000
-    assert out["result"]["effects"]["send_erc20"]["fee_sol"] == 0.00001
+    assert out["result"]["effects"]["send_spl"]["txn_hash"] == SOL_SIG
+    assert out["result"]["effects"]["send_spl"]["fee_lamports"] == 10_000
+    assert out["result"]["effects"]["send_spl"]["fee_sol"] == 0.00001
     # Recipient passed through un-checksummed (base58 is case-sensitive).
     assert out["result"]["recipient"] == RECIPIENT
 

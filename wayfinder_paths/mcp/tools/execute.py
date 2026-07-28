@@ -589,7 +589,8 @@ async def onchain_send(
         receipt_confirmations: Confirmations to wait for when `wait_for_receipt=true`.
 
     Returns:
-        `{status: "submitted"|"confirmed"|"failed", sender, recipient, effects: {send_native|send_erc20}, raw}`.
+        `{status: "submitted"|"confirmed"|"failed", sender, recipient,
+        effects: {send_native|send_erc20|send_spl}, raw}`.
     """
     if not wallet_label.strip():
         return err("invalid_request", "wallet_label is required")
@@ -664,7 +665,13 @@ async def onchain_send(
             },
         )
 
-    label = "send_native" if is_native else "send_erc20"
+    label = (
+        "send_native"
+        if is_native
+        else "send_spl"
+        if is_solana_chain(int(resolved_chain_id))
+        else "send_erc20"
+    )
 
     if is_solana_chain(int(resolved_chain_id)):
         # Solana transfer envelope: base58 recipient/mint (never checksummed).
