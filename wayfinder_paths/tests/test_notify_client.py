@@ -67,6 +67,37 @@ async def test_notify_client_text_alias_requests_sms(
     }
 
 
+@pytest.mark.asyncio
+async def test_notify_client_linq_adds_idempotency_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        notify_client_module,
+        "get_api_base_url",
+        lambda: "https://example.com/api/v1",
+    )
+    client = NotifyClient()
+    client._authed_request = AsyncMock(return_value=_Response({"sent": True}))  # type: ignore[method-assign]
+
+    await client.notify(
+        title="Alert",
+        message="Body",
+        delivery="linq",
+        idempotency_key="job:monitor:123",
+    )
+
+    assert client._authed_request.await_args.kwargs["json"] == {
+        "title": "Alert",
+        "message": "Body",
+        "delivery": "linq",
+        "idempotency_key": "job:monitor:123",
+    }
+
+
+def test_normalize_notify_delivery_accepts_linq() -> None:
+    assert normalize_notify_delivery(" LINQ ") == "linq"
+
+
 def test_normalize_notify_delivery_rejects_unknown_delivery() -> None:
     with pytest.raises(ValueError):
         normalize_notify_delivery("fax")
@@ -87,6 +118,24 @@ async def test_notification_send_passes_sms_delivery(
         title="Alert",
         message="Body",
         delivery="sms",
+    )
+
+
+@pytest.mark.asyncio
+async def test_notification_send_passes_linq_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = AsyncMock()
+    fake_client.notify.return_value = {"sent": True, "delivery": "linq"}
+    monkeypatch.setattr(notify_tool_module, "NOTIFY_CLIENT", fake_client)
+
+    out = await notify_tool_module.notification_send("Alert", "Body", delivery="linq")
+
+    assert out == {"ok": True, "result": {"sent": True, "delivery": "linq"}}
+    fake_client.notify.assert_awaited_once_with(
+        title="Alert",
+        message="Body",
+        delivery="linq",
     )
 
 

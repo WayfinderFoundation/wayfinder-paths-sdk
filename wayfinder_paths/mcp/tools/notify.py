@@ -14,15 +14,16 @@ MESSAGE_MAX = 20_000
 
 @catch_errors
 async def notification_send(title: str, message: str, delivery: str = "email") -> dict:
-    """Notify the OpenCode instance owner by email or SMS.
+    """Notify the OpenCode instance owner by email, SMS, or linked iMessage.
 
     Email requires a verified email address and renders Markdown into a themed
-    HTML email. SMS requires a verified phone number and sends plain text.
+    HTML email. SMS requires a verified phone number and sends plain text. Linq
+    sends to the iMessage chat linked in Shells when that feature is enabled.
 
     Args:
         title: Short subject line (<= 200 chars).
         message: Markdown body (<= 20 000 chars).
-        delivery: "email" (default), "sms", or "text".
+        delivery: "email" (default), "sms", "text", or "linq".
     """
     title_s = throw_if_empty_str("title is required", title)
     if len(title_s) > TITLE_MAX:
