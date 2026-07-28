@@ -206,11 +206,29 @@ async def get_recent_priority_fee(
 # ---------------------------------------------------------------------------
 
 
+async def simulate_svm_versioned_transaction(
+    tx: VersionedTransaction,
+    chain_id: int = CHAIN_ID_SOLANA,
+) -> int:
+    """Preflight a transaction and return its measured compute-unit usage."""
+    async with solana_client_from_chain_id(chain_id) as client:
+        sim = await client.simulate_transaction(tx, sig_verify=False)
+    if sim.value.err is not None:
+        raise RuntimeError(
+            f"Solana transaction simulation failed: {sim.value.err}; "
+            f"logs: {sim.value.logs}"
+        )
+    if not sim.value.units_consumed:
+        raise RuntimeError("Solana transaction simulation returned no compute units")
+    return int(sim.value.units_consumed)
+
+
 async def apply_compute_budget(
     tx: VersionedTransaction,
     chain_id: int = CHAIN_ID_SOLANA,
     cu_limit_multiplier: float = 1.2,
     priority_fee_micro_lamports: int | None = None,
+    simulated_units: int | None = None,
 ) -> VersionedTransaction:
     """Set an exact compute-unit limit and priority fee on a v0 transaction.
 
@@ -256,18 +274,12 @@ async def apply_compute_budget(
             ix for ix in message.instructions if ix.program_id_index != cb_index
         ]
 
-    async with solana_client_from_chain_id(chain_id) as client:
-        sim = await client.simulate_transaction(tx, sig_verify=False)
-    if sim.value.err is not None:
-        raise RuntimeError(
-            f"Solana transaction simulation failed: {sim.value.err}; "
-            f"logs: {sim.value.logs}"
-        )
-    if not sim.value.units_consumed:
-        raise RuntimeError("Solana transaction simulation returned no compute units")
+    units_consumed = simulated_units
+    if units_consumed is None:
+        units_consumed = await simulate_svm_versioned_transaction(tx, chain_id=chain_id)
 
     cu_limit = min(
-        int(sim.value.units_consumed * cu_limit_multiplier) + COMPUTE_BUDGET_IX_UNITS,
+        int(units_consumed * cu_limit_multiplier) + COMPUTE_BUDGET_IX_UNITS,
         MAX_COMPUTE_UNIT_LIMIT,
     )
     if priority_fee_micro_lamports is None:
@@ -340,6 +352,7 @@ async def send_svm_versioned_transaction(
     if sign_callback is None:
         raise ValueError("sign_callback must be provided to send transaction")
 
+    simulated_units = await simulate_svm_versioned_transaction(tx, chain_id=chain_id)
     signature = None
     if await sponsorship_enabled():
         try:
@@ -352,7 +365,10 @@ async def send_svm_versioned_transaction(
             )
     if signature is None:
         budgeted = await apply_compute_budget(
-            tx, chain_id=chain_id, cu_limit_multiplier=cu_limit_multiplier
+            tx,
+            chain_id=chain_id,
+            cu_limit_multiplier=cu_limit_multiplier,
+            simulated_units=simulated_units,
         )
         signed_bytes = await sign_callback(budgeted)
         signature = await send_svm_transaction(
