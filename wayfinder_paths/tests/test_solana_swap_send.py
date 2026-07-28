@@ -27,10 +27,17 @@ USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 SOL_SIG = "5" + "j" * 87  # base58-ish placeholder signature the SVM path returns
 
 
-def _svm_send_result(fee_lamports: int | None = None) -> SvmTransactionDetails:
+def _svm_send_result(
+    fee_lamports: int | None = None,
+    *,
+    fee_payer: str | None = None,
+    sponsored: bool | None = None,
+) -> SvmTransactionDetails:
     return {
         "signature": SOL_SIG,
         "fee_lamports": fee_lamports,
+        "fee_payer": fee_payer,
+        "sponsored": sponsored,
     }
 
 
@@ -435,7 +442,11 @@ async def test_send_solana_spl_builds_envelope_and_broadcasts_via_svm():
         patch(
             "wayfinder_paths.mcp.tools.execute.send_svm_versioned_transaction",
             new_callable=AsyncMock,
-            return_value=_svm_send_result(fee_lamports=10_000),
+            return_value=_svm_send_result(
+                fee_lamports=10_000,
+                fee_payer="DmxEUYwgTX2qYnsf29LXBBScxYkKp1yn1Doodqf95SP7",
+                sponsored=True,
+            ),
         ) as svm_send,
         patch(
             "wayfinder_paths.mcp.tools.execute.send_transaction",
@@ -451,9 +462,11 @@ async def test_send_solana_spl_builds_envelope_and_broadcasts_via_svm():
 
     assert out["ok"] is True
     assert out["result"]["status"] == "confirmed"
-    assert out["result"]["effects"]["send_erc20"]["txn_hash"] == SOL_SIG
-    assert out["result"]["effects"]["send_erc20"]["fee_lamports"] == 10_000
-    assert out["result"]["effects"]["send_erc20"]["fee_sol"] == 0.00001
+    assert out["result"]["effects"]["send_spl"]["txn_hash"] == SOL_SIG
+    assert out["result"]["effects"]["send_spl"]["fee_lamports"] == 10_000
+    assert out["result"]["effects"]["send_spl"]["fee_sol"] == 0.00001
+    assert out["result"]["effects"]["send_spl"]["fee_payer"].startswith("DmxEU")
+    assert out["result"]["effects"]["send_spl"]["sponsored"] is True
     # Recipient passed through un-checksummed (base58 is case-sensitive).
     assert out["result"]["recipient"] == RECIPIENT
 
