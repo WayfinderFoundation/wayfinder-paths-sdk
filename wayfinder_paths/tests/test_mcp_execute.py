@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from wayfinder_paths.core.constants import ZERO_ADDRESS
+from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
+from wayfinder_paths.core.utils.svm_tokens import SOL_DECIMALS
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.mcp.tools.execute import onchain_swap
 
@@ -55,6 +57,30 @@ async def test_resolve_token_meta_native_gas_token_missing_address():
         out = await TokenResolver.resolve_token_meta("ethereum-base")
         assert out["address"] == ZERO_ADDRESS
         assert out["chain_id"] == 8453
+
+
+@pytest.mark.asyncio
+async def test_resolve_token_meta_native_solana():
+    meta = {
+        "asset_id": "solana",
+        "symbol": "SOL",
+        "decimals": SOL_DECIMALS,
+        "address": None,
+        "chain": {
+            "id": CHAIN_ID_SOLANA,
+            "code": "solana",
+            "name": "Solana",
+        },
+    }
+    with patch(
+        "wayfinder_paths.core.utils.token_resolver.TOKEN_CLIENT.get_gas_token",
+        new=AsyncMock(return_value=meta),
+    ):
+        out = await TokenResolver.resolve_token_meta("native", chain_id=CHAIN_ID_SOLANA)
+
+    assert out["address"] == ZERO_ADDRESS
+    assert out["chain_id"] == CHAIN_ID_SOLANA
+    assert out["decimals"] == SOL_DECIMALS
 
 
 @pytest.mark.asyncio
