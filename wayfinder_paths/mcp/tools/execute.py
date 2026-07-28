@@ -164,11 +164,15 @@ async def _broadcast_svm(
         )
         signature = send_result["signature"]
         fee_lamports = send_result["fee_lamports"]
+        fee_payer = send_result["fee_payer"]
+        sponsored = send_result["sponsored"]
         result: dict[str, Any] = {
             "txn_hash": signature,
             "chain_id": chain_id,
             "confirmation_waited": wait_for_confirmation,
             "explorer_url": get_solana_explorer_link(signature),
+            "fee_payer": fee_payer,
+            "sponsored": sponsored,
         }
         if fee_lamports is not None:
             result["fee_lamports"] = int(fee_lamports)

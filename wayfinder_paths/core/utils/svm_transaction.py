@@ -56,6 +56,13 @@ COMPUTE_BUDGET_IX_UNITS = 300
 class SvmTransactionDetails(TypedDict):
     signature: str
     fee_lamports: int | None
+    fee_payer: str | None
+    sponsored: bool | None
+
+
+class SvmFeeMetadata(TypedDict):
+    fee_lamports: int
+    fee_payer: str | None
 
 
 async def send_svm_transaction(
@@ -136,12 +143,12 @@ async def confirm_svm_signature(
             await asyncio.sleep(1)
 
 
-async def get_svm_transaction_fee_lamports(
+async def get_svm_transaction_fee_metadata(
     signature: str,
     chain_id: int = CHAIN_ID_SOLANA,
     timeout_s: float = 15,
-) -> int | None:
-    """Return the confirmed transaction fee once RPC metadata is indexed."""
+) -> SvmFeeMetadata | None:
+    """Return the confirmed fee and actual fee payer once RPC metadata is indexed."""
     sig = Signature.from_string(signature)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout_s
@@ -155,10 +162,28 @@ async def get_svm_transaction_fee_lamports(
             )
             transaction = response.value
             if transaction is not None and transaction.transaction.meta is not None:
-                return int(transaction.transaction.meta.fee)
+                message = transaction.transaction.transaction.message
+                account_keys = getattr(message, "account_keys", [])
+                fee_payer = str(account_keys[0]) if account_keys else None
+                return {
+                    "fee_lamports": int(transaction.transaction.meta.fee),
+                    "fee_payer": fee_payer,
+                }
             if loop.time() >= deadline:
                 return None
             await asyncio.sleep(0.5)
+
+
+async def get_svm_transaction_fee_lamports(
+    signature: str,
+    chain_id: int = CHAIN_ID_SOLANA,
+    timeout_s: float = 15,
+) -> int | None:
+    """Backward-compatible fee-only view of confirmed transaction metadata."""
+    metadata = await get_svm_transaction_fee_metadata(
+        signature, chain_id=chain_id, timeout_s=timeout_s
+    )
+    return metadata["fee_lamports"] if metadata else None
 
 
 # ---------------------------------------------------------------------------
@@ -372,11 +397,22 @@ async def send_svm_versioned_transaction(
             )
 
     fee_lamports = None
+    fee_payer = None
+    sponsored = None
     if wait_for_confirmation:
         try:
-            fee_lamports = await get_svm_transaction_fee_lamports(
+            fee_metadata = await get_svm_transaction_fee_metadata(
                 signature, chain_id=chain_id
             )
+            if fee_metadata:
+                fee_lamports = fee_metadata["fee_lamports"]
+                fee_payer = fee_metadata["fee_payer"]
+                expected_fee_payer = getattr(
+                    sign_callback, "wallet_address", None
+                ) or str(tx.message.account_keys[0])
+                sponsored = (
+                    fee_payer != expected_fee_payer if fee_payer is not None else None
+                )
         except Exception as exc:
             # Fee metadata can lag confirmation or be unavailable on a
             # particular RPC. A successfully confirmed transaction must
@@ -389,4 +425,6 @@ async def send_svm_versioned_transaction(
     return {
         "signature": signature,
         "fee_lamports": fee_lamports,
+        "fee_payer": fee_payer,
+        "sponsored": sponsored,
     }
