@@ -243,10 +243,22 @@ def _summary(fold_rows: list[dict[str, Any]], rank_by: str) -> dict[str, Any]:
     ]
     is_mean = fmean(is_returns)
     oos_mean = fmean(oos_returns)
+    # Recency-weighted OOS mean (half-life = half the folds): "worked in
+    # April, fails in July" must score worse than the reverse. Weighting the
+    # EVALUATION is the honest way to favor recency — the estimation windows
+    # stay untouched. Folds are chronological; the newest fold has weight 1.
+    weights = [
+        0.5 ** ((len(ok) - 1 - i) / max(len(ok) / 2.0, 1.0)) for i in range(len(ok))
+    ]
+    weight_total = sum(weights)
+    oos_recency_weighted = (
+        sum(w * r for w, r in zip(weights, oos_returns, strict=True)) / weight_total
+    )
     return {
         "fold_count": len(ok),
         "is_return_mean": is_mean,
         "oos_return_mean": oos_mean,
+        "oos_return_recency_weighted": oos_recency_weighted,
         "is_rank_metric_mean": fmean(is_rank) if is_rank else None,
         "oos_rank_metric_mean": fmean(oos_rank) if oos_rank else None,
         # Sign-guarded: a ratio against a negative in-sample base is noise.
