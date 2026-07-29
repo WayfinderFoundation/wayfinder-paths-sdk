@@ -1,3 +1,4 @@
+import base64
 import json
 from pathlib import Path
 from typing import Any
@@ -5,6 +6,7 @@ from typing import Any
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 from loguru import logger
+from solders.transaction import VersionedTransaction
 
 from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.config import (
@@ -16,11 +18,20 @@ from wayfinder_paths.core.config import (
     load_wallet_mnemonic,
     write_wallet_mnemonic,
 )
+from wayfinder_paths.core.constants.chains import SVM_CHAIN_IDS
 from wayfinder_paths.policies.session import build_session_policy, build_strategy_policy
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
 
 Account.enable_unaudited_hdwallet_features()
+
+CHAIN_TYPE_ETHEREUM = "ethereum"
+CHAIN_TYPE_SOLANA = "solana"
+
+
+def wallet_chain_type(wallet: dict[str, Any]) -> str:
+    # Legacy local config.json wallets predate chain_type — default them to EVM.
+    return wallet.get("chain_type") or CHAIN_TYPE_ETHEREUM
 
 
 # ---------------------------------------------------------------------------
@@ -39,26 +50,49 @@ async def load_remote_wallets() -> list[dict[str, Any]]:
     if not get_api_key() or not is_opencode_instance():
         return []
     try:
-        raw = await WALLET_CLIENT.list_wallets(instance_id=get_opencode_instance_id())
+        features = await WALLET_CLIENT.get_features()
+        solana_enabled = "solana_enabled" in features["enabledSwitches"]
+        rings = await WALLET_CLIENT.list_wallet_rings(
+            instance_id=get_opencode_instance_id()
+        )
         wallets = []
-        for i, w in enumerate(raw):
-            addr = w.get("wallet_address")
-            if not addr:
-                continue
-            entry = {
-                "address": addr,
-                "label": w.get("label") or f"remote-{i}",
-                "type": "remote",
-                "chain_type": w.get("chain_type", "ethereum"),
-                "wallet_type": w.get("wallet_type", "session"),
-                "session_expires_at": w.get("session_expires_at"),
-                "session_expires_in": w.get("session_expires_in"),
-            }
-            wallets.append(entry)
+        for i, ring in enumerate(rings):
+            label = ring["label"] or f"remote-{i}"
+            # One entry per ring leg — the EVM leg always, the SVM leg only when
+            # Solana is enabled. Same ring label, distinguished by chain_type; each
+            # leg carries its own session expiry (session/strategy wallets only).
+            legs = [ring["evm"]]
+            svm = ring.get("svm")
+            if svm and solana_enabled:
+                legs.append(svm)
+            for leg in legs:
+                wallets.append(
+                    {
+                        "address": leg["wallet_address"],
+                        "label": label,
+                        "type": "remote",
+                        "chain_type": leg["chain_type"],
+                        "wallet_type": leg["wallet_type"],
+                        "session_expires_at": leg.get("session_expires_at"),
+                        "session_expires_in": leg.get("session_expires_in"),
+                    }
+                )
         return wallets
     except Exception as exc:
         logger.debug(f"Failed to fetch remote wallets: {exc}")
         return []
+
+
+async def is_solana_enabled() -> bool:
+    """Whether the solana_enabled switch is on for this instance's account.
+
+    Solana agent wallets are remote-only, so off-instance callers are never
+    Solana-enabled and skip the features fetch.
+    """
+    if not get_api_key() or not is_opencode_instance():
+        return False
+    features = await WALLET_CLIENT.get_features()
+    return "solana_enabled" in features["enabledSwitches"]
 
 
 async def load_wallets() -> list[dict[str, Any]]:
@@ -88,6 +122,32 @@ async def find_wallet_by_label(label: str) -> dict[str, Any] | None:
     return None
 
 
+async def load_wallet_ring(label: str) -> list[dict[str, Any]]:
+    """All legs (EVM + SVM) of the wallet ring sharing ``label``, loaded once."""
+    want = str(label).strip()
+    return [w for w in await load_wallets() if str(w.get("label", "")).strip() == want]
+
+
+def leg_for_chain(ring: list[dict[str, Any]], chain_id: int) -> dict[str, Any] | None:
+    """Pick the ring leg that transacts on ``chain_id`` (SVM vs EVM), or None.
+
+    A wallet ring shares one label across its EVM and SVM legs; a cross-chain
+    swap sends from the source-chain leg and lands on the destination-chain leg.
+    """
+    want_type = (
+        CHAIN_TYPE_SOLANA if int(chain_id) in SVM_CHAIN_IDS else CHAIN_TYPE_ETHEREUM
+    )
+    for w in ring:
+        if wallet_chain_type(w) == want_type:
+            return w
+    return None
+
+
+async def find_wallet_leg_for_chain(label: str, chain_id: int) -> dict[str, Any] | None:
+    """Resolve the ring leg (by label) that transacts on ``chain_id``."""
+    return leg_for_chain(await load_wallet_ring(label), chain_id)
+
+
 # ---------------------------------------------------------------------------
 # Signing callbacks (local)
 # ---------------------------------------------------------------------------
@@ -114,6 +174,7 @@ def get_local_sign_callback(private_key: str):
     # None means local key — send_transaction() never routes it through the
     # sponsored backend broadcast.
     sign_callback.wallet_address = None
+    sign_callback.chain_type = CHAIN_TYPE_ETHEREUM
     return sign_callback
 
 
@@ -186,6 +247,21 @@ def get_remote_sign_callback(wallet_address: str):
     # Sign-callback contract: send_transaction() reads this to route
     # gas-sponsored chains through the backend broadcast.
     sign_callback.wallet_address = wallet_address
+    sign_callback.chain_type = CHAIN_TYPE_ETHEREUM
+    return sign_callback
+
+
+def get_remote_svm_sign_callback(wallet_address: str):
+    """Sign a remote (Privy-backed) Solana wallet's tx via the backend."""
+
+    async def sign_callback(tx: VersionedTransaction) -> bytes:
+        signed_b64 = await WALLET_CLIENT.sign_svm_transaction(
+            wallet_address, base64.b64encode(bytes(tx)).decode()
+        )
+        return base64.b64decode(signed_b64)
+
+    sign_callback.wallet_address = wallet_address
+    sign_callback.chain_type = CHAIN_TYPE_SOLANA
     return sign_callback
 
 
@@ -234,13 +310,15 @@ def _require_wallet_address(wallet: dict[str, Any], label: str) -> str:
 
 def _build_signing_callback(wallet: dict[str, Any], label: str):
     address = _require_wallet_address(wallet, label)
+    if wallet_chain_type(wallet) == CHAIN_TYPE_SOLANA:
+        # Solana agent wallets are always Privy-managed (remote) — no local keys.
+        return get_remote_svm_sign_callback(address), address
     if wallet.get("type") == "remote":
         return get_remote_sign_callback(address), address
-    else:
-        pk = get_private_key(wallet)
-        if not pk:
-            raise ValueError(f"Wallet '{label}' is missing private_key_hex.")
-        return get_local_sign_callback(pk), address
+    pk = get_private_key(wallet)
+    if not pk:
+        raise ValueError(f"Wallet '{label}' is missing private_key_hex.")
+    return get_local_sign_callback(pk), address
 
 
 def _build_typed_data_callback(wallet: dict[str, Any], label: str):
@@ -284,6 +362,20 @@ async def get_wallet_signing_callback(label: str):
     wallet = await find_wallet_by_label(label)
     if not wallet:
         raise ValueError(f"Wallet '{label}' not found.")
+    return _build_signing_callback(wallet, label)
+
+
+async def get_wallet_signing_callback_for_chain(label: str, chain_id: int):
+    """Async — resolve the ring leg that signs on ``chain_id`` and return
+    (sign_callback, address).
+
+    A source tx is signed by its own chain's leg: EVM legs sign EVM txs, the SVM
+    leg signs Solana txs. Falls back to the default label lookup when no leg for
+    that chain family is loaded, preserving legacy single-leg behavior.
+    """
+    wallet = await find_wallet_leg_for_chain(label, chain_id)
+    if not wallet:
+        return await get_wallet_signing_callback(label)
     return _build_signing_callback(wallet, label)
 
 
@@ -336,9 +428,11 @@ async def create_remote_wallet(
         label=label,
         wallet_type=wallet_type,
     )
+    # A create provisions an EVM + SVM wallet pair ({"evm": ..., "svm": ...});
+    # the instance binds to the EVM wallet.
     if is_opencode_instance():
         await WALLET_CLIENT.bind_to_instance(
-            result["wallet_address"], get_opencode_instance_id()
+            result["evm"]["wallet_address"], get_opencode_instance_id()
         )
     return result
 

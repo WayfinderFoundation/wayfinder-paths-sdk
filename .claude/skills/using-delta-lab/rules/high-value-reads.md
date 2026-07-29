@@ -139,7 +139,7 @@ from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
 result = await DELTA_LAB_CLIENT.get_basis_apy_sources(
     basis_symbol="BTC",
     lookback_days=7,  # Default: 7, min: 1
-    limit=500,  # Default: 500, max: 1000
+    limit=25,  # Default: 25, max: 1000
     as_of=None,  # Default: now (optional datetime)
 )
 ```
@@ -156,7 +156,6 @@ result = await DELTA_LAB_CLIENT.get_basis_apy_sources(
         "basis_asset_ids": [1, 123, 456]
     },
     "as_of": "2024-02-12T12:00:00Z",
-    "lookback_days": 7,
     "summary": {
         "instrument_type_counts": {
             "PERP": 15,
@@ -171,7 +170,6 @@ result = await DELTA_LAB_CLIENT.get_basis_apy_sources(
         "LONG": [...],  # Opportunities where you take the LONG side
         "SHORT": [...]  # Opportunities where you take the SHORT side
     },
-    "opportunities": [...],  # All opportunities combined
     "warnings": [
         {
             "type": "stale_data",
@@ -186,9 +184,11 @@ result = await DELTA_LAB_CLIENT.get_basis_apy_sources(
 
 - `directions.LONG` - Opportunities where `side="LONG"` (supply/lend, hold yield token/PT, receive fixed rate, long perp)
 - `directions.SHORT` - Opportunities where `side="SHORT"` (borrow, pay fixed rate, short perp)
-- `opportunities` - All opportunities regardless of direction
 - `summary.instrument_type_counts` - Count by instrument type
 - `warnings` - List of warning objects (often empty)
+
+The response is an envelope, not an opportunity list. Iterating `result` yields
+top-level keys such as `"basis"` and `"directions"`, not opportunity objects.
 
 ## 2. Get Best Delta-Neutral Pairs
 
@@ -278,16 +278,20 @@ result = await DELTA_LAB_CLIENT.get_asset(asset_id=1)
 result = await DELTA_LAB_CLIENT.get_basis_apy_sources(
     basis_symbol="ETH",
     lookback_days=7,
-    limit=500
+    limit=25,
 )
 
 # Filter LONG opportunities (yield-generating)
-long_opps = result["directions"]["LONG"]
+long_opps = [
+    opp
+    for opp in result["directions"]["LONG"]
+    if (opp.get("apy") or {}).get("value") is not None
+]
 
 # Sort by APY descending
 sorted_opps = sorted(
     long_opps,
-    key=lambda x: x["apy"]["value"] or 0,
+    key=lambda x: x["apy"]["value"],
     reverse=True
 )
 
@@ -336,20 +340,30 @@ highest_yield = max(pareto, key=lambda x: x["net_apy"]) if pareto else None
 result = await DELTA_LAB_CLIENT.get_basis_apy_sources(
     basis_symbol="HYPE",
     lookback_days=7,
-    limit=500
+    limit=100
 )
 
 # Group by venue
 from collections import defaultdict
 by_venue = defaultdict(list)
-for opp in result["opportunities"]:
+opportunities = [
+    *result["directions"]["LONG"],
+    *result["directions"]["SHORT"],
+]
+for opp in opportunities:
     venue = opp.get("venue") or "unknown"
     by_venue[venue].append(opp)
 
 # Compare average APY by venue
 for venue, opps in by_venue.items():
-    avg_apy = sum(o["apy"]["value"] or 0 for o in opps) / len(opps)
-    print(f"{venue}: {avg_apy:.2%} avg APY ({len(opps)} opportunities)")
+    values = [
+        opp["apy"]["value"]
+        for opp in opps
+        if (opp.get("apy") or {}).get("value") is not None
+    ]
+    if values:
+        avg_apy = sum(values) / len(values)
+        print(f"{venue}: {avg_apy:.2%} avg APY ({len(values)} opportunities)")
 ```
 
 ## 4. Get Assets by Address

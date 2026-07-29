@@ -42,16 +42,29 @@ research_get_top_apy(lookback_days="14", limit="100")
 **Parameters:**
 - `basis_symbol` - Uppercase symbol (e.g., `"BTC"`, `"ETH"`, `"HYPE"`)
 - `lookback_days` - Days to average over (default `"7"`, min `"1"`)
-- `limit` - Max opportunities to return (default `"10"`, max `"1000"`)
+- `limit` - Max opportunities to return (default `"25"`, max `"1000"`)
 
 **Examples:**
 ```python
-# Default: 7-day lookback, top 10
+# Default: 7-day lookback, top 25
 research_get_basis_apy_sources(basis_symbol="BTC")
 
 # Custom: 30-day lookback, top 100
 research_get_basis_apy_sources(basis_symbol="BTC", lookback_days="30", limit="100")
 ```
+
+**Response:**
+
+MCP tools use the standard `{"ok": true, "result": ...}` wrapper. The result is
+the same APY-sources envelope returned by the Python client; opportunities are
+grouped under `directions.LONG` and `directions.SHORT`.
+
+```python
+long_opps = response["result"]["directions"]["LONG"]
+```
+
+See [rules/response-structures.md](rules/response-structures.md) for the full
+result envelope and opportunity fields.
 
 ### 3. Basis Symbols
 **Tool:** `research_get_basis_symbols()`

@@ -8,7 +8,8 @@ from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
-    find_wallet_by_label,
+    leg_for_chain,
+    load_wallet_ring,
     normalize_address,
     ok,
     parse_amount_to_raw,
@@ -85,7 +86,8 @@ async def onchain_quote_swap(
             not wei. Must include a decimal point; integer-looking strings like
             "1000" are rejected.
         slippage_bps: Slippage cap in basis points (50 = 0.50%).
-        recipient: Destination address (defaults to sender).
+        recipient: Optional destination override. Defaults to the destination-chain
+            leg of the same wallet ring.
         include_calldata: Include the raw tx calldata in the response (off by default to keep
             payload small; only the `len` is reported when false).
 
@@ -93,12 +95,9 @@ async def onchain_quote_swap(
         `{preview, quote: {best_quote, quote_count, providers}, suggested_swap_request, ...}`.
         `preview` flags `⚠ RECIPIENT DIFFERS FROM SENDER` when applicable.
     """
-    w = await find_wallet_by_label(wallet_label)
-    if not w:
+    ring = await load_wallet_ring(wallet_label)
+    if not ring:
         return err("not_found", f"Unknown wallet_label: {wallet_label}")
-    sender = normalize_address(w.get("address"))
-    if not sender:
-        return err("invalid_wallet", f"Wallet {wallet_label} missing address")
 
     try:
         from_meta, to_meta = await asyncio.gather(
@@ -131,7 +130,17 @@ async def onchain_quote_swap(
     except ValueError as exc:
         return err("invalid_amount", str(exc))
 
-    rcpt = normalize_address(recipient) or sender
+    # Cross-chain swaps send from the source-chain leg and land on the
+    # destination-chain leg of the same wallet ring (e.g. EVM→Solana pays out to
+    # the ring's SVM address). Same-chain swaps resolve both to the one leg;
+    # missing a chain-specific leg falls back to the default (EVM) leg.
+    from_leg = leg_for_chain(ring, from_chain_id) or ring[0]
+    to_leg = leg_for_chain(ring, to_chain_id) or ring[0]
+    sender = normalize_address(from_leg.get("address"))
+    if not sender:
+        return err("invalid_wallet", f"Wallet {wallet_label} missing address")
+
+    rcpt = normalize_address(recipient) or normalize_address(to_leg.get("address"))
     slip = _slippage_float(slippage_bps)
 
     try:
@@ -141,6 +150,7 @@ async def onchain_quote_swap(
             from_chain=from_chain_id,
             to_chain=to_chain_id,
             from_wallet=sender,
+            to_wallet=rcpt,
             from_amount=str(amount_raw),
             slippage=slip,
         )
@@ -228,5 +238,4 @@ async def onchain_quote_swap(
             "recipient": rcpt,
         },
     }
-
     return ok(result)

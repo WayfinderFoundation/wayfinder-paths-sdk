@@ -504,6 +504,7 @@ async def contracts_execute(
     abi: list[dict[str, Any]] | str | None = None,
     abi_path: str | None = None,
     wait_for_receipt: bool = True,
+    override: bool = False,
 ) -> dict[str, Any]:
     """Execute a contract function by encoding calldata and broadcasting a tx.
 
@@ -557,6 +558,23 @@ async def contracts_execute(
         )
     except Exception as exc:
         return err("invalid_args", str(exc))
+
+    if (
+        not override
+        and str(fn_abi.get("name") or "").strip() == "transfer"
+        and casted_args
+        and await web3_utils.is_contract(int(chain_id), casted_args[0])
+    ):
+        return err(
+            "raw_transfer_to_contract",
+            "Raw transfers to contracts are discouraged. There may be a loss of funds "
+            "if you accidentally execute the transaction, but you must verify with the "
+            "user that this is actually their intention. In particular, never send "
+            "tokens directly to a Uniswap V2 (or fork) pool: the pool absorbs them on "
+            "the next reserve sync without paying out. Use a router or an atomic swap "
+            "contract instead. Otherwise, you need to review the contract source code "
+            "or public documentation that sending funds to this contract is expected.",
+        )
 
     try:
         tx = await encode_call(

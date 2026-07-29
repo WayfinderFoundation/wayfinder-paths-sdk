@@ -5,6 +5,8 @@ from typing import Any, NotRequired, Required, TypedDict
 
 from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
 from wayfinder_paths.core.config import get_api_base_url
+from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
+from wayfinder_paths.core.utils.svm_tokens import SOL_DECIMALS
 
 
 class TokenLinks(TypedDict):
@@ -109,7 +111,18 @@ class TokenClient(WayfinderClient):
         response = await self._authed_request("GET", url, params=params)
         response.raise_for_status()
         data = response.json()
-        return data.get("data", data)
+        token = data.get("data", data)
+        if str(query).strip().lower() == "solana":
+            token = dict(token)
+            token["decimals"] = SOL_DECIMALS
+            token["symbol"] = "SOL"
+            token["chain"] = {
+                **dict(token.get("chain") or {}),
+                "id": CHAIN_ID_SOLANA,
+                "code": "solana",
+                "name": "Solana",
+            }
+        return token
 
     async def discover_tokens(
         self, chain_code: str, dimension: str = "trending", limit: int = 25

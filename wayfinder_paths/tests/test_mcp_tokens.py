@@ -5,6 +5,9 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from wayfinder_paths.core.clients.TokenClient import TokenClient
+from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
+from wayfinder_paths.core.utils.svm_tokens import SOL_DECIMALS
 from wayfinder_paths.mcp.tools.tokens import (
     onchain_fuzzy_search_tokens,
     onchain_get_gas_token,
@@ -58,6 +61,45 @@ async def test_get_gas_token_happy_path():
 
     assert out["ok"] is True
     assert out["result"]["symbol"] == "ETH"
+
+
+@pytest.mark.asyncio
+async def test_solana_gas_token_uses_canonical_sdk_metadata():
+    client = TokenClient()
+    response = httpx.Response(
+        200,
+        json={
+            "data": {
+                "asset_id": "solana",
+                "symbol": "SOL",
+                "decimals": 18,
+                "address": None,
+                "chain": {
+                    "id": 1,
+                    "code": "ethereum",
+                    "name": "Ethereum",
+                },
+            }
+        },
+        request=httpx.Request("GET", "https://example.test/tokens/gas/"),
+    )
+    try:
+        with patch.object(
+            client,
+            "_authed_request",
+            new=AsyncMock(return_value=response),
+        ):
+            token = await client.get_gas_token("solana")
+    finally:
+        await client.client.aclose()
+
+    assert token["symbol"] == "SOL"
+    assert token["decimals"] == SOL_DECIMALS
+    assert token["chain"] == {
+        "id": CHAIN_ID_SOLANA,
+        "code": "solana",
+        "name": "Solana",
+    }
 
 
 @pytest.mark.asyncio

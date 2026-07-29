@@ -14,10 +14,10 @@ class WalletClient(WayfinderClient):
         resp = await self._authed_request("GET", url)
         return resp.json()
 
-    async def list_wallets(
+    async def list_wallet_rings(
         self, instance_id: str | None = None
     ) -> list[dict[str, Any]]:
-        url = f"{get_api_base_url()}/wallets/"
+        url = f"{get_api_base_url()}/wallets/rings/"
         if instance_id:
             url += f"?instance_id={instance_id}"
         resp = await self._authed_request("GET", url)
@@ -59,6 +59,21 @@ class WalletClient(WayfinderClient):
             return resp.json()["signed_transaction"]
         except Exception as exc:
             logger.error(f"sign_transaction failed for {wallet_address}: {exc}")
+            raise
+
+    async def sign_svm_transaction(
+        self, wallet_address: str, serialized_transaction: str
+    ) -> str:
+        url = f"{get_api_base_url()}/wallets/{wallet_address}/sign-svm-transaction/"
+        try:
+            resp = await self._authed_request(
+                "POST",
+                url,
+                json={"transaction": {"serializedTransaction": serialized_transaction}},
+            )
+            return resp.json()["signed_transaction"]
+        except Exception as exc:
+            logger.error(f"sign_svm_transaction failed for {wallet_address}: {exc}")
             raise
 
     async def send_privy_transaction_sponsored(
