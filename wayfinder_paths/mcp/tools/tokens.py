@@ -102,8 +102,8 @@ async def onchain_list_tokens(
     return ok(result)
 
 
-# Chains the backend's Moralis integration covers. Deliberately narrower than
-# CHAIN_CODE_TO_ID — e.g. robinhood/hyperevm/monad are not Moralis-indexed yet.
+# Chains supported by the backend holder-intelligence endpoint. Deliberately
+# narrower than CHAIN_CODE_TO_ID.
 _HOLDER_INTEL_CHAINS = (
     "ethereum",
     "bsc",
@@ -111,6 +111,7 @@ _HOLDER_INTEL_CHAINS = (
     "base",
     "arbitrum",
     "avalanche",
+    "solana",
 )
 
 
@@ -118,27 +119,26 @@ _HOLDER_INTEL_CHAINS = (
 async def onchain_token_holder_intel(
     chain_code: str, token_address: str, refresh: bool = False
 ) -> dict[str, Any]:
-    """Holder-base intelligence for a token: who holds it, what they paid, and
-    whether they're up — the health check a trader runs before touching a lowcap.
+    """Analyze who holds a token, what they paid, and whether they are up.
 
-    Answers questions like: "what's the avg PnL of holders of X?", "how long do
-    holders hold?", "what did the top 15-20% of supply pay to get in?". Returns:
+    Use this before entering a low-liquidity or unfamiliar token to understand
+    whether gains are broadly distributed, holders are retaining positions, and
+    the largest wallets entered near or far below the current price. Returns:
     - holder_pnl: mean/median/p10/p90 PnL %, % profitable, realized+unrealized
-    - hold_time: supply-weighted avg + median hold hours, diamond-hands % (>7d)
+    - hold_time: weighted average + median hold hours, diamond-hands % (>7d)
     - whale_entry: top-supply cohort (default 20%) VWAP entry vs current price,
       cohort PnL, first/last entry times
-    - holder_stats: total holders, holder change (5min-30d), top10/25/50
-      concentration, holders by acquisition (swap/transfer/airdrop), distribution
-    - coverage: honesty metadata — ALWAYS report these caveats to the user:
-      PnL covers only swap-acquired positions (`pnl_coverage_pct` of analyzed
-      holders); `swap_coverage: "partial"` means older history was truncated.
+    - holder_stats: total holders and top-holder concentration
+    - coverage: completeness and methodology metadata
 
-    Data is computed from the top ~100 holders and up to ~2000 recent swaps,
-    cached ~10 minutes (pass refresh=true to force recompute — costs more).
+    Always report `pnl_coverage_pct`, `holders_analyzed`, `swap_coverage`, and
+    `hold_time.basis` so the user can judge the result's completeness. Results
+    are cached for roughly 10 minutes; refresh only when the user needs a fresh
+    recomputation because it costs more.
 
     Args:
-        chain_code: ethereum, bsc, polygon, base, arbitrum, or avalanche.
-        token_address: 0x-prefixed token contract address.
+        chain_code: ethereum, bsc, polygon, base, arbitrum, avalanche, or solana.
+        token_address: EVM contract address or Solana mint address.
         refresh: bypass the cache and recompute from fresh upstream data.
     """
     if chain_code not in _HOLDER_INTEL_CHAINS:

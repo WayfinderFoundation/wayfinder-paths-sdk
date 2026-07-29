@@ -136,8 +136,7 @@ class TokenClient(WayfinderClient):
     async def get_holder_intel(
         self, chain_id: int, token_address: str, refresh: bool = False
     ) -> dict[str, Any]:
-        """Moralis-backed holder intelligence for a token (computed backend-side):
-        holder PnL distribution, hold times, whale-entry analysis, coverage."""
+        """Return backend-computed holder PnL, hold-time, and whale-entry analysis."""
         url = f"{get_api_base_url()}/blockchain/token-intel/holders/"
         params: dict[str, Any] = {"chain_id": chain_id, "address": token_address}
         if refresh:

@@ -8,6 +8,7 @@ import pytest
 from wayfinder_paths.mcp.tools.tokens import onchain_token_holder_intel
 
 TOKEN = "0x" + "ab" * 20
+SOLANA_TOKEN = "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN"
 
 
 def _blob() -> dict:
@@ -48,10 +49,24 @@ async def test_holder_intel_refresh_is_passed_through():
 
 
 @pytest.mark.asyncio
+async def test_holder_intel_supports_solana():
+    fake_client = AsyncMock()
+    fake_client.get_holder_intel = AsyncMock(
+        return_value={**_blob(), "chain": "solana"}
+    )
+
+    with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
+        out = await onchain_token_holder_intel("solana", SOLANA_TOKEN)
+
+    assert out["ok"] is True
+    fake_client.get_holder_intel.assert_awaited_once_with(900, SOLANA_TOKEN, False)
+
+
+@pytest.mark.asyncio
 async def test_holder_intel_rejects_unsupported_chain():
     fake_client = AsyncMock()
 
-    # robinhood is a valid platform chain but not Moralis-indexed.
+    # Robinhood is a valid platform chain but not supported by holder intel.
     with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
         out = await onchain_token_holder_intel("robinhood", TOKEN)
 
