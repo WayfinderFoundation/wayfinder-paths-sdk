@@ -182,3 +182,5 @@ def test_caps_and_empty_job(tmp_path) -> None:
     )
     log = build_decision_log(store, job_id, limit=25)
     assert len(log["entries"]) == 25
+    # Stats see past the display cap: all 80 pending proposals counted.
+    assert log["stats"]["proposals_created"] == 80
