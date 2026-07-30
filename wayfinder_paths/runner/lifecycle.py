@@ -121,7 +121,18 @@ def ensure_daemon_started(
     env: dict[str, str] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     client = RunnerControlClient(sock_path=paths.sock_path)
+    # Liveness is decided on RETRIES, never one shot: the control socket's
+    # accept backlog is small (5), so a status attempt that coincides with a
+    # burst of other clients can transiently fail against a HEALTHY daemon
+    # (measured on-box: 0-gap bursts 9/20, >=50ms spacing 20/20). A one-shot
+    # check here could then spawn a duplicate daemon — the new one steals
+    # the socket and the orphan keeps ticking the same schedule.
     started, status, err_obj = try_status(client)
+    for _ in range(4):
+        if started and status is not None:
+            break
+        time.sleep(0.3)
+        started, status, err_obj = try_status(client)
     if started and status is not None:
         return True, {
             "already_running": True,
