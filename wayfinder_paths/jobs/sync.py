@@ -198,6 +198,7 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         "proposals": store.proposals(job_id),
         "probation": store.read_json(job_id, "probation.json", default={"legs": []}),
         "post_apply_shadow": _shadow_topline(store, job_id),
+        "decision_log": _decision_log(store, job_id),
         "proposal_queue": store.proposal_queue(job_id),
         "reports": {
             "monitor": latest_monitor,
@@ -286,3 +287,13 @@ def _shadow_topline(store: JobStore, job_id: str) -> dict[str, Any]:
         return {}
     keys = ("proposal_id", "applied_at", "window", "actual", "shadow", "delta_net_pnl")
     return {key: doc[key] for key in keys if key in doc}
+
+
+def _decision_log(store: JobStore, job_id: str) -> dict[str, Any]:
+    """Narrative feed for the UI, assembled read-only from recorded events."""
+    from wayfinder_paths.jobs.decision_log import build_decision_log
+
+    try:
+        return build_decision_log(store, job_id)
+    except Exception:  # noqa: BLE001 — sync must never die on a feed
+        return {}

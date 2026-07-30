@@ -376,8 +376,21 @@ def _resolve_dataset(
     for path in candidate_paths:
         if path.exists():
             # Agent-written files: accept a bare row list or {"bars": [...]}.
+            # The file's own metadata block (days/interval/fetched_at from
+            # fetch-dataset) rides along — dropping it here left the proposal
+            # comparison's dataset window empty, so the UI could not label
+            # "window return (Nd)".
             match json.loads(path.read_text(encoding="utf-8")):
-                case {"bars": list() as rows} | [*rows]:
+                case {"bars": list() as rows, **rest}:
+                    file_meta = rest.get("metadata")
+                    return PreparedExecutionDataset.from_rows(
+                        rows,
+                        {
+                            **(file_meta if isinstance(file_meta, dict) else {}),
+                            "source": str(path),
+                        },
+                    )
+                case [*rows]:
                     return PreparedExecutionDataset.from_rows(
                         rows, {"source": str(path)}
                     )

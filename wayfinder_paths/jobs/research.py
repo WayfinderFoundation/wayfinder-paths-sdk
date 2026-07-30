@@ -694,10 +694,29 @@ def apply_bh_verdicts(
             and bool(row.get("fold_stable"))
             and int(row.get("folds_agreeing") or 0) >= min_folds_agree
         )
+        # Aliveness co-requirement (IMX calibration, 2026-07-28): a long-
+        # window average edge that has DIED in its recent half must not
+        # promote. Regime rows compute t_recent on their OWN cell's events,
+        # so for them this is within-cell aliveness — calendar recency would
+        # conflate "regime dormant" with "edge dead" (IMX: -$3.29 last-30d
+        # calendar, yet its down_highvol cell is 63% WR across 120d; the
+        # recent month was simply its flat cell). A None t_recent (halves
+        # too thin) does not block — folds + holdout still gate.
+        t_recent_gate = row.get("t_recent")
+        if promote and t_recent_gate is not None and t_recent_gate * t <= 0:
+            promote = False
         # Short-window families cap at probation: fewer events by construction
         # means the same q is weaker evidence — forward paper adjudicates.
         if row.get("window_days"):
             promote = False
+        # Regime-cell promotion: a cell passing the FULL gates on a long
+        # window is a real edge WITHIN that regime — promote it as a
+        # regime-GATED leg (promote_scope tells consumers the deployment
+        # must carry the gate; the leg idles outside its cell, so current
+        # regime does not matter for eligibility). Previously such cells
+        # capped at probation regardless of strength.
+        if promote and row.get("regime"):
+            row["promote_scope"] = "regime"
         # PROBATION: eligibility for reduced-size paper deployment with
         # pre-registered kill/graduate criteria. Forward paper is the honest
         # holdout — that is why this tier is allowed to be looser. Paths:

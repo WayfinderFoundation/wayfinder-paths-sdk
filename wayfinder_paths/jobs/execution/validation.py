@@ -205,6 +205,7 @@ def validate_execution_job(
         )
 
     checks.extend(_preflight_checks(root, job_data, spec))
+    checks.extend(_evidence_window_check(root))
     checks.extend(_live_wallet_checks(job_data))
 
     report = _report(checks, strict=strict or spec.strict)
@@ -212,6 +213,96 @@ def validate_execution_job(
     if not candidate_dir:
         store.write_json(job_id, "reports/validation/latest.json", report)
     return report
+
+
+# Evidence-window policy (owner-set 2026-07-27): a 5m strategy validated on
+# a 14-day window backtested +21% at deploy and ran -41bps/trade forward —
+# window-local noise survived every multiplicity gate because none of them
+# question the window itself. Force long history when it exists; the 30d
+# floor applies ONLY with proof of unavailability (the full target was
+# requested and the source could not supply it — e.g. a new listing).
+EVIDENCE_TARGET_DAYS = 120.0
+EVIDENCE_FLOOR_DAYS = 30.0
+
+
+def _evidence_window_check(root: Path) -> list[dict[str, Any]]:
+    bars_path = root / "results" / "backtest" / "input_bars.json"
+    if not bars_path.exists():
+        return []  # fixture/scenario-driven validation contexts
+    try:
+        metadata = json.loads(bars_path.read_text(encoding="utf-8")).get("metadata")
+    except ValueError:
+        metadata = None
+    if not isinstance(metadata, dict) or metadata.get("days") is None:
+        return [
+            {
+                "name": "evidence_window",
+                "passed": True,
+                "blocking": False,
+                "note": (
+                    "dataset provenance unknown (hand-written bars) — window "
+                    "policy not evaluable; prefer fetch-dataset so the window "
+                    "is auditable"
+                ),
+            }
+        ]
+    requested = float(metadata.get("days") or 0.0)
+    received = float(metadata.get("days_received") or requested)
+    if received >= 0.9 * EVIDENCE_TARGET_DAYS:
+        return [
+            {
+                "name": "evidence_window",
+                "passed": True,
+                "tier": "long_history",
+                "days_received": received,
+            }
+        ]
+    if requested < EVIDENCE_TARGET_DAYS:
+        # A short window is only excusable with PROOF the data does not
+        # exist — and proof requires having asked for the full target.
+        return [
+            {
+                "name": "evidence_window",
+                "passed": False,
+                "days_received": received,
+                "error": (
+                    f"dataset spans {received:g}d but only {requested:g}d was "
+                    f"requested — request the full target first: fetch-dataset "
+                    f"--days {EVIDENCE_TARGET_DAYS:g} --source ccxt. The "
+                    f"{EVIDENCE_FLOOR_DAYS:g}d floor applies only when the "
+                    "full target was requested and the source could not "
+                    "supply it (new listing)."
+                ),
+            }
+        ]
+    if received >= EVIDENCE_FLOOR_DAYS:
+        return [
+            {
+                "name": "evidence_window",
+                "passed": True,
+                "tier": "short_history_proven",
+                "days_received": received,
+                "note": (
+                    f"{received:g}d received of {requested:g}d requested — the "
+                    "source could not supply the target (new symbol); the 30d "
+                    "floor applies. Evidence from this window is short-history: "
+                    "prefer probation sizing and re-validate as history grows."
+                ),
+            }
+        ]
+    return [
+        {
+            "name": "evidence_window",
+            "passed": False,
+            "days_received": received,
+            "error": (
+                f"only {received:g}d of history exists (full target "
+                "requested) — below the "
+                f"{EVIDENCE_FLOOR_DAYS:g}d floor; too new to validate any "
+                "deployment evidence"
+            ),
+        }
+    ]
 
 
 def _feature_checks(root: Path, spec: ExecutionSpec) -> list[dict[str, Any]]:

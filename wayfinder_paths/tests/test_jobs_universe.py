@@ -102,3 +102,39 @@ def test_universe_scan_filters_pools_and_persists(tmp_path) -> None:
         encoding="utf-8"
     )
     assert "universe-scan-" in ledger
+
+
+def test_resolve_dataset_keeps_file_metadata(tmp_path) -> None:
+    """input_bars.json metadata (days/fetched_at) must survive into dataset
+    metadata — it is the only source for the UI's window labels."""
+    import json as _json
+
+    from wayfinder_paths.jobs.execution.job import _load_dataset
+    from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+
+    root = tmp_path
+    (root / "results" / "backtest").mkdir(parents=True)
+    bars = [
+        {
+            "timestamp": f"2026-07-01T00:{m:02d}:00+00:00",
+            "symbol": "LIT",
+            "open": 1.0,
+            "high": 1.1,
+            "low": 0.9,
+            "close": 1.0,
+            "volume": 2.0,
+        }
+        for m in range(10)
+    ]
+    (root / "results" / "backtest" / "input_bars.json").write_text(
+        _json.dumps(
+            {"bars": bars, "metadata": {"days": 14, "fetched_at": "2026-07-27"}}
+        ),
+        encoding="utf-8",
+    )
+    spec = ExecutionSpec()
+    spec.data_contract["bar_interval"] = "5m"
+    dataset = _load_dataset(root, spec, {})
+    assert dataset.metadata["days"] == 14
+    assert dataset.metadata["fetched_at"] == "2026-07-27"
+    assert "input_bars.json" in dataset.metadata["source"]

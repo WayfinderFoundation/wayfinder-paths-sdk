@@ -20,6 +20,7 @@ from wayfinder_paths.jobs.backtest_artifacts import (
 )
 from wayfinder_paths.jobs.compiler import JobCompiler, compile_job
 from wayfinder_paths.jobs.counterfactual import counterfactual_job
+from wayfinder_paths.jobs.decision_log import build_decision_log
 from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.experiments import (
     list_experiments,
@@ -50,6 +51,7 @@ from wayfinder_paths.jobs.models import (
     normalize_agent_mode,
 )
 from wayfinder_paths.jobs.proposals import propose_change
+from wayfinder_paths.jobs.replication import replication_job
 from wayfinder_paths.jobs.research import (
     holdout_check_job,
     pair_check_job,
@@ -555,6 +557,12 @@ def reconcile_cmd(job_id: str, limit: int) -> None:
     show_default=True,
 )
 @click.option("--quote", default="USDT", show_default=True)
+@click.option(
+    "--full",
+    is_flag=True,
+    default=False,
+    help="Force a full refetch instead of the default incremental tail merge.",
+)
 def fetch_dataset_cmd(
     job_id: str,
     days: int,
@@ -562,6 +570,7 @@ def fetch_dataset_cmd(
     exchange: str,
     market_type: str,
     quote: str,
+    full: bool,
 ) -> None:
     store = JobStore()
     result = build_live_dataset(
@@ -572,6 +581,7 @@ def fetch_dataset_cmd(
         exchange=exchange,
         market_type=market_type,
         quote=quote,
+        incremental=not full,
     )
     _echo_json({"ok": True, "result": result})
 
@@ -1079,6 +1089,35 @@ def counterfactual_cmd(job_id: str, force: bool) -> None:
             "ok": True,
             "result": counterfactual_job(job_id, store=JobStore(), force=force),
         }
+    )
+
+
+@job_cli.command(
+    name="decision-log",
+    help="Threaded narrative feed of what the job's agent tried and why "
+    "(proposal generations with rejection reasons, research verdicts, "
+    "discoveries, shadow A/B checkpoints) — assembled from recorded events.",
+)
+@click.argument("job_id")
+@click.option("--limit", type=int, default=50, show_default=True)
+def decision_log_cmd(job_id: str, limit: int) -> None:
+    _echo_json(
+        {"ok": True, "result": build_decision_log(JobStore(), job_id, limit=limit)}
+    )
+
+
+@job_cli.command(
+    name="replication",
+    help="Backtest replication monitor: re-run the ACTIVE strategy on the "
+    "refreshed dataset and compare against this revision's first run — "
+    "decayed=true means the deploy-time edge is not reproducing (selection "
+    "on window-local noise).",
+)
+@click.argument("job_id")
+@click.option("--force", is_flag=True, default=False)
+def replication_cmd(job_id: str, force: bool) -> None:
+    _echo_json(
+        {"ok": True, "result": replication_job(job_id, store=JobStore(), force=force)}
     )
 
 

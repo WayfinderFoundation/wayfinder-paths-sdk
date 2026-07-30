@@ -312,3 +312,76 @@ def test_forward_view_trades_and_marker_directions(tmp_path) -> None:
     assert trade["duration_minutes"] == 60
     assert trade["entry_reason"] == "fade"
     assert trade["exit_reason"] == "bracket_stop"
+
+
+def test_regime_aware_aliveness_and_cell_promotion() -> None:
+    """IMX calibration: dead-recency averages cannot promote; full-gate
+    regime cells promote as regime-gated legs regardless of current regime."""
+    rows = [
+        _verdict_row(  # Tier-1 with healthy recency: promotes as before
+            t_stat_vs_drift=4.5,
+            p_value=_p(4.5),
+            fold_stable=True,
+            folds_agreeing=4,
+            t_recent=2.0,
+        ),
+        _verdict_row(  # Tier-1 stats but recency SIGN-FLIPPED: blocked
+            t_stat_vs_drift=4.4,
+            p_value=_p(4.4),
+            fold_stable=True,
+            folds_agreeing=4,
+            t_recent=-2.1,
+        ),
+        _verdict_row(  # Tier-1 with thin halves (t_recent None): not blocked
+            t_stat_vs_drift=4.3,
+            p_value=_p(4.3),
+            fold_stable=True,
+            folds_agreeing=4,
+            t_recent=None,
+        ),
+        _verdict_row(  # full-gate REGIME cell, not current regime: promotes
+            t_stat_vs_drift=4.2,
+            p_value=_p(4.2),
+            fold_stable=True,
+            folds_agreeing=4,
+            t_recent=2.2,
+            regime="down_highvol",
+            in_current_regime=False,
+        ),
+        _verdict_row(t_stat_vs_drift=0.5, p_value=_p(0.5), t_recent=None),
+    ]
+    apply_bh_verdicts(rows)
+    assert rows[0]["verdict"] == "promote"
+    assert rows[1]["verdict"] != "promote"  # dead average blocked
+    assert rows[2]["verdict"] == "promote"  # thin halves do not block
+    assert rows[3]["verdict"] == "promote"
+    assert rows[3]["promote_scope"] == "regime"  # deployment must carry the gate
+    assert "promote_scope" not in rows[0]
+
+
+def test_walk_forward_recency_weighting() -> None:
+    from wayfinder_paths.jobs.execution.walk_forward import _summary
+
+    def fold(net: float) -> dict:
+        stats = {
+            "net_return": net,
+            "sharpe": 1.0,
+            "sortino": 1.0,
+            "max_drawdown_pct": -0.01,
+        }
+        return {"status": "ok", "train_stats": dict(stats), "test_stats": dict(stats)}
+
+    early_good = _summary(
+        [fold(0.10), fold(0.05), fold(-0.02), fold(-0.04)], "net_return"
+    )
+    late_good = _summary(
+        [fold(-0.04), fold(-0.02), fold(0.05), fold(0.10)], "net_return"
+    )
+    # Same raw mean; recency weighting must prefer the strategy that works NOW.
+    assert abs(early_good["oos_return_mean"] - late_good["oos_return_mean"]) < 1e-12
+    spread = (
+        late_good["oos_return_recency_weighted"]
+        - early_good["oos_return_recency_weighted"]
+    )
+    assert spread > 0.03  # decisive separation, not a rounding artifact
+    assert late_good["oos_return_recency_weighted"] > late_good["oos_return_mean"]
