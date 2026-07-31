@@ -9,11 +9,11 @@
 | `sort="score"` | `sort="-insightfulness_score"` | Must use valid sort field with optional `-` prefix |
 | `limit=500` | `limit=200` | Max 200 per request; paginate with `offset` |
 
-## Valid Sort Fields (Python client only)
+## Valid Sort Fields
 
 `"insightfulness_score"`, `"-insightfulness_score"` (desc), `"created"`, `"-created"` (desc)
 
-MCP tool always sorts by `-insightfulness_score`.
+MCP tool defaults to `-insightfulness_score` — all-time top scorers, not newest. Pass `sort="-created"` when the user asks for latest/fresh insights.
 
 ## Valid Scan Types
 
@@ -24,12 +24,13 @@ MCP tool always sorts by `-insightfulness_score`.
 Use `_` for unused string params and `all` for no type filter.
 
 ```
-research_search_alpha(query, scan_type, created_after, created_before, limit)
+research_search_alpha(query, scan_type, created_after, created_before, sort, limit)
 ```
 
 Examples:
 ```
 research_search_alpha(limit="20")                                          # Top 20 insights
+research_search_alpha(sort="-created", limit="20")                         # Newest insights
 research_search_alpha(created_after="2026-03-06T00:00:00Z", limit="20")    # Today's insights
 research_search_alpha(query="ETH", scan_type="twitter_post", limit="10")   # ETH tweets
 ```

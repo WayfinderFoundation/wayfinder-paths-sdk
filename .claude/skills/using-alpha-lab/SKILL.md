@@ -32,19 +32,21 @@ research_search_alpha(limit="20")                                               
 research_search_alpha(scan_type="twitter_post", limit="10")                        # Top 10 tweets
 research_search_alpha(query="ETH", limit="10")                                     # Search "ETH"
 research_search_alpha(created_after="2026-03-06T00:00:00Z", limit="20")            # Today's insights
+research_search_alpha(sort="-created", limit="20")                                 # Newest insights
 research_get_alpha_types()                                                         # List scan types
 ```
 
-Tool args: `research_search_alpha(query, scan_type, created_after, created_before, limit)`
+Tool args: `research_search_alpha(query, scan_type, created_after, created_before, sort, limit)`
 - `query`: text search, `_` for none (default `_`)
 - `scan_type`: filter by type, `all` for none (default `all`)
 - `created_after` / `created_before`: ISO 8601 datetime bounds, `_` to skip (default `_`)
+- `sort`: `-insightfulness_score` (default) or `-created` for newest first
 - `limit`: max results (default `"20"`, max `"200"`)
 
 **Critical gotchas:**
 - Client returns data directly (not tuples) — `data = await ALPHA_LAB_CLIENT.search()`
 - Scores are 0-1 floats (1 = most insightful)
-- MCP tool sorts by score descending (highest first); use Python client for custom sort/pagination
+- Default sort is score descending — all-time top scorers, NOT newest. For "latest/fresh alpha" pass `sort="-created"` (or a `created_after` bound), or recent items stay invisible unless they crack the all-time top N and the feed looks stale
 - Max 200 results per call; use `offset` for pagination (Python client only)
 
 ## When to use
