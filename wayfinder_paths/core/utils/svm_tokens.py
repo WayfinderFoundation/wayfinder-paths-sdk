@@ -26,13 +26,12 @@ from spl.token.constants import (
 from spl.token.instructions import create_associated_token_account, transfer_checked
 from spl.token.models import TransferCheckedParams
 
-from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
+from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA, SOL_DECIMALS
 from wayfinder_paths.core.utils.svm import solana_client_from_chain_id
 from wayfinder_paths.core.utils.tokens import is_native_token
 
 SOL_NATIVE_SENTINEL = "11111111111111111111111111111111"
 WRAPPED_SOL_MINT = "So11111111111111111111111111111111111111112"
-SOL_DECIMALS = 9
 
 
 async def _get_mint_account(client: AsyncClient, mint: Pubkey):

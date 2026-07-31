@@ -5,8 +5,7 @@ from typing import Any, NotRequired, Required, TypedDict
 
 from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
 from wayfinder_paths.core.config import get_api_base_url
-from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
-from wayfinder_paths.core.utils.svm_tokens import SOL_DECIMALS
+from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA, SOL_DECIMALS
 
 
 class TokenLinks(TypedDict):

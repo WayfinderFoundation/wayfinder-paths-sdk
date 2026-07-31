@@ -14,6 +14,7 @@ CHAIN_ID_ROBINHOOD = 4663
 # Internal chain id for Solana mainnet-beta. Li.Fi's external id
 # 1151111081099710 maps to/from 900 at service boundaries only.
 CHAIN_ID_SOLANA = 900
+SOL_DECIMALS = 9
 
 CHAIN_CODE_TO_ID = {
     "base": CHAIN_ID_BASE,

@@ -6,8 +6,7 @@ import httpx
 import pytest
 
 from wayfinder_paths.core.clients.TokenClient import TokenClient
-from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
-from wayfinder_paths.core.utils.svm_tokens import SOL_DECIMALS
+from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA, SOL_DECIMALS
 from wayfinder_paths.mcp.tools.tokens import (
     onchain_fuzzy_search_tokens,
     onchain_get_gas_token,

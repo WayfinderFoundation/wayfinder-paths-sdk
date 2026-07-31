@@ -8,13 +8,13 @@ from solders.transaction import VersionedTransaction
 
 from wayfinder_paths.core.clients.BRAPClient import BRAP_CLIENT
 from wayfinder_paths.core.constants import ZERO_ADDRESS
+from wayfinder_paths.core.constants.chains import SOL_DECIMALS
 from wayfinder_paths.core.utils.etherscan import get_etherscan_transaction_link
 from wayfinder_paths.core.utils.svm import (
     get_solana_explorer_link,
     is_solana_chain,
 )
 from wayfinder_paths.core.utils.svm_tokens import (
-    SOL_DECIMALS,
     WRAPPED_SOL_MINT,
     build_solana_send_transaction,
     get_solana_token_balance,
