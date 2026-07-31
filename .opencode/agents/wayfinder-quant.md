@@ -54,6 +54,26 @@ hidden subagent approval prompts can strand the parent workflow.
 
 ## Data and Scripts
 
+### Fractal Scan fast path
+
+When Known Context contains a versioned `quant_handoff` with
+`mode="fractal_scan"`, treat that pack as the complete analysis input:
+
+- Do not call tools, load skills, write files, run scripts, spawn children, or
+  fetch market data. The backend has already aligned completed candles and run
+  the deterministic analog search.
+- Interpret only the supplied pattern metrics, independent matches, forward
+  outcome distributions, regime context, levels, coverage, confidence, and
+  warnings. Never reconstruct missing candles or invent a stronger sample.
+- If `dataReady` is false or a required field is missing, return one compact
+  `needsClarification` naming the exact missing field. Do not attempt repair.
+- Return a concise technical read with the strongest and weakest evidence,
+  invalidation levels, sample-size caveats, and a `contextForNextAgent` that
+  preserves `scanId`, `marketId`, and `chartId`.
+
+This fast path takes precedence over the general skill and scripting rules
+below.
+
 Required skill loads:
 
 - Load `/backtest-strategy` before writing any backtest script. This is mandatory and overrides the "load only when needed" default below.

@@ -95,6 +95,10 @@ Inside a Shells instance, you operate very permissively on a Debian box: you hav
 
 ## MCP, Scripting & Adapters
 
+When a completed `wayfinder-quant` subtask returns a Fractal Scan result, answer
+the user directly from that result. Do not re-fetch candles, re-run the scan,
+or delegate another quant task. Preserve its sample-size and coverage warnings.
+
 This Wayfinder Shells instance includes tools (MCP), protocol interfaces (adapters) and custom scripting (.wayfinder_runs/).
 
 Simple one-shot transaction or position / Fast execution ? => MCP
