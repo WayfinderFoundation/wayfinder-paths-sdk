@@ -5,6 +5,7 @@
 **User asks:** -> **Use this:**
 
 - "What's today's alpha?" -> `research_search_alpha(created_after="2026-03-06T00:00:00Z", limit="20")`
+- "What's the latest/freshest alpha?" -> `research_search_alpha(sort="-created", limit="20")`
 - "Any good tweets?" -> `research_search_alpha(scan_type="twitter_post", limit="20")`
 - "Chain flow activity?" -> `research_search_alpha(scan_type="defi_llama_chain_flow", limit="20")`
 - "Top APY signals" -> `research_search_alpha(scan_type="delta_lab_top_apy", limit="20")`
@@ -13,7 +14,7 @@
 
 ## MCP Tools
 
-Tool: `research_search_alpha(query, scan_type, created_after, created_before, limit)`
+Tool: `research_search_alpha(query, scan_type, created_after, created_before, sort, limit)`
 
 | Param | Values | Default |
 |-------|--------|---------|
@@ -21,9 +22,10 @@ Tool: `research_search_alpha(query, scan_type, created_after, created_before, li
 | `scan_type` | `all`, `twitter_post`, `defi_llama_chain_flow`, `defi_llama_overview`, `defi_llama_protocol`, `delta_lab_top_apy`, `delta_lab_best_delta_neutral` | `all` |
 | `created_after` | ISO 8601 datetime or `_` to skip | `_` |
 | `created_before` | ISO 8601 datetime or `_` to skip | `_` |
+| `sort` | `-insightfulness_score`, `insightfulness_score`, `-created`, `created` | `-insightfulness_score` |
 | `limit` | 1-200 | `"20"` |
 
-Results are always sorted by insightfulness score (highest first).
+Default sort is insightfulness score (highest first); use `sort="-created"` for newest first.
 
 ```python
 # Top 20 insights
