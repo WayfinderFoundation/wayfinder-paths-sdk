@@ -1,0 +1,92 @@
+// {{panel_name}} — Wayfinder path panel (bridge protocol v1).
+//
+// This is a plain-JS example so it runs in `wayfinder path preview --panel`
+// with no build step. For a real panel, build with a bundler (base: './')
+// and use the typed helper in ../src/bridge.ts.
+//
+// Protocol (host <-> panel over postMessage, envelope {type, v: 1, ...}):
+//   host -> wf:hello {panelId, pathSlug, capabilities}
+//   panel -> wf:hello_ack
+//   host -> wf:state {state}            (once, after ack)
+//   host -> wf:context {market, theme, wallet, instanceId}
+//   panel -> wf:set_state {state}       (<= 32KB)
+//   panel -> wf:fetch {requestId, capability, resource, params}
+//   host -> wf:fetch_result {requestId, ok, data?, error?}
+const PROTOCOL_VERSION = 1;
+const pending = new Map();
+let seq = 0;
+
+function post(type, payload) {
+  window.parent?.postMessage({ type, v: PROTOCOL_VERSION, ...payload }, "*");
+}
+
+// Host-mediated authenticated read. The host attaches the user's credentials
+// and enforces the capability allowlist — the token never reaches this frame.
+function fetchData(capability, resource, params) {
+  const requestId = `r${++seq}`;
+  return new Promise((resolve, reject) => {
+    pending.set(requestId, { resolve, reject });
+    post("wf:fetch", { requestId, capability, resource, params });
+  });
+}
+
+function applyTheme(theme) {
+  const tokens = theme?.tokens || {};
+  for (const [key, value] of Object.entries(tokens)) {
+    document.body.style.setProperty(`--wf-${key}`, String(value));
+  }
+}
+
+function renderMarket(market) {
+  const el = document.getElementById("market");
+  if (!el) return;
+  el.textContent = market
+    ? `${market.symbol} · ${market.venue}`
+    : "No market selected";
+}
+
+async function refresh() {
+  const el = document.getElementById("data");
+  if (el) el.textContent = "Loading…";
+  try {
+    // Requires the `market.read` capability to be declared by the path and
+    // granted by the user. Swap in the resource + capability your panel needs.
+    const data = await fetchData("market.read", "/blockchain/hyperliquid/markets", {});
+    if (el) el.textContent = JSON.stringify(data, null, 2).slice(0, 2000);
+  } catch (err) {
+    if (el) el.textContent = `Error: ${err?.message || err}`;
+  }
+}
+
+window.addEventListener("message", (event) => {
+  const msg = event.data;
+  if (!msg || typeof msg !== "object") return;
+
+  switch (msg.type) {
+    case "wf:hello":
+      post("wf:hello_ack", { protocolVersion: PROTOCOL_VERSION });
+      break;
+    case "wf:context":
+      applyTheme(msg.context?.theme);
+      renderMarket(msg.context?.market);
+      break;
+    case "wf:state":
+      // msg.state is this panel's persisted state (or null on first mount).
+      break;
+    case "wf:fetch_result": {
+      const entry = pending.get(msg.requestId);
+      if (!entry) return;
+      pending.delete(msg.requestId);
+      if (msg.ok) entry.resolve(msg.data);
+      else entry.reject(new Error(msg.error?.message || msg.error?.code || "fetch failed"));
+      break;
+    }
+    default:
+      // Ignore unknown types — forward compatibility.
+      break;
+  }
+});
+
+document.getElementById("refresh")?.addEventListener("click", () => void refresh());
+document.body.setAttribute("data-path-ready", "true");
+void refresh();

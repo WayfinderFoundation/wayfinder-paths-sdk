@@ -7,14 +7,28 @@ import threading
 from dataclasses import dataclass
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from importlib import resources
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from wayfinder_paths.paths.manifest import PathManifest, PathManifestError
+from wayfinder_paths.paths.manifest import (
+    PathManifest,
+    PathManifestError,
+    PathPanelConfig,
+)
 
 
 class PathPreviewError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class PanelPreviewInspection:
+    slug: str
+    version: str
+    panel: PathPanelConfig
+    panel_root: Path | None  # None in --dev-server mode
+    entry: str
 
 
 @dataclass(frozen=True)
@@ -93,6 +107,150 @@ def inspect_preview_path(*, path_dir: Path) -> PreviewInspection:
         entry=entry,
         entry_path=entry_path,
     )
+
+
+def inspect_panel_preview(
+    *, path_dir: Path, panel_id: str, dev_server: str | None
+) -> PanelPreviewInspection:
+    path_dir = path_dir.resolve()
+    manifest_path = path_dir / "wfpath.yaml"
+    if not manifest_path.exists():
+        raise PathPreviewError("Missing wfpath.yaml")
+    try:
+        manifest = PathManifest.load(manifest_path)
+    except PathManifestError as exc:
+        raise PathPreviewError(str(exc)) from exc
+
+    panel = next((p for p in manifest.panels if p.panel_id == panel_id), None)
+    if panel is None:
+        declared = ", ".join(p.panel_id for p in manifest.panels) or "(none)"
+        raise PathPreviewError(
+            f"Panel '{panel_id}' not found in wfpath.yaml. Declared: {declared}"
+        )
+
+    panel_root: Path | None = None
+    if dev_server is None:
+        panel_root = (path_dir / panel.build_dir).resolve()
+        if not panel_root.exists():
+            raise PathPreviewError(
+                f"Panel build_dir not found: {panel_root} "
+                "(build the panel, or pass --dev-server <url> for HMR)"
+            )
+        entry_path = (panel_root / panel.entry).resolve()
+        if not entry_path.exists():
+            raise PathPreviewError(f"Panel entry not found: {entry_path}")
+
+    return PanelPreviewInspection(
+        slug=manifest.slug,
+        version=manifest.version,
+        panel=panel,
+        panel_root=panel_root,
+        entry=panel.entry,
+    )
+
+
+def _render_host_asset(name: str, replacements: dict[str, str]) -> str:
+    root = resources.files("wayfinder_paths.paths").joinpath(
+        "templates", "panel_host", name
+    )
+    text = root.read_text(encoding="utf-8")
+    for key, value in replacements.items():
+        text = text.replace(f"{{{{{key}}}}}", value)
+    return text
+
+
+def preview_panel(
+    *,
+    path_dir: Path,
+    panel_id: str,
+    dev_server: str | None = None,
+    parent_port: int = 3333,
+    panel_port: int = 3334,
+) -> PreviewUrls:
+    """Serve the panel dev sandbox: a workspace-shaped host page with a bridge
+    emulator (mock context + wf:fetch fixtures) around the panel iframe. With
+    --dev-server the iframe points at the author's own dev server for HMR."""
+    inspection = inspect_panel_preview(
+        path_dir=path_dir, panel_id=panel_id, dev_server=dev_server
+    )
+
+    with TemporaryDirectory(prefix="wfpath-panel-preview-") as tmp:
+        tmp_dir = Path(tmp)
+        panel_server: ThreadingHTTPServer | None = None
+        panel_actual_port = panel_port
+
+        if dev_server is not None:
+            # HMR: point the iframe straight at the author's dev server. That
+            # server serves same-origin content, so the vite client needs
+            # allow-same-origin — relaxed ONLY in dev, flagged in the chrome.
+            panel_src = dev_server.rstrip("/") + "/"
+            sandbox = "allow-scripts allow-same-origin"
+            dev_mode = "true"
+            dev_chip = '<span class="devchip">DEV MODE — sandbox relaxed</span>'
+        else:
+            assert inspection.panel_root is not None
+            panel_server, panel_actual_port = _serve_dir(
+                inspection.panel_root, port=panel_port
+            )
+            panel_src = f"http://127.0.0.1:{panel_actual_port}/{inspection.entry}"
+            # Production-parity isolation for the mock run.
+            sandbox = "allow-scripts"
+            dev_mode = "false"
+            dev_chip = ""
+
+        # Copy the static host assets into the served dir, render index.html.
+        for asset in ("host.css", "host.js", "fixtures.js"):
+            src = resources.files("wayfinder_paths.paths").joinpath(
+                "templates", "panel_host", asset
+            )
+            (tmp_dir / asset).write_text(
+                src.read_text(encoding="utf-8"), encoding="utf-8"
+            )
+
+        index_html = _render_host_asset(
+            "index.html.tmpl",
+            {
+                "slug": inspection.slug,
+                "panel_id": inspection.panel.panel_id,
+                "panel_name": inspection.panel.name,
+                "version": inspection.version,
+                "capabilities_json": json.dumps(list(inspection.panel.capabilities)),
+                "dev_mode": dev_mode,
+                "dev_chip": dev_chip,
+                "sandbox": sandbox,
+                "panel_src": panel_src,
+            },
+        )
+        (tmp_dir / "index.html").write_text(index_html, encoding="utf-8")
+
+        parent_server, parent_actual_port = _serve_dir(tmp_dir, port=parent_port)
+        parent_url = f"http://127.0.0.1:{parent_actual_port}/index.html"
+
+        def serve(server: ThreadingHTTPServer) -> None:
+            server.serve_forever(poll_interval=0.25)
+
+        servers = [parent_server] + ([panel_server] if panel_server else [])
+        for server in servers:
+            threading.Thread(target=serve, args=(server,), daemon=True).start()
+
+        try:
+            mode = f"dev-server {dev_server}" if dev_server else "static dist"
+            print(
+                f"Panel preview running ({mode}):\n"
+                f"  Open: {parent_url}\n(Press Ctrl+C to stop)"
+            )
+            while True:
+                threading.Event().wait(3600)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            for server in servers:
+                server.shutdown()
+
+        return PreviewUrls(
+            parent_url=parent_url,
+            applet_url=panel_src,
+        )
 
 
 def preview_path(

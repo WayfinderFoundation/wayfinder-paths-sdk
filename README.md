@@ -284,7 +284,55 @@ Uses your existing Wayfinder API key — no extra config needed. See the `/simul
 
 ## Paths
 
-Wayfinder paths bundle a manifest, runtime component, optional applet, and optional host skill exports into a publishable artifact.
+Wayfinder paths bundle a manifest, runtime component, optional applet, optional workspace panels, and optional host skill exports into a publishable artifact.
+
+### Panels
+
+A path can declare **panels** — author-built UI that users add to the Wayfinder
+Shells workspace grid (alongside built-in panels like Chart and Portfolio).
+Panels render in a sandboxed iframe and talk to the host over the `wf:*`
+postMessage bridge (protocol v1): the host pushes workspace context (active
+market, theme, wallet address) and each panel's persisted state, and mediates
+authenticated data reads — the panel calls `bridge.fetch(capability, resource)`
+and the host attaches the user's credentials against an allowlist, so **no
+token ever enters the panel frame**.
+
+Declare panels in `wfpath.yaml`:
+
+```yaml
+capabilities:
+  - market.read          # authoritative superset; panels request a subset
+
+panels:
+  - id: radar
+    name: Funding Radar
+    build_dir: panels/radar/dist
+    category: markets
+    size: { min_width: 320, min_height: 240 }
+    capabilities:
+      - market.read
+    permissions:
+      external_origins: ["https://api.example.com"]
+```
+
+Scaffold and preview:
+
+```bash
+# Scaffold a path with a panel (repeatable --with-panel)
+poetry run wayfinder path init my-path --with-panel radar
+
+# Preview in a panel-shaped dev sandbox (mock market feed, state inspector,
+# and a Data tab showing every bridge.fetch with allow/deny)
+poetry run wayfinder path preview --path my-path --panel radar
+
+# Iterate with your own bundler + hot reload (set base: './')
+poetry run wayfinder path preview --path my-path --panel radar \
+  --dev-server http://localhost:5173
+```
+
+`wayfinder path doctor` validates panel entries, asset URLs, bundle sizes, and
+that each panel's capabilities are a subset of the path's declared set. Panel
+`dist/` folders ride the published bundle automatically — no separate upload.
 
 ### Publish a path
 

@@ -1,0 +1,113 @@
+// Typed panel-side helper for the Wayfinder path-panel bridge (protocol v1).
+//
+// Copy this into your panel's source and build with a bundler configured with
+// `base: './'` so assets resolve under the served panel path. A published npm
+// package (@wayfinder/panel-bridge) will replace this file later.
+
+export const PROTOCOL_VERSION = 1;
+
+export type PanelMarket = {
+  id: string;
+  symbol: string;
+  name: string;
+  venue: string;
+};
+
+export type PanelTheme = { mode: "dark"; tokens: Record<string, string> };
+
+export type PanelContext = {
+  instanceId: string | null;
+  theme: PanelTheme;
+  market: PanelMarket | null;
+  wallet: { address: string } | null;
+};
+
+type FetchError = { code: string; message: string };
+
+type Pending = {
+  resolve: (data: unknown) => void;
+  reject: (err: Error) => void;
+};
+
+export type PanelBridge = {
+  /** Fires on the initial context and on every market/theme change. */
+  onContext(cb: (context: PanelContext) => void): void;
+  /** Fires once with this panel's persisted state (or null on first mount). */
+  onState(cb: (state: unknown | null) => void): void;
+  /** Persist panel state (JSON, <= 32KB). Debounced host-side. */
+  setState(state: unknown): void;
+  /**
+   * Host-mediated authenticated read. The host attaches the user's credentials
+   * and enforces the capability allowlist + install-time grant — no token ever
+   * reaches this frame. `capability` must be declared by the path and granted
+   * by the user; `resource` must be on the host allowlist.
+   */
+  fetch<T = unknown>(
+    capability: string,
+    resource: string,
+    params?: Record<string, unknown>,
+  ): Promise<T>;
+};
+
+export function connect(): PanelBridge {
+  const pending = new Map<string, Pending>();
+  let seq = 0;
+  let contextCb: ((context: PanelContext) => void) | null = null;
+  let stateCb: ((state: unknown | null) => void) | null = null;
+
+  const post = (type: string, payload: Record<string, unknown>): void => {
+    window.parent?.postMessage({ type, v: PROTOCOL_VERSION, ...payload }, "*");
+  };
+
+  window.addEventListener("message", (event: MessageEvent) => {
+    const msg = event.data as { type?: string; [k: string]: unknown } | null;
+    if (!msg || typeof msg !== "object") return;
+    switch (msg.type) {
+      case "wf:hello":
+        post("wf:hello_ack", { protocolVersion: PROTOCOL_VERSION });
+        break;
+      case "wf:context":
+        contextCb?.(msg.context as PanelContext);
+        break;
+      case "wf:state":
+        stateCb?.((msg.state ?? null) as unknown);
+        break;
+      case "wf:fetch_result": {
+        const entry = pending.get(msg.requestId as string);
+        if (!entry) return;
+        pending.delete(msg.requestId as string);
+        if (msg.ok) entry.resolve(msg.data);
+        else {
+          const err = msg.error as FetchError | undefined;
+          entry.reject(new Error(err?.message || err?.code || "fetch failed"));
+        }
+        break;
+      }
+      default:
+        // Ignore unknown message types — forward compatibility.
+        break;
+    }
+  });
+
+  return {
+    onContext(cb) {
+      contextCb = cb;
+    },
+    onState(cb) {
+      stateCb = cb;
+    },
+    setState(state) {
+      post("wf:set_state", { state });
+    },
+    fetch<T = unknown>(capability, resource, params) {
+      const requestId = `r${++seq}`;
+      return new Promise<T>((resolve, reject) => {
+        pending.set(requestId, {
+          resolve: resolve as (data: unknown) => void,
+          reject,
+        });
+        post("wf:fetch", { requestId, capability, resource, params });
+      });
+    },
+  };
+}
