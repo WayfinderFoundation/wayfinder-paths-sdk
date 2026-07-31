@@ -220,13 +220,29 @@ class _PanelHostRequestHandler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
 
+class _CorsAssetRequestHandler(SimpleHTTPRequestHandler):
+    """Panel-dist asset server. The panel iframe is sandboxed WITHOUT
+    allow-same-origin, so its document has an opaque origin and module
+    scripts are fetched in CORS mode with Origin: null — without an ACAO
+    header the browser blocks them and the panel never boots. Mirrors the
+    production bundle-serving headers (decorate_ui_response)."""
+
+    def end_headers(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cross-Origin-Resource-Policy", "cross-origin")
+        super().end_headers()
+
+
 def _serve_dir(
     directory: Path,
     *,
     port: int,
     live_proxy: _LiveProxyConfig | None = None,
+    cors_assets: bool = False,
 ) -> tuple[ThreadingHTTPServer, int]:
-    handler_cls = _PanelHostRequestHandler if live_proxy else SimpleHTTPRequestHandler
+    handler_cls: type[SimpleHTTPRequestHandler] = SimpleHTTPRequestHandler
+    if cors_assets:
+        handler_cls = _CorsAssetRequestHandler
     if live_proxy:
         handler_cls = type(
             "_LivePanelHostRequestHandler",
@@ -384,7 +400,7 @@ def preview_panel(
         else:
             assert inspection.panel_root is not None
             panel_server, panel_actual_port = _serve_dir(
-                inspection.panel_root, port=panel_port
+                inspection.panel_root, port=panel_port, cors_assets=True
             )
             panel_src = f"http://127.0.0.1:{panel_actual_port}/{inspection.entry}"
             # Production-parity isolation for the mock run.

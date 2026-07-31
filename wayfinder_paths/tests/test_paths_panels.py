@@ -337,3 +337,23 @@ class TestLiveProxy:
         )
         for resource, (capability, _upstream) in _LIVE_FETCH_ALLOWLIST.items():
             assert f'"{resource}": "{capability}"' in fixtures
+
+    def test_panel_asset_server_sends_cors_headers(self) -> None:
+        """The panel iframe is sandboxed without allow-same-origin, so its
+        module scripts are fetched with an opaque origin — without ACAO the
+        browser blocks them and the panel never boots (found in live demo)."""
+        import threading
+        import urllib.request
+
+        from wayfinder_paths.paths.preview import _serve_dir
+
+        d = Path(tempfile.mkdtemp())
+        (d / "panel.js").write_text("// module")
+        server, port = _serve_dir(d, port=0, cors_assets=True)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/panel.js") as r:
+                assert r.headers.get("Access-Control-Allow-Origin") == "*"
+                assert r.headers.get("Cross-Origin-Resource-Policy") == "cross-origin"
+        finally:
+            server.shutdown()
