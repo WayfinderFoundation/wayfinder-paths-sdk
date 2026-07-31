@@ -11,6 +11,7 @@ permission:
     wayfinder-sports: deny
     scout: deny
     general: deny
+    wayfinder-mobile: deny
 
   write: allow
   wayfinder_*: deny
