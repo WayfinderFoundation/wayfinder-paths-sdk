@@ -67,7 +67,13 @@ export function connect(): PanelBridge {
         post("wf:hello_ack", { protocolVersion: PROTOCOL_VERSION });
         break;
       case "wf:context":
-        contextCb?.(msg.context as PanelContext);
+        // Flat envelope: context fields ride at the top level of the message.
+        contextCb?.({
+          instanceId: msg.instanceId,
+          theme: msg.theme,
+          market: msg.market,
+          wallet: msg.wallet,
+        } as PanelContext);
         break;
       case "wf:state":
         stateCb?.((msg.state ?? null) as unknown);

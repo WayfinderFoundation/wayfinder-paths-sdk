@@ -8,7 +8,7 @@
 //   host -> wf:hello {panelId, pathSlug, capabilities}
 //   panel -> wf:hello_ack
 //   host -> wf:state {state}            (once, after ack)
-//   host -> wf:context {market, theme, wallet, instanceId}
+//   host -> wf:context — flat fields: {instanceId, theme, market, wallet}
 //   panel -> wf:set_state {state}       (<= 32KB)
 //   panel -> wf:fetch {requestId, capability, resource, params}
 //   host -> wf:fetch_result {requestId, ok, data?, error?}
@@ -51,7 +51,7 @@ async function refresh() {
   try {
     // Requires the `market.read` capability to be declared by the path and
     // granted by the user. Swap in the resource + capability your panel needs.
-    const data = await fetchData("market.read", "/blockchain/hyperliquid/markets", {});
+    const data = await fetchData("market.read", "/blockchain/hyperliquid/markets/", {});
     if (el) el.textContent = JSON.stringify(data, null, 2).slice(0, 2000);
   } catch (err) {
     if (el) el.textContent = `Error: ${err?.message || err}`;
@@ -67,8 +67,8 @@ window.addEventListener("message", (event) => {
       post("wf:hello_ack", { protocolVersion: PROTOCOL_VERSION });
       break;
     case "wf:context":
-      applyTheme(msg.context?.theme);
-      renderMarket(msg.context?.market);
+      applyTheme(msg.theme);
+      renderMarket(msg.market);
       break;
     case "wf:state":
       // msg.state is this panel's persisted state (or null on first mount).

@@ -71,6 +71,7 @@ pre { margin: 0; white-space: pre-wrap; word-break: break-word; font-size: 11px;
 .pill.ok { background: rgba(152, 242, 131, 0.15); color: var(--accent); }
 .pill.deny { background: rgba(244, 98, 110, 0.15); color: #f4626e; }
 .devchip { background: rgba(246, 183, 60, 0.15); color: var(--amber); border: 1px solid rgba(246, 183, 60, 0.4); border-radius: 999px; padding: 2px 10px; font-size: 11px; }
+.livechip { background: rgba(74, 222, 128, 0.12); color: var(--green, #4ade80); border: 1px solid rgba(74, 222, 128, 0.4); border-radius: 999px; padding: 2px 10px; font-size: 11px; }
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); display: none; align-items: center; justify-content: center; }
 .modal-backdrop.show { display: flex; }
 .modal { background: var(--panel-bg); border: 1px solid var(--border); border-radius: 14px; padding: 16px; width: 440px; max-width: 90vw; }

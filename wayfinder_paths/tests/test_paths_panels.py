@@ -196,6 +196,8 @@ class TestPanelPreviewSandbox:
                 "capabilities_json": json.dumps(["market.read"]),
                 "dev_mode": "false",
                 "dev_chip": "",
+                "live_mode": "false",
+                "live_chip": "",
                 "sandbox": "allow-scripts",
                 "panel_src": "http://127.0.0.1:3334/index.html",
             },
@@ -217,9 +219,121 @@ class TestPanelPreviewSandbox:
                 "capabilities_json": "[]",
                 "dev_mode": "true",
                 "dev_chip": '<span class="devchip">DEV MODE</span>',
+                "live_mode": "false",
+                "live_chip": "",
                 "sandbox": "allow-scripts allow-same-origin",
                 "panel_src": "http://localhost:5173/",
             },
         )
         assert "allow-same-origin" in html
         assert "DEV MODE" in html
+
+
+class TestLiveProxy:
+    """--live mode: real read-only data through the author's key, same gates
+    as the production host."""
+
+    def _envelope(self, **overrides):
+        from wayfinder_paths.paths.preview import _live_proxy_envelope
+
+        calls = []
+
+        class _Resp:
+            status_code = 200
+            content = b'{"markets": []}'
+
+        def fetch(url, params):
+            calls.append((url, params))
+            return _Resp()
+
+        kwargs = {
+            "resource": "/blockchain/hyperliquid/markets/",
+            "params": [],
+            "declared_capabilities": frozenset({"market.read", "pnl.read"}),
+            "api_base": "https://wayfinder.ai/api/v1",
+            "api_key": "wf-key",
+            "fetch": fetch,
+        }
+        kwargs.update(overrides)
+        return _live_proxy_envelope(**kwargs), calls
+
+    def test_allowed_resource_proxies_upstream(self) -> None:
+        envelope, calls = self._envelope(params=[("coin", "HYPE")])
+        assert envelope == {"ok": True, "data": {"markets": []}}
+        assert calls == [
+            (
+                "https://wayfinder.ai/api/v1/blockchain/hyperliquid/markets/",
+                [("coin", "HYPE")],
+            )
+        ]
+
+    def test_vendor_neutral_resource_maps_to_upstream_path(self) -> None:
+        envelope, calls = self._envelope(resource="/blockchain/portfolio/pnl")
+        assert envelope["ok"] is True
+        # Panel-facing name never exposes the vendor; the proxy calls it.
+        assert calls[0][0] == "https://wayfinder.ai/api/v1/blockchain/zerion/pnl"
+
+    def test_unlisted_resource_denied(self) -> None:
+        envelope, calls = self._envelope(resource="/users/api-keys/")
+        assert envelope["ok"] is False
+        assert envelope["error"]["code"] == "denied"
+        assert calls == []
+
+    def test_undeclared_capability_denied(self) -> None:
+        envelope, calls = self._envelope(
+            declared_capabilities=frozenset({"wallet_read"})
+        )
+        assert envelope["ok"] is False
+        assert "does not declare" in envelope["error"]["message"]
+        assert calls == []
+
+    def test_upstream_error_normalized(self) -> None:
+        class _Resp:
+            status_code = 500
+            content = b'{"secret": "internals"}'
+
+        envelope, _ = self._envelope(fetch=lambda u, p: _Resp())
+        assert envelope == {
+            "ok": False,
+            "error": {"code": "upstream_error", "message": "upstream returned 500"},
+        }
+
+    def test_oversized_response_rejected(self) -> None:
+        class _Resp:
+            status_code = 200
+            content = b'"' + b"x" * (512 * 1024 + 10) + b'"'
+
+        envelope, _ = self._envelope(fetch=lambda u, p: _Resp())
+        assert envelope["ok"] is False
+        assert envelope["error"]["code"] == "invalid"
+
+    def test_live_without_api_key_errors(self, monkeypatch) -> None:
+        import wayfinder_paths.paths.preview as preview_mod
+        from wayfinder_paths.paths.preview import preview_panel
+
+        monkeypatch.setattr(preview_mod, "get_api_key", lambda: None)
+        d = Path(tempfile.mkdtemp()) / "demo"
+        init_path(
+            path_dir=d,
+            slug="lp-manager",
+            panels=["overview"],
+            with_skill=False,
+            with_applet=False,
+        )
+        with pytest.raises(PathPreviewError, match="API key"):
+            preview_panel(path_dir=d, panel_id="overview", live=True)
+
+    def test_allowlists_in_lockstep_with_fixtures(self) -> None:
+        """The Python proxy allowlist and the browser-side RESOURCE_CAPABILITY
+        map must agree on resources AND capabilities."""
+        from importlib import resources as ilr
+
+        from wayfinder_paths.paths.preview import _LIVE_FETCH_ALLOWLIST
+
+        fixtures = (
+            ilr.files("wayfinder_paths.paths")
+            .joinpath("templates", "panel_host", "fixtures.js")
+            .read_text(encoding="utf-8")
+        )
+        for resource, (capability, _upstream) in _LIVE_FETCH_ALLOWLIST.items():
+            assert f'"{resource}": "{capability}"' in fixtures

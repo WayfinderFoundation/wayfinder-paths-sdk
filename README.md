@@ -328,6 +328,12 @@ poetry run wayfinder path preview --path my-path --panel radar
 # Iterate with your own bundler + hot reload (set base: './')
 poetry run wayfinder path preview --path my-path --panel radar \
   --dev-server http://localhost:5173
+
+# Develop against REAL read-only data: the local server proxies bridge.fetch
+# through your own API key (WAYFINDER_API_KEY). The key is attached
+# server-side and never enters the panel frame; only the same curated
+# read-only allowlist the production host enforces is reachable.
+poetry run wayfinder path preview --path my-path --panel radar --live
 ```
 
 `wayfinder path doctor` validates panel entries, asset URLs, bundle sizes, and

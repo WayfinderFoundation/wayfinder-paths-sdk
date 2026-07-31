@@ -1639,6 +1639,13 @@ def activate_cmd(
     help="Point the panel iframe at your own dev server for HMR (relaxes the "
     "sandbox; dev-only).",
 )
+@click.option(
+    "--live",
+    is_flag=True,
+    help="Serve wf:fetch with REAL read-only data proxied through your own "
+    "API key (attached server-side; never enters the panel frame). "
+    "Requires WAYFINDER_API_KEY or a configured api_key.",
+)
 @click.option("--panel-port", default=3334, show_default=True, type=int)
 def preview_cmd(
     path_dir: str,
@@ -1647,9 +1654,12 @@ def preview_cmd(
     applet_port: int,
     panel_id: str | None,
     dev_server: str | None,
+    live: bool,
     panel_port: int,
 ) -> None:
     try:
+        if live and not panel_id:
+            raise click.UsageError("--live requires --panel <id>")
         if panel_id:
             if check:
                 inspection = inspect_panel_preview(
@@ -1677,6 +1687,7 @@ def preview_cmd(
                 path_dir=Path(path_dir),
                 panel_id=panel_id,
                 dev_server=dev_server,
+                live=live,
                 parent_port=parent_port,
                 panel_port=panel_port,
             )

@@ -28,6 +28,9 @@ Point the sandbox at your dev server for hot reload:
 
 ```bash
 wayfinder path preview --panel {{panel_id}} --dev-server http://localhost:5173
+
+# Real read-only data via your own API key (never enters the frame):
+wayfinder path preview --panel {{panel_id}} --live
 ```
 
 Use the typed helper in `src/bridge.ts`:
@@ -36,7 +39,7 @@ Use the typed helper in `src/bridge.ts`:
 import { connect } from "./bridge";
 const wf = connect();
 wf.onContext((ctx) => { /* ctx.market, ctx.theme, ctx.wallet */ });
-const markets = await wf.fetch("market.read", "/blockchain/hyperliquid/markets");
+const markets = await wf.fetch("market.read", "/blockchain/hyperliquid/markets/");
 ```
 
 ## Data access & capabilities

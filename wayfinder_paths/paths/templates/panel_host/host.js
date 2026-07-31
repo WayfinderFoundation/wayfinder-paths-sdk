@@ -46,7 +46,9 @@ function currentContext() {
 
 function sendContext() {
   const ctx = currentContext();
-  post("wf:context", { context: ctx });
+  // Flat envelope — fields at the top level, exactly like the production
+  // host: {type, v, instanceId, theme, market, wallet}.
+  post("wf:context", ctx);
   document.getElementById("context-json").textContent = JSON.stringify(ctx, null, 2);
 }
 
@@ -68,11 +70,36 @@ function handleFetch(msg) {
     error = { code: "denied", message: `capability '${capability}' not granted` };
   }
 
-  logData(rowDetail, allowed);
   if (!allowed) {
+    logData(rowDetail, false);
     post("wf:fetch_result", { requestId, ok: false, error });
     return;
   }
+
+  if (CONFIG.liveMode) {
+    // LIVE mode: the Python server proxies the real read-only API with the
+    // author's key (attached server-side; never present in this page). The
+    // proxy route is same-origin with this host page only — the panel frame
+    // is cross-origin and cannot call it directly.
+    const qs = new URLSearchParams({ resource, ...(msg.params || {}) });
+    fetch(`/live-proxy?${qs.toString()}`)
+      .then((r) => r.json())
+      .then((envelope) => {
+        logData(`${rowDetail} [live]`, envelope.ok === true);
+        post("wf:fetch_result", { requestId, ...envelope });
+      })
+      .catch(() => {
+        logData(`${rowDetail} [live]`, false);
+        post("wf:fetch_result", {
+          requestId,
+          ok: false,
+          error: { code: "upstream_error", message: "live proxy unreachable" },
+        });
+      });
+    return;
+  }
+
+  logData(rowDetail, true);
   const data = FETCH_FIXTURES[resource] ?? { note: "no fixture; returned empty" };
   post("wf:fetch_result", { requestId, ok: true, data });
 }

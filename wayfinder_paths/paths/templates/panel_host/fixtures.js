@@ -33,14 +33,14 @@ export const MARKETS = [
 // the matching mock (or a not-found error) — so authors build the data flow
 // entirely offline.
 export const FETCH_FIXTURES = {
-  "/blockchain/hyperliquid/markets": {
+  "/blockchain/hyperliquid/markets/": {
     markets: [
       { id: "HYPE", symbol: "HYPE", fundingRate: 0.000125, openInterest: 12500000 },
       { id: "BTC", symbol: "BTC", fundingRate: 0.00008, openInterest: 2240000000 },
       { id: "ETH", symbol: "ETH", fundingRate: -0.00002, openInterest: 553000000 },
     ],
   },
-  "/blockchain/hyperliquid/funding": { coin: "HYPE", fundingRate: 0.000125 },
+  "/blockchain/hyperliquid/funding/": { coin: "HYPE", fundingRate: 0.000125 },
   "/blockchain/balances/wallet/": {
     balances: [
       { symbol: "USDC", balance: "778.64", usdValue: 778.64 },
@@ -56,11 +56,22 @@ export const FETCH_FIXTURES = {
   },
 };
 
-// Which capability each allowlisted resource requires (mirrors the host's
-// pathPanelDataAllowlist). Used to show authors the deny path.
+// Which capability each allowlisted resource requires. Resource names are
+// the stable PANEL-FACING contract (vendor-neutral — e.g. wallet PnL lives
+// under /blockchain/portfolio/*, whatever provider serves it upstream).
+// Mirrors the production host's pathPanelDataAllowlist.ts AND the --live
+// proxy's allowlist in preview.py — keep all three in lockstep. Resources
+// without a FETCH_FIXTURES entry return a "no fixture" note in mock mode but
+// serve real data in --live mode.
 export const RESOURCE_CAPABILITY = {
-  "/blockchain/hyperliquid/markets": "market.read",
-  "/blockchain/hyperliquid/funding": "market.read",
   "/blockchain/balances/wallet/": "wallet_read",
+  "/blockchain/balances/aggregated-chart": "wallet_read",
+  "/blockchain/balances/activity/": "wallet_read",
   "/blockchain/hyperliquid/portfolio-state/": "positions.read",
+  "/blockchain/portfolio/balance-chart": "pnl.read",
+  "/blockchain/portfolio/pnl": "pnl.read",
+  "/blockchain/hyperliquid/markets/": "market.read",
+  "/blockchain/hyperliquid/funding/": "market.read",
+  "/blockchain/tokens/discover/": "market.read",
+  "/blockchain/tokens/security/": "market.read",
 };
