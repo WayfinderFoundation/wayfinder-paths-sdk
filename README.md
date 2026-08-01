@@ -336,6 +336,14 @@ poetry run wayfinder path preview --path my-path --panel radar \
 poetry run wayfinder path preview --path my-path --panel radar --live
 ```
 
+A complete worked example lives at `examples/paths/funding-radar` — an
+equity-perp funding radar with sortable columns, progressive history
+backfill, and click-to-trade via `wf:set_market`:
+
+```bash
+poetry run wayfinder path preview --path examples/paths/funding-radar --panel radar
+```
+
 `wayfinder path doctor` validates panel entries, asset URLs, bundle sizes, and
 that each panel's capabilities are a subset of the path's declared set. Panel
 `dist/` folders ride the published bundle automatically — no separate upload.

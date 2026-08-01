@@ -47,6 +47,15 @@ export type PanelBridge = {
     resource: string,
     params?: Record<string, unknown>,
   ): Promise<T>;
+  /**
+   * Ask the host to switch the workspace's active market — populates the
+   * chart and trade ticket. `symbol` is the Hyperliquid coin name (e.g.
+   * "BTC" or "xyz:TSLA" for builder-dex equity perps). Requires the
+   * `market.switch` capability, declared by the path and granted by the
+   * user. Resolves true when the host switched, false when denied or the
+   * market isn't available in this workspace.
+   */
+  setMarket(symbol: string): Promise<boolean>;
 };
 
 export function connect(): PanelBridge {
@@ -78,7 +87,8 @@ export function connect(): PanelBridge {
       case "wf:state":
         stateCb?.((msg.state ?? null) as unknown);
         break;
-      case "wf:fetch_result": {
+      case "wf:fetch_result":
+      case "wf:set_market_result": {
         const entry = pending.get(msg.requestId as string);
         if (!entry) return;
         pending.delete(msg.requestId as string);
@@ -113,6 +123,18 @@ export function connect(): PanelBridge {
           reject,
         });
         post("wf:fetch", { requestId, capability, resource, params });
+      });
+    },
+    setMarket(symbol) {
+      const requestId = `r${++seq}`;
+      return new Promise<boolean>((resolve) => {
+        // Denials resolve false rather than throwing — a radar-style panel
+        // treats "can't switch" as a soft state, not an error.
+        pending.set(requestId, {
+          resolve: () => resolve(true),
+          reject: () => resolve(false),
+        });
+        post("wf:set_market", { requestId, symbol });
       });
     },
   };

@@ -417,6 +417,13 @@ def preview_panel(
                 src.read_text(encoding="utf-8"), encoding="utf-8"
             )
 
+        # Manifest min sizes flow into the host page so drag-resize stops at
+        # the same floor the real workspace grid enforces. Defaults match the
+        # frontend registry entry for pathPanel (260x180).
+        size = inspection.panel.size
+        min_width = (size.min_width if size else None) or 260
+        min_height = (size.min_height if size else None) or 180
+
         index_html = _render_host_asset(
             "index.html.tmpl",
             {
@@ -425,6 +432,8 @@ def preview_panel(
                 "panel_name": inspection.panel.name,
                 "version": inspection.version,
                 "capabilities_json": json.dumps(list(inspection.panel.capabilities)),
+                "min_width": str(min_width),
+                "min_height": str(min_height),
                 "dev_mode": dev_mode,
                 "dev_chip": dev_chip,
                 "live_mode": "true" if live_proxy else "false",

@@ -12,6 +12,8 @@
 //   panel -> wf:set_state {state}       (<= 32KB)
 //   panel -> wf:fetch {requestId, capability, resource, params}
 //   host -> wf:fetch_result {requestId, ok, data?, error?}
+//   panel -> wf:set_market {requestId, symbol}   (needs market.switch)
+//   host -> wf:set_market_result {requestId, ok, error?}
 const PROTOCOL_VERSION = 1;
 const pending = new Map();
 let seq = 0;

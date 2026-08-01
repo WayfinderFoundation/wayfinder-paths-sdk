@@ -2,7 +2,14 @@
 // v1) so authors iterate on a panel with mock data before publishing. The
 // message contract here mirrors the real host — keep it in sync with
 // PATH_PANEL_BRIDGE.md.
-import { THEME, WALLET, MARKETS, FETCH_FIXTURES, RESOURCE_CAPABILITY } from "./fixtures.js";
+import {
+  THEME,
+  WALLET,
+  MARKETS,
+  FETCH_FIXTURES,
+  FETCH_FIXTURE_FNS,
+  RESOURCE_CAPABILITY,
+} from "./fixtures.js";
 
 // WF_CONFIG is injected by the Python server (panel id, slug, granted caps…).
 const CONFIG = window.WF_CONFIG || {};
@@ -100,8 +107,46 @@ function handleFetch(msg) {
   }
 
   logData(rowDetail, true);
-  const data = FETCH_FIXTURES[resource] ?? { note: "no fixture; returned empty" };
+  const fixtureFn = FETCH_FIXTURE_FNS[resource];
+  const data = fixtureFn
+    ? fixtureFn(msg.params)
+    : (FETCH_FIXTURES[resource] ?? { note: "no fixture; returned empty" });
   post("wf:fetch_result", { requestId, ok: true, data });
+}
+
+// --- Market switch (wf:set_market): mirrors the host's capability gate,
+// then flips the sandbox's active market and re-sends context — the same
+// visible effect as the workspace chart + ticket following the panel. ---
+function handleSetMarket(msg) {
+  const { requestId, symbol } = msg;
+  const detail = `market.switch set_market ${symbol}`;
+  if (!grantedCaps.has("market.switch")) {
+    logData(detail, false);
+    post("wf:set_market_result", {
+      requestId,
+      ok: false,
+      error: { code: "denied", message: "capability 'market.switch' not granted" },
+    });
+    return;
+  }
+  const wanted = String(symbol || "").toLowerCase();
+  const index = MARKETS.findIndex(
+    (m) => m.id.toLowerCase() === wanted || m.symbol.toLowerCase() === wanted,
+  );
+  if (index === -1) {
+    logData(detail, false);
+    post("wf:set_market_result", {
+      requestId,
+      ok: false,
+      error: { code: "invalid", message: `market '${symbol}' not in this workspace` },
+    });
+    return;
+  }
+  marketIndex = index;
+  document.getElementById("market-switch").value = String(index);
+  sendContext();
+  logData(detail, true);
+  post("wf:set_market_result", { requestId, ok: true });
 }
 
 function logData(detail, allowed) {
@@ -153,6 +198,9 @@ window.addEventListener("message", (event) => {
     case "wf:fetch":
       handleFetch(msg);
       break;
+    case "wf:set_market":
+      handleSetMarket(msg);
+      break;
     case "wf:ask_agent":
       handleAskAgent(msg);
       break;
@@ -170,7 +218,7 @@ function helloLoop() {
       protocolVersion: PROTOCOL_VERSION,
       panelId: CONFIG.panelId,
       pathSlug: CONFIG.slug,
-      capabilities: ["context", "state", "fetch", "ask_agent"],
+      capabilities: ["context", "state", "fetch", "set_market", "ask_agent"],
     });
   }, 500);
 }
@@ -225,3 +273,18 @@ MARKETS.forEach((m, i) => {
   opt.textContent = `${m.symbol} · ${m.venue}`;
   sel.appendChild(opt);
 });
+
+// Live W×H readout: amber at the manifest minimum — exactly the floor the
+// real workspace grid enforces on this panel.
+const panelEl = document.querySelector(".panel");
+const readout = document.getElementById("size-readout");
+const minW = Number(CONFIG.minWidth || 0);
+const minH = Number(CONFIG.minHeight || 0);
+new ResizeObserver(() => {
+  // offsetWidth/Height measure the border box — the same box the CSS
+  // min-width/min-height constrain, so the readout matches the floor.
+  const w = panelEl.offsetWidth;
+  const h = panelEl.offsetHeight;
+  readout.textContent = `${w} × ${h}  (min ${minW} × ${minH})`;
+  readout.classList.toggle("at-min", w <= minW || h <= minH);
+}).observe(panelEl);
