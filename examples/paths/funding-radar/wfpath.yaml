@@ -1,0 +1,26 @@
+schema_version: "0.1"
+slug: funding-radar
+name: Funding Radar
+version: 0.1.0
+summary: >
+  Live funding-rate radar for Hyperliquid equity perps (HIP-3 builder
+  dexes). Sort by 1h funding, 24h price change, or 24h funding change;
+  click a row to load that market into your chart and trade ticket.
+primary_kind: bundle
+tags: [hyperliquid, funding, equities, panel]
+
+# Panel data plane: market.read unlocks the markets + funding-history
+# reads; market.switch lets a row click drive the workspace's active
+# market (chart + trade ticket). Both are shown to the user at add time.
+capabilities: ["market.read", "market.switch"]
+
+panels:
+  - id: radar
+    name: Funding Radar
+    category: markets
+    description: >
+      Equity-perp funding radar: 1h funding, 24h price move, and 24h
+      funding drift per market. Click a row to trade it.
+    build_dir: panels/radar/dist
+    size: { min_width: 320, min_height: 300 }
+    capabilities: ["market.read", "market.switch"]
