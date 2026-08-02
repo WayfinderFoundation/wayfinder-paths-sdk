@@ -89,6 +89,26 @@ class FuzzyTokenResult(TypedDict):
 
 
 class TokenClient(WayfinderClient):
+    async def get_candles(
+        self,
+        coin: str,
+        interval: str,
+        *,
+        chain_id: int,
+        before_timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        url = f"{get_api_base_url()}/blockchain/tokens/candles/"
+        params: dict[str, str | int] = {
+            "coin": coin,
+            "interval": interval,
+            "chain_id": chain_id,
+        }
+        if before_timestamp is not None:
+            params["before_timestamp"] = before_timestamp
+        response = await self._authed_request("GET", url, params=params)
+        response.raise_for_status()
+        return response.json()
+
     async def get_token_details(
         self, query: str, market_data: bool = False, chain_id: int | None = None
     ) -> TokenDetails:

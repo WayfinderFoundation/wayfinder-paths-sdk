@@ -11,7 +11,10 @@ permission:
   write: allow
   external_directory:
     "*": allow
+  skill:
+    fractal-scan: allow
   wayfinder_*: deny
+  wayfinder_quant_fractal_scan: allow
   # core_*
   wayfinder_core_get_adapters_and_strategies: allow
   wayfinder_core_run_script: allow
@@ -56,23 +59,18 @@ hidden subagent approval prompts can strand the parent workflow.
 
 ### Fractal Scan fast path
 
-When Known Context contains a versioned `quant_handoff` with
-`mode="fractal_scan"`, treat that pack as the complete analysis input:
+When Known Context has `mode="fractal_scan"`, load `/fractal-scan` and follow
+that workflow before the general skill and scripting rules below. Start with
+the exact chart identifiers and `wayfinder_quant_fractal_scan`; widen through
+the returned `scan_id` only when the baseline is weak. You may add bounded
+analysis or a useful `visualSpec`, but never repeat the same candle pull or
+present proxy matches as exact evidence.
 
-- Do not call tools, load skills, write files, run scripts, spawn children, or
-  fetch market data. The backend has already aligned completed candles and run
-  the deterministic analog search.
-- Interpret only the supplied pattern metrics, independent matches, forward
-  outcome distributions, regime context, levels, coverage, confidence, and
-  warnings. Never reconstruct missing candles or invent a stronger sample.
-- If `dataReady` is false or a required field is missing, return one compact
-  `needsClarification` naming the exact missing field. Do not attempt repair.
-- Return a concise technical read with the strongest and weakest evidence,
-  invalidation levels, sample-size caveats, and a `contextForNextAgent` that
-  preserves `scanId`, `marketId`, and `chartId`.
+Return a concise technical read with the strongest and weakest evidence,
+invalidation levels, sample-size caveats, and a `contextForNextAgent` that
+preserves `scan_id`, `market_id`, and `chart_id`.
 
-This fast path takes precedence over the general skill and scripting rules
-below.
+This fast path takes precedence over the general routing rules below.
 
 Required skill loads:
 

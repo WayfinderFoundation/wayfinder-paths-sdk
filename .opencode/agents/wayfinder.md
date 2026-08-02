@@ -15,6 +15,9 @@ permission:
     general: deny
     wayfinder-mobile: deny
 
+  skill:
+    fractal-scan: deny
+
   write: allow
   wayfinder_*: deny
   # contracts_*
@@ -95,9 +98,11 @@ Inside a Shells instance, you operate very permissively on a Debian box: you hav
 
 ## MCP, Scripting & Adapters
 
-When a completed `wayfinder-quant` subtask returns a Fractal Scan result, answer
-the user directly from that result. Do not re-fetch candles, re-run the scan,
-or delegate another quant task. Preserve its sample-size and coverage warnings.
+When a completed `wayfinder-quant` subtask returns a Fractal Scan result, do not
+re-fetch candles, re-run the scan, or delegate another quant task. Preserve its
+exact-versus-fuzzy provenance, sample-size, coverage, and confidence warnings.
+If it includes a useful `visualSpec`, pass that exact bounded spec to
+`wayfinder-visual` before answering; otherwise answer directly.
 
 This Wayfinder Shells instance includes tools (MCP), protocol interfaces (adapters) and custom scripting (.wayfinder_runs/).
 

@@ -69,6 +69,23 @@ def _summary(values: Sequence[float]) -> dict[str, float | int | None]:
     }
 
 
+def summarize_forward_outcomes(
+    matches: Sequence[dict[str, Any]], horizons: Sequence[int]
+) -> dict[str, dict[str, float | int | None]]:
+    """Summarize the matcher outcome fields for a match subset."""
+
+    return {
+        f"{horizon}_bar": _summary(
+            [float(match["outcomes"][f"{horizon}_bar_bps"]) for match in matches]
+        )
+        for horizon in horizons
+    }
+
+
+def _path_bps(values: np.ndarray, base: float) -> list[float]:
+    return [round(float((value / base - 1) * 10_000), 1) for value in values]
+
+
 def find_price_analogs(
     pattern: PriceSeries,
     histories: Sequence[PriceSeries],
@@ -76,6 +93,7 @@ def find_price_analogs(
     horizons: Sequence[int] = DEFAULT_HORIZONS,
     top: int = 15,
     min_separation_bars: int | None = None,
+    shape_paths: int = 0,
 ) -> dict[str, Any]:
     """Find independent shape analogs and summarize their forward returns.
 
@@ -152,25 +170,22 @@ def find_price_analogs(
             )
             for horizon in normalized_horizons
         }
-        matches.append(
-            {
-                "symbol": history.symbol,
-                "source": history.source,
-                "start_ms": int(timestamps[start]),
-                "end_ms": int(timestamps[end - 1]),
-                "distance": round(distance, 4),
-                "outcomes": outcomes,
-            }
-        )
+        match: dict[str, Any] = {
+            "symbol": history.symbol,
+            "source": history.source,
+            "start_ms": int(timestamps[start]),
+            "end_ms": int(timestamps[end - 1]),
+            "distance": round(distance, 4),
+            "outcomes": outcomes,
+            "forward_path_bps": _path_bps(closes[end - 1 : end + max_horizon], base),
+        }
+        if len(matches) < shape_paths:
+            match["shape_path_bps"] = _path_bps(closes[start:end], float(closes[start]))
+        matches.append(match)
         if len(matches) >= top:
             break
 
-    outcome_distributions = {
-        f"{horizon}_bar": _summary(
-            [match["outcomes"][f"{horizon}_bar_bps"] for match in matches]
-        )
-        for horizon in normalized_horizons
-    }
+    outcome_distributions = summarize_forward_outcomes(matches, normalized_horizons)
     return {
         "pattern": {
             "symbol": pattern.symbol,
@@ -181,6 +196,7 @@ def find_price_analogs(
             "return_bps": round(
                 float((pattern_closes[-1] / pattern_closes[0] - 1) * 10_000), 1
             ),
+            "shape_path_bps": _path_bps(pattern_closes, float(pattern_closes[0])),
         },
         "histories": usable_histories,
         "matches": matches,

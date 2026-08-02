@@ -41,6 +41,8 @@ def test_finds_non_overlapping_multi_source_matches_and_horizons() -> None:
     assert {row["source"] for row in result["matches"]} == {"hyperliquid", "binance"}
     assert set(result["outcome_distributions"]) == {"1_bar", "2_bar"}
     assert result["outcome_distributions"]["1_bar"]["samples"] == 3
+    assert result["matches"][0]["forward_path_bps"][0] == 0.0
+    assert result["pattern"]["shape_path_bps"][0] == 0.0
 
 
 def test_excludes_the_live_pattern_window_from_same_market() -> None:

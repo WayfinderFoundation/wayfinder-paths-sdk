@@ -20,6 +20,7 @@ Namespaces:
   - polymarket   prediction markets reads + writes
   - sports       provider-agnostic sports data + betting backtests (backend-mediated)
   - contracts    contract compile/deploy/call/abi
+  - quant        hidden deterministic analytics for the quant worker
   - core         cross-persona tools every subagent should allowlist
                  (discovery, wallet reads, web search/fetch, run_script, runner)
 """
@@ -66,6 +67,7 @@ from wayfinder_paths.mcp.tools.evm_contract import (
     contracts_execute,
 )
 from wayfinder_paths.mcp.tools.execute import onchain_send, onchain_swap
+from wayfinder_paths.mcp.tools.fractal_scan import quant_fractal_scan
 from wayfinder_paths.mcp.tools.goldsky_direct import (
     research_goldsky_graphql,
     research_goldsky_schema,
@@ -168,6 +170,9 @@ def build_mcp(
     mcp.tool()(core_run_strategy)
     mcp.tool()(core_runner_status)
     mcp.tool()(core_runner)
+
+    # ─── quant_* (hidden quant-worker analytics) ──────────────────────
+    mcp.tool()(quant_fractal_scan)
 
     # ─── hyperliquid_* ─────────────────────────────────────────────────
     # Coin naming reference: /using-hyperliquid-adapter/rules/coin-naming.md.
