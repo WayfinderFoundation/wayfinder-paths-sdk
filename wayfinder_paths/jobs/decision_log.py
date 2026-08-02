@@ -45,10 +45,14 @@ def build_decision_log(
     entries.extend(_shadow_entries(root))
     entries.sort(key=lambda entry: str(entry.get("ts") or ""), reverse=True)
     _assign_threads(entries)
-    entries = entries[: max(int(limit), 1)]
+    # Stats over the FULL set BEFORE the display cap — a busy week must not
+    # undercount, and a small --limit must not produce nonsense glance
+    # numbers (caught live: --limit 5 reported self_culled=0 for a week
+    # that had them).
+    stats = _glance_stats(entries)
     return {
-        "entries": entries,
-        "stats": _glance_stats(entries),
+        "entries": entries[: max(int(limit), 1)],
+        "stats": stats,
         "generated_at": _now_iso(),
     }
 
