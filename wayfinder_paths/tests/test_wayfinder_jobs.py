@@ -740,7 +740,9 @@ def test_runner_bridge_starts_daemon_with_defaults(tmp_path: Path, monkeypatch) 
     assert result["ok"] is True
     assert captured["paths"].repo_root == tmp_path.resolve()
     assert captured["tick_seconds"] == 1.0
-    assert captured["max_workers"] == 4
+    from wayfinder_paths.runner.constants import DEFAULT_MAX_WORKERS
+
+    assert captured["max_workers"] == DEFAULT_MAX_WORKERS
     assert captured["max_failures"] == 5
     assert captured["default_timeout_seconds"] == 20 * 60
     assert captured["log_level"] == "INFO"

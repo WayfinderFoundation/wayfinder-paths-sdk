@@ -11,6 +11,7 @@ from loguru import logger
 from wayfinder_paths.runner.client import RunnerControlClient
 from wayfinder_paths.runner.constants import (
     ADD_JOB_CLI_VERB,
+    DEFAULT_MAX_WORKERS,
     JOB_TYPE_SCRIPT,
     JOB_TYPE_STRATEGY,
 )
@@ -35,7 +36,7 @@ def runner_cli() -> None:
 
 @runner_cli.command(name="start", help="Start the runner daemon (idempotent).")
 @click.option("--tick-seconds", type=float, default=1.0, show_default=True)
-@click.option("--max-workers", type=int, default=4, show_default=True)
+@click.option("--max-workers", type=int, default=DEFAULT_MAX_WORKERS, show_default=True)
 @click.option("--max-failures", type=int, default=5, show_default=True)
 @click.option("--default-timeout-seconds", type=int, default=20 * 60, show_default=True)
 @click.option(
