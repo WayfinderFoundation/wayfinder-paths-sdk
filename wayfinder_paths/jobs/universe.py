@@ -93,13 +93,19 @@ def universe_scan_job(
                 {**entry, "scanned": False, "reason": "insufficient bars"}
             )
             continue
-        result = scan_signals(
-            frame,
-            bar_seconds=_BAR_SECONDS,
-            min_events=min_events,
-            condition_regime=True,
-            holdout_fraction=0.1,
-        )
+        from wayfinder_paths.jobs.compute_lock import heavy_compute_lock
+
+        # Per-symbol acquire: heavy scans serialize against other big sims
+        # while letting them interleave between symbols (fairness on the
+        # shared box).
+        with heavy_compute_lock(label=f"universe-scan:{symbol}"):
+            result = scan_signals(
+                frame,
+                bar_seconds=_BAR_SECONDS,
+                min_events=min_events,
+                condition_regime=True,
+                holdout_fraction=0.1,
+            )
         rows = [
             {**row, "universe_symbol": symbol} for row in result.get("_all_rows") or []
         ]
