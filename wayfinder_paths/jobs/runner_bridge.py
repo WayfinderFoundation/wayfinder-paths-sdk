@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.runner.client import RunnerControlClient
-from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT
+from wayfinder_paths.runner.constants import DEFAULT_MAX_WORKERS, JOB_TYPE_SCRIPT
 from wayfinder_paths.runner.lifecycle import ensure_daemon_started
 from wayfinder_paths.runner.paths import RunnerPaths, get_runner_paths
 from wayfinder_paths.runner.schedule import schedule_request_params
@@ -21,7 +21,7 @@ class RunnerBridge:
         started, info = ensure_daemon_started(
             paths=self.paths,
             tick_seconds=1.0,
-            max_workers=4,
+            max_workers=DEFAULT_MAX_WORKERS,
             max_failures=5,
             default_timeout_seconds=20 * 60,
             log_level="INFO",

@@ -13,7 +13,11 @@ from wayfinder_paths.mcp.utils import (
     repo_root,
 )
 from wayfinder_paths.runner.client import RunnerControlClient
-from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JOB_TYPE_STRATEGY
+from wayfinder_paths.runner.constants import (
+    DEFAULT_MAX_WORKERS,
+    JOB_TYPE_SCRIPT,
+    JOB_TYPE_STRATEGY,
+)
 from wayfinder_paths.runner.lifecycle import ensure_daemon_started, try_status
 from wayfinder_paths.runner.paths import RunnerPaths, get_runner_paths
 from wayfinder_paths.runner.schedule import schedule_request_params
@@ -213,7 +217,9 @@ async def core_runner(
                     tick_seconds=float(tick_seconds)
                     if tick_seconds is not None
                     else 1.0,
-                    max_workers=int(max_workers) if max_workers is not None else 4,
+                    max_workers=int(max_workers)
+                    if max_workers is not None
+                    else DEFAULT_MAX_WORKERS,
                     max_failures=int(max_failures) if max_failures is not None else 5,
                     default_timeout_seconds=int(default_timeout_seconds)
                     if default_timeout_seconds is not None
