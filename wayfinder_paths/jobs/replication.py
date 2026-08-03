@@ -23,6 +23,8 @@ from wayfinder_paths.jobs.store import JobStore
 
 REPLICATION_PATH = "results/backtest/replication.json"
 _RECOMPUTE_AFTER_S = 24 * 3600
+# Worker-safety: give up on the compute lock quickly (see _compute).
+_LOCK_TIMEOUT_S = 60.0
 # Relative collapse of net return vs the revision's own baseline that flags
 # decay (sign flips always flag).
 _DECAY_RELATIVE = 0.5
@@ -56,9 +58,19 @@ def replication_job(
 def _compute(
     store: JobStore, job_id: str, cached: dict[str, Any] | None
 ) -> dict[str, Any]:
+    from wayfinder_paths.jobs.compute_lock import heavy_compute_lock
     from wayfinder_paths.jobs.execution.job import backtest_execution_job
 
-    payload = backtest_execution_job(job_id, store=store)
+    # Short lock wait for the same reason as the counterfactual monitor:
+    # this runs in a runner worker on the wake path — skip the cycle rather
+    # than hold a worker behind a long-running sim. The inner acquire in
+    # backtest_execution_job is reentrant and free once we hold it here.
+    with heavy_compute_lock(
+        repo_root=store.repo_root,
+        label=f"replication:{job_id}",
+        timeout_s=_LOCK_TIMEOUT_S,
+    ):
+        payload = backtest_execution_job(job_id, store=store)
     result = payload.get("result") or {}
     stats = result.get("stats") or {}
     revision = str(payload.get("revision") or "")
