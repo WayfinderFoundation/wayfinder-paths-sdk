@@ -33,6 +33,8 @@ _WARMUP_BARS = 720
 _MAX_FETCH_BARS = 4500
 _MIN_WINDOW_BARS = 12
 _RECOMPUTE_AFTER_S = 6 * 3600
+# Worker-safety: give up on the compute lock quickly (see _compute).
+_LOCK_TIMEOUT_S = 60.0
 _EXAMPLE_LIMIT = 5
 
 BASIS_NOTE = (
@@ -234,7 +236,16 @@ def _compute(
     from wayfinder_paths.jobs.compute_lock import heavy_compute_lock
 
     run = simulate or simulate_execution
-    with heavy_compute_lock(label=f"counterfactual:{job_id}"):
+    # Short lock wait: this monitor runs inside a runner WORKER (cap 2) on
+    # the wake path — waiting minutes for the lock would hold a worker and
+    # delay script ticks. It is stamp-gated; skipping a cycle is free, and
+    # ComputeLockBusy degrades to the journaled-unavailable path like any
+    # other failure.
+    with heavy_compute_lock(
+        repo_root=store.repo_root,
+        label=f"counterfactual:{job_id}",
+        timeout_s=_LOCK_TIMEOUT_S,
+    ):
         result = run(script, dataset, spec, params)
     shadow_rows = [dict(row) for row in result.trades]
 
