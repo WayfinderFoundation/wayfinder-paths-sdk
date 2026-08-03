@@ -65,7 +65,11 @@ def _compute(
     # this runs in a runner worker on the wake path — skip the cycle rather
     # than hold a worker behind a long-running sim. The inner acquire in
     # backtest_execution_job is reentrant and free once we hold it here.
-    with heavy_compute_lock(label=f"replication:{job_id}", timeout_s=_LOCK_TIMEOUT_S):
+    with heavy_compute_lock(
+        repo_root=store.repo_root,
+        label=f"replication:{job_id}",
+        timeout_s=_LOCK_TIMEOUT_S,
+    ):
         payload = backtest_execution_job(job_id, store=store)
     result = payload.get("result") or {}
     stats = result.get("stats") or {}
