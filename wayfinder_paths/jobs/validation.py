@@ -124,9 +124,7 @@ def validate_candidate_application(
         }
     )
     if script_required:
-        checks.append(
-            entrypoint_inside_workspace_check(candidate_dir, script_path)
-        )
+        checks.append(entrypoint_inside_workspace_check(candidate_dir, script_path))
     if script_path and script_path.exists():
         if contract == "jobs_v1":
             checks.extend(_jobs_v1_script_checks(script_path))
@@ -305,12 +303,18 @@ def _candidate_behavior_checks(
             )
             return checks
     try:
-        result = simulate_execution(
-            script_path,
-            dataset,
-            spec,
-            params=dict(job_data.get("execution_params") or {}),
-        )
+        from wayfinder_paths.jobs.compute_lock import heavy_compute_lock
+
+        # Full-dataset candidate backtest (~336MB peak on 120d) — serialize
+        # machine-wide so it can never overlap another heavy sim (the OOM
+        # class that blocked composition proposals 2026-08-02).
+        with heavy_compute_lock(label=f"candidate-backtest:{job_dir.name}"):
+            result = simulate_execution(
+                script_path,
+                dataset,
+                spec,
+                params=dict(job_data.get("execution_params") or {}),
+            )
         # Persist the candidate backtest as a revision-stamped artifact inside
         # the candidate bundle (outside workspace/, so the candidate revision
         # is unchanged). Promotion copies it into the job's results/ — the

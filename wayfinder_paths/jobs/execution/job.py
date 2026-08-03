@@ -111,6 +111,37 @@ def backtest_execution_job(
     quick_bars: int | None = None,
     store: JobStore | None = None,
 ) -> dict[str, Any]:
+    from wayfinder_paths.jobs.compute_lock import heavy_compute_lock
+
+    store = store or JobStore()
+    with heavy_compute_lock(repo_root=store.repo_root, label=f"backtest:{job_id}"):
+        return _backtest_execution_job_locked(
+            job_id,
+            grid_path=grid_path,
+            workers=workers,
+            parallel=parallel,
+            rank_by=rank_by,
+            walk_forward=walk_forward,
+            optimizer=optimizer,
+            optuna_options=optuna_options,
+            quick_bars=quick_bars,
+            store=store,
+        )
+
+
+def _backtest_execution_job_locked(
+    job_id: str,
+    *,
+    grid_path: str | Path | None = None,
+    workers: int = 1,
+    parallel: str = "serial",
+    rank_by: str = "net_return",
+    walk_forward: Mapping[str, Any] | None = None,
+    optimizer: str = "grid",
+    optuna_options: Mapping[str, Any] | None = None,
+    quick_bars: int | None = None,
+    store: JobStore | None = None,
+) -> dict[str, Any]:
     store = store or JobStore()
     root = store.job_dir(job_id)
     job_data = _load_job_yaml(root)

@@ -842,12 +842,21 @@ def write_backtest_artifacts(
         case _:
             latest = root / "latest.json"
             visualization = root / "visualization.json"
+            # Compact separators: indent=2 on multi-MB per-bar arrays doubles
+            # both the dump's transient memory and the disk footprint, and
+            # these files are machine-read only.
             latest.write_text(
-                json.dumps({**result.to_dict(), **stamp}, indent=2, default=str) + "\n",
+                json.dumps(
+                    {**result.to_dict(), **stamp},
+                    separators=(",", ":"),
+                    default=str,
+                )
+                + "\n",
                 encoding="utf-8",
             )
             visualization.write_text(
-                json.dumps(result.visualization, indent=2, default=str) + "\n",
+                json.dumps(result.visualization, separators=(",", ":"), default=str)
+                + "\n",
                 encoding="utf-8",
             )
             return {"latest": str(latest), "visualization": str(visualization)}

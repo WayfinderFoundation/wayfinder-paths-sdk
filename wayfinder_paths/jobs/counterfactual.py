@@ -231,8 +231,11 @@ def _compute(
         warm_ready = warm_ready.tz_localize("UTC")
     effective_from = max(apply_ts, warm_ready)
 
+    from wayfinder_paths.jobs.compute_lock import heavy_compute_lock
+
     run = simulate or simulate_execution
-    result = run(script, dataset, spec, params)
+    with heavy_compute_lock(label=f"counterfactual:{job_id}"):
+        result = run(script, dataset, spec, params)
     shadow_rows = [dict(row) for row in result.trades]
 
     shadow_entries = _entries(shadow_rows, effective_from, interval_seconds)
