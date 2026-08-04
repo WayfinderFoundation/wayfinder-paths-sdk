@@ -1,15 +1,15 @@
 ---
-name: fractal-scan
-description: Use ONLY for a chart-selected Fractal Scan delegated directly to wayfinder-quant. Starts with a cached exact-market baseline, then lets the quant agent add clearly labelled analogues when useful.
+name: pattern-match
+description: Use ONLY for a chart-selected Pattern Match delegated directly to wayfinder-quant. Starts with a cached exact-market baseline, then lets the quant agent add clearly labelled analogues when useful.
 metadata:
-  tags: fractal-scan, technical-analysis, analogues, pattern-matching, chart
+  tags: pattern-match, technical-analysis, analogues, pattern-matching, chart
 ---
 
-# Fractal Scan
+# Pattern Match
 
 ## Required first step
 
-Call `wayfinder_quant_fractal_scan` with the exact market, chart, interval,
+Call `wayfinder_quant_pattern_match` with the exact market, chart, interval,
 timestamp, price-range, and contract/coin identifiers from Known Context. Do
 this before research, scripts, or generic candle tools.
 
@@ -25,7 +25,7 @@ those comparisons from the user's market and thesis; do not use a fixed peer
 list merely to increase sample size.
 
 For a liquid asset with a defensible CEX spot analogue, prefer
-`wayfinder_quant_fractal_scan_ccxt_proxy(scan_id=..., symbol=...)`. It reuses
+`wayfinder_quant_pattern_match_ccxt_proxy(match_id=..., symbol=...)`. It reuses
 the cached selected pattern, fetches the same timeframe from CCXT, and returns
 the proxy evidence separately. Do not use it for a long-tail token merely
 because its ticker resembles a listed asset.
@@ -39,7 +39,7 @@ analysis to completed candles at the analyzed interval.
 
 Never silently blend fuzzy evidence into exact evidence. State:
 
-- why you widened the scan and why each comparison was selected;
+- why you widened the search and why each comparison was selected;
 - same-market, same-asset-proxy, and cross-market sample counts;
 - source, interval, and lookback;
 - how fuzzing changes confidence;
@@ -72,7 +72,7 @@ focused line chart rather than several panes:
 - same-market versus fuzzy distributions when custom comparisons disagree.
 
 Use the bounded `pattern.shape_path_bps` and match `shape_path_bps` values,
-label units as basis points, and carry `market_id`, `chart_id`, and `scan_id` in
+label units as basis points, and carry `market_id`, `chart_id`, and `match_id` in
 `contextForNextAgent`. The primary agent will delegate the spec to
 `wayfinder-visual`; do not call visual tools directly.
 
