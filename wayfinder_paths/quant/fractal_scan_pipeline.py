@@ -1,16 +1,16 @@
-"""Hydrate, cache, and expand deterministic Fractal Scan analysis."""
+"""Hydrate, cache, and match exact-market Fractal Scan history."""
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import math
 import time
 from collections import OrderedDict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypedDict
 
 from wayfinder_paths.core.clients.HyperliquidDataClient import (
     HYPERLIQUID_DATA_CLIENT,
@@ -20,21 +20,12 @@ from wayfinder_paths.quant.fractal_scan import (
     MIN_PATTERN_BARS,
     PriceSeries,
     find_price_analogs,
-    summarize_forward_outcomes,
 )
 from wayfinder_paths.quant.fractal_scan_context import (
     INTERVAL_MS,
     MAX_PATTERN_BARS,
     SUPPORTED_INTERVALS,
     FractalScanRequest,
-    FractalScanScope,
-)
-from wayfinder_paths.quant.fractal_scan_output import (
-    build_view_data,
-    confidence_label,
-    label_match_scopes,
-    pattern_metrics,
-    regime_stats,
 )
 
 MAX_HISTORY_BARS = 10_000
@@ -44,12 +35,24 @@ MAX_ONCHAIN_HISTORY_PAGES = math.ceil(
     MAX_ONCHAIN_HISTORY_BARS / ONCHAIN_CANDLE_PAGE_SIZE
 )
 MAX_HISTORY_DAYS = 3 * 366
-MIN_EXACT_MATCHES = 12
 TOP_MATCHES = 15
-MAX_PEERS = 4
-PEER_SYMBOLS = ("BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "AVAX", "LINK")
 SCAN_CACHE_TTL_SECONDS = 15 * 60
 SCAN_CACHE_MAX_ENTRIES = 32
+FORWARD_HORIZONS_MS = {
+    "1h": 60 * 60_000,
+    "4h": 4 * 60 * 60_000,
+    "12h": 12 * 60 * 60_000,
+    "24h": 24 * 60 * 60_000,
+}
+
+
+class CandleRow(TypedDict):
+    t: int
+    o: float | None
+    h: float | None
+    l: float | None  # noqa: E741 - provider OHLC field name
+    c: float
+    v: float | None
 
 
 @dataclass(frozen=True)
@@ -62,197 +65,35 @@ class _ScanWindow:
 
 
 @dataclass
-class _PreparedScan:
-    request: FractalScanRequest
-    scan_id: str
-    window: _ScanWindow
-    symbol: str
-    source: str
-    rows: list[dict[str, float | int | None]]
-    selected_rows: list[dict[str, float | int | None]]
-    expected_bars: int
-    coverage_ratio: float
-    warnings: list[str]
-    data_fetch_ms: float
+class _CachedScan:
+    result: dict[str, Any]
     created_at: float = field(default_factory=time.monotonic)
-    peer_histories: list[PriceSeries] | None = None
-    same_asset_history: PriceSeries | None = None
 
 
-_SCAN_CACHE: OrderedDict[str, _PreparedScan] = OrderedDict()
+_SCAN_CACHE: OrderedDict[str, _CachedScan] = OrderedDict()
 
 
 async def run_fractal_scan(
     *,
-    scope: FractalScanScope = "same_market",
-    request: FractalScanRequest | None = None,
-    scan_id: str | None = None,
-    include_views: bool = True,
+    request: FractalScanRequest,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
-    if scope not in {"same_market", "adaptive", "broad"}:
-        raise ValueError("scope must be same_market, adaptive, or broad")
+    """Return a compact exact-market analogue baseline.
+
+    The quant agent owns any decision to widen the comparison universe.
+    Identical requests reuse the result cache instead of pulling candles again.
+    """
+
     started = time.perf_counter()
-    prepared = await _resolve_prepared_scan(request, scan_id, now_ms=now_ms)
-    exact_history = _series(prepared.symbol, prepared.source, prepared.rows)
-    pattern = _series(prepared.symbol, prepared.source, prepared.selected_rows)
-    histories = [exact_history]
-    match_started = time.perf_counter()
-    exact_analysis = find_price_analogs(
-        pattern,
-        histories,
-        top=TOP_MATCHES,
-        shape_paths=5 if include_views else 0,
-    )
-
-    scope_used: FractalScanScope = "same_market"
-    exact_match_count = len(exact_analysis["matches"])
-    should_expand = scope == "broad" or (
-        scope == "adaptive" and exact_match_count < MIN_EXACT_MATCHES
-    )
-    if should_expand:
-        histories.extend(await _get_peer_histories(prepared))
-        scope_used = scope
-        if scope == "broad":
-            same_asset = await _get_same_asset_history(prepared)
-            if same_asset is not None:
-                histories.append(same_asset)
-
-    analysis = (
-        exact_analysis
-        if len(histories) == 1
-        else find_price_analogs(
-            pattern,
-            histories,
-            top=TOP_MATCHES,
-            shape_paths=5 if include_views else 0,
-        )
-    )
-    match_ms = (time.perf_counter() - match_started) * 1000
-    matches = label_match_scopes(
-        analysis["matches"],
-        selected_symbol=_canonical_symbol(prepared.symbol),
-        exact_symbol=prepared.symbol,
-        exact_source=prepared.source,
-        canonical_symbol=_canonical_symbol,
-    )
-    warnings = list(prepared.warnings)
-    if len(matches) < 8:
-        warnings.append("small_analogue_sample")
-    if any(match["match_scope"] != "same_market" for match in matches):
-        warnings.append("fuzzy_analogues_included")
-
-    exact_matches = [
-        match for match in matches if match["match_scope"] == "same_market"
-    ]
-    fuzzy_matches = [
-        match for match in matches if match["match_scope"] != "same_market"
-    ]
-    confidence = confidence_label(len(exact_matches), prepared.coverage_ratio)
-    metrics = pattern_metrics(prepared.selected_rows)
-    result = {
-        "schema_version": 2,
-        "mode": "fractal_scan",
-        "scan_id": prepared.scan_id,
-        "scope_requested": scope,
-        "scope_used": scope_used,
-        "market_id": prepared.request.market_id,
-        "chart_id": prepared.request.chart_id,
-        "display_symbol": prepared.request.display_symbol,
-        "requested_window": {
-            "start_ms": prepared.request.start_ms,
-            "end_ms": prepared.request.end_ms,
-            "interval": prepared.request.interval,
-        },
-        "analyzed_window": {
-            "start_ms": int(prepared.selected_rows[0]["t"]),
-            "end_ms": int(prepared.selected_rows[-1]["t"]),
-            "interval": prepared.window.interval,
-            "bars": len(prepared.selected_rows),
-        },
-        "coverage": {
-            "ratio": round(prepared.coverage_ratio, 3),
-            "expected_bars": prepared.expected_bars,
-            "actual_bars": len(prepared.selected_rows),
-            "history_bars": sum(len(history.closes) for history in histories),
-            "sources": sorted({history.source for history in histories}),
-        },
-        "pattern": {**analysis["pattern"], **metrics},
-        "matches": matches,
-        "outcome_distributions": analysis["outcome_distributions"],
-        "outcome_distributions_by_scope": {
-            "same_market": summarize_forward_outcomes(exact_matches, (1, 3, 6, 12)),
-            "fuzzy": summarize_forward_outcomes(fuzzy_matches, (1, 3, 6, 12)),
-        },
-        "regime": regime_stats(prepared.rows, prepared.window.interval_ms),
-        "levels": {
-            "selection_low": prepared.request.selected_price_min or metrics["low"],
-            "selection_high": prepared.request.selected_price_max or metrics["high"],
-            "last_close": metrics["last"],
-        },
-        "evidence": {
-            "same_market_samples": len(exact_matches),
-            "fuzzy_samples": len(fuzzy_matches),
-            "fuzzy_match_scopes": sorted(
-                {match["match_scope"] for match in fuzzy_matches}
-            ),
-        },
-        "confidence": confidence,
-        "warnings": list(dict.fromkeys(warnings)),
-        "expansion": {
-            "available_scopes": ["same_market", "adaptive", "broad"],
-            "reuse_scan_id": prepared.scan_id,
-            "same_market_target": MIN_EXACT_MATCHES,
-        },
-        "view_data": build_view_data(analysis, matches) if include_views else None,
-        "timing_ms": {
-            "data_fetch": round(prepared.data_fetch_ms, 1),
-            "matching": round(match_ms, 1),
-            "total": round((time.perf_counter() - started) * 1000, 1),
-        },
-        "data_ready": True,
-    }
-    return result
-
-
-async def _resolve_prepared_scan(
-    request: FractalScanRequest | None,
-    scan_id: str | None,
-    *,
-    now_ms: int | None,
-) -> _PreparedScan:
-    _evict_expired_scans()
-    if scan_id is not None:
-        prepared = _SCAN_CACHE.get(scan_id)
-        if prepared is None:
-            raise ValueError(
-                "scan_id is unknown or expired; start a new same_market scan"
-            )
-        _SCAN_CACHE.move_to_end(scan_id)
-        return prepared
-    if request is None:
-        raise ValueError("Initial scans require exact market and chart context")
-    identity = _scan_identity(request)
-    if cached := _SCAN_CACHE.get(identity):
-        _SCAN_CACHE.move_to_end(identity)
+    scan_id = _scan_identity(request)
+    if cached := _cached_scan(scan_id):
         return cached
-    prepared = await _prepare_scan(
-        request,
-        identity,
-        now_ms=now_ms or int(datetime.now(UTC).timestamp() * 1000),
-    )
-    _SCAN_CACHE[identity] = prepared
-    _SCAN_CACHE.move_to_end(identity)
-    while len(_SCAN_CACHE) > SCAN_CACHE_MAX_ENTRIES:
-        _SCAN_CACHE.popitem(last=False)
-    return prepared
 
-
-async def _prepare_scan(
-    request: FractalScanRequest, scan_id: str, *, now_ms: int
-) -> _PreparedScan:
     fetch_started = time.perf_counter()
-    window = _scan_window(request, now_ms)
+    current_ms = (
+        now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
+    )
+    window = _scan_window(request, current_ms)
     warnings: list[str] = []
     if window.interval != request.interval:
         warnings.append(f"auto_coarsened:{request.interval}->{window.interval}")
@@ -271,19 +112,76 @@ async def _prepare_scan(
     selected_rows, expected_bars, coverage_ratio = _selected_pattern(rows, window)
     if coverage_ratio < 0.9:
         warnings.append("selected_window_has_data_gaps")
-    return _PreparedScan(
-        request=request,
-        scan_id=scan_id,
-        window=window,
-        symbol=symbol,
-        source=source,
-        rows=rows,
-        selected_rows=selected_rows,
-        expected_bars=expected_bars,
-        coverage_ratio=coverage_ratio,
-        warnings=warnings,
-        data_fetch_ms=(time.perf_counter() - fetch_started) * 1000,
+    data_fetch_ms = (time.perf_counter() - fetch_started) * 1000
+
+    horizon_bars = _forward_horizon_bars(window.interval_ms)
+    match_started = time.perf_counter()
+    analysis = find_price_analogs(
+        _series(symbol, source, selected_rows),
+        [_series(symbol, source, rows)],
+        horizons=tuple(sorted(set(horizon_bars.values()))),
+        top=TOP_MATCHES,
+        shape_paths=5,
     )
+    match_ms = (time.perf_counter() - match_started) * 1000
+    matches = _label_forward_outcomes(analysis["matches"], horizon_bars)
+    distributions = {
+        label: analysis["outcome_distributions"][f"{bars}_bar"]
+        for label, bars in horizon_bars.items()
+    }
+    if len(matches) < 8:
+        warnings.append("small_analogue_sample")
+
+    result = {
+        "schema_version": 3,
+        "mode": "fractal_scan",
+        "scan_id": scan_id,
+        "market_id": request.market_id,
+        "chart_id": request.chart_id,
+        "display_symbol": request.display_symbol,
+        "requested_window": {
+            "start_ms": request.start_ms,
+            "end_ms": request.end_ms,
+            "interval": request.interval,
+        },
+        "analyzed_window": {
+            "start_ms": int(selected_rows[0]["t"]),
+            "end_ms": int(selected_rows[-1]["t"]),
+            "interval": window.interval,
+            "bars": len(selected_rows),
+        },
+        "coverage": {
+            "ratio": round(coverage_ratio, 3),
+            "expected_bars": expected_bars,
+            "actual_bars": len(selected_rows),
+            "history_bars": len(rows),
+            "source": source,
+        },
+        "pattern": analysis["pattern"],
+        "matches": matches,
+        "outcome_distributions": distributions,
+        "forward_horizons": {
+            label: {
+                "bars": bars,
+                "actual_ms": bars * window.interval_ms,
+            }
+            for label, bars in horizon_bars.items()
+        },
+        "levels": _selection_levels(request, selected_rows),
+        "evidence": {"same_market_samples": len(matches)},
+        "warnings": list(dict.fromkeys(warnings)),
+        "timing_ms": {
+            "data_fetch": round(data_fetch_ms, 1),
+            "matching": round(match_ms, 1),
+            "total": round((time.perf_counter() - started) * 1000, 1),
+        },
+        "data_ready": True,
+    }
+    _SCAN_CACHE[scan_id] = _CachedScan(result)
+    _SCAN_CACHE.move_to_end(scan_id)
+    while len(_SCAN_CACHE) > SCAN_CACHE_MAX_ENTRIES:
+        _SCAN_CACHE.popitem(last=False)
+    return result
 
 
 def _scan_identity(request: FractalScanRequest) -> str:
@@ -325,9 +223,7 @@ def _scan_window(request: FractalScanRequest, now_ms: int) -> _ScanWindow:
     return _ScanWindow(interval, interval_ms, start_ms, end_ms, last_closed_ms)
 
 
-async def _hyperliquid_history(
-    symbol: str, window: _ScanWindow
-) -> list[dict[str, float | int | None]]:
+async def _hyperliquid_history(symbol: str, window: _ScanWindow) -> list[CandleRow]:
     start_ms = window.end_ms - _history_lookback_ms(window.interval_ms)
     response = await HYPERLIQUID_DATA_CLIENT.get_candles_response(
         symbol, start_ms, window.end_ms, window.interval
@@ -342,11 +238,11 @@ async def _hyperliquid_history(
 
 async def _onchain_history(
     request: FractalScanRequest, window: _ScanWindow
-) -> list[dict[str, float | int | None]]:
+) -> list[CandleRow]:
     if request.chain_id is None or request.token_address is None:
         raise ValueError("On-chain scans require chain_id and token_address")
 
-    rows: list[dict[str, float | int | None]] = []
+    rows: list[CandleRow] = []
     before_timestamp: int | None = window.end_ms // 1000 + window.interval_ms // 1000
     oldest_timestamp: int | None = None
     request_count = 0
@@ -362,10 +258,8 @@ async def _onchain_history(
         request_count += 1
         page_rows = _normalize_rows(list(page.get("rows") or []))
 
-        # A bounded request can occasionally return an empty page even when
-        # the token has recent history. Retry the provider's default page once
-        # and continue paging backwards from there. The downstream selected-
-        # window check still prevents us from analyzing unrelated recent data.
+        # Some pools reject a bounded first page despite having recent history.
+        # Retry the provider default once, then continue normal backward paging.
         if not page_rows and request_count == 1:
             before_timestamp = None
             request_limit += 1
@@ -390,79 +284,10 @@ async def _onchain_history(
     return normalized
 
 
-async def _get_peer_histories(prepared: _PreparedScan) -> list[PriceSeries]:
-    if prepared.peer_histories is not None:
-        return prepared.peer_histories
-    peers = [symbol for symbol in PEER_SYMBOLS if symbol != prepared.symbol][:MAX_PEERS]
-    start_ms = prepared.window.end_ms - _history_lookback_ms(
-        prepared.window.interval_ms
-    )
-
-    async def fetch(symbol: str) -> PriceSeries | None:
-        try:
-            response = await HYPERLIQUID_DATA_CLIENT.get_candles_response(
-                symbol,
-                start_ms,
-                prepared.window.end_ms,
-                prepared.window.interval,
-            )
-        except Exception:
-            return None
-        rows = _normalize_rows(response.get("rows") or [])[-MAX_HISTORY_BARS:]
-        return _series(symbol, "hyperliquid", rows) if rows else None
-
-    try:
-        async with asyncio.timeout(8):
-            fetched = await asyncio.gather(*(fetch(symbol) for symbol in peers))
-    except TimeoutError:
-        fetched = []
-    prepared.peer_histories = [series for series in fetched if series is not None]
-    return prepared.peer_histories
-
-
-async def _get_same_asset_history(prepared: _PreparedScan) -> PriceSeries | None:
-    if prepared.same_asset_history is not None:
-        return prepared.same_asset_history
-    symbol = _canonical_symbol(prepared.symbol)
-    if symbol is None:
-        return None
-    from wayfinder_paths.core.backtesting.data import fetch_prices
-
-    start = datetime.fromtimestamp(
-        (prepared.window.end_ms - _history_lookback_ms(prepared.window.interval_ms))
-        / 1000,
-        tz=UTC,
-    )
-    end = datetime.fromtimestamp(prepared.window.end_ms / 1000, tz=UTC)
-    try:
-        async with asyncio.timeout(8):
-            prices = await fetch_prices(
-                [symbol],
-                start.isoformat(),
-                end.isoformat(),
-                interval=prepared.window.interval,
-                source="ccxt",
-            )
-    except Exception:
-        return None
-    if symbol not in prices:
-        return None
-    values = prices[symbol].dropna().tail(MAX_HISTORY_BARS)
-    if values.empty:
-        return None
-    prepared.same_asset_history = PriceSeries(
-        symbol=symbol,
-        source="binance",
-        timestamps_ms=[int(timestamp.timestamp() * 1000) for timestamp in values.index],
-        closes=[float(value) for value in values],
-    )
-    return prepared.same_asset_history
-
-
 def _normalize_rows(
-    rows: list[dict[str, Any]],
-) -> list[dict[str, float | int | None]]:
-    by_timestamp: dict[int, dict[str, float | int | None]] = {}
+    rows: Sequence[Mapping[str, Any]],
+) -> list[CandleRow]:
+    by_timestamp: dict[int, CandleRow] = {}
     for row in rows:
         try:
             timestamp = int(row["t"])
@@ -483,8 +308,8 @@ def _normalize_rows(
 
 
 def _selected_pattern(
-    rows: list[dict[str, float | int | None]], window: _ScanWindow
-) -> tuple[list[dict[str, float | int | None]], int, float]:
+    rows: list[CandleRow], window: _ScanWindow
+) -> tuple[list[CandleRow], int, float]:
     selected = [
         row for row in rows if window.start_ms <= int(row["t"]) <= window.end_ms
     ]
@@ -500,7 +325,7 @@ def _selected_pattern(
 def _series(
     symbol: str,
     source: str,
-    rows: list[dict[str, float | int | None]],
+    rows: list[CandleRow],
 ) -> PriceSeries:
     return PriceSeries(
         symbol=symbol,
@@ -508,6 +333,47 @@ def _series(
         timestamps_ms=[int(row["t"]) for row in rows],
         closes=[float(row["c"]) for row in rows],
     )
+
+
+def _forward_horizon_bars(interval_ms: int) -> dict[str, int]:
+    return {
+        label: max(1, math.ceil(duration_ms / interval_ms))
+        for label, duration_ms in FORWARD_HORIZONS_MS.items()
+    }
+
+
+def _label_forward_outcomes(
+    matches: list[dict[str, Any]], horizon_bars: dict[str, int]
+) -> list[dict[str, Any]]:
+    labelled = []
+    for match in matches:
+        raw_outcomes = match["outcomes"]
+        labelled.append(
+            {
+                **match,
+                "outcomes": {
+                    f"{label}_bps": raw_outcomes[f"{bars}_bar_bps"]
+                    for label, bars in horizon_bars.items()
+                },
+            }
+        )
+    return labelled
+
+
+def _selection_levels(
+    request: FractalScanRequest,
+    selected_rows: list[CandleRow],
+) -> dict[str, float]:
+    closes = [float(row["c"]) for row in selected_rows]
+    lows = [float(row["l"]) for row in selected_rows if row["l"] is not None]
+    highs = [float(row["h"]) for row in selected_rows if row["h"] is not None]
+    return {
+        "selection_low": request.selected_price_min
+        or (min(lows) if lows else min(closes)),
+        "selection_high": request.selected_price_max
+        or (max(highs) if highs else max(closes)),
+        "last_close": closes[-1],
+    }
 
 
 def _history_lookback_ms(interval_ms: int) -> int:
@@ -518,19 +384,21 @@ def _normalize_hl_coin(value: str) -> str:
     return value.strip().upper().removesuffix("-USDC").removesuffix("/USDC")
 
 
-def _canonical_symbol(value: str) -> str | None:
-    symbol = value.upper().removesuffix("-USDC")
-    aliases = {"WBTC": "BTC", "WETH": "ETH"}
-    symbol = aliases.get(symbol, symbol)
-    return symbol if symbol in PEER_SYMBOLS else None
-
-
 def _float_or_none(value: Any) -> float | None:
     try:
         result = float(value)
     except (TypeError, ValueError):
         return None
     return result if math.isfinite(result) else None
+
+
+def _cached_scan(scan_id: str) -> dict[str, Any] | None:
+    _evict_expired_scans()
+    cached = _SCAN_CACHE.get(scan_id)
+    if cached is None:
+        return None
+    _SCAN_CACHE.move_to_end(scan_id)
+    return cached.result
 
 
 def _evict_expired_scans() -> None:

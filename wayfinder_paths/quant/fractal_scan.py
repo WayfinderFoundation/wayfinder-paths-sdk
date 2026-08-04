@@ -177,7 +177,6 @@ def find_price_analogs(
             "end_ms": int(timestamps[end - 1]),
             "distance": round(distance, 4),
             "outcomes": outcomes,
-            "forward_path_bps": _path_bps(closes[end - 1 : end + max_horizon], base),
         }
         if len(matches) < shape_paths:
             match["shape_path_bps"] = _path_bps(closes[start:end], float(closes[start]))

@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Literal
 
 FractalScanKind = Literal["hyperliquid", "onchain"]
-FractalScanScope = Literal["same_market", "adaptive", "broad"]
 
 INTERVAL_MS = {
     "1m": 60_000,
@@ -90,7 +89,7 @@ def create_fractal_scan_request(
         if not token_address or not EVM_ADDRESS.fullmatch(token_address):
             raise ValueError("token_address must be an exact EVM contract address")
     return FractalScanRequest(
-        kind=kind,
+        kind="hyperliquid" if kind == "hyperliquid" else "onchain",
         interval=interval,
         start_ms=int(start_ms),
         end_ms=int(end_ms),

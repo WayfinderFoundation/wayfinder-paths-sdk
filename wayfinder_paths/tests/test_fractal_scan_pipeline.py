@@ -28,12 +28,14 @@ def _rows(count: int, *, scale: float = 1.0) -> list[dict[str, Any]]:
     ]
 
 
-def _request(kind: str = "hyperliquid") -> pipeline.FractalScanRequest:
+def _request(
+    kind: str = "hyperliquid", *, start_bar: int = 84
+) -> pipeline.FractalScanRequest:
     common = {
         "kind": kind,
         "interval": "5m",
-        "start_ms": 84 * INTERVAL_MS,
-        "end_ms": 95 * INTERVAL_MS,
+        "start_ms": start_bar * INTERVAL_MS,
+        "end_ms": (start_bar + 11) * INTERVAL_MS,
         "display_symbol": "BTC",
         "market_id": "hl-perp-btc",
         "chart_id": "hl-perp-btc",
@@ -54,7 +56,7 @@ def clear_scan_cache() -> None:
     pipeline._clear_fractal_scan_cache()
 
 
-async def test_adaptive_followup_reuses_exact_history_and_labels_fuzzy(
+async def test_scan_returns_exact_baseline_and_reuses_cached_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
@@ -63,8 +65,7 @@ async def test_adaptive_followup_reuses_exact_history_and_labels_fuzzy(
         coin: str, start_ms: int, end_ms: int, interval: str
     ) -> dict[str, Any]:
         calls.append(coin)
-        scale = 1.0 if coin == "BTC" else 1.0 + len(calls) / 10
-        return {"rows": _rows(100, scale=scale)}
+        return {"rows": _rows(500)}
 
     monkeypatch.setattr(
         pipeline.HYPERLIQUID_DATA_CLIENT,
@@ -72,24 +73,23 @@ async def test_adaptive_followup_reuses_exact_history_and_labels_fuzzy(
         get_candles_response,
     )
     exact = await pipeline.run_fractal_scan(
-        request=_request(),
-        scope="same_market",
-        now_ms=110 * INTERVAL_MS,
+        request=_request(start_bar=484),
+        now_ms=510 * INTERVAL_MS,
     )
     assert calls == ["BTC"]
-    assert exact["scope_used"] == "same_market"
-    assert {match["match_scope"] for match in exact["matches"]} == {"same_market"}
+    assert exact["coverage"]["source"] == "hyperliquid"
+    assert exact["evidence"]["same_market_samples"] == len(exact["matches"])
+    assert exact["matches"]
+    assert set(exact["outcome_distributions"]) == {"1h", "4h", "12h", "24h"}
+    assert "scope_used" not in exact
+    assert "view_data" not in exact
 
-    adaptive = await pipeline.run_fractal_scan(
-        scan_id=exact["scan_id"], scope="adaptive"
+    cached = await pipeline.run_fractal_scan(
+        request=_request(start_bar=484),
+        now_ms=510 * INTERVAL_MS,
     )
     assert calls.count("BTC") == 1
-    assert set(calls[1:]) == {"ETH", "SOL", "BNB", "XRP"}
-    assert adaptive["scope_used"] == "adaptive"
-    assert adaptive["evidence"]["fuzzy_samples"] > 0
-    assert "fuzzy_analogues_included" in adaptive["warnings"]
-    assert adaptive["confidence"] != "high"
-    assert adaptive["view_data"]["forward_fan"] is not None
+    assert cached["scan_id"] == exact["scan_id"]
 
 
 async def test_onchain_history_pages_before_selected_window(
@@ -111,7 +111,6 @@ async def test_onchain_history_pages_before_selected_window(
     monkeypatch.setattr(pipeline.TOKEN_CLIENT, "get_candles", get_candles)
     result = await pipeline.run_fractal_scan(
         request=_request("onchain"),
-        scope="same_market",
         now_ms=110 * INTERVAL_MS,
     )
 
@@ -119,7 +118,7 @@ async def test_onchain_history_pages_before_selected_window(
     assert calls[0] == 96 * INTERVAL_MS // 1000
     assert calls[1] == 50 * INTERVAL_MS // 1000 - 1
     assert result["coverage"]["actual_bars"] == 12
-    assert result["coverage"]["sources"] == ["coingecko_onchain:8453"]
+    assert result["coverage"]["source"] == "coingecko_onchain:8453"
 
 
 async def test_onchain_history_recovers_from_empty_bounded_page(
@@ -142,7 +141,6 @@ async def test_onchain_history_recovers_from_empty_bounded_page(
     monkeypatch.setattr(pipeline.TOKEN_CLIENT, "get_candles", get_candles)
     result = await pipeline.run_fractal_scan(
         request=_request("onchain"),
-        scope="same_market",
         now_ms=110 * INTERVAL_MS,
     )
 
@@ -169,7 +167,6 @@ async def test_onchain_history_stops_when_a_page_makes_no_progress(
     monkeypatch.setattr(pipeline.TOKEN_CLIENT, "get_candles", get_candles)
     result = await pipeline.run_fractal_scan(
         request=_request("onchain"),
-        scope="same_market",
         now_ms=110 * INTERVAL_MS,
     )
 
@@ -211,9 +208,19 @@ def test_scan_window_uses_a_supported_interval(requested: str, expected: str) ->
     assert window.interval == expected
 
 
-async def test_unknown_followup_scan_is_rejected() -> None:
-    with pytest.raises(ValueError, match="unknown or expired"):
-        await pipeline.run_fractal_scan(scan_id="missing", scope="adaptive")
+def test_forward_horizons_are_wall_clock_based() -> None:
+    assert pipeline._forward_horizon_bars(5 * 60_000) == {
+        "1h": 12,
+        "4h": 48,
+        "12h": 144,
+        "24h": 288,
+    }
+    assert pipeline._forward_horizon_bars(4 * 60 * 60_000) == {
+        "1h": 1,
+        "4h": 1,
+        "12h": 3,
+        "24h": 6,
+    }
 
 
 def test_request_requires_exact_market_identity() -> None:
