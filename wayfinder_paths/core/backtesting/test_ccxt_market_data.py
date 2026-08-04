@@ -33,8 +33,9 @@ class _FakeBinance:
 class _FakeAdapter:
     instance: _FakeAdapter | None = None
 
-    def __init__(self, **_: Any) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         self.binance = _FakeBinance()
+        self.exchanges = kwargs.get("exchanges")
         self.closed = False
         type(self).instance = self
 
@@ -56,6 +57,9 @@ async def test_ccxt_prices_use_binance_market_data_endpoint(monkeypatch) -> None
 
     adapter = _FakeAdapter.instance
     assert adapter is not None
+    assert adapter.exchanges == {
+        "binance": {"options": {"fetchMarkets": {"types": ["spot"]}}}
+    }
     assert (
         adapter.binance.public_url_at_fetch == "https://data-api.binance.vision/api/v3"
     )
