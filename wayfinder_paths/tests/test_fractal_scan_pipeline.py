@@ -5,7 +5,9 @@ from typing import Any
 import pytest
 
 from wayfinder_paths.quant import fractal_scan_pipeline as pipeline
-from wayfinder_paths.quant.fractal_scan_context import create_fractal_scan_request
+from wayfinder_paths.quant.fractal_scan_context import (
+    create_fractal_scan_request,
+)
 
 INTERVAL_MS = 5 * 60_000
 
@@ -118,6 +120,95 @@ async def test_onchain_history_pages_before_selected_window(
     assert calls[1] == 50 * INTERVAL_MS // 1000 - 1
     assert result["coverage"]["actual_bars"] == 12
     assert result["coverage"]["sources"] == ["coingecko_onchain:8453"]
+
+
+async def test_onchain_history_recovers_from_empty_bounded_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _rows(100)
+    calls: list[int | None] = []
+
+    async def get_candles(
+        coin: str,
+        interval: str,
+        *,
+        chain_id: int,
+        before_timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        calls.append(before_timestamp)
+        pages = ([], rows[50:], rows[:50])
+        return {"rows": pages[len(calls) - 1]}
+
+    monkeypatch.setattr(pipeline.TOKEN_CLIENT, "get_candles", get_candles)
+    result = await pipeline.run_fractal_scan(
+        request=_request("onchain"),
+        scope="same_market",
+        now_ms=110 * INTERVAL_MS,
+    )
+
+    assert calls == [96 * INTERVAL_MS // 1000, None, 50 * INTERVAL_MS // 1000 - 1]
+    assert result["coverage"]["actual_bars"] == 12
+
+
+async def test_onchain_history_stops_when_a_page_makes_no_progress(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = _rows(100)
+    calls: list[int | None] = []
+
+    async def get_candles(
+        coin: str,
+        interval: str,
+        *,
+        chain_id: int,
+        before_timestamp: int | None = None,
+    ) -> dict[str, Any]:
+        calls.append(before_timestamp)
+        return {"rows": rows}
+
+    monkeypatch.setattr(pipeline.TOKEN_CLIENT, "get_candles", get_candles)
+    result = await pipeline.run_fractal_scan(
+        request=_request("onchain"),
+        scope="same_market",
+        now_ms=110 * INTERVAL_MS,
+    )
+
+    assert len(calls) == 2
+    assert result["coverage"]["history_bars"] == 100
+
+
+@pytest.mark.parametrize(
+    ("requested", "expected"),
+    [
+        ("1m", "1m"),
+        ("3m", "5m"),
+        ("5m", "5m"),
+        ("15m", "15m"),
+        ("30m", "1h"),
+        ("1h", "1h"),
+        ("2h", "4h"),
+        ("4h", "4h"),
+        ("8h", "1d"),
+        ("12h", "1d"),
+        ("1d", "1d"),
+    ],
+)
+def test_scan_window_uses_a_supported_interval(requested: str, expected: str) -> None:
+    expected_ms = pipeline.INTERVAL_MS[expected]
+    request = create_fractal_scan_request(
+        kind="hyperliquid",
+        interval=requested,
+        start_ms=10 * expected_ms,
+        end_ms=21 * expected_ms,
+        display_symbol="BTC",
+        market_id="hl-perp-btc",
+        chart_id="hl-perp-btc",
+        hl_coin="BTC",
+    )
+
+    window = pipeline._scan_window(request, now_ms=100 * 86_400_000)
+
+    assert window.interval == expected
 
 
 async def test_unknown_followup_scan_is_rejected() -> None:

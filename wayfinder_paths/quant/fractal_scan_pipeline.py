@@ -39,6 +39,10 @@ from wayfinder_paths.quant.fractal_scan_output import (
 
 MAX_HISTORY_BARS = 10_000
 MAX_ONCHAIN_HISTORY_BARS = 2_000
+ONCHAIN_CANDLE_PAGE_SIZE = 1_000
+MAX_ONCHAIN_HISTORY_PAGES = math.ceil(
+    MAX_ONCHAIN_HISTORY_BARS / ONCHAIN_CANDLE_PAGE_SIZE
+)
 MAX_HISTORY_DAYS = 3 * 366
 MIN_EXACT_MATCHES = 12
 TOP_MATCHES = 15
@@ -341,22 +345,45 @@ async def _onchain_history(
 ) -> list[dict[str, float | int | None]]:
     if request.chain_id is None or request.token_address is None:
         raise ValueError("On-chain scans require chain_id and token_address")
-    first_page = await TOKEN_CLIENT.get_candles(
-        request.token_address,
-        window.interval,
-        chain_id=request.chain_id,
-        before_timestamp=window.end_ms // 1000 + window.interval_ms // 1000,
-    )
-    rows = list(first_page.get("rows") or [])
-    timestamps = [int(row["t"]) for row in rows if row.get("t") is not None]
-    if timestamps:
-        second_page = await TOKEN_CLIENT.get_candles(
+
+    rows: list[dict[str, float | int | None]] = []
+    before_timestamp: int | None = window.end_ms // 1000 + window.interval_ms // 1000
+    oldest_timestamp: int | None = None
+    request_count = 0
+    request_limit = MAX_ONCHAIN_HISTORY_PAGES
+
+    while request_count < request_limit and len(rows) < MAX_ONCHAIN_HISTORY_BARS:
+        page = await TOKEN_CLIENT.get_candles(
             request.token_address,
             window.interval,
             chain_id=request.chain_id,
-            before_timestamp=min(timestamps) // 1000 - 1,
+            before_timestamp=before_timestamp,
         )
-        rows.extend(second_page.get("rows") or [])
+        request_count += 1
+        page_rows = _normalize_rows(list(page.get("rows") or []))
+
+        # A bounded request can occasionally return an empty page even when
+        # the token has recent history. Retry the provider's default page once
+        # and continue paging backwards from there. The downstream selected-
+        # window check still prevents us from analyzing unrelated recent data.
+        if not page_rows and request_count == 1:
+            before_timestamp = None
+            request_limit += 1
+            continue
+        if not page_rows:
+            break
+
+        next_oldest_value = page_rows[0].get("t")
+        if next_oldest_value is None:
+            break
+        next_oldest = int(next_oldest_value)
+        if oldest_timestamp is not None and next_oldest >= oldest_timestamp:
+            break
+
+        rows.extend(page_rows)
+        oldest_timestamp = next_oldest
+        before_timestamp = next_oldest // 1000 - 1
+
     normalized = _normalize_rows(rows)[-MAX_ONCHAIN_HISTORY_BARS:]
     if not normalized:
         raise ValueError("No on-chain candles are available for this token")
