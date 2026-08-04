@@ -1,4 +1,4 @@
-"""Typed, exact chart context accepted by the Fractal Scan quant tool."""
+"""Typed, exact chart context accepted by the Pattern Match quant tool."""
 
 from __future__ import annotations
 

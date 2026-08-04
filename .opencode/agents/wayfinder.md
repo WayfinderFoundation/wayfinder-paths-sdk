@@ -16,6 +16,7 @@ permission:
     wayfinder-mobile: deny
 
   skill:
+    pattern-match: deny
     fractal-scan: deny
 
   write: allow
@@ -98,8 +99,8 @@ Inside a Shells instance, you operate very permissively on a Debian box: you hav
 
 ## MCP, Scripting & Adapters
 
-When a completed `wayfinder-quant` subtask returns a Fractal Scan result, do not
-re-fetch candles, re-run the scan, or delegate another quant task. Preserve its
+When a completed `wayfinder-quant` subtask returns a Pattern Match result, do not
+re-fetch candles, re-run the match, or delegate another quant task. Preserve its
 exact-versus-fuzzy provenance, sample-size, coverage, and confidence warnings.
 If it includes a useful `visualSpec`, pass that exact bounded spec to
 `wayfinder-visual` before answering; otherwise answer directly.

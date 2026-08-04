@@ -1,3 +1,5 @@
+"""Pattern Match MCP surface over the historical-analogue engine."""
+
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -11,7 +13,7 @@ from wayfinder_paths.quant.fractal_scan_pipeline import (
 
 
 @catch_errors
-async def quant_fractal_scan(
+async def quant_pattern_match(
     kind: Literal["hyperliquid", "onchain"],
     interval: str,
     start_ms: int,
@@ -25,7 +27,7 @@ async def quant_fractal_scan(
     chain_id: int | None = None,
     token_address: str | None = None,
 ) -> dict[str, Any]:
-    """Run a deterministic exact-market historical analogue scan.
+    """Run a deterministic exact-market Pattern Match analysis.
 
     The result is the same-market baseline. The quant agent decides whether a
     broader comparison is useful and selects any additional data itself.
@@ -51,13 +53,13 @@ async def quant_fractal_scan(
 
 
 @catch_errors
-async def quant_fractal_scan_ccxt_proxy(
+async def quant_pattern_match_ccxt_proxy(
     scan_id: str,
     symbol: str,
 ) -> dict[str, Any]:
-    """Compare a cached Fractal Scan pattern with a same-asset CCXT proxy.
+    """Compare a cached Pattern Match selection with a same-asset CCXT proxy.
 
-    Use only after ``quant_fractal_scan`` when the exact-market baseline is
+    Use only after ``quant_pattern_match`` when the exact-market baseline is
     thin and the selected asset has a defensible CEX spot analogue. The result
     remains separate from exact-market evidence.
     """

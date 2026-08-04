@@ -67,10 +67,6 @@ from wayfinder_paths.mcp.tools.evm_contract import (
     contracts_execute,
 )
 from wayfinder_paths.mcp.tools.execute import onchain_send, onchain_swap
-from wayfinder_paths.mcp.tools.fractal_scan import (
-    quant_fractal_scan,
-    quant_fractal_scan_ccxt_proxy,
-)
 from wayfinder_paths.mcp.tools.goldsky_direct import (
     research_goldsky_graphql,
     research_goldsky_schema,
@@ -107,6 +103,10 @@ from wayfinder_paths.mcp.tools.instance_state import (
     visual_set_chart_indicators,
 )
 from wayfinder_paths.mcp.tools.notify import notification_send
+from wayfinder_paths.mcp.tools.pattern_match import (
+    quant_pattern_match,
+    quant_pattern_match_ccxt_proxy,
+)
 from wayfinder_paths.mcp.tools.polymarket import (
     polymarket_cancel_order,
     polymarket_deposit_pusd,
@@ -175,8 +175,17 @@ def build_mcp(
     mcp.tool()(core_runner)
 
     # ─── quant_* (hidden quant-worker analytics) ──────────────────────
-    mcp.tool()(quant_fractal_scan)
-    mcp.tool()(quant_fractal_scan_ccxt_proxy)
+    mcp.tool()(quant_pattern_match)
+    mcp.tool()(quant_pattern_match_ccxt_proxy)
+    # Temporary aliases keep mixed frontend/image rollouts compatible.
+    mcp.tool(
+        name="quant_fractal_scan",
+        description="Legacy alias for quant_pattern_match.",
+    )(quant_pattern_match)
+    mcp.tool(
+        name="quant_fractal_scan_ccxt_proxy",
+        description="Legacy alias for quant_pattern_match_ccxt_proxy.",
+    )(quant_pattern_match_ccxt_proxy)
 
     # ─── hyperliquid_* ─────────────────────────────────────────────────
     # Coin naming reference: /using-hyperliquid-adapter/rules/coin-naming.md.

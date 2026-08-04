@@ -1,4 +1,4 @@
-"""Hydrate, cache, and match exact-market Fractal Scan history."""
+"""Hydrate, cache, and match exact-market Pattern Match history."""
 
 from __future__ import annotations
 

@@ -12,8 +12,12 @@ permission:
   external_directory:
     "*": allow
   skill:
+    pattern-match: allow
     fractal-scan: allow
   wayfinder_*: deny
+  wayfinder_quant_pattern_match: allow
+  wayfinder_quant_pattern_match_ccxt_proxy: allow
+  # Temporary aliases for mixed frontend/image rollouts.
   wayfinder_quant_fractal_scan: allow
   wayfinder_quant_fractal_scan_ccxt_proxy: allow
   # core_*
@@ -58,16 +62,17 @@ hidden subagent approval prompts can strand the parent workflow.
 
 ## Data and Scripts
 
-### Fractal Scan fast path
+### Pattern Match fast path
 
-When Known Context has `mode="fractal_scan"`, load `/fractal-scan` and follow
-that workflow before the general skill and scripting rules below. Start with
-the exact chart identifiers and `wayfinder_quant_fractal_scan`. If the baseline
-is weak, choose any additional comparisons yourself from the market context and
-fetch only their histories. Prefer `wayfinder_quant_fractal_scan_ccxt_proxy`
-for a defensible same-asset CEX comparison. You may add bounded analysis or a
-useful `visualSpec`, but never repeat the exact candle pull or present proxy
-matches as exact evidence.
+When Known Context has `mode="pattern_match"` or the compatibility value
+`mode="fractal_scan"`, load `/pattern-match` and follow that workflow before
+the general skill and scripting rules below. Start with the exact chart
+identifiers and `wayfinder_quant_pattern_match`. If the baseline is weak,
+choose any additional comparisons yourself from the market context and fetch
+only their histories. Prefer `wayfinder_quant_pattern_match_ccxt_proxy` for a
+defensible same-asset CEX comparison. You may add bounded analysis or a useful
+`visualSpec`, but never repeat the exact candle pull or present proxy matches as
+exact evidence.
 
 Return a concise technical read with the strongest and weakest evidence,
 invalidation levels, sample-size caveats, and a `contextForNextAgent` that
