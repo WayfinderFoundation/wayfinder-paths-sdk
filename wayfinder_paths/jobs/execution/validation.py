@@ -275,6 +275,26 @@ def _evidence_window_check(root: Path) -> list[dict[str, Any]]:
                 ),
             }
         ]
+    source = str(metadata.get("source") or "")
+    if source != "ccxt":
+        # A VENUE shortfall proves nothing — venue feeds cap at days of
+        # history while the ccxt path has years. This exact hole let an
+        # Aug 2 default-source refetch replace the 120d ccxt dataset with
+        # 40d of venue data and still pass the gate as "proven".
+        return [
+            {
+                "name": "evidence_window",
+                "passed": False,
+                "days_received": received,
+                "error": (
+                    f"dataset spans {received:g}d from source {source!r} — a "
+                    "venue-capped shortfall is NOT proof of unavailability. "
+                    f"Refetch via the long-history path: fetch-dataset --days "
+                    f"{EVIDENCE_TARGET_DAYS:g} --source ccxt. Only a ccxt "
+                    "shortfall counts as proven (new listing)."
+                ),
+            }
+        ]
     if received >= EVIDENCE_FLOOR_DAYS:
         return [
             {
@@ -284,9 +304,10 @@ def _evidence_window_check(root: Path) -> list[dict[str, Any]]:
                 "days_received": received,
                 "note": (
                     f"{received:g}d received of {requested:g}d requested — the "
-                    "source could not supply the target (new symbol); the 30d "
-                    "floor applies. Evidence from this window is short-history: "
-                    "prefer probation sizing and re-validate as history grows."
+                    "long-history source could not supply the target (new "
+                    "symbol); the 30d floor applies. Evidence from this window "
+                    "is short-history: prefer probation sizing and re-validate "
+                    "as history grows."
                 ),
             }
         ]
