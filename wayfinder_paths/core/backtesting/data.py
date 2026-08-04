@@ -301,6 +301,10 @@ async def _fetch_prices_ccxt(
 ) -> pd.DataFrame:
     """Fetch prices from Binance spot via CCXT (multi-year history)."""
     adapter = CCXTAdapter(exchanges={"binance": {}})
+    # Binance's trading API is location-restricted on some cloud egress IPs.
+    # This loader only reads public candles, so use Binance's official
+    # market-data-only endpoint without changing any signed/private URLs.
+    adapter.binance.urls["api"]["public"] = "https://data-api.binance.vision/api/v3"
     try:
         start_ms = int(start.timestamp() * 1000)
         end_ms = int(end.timestamp() * 1000)
