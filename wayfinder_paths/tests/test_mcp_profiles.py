@@ -164,8 +164,6 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
     assert quant["wayfinder_*"] == "deny"
     assert quant["wayfinder_quant_pattern_match"] == "allow"
     assert quant["wayfinder_quant_pattern_match_ccxt_proxy"] == "allow"
-    assert quant["wayfinder_quant_fractal_scan"] == "allow"
-    assert quant["wayfinder_quant_fractal_scan_ccxt_proxy"] == "allow"
     assert quant["wayfinder_research_*"] == "allow"
     assert quant["wayfinder_core_get_adapters_and_strategies"] == "allow"
     assert quant["wayfinder_core_run_script"] == "allow"
@@ -180,8 +178,6 @@ def test_opencode_agents_scope_single_mcp_tool_names() -> None:
         "wayfinder_*",
         "wayfinder_quant_pattern_match_ccxt_proxy",
     )
-    _assert_rule_order(quant, "wayfinder_*", "wayfinder_quant_fractal_scan")
-    _assert_rule_order(quant, "wayfinder_*", "wayfinder_quant_fractal_scan_ccxt_proxy")
     _assert_rule_order(quant, "wayfinder_*", "wayfinder_polymarket_read")
 
     assert visual["wayfinder_*"] == "deny"
@@ -269,8 +265,6 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_*": "deny",
         "wayfinder_quant_pattern_match": "allow",
         "wayfinder_quant_pattern_match_ccxt_proxy": "allow",
-        "wayfinder_quant_fractal_scan": "allow",
-        "wayfinder_quant_fractal_scan_ccxt_proxy": "allow",
         "wayfinder_research_*": "allow",
         "wayfinder_core_get_adapters_and_strategies": "allow",
         "wayfinder_core_run_script": "allow",
@@ -284,8 +278,6 @@ def test_opencode_agent_frontmatter_scopes_visible_wayfinder_tools() -> None:
         "wayfinder_*",
         "wayfinder_quant_pattern_match_ccxt_proxy",
     )
-    _assert_rule_order(quant, "wayfinder_*", "wayfinder_quant_fractal_scan")
-    _assert_rule_order(quant, "wayfinder_*", "wayfinder_quant_fractal_scan_ccxt_proxy")
     _assert_rule_order(quant, "wayfinder_*", "wayfinder_research_*")
     _assert_rule_order(quant, "wayfinder_*", "wayfinder_polymarket_read")
 

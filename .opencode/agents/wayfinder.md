@@ -17,7 +17,6 @@ permission:
 
   skill:
     pattern-match: deny
-    fractal-scan: deny
 
   write: allow
   wayfinder_*: deny

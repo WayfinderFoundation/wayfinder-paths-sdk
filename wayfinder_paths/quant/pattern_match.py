@@ -1,4 +1,4 @@
-"""Deterministic historical-pattern matching for Pattern Match.
+"""Deterministic historical pattern matching for Pattern Match.
 
 This module deliberately accepts already-hydrated price series. Provider access,
 cache policy, candle completion, and interval selection belong to the caller so

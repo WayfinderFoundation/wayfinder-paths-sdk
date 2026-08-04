@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from wayfinder_paths.mcp.utils import catch_errors, ok
-from wayfinder_paths.quant.fractal_scan_context import create_fractal_scan_request
-from wayfinder_paths.quant.fractal_scan_pipeline import (
-    run_fractal_scan,
-    run_fractal_scan_ccxt_proxy,
+from wayfinder_paths.quant.pattern_match_context import create_pattern_match_request
+from wayfinder_paths.quant.pattern_match_pipeline import (
+    run_pattern_match,
+    run_pattern_match_ccxt_proxy,
 )
 
 
@@ -32,10 +32,10 @@ async def quant_pattern_match(
     The result is the same-market baseline. The quant agent decides whether a
     broader comparison is useful and selects any additional data itself.
 
-    Hyperliquid scans also require hl_coin; onchain scans require chain_id and
+    Hyperliquid requests also require hl_coin; onchain requests require chain_id and
     an exact token_address. Identical requests reuse a short-lived result cache.
     """
-    request = create_fractal_scan_request(
+    request = create_pattern_match_request(
         kind=kind,
         interval=interval,
         start_ms=start_ms,
@@ -49,12 +49,12 @@ async def quant_pattern_match(
         chain_id=chain_id,
         token_address=token_address,
     )
-    return ok(await run_fractal_scan(request=request))
+    return ok(await run_pattern_match(request=request))
 
 
 @catch_errors
 async def quant_pattern_match_ccxt_proxy(
-    scan_id: str,
+    match_id: str,
     symbol: str,
 ) -> dict[str, Any]:
     """Compare a cached Pattern Match selection with a same-asset CCXT proxy.
@@ -63,4 +63,4 @@ async def quant_pattern_match_ccxt_proxy(
     thin and the selected asset has a defensible CEX spot analogue. The result
     remains separate from exact-market evidence.
     """
-    return ok(await run_fractal_scan_ccxt_proxy(scan_id=scan_id, symbol=symbol))
+    return ok(await run_pattern_match_ccxt_proxy(match_id=match_id, symbol=symbol))

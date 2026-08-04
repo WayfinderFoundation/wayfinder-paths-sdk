@@ -25,7 +25,7 @@ those comparisons from the user's market and thesis; do not use a fixed peer
 list merely to increase sample size.
 
 For a liquid asset with a defensible CEX spot analogue, prefer
-`wayfinder_quant_pattern_match_ccxt_proxy(scan_id=..., symbol=...)`. It reuses
+`wayfinder_quant_pattern_match_ccxt_proxy(match_id=..., symbol=...)`. It reuses
 the cached selected pattern, fetches the same timeframe from CCXT, and returns
 the proxy evidence separately. Do not use it for a long-tail token merely
 because its ticker resembles a listed asset.
@@ -72,7 +72,7 @@ focused line chart rather than several panes:
 - same-market versus fuzzy distributions when custom comparisons disagree.
 
 Use the bounded `pattern.shape_path_bps` and match `shape_path_bps` values,
-label units as basis points, and carry `market_id`, `chart_id`, and `scan_id` in
+label units as basis points, and carry `market_id`, `chart_id`, and `match_id` in
 `contextForNextAgent`. The primary agent will delegate the spec to
 `wayfinder-visual`; do not call visual tools directly.
 

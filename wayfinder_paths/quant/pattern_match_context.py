@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-FractalScanKind = Literal["hyperliquid", "onchain"]
+PatternMatchKind = Literal["hyperliquid", "onchain"]
 
 INTERVAL_MS = {
     "1m": 60_000,
@@ -27,8 +27,8 @@ EVM_ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 
 @dataclass(frozen=True)
-class FractalScanRequest:
-    kind: FractalScanKind
+class PatternMatchRequest:
+    kind: PatternMatchKind
     interval: str
     start_ms: int
     end_ms: int
@@ -42,7 +42,7 @@ class FractalScanRequest:
     token_address: str | None = None
 
 
-def create_fractal_scan_request(
+def create_pattern_match_request(
     *,
     kind: str,
     interval: str,
@@ -56,7 +56,7 @@ def create_fractal_scan_request(
     hl_coin: str | None = None,
     chain_id: int | None = None,
     token_address: str | None = None,
-) -> FractalScanRequest:
+) -> PatternMatchRequest:
     if kind not in {"hyperliquid", "onchain"}:
         raise ValueError("kind must be hyperliquid or onchain")
     if interval not in INTERVAL_MS:
@@ -82,13 +82,15 @@ def create_fractal_scan_request(
         raise ValueError("selected_price_max must exceed selected_price_min")
     if kind == "hyperliquid":
         if not hl_coin or not hl_coin.strip():
-            raise ValueError("hl_coin is required for Hyperliquid scans")
+            raise ValueError(
+                "hl_coin is required for Hyperliquid Pattern Match requests"
+            )
     else:
         if chain_id is None or chain_id <= 0:
-            raise ValueError("chain_id is required for onchain scans")
+            raise ValueError("chain_id is required for onchain Pattern Match requests")
         if not token_address or not EVM_ADDRESS.fullmatch(token_address):
             raise ValueError("token_address must be an exact EVM contract address")
-    return FractalScanRequest(
+    return PatternMatchRequest(
         kind="hyperliquid" if kind == "hyperliquid" else "onchain",
         interval=interval,
         start_ms=int(start_ms),

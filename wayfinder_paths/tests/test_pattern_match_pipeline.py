@@ -5,9 +5,9 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from wayfinder_paths.quant import fractal_scan_pipeline as pipeline
-from wayfinder_paths.quant.fractal_scan_context import (
-    create_fractal_scan_request,
+from wayfinder_paths.quant import pattern_match_pipeline as pipeline
+from wayfinder_paths.quant.pattern_match_context import (
+    create_pattern_match_request,
 )
 
 INTERVAL_MS = 5 * 60_000
@@ -36,7 +36,7 @@ def _rows(
 
 def _request(
     kind: str = "hyperliquid", *, start_bar: int = 84
-) -> pipeline.FractalScanRequest:
+) -> pipeline.PatternMatchRequest:
     common = {
         "kind": kind,
         "interval": "5m",
@@ -49,8 +49,8 @@ def _request(
         "selected_price_max": 116.0,
     }
     if kind == "hyperliquid":
-        return create_fractal_scan_request(**common, hl_coin="BTC")
-    return create_fractal_scan_request(
+        return create_pattern_match_request(**common, hl_coin="BTC")
+    return create_pattern_match_request(
         **common,
         chain_id=8453,
         token_address="0x1111111111111111111111111111111111111111",
@@ -58,11 +58,11 @@ def _request(
 
 
 @pytest.fixture(autouse=True)
-def clear_scan_cache() -> None:
-    pipeline._clear_fractal_scan_cache()
+def clear_match_cache() -> None:
+    pipeline._clear_pattern_match_cache()
 
 
-async def test_scan_returns_exact_baseline_and_reuses_cached_history(
+async def test_match_returns_exact_baseline_and_reuses_cached_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[str] = []
@@ -78,7 +78,7 @@ async def test_scan_returns_exact_baseline_and_reuses_cached_history(
         "get_candles",
         get_candles,
     )
-    exact = await pipeline.run_fractal_scan(
+    exact = await pipeline.run_pattern_match(
         request=_request(start_bar=484),
         now_ms=510 * INTERVAL_MS,
     )
@@ -90,12 +90,12 @@ async def test_scan_returns_exact_baseline_and_reuses_cached_history(
     assert "scope_used" not in exact
     assert "view_data" not in exact
 
-    cached = await pipeline.run_fractal_scan(
+    cached = await pipeline.run_pattern_match(
         request=_request(start_bar=484),
         now_ms=510 * INTERVAL_MS,
     )
     assert calls.count("BTC") == 1
-    assert cached["scan_id"] == exact["scan_id"]
+    assert cached["match_id"] == exact["match_id"]
 
 
 async def test_onchain_history_pages_before_selected_window(
@@ -115,7 +115,7 @@ async def test_onchain_history_pages_before_selected_window(
         return rows[50:] if len(calls) == 1 else rows[:50]
 
     monkeypatch.setattr(pipeline.TOKEN_CLIENT, "get_candles", get_candles)
-    result = await pipeline.run_fractal_scan(
+    result = await pipeline.run_pattern_match(
         request=_request("onchain"),
         now_ms=110 * INTERVAL_MS,
     )
@@ -145,7 +145,7 @@ async def test_onchain_history_recovers_from_empty_bounded_page(
         return pages[len(calls) - 1]
 
     monkeypatch.setattr(pipeline.TOKEN_CLIENT, "get_candles", get_candles)
-    result = await pipeline.run_fractal_scan(
+    result = await pipeline.run_pattern_match(
         request=_request("onchain"),
         now_ms=110 * INTERVAL_MS,
     )
@@ -171,7 +171,7 @@ async def test_onchain_history_stops_when_a_page_makes_no_progress(
         return rows
 
     monkeypatch.setattr(pipeline.TOKEN_CLIENT, "get_candles", get_candles)
-    result = await pipeline.run_fractal_scan(
+    result = await pipeline.run_pattern_match(
         request=_request("onchain"),
         now_ms=110 * INTERVAL_MS,
     )
@@ -196,9 +196,9 @@ async def test_onchain_history_stops_when_a_page_makes_no_progress(
         ("1d", "1d"),
     ],
 )
-def test_scan_window_uses_a_supported_interval(requested: str, expected: str) -> None:
+def test_match_window_uses_a_supported_interval(requested: str, expected: str) -> None:
     expected_ms = pipeline.INTERVAL_MS[expected]
-    request = create_fractal_scan_request(
+    request = create_pattern_match_request(
         kind="hyperliquid",
         interval=requested,
         start_ms=10 * expected_ms,
@@ -209,7 +209,7 @@ def test_scan_window_uses_a_supported_interval(requested: str, expected: str) ->
         hl_coin="BTC",
     )
 
-    window = pipeline._scan_window(request, now_ms=100 * 86_400_000)
+    window = pipeline._match_window(request, now_ms=100 * 86_400_000)
 
     assert window.interval == expected
 
@@ -254,7 +254,7 @@ def test_ccxt_symbol_reuses_canonical_symbol_normalization(
         ),
     ],
 )
-async def test_ccxt_proxy_reuses_exact_scan_at_selected_timeframe(
+async def test_ccxt_proxy_reuses_exact_match_at_selected_timeframe(
     monkeypatch: pytest.MonkeyPatch,
     expected_interval: str,
     interval_ms: int,
@@ -299,7 +299,7 @@ async def test_ccxt_proxy_reuses_exact_scan_at_selected_timeframe(
         "wayfinder_paths.core.backtesting.data.fetch_prices",
         fetch_prices,
     )
-    request = create_fractal_scan_request(
+    request = create_pattern_match_request(
         kind="hyperliquid",
         interval=expected_interval,
         start_ms=584 * interval_ms,
@@ -309,16 +309,16 @@ async def test_ccxt_proxy_reuses_exact_scan_at_selected_timeframe(
         chart_id="hl-perp-btc",
         hl_coin="BTC",
     )
-    exact = await pipeline.run_fractal_scan(
+    exact = await pipeline.run_pattern_match(
         request=request,
         now_ms=610 * interval_ms,
     )
-    proxy = await pipeline.run_fractal_scan_ccxt_proxy(
-        scan_id=exact["scan_id"],
+    proxy = await pipeline.run_pattern_match_ccxt_proxy(
+        match_id=exact["match_id"],
         symbol="WBTC",
     )
-    cached_proxy = await pipeline.run_fractal_scan_ccxt_proxy(
-        scan_id=exact["scan_id"],
+    cached_proxy = await pipeline.run_pattern_match_ccxt_proxy(
+        match_id=exact["match_id"],
         symbol="WBTC",
     )
 
@@ -339,7 +339,7 @@ async def test_ccxt_proxy_reuses_exact_scan_at_selected_timeframe(
 
 def test_request_requires_exact_market_identity() -> None:
     with pytest.raises(ValueError, match="exact EVM contract"):
-        create_fractal_scan_request(
+        create_pattern_match_request(
             kind="onchain",
             interval="5m",
             start_ms=0,

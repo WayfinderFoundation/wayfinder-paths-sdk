@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from wayfinder_paths.quant.fractal_scan import PriceSeries, find_price_analogs
+from wayfinder_paths.quant.pattern_match import PriceSeries, find_price_analogs
 
 
 def _series(

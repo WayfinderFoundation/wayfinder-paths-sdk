@@ -17,16 +17,16 @@ from wayfinder_paths.core.clients.HyperliquidDataClient import (
 )
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
 from wayfinder_paths.core.utils.symbols import normalize_symbol
-from wayfinder_paths.quant.fractal_scan import (
+from wayfinder_paths.quant.pattern_match import (
     MIN_PATTERN_BARS,
     PriceSeries,
     find_price_analogs,
 )
-from wayfinder_paths.quant.fractal_scan_context import (
+from wayfinder_paths.quant.pattern_match_context import (
     INTERVAL_MS,
     MAX_PATTERN_BARS,
     SUPPORTED_INTERVALS,
-    FractalScanRequest,
+    PatternMatchRequest,
 )
 
 MAX_HISTORY_BARS = 10_000
@@ -37,8 +37,8 @@ MAX_ONCHAIN_HISTORY_PAGES = math.ceil(
 )
 MAX_HISTORY_DAYS = 3 * 366
 TOP_MATCHES = 15
-SCAN_CACHE_TTL_SECONDS = 15 * 60
-SCAN_CACHE_MAX_ENTRIES = 32
+MATCH_CACHE_TTL_SECONDS = 15 * 60
+MATCH_CACHE_MAX_ENTRIES = 32
 FORWARD_HORIZONS_MS = {
     "1h": 60 * 60_000,
     "4h": 4 * 60 * 60_000,
@@ -57,7 +57,7 @@ class CandleRow(TypedDict):
 
 
 @dataclass(frozen=True)
-class _ScanWindow:
+class _MatchWindow:
     interval: str
     interval_ms: int
     start_ms: int
@@ -66,17 +66,17 @@ class _ScanWindow:
 
 
 @dataclass
-class _CachedScan:
+class _CachedMatch:
     result: dict[str, Any]
     created_at: float = field(default_factory=time.monotonic)
 
 
-_SCAN_CACHE: OrderedDict[str, _CachedScan] = OrderedDict()
+_MATCH_CACHE: OrderedDict[str, _CachedMatch] = OrderedDict()
 
 
-async def run_fractal_scan(
+async def run_pattern_match(
     *,
-    request: FractalScanRequest,
+    request: PatternMatchRequest,
     now_ms: int | None = None,
 ) -> dict[str, Any]:
     """Return a compact exact-market analogue baseline.
@@ -86,15 +86,15 @@ async def run_fractal_scan(
     """
 
     started = time.perf_counter()
-    scan_id = _scan_identity(request)
-    if cached := _cached_scan(scan_id):
+    match_id = _match_identity(request)
+    if cached := _cached_match(match_id):
         return cached
 
     fetch_started = time.perf_counter()
     current_ms = (
         now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
     )
-    window = _scan_window(request, current_ms)
+    window = _match_window(request, current_ms)
     warnings: list[str] = []
     if window.interval != request.interval:
         warnings.append(f"auto_coarsened:{request.interval}->{window.interval}")
@@ -128,8 +128,8 @@ async def run_fractal_scan(
 
     result = {
         "schema_version": 3,
-        "mode": "fractal_scan",
-        "scan_id": scan_id,
+        "mode": "pattern_match",
+        "match_id": match_id,
         "market_id": request.market_id,
         "chart_id": request.chart_id,
         "display_symbol": request.display_symbol,
@@ -171,24 +171,24 @@ async def run_fractal_scan(
         },
         "data_ready": True,
     }
-    _cache_scan(scan_id, result)
+    _cache_match(match_id, result)
     return result
 
 
-async def run_fractal_scan_ccxt_proxy(
+async def run_pattern_match_ccxt_proxy(
     *,
-    scan_id: str,
+    match_id: str,
     symbol: str,
 ) -> dict[str, Any]:
     """Compare a cached exact pattern with an explicitly selected CCXT asset."""
 
-    exact = _cached_scan(scan_id)
-    if exact is None or exact.get("mode") != "fractal_scan":
-        raise ValueError("scan_id is unknown or expired; run the exact scan first")
+    exact = _cached_match(match_id)
+    if exact is None or exact.get("mode") != "pattern_match":
+        raise ValueError("match_id is unknown or expired; run the exact match first")
 
     proxy_symbol = _normalize_ccxt_symbol(symbol)
-    cache_key = f"{scan_id}:ccxt:{proxy_symbol}"
-    if cached := _cached_scan(cache_key):
+    cache_key = f"{match_id}:ccxt:{proxy_symbol}"
+    if cached := _cached_match(cache_key):
         return cached
 
     analyzed = exact["analyzed_window"]
@@ -249,8 +249,8 @@ async def run_fractal_scan_ccxt_proxy(
         warnings.append("small_proxy_sample")
     result = {
         "schema_version": 3,
-        "mode": "fractal_scan_proxy",
-        "scan_id": scan_id,
+        "mode": "pattern_match_proxy",
+        "match_id": match_id,
         "proxy": {"symbol": proxy_symbol, "source": source, "interval": interval},
         "coverage": {"history_bars": len(values), "source": source},
         "matches": matches,
@@ -261,18 +261,18 @@ async def run_fractal_scan_ccxt_proxy(
         "timing_ms": {"total": round((time.perf_counter() - started) * 1000, 1)},
         "data_ready": True,
     }
-    _cache_scan(cache_key, result)
+    _cache_match(cache_key, result)
     return result
 
 
-def _scan_identity(request: FractalScanRequest) -> str:
+def _match_identity(request: PatternMatchRequest) -> str:
     encoded = json.dumps(
         asdict(request), sort_keys=True, separators=(",", ":")
     ).encode()
     return hashlib.sha256(encoded).hexdigest()[:24]
 
 
-def _scan_window(request: FractalScanRequest, now_ms: int) -> _ScanWindow:
+def _match_window(request: PatternMatchRequest, now_ms: int) -> _MatchWindow:
     requested_ms = INTERVAL_MS[request.interval]
     duration_ms = request.end_ms - request.start_ms
     candidates = [
@@ -301,10 +301,10 @@ def _scan_window(request: FractalScanRequest, now_ms: int) -> _ScanWindow:
     start_ms = (request.start_ms // interval_ms) * interval_ms
     if end_ms <= start_ms:
         raise ValueError("Selection does not contain completed candles")
-    return _ScanWindow(interval, interval_ms, start_ms, end_ms, last_closed_ms)
+    return _MatchWindow(interval, interval_ms, start_ms, end_ms, last_closed_ms)
 
 
-async def _hyperliquid_history(symbol: str, window: _ScanWindow) -> list[CandleRow]:
+async def _hyperliquid_history(symbol: str, window: _MatchWindow) -> list[CandleRow]:
     start_ms = window.end_ms - _history_lookback_ms(window.interval_ms)
     response_rows = await HYPERLIQUID_DATA_CLIENT.get_candles(
         symbol, start_ms, window.end_ms, window.interval
@@ -318,10 +318,10 @@ async def _hyperliquid_history(symbol: str, window: _ScanWindow) -> list[CandleR
 
 
 async def _onchain_history(
-    request: FractalScanRequest, window: _ScanWindow
+    request: PatternMatchRequest, window: _MatchWindow
 ) -> list[CandleRow]:
     if request.chain_id is None or request.token_address is None:
-        raise ValueError("On-chain scans require chain_id and token_address")
+        raise ValueError("On-chain matches require chain_id and token_address")
 
     rows: list[CandleRow] = []
     before_timestamp: int | None = window.end_ms // 1000 + window.interval_ms // 1000
@@ -390,7 +390,7 @@ def _normalize_rows(
 
 
 def _selected_pattern(
-    rows: list[CandleRow], window: _ScanWindow
+    rows: list[CandleRow], window: _MatchWindow
 ) -> tuple[list[CandleRow], int, float]:
     selected = [
         row for row in rows if window.start_ms <= int(row["t"]) <= window.end_ms
@@ -460,7 +460,7 @@ def _analyze_history(
 
 
 def _selection_levels(
-    request: FractalScanRequest,
+    request: PatternMatchRequest,
     selected_rows: list[CandleRow],
 ) -> dict[str, float]:
     closes = [float(row["c"]) for row in selected_rows]
@@ -501,32 +501,32 @@ def _float_or_none(value: Any) -> float | None:
     return result if math.isfinite(result) else None
 
 
-def _cached_scan(scan_id: str) -> dict[str, Any] | None:
-    _evict_expired_scans()
-    cached = _SCAN_CACHE.get(scan_id)
+def _cached_match(match_id: str) -> dict[str, Any] | None:
+    _evict_expired_matches()
+    cached = _MATCH_CACHE.get(match_id)
     if cached is None:
         return None
-    _SCAN_CACHE.move_to_end(scan_id)
+    _MATCH_CACHE.move_to_end(match_id)
     return cached.result
 
 
-def _cache_scan(scan_id: str, result: dict[str, Any]) -> None:
-    _SCAN_CACHE[scan_id] = _CachedScan(result)
-    _SCAN_CACHE.move_to_end(scan_id)
-    while len(_SCAN_CACHE) > SCAN_CACHE_MAX_ENTRIES:
-        _SCAN_CACHE.popitem(last=False)
+def _cache_match(match_id: str, result: dict[str, Any]) -> None:
+    _MATCH_CACHE[match_id] = _CachedMatch(result)
+    _MATCH_CACHE.move_to_end(match_id)
+    while len(_MATCH_CACHE) > MATCH_CACHE_MAX_ENTRIES:
+        _MATCH_CACHE.popitem(last=False)
 
 
-def _evict_expired_scans() -> None:
-    cutoff = time.monotonic() - SCAN_CACHE_TTL_SECONDS
+def _evict_expired_matches() -> None:
+    cutoff = time.monotonic() - MATCH_CACHE_TTL_SECONDS
     expired = [
-        scan_id
-        for scan_id, prepared in _SCAN_CACHE.items()
+        match_id
+        for match_id, prepared in _MATCH_CACHE.items()
         if prepared.created_at < cutoff
     ]
-    for scan_id in expired:
-        _SCAN_CACHE.pop(scan_id, None)
+    for match_id in expired:
+        _MATCH_CACHE.pop(match_id, None)
 
 
-def _clear_fractal_scan_cache() -> None:
-    _SCAN_CACHE.clear()
+def _clear_pattern_match_cache() -> None:
+    _MATCH_CACHE.clear()
