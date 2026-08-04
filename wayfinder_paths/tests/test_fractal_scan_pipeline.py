@@ -67,16 +67,16 @@ async def test_scan_returns_exact_baseline_and_reuses_cached_history(
 ) -> None:
     calls: list[str] = []
 
-    async def get_candles_response(
+    async def get_candles(
         coin: str, start_ms: int, end_ms: int, interval: str
-    ) -> dict[str, Any]:
+    ) -> list[dict[str, Any]]:
         calls.append(coin)
-        return {"rows": _rows(500)}
+        return _rows(500)
 
     monkeypatch.setattr(
         pipeline.HYPERLIQUID_DATA_CLIENT,
-        "get_candles_response",
-        get_candles_response,
+        "get_candles",
+        get_candles,
     )
     exact = await pipeline.run_fractal_scan(
         request=_request(start_bar=484),
@@ -110,9 +110,9 @@ async def test_onchain_history_pages_before_selected_window(
         *,
         chain_id: int,
         before_timestamp: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> list[dict[str, Any]]:
         calls.append(before_timestamp)
-        return {"rows": rows[50:] if len(calls) == 1 else rows[:50]}
+        return rows[50:] if len(calls) == 1 else rows[:50]
 
     monkeypatch.setattr(pipeline.TOKEN_CLIENT, "get_candles", get_candles)
     result = await pipeline.run_fractal_scan(
@@ -139,10 +139,10 @@ async def test_onchain_history_recovers_from_empty_bounded_page(
         *,
         chain_id: int,
         before_timestamp: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> list[dict[str, Any]]:
         calls.append(before_timestamp)
         pages = ([], rows[50:], rows[:50])
-        return {"rows": pages[len(calls) - 1]}
+        return pages[len(calls) - 1]
 
     monkeypatch.setattr(pipeline.TOKEN_CLIENT, "get_candles", get_candles)
     result = await pipeline.run_fractal_scan(
@@ -166,9 +166,9 @@ async def test_onchain_history_stops_when_a_page_makes_no_progress(
         *,
         chain_id: int,
         before_timestamp: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> list[dict[str, Any]]:
         calls.append(before_timestamp)
-        return {"rows": rows}
+        return rows
 
     monkeypatch.setattr(pipeline.TOKEN_CLIENT, "get_candles", get_candles)
     result = await pipeline.run_fractal_scan(
@@ -230,7 +230,17 @@ def test_forward_horizons_are_wall_clock_based() -> None:
 
 
 @pytest.mark.parametrize(
-    ("interval", "interval_ms", "expected_horizons"),
+    ("value", "expected"),
+    [("btc/usdt", "BTC"), ("WETH-USDC", "ETH"), ("wbtc", "BTC")],
+)
+def test_ccxt_symbol_reuses_canonical_symbol_normalization(
+    value: str, expected: str
+) -> None:
+    assert pipeline._normalize_ccxt_symbol(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("expected_interval", "interval_ms", "expected_horizons"),
     [
         (
             "5m",
@@ -246,7 +256,7 @@ def test_forward_horizons_are_wall_clock_based() -> None:
 )
 async def test_ccxt_proxy_reuses_exact_scan_at_selected_timeframe(
     monkeypatch: pytest.MonkeyPatch,
-    interval: str,
+    expected_interval: str,
     interval_ms: int,
     expected_horizons: dict[str, int],
 ) -> None:
@@ -254,13 +264,13 @@ async def test_ccxt_proxy_reuses_exact_scan_at_selected_timeframe(
     ccxt_calls = 0
     rows = _rows(600, interval_ms=interval_ms)
 
-    async def get_candles_response(
+    async def get_candles(
         coin: str, start_ms: int, end_ms: int, requested_interval: str
-    ) -> dict[str, Any]:
+    ) -> list[dict[str, Any]]:
         nonlocal exact_calls
         exact_calls += 1
-        assert requested_interval == interval
-        return {"rows": rows}
+        assert requested_interval == expected_interval
+        return rows
 
     async def fetch_prices(
         symbols: list[str],
@@ -273,18 +283,17 @@ async def test_ccxt_proxy_reuses_exact_scan_at_selected_timeframe(
         nonlocal ccxt_calls
         ccxt_calls += 1
         assert symbols == ["BTC"]
-        assert interval == requested_interval
+        assert interval == expected_interval
         assert source == "ccxt"
         return pd.DataFrame(
             {"BTC": [float(row["c"]) for row in rows]},
             index=pd.to_datetime([int(row["t"]) for row in rows], unit="ms", utc=True),
         )
 
-    requested_interval = interval
     monkeypatch.setattr(
         pipeline.HYPERLIQUID_DATA_CLIENT,
-        "get_candles_response",
-        get_candles_response,
+        "get_candles",
+        get_candles,
     )
     monkeypatch.setattr(
         "wayfinder_paths.core.backtesting.data.fetch_prices",
@@ -292,7 +301,7 @@ async def test_ccxt_proxy_reuses_exact_scan_at_selected_timeframe(
     )
     request = create_fractal_scan_request(
         kind="hyperliquid",
-        interval=interval,
+        interval=expected_interval,
         start_ms=584 * interval_ms,
         end_ms=595 * interval_ms,
         display_symbol="WBTC",
@@ -318,7 +327,7 @@ async def test_ccxt_proxy_reuses_exact_scan_at_selected_timeframe(
     assert proxy["proxy"] == {
         "symbol": "BTC",
         "source": "ccxt:binance",
-        "interval": interval,
+        "interval": expected_interval,
     }
     assert {
         label: details["bars"] for label, details in proxy["forward_horizons"].items()

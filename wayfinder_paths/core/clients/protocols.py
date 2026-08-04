@@ -28,15 +28,6 @@ from wayfinder_paths.core.clients.TokenClient import (
 
 
 class TokenClientProtocol(Protocol):
-    async def get_candles(
-        self,
-        coin: str,
-        interval: str,
-        *,
-        chain_id: int,
-        before_timestamp: int | None = None,
-    ) -> dict[str, Any]: ...
-
     async def get_token_details(
         self,
         query: str,

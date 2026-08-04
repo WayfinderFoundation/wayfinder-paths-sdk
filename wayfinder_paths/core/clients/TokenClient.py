@@ -5,7 +5,8 @@ from typing import Any, NotRequired, Required, TypedDict
 
 from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
 from wayfinder_paths.core.config import get_api_base_url
-from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA, SOL_DECIMALS
+from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
+from wayfinder_paths.core.utils.svm_tokens import SOL_DECIMALS
 
 
 class TokenLinks(TypedDict):
@@ -96,7 +97,7 @@ class TokenClient(WayfinderClient):
         *,
         chain_id: int,
         before_timestamp: int | None = None,
-    ) -> dict[str, Any]:
+    ) -> list[dict[str, Any]]:
         url = f"{get_api_base_url()}/blockchain/tokens/candles/"
         params: dict[str, str | int] = {
             "coin": coin,
@@ -107,7 +108,7 @@ class TokenClient(WayfinderClient):
             params["before_timestamp"] = before_timestamp
         response = await self._authed_request("GET", url, params=params)
         response.raise_for_status()
-        return response.json()
+        return response.json().get("rows", [])
 
     async def get_token_details(
         self, query: str, market_data: bool = False, chain_id: int | None = None

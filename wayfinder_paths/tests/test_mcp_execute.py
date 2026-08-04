@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from wayfinder_paths.core.constants import ZERO_ADDRESS
-from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA, SOL_DECIMALS
+from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
+from wayfinder_paths.core.utils.svm_tokens import SOL_DECIMALS
 from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.mcp.tools.execute import onchain_swap
 

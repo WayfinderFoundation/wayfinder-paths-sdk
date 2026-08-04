@@ -6,7 +6,8 @@ import httpx
 import pytest
 
 from wayfinder_paths.core.clients.TokenClient import TokenClient
-from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA, SOL_DECIMALS
+from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
+from wayfinder_paths.core.utils.svm_tokens import SOL_DECIMALS
 from wayfinder_paths.mcp.tools.tokens import (
     onchain_fuzzy_search_tokens,
     onchain_get_gas_token,
@@ -98,6 +99,29 @@ async def test_solana_gas_token_uses_canonical_sdk_metadata():
         "id": CHAIN_ID_SOLANA,
         "code": "solana",
         "name": "Solana",
+    }
+
+
+@pytest.mark.asyncio
+async def test_token_candles_returns_rows():
+    client = TokenClient()
+    response = httpx.Response(
+        200,
+        json={"rows": [{"t": 1, "c": "1.0"}]},
+        request=httpx.Request("GET", "https://example.test/tokens/candles/"),
+    )
+    request = AsyncMock(return_value=response)
+    try:
+        with patch.object(client, "_authed_request", new=request):
+            rows = await client.get_candles("0xabc", "5m", chain_id=8453)
+    finally:
+        await client.client.aclose()
+
+    assert rows == [{"t": 1, "c": "1.0"}]
+    assert request.await_args.kwargs["params"] == {
+        "coin": "0xabc",
+        "interval": "5m",
+        "chain_id": 8453,
     }
 
 

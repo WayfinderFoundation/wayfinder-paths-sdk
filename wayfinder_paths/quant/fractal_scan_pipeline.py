@@ -8,7 +8,7 @@ import math
 import time
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, TypedDict
 
@@ -16,6 +16,7 @@ from wayfinder_paths.core.clients.HyperliquidDataClient import (
     HYPERLIQUID_DATA_CLIENT,
 )
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
+from wayfinder_paths.core.utils.symbols import normalize_symbol
 from wayfinder_paths.quant.fractal_scan import (
     MIN_PATTERN_BARS,
     PriceSeries,
@@ -116,19 +117,12 @@ async def run_fractal_scan(
 
     horizon_bars = _forward_horizon_bars(window.interval_ms)
     match_started = time.perf_counter()
-    analysis = find_price_analogs(
+    analysis, matches, distributions = _analyze_history(
         _series(symbol, source, selected_rows),
-        [_series(symbol, source, rows)],
-        horizons=tuple(sorted(set(horizon_bars.values()))),
-        top=TOP_MATCHES,
-        shape_paths=5,
+        _series(symbol, source, rows),
+        horizon_bars,
     )
     match_ms = (time.perf_counter() - match_started) * 1000
-    matches = _label_forward_outcomes(analysis["matches"], horizon_bars)
-    distributions = {
-        label: analysis["outcome_distributions"][f"{bars}_bar"]
-        for label, bars in horizon_bars.items()
-    }
     if len(matches) < 8:
         warnings.append("small_analogue_sample")
 
@@ -169,7 +163,7 @@ async def run_fractal_scan(
         },
         "levels": _selection_levels(request, selected_rows),
         "evidence": {"same_market_samples": len(matches)},
-        "warnings": list(dict.fromkeys(warnings)),
+        "warnings": warnings,
         "timing_ms": {
             "data_fetch": round(data_fetch_ms, 1),
             "matching": round(match_ms, 1),
@@ -207,6 +201,8 @@ async def run_fractal_scan_ccxt_proxy(
     )
     end = datetime.fromtimestamp(end_ms / 1000, tz=UTC)
 
+    # Keep pandas and the CCXT adapter off the MCP startup path. They are only
+    # needed when the quant agent explicitly asks for proxy evidence.
     from wayfinder_paths.core.backtesting.data import fetch_prices
 
     started = time.perf_counter()
@@ -242,17 +238,12 @@ async def run_fractal_scan_ccxt_proxy(
         label: int(details["bars"])
         for label, details in exact["forward_horizons"].items()
     }
-    analysis = find_price_analogs(
+    _, matches, distributions = _analyze_history(
         pattern,
-        [history],
-        horizons=tuple(sorted(set(horizon_bars.values()))),
-        top=TOP_MATCHES,
-        shape_paths=5,
+        history,
+        horizon_bars,
+        match_scope="same_asset_proxy",
     )
-    matches = [
-        {**match, "match_scope": "same_asset_proxy"}
-        for match in _label_forward_outcomes(analysis["matches"], horizon_bars)
-    ]
     warnings = ["ccxt_same_asset_proxy"]
     if len(matches) < 8:
         warnings.append("small_proxy_sample")
@@ -263,10 +254,7 @@ async def run_fractal_scan_ccxt_proxy(
         "proxy": {"symbol": proxy_symbol, "source": source, "interval": interval},
         "coverage": {"history_bars": len(values), "source": source},
         "matches": matches,
-        "outcome_distributions": {
-            label: analysis["outcome_distributions"][f"{bars}_bar"]
-            for label, bars in horizon_bars.items()
-        },
+        "outcome_distributions": distributions,
         "forward_horizons": exact["forward_horizons"],
         "evidence": {"same_asset_proxy_samples": len(matches)},
         "warnings": warnings,
@@ -279,7 +267,7 @@ async def run_fractal_scan_ccxt_proxy(
 
 def _scan_identity(request: FractalScanRequest) -> str:
     encoded = json.dumps(
-        request.__dict__, sort_keys=True, separators=(",", ":")
+        asdict(request), sort_keys=True, separators=(",", ":")
     ).encode()
     return hashlib.sha256(encoded).hexdigest()[:24]
 
@@ -318,10 +306,10 @@ def _scan_window(request: FractalScanRequest, now_ms: int) -> _ScanWindow:
 
 async def _hyperliquid_history(symbol: str, window: _ScanWindow) -> list[CandleRow]:
     start_ms = window.end_ms - _history_lookback_ms(window.interval_ms)
-    response = await HYPERLIQUID_DATA_CLIENT.get_candles_response(
+    response_rows = await HYPERLIQUID_DATA_CLIENT.get_candles(
         symbol, start_ms, window.end_ms, window.interval
     )
-    rows = _normalize_rows(response.get("rows") or [])[-MAX_HISTORY_BARS:]
+    rows = _normalize_rows(response_rows)[-MAX_HISTORY_BARS:]
     if not rows:
         raise ValueError(
             f"No completed {window.interval} candles are available for {symbol}"
@@ -342,14 +330,15 @@ async def _onchain_history(
     request_limit = MAX_ONCHAIN_HISTORY_PAGES
 
     while request_count < request_limit and len(rows) < MAX_ONCHAIN_HISTORY_BARS:
-        page = await TOKEN_CLIENT.get_candles(
-            request.token_address,
-            window.interval,
-            chain_id=request.chain_id,
-            before_timestamp=before_timestamp,
+        page_rows = _normalize_rows(
+            await TOKEN_CLIENT.get_candles(
+                request.token_address,
+                window.interval,
+                chain_id=request.chain_id,
+                before_timestamp=before_timestamp,
+            )
         )
         request_count += 1
-        page_rows = _normalize_rows(list(page.get("rows") or []))
 
         # Some pools reject a bounded first page despite having recent history.
         # Retry the provider default once, then continue normal backward paging.
@@ -435,22 +424,39 @@ def _forward_horizon_bars(interval_ms: int) -> dict[str, int]:
     }
 
 
-def _label_forward_outcomes(
-    matches: list[dict[str, Any]], horizon_bars: dict[str, int]
-) -> list[dict[str, Any]]:
-    labelled = []
-    for match in matches:
-        raw_outcomes = match["outcomes"]
-        labelled.append(
-            {
-                **match,
-                "outcomes": {
-                    f"{label}_bps": raw_outcomes[f"{bars}_bar_bps"]
-                    for label, bars in horizon_bars.items()
-                },
-            }
-        )
-    return labelled
+def _analyze_history(
+    pattern: PriceSeries,
+    history: PriceSeries,
+    horizon_bars: dict[str, int],
+    *,
+    match_scope: str | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """Apply the shared matcher configuration and label wall-clock outcomes."""
+
+    analysis = find_price_analogs(
+        pattern,
+        [history],
+        horizons=tuple(sorted(set(horizon_bars.values()))),
+        top=TOP_MATCHES,
+        shape_paths=5,
+    )
+    matches = [
+        {
+            **match,
+            "outcomes": {
+                f"{label}_bps": match["outcomes"][f"{bars}_bar_bps"]
+                for label, bars in horizon_bars.items()
+            },
+        }
+        for match in analysis["matches"]
+    ]
+    if match_scope is not None:
+        matches = [{**match, "match_scope": match_scope} for match in matches]
+    distributions = {
+        label: analysis["outcome_distributions"][f"{bars}_bar"]
+        for label, bars in horizon_bars.items()
+    }
+    return analysis, matches, distributions
 
 
 def _selection_levels(
@@ -478,7 +484,9 @@ def _normalize_hl_coin(value: str) -> str:
 
 
 def _normalize_ccxt_symbol(value: str) -> str:
-    symbol = _normalize_hl_coin(value).removesuffix("USDT")
+    symbol = normalize_symbol(value).upper()
+    for quote in ("USDC", "USDT"):
+        symbol = symbol.removesuffix(quote)
     symbol = {"WBTC": "BTC", "WETH": "ETH"}.get(symbol, symbol)
     if not symbol.isalnum() or len(symbol) > 16:
         raise ValueError("symbol must be a simple CCXT base asset such as BTC or ETH")
