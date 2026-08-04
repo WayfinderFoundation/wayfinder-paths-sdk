@@ -103,6 +103,29 @@ async def test_solana_gas_token_uses_canonical_sdk_metadata():
 
 
 @pytest.mark.asyncio
+async def test_token_candles_returns_rows():
+    client = TokenClient()
+    response = httpx.Response(
+        200,
+        json={"rows": [{"t": 1, "c": "1.0"}]},
+        request=httpx.Request("GET", "https://example.test/tokens/candles/"),
+    )
+    request = AsyncMock(return_value=response)
+    try:
+        with patch.object(client, "_authed_request", new=request):
+            rows = await client.get_candles("0xabc", "5m", chain_id=8453)
+    finally:
+        await client.client.aclose()
+
+    assert rows == [{"t": 1, "c": "1.0"}]
+    assert request.await_args.kwargs["params"] == {
+        "coin": "0xabc",
+        "interval": "5m",
+        "chain_id": 8453,
+    }
+
+
+@pytest.mark.asyncio
 async def test_fuzzy_search_tokens_happy_path():
     fake_client = AsyncMock()
     fake_client.fuzzy_search = AsyncMock(return_value={"results": [{"id": "foo"}]})

@@ -25,6 +25,8 @@ def test_build_mcp_registers_tools() -> None:
         "sports_snapshot",
         "sports_backtest_state",
         "sports_provider",
+        "quant_fractal_scan",
+        "quant_fractal_scan_ccxt_proxy",
     ):
         assert required in names, f"missing tool: {required}"
 

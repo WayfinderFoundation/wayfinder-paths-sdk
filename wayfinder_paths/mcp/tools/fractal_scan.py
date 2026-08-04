@@ -1,0 +1,64 @@
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from wayfinder_paths.mcp.utils import catch_errors, ok
+from wayfinder_paths.quant.fractal_scan_context import create_fractal_scan_request
+from wayfinder_paths.quant.fractal_scan_pipeline import (
+    run_fractal_scan,
+    run_fractal_scan_ccxt_proxy,
+)
+
+
+@catch_errors
+async def quant_fractal_scan(
+    kind: Literal["hyperliquid", "onchain"],
+    interval: str,
+    start_ms: int,
+    end_ms: int,
+    display_symbol: str,
+    market_id: str,
+    chart_id: str,
+    selected_price_min: float | None = None,
+    selected_price_max: float | None = None,
+    hl_coin: str | None = None,
+    chain_id: int | None = None,
+    token_address: str | None = None,
+) -> dict[str, Any]:
+    """Run a deterministic exact-market historical analogue scan.
+
+    The result is the same-market baseline. The quant agent decides whether a
+    broader comparison is useful and selects any additional data itself.
+
+    Hyperliquid scans also require hl_coin; onchain scans require chain_id and
+    an exact token_address. Identical requests reuse a short-lived result cache.
+    """
+    request = create_fractal_scan_request(
+        kind=kind,
+        interval=interval,
+        start_ms=start_ms,
+        end_ms=end_ms,
+        display_symbol=display_symbol,
+        market_id=market_id,
+        chart_id=chart_id,
+        selected_price_min=selected_price_min,
+        selected_price_max=selected_price_max,
+        hl_coin=hl_coin,
+        chain_id=chain_id,
+        token_address=token_address,
+    )
+    return ok(await run_fractal_scan(request=request))
+
+
+@catch_errors
+async def quant_fractal_scan_ccxt_proxy(
+    scan_id: str,
+    symbol: str,
+) -> dict[str, Any]:
+    """Compare a cached Fractal Scan pattern with a same-asset CCXT proxy.
+
+    Use only after ``quant_fractal_scan`` when the exact-market baseline is
+    thin and the selected asset has a defensible CEX spot analogue. The result
+    remains separate from exact-market evidence.
+    """
+    return ok(await run_fractal_scan_ccxt_proxy(scan_id=scan_id, symbol=symbol))

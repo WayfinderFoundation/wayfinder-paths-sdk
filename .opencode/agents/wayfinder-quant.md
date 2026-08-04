@@ -11,7 +11,11 @@ permission:
   write: allow
   external_directory:
     "*": allow
+  skill:
+    fractal-scan: allow
   wayfinder_*: deny
+  wayfinder_quant_fractal_scan: allow
+  wayfinder_quant_fractal_scan_ccxt_proxy: allow
   # core_*
   wayfinder_core_get_adapters_and_strategies: allow
   wayfinder_core_run_script: allow
@@ -53,6 +57,23 @@ approval-gated, or unavailable, stop and return a compact blocker instead of wai
 hidden subagent approval prompts can strand the parent workflow.
 
 ## Data and Scripts
+
+### Fractal Scan fast path
+
+When Known Context has `mode="fractal_scan"`, load `/fractal-scan` and follow
+that workflow before the general skill and scripting rules below. Start with
+the exact chart identifiers and `wayfinder_quant_fractal_scan`. If the baseline
+is weak, choose any additional comparisons yourself from the market context and
+fetch only their histories. Prefer `wayfinder_quant_fractal_scan_ccxt_proxy`
+for a defensible same-asset CEX comparison. You may add bounded analysis or a
+useful `visualSpec`, but never repeat the exact candle pull or present proxy
+matches as exact evidence.
+
+Return a concise technical read with the strongest and weakest evidence,
+invalidation levels, sample-size caveats, and a `contextForNextAgent` that
+preserves `scan_id`, `market_id`, and `chart_id`.
+
+This fast path takes precedence over the general routing rules below.
 
 Required skill loads:
 
