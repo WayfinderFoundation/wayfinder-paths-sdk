@@ -24,11 +24,17 @@ same asset or a contextually relevant market would materially help. Select
 those comparisons from the user's market and thesis; do not use a fixed peer
 list merely to increase sample size.
 
-Use existing data tools or a bounded script for additional histories. The SDK's
-`PriceSeries` and `find_price_analogs` helpers are available when deterministic
-comparison is useful. Reconstruct the selected query from
-`pattern.shape_path_bps`; fetch only candidate histories, never the exact
-market again. Keep the original baseline separate and tie all additional
+For a liquid asset with a defensible CEX spot analogue, prefer
+`wayfinder_quant_fractal_scan_ccxt_proxy(scan_id=..., symbol=...)`. It reuses
+the cached selected pattern, fetches the same timeframe from CCXT, and returns
+the proxy evidence separately. Do not use it for a long-tail token merely
+because its ticker resembles a listed asset.
+
+For other contextually relevant comparisons, use existing data tools or a
+bounded script. The SDK's `PriceSeries` and `find_price_analogs` helpers are
+available when deterministic comparison is useful. Reconstruct the selected
+query from `pattern.shape_path_bps`; fetch only candidate histories, never the
+exact market again. Keep the original baseline separate and tie all additional
 analysis to completed candles at the analyzed interval.
 
 Never silently blend fuzzy evidence into exact evidence. State:

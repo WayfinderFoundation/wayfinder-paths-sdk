@@ -67,7 +67,10 @@ from wayfinder_paths.mcp.tools.evm_contract import (
     contracts_execute,
 )
 from wayfinder_paths.mcp.tools.execute import onchain_send, onchain_swap
-from wayfinder_paths.mcp.tools.fractal_scan import quant_fractal_scan
+from wayfinder_paths.mcp.tools.fractal_scan import (
+    quant_fractal_scan,
+    quant_fractal_scan_ccxt_proxy,
+)
 from wayfinder_paths.mcp.tools.goldsky_direct import (
     research_goldsky_graphql,
     research_goldsky_schema,
@@ -173,6 +176,7 @@ def build_mcp(
 
     # ─── quant_* (hidden quant-worker analytics) ──────────────────────
     mcp.tool()(quant_fractal_scan)
+    mcp.tool()(quant_fractal_scan_ccxt_proxy)
 
     # ─── hyperliquid_* ─────────────────────────────────────────────────
     # Coin naming reference: /using-hyperliquid-adapter/rules/coin-naming.md.

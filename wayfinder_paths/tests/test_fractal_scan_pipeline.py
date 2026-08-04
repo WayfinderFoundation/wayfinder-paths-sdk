@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pandas as pd
 import pytest
 
 from wayfinder_paths.quant import fractal_scan_pipeline as pipeline
@@ -12,12 +13,17 @@ from wayfinder_paths.quant.fractal_scan_context import (
 INTERVAL_MS = 5 * 60_000
 
 
-def _rows(count: int, *, scale: float = 1.0) -> list[dict[str, Any]]:
+def _rows(
+    count: int,
+    *,
+    scale: float = 1.0,
+    interval_ms: int = INTERVAL_MS,
+) -> list[dict[str, Any]]:
     shape = [100, 101, 103, 102, 105, 107, 106, 109, 111, 110, 113, 115]
     closes = [shape[index % len(shape)] * scale for index in range(count)]
     return [
         {
-            "t": index * INTERVAL_MS,
+            "t": index * interval_ms,
             "o": close,
             "h": close * 1.01,
             "l": close * 0.99,
@@ -221,6 +227,105 @@ def test_forward_horizons_are_wall_clock_based() -> None:
         "12h": 3,
         "24h": 6,
     }
+
+
+@pytest.mark.parametrize(
+    ("interval", "interval_ms", "expected_horizons"),
+    [
+        (
+            "5m",
+            5 * 60_000,
+            {"1h": 12, "4h": 48, "12h": 144, "24h": 288},
+        ),
+        (
+            "15m",
+            15 * 60_000,
+            {"1h": 4, "4h": 16, "12h": 48, "24h": 96},
+        ),
+    ],
+)
+async def test_ccxt_proxy_reuses_exact_scan_at_selected_timeframe(
+    monkeypatch: pytest.MonkeyPatch,
+    interval: str,
+    interval_ms: int,
+    expected_horizons: dict[str, int],
+) -> None:
+    exact_calls = 0
+    ccxt_calls = 0
+    rows = _rows(600, interval_ms=interval_ms)
+
+    async def get_candles_response(
+        coin: str, start_ms: int, end_ms: int, requested_interval: str
+    ) -> dict[str, Any]:
+        nonlocal exact_calls
+        exact_calls += 1
+        assert requested_interval == interval
+        return {"rows": rows}
+
+    async def fetch_prices(
+        symbols: list[str],
+        start_date: str,
+        end_date: str,
+        *,
+        interval: str,
+        source: str,
+    ) -> pd.DataFrame:
+        nonlocal ccxt_calls
+        ccxt_calls += 1
+        assert symbols == ["BTC"]
+        assert interval == requested_interval
+        assert source == "ccxt"
+        return pd.DataFrame(
+            {"BTC": [float(row["c"]) for row in rows]},
+            index=pd.to_datetime([int(row["t"]) for row in rows], unit="ms", utc=True),
+        )
+
+    requested_interval = interval
+    monkeypatch.setattr(
+        pipeline.HYPERLIQUID_DATA_CLIENT,
+        "get_candles_response",
+        get_candles_response,
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.core.backtesting.data.fetch_prices",
+        fetch_prices,
+    )
+    request = create_fractal_scan_request(
+        kind="hyperliquid",
+        interval=interval,
+        start_ms=584 * interval_ms,
+        end_ms=595 * interval_ms,
+        display_symbol="WBTC",
+        market_id="hl-perp-btc",
+        chart_id="hl-perp-btc",
+        hl_coin="BTC",
+    )
+    exact = await pipeline.run_fractal_scan(
+        request=request,
+        now_ms=610 * interval_ms,
+    )
+    proxy = await pipeline.run_fractal_scan_ccxt_proxy(
+        scan_id=exact["scan_id"],
+        symbol="WBTC",
+    )
+    cached_proxy = await pipeline.run_fractal_scan_ccxt_proxy(
+        scan_id=exact["scan_id"],
+        symbol="WBTC",
+    )
+
+    assert exact_calls == 1
+    assert ccxt_calls == 1
+    assert proxy["proxy"] == {
+        "symbol": "BTC",
+        "source": "ccxt:binance",
+        "interval": interval,
+    }
+    assert {
+        label: details["bars"] for label, details in proxy["forward_horizons"].items()
+    } == expected_horizons
+    assert proxy["matches"]
+    assert {match["match_scope"] for match in proxy["matches"]} == {"same_asset_proxy"}
+    assert cached_proxy == proxy
 
 
 def test_request_requires_exact_market_identity() -> None:

@@ -4,7 +4,10 @@ from typing import Any, Literal
 
 from wayfinder_paths.mcp.utils import catch_errors, ok
 from wayfinder_paths.quant.fractal_scan_context import create_fractal_scan_request
-from wayfinder_paths.quant.fractal_scan_pipeline import run_fractal_scan
+from wayfinder_paths.quant.fractal_scan_pipeline import (
+    run_fractal_scan,
+    run_fractal_scan_ccxt_proxy,
+)
 
 
 @catch_errors
@@ -45,3 +48,17 @@ async def quant_fractal_scan(
         token_address=token_address,
     )
     return ok(await run_fractal_scan(request=request))
+
+
+@catch_errors
+async def quant_fractal_scan_ccxt_proxy(
+    scan_id: str,
+    symbol: str,
+) -> dict[str, Any]:
+    """Compare a cached Fractal Scan pattern with a same-asset CCXT proxy.
+
+    Use only after ``quant_fractal_scan`` when the exact-market baseline is
+    thin and the selected asset has a defensible CEX spot analogue. The result
+    remains separate from exact-market evidence.
+    """
+    return ok(await run_fractal_scan_ccxt_proxy(scan_id=scan_id, symbol=symbol))

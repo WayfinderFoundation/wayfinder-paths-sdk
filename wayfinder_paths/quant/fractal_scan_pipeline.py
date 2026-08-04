@@ -177,10 +177,103 @@ async def run_fractal_scan(
         },
         "data_ready": True,
     }
-    _SCAN_CACHE[scan_id] = _CachedScan(result)
-    _SCAN_CACHE.move_to_end(scan_id)
-    while len(_SCAN_CACHE) > SCAN_CACHE_MAX_ENTRIES:
-        _SCAN_CACHE.popitem(last=False)
+    _cache_scan(scan_id, result)
+    return result
+
+
+async def run_fractal_scan_ccxt_proxy(
+    *,
+    scan_id: str,
+    symbol: str,
+) -> dict[str, Any]:
+    """Compare a cached exact pattern with an explicitly selected CCXT asset."""
+
+    exact = _cached_scan(scan_id)
+    if exact is None or exact.get("mode") != "fractal_scan":
+        raise ValueError("scan_id is unknown or expired; run the exact scan first")
+
+    proxy_symbol = _normalize_ccxt_symbol(symbol)
+    cache_key = f"{scan_id}:ccxt:{proxy_symbol}"
+    if cached := _cached_scan(cache_key):
+        return cached
+
+    analyzed = exact["analyzed_window"]
+    interval = str(analyzed["interval"])
+    interval_ms = INTERVAL_MS[interval]
+    end_ms = int(analyzed["end_ms"])
+    start = datetime.fromtimestamp(
+        (end_ms - _history_lookback_ms(interval_ms)) / 1000,
+        tz=UTC,
+    )
+    end = datetime.fromtimestamp(end_ms / 1000, tz=UTC)
+
+    from wayfinder_paths.core.backtesting.data import fetch_prices
+
+    started = time.perf_counter()
+    prices = await fetch_prices(
+        [proxy_symbol],
+        start.isoformat(),
+        end.isoformat(),
+        interval=interval,
+        source="ccxt",
+    )
+    values = prices[proxy_symbol].dropna().tail(MAX_HISTORY_BARS)
+    if values.empty:
+        raise ValueError(f"No CCXT candles are available for {proxy_symbol}")
+
+    source = "ccxt:binance"
+    shape = [float(value) for value in exact["pattern"]["shape_path_bps"]]
+    pattern_start_ms = int(analyzed["start_ms"])
+    pattern = PriceSeries(
+        symbol=proxy_symbol,
+        source=source,
+        timestamps_ms=[
+            pattern_start_ms + index * interval_ms for index in range(len(shape))
+        ],
+        closes=[1 + value / 10_000 for value in shape],
+    )
+    history = PriceSeries(
+        symbol=proxy_symbol,
+        source=source,
+        timestamps_ms=[int(timestamp.timestamp() * 1000) for timestamp in values.index],
+        closes=[float(value) for value in values],
+    )
+    horizon_bars = {
+        label: int(details["bars"])
+        for label, details in exact["forward_horizons"].items()
+    }
+    analysis = find_price_analogs(
+        pattern,
+        [history],
+        horizons=tuple(sorted(set(horizon_bars.values()))),
+        top=TOP_MATCHES,
+        shape_paths=5,
+    )
+    matches = [
+        {**match, "match_scope": "same_asset_proxy"}
+        for match in _label_forward_outcomes(analysis["matches"], horizon_bars)
+    ]
+    warnings = ["ccxt_same_asset_proxy"]
+    if len(matches) < 8:
+        warnings.append("small_proxy_sample")
+    result = {
+        "schema_version": 3,
+        "mode": "fractal_scan_proxy",
+        "scan_id": scan_id,
+        "proxy": {"symbol": proxy_symbol, "source": source, "interval": interval},
+        "coverage": {"history_bars": len(values), "source": source},
+        "matches": matches,
+        "outcome_distributions": {
+            label: analysis["outcome_distributions"][f"{bars}_bar"]
+            for label, bars in horizon_bars.items()
+        },
+        "forward_horizons": exact["forward_horizons"],
+        "evidence": {"same_asset_proxy_samples": len(matches)},
+        "warnings": warnings,
+        "timing_ms": {"total": round((time.perf_counter() - started) * 1000, 1)},
+        "data_ready": True,
+    }
+    _cache_scan(cache_key, result)
     return result
 
 
@@ -384,6 +477,14 @@ def _normalize_hl_coin(value: str) -> str:
     return value.strip().upper().removesuffix("-USDC").removesuffix("/USDC")
 
 
+def _normalize_ccxt_symbol(value: str) -> str:
+    symbol = _normalize_hl_coin(value).removesuffix("USDT")
+    symbol = {"WBTC": "BTC", "WETH": "ETH"}.get(symbol, symbol)
+    if not symbol.isalnum() or len(symbol) > 16:
+        raise ValueError("symbol must be a simple CCXT base asset such as BTC or ETH")
+    return symbol
+
+
 def _float_or_none(value: Any) -> float | None:
     try:
         result = float(value)
@@ -399,6 +500,13 @@ def _cached_scan(scan_id: str) -> dict[str, Any] | None:
         return None
     _SCAN_CACHE.move_to_end(scan_id)
     return cached.result
+
+
+def _cache_scan(scan_id: str, result: dict[str, Any]) -> None:
+    _SCAN_CACHE[scan_id] = _CachedScan(result)
+    _SCAN_CACHE.move_to_end(scan_id)
+    while len(_SCAN_CACHE) > SCAN_CACHE_MAX_ENTRIES:
+        _SCAN_CACHE.popitem(last=False)
 
 
 def _evict_expired_scans() -> None:

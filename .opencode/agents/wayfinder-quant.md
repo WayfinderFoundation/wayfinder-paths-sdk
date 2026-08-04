@@ -15,6 +15,7 @@ permission:
     fractal-scan: allow
   wayfinder_*: deny
   wayfinder_quant_fractal_scan: allow
+  wayfinder_quant_fractal_scan_ccxt_proxy: allow
   # core_*
   wayfinder_core_get_adapters_and_strategies: allow
   wayfinder_core_run_script: allow
@@ -63,9 +64,10 @@ When Known Context has `mode="fractal_scan"`, load `/fractal-scan` and follow
 that workflow before the general skill and scripting rules below. Start with
 the exact chart identifiers and `wayfinder_quant_fractal_scan`. If the baseline
 is weak, choose any additional comparisons yourself from the market context and
-fetch only their histories. You may add bounded analysis or a useful
-`visualSpec`, but never repeat the exact candle pull or present proxy matches as
-exact evidence.
+fetch only their histories. Prefer `wayfinder_quant_fractal_scan_ccxt_proxy`
+for a defensible same-asset CEX comparison. You may add bounded analysis or a
+useful `visualSpec`, but never repeat the exact candle pull or present proxy
+matches as exact evidence.
 
 Return a concise technical read with the strongest and weakest evidence,
 invalidation levels, sample-size caveats, and a `contextForNextAgent` that
