@@ -12,14 +12,18 @@ from wayfinder_paths.jobs.replication import replication_job
 from wayfinder_paths.jobs.store import JobStore
 
 
-def _root_with_dataset(tmp_path, *, days, days_received):
+def _root_with_dataset(tmp_path, *, days, days_received, source="ccxt"):
     root = tmp_path
     (root / "results" / "backtest").mkdir(parents=True, exist_ok=True)
     (root / "results" / "backtest" / "input_bars.json").write_text(
         json.dumps(
             {
                 "bars": [],
-                "metadata": {"days": days, "days_received": days_received},
+                "metadata": {
+                    "days": days,
+                    "days_received": days_received,
+                    "source": source,
+                },
             }
         ),
         encoding="utf-8",
@@ -47,6 +51,16 @@ def test_evidence_window_policy_paths(tmp_path) -> None:
     )[0]
     assert not check["passed"]
     assert "--source ccxt" in check["error"]
+
+    # VENUE shortfall is NOT proof — ccxt has the history (the Aug 2 hole:
+    # a default-source refetch got 40d from the venue and passed as proven).
+    check = _evidence_window_check(
+        _root_with_dataset(
+            tmp_path / "g", days=120, days_received=40.4, source="live_fetch"
+        )
+    )[0]
+    assert not check["passed"]
+    assert "NOT proof" in check["error"] and "--source ccxt" in check["error"]
 
     # Below the floor even with the target requested -> fail.
     check = _evidence_window_check(
@@ -266,3 +280,50 @@ def test_incremental_provenance_mismatch_forces_full(tmp_path) -> None:
     path.write_text(_json.dumps(doc), encoding="utf-8")
     build_live_dataset(job_id, days=5, store=store, source="ccxt", feed=feed)
     assert feed.lookbacks[1] == 120  # full 5d again
+
+
+def test_replication_window_change_repins_not_decays(tmp_path, monkeypatch) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("rep-window", agent_mode="intervene")
+    store.save(job)
+    runs = [
+        {  # 120d baseline, strong
+            "revision": "rev-a",
+            "dataset": {"days": 120, "days_received": 119.0, "source": "ccxt"},
+            "result": {
+                "stats": {
+                    "net_return": 0.20,
+                    "avg_trade_pnl": 0.006,
+                    "total_trades": 1300,
+                    "win_rate": 0.51,
+                }
+            },
+        },
+        {  # window collapsed to 40d — NOT decay; re-pin
+            "revision": "rev-a",
+            "dataset": {"days": 120, "days_received": 40.0, "source": "live_fetch"},
+            "result": {
+                "stats": {
+                    "net_return": 0.008,
+                    "avg_trade_pnl": 0.007,
+                    "total_trades": 226,
+                    "win_rate": 0.52,
+                }
+            },
+        },
+    ]
+    calls = {"n": 0}
+
+    def fake_backtest(job_id, **kwargs):
+        payload = runs[min(calls["n"], len(runs) - 1)]
+        calls["n"] += 1
+        return payload
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.job.backtest_execution_job", fake_backtest
+    )
+    first = replication_job(job.id, store=store)
+    assert first["baseline"]["dataset_days"] == 119.0
+    second = replication_job(job.id, store=store, force=True)
+    assert second["decayed"] is False  # window change, not edge decay
+    assert second["baseline"]["dataset_days"] == 40.0  # re-pinned

@@ -83,9 +83,20 @@ def _compute(
         "run_at": utc_now_iso(),
     }
 
+    current["dataset_days"] = (
+        dataset_meta.get("days_received") or dataset_meta.get("days")
+        if isinstance(dataset_meta, dict)
+        else None
+    )
     baseline = None
     if cached and cached.get("revision") == revision:
         baseline = cached.get("baseline")
+    if baseline and _window_changed(baseline, current):
+        # Different dataset window => not comparable. A 120d baseline vs a
+        # 40d rerun reads as "decay" when only the window shrank (Aug 4
+        # false positive). Re-pin and note it — the evidence_window gate
+        # separately polices whether the window itself is acceptable.
+        baseline = None
     if not baseline:
         # First run for this revision pins its baseline — subsequent runs
         # measure drift against it. A new revision resets the baseline (its
@@ -114,6 +125,17 @@ def _compute(
         ),
         "computed_at": utc_now_iso(),
     }
+
+
+def _window_changed(baseline: dict[str, Any], current: dict[str, Any]) -> bool:
+    try:
+        base_days = float(baseline.get("dataset_days") or 0.0)
+        now_days = float(current.get("dataset_days") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if not base_days or not now_days:
+        return False
+    return abs(now_days - base_days) / base_days > 0.2
 
 
 def _decayed(baseline: dict[str, Any], current: dict[str, Any]) -> bool:
