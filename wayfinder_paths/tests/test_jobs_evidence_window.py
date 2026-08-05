@@ -12,7 +12,7 @@ from wayfinder_paths.jobs.replication import replication_job
 from wayfinder_paths.jobs.store import JobStore
 
 
-def _root_with_dataset(tmp_path, *, days, days_received, source="ccxt"):
+def _root_with_dataset(tmp_path, *, days, days_received, source="ccxt", extra=None):
     root = tmp_path
     (root / "results" / "backtest").mkdir(parents=True, exist_ok=True)
     (root / "results" / "backtest" / "input_bars.json").write_text(
@@ -23,6 +23,7 @@ def _root_with_dataset(tmp_path, *, days, days_received, source="ccxt"):
                     "days": days,
                     "days_received": days_received,
                     "source": source,
+                    **(extra or {}),
                 },
             }
         ),
@@ -61,6 +62,44 @@ def test_evidence_window_policy_paths(tmp_path) -> None:
     )[0]
     assert not check["passed"]
     assert "NOT proof" in check["error"] and "--source ccxt" in check["error"]
+
+    # Venue data with PROBED ccxt unavailability (HIP-3 symbols) -> proven.
+    check = _evidence_window_check(
+        _root_with_dataset(
+            tmp_path / "h",
+            days=120,
+            days_received=52.0,
+            source="live_fetch",
+            extra={"ccxt_missing_markets": ["xyz:MU", "xyz:SNDK"]},
+        )
+    )[0]
+    assert check["passed"] and check["tier"] == "short_history_proven"
+    assert "no market on the long-history exchange" in check["note"]
+
+    # Probed-missing but below the floor -> still fails (too new).
+    check = _evidence_window_check(
+        _root_with_dataset(
+            tmp_path / "i",
+            days=120,
+            days_received=12.0,
+            source="live_fetch",
+            extra={"ccxt_missing_markets": ["NEWCOIN"]},
+        )
+    )[0]
+    assert not check["passed"] and "floor" in check["error"]
+
+    # Empty missing list (probe ran, all symbols exist on ccxt) -> venue
+    # shortfall still rejected.
+    check = _evidence_window_check(
+        _root_with_dataset(
+            tmp_path / "j",
+            days=120,
+            days_received=40.0,
+            source="live_fetch",
+            extra={"ccxt_missing_markets": []},
+        )
+    )[0]
+    assert not check["passed"] and "NOT proof" in check["error"]
 
     # Below the floor even with the target requested -> fail.
     check = _evidence_window_check(

@@ -276,6 +276,38 @@ def _evidence_window_check(root: Path) -> list[dict[str, Any]]:
             }
         ]
     source = str(metadata.get("source") or "")
+    missing = metadata.get("ccxt_missing_markets")
+    if source != "ccxt" and isinstance(missing, list) and missing:
+        # The long-history source does not list these symbols at all (probed
+        # at fetch time) — a venue dataset is the only obtainable evidence.
+        if received >= EVIDENCE_FLOOR_DAYS:
+            return [
+                {
+                    "name": "evidence_window",
+                    "passed": True,
+                    "tier": "short_history_proven",
+                    "days_received": received,
+                    "note": (
+                        f"{received:g}d from the venue; symbols {missing} "
+                        "have no market on the long-history exchange (probed "
+                        "at fetch) — venue data is the only obtainable "
+                        "evidence. 30d floor applies; short-history caveats "
+                        "stand."
+                    ),
+                }
+            ]
+        return [
+            {
+                "name": "evidence_window",
+                "passed": False,
+                "days_received": received,
+                "error": (
+                    f"only {received:g}d of venue history and symbols "
+                    f"{missing} have no long-history market — below the "
+                    f"{EVIDENCE_FLOOR_DAYS:g}d floor; too new to validate."
+                ),
+            }
+        ]
     if source != "ccxt":
         # A VENUE shortfall proves nothing — venue feeds cap at days of
         # history while the ccxt path has years. This exact hole let an
