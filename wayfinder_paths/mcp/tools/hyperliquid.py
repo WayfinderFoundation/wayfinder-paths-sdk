@@ -1921,18 +1921,17 @@ async def hyperliquid_place_limit_order(
 
 @catch_errors
 async def hyperliquid_get_state(label: str) -> dict[str, Any]:
-    """Return a Hyperliquid account snapshot in one shot: a money `summary`,
+    """Return a Hyperliquid account snapshot: money `summary`, open
     `perp_positions` / `spot_positions` / `outcome_positions`, and all
     `open_orders` (including untriggered TP/SL trigger orders).
 
-    Unified accounts (`account_abstraction == "unifiedAccount"`) hold one USDC
-    ledger, so `summary` is `unified_usdc_total` (USDC owned, including margin
-    holds), `unified_usdc_available` (free to trade or withdraw) and
-    `unified_equity` (total + unrealized perp PnL — the account value the
-    Hyperliquid UI shows; quote this when asked "how much money"). Classic
-    accounts keep separate ledgers, so `summary` is `perp_account_value` /
-    `perp_withdrawable` / `spot_usdc_total`. For per-market sizing use
-    `hyperliquid_get_trade_asset`, not the summary.
+    `summary` is the only place balances appear. Unified accounts hold one
+    USDC ledger: `unified_usdc_total` (includes margin holds),
+    `unified_usdc_available` (free to trade or withdraw), `unified_equity`
+    (total + unrealized PnL — quote this as "the balance"). Classic
+    `"default"` accounts keep separate `perp_account_value` /
+    `perp_withdrawable` / `spot_usdc_total` ledgers. For per-market sizing
+    use `hyperliquid_get_trade_asset`.
     """
     addr, _ = await resolve_wallet_address(wallet_label=label)
     if not addr:
@@ -1952,18 +1951,11 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
         adapter.get_frontend_open_orders(addr),
         adapter.get_spot_assets(),
     )
-    for fetch_ok, payload in (
-        (perp_ok, perp),
-        (spot_ok, spot),
-        (abstraction_ok, abstraction),
-        (orders_ok, orders),
-    ):
-        if not fetch_ok:
-            return err("state_error", f"Could not fetch Hyperliquid state: {payload}")
+    if not (perp_ok and spot_ok and abstraction_ok and orders_ok):
+        return err("state_error", "Could not fetch Hyperliquid state")
 
-    # Stamp the canonical `asset_name` onto every market-identifier field so
-    # state is interchangeable with search/quote/order tools — the agent reads
-    # one format and never re-guesses `-USDC`. `coin` (raw HL) is preserved.
+    # Stamp the canonical `asset_name` next to the raw `coin` so positions and
+    # orders feed straight into search/quote/order tools.
     spot_index_to_pair = {f"@{aid - 10000}": name for name, aid in spot_map.items()}
 
     def _stamp(row: dict[str, Any]) -> None:
@@ -1991,9 +1983,8 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
             outcome_positions.append(
                 {
                     "coin": coin,
-                    # Canonical HIP-4 path — feed straight to order tools to
-                    # close. Not routable through canonical_asset_name (a
-                    # `+` coin would wrongly resolve to `+enc-USDC`).
+                    # Not routable through canonical_asset_name — a `+` coin
+                    # would wrongly resolve to `+enc-USDC`.
                     "asset_name": f"#{coin[1:]}",
                     "outcome_id": encoding // 10,
                     "side": encoding % 10,
@@ -2008,19 +1999,13 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
     if abstraction == "unifiedAccount":
         # Perp margin is held out of spot USDC, so spot USDC is THE balance —
         # perp accountValue only reflects margin committed to open positions.
-        usdc_available = next(
-            (
-                float(avail)
-                for token, avail in spot["tokenToAvailableAfterMaintenance"]
-                if token == 0
-            ),
-            0.0,
-        )
-        unrealized = sum(float(p["unrealizedPnl"]) for p in perp_positions)
         summary = {
             "unified_usdc_total": usdc_total,
-            "unified_usdc_available": usdc_available,
-            "unified_equity": usdc_total + unrealized,
+            "unified_usdc_available": float(
+                dict(spot["tokenToAvailableAfterMaintenance"])[0]  # token 0 = USDC
+            ),
+            "unified_equity": usdc_total
+            + sum(float(p["unrealizedPnl"]) for p in perp_positions),
         }
     else:
         summary = {
@@ -2038,8 +2023,6 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
             "perp_positions": perp_positions,
             "spot_positions": spot_positions,
             "outcome_positions": outcome_positions,
-            # frontendOpenOrders rows: resting limit orders plus untriggered
-            # trigger orders (isTrigger/triggerPx/orderType/isPositionTpsl).
             "open_orders": orders,
         }
     )
