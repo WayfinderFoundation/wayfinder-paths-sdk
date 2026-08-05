@@ -7,6 +7,7 @@ from typing import Any, Literal
 from wayfinder_paths.mcp.utils import catch_errors, ok
 from wayfinder_paths.quant.pattern_match_context import create_pattern_match_request
 from wayfinder_paths.quant.pattern_match_pipeline import (
+    compact_pattern_match_result,
     run_pattern_match,
     run_pattern_match_ccxt_proxy,
 )
@@ -49,7 +50,8 @@ async def quant_pattern_match(
         chain_id=chain_id,
         token_address=token_address,
     )
-    return ok(await run_pattern_match(request=request))
+    result = await run_pattern_match(request=request)
+    return ok(compact_pattern_match_result(result))
 
 
 @catch_errors
@@ -64,4 +66,5 @@ async def quant_pattern_match_ccxt_proxy(
     healthy supported perp venue is used; spot is never substituted. Proxy
     evidence remains separate from the exact-market baseline.
     """
-    return ok(await run_pattern_match_ccxt_proxy(match_id=match_id, symbol=symbol))
+    result = await run_pattern_match_ccxt_proxy(match_id=match_id, symbol=symbol)
+    return ok(compact_pattern_match_result(result))

@@ -366,7 +366,26 @@ async def test_ccxt_proxy_reuses_exact_match_at_selected_timeframe(
     assert proxy["forward_path_distribution"]["samples"] == len(proxy["matches"])
     assert proxy["visual_spec"]["operation"] == "upsert_overlay"
     assert len(proxy["visual_spec"]["overlay"]["series"]) == 2
+    exact_series, proxy_series = proxy["visual_spec"]["overlay"]["series"]
+    assert len(exact_series["analogues"]) == 1
+    assert proxy_series["analogues"] == []
+    assert proxy_series["q25_bps"] == []
+    assert proxy_series["q75_bps"] == []
+    assert (
+        pipeline.get_pattern_match_visual_spec(exact["match_id"])
+        == proxy["visual_spec"]
+    )
     assert cached_proxy == proxy
+
+    compact = pipeline.compact_pattern_match_result(proxy)
+    assert compact["visual_match_id"] == exact["match_id"]
+    assert "visual_spec" not in compact
+    assert "forward_path_distribution" not in compact
+    assert len(compact["matches"]) == pipeline.AGENT_MATCH_LIMIT
+    assert compact["evidence"]["top_matches_returned"] == pipeline.AGENT_MATCH_LIMIT
+    assert all("shape_path_bps" not in match for match in compact["matches"])
+    assert all("forward_path_bps" not in match for match in compact["matches"])
+    assert "forward_path_bps" in proxy["matches"][0]
 
 
 def test_request_requires_exact_market_identity() -> None:

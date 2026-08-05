@@ -44,6 +44,9 @@ If the primary or quant agent passes a `Known Context` block with exact market I
 
 Pattern Match overlay fast path:
 
+- When the primary passes a `visualMatchId`, call
+  `visual_add_workspace_chart_overlay(match_id=visualMatchId)` once. Do not
+  request or reconstruct the cached overlay.
 - When `visualSpec.operation` is `upsert_overlay`, call
   `visual_add_workspace_chart_overlay` once with its exact `chart_id` and
   `overlay`.

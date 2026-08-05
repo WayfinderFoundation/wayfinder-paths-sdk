@@ -67,9 +67,9 @@ baseline is weak, choose any additional comparisons yourself from the market
 context and fetch only their histories. Prefer
 `wayfinder_quant_pattern_match_ccxt_proxy` for a defensible same-asset
 perpetual comparison. It uses strict perp markets and returns the chosen venue;
-do not replace it with spot. Return the most complete tool-provided
-`visual_spec` unchanged as `visualSpec`, but never repeat the exact candle pull
-or present proxy matches as exact evidence.
+do not replace it with spot. Return the tool-provided `visual_match_id` as
+`visualMatchId`; never reconstruct or inline its cached overlay, repeat the
+exact candle pull, or present proxy matches as exact evidence.
 
 Return a detailed but structured technical read: selected-pattern range and
 realized volatility; strongest match dates and shape/magnitude/volatility
