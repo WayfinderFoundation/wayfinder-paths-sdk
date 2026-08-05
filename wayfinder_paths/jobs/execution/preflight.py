@@ -166,6 +166,14 @@ def build_live_dataset(
             "days": days,
             "fetched_at": utc_now_iso(),
         }
+        # Probe the long-history source's market list so the evidence gate
+        # can distinguish "venue-capped but ccxt has years" (must refetch
+        # via ccxt) from "these symbols do not exist on ccxt at all" (HIP-3
+        # equity perps like xyz:MU) — the latter is legitimate proof of
+        # unavailability that a raising ccxt fetch can never leave behind.
+        missing = _ccxt_missing_markets(symbols, exchange=exchange, quote=quote)
+        if missing is not None:
+            metadata["ccxt_missing_markets"] = missing
     if not rows and not previous_rows:
         raise RuntimeError("no bars returned while building live dataset")
     if previous_rows:
@@ -657,6 +665,29 @@ def _write_report(
     return report
 
 
+def _ccxt_missing_markets(
+    symbols: list[str], *, exchange: str, quote: str
+) -> list[str] | None:
+    """Symbols with no swap OR spot market on the long-history exchange.
+    None = probe failed (network etc.) — record nothing so the evidence gate
+    stays conservative."""
+    try:
+        import ccxt
+
+        client = getattr(ccxt, exchange)()
+        markets = client.load_markets()
+        return [
+            coin
+            for coin in symbols
+            if not any(
+                (market := markets.get(pair)) and market.get("active")
+                for pair in (f"{coin}/{quote}:{quote}", f"{coin}/{quote}")
+            )
+        ]
+    except Exception:  # noqa: BLE001 — best-effort probe only
+        return None
+
+
 def _incremental_plan(
     root: Path,
     *,
@@ -717,9 +748,7 @@ def _merge_dataset_rows(
         merged[(str(row.get("timestamp")), str(row.get("symbol")))] = row
     for row in new_rows:
         merged[(str(row.get("timestamp")), str(row.get("symbol")))] = row
-    newest = max(
-        pd.Timestamp(str(row.get("timestamp"))) for row in merged.values()
-    )
+    newest = max(pd.Timestamp(str(row.get("timestamp"))) for row in merged.values())
     cutoff = newest - pd.Timedelta(days=days)
     kept = [
         row
