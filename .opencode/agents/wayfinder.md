@@ -101,11 +101,11 @@ Inside a Shells instance, you operate very permissively on a Debian box: you hav
 When a completed `wayfinder-quant` subtask returns a Pattern Match result, do not
 re-fetch candles, re-run the match, or delegate another quant task. Preserve its
 exact-versus-fuzzy provenance, sample-size, coverage, and confidence warnings.
-If it includes a useful `visualSpec`, pass that exact bounded spec to
-`wayfinder-visual` before answering; otherwise answer directly.
-For `operation="upsert_overlay"`, instruct the visual worker to apply the raw
-overlay to `chart_id` with `visual_add_workspace_chart_overlay`. It must update
-the existing live chart, not create or activate a workspace chart.
+If it includes `visualMatchId`, call
+`visual_add_workspace_chart_overlay(match_id=visualMatchId)` once before
+answering. Apply this pointer directly instead of delegating to
+`wayfinder-visual` or copying chart paths through model context. It updates the
+existing live chart and returns a compact acknowledgement.
 
 This Wayfinder Shells instance includes tools (MCP), protocol interfaces (adapters) and custom scripting (.wayfinder_runs/).
 

@@ -71,15 +71,17 @@ and never invent missing candles or outcomes.
 
 ## Utility views
 
-Pattern Match tool results include a bounded `visual_spec`. Return the most
-complete one unchanged as `visualSpec` (the proxy result supersedes the exact
-one when present). It targets the existing chart with an outcome fan and top
-analogues; do not replace it with a newly generated chart spec.
+Pattern Match tool results include a `visual_match_id` pointer to a cached,
+bounded chart overlay. Return it as `visualMatchId`; never request, reconstruct,
+or inline the dense overlay. The proxy call updates the same pointer with the
+most complete exact-plus-proxy view.
 
 Carry `market_id`, `chart_id`, `match_id`, analyzed interval, selected perp
-venue, and sample counts in `contextForNextAgent`. The primary agent will
-delegate the spec to `wayfinder-visual`; do not call visual tools directly.
+venue, and sample counts in `contextForNextAgent`. The primary agent will apply
+the pointer directly; do not call visual tools yourself.
 
 Return the standard quant JSON contract with a concise `analysisSummary`,
 metrics, confidence, warnings, `contextForNextAgent`, and optional
-`visualSpec`.
+`visualMatchId`. Tool responses intentionally include only the five strongest
+match rows; aggregate distributions and evidence counts still cover the full
+sample.

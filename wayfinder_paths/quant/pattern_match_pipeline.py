@@ -8,6 +8,7 @@ import math
 import time
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, TypedDict
@@ -37,6 +38,7 @@ MAX_ONCHAIN_HISTORY_PAGES = math.ceil(
 )
 MAX_HISTORY_DAYS = 3 * 366
 TOP_MATCHES = 15
+AGENT_MATCH_LIMIT = 5
 MATCH_CACHE_TTL_SECONDS = 15 * 60
 MATCH_CACHE_MAX_ENTRIES = 32
 FORWARD_HORIZONS_MS = {
@@ -68,6 +70,7 @@ class _MatchWindow:
 @dataclass
 class _CachedMatch:
     result: dict[str, Any]
+    visual_spec: dict[str, Any]
     created_at: float = field(default_factory=time.monotonic)
 
 
@@ -286,11 +289,53 @@ async def run_pattern_match_ccxt_proxy(
                 result,
                 label=f"{perp_history.exchange_id.upper()} perpetual",
                 scope="same_asset_proxy",
+                include_band=False,
+                analogue_limit=0,
             ),
         ],
     )
     _cache_match(cache_key, result)
+    _set_cached_visual_spec(match_id, result["visual_spec"])
     return result
+
+
+def compact_pattern_match_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the analytic fields an agent needs without dense chart paths."""
+
+    compact = {
+        key: deepcopy(value)
+        for key, value in result.items()
+        if key not in {"visual_spec", "forward_path_distribution", "matches"}
+    }
+    compact["visual_match_id"] = str(result["match_id"])
+
+    matches = result.get("matches")
+    match_rows = matches if isinstance(matches, list) else []
+    compact_matches: list[dict[str, Any]] = []
+    for match in match_rows[:AGENT_MATCH_LIMIT]:
+        if not isinstance(match, Mapping):
+            continue
+        summary = deepcopy(dict(match))
+        summary.pop("shape_path_bps", None)
+        summary.pop("forward_path_bps", None)
+        compact_matches.append(summary)
+    compact["matches"] = compact_matches
+
+    evidence = compact.get("evidence")
+    if isinstance(evidence, dict):
+        evidence["top_matches_returned"] = len(compact_matches)
+    return compact
+
+
+def get_pattern_match_visual_spec(match_id: str) -> dict[str, Any]:
+    """Resolve the most complete cached overlay for a Pattern Match run."""
+
+    _evict_expired_matches()
+    cached = _MATCH_CACHE.get(match_id)
+    if cached is None:
+        raise ValueError("match_id is unknown or expired; run Pattern Match again")
+    _MATCH_CACHE.move_to_end(match_id)
+    return deepcopy(cached.visual_spec)
 
 
 def _match_identity(request: PatternMatchRequest) -> str:
@@ -501,7 +546,12 @@ def _analyze_history(
 
 
 def _distribution_series(
-    result: Mapping[str, Any], *, label: str, scope: str
+    result: Mapping[str, Any],
+    *,
+    label: str,
+    scope: str,
+    include_band: bool = True,
+    analogue_limit: int = 1,
 ) -> dict[str, Any]:
     matches = result.get("matches")
     match_rows = matches if isinstance(matches, list) else []
@@ -514,7 +564,7 @@ def _distribution_series(
         }
         for match in match_rows
         if isinstance(match, Mapping) and "forward_path_bps" in match
-    ][:3]
+    ][:analogue_limit]
     distribution = result["forward_path_distribution"]
     proxy = result.get("proxy")
     coverage = result.get("coverage")
@@ -528,8 +578,8 @@ def _distribution_series(
         else None,
         "sample_count": distribution["samples"],
         "median_bps": distribution["median_bps"],
-        "q25_bps": distribution["q25_bps"],
-        "q75_bps": distribution["q75_bps"],
+        "q25_bps": distribution["q25_bps"] if include_band else [],
+        "q75_bps": distribution["q75_bps"] if include_band else [],
         "hit_rate_up": distribution["hit_rate_up"],
         "analogues": analogues,
     }
@@ -610,10 +660,21 @@ def _cached_match(match_id: str) -> dict[str, Any] | None:
 
 
 def _cache_match(match_id: str, result: dict[str, Any]) -> None:
-    _MATCH_CACHE[match_id] = _CachedMatch(result)
+    _MATCH_CACHE[match_id] = _CachedMatch(
+        result=result,
+        visual_spec=result["visual_spec"],
+    )
     _MATCH_CACHE.move_to_end(match_id)
     while len(_MATCH_CACHE) > MATCH_CACHE_MAX_ENTRIES:
         _MATCH_CACHE.popitem(last=False)
+
+
+def _set_cached_visual_spec(match_id: str, visual_spec: dict[str, Any]) -> None:
+    cached = _MATCH_CACHE.get(match_id)
+    if cached is None:
+        raise ValueError("match_id is unknown or expired; run Pattern Match again")
+    cached.visual_spec = visual_spec
+    _MATCH_CACHE.move_to_end(match_id)
 
 
 def _evict_expired_matches() -> None:
