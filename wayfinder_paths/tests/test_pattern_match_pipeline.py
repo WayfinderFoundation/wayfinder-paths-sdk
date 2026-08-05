@@ -35,7 +35,10 @@ def _rows(
 
 
 def _request(
-    kind: str = "hyperliquid", *, start_bar: int = 84
+    kind: str = "hyperliquid",
+    *,
+    start_bar: int = 84,
+    request_id: str | None = None,
 ) -> pipeline.PatternMatchRequest:
     common = {
         "kind": kind,
@@ -45,6 +48,7 @@ def _request(
         "display_symbol": "BTC",
         "market_id": "hl-perp-btc",
         "chart_id": "hl-perp-btc",
+        "request_id": request_id,
         "selected_price_min": 99.0,
         "selected_price_max": 116.0,
     }
@@ -96,6 +100,43 @@ async def test_match_returns_exact_baseline_and_reuses_cached_history(
     )
     assert calls.count("BTC") == 1
     assert cached["match_id"] == exact["match_id"]
+
+
+async def test_cached_analysis_tracks_the_latest_frontend_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    async def get_candles(
+        coin: str, start_ms: int, end_ms: int, interval: str
+    ) -> list[dict[str, Any]]:
+        nonlocal calls
+        calls += 1
+        return _rows(500)
+
+    monkeypatch.setattr(
+        pipeline.HYPERLIQUID_DATA_CLIENT,
+        "get_candles",
+        get_candles,
+    )
+    first = await pipeline.run_pattern_match(
+        request=_request(start_bar=484, request_id="request-1"),
+        now_ms=510 * INTERVAL_MS,
+    )
+    second = await pipeline.run_pattern_match(
+        request=_request(start_bar=484, request_id="request-2"),
+        now_ms=510 * INTERVAL_MS,
+    )
+
+    assert calls == 1
+    assert second["match_id"] == first["match_id"]
+    assert second["request_id"] == "request-2"
+    assert (
+        pipeline.get_pattern_match_visual_spec(second["match_id"])["overlay"][
+            "request_id"
+        ]
+        == "request-2"
+    )
 
 
 async def test_onchain_history_pages_before_selected_window(

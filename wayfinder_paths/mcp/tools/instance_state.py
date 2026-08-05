@@ -714,7 +714,6 @@ async def visual_add_workspace_chart_overlay(
         chart_id = str(visual_spec["chart_id"])
         overlay = visual_spec["overlay"]
         pointer_result = {
-            "applied": True,
             "match_id": match_id,
             "chart_id": chart_id,
             "overlay_id": overlay.get("id"),
@@ -728,7 +727,16 @@ async def visual_add_workspace_chart_overlay(
         result = await INSTANCE_STATE_CLIENT.add_workspace_chart_overlay(
             chart_id, overlay
         )
-        return ok(pointer_result or result)
+        if pointer_result is None:
+            return ok(result)
+        applied = result.get("overlay_applied", True)
+        return ok(
+            {
+                **pointer_result,
+                "applied": applied,
+                **({"reason": "superseded"} if not applied else {}),
+            }
+        )
     except httpx.HTTPStatusError as exc:
         return err("chart_workspace_http_error", f"HTTP {exc.response.status_code}")
     except Exception as exc:  # noqa: BLE001
