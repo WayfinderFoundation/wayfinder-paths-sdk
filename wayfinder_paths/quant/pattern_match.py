@@ -48,6 +48,23 @@ def _normalized_shape(values: np.ndarray) -> np.ndarray | None:
     return (log_values - float(log_values.mean())) / std
 
 
+def _path_features(values: np.ndarray) -> tuple[float, float]:
+    log_values = np.log(values)
+    log_returns = np.diff(log_values)
+    path_range = float(log_values.max() - log_values.min())
+    realized_volatility = float(
+        np.sqrt(np.mean(np.square(log_returns))) * np.sqrt(len(log_returns))
+    )
+    return path_range, realized_volatility
+
+
+def _ratio_similarity(candidate: float, query: float) -> tuple[float, float]:
+    if query <= 1e-12 or candidate <= 1e-12:
+        return (1.0, 1.0) if query <= 1e-12 and candidate <= 1e-12 else (0.0, 0.0)
+    ratio = candidate / query
+    return float(np.exp(-abs(np.log(ratio)))), ratio
+
+
 def _summary(values: Sequence[float]) -> dict[str, float | int | None]:
     outcomes = np.asarray(values, dtype=np.float64)
     if not len(outcomes):
@@ -86,6 +103,36 @@ def _path_bps(values: np.ndarray, base: float) -> list[float]:
     return [round(float((value / base - 1) * 10_000), 1) for value in values]
 
 
+def _forward_path_distribution(
+    matches: Sequence[dict[str, Any]], max_horizon: int
+) -> dict[str, Any]:
+    paths = [
+        match["forward_path_bps"]
+        for match in matches
+        if len(match.get("forward_path_bps", [])) == max_horizon + 1
+    ]
+    if not paths:
+        return {
+            "samples": 0,
+            "median_bps": [],
+            "q25_bps": [],
+            "q75_bps": [],
+            "hit_rate_up": [],
+        }
+    values = np.asarray(paths, dtype=np.float64)
+    return {
+        "samples": int(len(values)),
+        "median_bps": [round(float(value), 1) for value in np.median(values, axis=0)],
+        "q25_bps": [
+            round(float(value), 1) for value in np.quantile(values, 0.25, axis=0)
+        ],
+        "q75_bps": [
+            round(float(value), 1) for value in np.quantile(values, 0.75, axis=0)
+        ],
+        "hit_rate_up": [round(float(value), 3) for value in (values > 0).mean(axis=0)],
+    }
+
+
 def find_price_analogs(
     pattern: PriceSeries,
     histories: Sequence[PriceSeries],
@@ -94,6 +141,7 @@ def find_price_analogs(
     top: int = 15,
     min_separation_bars: int | None = None,
     shape_paths: int = 0,
+    forward_paths: int = 0,
 ) -> dict[str, Any]:
     """Find independent shape analogs and summarize their forward returns.
 
@@ -109,6 +157,7 @@ def find_price_analogs(
     query_shape = _normalized_shape(pattern_closes)
     if query_shape is None:
         raise ValueError("pattern has zero price variance")
+    query_range, query_volatility = _path_features(pattern_closes)
 
     normalized_horizons = tuple(
         sorted({int(value) for value in horizons if int(value) > 0})
@@ -122,7 +171,21 @@ def find_price_analogs(
     query_start = int(pattern_timestamps[0])
     query_end = int(pattern_timestamps[-1])
 
-    candidates: list[tuple[float, int, PriceSeries, np.ndarray, np.ndarray]] = []
+    candidates: list[
+        tuple[
+            float,
+            float,
+            float,
+            float,
+            float,
+            float,
+            float,
+            int,
+            PriceSeries,
+            np.ndarray,
+            np.ndarray,
+        ]
+    ] = []
     usable_histories: list[dict[str, Any]] = []
     for history in histories:
         timestamps, closes = history.arrays()
@@ -150,13 +213,52 @@ def find_price_analogs(
             shape = _normalized_shape(closes[start:end])
             if shape is None:
                 continue
-            distance = float(np.sqrt(np.mean((shape - query_shape) ** 2)))
-            candidates.append((distance, start, history, timestamps, closes))
+            shape_distance = float(np.sqrt(np.mean((shape - query_shape) ** 2)))
+            shape_similarity = float(np.exp(-shape_distance))
+            candidate_range, candidate_volatility = _path_features(closes[start:end])
+            magnitude_similarity, magnitude_ratio = _ratio_similarity(
+                candidate_range, query_range
+            )
+            volatility_similarity, volatility_ratio = _ratio_similarity(
+                candidate_volatility, query_volatility
+            )
+            similarity_score = (
+                0.65 * shape_similarity
+                + 0.20 * magnitude_similarity
+                + 0.15 * volatility_similarity
+            )
+            candidates.append(
+                (
+                    similarity_score,
+                    shape_distance,
+                    shape_similarity,
+                    magnitude_similarity,
+                    volatility_similarity,
+                    magnitude_ratio,
+                    volatility_ratio,
+                    start,
+                    history,
+                    timestamps,
+                    closes,
+                )
+            )
 
-    candidates.sort(key=lambda item: item[0])
+    candidates.sort(key=lambda item: (-item[0], item[1]))
     selected_starts: dict[tuple[str, str], list[int]] = {}
     matches: list[dict[str, Any]] = []
-    for distance, start, history, timestamps, closes in candidates:
+    for (
+        similarity_score,
+        shape_distance,
+        shape_similarity,
+        magnitude_similarity,
+        volatility_similarity,
+        magnitude_ratio,
+        volatility_ratio,
+        start,
+        history,
+        timestamps,
+        closes,
+    ) in candidates:
         key = (history.source, history.symbol)
         taken = selected_starts.setdefault(key, [])
         if any(abs(start - other) < separation for other in taken):
@@ -175,16 +277,30 @@ def find_price_analogs(
             "source": history.source,
             "start_ms": int(timestamps[start]),
             "end_ms": int(timestamps[end - 1]),
-            "distance": round(distance, 4),
+            "distance": round(shape_distance, 4),
+            "shape_similarity": round(shape_similarity, 4),
+            "magnitude_similarity": round(magnitude_similarity, 4),
+            "volatility_similarity": round(volatility_similarity, 4),
+            "magnitude_ratio": round(magnitude_ratio, 4),
+            "volatility_ratio": round(volatility_ratio, 4),
+            "similarity_score": round(similarity_score, 4),
             "outcomes": outcomes,
         }
         if len(matches) < shape_paths:
             match["shape_path_bps"] = _path_bps(closes[start:end], float(closes[start]))
+        match["forward_path_bps"] = _path_bps(
+            closes[end - 1 : end + max_horizon],
+            base,
+        )
         matches.append(match)
         if len(matches) >= top:
             break
 
     outcome_distributions = summarize_forward_outcomes(matches, normalized_horizons)
+    forward_path_distribution = _forward_path_distribution(matches, max_horizon)
+    for index, match in enumerate(matches):
+        if index >= forward_paths:
+            match.pop("forward_path_bps", None)
     return {
         "pattern": {
             "symbol": pattern.symbol,
@@ -195,9 +311,12 @@ def find_price_analogs(
             "return_bps": round(
                 float((pattern_closes[-1] / pattern_closes[0] - 1) * 10_000), 1
             ),
+            "range_bps": round(float(np.expm1(query_range) * 10_000), 1),
+            "realized_volatility_bps": round(query_volatility * 10_000, 1),
             "shape_path_bps": _path_bps(pattern_closes, float(pattern_closes[0])),
         },
         "histories": usable_histories,
         "matches": matches,
         "outcome_distributions": outcome_distributions,
+        "forward_path_distribution": forward_path_distribution,
     }

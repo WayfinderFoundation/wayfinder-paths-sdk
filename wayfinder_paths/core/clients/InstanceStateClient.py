@@ -139,12 +139,13 @@ class InstanceStateClient(WayfinderClient):
         overlay = self._normalize_overlay(overlay)
         chart = self._find_workspace_chart(workspace, chart_id)
         if chart is not None:
-            chart.setdefault("overlays", []).append(overlay)
+            self._upsert_overlay(chart.setdefault("overlays", []), overlay)
         else:
             chart_id = self._resolve_default_chart_id(state, chart_id)
-            workspace.setdefault("defaultAnnotations", {}).setdefault(
+            overlays = workspace.setdefault("defaultAnnotations", {}).setdefault(
                 chart_id, []
-            ).append(overlay)
+            )
+            self._upsert_overlay(overlays, overlay)
         return await self.patch_chart_workspace(self._bump_workspace(workspace))
 
     async def add_workspace_chart_annotation(
@@ -233,6 +234,18 @@ class InstanceStateClient(WayfinderClient):
         if not isinstance(normalized.get("data"), list) and isinstance(markers, list):
             normalized["data"] = markers
         return normalized
+
+    @staticmethod
+    def _upsert_overlay(
+        overlays: list[dict[str, Any]], overlay: dict[str, Any]
+    ) -> None:
+        overlay_id = str(overlay.get("id") or "").strip()
+        if overlay_id:
+            for index, existing in enumerate(overlays):
+                if str(existing.get("id") or "").strip() == overlay_id:
+                    overlays[index] = overlay
+                    return
+        overlays.append(overlay)
 
     @staticmethod
     def _find_workspace_chart(

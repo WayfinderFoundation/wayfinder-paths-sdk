@@ -154,6 +154,48 @@ async def test_event_markers_overlay_accepts_legacy_markers_key(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_add_overlay_replaces_existing_overlay_with_same_id(monkeypatch) -> None:
+    client = InstanceStateClient()
+    captured: dict[str, object] = {}
+
+    async def fake_get_state() -> dict:
+        return {
+            "frontend_context": {"chart": {"id": "hl-perp-sol"}},
+            "chart_workspace": {
+                "version": 3,
+                "activeChartId": None,
+                "charts": [],
+                "defaultAnnotations": {
+                    "hl-perp-sol": [
+                        {
+                            "id": "pattern-match-abc",
+                            "type": "pattern_match_distribution",
+                            "series": [{"id": "same_market"}],
+                        }
+                    ]
+                },
+            },
+        }
+
+    async def fake_patch_chart_workspace(workspace: dict) -> dict:
+        captured["workspace"] = workspace
+        return {"chart_workspace": workspace}
+
+    monkeypatch.setattr(client, "get_state", fake_get_state)
+    monkeypatch.setattr(client, "patch_chart_workspace", fake_patch_chart_workspace)
+
+    replacement = {
+        "id": "pattern-match-abc",
+        "type": "pattern_match_distribution",
+        "series": [{"id": "same_market"}, {"id": "same_asset_proxy"}],
+    }
+    await client.add_workspace_chart_overlay("hl-perp-sol", replacement)
+
+    overlays = captured["workspace"]["defaultAnnotations"]["hl-perp-sol"]  # type: ignore[index]
+    assert overlays == [replacement]
+
+
+@pytest.mark.asyncio
 async def test_set_chart_indicators_resolves_live_chart_alias(monkeypatch) -> None:
     client = InstanceStateClient()
     captured: dict[str, object] = {}

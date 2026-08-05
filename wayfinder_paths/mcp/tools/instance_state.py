@@ -683,7 +683,11 @@ async def visual_add_workspace_chart_overlay(
     chart_id: str,
     overlay: dict[str, Any],
 ) -> dict[str, Any]:
-    """Append a raw overlay or event marker set to a workspace or default chart.
+    """Upsert a raw overlay or event marker set on a workspace or default chart.
+
+    Overlays with an ``id`` replace the prior overlay with that id; overlays
+    without one append. Pattern Match uses ``type=pattern_match_distribution``
+    with the bounded spec returned by the quant tool.
 
     For event marker sets, use overlay = {"type": "event_markers", "data": [...]}
     with each event using {time, price?, label?/text?, color?}. The legacy

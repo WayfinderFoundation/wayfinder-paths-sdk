@@ -57,10 +57,11 @@ async def quant_pattern_match_ccxt_proxy(
     match_id: str,
     symbol: str,
 ) -> dict[str, Any]:
-    """Compare a cached Pattern Match selection with a same-asset CCXT proxy.
+    """Compare a cached Pattern Match selection with a same-asset perp proxy.
 
     Use only after ``quant_pattern_match`` when the exact-market baseline is
-    thin and the selected asset has a defensible CEX spot analogue. The result
-    remains separate from exact-market evidence.
+    thin and the selected asset has a defensible perpetual analogue. The first
+    healthy supported perp venue is used; spot is never substituted. Proxy
+    evidence remains separate from the exact-market baseline.
     """
     return ok(await run_pattern_match_ccxt_proxy(match_id=match_id, symbol=symbol))

@@ -42,6 +42,17 @@ Always start with `visual_get_frontend_context()` unless the request is only to 
 
 If the primary or quant agent passes a `Known Context` block with exact market IDs, source objects, chart source refs, data files, token IDs, or visual specs, use those directly before searching. Do not rediscover or substitute a different market when exact context is supplied. Return any reusable chart IDs, source refs, selected market IDs, and data-file refs in `contextForNextAgent`.
 
+Pattern Match overlay fast path:
+
+- When `visualSpec.operation` is `upsert_overlay`, call
+  `visual_add_workspace_chart_overlay` once with its exact `chart_id` and
+  `overlay`.
+- Do not call `visual_create_chart`, `visual_search_chart_series`, or switch
+  the active chart for this operation. The bounded fan and analogue data are
+  already present in the overlay.
+- Verify the returned `defaultAnnotations[chart_id]` contains the overlay id,
+  then report that existing-chart overlay in `overlays`.
+
 Use `visual_set_active_market` for a single tradable market request such as "show BTC perp", "switch to AAVE", "chart PROMPT", or "plot this token". This should move the default chart, order book, trades, and trade ticket together.
 
 Single-token chart fast path:

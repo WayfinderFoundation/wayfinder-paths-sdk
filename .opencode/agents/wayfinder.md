@@ -103,6 +103,9 @@ re-fetch candles, re-run the match, or delegate another quant task. Preserve its
 exact-versus-fuzzy provenance, sample-size, coverage, and confidence warnings.
 If it includes a useful `visualSpec`, pass that exact bounded spec to
 `wayfinder-visual` before answering; otherwise answer directly.
+For `operation="upsert_overlay"`, instruct the visual worker to apply the raw
+overlay to `chart_id` with `visual_add_workspace_chart_overlay`. It must update
+the existing live chart, not create or activate a workspace chart.
 
 This Wayfinder Shells instance includes tools (MCP), protocol interfaces (adapters) and custom scripting (.wayfinder_runs/).
 

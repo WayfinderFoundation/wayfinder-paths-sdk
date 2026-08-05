@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-import pandas as pd
 import pytest
 
+from wayfinder_paths.core.perps.ccxt_history import CcxtPerpHistory
 from wayfinder_paths.quant import pattern_match_pipeline as pipeline
 from wayfinder_paths.quant.pattern_match_context import (
     create_pattern_match_request,
@@ -222,11 +222,35 @@ def test_forward_horizons_are_wall_clock_based() -> None:
         "24h": 288,
     }
     assert pipeline._forward_horizon_bars(4 * 60 * 60_000) == {
-        "1h": 1,
         "4h": 1,
         "12h": 3,
         "24h": 6,
     }
+    assert pipeline._suppressed_forward_horizons(4 * 60 * 60_000) == ["1h"]
+
+
+@pytest.mark.parametrize(
+    ("interval", "bars"),
+    [("15m", 200), ("1h", 136), ("1h", 256)],
+)
+def test_match_window_preserves_requested_interval_through_256_bars(
+    interval: str, bars: int
+) -> None:
+    interval_ms = pipeline.INTERVAL_MS[interval]
+    request = create_pattern_match_request(
+        kind="hyperliquid",
+        interval=interval,
+        start_ms=10 * interval_ms,
+        end_ms=(10 + bars - 1) * interval_ms,
+        display_symbol="SOL",
+        market_id="hl-perp-sol",
+        chart_id="hl-perp-sol",
+        hl_coin="SOL",
+    )
+
+    window = pipeline._match_window(request, now_ms=400 * 86_400_000)
+
+    assert window.interval == interval
 
 
 @pytest.mark.parametrize(
@@ -272,22 +296,24 @@ async def test_ccxt_proxy_reuses_exact_match_at_selected_timeframe(
         assert requested_interval == expected_interval
         return rows
 
-    async def fetch_prices(
-        symbols: list[str],
-        start_date: str,
-        end_date: str,
+    async def fetch_perp_history(
+        base_symbol: str,
+        requested_interval: str,
         *,
-        interval: str,
-        source: str,
-    ) -> pd.DataFrame:
+        interval_ms: int,
+        start_ms: int,
+        end_ms: int,
+        exchange_ids: tuple[str, ...] = ("okx", "bitget", "gate"),
+    ) -> CcxtPerpHistory:
         nonlocal ccxt_calls
         ccxt_calls += 1
-        assert symbols == ["BTC"]
-        assert interval == expected_interval
-        assert source == "ccxt"
-        return pd.DataFrame(
-            {"BTC": [float(row["c"]) for row in rows]},
-            index=pd.to_datetime([int(row["t"]) for row in rows], unit="ms", utc=True),
+        assert base_symbol == "BTC"
+        assert requested_interval == expected_interval
+        return CcxtPerpHistory(
+            exchange_id="okx",
+            market_symbol="BTC/USDT:USDT",
+            rows=rows,
+            failures=(),
         )
 
     monkeypatch.setattr(
@@ -296,8 +322,8 @@ async def test_ccxt_proxy_reuses_exact_match_at_selected_timeframe(
         get_candles,
     )
     monkeypatch.setattr(
-        "wayfinder_paths.core.backtesting.data.fetch_prices",
-        fetch_prices,
+        "wayfinder_paths.core.perps.ccxt_history.fetch_ccxt_perp_history",
+        fetch_perp_history,
     )
     request = create_pattern_match_request(
         kind="hyperliquid",
@@ -326,14 +352,20 @@ async def test_ccxt_proxy_reuses_exact_match_at_selected_timeframe(
     assert ccxt_calls == 1
     assert proxy["proxy"] == {
         "symbol": "BTC",
-        "source": "ccxt:binance",
+        "source": "ccxt:okx:swap",
         "interval": expected_interval,
+        "exchange": "okx",
+        "market_symbol": "BTC/USDT:USDT",
+        "market_type": "swap",
     }
     assert {
         label: details["bars"] for label, details in proxy["forward_horizons"].items()
     } == expected_horizons
     assert proxy["matches"]
     assert {match["match_scope"] for match in proxy["matches"]} == {"same_asset_proxy"}
+    assert proxy["forward_path_distribution"]["samples"] == len(proxy["matches"])
+    assert proxy["visual_spec"]["operation"] == "upsert_overlay"
+    assert len(proxy["visual_spec"]["overlay"]["series"]) == 2
     assert cached_proxy == proxy
 
 
