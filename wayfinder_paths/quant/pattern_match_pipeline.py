@@ -117,7 +117,7 @@ async def run_pattern_match(
 
     horizon_bars = _forward_horizon_bars(window.interval_ms)
     match_started = time.perf_counter()
-    analysis, matches, distributions = _analyze_history(
+    analysis, matches, distributions, forward_distribution = _analyze_history(
         _series(symbol, source, selected_rows),
         _series(symbol, source, rows),
         horizon_bars,
@@ -127,7 +127,7 @@ async def run_pattern_match(
         warnings.append("small_analogue_sample")
 
     result = {
-        "schema_version": 3,
+        "schema_version": 4,
         "mode": "pattern_match",
         "match_id": match_id,
         "market_id": request.market_id,
@@ -154,6 +154,7 @@ async def run_pattern_match(
         "pattern": analysis["pattern"],
         "matches": matches,
         "outcome_distributions": distributions,
+        "forward_path_distribution": forward_distribution,
         "forward_horizons": {
             label: {
                 "bars": bars,
@@ -161,6 +162,7 @@ async def run_pattern_match(
             }
             for label, bars in horizon_bars.items()
         },
+        "suppressed_forward_horizons": _suppressed_forward_horizons(window.interval_ms),
         "levels": _selection_levels(request, selected_rows),
         "evidence": {"same_market_samples": len(matches)},
         "warnings": warnings,
@@ -171,6 +173,10 @@ async def run_pattern_match(
         },
         "data_ready": True,
     }
+    result["visual_spec"] = _pattern_match_visual_spec(
+        result,
+        [_distribution_series(result, label="Same market", scope="same_market")],
+    )
     _cache_match(match_id, result)
     return result
 
@@ -180,14 +186,14 @@ async def run_pattern_match_ccxt_proxy(
     match_id: str,
     symbol: str,
 ) -> dict[str, Any]:
-    """Compare a cached exact pattern with an explicitly selected CCXT asset."""
+    """Compare a cached exact pattern with a same-asset perpetual market."""
 
     exact = _cached_match(match_id)
     if exact is None or exact.get("mode") != "pattern_match":
         raise ValueError("match_id is unknown or expired; run the exact match first")
 
     proxy_symbol = _normalize_ccxt_symbol(symbol)
-    cache_key = f"{match_id}:ccxt:{proxy_symbol}"
+    cache_key = f"{match_id}:perp:{proxy_symbol}"
     if cached := _cached_match(cache_key):
         return cached
 
@@ -195,29 +201,25 @@ async def run_pattern_match_ccxt_proxy(
     interval = str(analyzed["interval"])
     interval_ms = INTERVAL_MS[interval]
     end_ms = int(analyzed["end_ms"])
-    start = datetime.fromtimestamp(
-        (end_ms - _history_lookback_ms(interval_ms)) / 1000,
-        tz=UTC,
-    )
-    end = datetime.fromtimestamp(end_ms / 1000, tz=UTC)
+    start_ms = end_ms - _history_lookback_ms(interval_ms)
 
-    # Keep pandas and the CCXT adapter off the MCP startup path. They are only
-    # needed when the quant agent explicitly asks for proxy evidence.
-    from wayfinder_paths.core.backtesting.data import fetch_prices
+    # Keep the CCXT registry off the MCP startup path. It is only needed when
+    # the quant agent explicitly asks for same-asset perp evidence.
+    from wayfinder_paths.core.perps.ccxt_history import fetch_ccxt_perp_history
 
     started = time.perf_counter()
-    prices = await fetch_prices(
-        [proxy_symbol],
-        start.isoformat(),
-        end.isoformat(),
-        interval=interval,
-        source="ccxt",
+    perp_history = await fetch_ccxt_perp_history(
+        proxy_symbol,
+        interval,
+        interval_ms=interval_ms,
+        start_ms=start_ms,
+        end_ms=end_ms,
     )
-    values = prices[proxy_symbol].dropna().tail(MAX_HISTORY_BARS)
-    if values.empty:
-        raise ValueError(f"No CCXT candles are available for {proxy_symbol}")
+    rows = _normalize_rows(perp_history.rows)[-MAX_HISTORY_BARS:]
+    if not rows:
+        raise ValueError(f"No perpetual candles are available for {proxy_symbol}")
 
-    source = "ccxt:binance"
+    source = f"ccxt:{perp_history.exchange_id}:swap"
     shape = [float(value) for value in exact["pattern"]["shape_path_bps"]]
     pattern_start_ms = int(analyzed["start_ms"])
     pattern = PriceSeries(
@@ -231,36 +233,62 @@ async def run_pattern_match_ccxt_proxy(
     history = PriceSeries(
         symbol=proxy_symbol,
         source=source,
-        timestamps_ms=[int(timestamp.timestamp() * 1000) for timestamp in values.index],
-        closes=[float(value) for value in values],
+        timestamps_ms=[int(row["t"]) for row in rows],
+        closes=[float(row["c"]) for row in rows],
     )
     horizon_bars = {
         label: int(details["bars"])
         for label, details in exact["forward_horizons"].items()
     }
-    _, matches, distributions = _analyze_history(
+    _, matches, distributions, forward_distribution = _analyze_history(
         pattern,
         history,
         horizon_bars,
         match_scope="same_asset_proxy",
     )
-    warnings = ["ccxt_same_asset_proxy"]
+    warnings = ["perp_same_asset_proxy"]
+    if perp_history.failures:
+        warnings.append("perp_proxy_used_fallback_venue")
     if len(matches) < 8:
         warnings.append("small_proxy_sample")
     result = {
-        "schema_version": 3,
+        "schema_version": 4,
         "mode": "pattern_match_proxy",
         "match_id": match_id,
-        "proxy": {"symbol": proxy_symbol, "source": source, "interval": interval},
-        "coverage": {"history_bars": len(values), "source": source},
+        "proxy": {
+            "symbol": proxy_symbol,
+            "source": source,
+            "interval": interval,
+            "exchange": perp_history.exchange_id,
+            "market_symbol": perp_history.market_symbol,
+            "market_type": "swap",
+        },
+        "coverage": {
+            "history_bars": len(rows),
+            "source": source,
+            "failed_venues": list(perp_history.failures),
+        },
         "matches": matches,
         "outcome_distributions": distributions,
+        "forward_path_distribution": forward_distribution,
         "forward_horizons": exact["forward_horizons"],
         "evidence": {"same_asset_proxy_samples": len(matches)},
         "warnings": warnings,
         "timing_ms": {"total": round((time.perf_counter() - started) * 1000, 1)},
         "data_ready": True,
     }
+    exact_series = exact["visual_spec"]["overlay"]["series"][0]
+    result["visual_spec"] = _pattern_match_visual_spec(
+        exact,
+        [
+            exact_series,
+            _distribution_series(
+                result,
+                label=f"{perp_history.exchange_id.upper()} perpetual",
+                scope="same_asset_proxy",
+            ),
+        ],
+    )
     _cache_match(cache_key, result)
     return result
 
@@ -418,10 +446,22 @@ def _series(
 
 
 def _forward_horizon_bars(interval_ms: int) -> dict[str, int]:
-    return {
-        label: max(1, math.ceil(duration_ms / interval_ms))
-        for label, duration_ms in FORWARD_HORIZONS_MS.items()
-    }
+    horizons: dict[str, int] = {}
+    used_bars: set[int] = set()
+    for label, duration_ms in FORWARD_HORIZONS_MS.items():
+        if duration_ms < interval_ms:
+            continue
+        bars = math.ceil(duration_ms / interval_ms)
+        if bars in used_bars:
+            continue
+        horizons[label] = bars
+        used_bars.add(bars)
+    return horizons
+
+
+def _suppressed_forward_horizons(interval_ms: int) -> list[str]:
+    included = set(_forward_horizon_bars(interval_ms))
+    return [label for label in FORWARD_HORIZONS_MS if label not in included]
 
 
 def _analyze_history(
@@ -430,7 +470,7 @@ def _analyze_history(
     horizon_bars: dict[str, int],
     *,
     match_scope: str | None = None,
-) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     """Apply the shared matcher configuration and label wall-clock outcomes."""
 
     analysis = find_price_analogs(
@@ -439,6 +479,7 @@ def _analyze_history(
         horizons=tuple(sorted(set(horizon_bars.values()))),
         top=TOP_MATCHES,
         shape_paths=5,
+        forward_paths=3,
     )
     matches = [
         {
@@ -456,7 +497,65 @@ def _analyze_history(
         label: analysis["outcome_distributions"][f"{bars}_bar"]
         for label, bars in horizon_bars.items()
     }
-    return analysis, matches, distributions
+    return analysis, matches, distributions, analysis["forward_path_distribution"]
+
+
+def _distribution_series(
+    result: Mapping[str, Any], *, label: str, scope: str
+) -> dict[str, Any]:
+    matches = result.get("matches")
+    match_rows = matches if isinstance(matches, list) else []
+    analogues = [
+        {
+            "start_ms": match["start_ms"],
+            "end_ms": match["end_ms"],
+            "similarity_score": match["similarity_score"],
+            "forward_path_bps": match["forward_path_bps"],
+        }
+        for match in match_rows
+        if isinstance(match, Mapping) and "forward_path_bps" in match
+    ][:3]
+    distribution = result["forward_path_distribution"]
+    proxy = result.get("proxy")
+    coverage = result.get("coverage")
+    return {
+        "id": scope,
+        "label": label,
+        "source": proxy.get("source")
+        if isinstance(proxy, Mapping)
+        else coverage.get("source")
+        if isinstance(coverage, Mapping)
+        else None,
+        "sample_count": distribution["samples"],
+        "median_bps": distribution["median_bps"],
+        "q25_bps": distribution["q25_bps"],
+        "q75_bps": distribution["q75_bps"],
+        "hit_rate_up": distribution["hit_rate_up"],
+        "analogues": analogues,
+    }
+
+
+def _pattern_match_visual_spec(
+    exact: Mapping[str, Any], series: list[dict[str, Any]]
+) -> dict[str, Any]:
+    analyzed = exact["analyzed_window"]
+    levels = exact["levels"]
+    match_id = str(exact["match_id"])
+    return {
+        "operation": "upsert_overlay",
+        "chart_id": exact["chart_id"],
+        "overlay": {
+            "id": f"pattern-match-{match_id}",
+            "type": "pattern_match_distribution",
+            "schema_version": 1,
+            "match_id": match_id,
+            "market_id": exact["market_id"],
+            "anchor_time_ms": analyzed["end_ms"],
+            "anchor_price": levels["last_close"],
+            "interval_ms": INTERVAL_MS[str(analyzed["interval"])],
+            "series": series,
+        },
+    }
 
 
 def _selection_levels(

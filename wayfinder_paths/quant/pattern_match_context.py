@@ -22,7 +22,7 @@ INTERVAL_MS = {
     "1d": 86_400_000,
 }
 SUPPORTED_INTERVALS = ("1m", "5m", "15m", "1h", "4h", "1d")
-MAX_PATTERN_BARS = 128
+MAX_PATTERN_BARS = 256
 EVM_ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
 
 

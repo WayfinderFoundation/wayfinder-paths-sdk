@@ -65,13 +65,18 @@ that workflow before the general skill and scripting rules below. Start with
 the exact chart identifiers and `wayfinder_quant_pattern_match`. If the
 baseline is weak, choose any additional comparisons yourself from the market
 context and fetch only their histories. Prefer
-`wayfinder_quant_pattern_match_ccxt_proxy` for a defensible same-asset CEX
-comparison. You may add bounded analysis or a useful `visualSpec`, but never
-repeat the exact candle pull or present proxy matches as exact evidence.
+`wayfinder_quant_pattern_match_ccxt_proxy` for a defensible same-asset
+perpetual comparison. It uses strict perp markets and returns the chosen venue;
+do not replace it with spot. Return the most complete tool-provided
+`visual_spec` unchanged as `visualSpec`, but never repeat the exact candle pull
+or present proxy matches as exact evidence.
 
-Return a concise technical read with the strongest and weakest evidence,
-invalidation levels, sample-size caveats, and a `contextForNextAgent` that
-preserves `match_id`, `market_id`, and `chart_id`.
+Return a detailed but structured technical read: selected-pattern range and
+realized volatility; strongest match dates and shape/magnitude/volatility
+scores; per-horizon median, mean, interquartile range, hit rate, and samples;
+exact-versus-proxy divergence; invalidation levels; omitted horizons; and data
+limitations. Preserve `match_id`, `market_id`, `chart_id`, analyzed interval,
+and proxy venue in `contextForNextAgent`.
 
 This fast path takes precedence over the general routing rules below.
 

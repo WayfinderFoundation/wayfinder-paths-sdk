@@ -65,6 +65,56 @@ def test_returns_empty_distributions_when_history_is_insufficient() -> None:
     assert result["outcome_distributions"]["3_bar"]["samples"] == 0
 
 
+def test_ranking_accounts_for_magnitude_and_volatility() -> None:
+    log_shape = np.asarray(
+        [0.0, 0.01, 0.025, 0.015, 0.04, 0.055, 0.045, 0.07, 0.09, 0.08, 0.11, 0.13]
+    )
+    pattern = (100 * np.exp(log_shape)).tolist()
+    same_scale = (200 * np.exp(log_shape)).tolist() + [230, 232]
+    double_scale = (100 * np.exp(log_shape * 2)).tolist() + [132, 134]
+
+    result = find_price_analogs(
+        _series("SOL", "hyperliquid", pattern, start_ms=10_000_000),
+        [
+            _series("SOL", "same-scale", same_scale),
+            _series("SOL", "double-scale", double_scale),
+        ],
+        horizons=(1, 2),
+        top=2,
+    )
+
+    assert result["matches"][0]["source"] == "same-scale"
+    assert (
+        result["matches"][0]["similarity_score"]
+        > result["matches"][1]["similarity_score"]
+    )
+    assert result["matches"][0]["magnitude_similarity"] == pytest.approx(1.0)
+    assert result["matches"][1]["magnitude_similarity"] == pytest.approx(0.5, abs=0.01)
+
+
+def test_forward_distribution_uses_all_matches_but_exposes_three_paths() -> None:
+    shape = [100, 101, 103, 102, 105, 107, 106, 109, 111, 110, 113, 115]
+    histories = [
+        _series(
+            "SOL",
+            f"venue-{index}",
+            [value * (index + 1) for value in shape] + [116 + index, 117 + index],
+        )
+        for index in range(5)
+    ]
+
+    result = find_price_analogs(
+        _series("SOL", "hyperliquid", shape, start_ms=10_000_000),
+        histories,
+        horizons=(1, 2),
+        top=5,
+        forward_paths=3,
+    )
+
+    assert result["forward_path_distribution"]["samples"] == 5
+    assert sum("forward_path_bps" in match for match in result["matches"]) == 3
+
+
 @pytest.mark.parametrize(
     "closes, message",
     [
