@@ -1926,9 +1926,11 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
     `open_orders` (including untriggered TP/SL trigger orders).
 
     `summary` is the only place balances appear. Unified accounts hold one
-    USDC ledger: `unified_usdc_total` (includes margin holds),
-    `unified_usdc_available` (free to trade or withdraw), `unified_equity`
-    (total + unrealized PnL — quote this as "the balance"). Classic
+    USDC ledger that backs both perp margin and spot:
+    `unified_usdc_settled` (realized cash, incl. margin holds),
+    `unified_usdc_available_for_margin_or_spot` (free to open positions or
+    withdraw), `unified_usdc_settled_and_unrealized` (settled + unrealized
+    PnL — the HL account value; quote this as "the balance"). Classic
     `"default"` accounts keep separate `perp_account_value` /
     `perp_withdrawable` / `spot_usdc_total` ledgers. For per-market sizing
     use `hyperliquid_get_trade_asset`.
@@ -2000,11 +2002,11 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
         # Perp margin is held out of spot USDC, so spot USDC is THE balance —
         # perp accountValue only reflects margin committed to open positions.
         summary = {
-            "unified_usdc_total": usdc_total,
-            "unified_usdc_available": float(
+            "unified_usdc_settled": usdc_total,
+            "unified_usdc_available_for_margin_or_spot": float(
                 dict(spot["tokenToAvailableAfterMaintenance"])[0]  # token 0 = USDC
             ),
-            "unified_equity": usdc_total
+            "unified_usdc_settled_and_unrealized": usdc_total
             + sum(float(p["unrealizedPnl"]) for p in perp_positions),
         }
     else:

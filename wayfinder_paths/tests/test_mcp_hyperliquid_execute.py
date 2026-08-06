@@ -525,9 +525,9 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
     # money appears — raw marginSummary/withdrawable/USDC rows are stripped so
     # a perp accountValue of ~0 can never be misread as "no funds".
     assert result["summary"] == {
-        "unified_usdc_total": 21.50,
-        "unified_usdc_available": 19.94,
-        "unified_equity": 20.0,  # 21.50 total + (-1.5) unrealized PnL
+        "unified_usdc_settled": 21.50,
+        "unified_usdc_available_for_margin_or_spot": 19.94,
+        "unified_usdc_settled_and_unrealized": 20.0,  # 21.50 + (-1.5) uPnL
     }
     # Positions and orders carry the canonical asset_name every other tool
     # speaks (interchangeable format), with the raw HL coin preserved.
