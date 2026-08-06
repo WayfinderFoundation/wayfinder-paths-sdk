@@ -245,6 +245,53 @@ def _complete_applied_application(
 ) -> _ApplicationOutcome:
     proposal = store.load_proposal(job_id, proposal_id)
     candidate_dir = _candidate_dir_from_proposal(store, job_id, proposal)
+    # A propose-time candidate is a full workspace snapshot and promotion is a
+    # wholesale replace — promoting a candidate whose base is no longer the
+    # active revision silently reverts every apply that landed in between.
+    # active == candidate revision is allowed: that is a crash-resume after the
+    # promotion itself completed, where finishing the bookkeeping is correct.
+    base_revision = str(proposal.get("base_revision") or "")
+    candidate_revision = str(
+        (proposal.get("candidate_report") or {}).get("revision") or ""
+    )
+    active_revision = compute_workspace_revision(store.job_dir(job_id))
+    if base_revision and active_revision not in (base_revision, candidate_revision):
+        final_error = (
+            f"baseline drift: candidate was staged against revision {base_revision} "
+            f"but the active workspace is now {active_revision} (moved by an "
+            "intervening apply). Promoting this candidate would revert those "
+            "changes. Re-propose against the current workspace to stage a fresh "
+            "candidate."
+        )
+        store.append_journal(
+            job_id,
+            {
+                "type": "stale_baseline_promotion_refused",
+                "proposal_id": proposal_id,
+                "base_revision": base_revision,
+                "active_revision": active_revision,
+                "candidate_revision": candidate_revision,
+            },
+        )
+        _write_apply_report(
+            store,
+            job_id,
+            proposal_id,
+            status="red",
+            summary=f"Failed to apply approved proposal: {final_error}",
+            changed_files=changed_files or [],
+            validation={"status": "failed", "checks": [], "error": final_error},
+            error=final_error,
+        )
+        return _ApplicationOutcome(
+            final_status="failed",
+            final_error=final_error,
+            deterministic_validation={
+                "status": "failed",
+                "checks": [],
+                "error": final_error,
+            },
+        )
     deterministic_validation = validate_candidate_application(
         repo_root=store.repo_root,
         job_dir=store.job_dir(job_id),

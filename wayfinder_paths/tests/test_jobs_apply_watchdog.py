@@ -410,6 +410,100 @@ def test_torn_workspace_backup_preserved(tmp_path: Path, monkeypatch) -> None:
     assert (root / "workspace" / "src" / "fast_loop.py").exists()
 
 
+def _stamp_candidate_revisions(store: JobStore, job_id: str, proposal_id: str) -> None:
+    """Record base/candidate revisions the way the propose flow does."""
+    from wayfinder_paths.jobs.gating import compute_workspace_revision
+
+    proposal = store.load_proposal(job_id, proposal_id)
+    proposal["base_revision"] = compute_workspace_revision(store.job_dir(job_id))
+    candidate_dir = store.repo_root / proposal["application"]["candidate_dir"]
+    proposal["candidate_report"] = {
+        "revision": compute_workspace_revision(candidate_dir)
+    }
+    store.write_proposal(job_id, proposal)
+
+
+def test_complete_applied_refuses_stale_baseline(tmp_path: Path, monkeypatch) -> None:
+    """A candidate staged before an intervening apply must not promote: the
+    wholesale workspace replace would revert the intervening change."""
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "drift-demo")
+    _write_proposal(store, job.id, "prop_drift")
+
+    claim_application(store, job.id, "prop_drift")
+    _prepare_candidate_script(
+        store,
+        job.id,
+        "prop_drift",
+        rearm_reason="rearm_guard: SNX still below SMA50.",
+    )
+    _stamp_candidate_revisions(store, job.id, "prop_drift")
+
+    # An intervening apply moves the active workspace past the staged base.
+    root = store.job_dir(job.id)
+    intervening = root / "workspace" / "src" / "graduated_sizing.py"
+    intervening.parent.mkdir(parents=True, exist_ok=True)
+    intervening.write_text("HYPE_FRACTION = 0.25\n", encoding="utf-8")
+
+    completed = complete_application(
+        store,
+        job.id,
+        "prop_drift",
+        status="applied",
+        allow_legacy=True,
+    )
+
+    application = completed["proposal"]["application"]
+    assert application["status"] == "failed"
+    assert "baseline drift" in str(application.get("error"))
+    # The intervening change survived — no wholesale revert.
+    assert intervening.read_text(encoding="utf-8") == "HYPE_FRACTION = 0.25\n"
+    assert "stale_baseline_promotion_refused" in _journal_types(store, job.id)
+
+
+def test_complete_applied_allows_crash_resume_after_promotion(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """If a completer crashed after the promotion itself, the active workspace
+    already equals the candidate — re-completion must finish, not refuse."""
+    import shutil
+
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "resume-demo")
+    _write_proposal(store, job.id, "prop_resume")
+
+    claim_application(store, job.id, "prop_resume")
+    _prepare_candidate_script(
+        store,
+        job.id,
+        "prop_resume",
+        rearm_reason="rearm_guard: SNX still below SMA50.",
+    )
+    _stamp_candidate_revisions(store, job.id, "prop_resume")
+
+    # Simulate a crash after _promote_candidate: active == candidate content
+    # (promotion copies both the workspace and job.yaml).
+    root = store.job_dir(job.id)
+    proposal = store.load_proposal(job.id, "prop_resume")
+    candidate_dir = store.repo_root / proposal["application"]["candidate_dir"]
+    shutil.rmtree(root / "workspace")
+    shutil.copytree(candidate_dir / "workspace", root / "workspace")
+    shutil.copy2(candidate_dir / "job.yaml", root / "job.yaml")
+
+    completed = complete_application(
+        store,
+        job.id,
+        "prop_resume",
+        status="applied",
+        allow_legacy=True,
+    )
+
+    assert completed["proposal"]["application"]["status"] == "applied"
+    assert "stale_baseline_promotion_refused" not in _journal_types(store, job.id)
+
+
 def test_run_job_worker_apply_does_not_claim(tmp_path: Path, monkeypatch) -> None:
     calls = _patch_runner(monkeypatch)
 
