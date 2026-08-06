@@ -141,6 +141,69 @@ def _journal_entries(
                     actor="watchdog",
                 )
             )
+        elif kind == "stale_baseline_promotion_refused":
+            entries.append(
+                _entry(
+                    ts,
+                    "proposal",
+                    (
+                        f"Apply deferred: {title}"
+                        if title
+                        else "Apply deferred — stale baseline"
+                    ),
+                    "Candidate was staged before an earlier change applied; "
+                    "promoting it would revert that change. Re-stage requested "
+                    "— approval carries over, no action needed.",
+                    "info",
+                    actor="system",
+                    proposal_id=pid,
+                )
+            )
+        elif kind == "proposal_restaged":
+            entries.append(
+                _entry(
+                    ts,
+                    "proposal",
+                    (
+                        f"Re-staged against current strategy: {title}"
+                        if title
+                        else "Change re-staged against current strategy"
+                    ),
+                    f"new base revision {event.get('new_base_revision')}; "
+                    "apply re-queued automatically",
+                    "info",
+                    actor="agent",
+                    proposal_id=pid,
+                )
+            )
+        elif kind == "proposal_apply_finished":
+            status = str(event.get("application_status") or "")
+            error = str(event.get("error") or "")
+            # Applied is already narrated by proposal_promoted; deferrals by
+            # stale_baseline_promotion_refused. Only genuine failures add news.
+            if status == "failed" and "baseline drift" not in error:
+                entries.append(
+                    _entry(
+                        ts,
+                        "proposal",
+                        f"Apply failed: {title}" if title else "Apply failed",
+                        error or "no error recorded",
+                        "info",
+                        actor="system",
+                        proposal_id=pid,
+                    )
+                )
+        elif kind == "owner_workspace_repair":
+            entries.append(
+                _entry(
+                    ts,
+                    "recovery",
+                    "Owner repaired the strategy workspace",
+                    str(event.get("reason") or ""),
+                    "info",
+                    actor="owner",
+                )
+            )
         elif kind in ("halt_requested", "halt_flattened"):
             entries.append(
                 _entry(
