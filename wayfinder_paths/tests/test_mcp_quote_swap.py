@@ -53,6 +53,8 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
                     "fee_estimate": {"total_usd": 0.01},
                     "native_input": True,
                     "native_output": False,
+                    "safety_warnings": [{"code": "output_market_data_unavailable"}],
+                    "output_validation": {"identity": {"suspicious": False}},
                     "calldata": calldata,
                     "wrap_transaction": None,
                     "unwrap_transaction": None,
@@ -97,6 +99,9 @@ async def test_quote_swap_returns_compact_best_quote_by_default():
     assert "calldata" not in best
     assert res["quote"]["quote_count"] == 3
     assert res["quote"]["providers"] == ["brap_best", "brap_alt"]
+    assert best["safety_warnings"][0]["code"] == "output_market_data_unavailable"
+    assert best["output_validation"]["identity"]["suspicious"] is False
+    assert fake_brap.get_quote.await_args.kwargs["allow_unverified_output"] is False
 
 
 @pytest.mark.asyncio
@@ -161,11 +166,57 @@ async def test_quote_swap_can_include_calldata_when_requested():
             amount="0.0017",
             slippage_bps=50,
             include_calldata=True,
+            allow_unverified_output=True,
         )
 
     assert out["ok"] is True
     best = out["result"]["quote"]["best_quote"]
     assert best["calldata"] == calldata["data"]
+    assert out["result"]["suggested_swap_request"]["allow_unverified_output"] is True
+    assert fake_brap.get_quote.await_args.kwargs["allow_unverified_output"] is True
+
+
+@pytest.mark.asyncio
+async def test_quote_swap_surfaces_backend_safety_rejection():
+    token_meta = {
+        "token_id": "token-base",
+        "symbol": "TOKEN",
+        "decimals": 18,
+        "chain_id": 8453,
+        "address": "0x1111111111111111111111111111111111111111",
+    }
+    fake_brap = AsyncMock()
+    fake_brap.get_quote = AsyncMock(
+        return_value={
+            "quotes": [],
+            "best_quote": {},
+            "errors": [{"error": "unverified_protected_output"}],
+        }
+    )
+
+    with (
+        patch(
+            "wayfinder_paths.mcp.tools.quotes.load_wallet_ring",
+            return_value=[{"address": EVM_ADDRESS}],
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.quotes.TokenResolver.resolve_token_meta",
+            new=AsyncMock(return_value=token_meta),
+        ),
+        patch("wayfinder_paths.mcp.tools.quotes.BRAP_CLIENT", fake_brap),
+    ):
+        out = await onchain_quote_swap(
+            wallet_label="main",
+            from_token="from",
+            to_token="to",
+            amount="1.0",
+        )
+
+    assert out["ok"] is False
+    assert out["error"]["code"] == "quote_rejected"
+    assert out["error"]["details"]["errors"] == [
+        {"error": "unverified_protected_output"}
+    ]
 
 
 @pytest.mark.asyncio

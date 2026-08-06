@@ -135,6 +135,7 @@ from wayfinder_paths.mcp.tools.strategies import core_run_strategy
 from wayfinder_paths.mcp.tools.tokens import (
     onchain_fuzzy_search_tokens,
     onchain_get_gas_token,
+    onchain_get_settlement_assets,
     onchain_list_tokens,
     onchain_resolve_token,
 )
@@ -199,6 +200,7 @@ def build_mcp(
     mcp.tool()(onchain_get_wallet_activity)
     mcp.tool()(onchain_resolve_token)
     mcp.tool()(onchain_get_gas_token)
+    mcp.tool()(onchain_get_settlement_assets)
     mcp.tool()(onchain_fuzzy_search_tokens)
     mcp.tool()(onchain_list_tokens)
     mcp.tool()(onchain_quote_swap)
