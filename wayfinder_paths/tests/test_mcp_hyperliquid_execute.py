@@ -54,6 +54,7 @@ class _FakeExecutionAdapter:
         self.user_state = user_state or {
             "assetPositions": [],
             "marginSummary": {"accountValue": "20.56"},
+            "crossMaintenanceMarginUsed": "0.0",
         }
         self.active_asset_data = active_asset_data or {
             "availableToTrade": ["12.34", "56.78"],
@@ -489,6 +490,7 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
     }
     fake = _FakeExecutionAdapter(
         user_state={
+            "crossMaintenanceMarginUsed": "1.25",
             "assetPositions": [
                 {
                     "position": {
@@ -501,7 +503,7 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
                         "leverage": {"type": "cross", "value": 5},
                     }
                 }
-            ]
+            ],
         },
         frontend_open_orders=[stop_loss, resting_limit],
     )
@@ -528,6 +530,7 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
         "unified_usdc_settled": 21.50,
         "unified_usdc_available_for_margin_or_spot": 19.94,
         "unified_usdc_settled_and_unrealized": 20.0,  # 21.50 + (-1.5) uPnL
+        "usdc_maintenance_margin_used": 1.25,
     }
     # Positions and orders carry the canonical asset_name every other tool
     # speaks (interchangeable format), with the raw HL coin preserved.
@@ -598,10 +601,11 @@ async def test_hyperliquid_get_state_canonicalizes_every_market_type():
     # as-is; a spot @index order resolves to its pair via the spot map.
     fake = _FakeExecutionAdapter(
         user_state={
+            "crossMaintenanceMarginUsed": "0.0",
             "assetPositions": [
                 {"position": {"coin": "kBONK", "szi": "1000", "unrealizedPnl": "0"}},
                 {"position": {"coin": "xyz:SP500", "szi": "-2", "unrealizedPnl": "0"}},
-            ]
+            ],
         },
         frontend_open_orders=[
             {"coin": "kBONK", "oid": 1, "side": "B", "sz": "500"},
