@@ -1931,7 +1931,7 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
     `unified_usdc_available_for_margin_or_spot` (free to open positions or
     withdraw), `unified_usdc_settled_and_unrealized` (settled + unrealized
     PnL — the HL account value; quote this as "the balance"), and
-    `usdc_maintenance_margin_used` (liquidation buffer = settled_and_unrealized
+    `unified_usdc_maintenance_margin_used` (liquidation buffer = settled_and_unrealized
     − this). Classic
     `"default"` accounts keep separate `perp_account_value` /
     `perp_withdrawable` / `spot_usdc_total` ledgers. For per-market sizing
@@ -2011,7 +2011,7 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
             "unified_usdc_settled_and_unrealized": usdc_total
             + sum(float(p["unrealizedPnl"]) for p in perp_positions),
             # Liquidation buffer = settled_and_unrealized − this.
-            "usdc_maintenance_margin_used": float(perp["crossMaintenanceMarginUsed"]),
+            "unified_usdc_maintenance_margin_used": float(perp["crossMaintenanceMarginUsed"]),
         }
     else:
         summary = {

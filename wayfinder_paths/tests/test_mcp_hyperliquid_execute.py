@@ -530,7 +530,7 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
         "unified_usdc_settled": 21.50,
         "unified_usdc_available_for_margin_or_spot": 19.94,
         "unified_usdc_settled_and_unrealized": 20.0,  # 21.50 + (-1.5) uPnL
-        "usdc_maintenance_margin_used": 1.25,
+        "unified_usdc_maintenance_margin_used": 1.25,
     }
     # Positions and orders carry the canonical asset_name every other tool
     # speaks (interchangeable format), with the raw HL coin preserved.
