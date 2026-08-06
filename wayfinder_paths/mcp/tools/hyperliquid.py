@@ -2011,7 +2011,9 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
             "unified_usdc_settled_and_unrealized": usdc_total
             + sum(float(p["unrealizedPnl"]) for p in perp_positions),
             # Liquidation buffer = settled_and_unrealized − this.
-            "unified_usdc_maintenance_margin_used": float(perp["crossMaintenanceMarginUsed"]),
+            "unified_usdc_maintenance_margin_used": float(
+                perp["crossMaintenanceMarginUsed"]
+            ),
         }
     else:
         summary = {
