@@ -86,7 +86,39 @@ class FuzzyTokenResult(TypedDict):
     name: NotRequired[str]
     symbol: NotRequired[str]
     price: NotRequired[float]
+    match_score: NotRequired[int]
+    # Deprecated compatibility alias. Prefer match_score.
     confidence: NotRequired[int]
+    is_canonical: NotRequired[bool]
+    canonical_asset: NotRequired[CanonicalAsset]
+    verification: NotRequired[str]
+    suspicious: NotRequired[bool]
+    protected_claim: NotRequired[str]
+
+
+class CanonicalAsset(TypedDict):
+    chain_code: Required[str]
+    chain_id: Required[int]
+    symbol: Required[str]
+    name: Required[str]
+    address: Required[str]
+    decimals: Required[int]
+    verification: NotRequired[str]
+    aliases: NotRequired[list[str]]
+    settlement_rank: NotRequired[int | None]
+    canonical_asset: NotRequired[bool]
+
+
+class FuzzyTokenResponse(TypedDict):
+    tokens: Required[list[FuzzyTokenResult]]
+    notice: NotRequired[str]
+
+
+class CanonicalAssetsResponse(TypedDict):
+    success: Required[bool]
+    chain_code: Required[str]
+    assets: Required[list[CanonicalAsset]]
+    settlement_assets: Required[list[CanonicalAsset]]
 
 
 class TokenClient(WayfinderClient):
@@ -155,17 +187,33 @@ class TokenClient(WayfinderClient):
 
     async def fuzzy_search(
         self, query: str, chain: str | None = None
-    ) -> dict[str, list[FuzzyTokenResult]]:
+    ) -> FuzzyTokenResponse:
         url = f"{get_api_base_url()}/blockchain/tokens/fuzzy/"
         params: dict[str, str] = {"query": query}
         if chain:
             params["chain"] = chain
         response = await self._authed_request("GET", url, params=params)
         response.raise_for_status()
-        tokens = self._parse_fuzzy_xml(response.text)
-        return {"tokens": tokens}
+        return self._parse_fuzzy_xml(response.text)
 
-    def _parse_fuzzy_xml(self, xml_content: str) -> list[FuzzyTokenResult]:
+    async def get_canonical_assets(self, chain_code: str) -> CanonicalAssetsResponse:
+        url = f"{get_api_base_url()}/blockchain/tokens/canonical-assets/"
+        response = await self._authed_request(
+            "GET", url, params={"chain_code": chain_code}
+        )
+        response.raise_for_status()
+        return response.json()
+
+    @staticmethod
+    def _xml_bool(text: str | None) -> bool | None:
+        normalized = (text or "").strip().lower()
+        if normalized == "true":
+            return True
+        if normalized == "false":
+            return False
+        return None
+
+    def _parse_fuzzy_xml(self, xml_content: str) -> FuzzyTokenResponse:
         root = ET.fromstring(xml_content)
         tokens: list[FuzzyTokenResult] = []
         for token_elem in root.findall("token"):
@@ -174,18 +222,50 @@ class TokenClient(WayfinderClient):
                 elem = token_elem.find(field)
                 if elem is not None and elem.text:
                     token[field] = elem.text  # type: ignore[literal-required]
-            for num_field in ["price", "confidence"]:
+            for num_field in ["price", "match_score", "confidence"]:
                 elem = token_elem.find(num_field)
                 if elem is not None and elem.text:
                     try:
                         if num_field == "price":
                             token["price"] = float(elem.text)
                         else:
-                            token["confidence"] = int(elem.text)
+                            token[num_field] = int(elem.text)  # type: ignore[literal-required]
                     except ValueError:
                         pass
+            if "match_score" not in token and "confidence" in token:
+                token["match_score"] = token["confidence"]
+            if "confidence" not in token and "match_score" in token:
+                token["confidence"] = token["match_score"]
+
+            for bool_field in ["is_canonical", "suspicious"]:
+                elem = token_elem.find(bool_field)
+                value = self._xml_bool(elem.text if elem is not None else None)
+                if value is not None:
+                    token[bool_field] = value  # type: ignore[literal-required]
+            for field in ["verification", "protected_claim"]:
+                elem = token_elem.find(field)
+                if elem is not None and elem.text:
+                    token[field] = elem.text  # type: ignore[literal-required]
+
+            canonical_elem = token_elem.find("canonical_asset")
+            if canonical_elem is not None:
+                canonical: CanonicalAsset = {
+                    "chain_code": canonical_elem.findtext("chain_code", ""),
+                    "chain_id": int(canonical_elem.findtext("chain_id", "0")),
+                    "symbol": canonical_elem.findtext("symbol", ""),
+                    "name": canonical_elem.findtext("name", ""),
+                    "address": canonical_elem.findtext("address", ""),
+                    "decimals": int(canonical_elem.findtext("decimals", "0")),
+                    "canonical_asset": True,
+                }
+                token["canonical_asset"] = canonical
             tokens.append(token)
-        return tokens
+
+        result: FuzzyTokenResponse = {"tokens": tokens}
+        notice = root.findtext("notice")
+        if notice and notice.strip():
+            result["notice"] = notice.strip()
+        return result
 
 
 TOKEN_CLIENT = TokenClient()

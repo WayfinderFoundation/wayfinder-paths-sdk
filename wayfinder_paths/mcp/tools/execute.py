@@ -94,6 +94,8 @@ def _compact_quote(
             "output_amount": best_quote.get("output_amount"),
             "input_usd": best_quote.get("input_amount_usd"),
             "output_usd": best_quote.get("output_amount_usd"),
+            "safety_warnings": best_quote.get("safety_warnings"),
+            "output_validation": best_quote.get("output_validation"),
         }
         fee = best_quote.get("fee_estimate")
         if isinstance(fee, dict):
@@ -279,6 +281,7 @@ async def onchain_swap(
     recipient: str | None = None,
     wait_for_receipt: bool = True,
     receipt_confirmations: int = 0,
+    allow_unverified_output: bool = False,
 ) -> dict[str, Any]:
     """Broadcast a cross-chain / cross-DEX swap via BRAP.
 
@@ -300,6 +303,9 @@ async def onchain_swap(
             leg of the same wallet ring.
         wait_for_receipt: Synchronous receipt wait. Default true.
         receipt_confirmations: Confirmations to wait for when `wait_for_receipt=true`.
+        allow_unverified_output: Override a protected-identity safety block. Set
+            true only after the user explicitly confirms the exact destination
+            contract and acknowledges that it is not a canonical asset.
 
     Returns:
         `{status: "submitted"|"confirmed"|"failed", sender, recipient, effects: {approval?, swap}, raw}`.
@@ -383,7 +389,7 @@ async def onchain_swap(
 
     slippage = max(0.0, float(int(slippage_bps)) / 10_000.0)
     try:
-        quote_data = await BRAP_CLIENT.get_quote(
+        quote_response = await BRAP_CLIENT.get_quote(
             from_token=from_token_addr,
             to_token=to_token_addr,
             from_chain=from_chain_id,
@@ -392,11 +398,13 @@ async def onchain_swap(
             to_wallet=rcpt,
             from_amount=str(amount_raw),
             slippage=slippage,
+            allow_unverified_output=allow_unverified_output,
         )
+        quote_data: dict[str, Any] = dict(quote_response)
     except Exception as exc:  # noqa: BLE001
         return err("quote_error", str(exc))
 
-    best_quote = None
+    best_quote: dict[str, Any] | None = None
     if isinstance(quote_data, dict):
         if isinstance(quote_data.get("best_quote"), dict):
             best_quote = quote_data.get("best_quote")
@@ -408,7 +416,14 @@ async def onchain_swap(
                 best_quote = quotes_block.get("best_quote")
 
     if not isinstance(best_quote, dict):
-        return err("quote_error", "No best_quote returned", {"quote": quote_data})
+        errors = quote_data.get("errors") if isinstance(quote_data, dict) else None
+        return err(
+            "quote_rejected" if errors else "quote_error",
+            "The route was rejected by token-output safety checks."
+            if errors
+            else "No best_quote returned",
+            {"errors": errors or []},
+        )
 
     calldata = best_quote.get("calldata") or {}
     if not isinstance(calldata, dict) or not calldata:
