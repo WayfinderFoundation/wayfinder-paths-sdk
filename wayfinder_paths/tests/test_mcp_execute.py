@@ -233,6 +233,7 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
             amount="1.0",
             slippage_bps=50,
             wait_for_receipt=False,
+            allow_unverified_output=True,
         )
         assert out2["ok"] is True
         assert out2["result"]["status"] == "submitted"
@@ -240,6 +241,7 @@ async def test_execute_swap(tmp_path: Path, monkeypatch):
         assert send_transaction_mock.await_args.kwargs["wait_for_receipt"] is False
         assert send_transaction_mock.await_args.kwargs["confirmations"] == 0
         fake_brap.wait_for_bridge_execution.assert_not_awaited()
+        assert fake_brap.get_quote.await_args.kwargs["allow_unverified_output"] is True
 
 
 @pytest.mark.asyncio

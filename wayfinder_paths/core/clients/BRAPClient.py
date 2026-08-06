@@ -62,11 +62,14 @@ class BRAPQuoteEntry(TypedDict):
     unwrap_transaction: NotRequired[dict[str, Any] | None]
     native_input: Required[bool]
     native_output: Required[bool]
+    safety_warnings: NotRequired[list[dict[str, Any]] | None]
+    output_validation: NotRequired[dict[str, Any] | None]
 
 
 class BRAPQuoteResponse(TypedDict):
     quotes: Required[list[BRAPQuoteEntry]]
     best_quote: Required[BRAPQuoteEntry]
+    errors: NotRequired[list[dict[str, Any]]]
 
 
 class BRAPClient(WayfinderClient):
@@ -81,6 +84,7 @@ class BRAPClient(WayfinderClient):
         from_amount: str,
         slippage: float | None = None,
         to_wallet: str | None = None,
+        allow_unverified_output: bool = False,
     ) -> BRAPQuoteResponse:  # type: ignore # noqa: E501
         logger.info(
             f"Getting BRAP quote: {from_token} -> {to_token} (chain {from_chain} -> {to_chain})"
@@ -102,6 +106,8 @@ class BRAPClient(WayfinderClient):
             params["slippage"] = slippage
         if to_wallet is not None:
             params["to_wallet"] = to_wallet
+        if allow_unverified_output:
+            params["allow_unverified_output"] = True
 
         try:
             response = await self._authed_request("GET", url, params=params, headers={})

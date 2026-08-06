@@ -53,6 +53,21 @@ async def onchain_get_gas_token(chain_code: str) -> dict[str, Any]:
 
 
 @catch_errors
+async def onchain_get_settlement_assets(chain_code: str) -> dict[str, Any]:
+    """Return verified settlement assets and canonical token identities for a chain.
+
+    Use this before selecting a destination stablecoin. If a requested symbol is
+    absent, choose from settlement_assets instead of fuzzy-searching for a
+    same-symbol contract.
+
+    Args:
+        chain_code: Chain code such as hyperevm, robinhood, base, or solana.
+    """
+    result = await TOKEN_CLIENT.get_canonical_assets(chain_code)
+    return ok(result)
+
+
+@catch_errors
 async def onchain_fuzzy_search_tokens(chain_code: str, query: str) -> dict[str, Any]:
     """Fuzzy-search tokens on a chain by symbol, name, or address — use when an exact id isn't known.
 

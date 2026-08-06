@@ -22,6 +22,7 @@ from wayfinder_paths.core.clients.PoolClient import (
     PoolList,
 )
 from wayfinder_paths.core.clients.TokenClient import (
+    CanonicalAssetsResponse,
     GasToken,
     TokenDetails,
 )
@@ -36,6 +37,10 @@ class TokenClientProtocol(Protocol):
     ) -> TokenDetails: ...
 
     async def get_gas_token(self, chain_code: str) -> GasToken: ...
+
+    async def get_canonical_assets(
+        self, chain_code: str
+    ) -> CanonicalAssetsResponse: ...
 
 
 class HyperlendClientProtocol(Protocol):
@@ -152,6 +157,7 @@ class BRAPClientProtocol(Protocol):
         to_chain: int,
         from_wallet: str,
         from_amount: str,
+        allow_unverified_output: bool = False,
     ) -> BRAPQuoteResponse: ...
 
 
