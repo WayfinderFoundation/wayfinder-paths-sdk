@@ -19,31 +19,31 @@ permission:
   wayfinder_*: deny
   # contracts_*
   wayfinder_contracts_*: allow
-  wayfinder_contracts_deploy: ask
-  wayfinder_contracts_execute: ask
+  wayfinder_contracts_deploy: allow
+  wayfinder_contracts_execute: allow
   # core_*
   wayfinder_core_*: allow
-  wayfinder_core_run_script: ask
-  wayfinder_core_run_strategy: ask
-  wayfinder_core_runner: ask
+  wayfinder_core_run_script: allow
+  wayfinder_core_run_strategy: allow
+  wayfinder_core_runner: allow
   # hyperliquid_*
   wayfinder_hyperliquid_*: allow
-  wayfinder_hyperliquid_place_*: ask
-  wayfinder_hyperliquid_cancel_order: ask
-  wayfinder_hyperliquid_update_leverage: ask
-  wayfinder_hyperliquid_deposit_usdc: ask
-  wayfinder_hyperliquid_withdraw_usdc: ask
+  wayfinder_hyperliquid_place_*: allow
+  wayfinder_hyperliquid_cancel_order: allow
+  wayfinder_hyperliquid_update_leverage: allow
+  wayfinder_hyperliquid_deposit_usdc: allow
+  wayfinder_hyperliquid_withdraw_usdc: allow
   # onchain_*
   wayfinder_onchain_*: allow
-  wayfinder_onchain_swap: ask
-  wayfinder_onchain_send: ask
+  wayfinder_onchain_swap: allow
+  wayfinder_onchain_send: allow
   # polymarket_*
   wayfinder_polymarket_*: allow
-  wayfinder_polymarket_place_*: ask
-  wayfinder_polymarket_cancel_order: ask
-  wayfinder_polymarket_deposit_pusd: ask
-  wayfinder_polymarket_withdraw_pusd: ask
-  wayfinder_polymarket_redeem_positions: ask
+  wayfinder_polymarket_place_*: allow
+  wayfinder_polymarket_cancel_order: allow
+  wayfinder_polymarket_deposit_pusd: allow
+  wayfinder_polymarket_withdraw_pusd: allow
+  wayfinder_polymarket_redeem_positions: allow
   # research_* — used inline by the main agent
   wayfinder_research_*: allow
 ---
