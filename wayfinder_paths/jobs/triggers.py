@@ -20,6 +20,11 @@ from wayfinder_paths.jobs.store import JobStore
 WAKE_STATE_PATH = "state/agent_wake_state.json"
 DEFAULT_DEBOUNCE_SECONDS = 600
 
+# Infrastructure events wake the agent regardless of the job's configured
+# trigger list: they represent work the pipeline is waiting on the agent for
+# (not market conditions the owner opted into watching).
+ALWAYS_WAKE_EVENTS = {"proposal_restage_requested"}
+
 
 def fire_triggers(
     store: JobStore,
@@ -55,7 +60,8 @@ def _fire_triggers(
     loop = job.agent_loop
     if not loop.enabled or loop.mode == "off":
         return None
-    matched = sorted(set(event_types) & set(loop.triggers))
+    events = set(event_types)
+    matched = sorted((events & set(loop.triggers)) | (events & ALWAYS_WAKE_EVENTS))
     if not matched:
         return None
 

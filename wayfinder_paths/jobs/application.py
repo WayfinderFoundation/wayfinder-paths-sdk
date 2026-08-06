@@ -29,6 +29,7 @@ class _ApplicationOutcome:
     promoted_revision: str | None = None
     compile_result: dict[str, Any] | None = None
     rollback: dict[str, Any] | None = None
+    restage_requested: bool = False
 
 
 def ensure_jobs_v1_contract(
@@ -224,6 +225,20 @@ def complete_application(
         promoted_revision=outcome.promoted_revision,
         rollback=outcome.rollback,
     )
+    if outcome.restage_requested:
+        # Approval carryover: the proposal stays approved; the flag marks it
+        # as awaiting an agent re-stage against the moved workspace. Wake the
+        # agent now (after loops resumed) instead of waiting out its interval.
+        proposal["application"]["restage_requested"] = True
+        store.write_proposal(job_id, proposal)
+        from wayfinder_paths.jobs.triggers import fire_triggers
+
+        fire_triggers(
+            store,
+            store.load(job_id),
+            ["proposal_restage_requested"],
+            source=f"apply:{proposal_id}",
+        )
     sync_all_jobs(store=store)
     return {
         "proposal": proposal,
@@ -260,8 +275,8 @@ def _complete_applied_application(
             f"baseline drift: candidate was staged against revision {base_revision} "
             f"but the active workspace is now {active_revision} (moved by an "
             "intervening apply). Promoting this candidate would revert those "
-            "changes. Re-propose against the current workspace to stage a fresh "
-            "candidate."
+            "changes. Approval carried over — the agent re-stages the change "
+            "against the current workspace and the apply re-queues automatically."
         )
         store.append_journal(
             job_id,
@@ -271,6 +286,7 @@ def _complete_applied_application(
                 "base_revision": base_revision,
                 "active_revision": active_revision,
                 "candidate_revision": candidate_revision,
+                "restage_requested": True,
             },
         )
         _write_apply_report(
@@ -278,7 +294,7 @@ def _complete_applied_application(
             job_id,
             proposal_id,
             status="red",
-            summary=f"Failed to apply approved proposal: {final_error}",
+            summary=f"Apply deferred: {final_error}",
             changed_files=changed_files or [],
             validation={"status": "failed", "checks": [], "error": final_error},
             error=final_error,
@@ -291,6 +307,7 @@ def _complete_applied_application(
                 "checks": [],
                 "error": final_error,
             },
+            restage_requested=True,
         )
     deterministic_validation = validate_candidate_application(
         repo_root=store.repo_root,
