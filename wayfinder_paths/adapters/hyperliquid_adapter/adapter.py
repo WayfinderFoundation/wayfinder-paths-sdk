@@ -475,6 +475,14 @@ class HyperliquidAdapter(BaseAdapter):
     async def get_user_state(
         self, address: str
     ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
+        """PERP STATE ONLY (clearinghouseState) — positions + perp margin
+        summary. This is NOT the account balance: on a UnifiedAccount, USDC
+        collateral lives in spot, so `marginSummary.accountValue` reads ~0 when
+        no perp positions are open. If you need collateral/balance and the
+        account is unified, you MUST also pull spot USDC via
+        `get_spot_user_state`.
+        """
+
         def _aggregate(results: list[dict[str, Any]]) -> dict[str, Any]:
             if not results:
                 return {}
