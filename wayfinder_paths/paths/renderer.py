@@ -645,36 +645,6 @@ def _render_opencode_command(
     return "\n".join(lines)
 
 
-def _render_opencode_plugin_state() -> str:
-    return "\n".join(
-        [
-            'import type { Plugin } from "@opencode-ai/plugin"',
-            "",
-            "export const PipelineState: Plugin = async () => ({",
-            '  "experimental.session.compacting": async (_input, output) => {',
-            '    output.context.push("## Wayfinder pipeline state\\n- Keep the current run id and artifact directory in context.")',
-            "  },",
-            "})",
-            "",
-        ]
-    )
-
-
-def _render_opencode_plugin_guard() -> str:
-    return "\n".join(
-        [
-            'import type { Plugin } from "@opencode-ai/plugin"',
-            "",
-            "export const TradeGuard: Plugin = async () => ({",
-            '  "tool.execute.before": async (_input, _output) => {',
-            "    return",
-            "  },",
-            "})",
-            "",
-        ]
-    )
-
-
 def _opencode_tool_result_helper_lines() -> list[str]:
     return [
         "function jsonOutput(payload) {",
@@ -1512,8 +1482,6 @@ def _write_host_install_assets(
             }
         )
         for rel_path, content in (
-            (".opencode/plugins/pipeline-state.ts", _render_opencode_plugin_state()),
-            (".opencode/plugins/trade-guard.ts", _render_opencode_plugin_guard()),
             (
                 ".opencode/tools/wayfinder_artifact_gate.ts",
                 _render_opencode_artifact_gate_tool(manifest),
