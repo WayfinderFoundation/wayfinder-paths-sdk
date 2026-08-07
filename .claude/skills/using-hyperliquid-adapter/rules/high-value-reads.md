@@ -70,12 +70,15 @@ Symbol rules:
 
 ### Account state
 
-`mcp__wayfinder__hyperliquid_get_state(label)` returns all four account surfaces in one shot:
+`mcp__wayfinder__hyperliquid_get_state(label)` returns the whole account in one shot:
 
-- `perp.state` — perp clearinghouse (margin summary, asset positions, withdrawable).
-- `spot.state.balances` — pure spot balances (USDC / HYPE / USDH / …). `+N` HIP-4 outcome entries are filtered out into the `outcomes` bucket.
-- `open_orders.orders` — every open order across all dexes, from `frontendOpenOrders`: resting limit orders AND untriggered trigger orders (`isTrigger`, `triggerPx`, `orderType`, `isPositionTpsl`, `reduceOnly`). No separate call needed to see stop losses / take profits.
-- `outcomes.positions` — outcome positions only (`+N` entries with non-zero total), parsed `outcome_id` / `side`. See `rules/outcomes.md`.
+- `summary` — the ONLY place money appears; shape branches on `account_abstraction`:
+  - `"unifiedAccount"` (one USDC ledger backing both perp margin and spot) → `unified_usdc_settled` (realized cash, including margin holds), `unified_usdc_available_for_margin_or_spot` (free to open positions or withdraw), `unified_usdc_settled_and_unrealized` (settled + unrealized perp PnL — the account value the HL UI shows; quote this when the user asks how much money they have), `unified_usdc_maintenance_margin_used` (liquidation buffer = `unified_usdc_settled_and_unrealized` − this). Perp margin is held out of spot USDC, so a perp account value of ~0 with no open positions is normal, not "no funds".
+  - `"default"` → `perp_account_value`, `perp_withdrawable`, `spot_usdc_total` (separate ledgers).
+- `perp_positions` — open perp/HIP-3 positions (entry, size, leverage, liquidation price, unrealized PnL).
+- `spot_positions` — non-zero, non-USDC spot balances (HYPE / USDH / …). The USDC row lives in `summary`.
+- `outcome_positions` — HIP-4 outcome positions (`+N` entries with non-zero total), parsed `outcome_id` / `side`. See `rules/outcomes.md`.
+- `open_orders` — every open order across all dexes, from `frontendOpenOrders`: resting limit orders AND untriggered trigger orders (`isTrigger`, `triggerPx`, `orderType`, `isPositionTpsl`, `reduceOnly`). No separate call needed to see stop losses / take profits.
 
 Positions, open orders, and outcome positions each carry a canonical **`asset_name`** (`kBONK-USDC`, `xyz:NVDA`, `PURR/USDC`, `#40`) next to the raw HL `coin`. Feed `asset_name` straight into `hyperliquid_search_mid_prices` / `hyperliquid_get_trade_asset` / the order tools — it is the same format every HL tool speaks, so never re-derive the `-USDC` suffix from `coin` yourself.
 
