@@ -1928,11 +1928,13 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
     `summary` is the only place balances appear. Unified accounts hold one
     USDC ledger that backs both perp margin and spot:
     `unified_usdc_settled` (realized cash, incl. margin holds),
-    `unified_usdc_available_for_margin_or_spot` (free to open positions or
-    withdraw), `unified_usdc_settled_and_unrealized` (settled + unrealized
-    PnL — the HL account value; quote this as "the balance"), and
-    `unified_usdc_maintenance_margin_used` (liquidation buffer = settled_and_unrealized
-    − this). Classic
+    `unified_usdc_settled_and_unrealized` (equity — the HL account value;
+    quote this as "the balance"), `unified_usdc_margin_used` (margin
+    committed to open positions), `unified_usdc_margin_available` (equity −
+    margin used; capacity for new cross positions — per-asset caps via
+    `hyperliquid_get_trade_asset`), `unified_usdc_withdrawable` (settled −
+    holds; what can leave right now), and `unified_usdc_liquidation_floor`
+    (cross liquidates when equity falls to this). Classic
     `"default"` accounts keep separate `perp_account_value` /
     `perp_withdrawable` / `spot_usdc_total` ledgers. For per-market sizing
     use `hyperliquid_get_trade_asset`.
@@ -1974,12 +1976,14 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
         _stamp(order)
 
     usdc_total = 0.0
+    usdc_hold = 0.0
     spot_positions: list[dict[str, Any]] = []
     outcome_positions: list[dict[str, Any]] = []
     for bal in spot["balances"]:
         coin = str(bal["coin"])
         if coin == "USDC":
             usdc_total = float(bal["total"])
+            usdc_hold = float(bal["hold"])
         elif coin.startswith("+"):
             if float(bal["total"]) == 0:
                 continue
@@ -2003,17 +2007,22 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
     if abstraction == "unifiedAccount":
         # Perp margin is held out of spot USDC, so spot USDC is THE balance —
         # perp accountValue only reflects margin committed to open positions.
+        equity = usdc_total + sum(float(p["unrealizedPnl"]) for p in perp_positions)
+        margin_used = float(perp["marginSummary"]["totalMarginUsed"])
         summary = {
             "unified_usdc_settled": usdc_total,
-            "unified_usdc_available_for_margin_or_spot": float(
-                dict(spot["tokenToAvailableAfterMaintenance"])[0]  # token 0 = USDC
-            ),
-            "unified_usdc_settled_and_unrealized": usdc_total
-            + sum(float(p["unrealizedPnl"]) for p in perp_positions),
-            # Liquidation buffer = settled_and_unrealized − this.
-            "unified_usdc_maintenance_margin_used": float(
-                perp["crossMaintenanceMarginUsed"]
-            ),
+            # Equity — settled + unrealized perp PnL; the HL account value.
+            "unified_usdc_settled_and_unrealized": equity,
+            # Margin committed to open positions (notional / leverage) — held
+            # out of spot USDC.
+            "unified_usdc_margin_used": margin_used,
+            # Account-level capacity for new cross positions; per-asset caps
+            # still come from hyperliquid_get_trade_asset.
+            "unified_usdc_margin_available": equity - margin_used,
+            # Free to withdraw or spend on spot right now: settled minus holds.
+            "unified_usdc_withdrawable": usdc_total - usdc_hold,
+            # Cross liquidates when equity falls to this (maintenance margin).
+            "unified_usdc_liquidation_floor": float(perp["crossMaintenanceMarginUsed"]),
         }
     else:
         summary = {

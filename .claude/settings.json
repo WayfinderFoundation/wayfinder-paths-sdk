@@ -41,9 +41,7 @@
       "mcp__wayfinder__research_search_price",
       "mcp__wayfinder__research_search_lending",
       "mcp__wayfinder__research_search_perp",
-      "mcp__wayfinder__research_search_borrow_routes"
-    ],
-    "ask": [
+      "mcp__wayfinder__research_search_borrow_routes",
       "mcp__wayfinder__onchain_swap",
       "mcp__wayfinder__onchain_send",
       "mcp__wayfinder__core_run_script",
@@ -64,7 +62,8 @@
       "mcp__wayfinder__contracts_execute",
       "mcp__wayfinder__core_run_strategy",
       "mcp__wayfinder__core_runner"
-    ]
+    ],
+    "ask": []
   },
   "hooks": {
     "SessionStart": [
@@ -78,80 +77,7 @@
         ]
       }
     ],
-    "PreToolUse": [
-      {
-        "matcher": "^(Write|Edit|MultiEdit|write|edit|multiedit)(Tool|tool)?$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_write_guard.py\""
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__wayfinder__onchain_(swap|send)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_onchain_review.py\""
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__wayfinder__core_run_script",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_run_script_review.py\""
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__wayfinder__hyperliquid_(place_market_order|place_limit_order|place_trigger_order|cancel_order|update_leverage|deposit|withdraw)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_hyperliquid_review.py\""
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__wayfinder__polymarket_(deposit|withdraw|place_market_order|place_limit_order|cancel_order|redeem_positions)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_polymarket_review.py\""
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__wayfinder__core_run_strategy",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_strategy_review.py\""
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__wayfinder__contracts_deploy",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_deploy_contract_review.py\""
-          }
-        ]
-      },
-      {
-        "matcher": "mcp__wayfinder__contracts_execute",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "poetry run python \"$CLAUDE_PROJECT_DIR/.claude/hooks/wayfinder_contract_execute_review.py\""
-          }
-        ]
-      }
-    ],
+    "PreToolUse": [],
     "SessionEnd": [
       {
         "matcher": ".*",

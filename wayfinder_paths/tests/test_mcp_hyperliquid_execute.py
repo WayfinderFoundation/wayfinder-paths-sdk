@@ -491,6 +491,7 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
     fake = _FakeExecutionAdapter(
         user_state={
             "crossMaintenanceMarginUsed": "1.25",
+            "marginSummary": {"totalMarginUsed": "20.57"},
             "assetPositions": [
                 {
                     "position": {
@@ -528,9 +529,12 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
     # a perp accountValue of ~0 can never be misread as "no funds".
     assert result["summary"] == {
         "unified_usdc_settled": 21.50,
-        "unified_usdc_available_for_margin_or_spot": 19.94,
         "unified_usdc_settled_and_unrealized": 20.0,  # 21.50 + (-1.5) uPnL
-        "unified_usdc_maintenance_margin_used": 1.25,
+        # Margin committed to positions — matches the spot USDC hold.
+        "unified_usdc_margin_used": 20.57,
+        "unified_usdc_margin_available": 20.0 - 20.57,
+        "unified_usdc_withdrawable": 21.50 - 20.57,
+        "unified_usdc_liquidation_floor": 1.25,
     }
     # Positions and orders carry the canonical asset_name every other tool
     # speaks (interchangeable format), with the raw HL coin preserved.
@@ -602,6 +606,7 @@ async def test_hyperliquid_get_state_canonicalizes_every_market_type():
     fake = _FakeExecutionAdapter(
         user_state={
             "crossMaintenanceMarginUsed": "0.0",
+            "marginSummary": {"totalMarginUsed": "0.0"},
             "assetPositions": [
                 {"position": {"coin": "kBONK", "szi": "1000", "unrealizedPnl": "0"}},
                 {"position": {"coin": "xyz:SP500", "szi": "-2", "unrealizedPnl": "0"}},
