@@ -137,16 +137,25 @@ class InstanceStateClient(WayfinderClient):
         state = await self.get_state()
         workspace = self._workspace_from_state(state)
         overlay = self._normalize_overlay(overlay)
+        default_annotations = workspace.setdefault("defaultAnnotations", {})
+        default_overlays = default_annotations.get(chart_id, [])
+        has_pattern_request = any(
+            isinstance(item, dict) and item.get("type") == "pattern_match_request"
+            for item in default_overlays
+        )
         chart = self._find_workspace_chart(workspace, chart_id)
-        if chart is not None:
-            self._upsert_overlay(chart.setdefault("overlays", []), overlay)
+        if chart is not None and not has_pattern_request:
+            applied = self._upsert_overlay(chart.setdefault("overlays", []), overlay)
         else:
             chart_id = self._resolve_default_chart_id(state, chart_id)
             overlays = workspace.setdefault("defaultAnnotations", {}).setdefault(
                 chart_id, []
             )
-            self._upsert_overlay(overlays, overlay)
-        return await self.patch_chart_workspace(self._bump_workspace(workspace))
+            applied = self._upsert_overlay(overlays, overlay)
+        if not applied:
+            return {"overlay_applied": False, "reason": "superseded"}
+        response = await self.patch_chart_workspace(self._bump_workspace(workspace))
+        return {**response, "overlay_applied": True}
 
     async def add_workspace_chart_annotation(
         self,
@@ -238,14 +247,36 @@ class InstanceStateClient(WayfinderClient):
     @staticmethod
     def _upsert_overlay(
         overlays: list[dict[str, Any]], overlay: dict[str, Any]
-    ) -> None:
+    ) -> bool:
+        if overlay.get("type") == "pattern_match_distribution":
+            request = next(
+                (
+                    item
+                    for item in reversed(overlays)
+                    if isinstance(item, dict)
+                    and item.get("type") == "pattern_match_request"
+                ),
+                None,
+            )
+            if request is not None and (
+                request.get("accept_results") is not True
+                or not overlay.get("request_id")
+                or overlay.get("request_id") != request.get("request_id")
+            ):
+                return False
+            overlays[:] = [
+                item
+                for item in overlays
+                if item.get("type") != "pattern_match_distribution"
+            ]
         overlay_id = str(overlay.get("id") or "").strip()
         if overlay_id:
             for index, existing in enumerate(overlays):
                 if str(existing.get("id") or "").strip() == overlay_id:
                     overlays[index] = overlay
-                    return
+                    return True
         overlays.append(overlay)
+        return True
 
     @staticmethod
     def _find_workspace_chart(

@@ -91,6 +91,7 @@ async def run_pattern_match(
     started = time.perf_counter()
     match_id = _match_identity(request)
     if cached := _cached_match(match_id):
+        _set_cached_request_id(match_id, request.request_id)
         return cached
 
     fetch_started = time.perf_counter()
@@ -176,6 +177,8 @@ async def run_pattern_match(
         },
         "data_ready": True,
     }
+    if request.request_id is not None:
+        result["request_id"] = request.request_id
     result["visual_spec"] = _pattern_match_visual_spec(
         result,
         [_distribution_series(result, label="Same market", scope="same_market")],
@@ -339,9 +342,11 @@ def get_pattern_match_visual_spec(match_id: str) -> dict[str, Any]:
 
 
 def _match_identity(request: PatternMatchRequest) -> str:
-    encoded = json.dumps(
-        asdict(request), sort_keys=True, separators=(",", ":")
-    ).encode()
+    identity = asdict(request)
+    # Correlation controls which frontend request may display the result; it
+    # does not change the analysis, so identical selections still reuse data.
+    identity.pop("request_id", None)
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()[:24]
 
 
@@ -599,6 +604,11 @@ def _pattern_match_visual_spec(
             "type": "pattern_match_distribution",
             "schema_version": 1,
             "match_id": match_id,
+            **(
+                {"request_id": exact["request_id"]}
+                if exact.get("request_id") is not None
+                else {}
+            ),
             "market_id": exact["market_id"],
             "anchor_time_ms": analyzed["end_ms"],
             "anchor_price": levels["last_close"],
@@ -674,6 +684,23 @@ def _set_cached_visual_spec(match_id: str, visual_spec: dict[str, Any]) -> None:
     if cached is None:
         raise ValueError("match_id is unknown or expired; run Pattern Match again")
     cached.visual_spec = visual_spec
+    cached.result["visual_spec"] = visual_spec
+    _MATCH_CACHE.move_to_end(match_id)
+
+
+def _set_cached_request_id(match_id: str, request_id: str | None) -> None:
+    cached = _MATCH_CACHE.get(match_id)
+    if cached is None:
+        raise ValueError("match_id is unknown or expired; run Pattern Match again")
+    overlay = cached.visual_spec.get("overlay")
+    targets = [cached.result]
+    if isinstance(overlay, dict):
+        targets.append(overlay)
+    for target in targets:
+        if request_id is None:
+            target.pop("request_id", None)
+        else:
+            target["request_id"] = request_id
     _MATCH_CACHE.move_to_end(match_id)
 
 

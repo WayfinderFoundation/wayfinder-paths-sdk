@@ -35,6 +35,7 @@ class PatternMatchRequest:
     display_symbol: str
     market_id: str
     chart_id: str
+    request_id: str | None = None
     selected_price_min: float | None = None
     selected_price_max: float | None = None
     hl_coin: str | None = None
@@ -51,6 +52,7 @@ def create_pattern_match_request(
     display_symbol: str,
     market_id: str,
     chart_id: str,
+    request_id: str | None = None,
     selected_price_min: float | None = None,
     selected_price_max: float | None = None,
     hl_coin: str | None = None,
@@ -70,6 +72,9 @@ def create_pattern_match_request(
     ):
         if not value.strip():
             raise ValueError(f"{field_name} is required")
+    normalized_request_id = request_id.strip() if request_id else None
+    if normalized_request_id and len(normalized_request_id) > 128:
+        raise ValueError("request_id must be at most 128 characters")
     if selected_price_min is not None and selected_price_min <= 0:
         raise ValueError("selected_price_min must be positive")
     if selected_price_max is not None and selected_price_max <= 0:
@@ -98,6 +103,7 @@ def create_pattern_match_request(
         display_symbol=display_symbol.strip(),
         market_id=market_id.strip(),
         chart_id=chart_id.strip(),
+        request_id=normalized_request_id,
         selected_price_min=selected_price_min,
         selected_price_max=selected_price_max,
         hl_coin=hl_coin.strip() if hl_coin else None,
