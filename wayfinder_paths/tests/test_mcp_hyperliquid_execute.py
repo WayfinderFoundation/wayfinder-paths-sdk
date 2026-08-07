@@ -491,6 +491,7 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
     fake = _FakeExecutionAdapter(
         user_state={
             "crossMaintenanceMarginUsed": "1.25",
+            "marginSummary": {"totalMarginUsed": "20.57"},
             "assetPositions": [
                 {
                     "position": {
@@ -527,10 +528,14 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
     # money appears — raw marginSummary/withdrawable/USDC rows are stripped so
     # a perp accountValue of ~0 can never be misread as "no funds".
     assert result["summary"] == {
-        "unified_usdc_settled": 21.50,
-        "unified_usdc_available_for_margin_or_spot": 19.94,
-        "unified_usdc_settled_and_unrealized": 20.0,  # 21.50 + (-1.5) uPnL
-        "unified_usdc_maintenance_margin_used": 1.25,
+        "unified_usdc_equity": 20.0,  # 21.50 cash + (-1.5) uPnL
+        "unified_usdc_unrealized_pnl": -1.5,
+        # Margin committed to positions — matches the spot USDC hold.
+        "unified_usdc_margin_used": 20.57,
+        "unified_usdc_margin_available": 20.0 - 20.57,
+        "unified_usdc_liquidation_floor": 1.25,
+        "unified_maintenance_ratio": 1.25 / 20.0,
+        "unified_account_leverage": 25.0 / 20.0,  # positionValue 25 / equity
     }
     # Positions and orders carry the canonical asset_name every other tool
     # speaks (interchangeable format), with the raw HL coin preserved.
@@ -602,9 +607,24 @@ async def test_hyperliquid_get_state_canonicalizes_every_market_type():
     fake = _FakeExecutionAdapter(
         user_state={
             "crossMaintenanceMarginUsed": "0.0",
+            "marginSummary": {"totalMarginUsed": "0.0"},
             "assetPositions": [
-                {"position": {"coin": "kBONK", "szi": "1000", "unrealizedPnl": "0"}},
-                {"position": {"coin": "xyz:SP500", "szi": "-2", "unrealizedPnl": "0"}},
+                {
+                    "position": {
+                        "coin": "kBONK",
+                        "szi": "1000",
+                        "unrealizedPnl": "0",
+                        "positionValue": "10",
+                    }
+                },
+                {
+                    "position": {
+                        "coin": "xyz:SP500",
+                        "szi": "-2",
+                        "unrealizedPnl": "0",
+                        "positionValue": "20",
+                    }
+                },
             ],
         },
         frontend_open_orders=[
