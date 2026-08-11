@@ -267,6 +267,77 @@ def _recover_restage(
     return event
 
 
+def _recover_orphaned_pause(
+    store: JobStore,
+    job_id: str,
+    proposals: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Re-issue resumes that failed at apply completion.
+
+    Completion resumes the runner loops best-effort; when the daemon is
+    unresponsive (a gate backtest pinning the shared CPU), both resume calls
+    time out, the failure is RECORDED on the application — and the job stays
+    paused forever, because nothing watches "paused with no apply in
+    flight". Seen live: an apply finished `applied` at 18:35 and trading
+    stayed dark for 90 minutes. The watchdog now re-issues the recorded
+    failed resumes until they succeed; `resume_recovered` marks the terminal
+    success so an owner pausing the job later is never overridden.
+    """
+    in_flight = any(
+        p["application"].get("status") in {"queued", "applying"} for p in proposals
+    )
+    if in_flight:
+        return None  # the live apply owns the pause
+    candidates = []
+    for proposal in proposals:
+        application = proposal["application"]
+        if application.get("status") not in {"applied", "failed"}:
+            continue
+        if application.get("resume_recovered"):
+            continue
+        failed = [
+            entry
+            for entry in application.get("runner_responses") or []
+            if not (entry.get("response") or {}).get("ok")
+            and entry.get("runner_job_name")
+        ]
+        if failed:
+            candidates.append(
+                (str(application.get("finished_at") or ""), proposal, failed)
+            )
+    if not candidates:
+        return None
+    _, proposal, failed = max(candidates, key=lambda item: item[0])
+    proposal_id = str(proposal["proposal_id"])
+    bridge = RunnerBridge(repo_root=store.repo_root)
+    responses = []
+    all_ok = True
+    for entry in failed:
+        name = str(entry["runner_job_name"])
+        try:
+            response = bridge.resume(name)
+        except Exception as exc:  # noqa: BLE001 — retried next pass
+            response = {"ok": False, "error": str(exc)}
+        responses.append({"runner_job_name": name, "response": response})
+        if not (response or {}).get("ok"):
+            all_ok = False
+    if all_ok:
+        # Terminal: never re-resume this application again, so a LATER owner
+        # pause of the job is never fought by the watchdog.
+        proposal["application"]["resume_recovered"] = True
+        store.write_proposal(job_id, proposal)
+    event = {
+        "type": "application_watchdog_recovered",
+        "proposal_id": proposal_id,
+        "stalled_status": "orphaned_pause",
+        "action": "resume_orphaned_pause",
+        "outcome": "resumed" if all_ok else "resume_retry_pending",
+        "runner_responses": responses,
+    }
+    store.append_journal(job_id, event)
+    return event
+
+
 def recover_stalled_applications(
     *, store: JobStore | None = None, now: datetime | None = None
 ) -> dict[str, Any]:
@@ -322,6 +393,13 @@ def recover_stalled_applications(
                 continue
             if event is not None:
                 recovered.append({"job_id": job.id, **event})
+        try:
+            pause_event = _recover_orphaned_pause(store, job.id, proposals)
+        except Exception as exc:
+            errors.append({"job_id": job.id, "error": str(exc)})
+            pause_event = None
+        if pause_event is not None:
+            recovered.append({"job_id": job.id, **pause_event})
     return {"scanned": scanned, "recovered": recovered, "errors": errors}
 
 
