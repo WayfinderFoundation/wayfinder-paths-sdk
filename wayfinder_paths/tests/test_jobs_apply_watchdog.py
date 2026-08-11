@@ -582,3 +582,111 @@ def test_claim_survives_sync_failure(tmp_path: Path, monkeypatch) -> None:
     assert claimed["proposal"]["application"]["status"] == "applying"
     assert ("pause", "sync-fail-demo-script") in calls
     assert "claim_sync_failed" in _journal_types(store, job.id)
+
+
+def _write_restage_proposal(
+    store: JobStore,
+    job_id: str,
+    proposal_id: str,
+    *,
+    params: dict | None,
+    finished_minutes_ago: float = 45,
+) -> None:
+    proposal = {
+        "proposal_id": proposal_id,
+        "job_id": job_id,
+        "status": "approved",
+        "proposed_change": {
+            "summary": "Approved change awaiting re-stage",
+            **({"execution_params": params} if params else {}),
+        },
+        "intent_contract": _intent_contract(),
+        "scenario_plan": _scenario_plan(),
+        "candidate_report": {"revision": "abc123def456"},
+        "application": {
+            "status": "failed",
+            "restage_requested": True,
+            "finished_at": _iso_ago(finished_minutes_ago),
+        },
+    }
+    store.write_proposal(job_id, proposal)
+
+
+def test_watchdog_mechanically_restages_params_carryover(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A params re-stage needs no authoring: the watchdog re-stages it
+    directly instead of waiting on an agent session — bounded to one
+    mechanical re-stage per pass (each re-runs the gate backtest)."""
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "restage-mech")
+    _write_restage_proposal(store, job.id, "prop_params_a", params={"stop_pct": 0.01})
+    _write_restage_proposal(store, job.id, "prop_params_b", params={"tp_pct": 0.05})
+
+    restaged: list[str] = []
+
+    def fake_restage(store_, job_id, proposal_id):  # noqa: ANN001
+        restaged.append(proposal_id)
+        return {"status": "approved", "application": {"status": "queued"}}
+
+    monkeypatch.setattr("wayfinder_paths.jobs.proposals.restage_proposal", fake_restage)
+
+    result = recover_stalled_applications(store=store)
+
+    assert len(restaged) == 1, "one mechanical restage per watchdog pass"
+    actions = [event["action"] for event in result["recovered"]]
+    assert actions == ["mechanical_restage"]
+    assert "application_watchdog_recovered" in _journal_types(store, job.id)
+
+    # Next pass picks up the second one.
+    restaged.clear()
+    recover_stalled_applications(store=store)
+    assert len(restaged) == 1
+
+
+def test_watchdog_renags_code_change_restage(tmp_path: Path, monkeypatch) -> None:
+    """A code-change re-stage the agent has not resolved gets the wake
+    re-fired after the nag window — once per window, not every pass."""
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "restage-nag")
+    _write_restage_proposal(store, job.id, "prop_code_x", params=None)
+
+    fired: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.triggers.fire_triggers",
+        lambda store_, job_, events, *, source: fired.append(source) or {"ok": True},
+    )
+
+    result = recover_stalled_applications(store=store)
+    assert fired == ["watchdog-nag:prop_code_x"]
+    assert [e["action"] for e in result["recovered"]] == ["restage_wake_nag"]
+
+    # Within the nag window: no re-fire.
+    second = recover_stalled_applications(store=store)
+    assert fired == ["watchdog-nag:prop_code_x"]
+    assert second["recovered"] == []
+
+
+def test_watchdog_leaves_fresh_code_restage_to_the_agent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Inside the nag window the agent still owns the task — no watchdog
+    action, no duplicate wake."""
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "restage-fresh")
+    _write_restage_proposal(
+        store, job.id, "prop_code_y", params=None, finished_minutes_ago=5
+    )
+
+    fired: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.triggers.fire_triggers",
+        lambda *a, **k: fired.append(1),
+    )
+
+    result = recover_stalled_applications(store=store)
+    assert fired == []
+    assert result["recovered"] == []
