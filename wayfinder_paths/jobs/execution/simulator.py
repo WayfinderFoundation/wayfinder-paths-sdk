@@ -173,6 +173,34 @@ class BacktestBroker:
         )
 
 
+# Default per-side taker fee (bps) applied when a strategy does not declare its
+# own `fee_bps`. Backtests used to default to zero, which flattered every
+# strategy — and disproportionately the small-edge Hyperliquid scalpers whose
+# per-trade edge is smaller than real fees. Hyperliquid base taker is 4.5 bps
+# (HIP-3 / builder-deployed markets can be higher, so this is a floor).
+# Strategies override with params["fee_bps"] (e.g. 0.0 for a maker-only book).
+_DEFAULT_TAKER_FEE_BPS: dict[str, float] = {"hyperliquid": 4.5, "hl": 4.5}
+
+
+def _strategy_venue(strategy: Any) -> str:
+    """Venue a strategy declares on itself (e.g. ShortMomentumStrategy.params),
+    used for the fee default when the caller didn't pass `venue` in params."""
+    strat_params = getattr(strategy, "params", None)
+    if isinstance(strat_params, Mapping):
+        return str(strat_params.get("venue") or "")
+    return ""
+
+
+def _resolve_fee_bps(params_data: Mapping[str, Any], strategy: Any = None) -> float:
+    explicit = params_data.get("fee_bps")
+    if explicit is not None:
+        return float(explicit)
+    venue = (
+        str(params_data.get("venue") or _strategy_venue(strategy) or "").strip().lower()
+    )
+    return _DEFAULT_TAKER_FEE_BPS.get(venue, 0.0)
+
+
 def simulate_execution(
     script_entrypoint: str | Path | Callable[..., Any],
     dataset: PreparedExecutionDataset,
@@ -183,7 +211,7 @@ def simulate_execution(
     params_data = dict(params) if params else {}
     strategy = _load_strategy(script_entrypoint, params_data)
     broker = BacktestBroker(
-        fee_bps=float(params_data.get("fee_bps") or 0.0),
+        fee_bps=_resolve_fee_bps(params_data, strategy),
         slippage_bps=float(params_data.get("slippage_bps") or 0.0),
     )
     state = EngineState()

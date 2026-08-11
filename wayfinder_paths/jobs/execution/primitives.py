@@ -406,6 +406,16 @@ class PositionLedger:
     def apply_fill(self, fill: FillEvent) -> None:
         if not fill.successful or fill.avg_price is None:
             return
+        # Trading fees are a real cost of every fill (paid on entry AND exit),
+        # so charge them to realized PnL. Previously the fee was computed on the
+        # fill but never deducted here — it only surfaced as a separate
+        # `total_fees` stat, so the equity curve, net_return, and per-trade PnL
+        # were all reported GROSS of fees. That made small-edge strategies
+        # (e.g. Hyperliquid scalpers) look profitable in backtest while bleeding
+        # fees live. Deducting here flows through to every headline metric,
+        # since equity = initial_capital + realized_pnl + unrealized and
+        # realized_pnl_delta is the change in realized_pnl across the fill.
+        self.realized_pnl -= float(fill.fee or 0.0)
         size = abs(float(fill.filled_size))
         side = _normalize_side(fill.side)
         existing = self.positions.get(fill.symbol)

@@ -291,7 +291,9 @@ def test_simulate_execution_populates_new_stats() -> None:
     )
     stats = result.stats
     assert stats["buy_hold_return"] == pytest.approx(closes[-1] / closes[0] - 1.0)
-    assert stats["total_fees"] == 0.0  # fee_bps defaults to 0
+    # Hyperliquid strategies now get the default taker fee (fees used to default
+    # to zero — the bug this fixes); SNX momentum declares venue=hyperliquid.
+    assert stats["total_fees"] > 0.0
     assert stats["total_funding"] == 0.0
     assert stats["total_turnover_usd"] > 0
     assert stats["max_trade_duration_s"] is not None
