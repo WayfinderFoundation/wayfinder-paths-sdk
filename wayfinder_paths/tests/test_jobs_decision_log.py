@@ -184,3 +184,81 @@ def test_caps_and_empty_job(tmp_path) -> None:
     assert len(log["entries"]) == 25
     # Stats see past the display cap: all 80 pending proposals counted.
     assert log["stats"]["proposals_created"] == 80
+
+
+def test_apply_lifecycle_events(tmp_path) -> None:
+    """The apply pipeline narrates itself: stale-baseline deferral, re-stage,
+    genuine apply failure, and owner repair each become feed entries; applied
+    and deferral outcomes are not double-reported via proposal_apply_finished."""
+    store, job_id = _mk(tmp_path)
+    root = store.job_dir(job_id)
+    _write_proposal(root, "prop-aaaaaaaa", "Add vol_surge SignalDef")
+    _write_proposal(root, "prop-bbbbbbbb", "Bump stop_pct")
+
+    journal = [
+        {
+            "ts": _ts(10),
+            "type": "stale_baseline_promotion_refused",
+            "proposal_id": "prop-aaaaaaaa",
+            "base_revision": "aaaa11112222",
+            "active_revision": "bbbb33334444",
+        },
+        {
+            "ts": _ts(9),
+            "type": "proposal_apply_finished",
+            "proposal_id": "prop-aaaaaaaa",
+            "application_status": "failed",
+            "error": "baseline drift: candidate was staged against revision …",
+        },
+        {
+            "ts": _ts(8),
+            "type": "proposal_restaged",
+            "proposal_id": "prop-aaaaaaaa",
+            "new_base_revision": "bbbb33334444",
+        },
+        {
+            "ts": _ts(7),
+            "type": "proposal_apply_finished",
+            "proposal_id": "prop-bbbbbbbb",
+            "application_status": "failed",
+            "error": "Candidate validation failed: entrypoint missing",
+        },
+        {
+            "ts": _ts(6),
+            "type": "proposal_apply_finished",
+            "proposal_id": "prop-bbbbbbbb",
+            "application_status": "applied",
+            "error": None,
+        },
+        {
+            "ts": _ts(5),
+            "type": "owner_workspace_repair",
+            "reason": "Applies reverted the HYPE graduation; restored from backup.",
+        },
+    ]
+    (root / "journal.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in journal) + "\n", encoding="utf-8"
+    )
+
+    log = build_decision_log(store, job_id)
+    titles = [entry["title"] for entry in log["entries"]]
+
+    assert any(t.startswith("Apply deferred") for t in titles)
+    assert any(t.startswith("Re-staged against current strategy") for t in titles)
+    # Genuine failure reported once; baseline-drift failure NOT double-reported.
+    failures = [t for t in titles if t.startswith("Apply failed")]
+    assert failures == ["Apply failed: Bump stop_pct"]
+    # Applied completions are narrated by proposal_promoted, not apply_finished.
+    assert not any("applied" in t.lower() for t in titles)
+    repair = next(
+        entry
+        for entry in log["entries"]
+        if entry["title"] == "Owner repaired the strategy workspace"
+    )
+    assert repair["actor"] == "owner"
+    assert "HYPE graduation" in repair["detail"]
+    # Deferral + re-stage thread with the proposal they belong to.
+    deferred = next(
+        entry for entry in log["entries"] if entry["title"].startswith("Apply deferred")
+    )
+    assert deferred["proposal_id"] == "prop-aaaaaaaa"
