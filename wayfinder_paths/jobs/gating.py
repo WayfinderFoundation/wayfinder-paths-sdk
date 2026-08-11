@@ -30,6 +30,12 @@ def compute_workspace_revision(root: Path) -> str:
             # (py_compile, module loading) and must not perturb the revision.
             if "__pycache__" in path.parts or path.suffix == ".pyc":
                 continue
+            # Agent-writable diary state, read by nothing in the execution
+            # path (durable memory lives at the JOB root). Hashing it turned
+            # every routine memory update into a phantom strategy change:
+            # stale gate stamps + baseline drift on staged candidates.
+            if path.relative_to(workspace) == Path("memory.md"):
+                continue
             if path.is_file():
                 digest.update(str(path.relative_to(root)).encode("utf-8"))
                 digest.update(path.read_bytes())
