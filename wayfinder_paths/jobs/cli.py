@@ -50,7 +50,7 @@ from wayfinder_paths.jobs.models import (
     infer_job_kind,
     normalize_agent_mode,
 )
-from wayfinder_paths.jobs.proposals import propose_change
+from wayfinder_paths.jobs.proposals import propose_change, restage_proposal
 from wayfinder_paths.jobs.replication import replication_job
 from wayfinder_paths.jobs.research import (
     holdout_check_job,
@@ -1385,6 +1385,29 @@ def propose_cmd(
         scenario_plan=json.loads(scenario_json) if scenario_json else None,
         proposal_id=proposal_id,
         memo=memo,
+    )
+    _echo_json({"ok": True, "result": proposal})
+
+
+@job_cli.command(
+    name="restage",
+    help="Re-stage an approved proposal whose candidate went stale under an "
+    "intervening apply; re-runs the propose-time gates and auto-queues the "
+    "apply (approval carryover).",
+)
+@click.argument("job_id")
+@click.argument("proposal_id")
+@click.option(
+    "--candidate-dir",
+    default=None,
+    help="Re-authored change against the CURRENT workspace (bundle with "
+    "workspace/ or bare workspace). Required for code changes; params "
+    "updates re-stage mechanically.",
+)
+def restage_cmd(job_id: str, proposal_id: str, candidate_dir: str | None) -> None:
+    store = JobStore()
+    proposal = restage_proposal(
+        store, job_id, proposal_id, candidate_source=candidate_dir
     )
     _echo_json({"ok": True, "result": proposal})
 

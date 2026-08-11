@@ -134,3 +134,21 @@ def test_tick_trigger_event_derivation() -> None:
         {"ok": True, "guard_events": [{"kind": "risk_halt"}]}
     ) == ["risk_halt"]
     assert _tick_trigger_events({"ok": True, "snapshot": {"status": "valid"}}) == []
+
+
+def test_infrastructure_event_wakes_without_configured_trigger(
+    tmp_path: Path, wakes: list[dict[str, Any]]
+) -> None:
+    """Restage requests wake the agent even when the job never opted into any
+    trigger list — they are pipeline work, not market conditions."""
+    store, job = _make_job(tmp_path)
+    job.agent_loop.triggers = []
+    store.save(job)
+
+    fired = fire_triggers(
+        store, job, ["proposal_restage_requested"], source="apply:prop-x"
+    )
+
+    assert fired is not None
+    assert fired["triggers"] == ["proposal_restage_requested"]
+    assert len(wakes) == 1

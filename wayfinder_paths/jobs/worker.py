@@ -200,6 +200,57 @@ def _research_substrate_block(root: Path) -> dict[str, Any]:
     return block
 
 
+def _restage_block(root: Path) -> list[dict[str, Any]]:
+    """Approved proposals awaiting re-stage after a stale-baseline refusal.
+
+    Approval carryover: the owner already approved these — the workspace moved
+    under the staged candidate, so the change must be re-authored against the
+    CURRENT workspace and re-staged. This is a top-priority mechanical task,
+    not a new decision."""
+    tasks: list[dict[str, Any]] = []
+    proposals_dir = root / "proposals"
+    if not proposals_dir.exists():
+        return tasks
+    for path in sorted(proposals_dir.glob("*.json")):
+        try:
+            proposal = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        application = proposal.get("application") or {}
+        if proposal.get("status") != "approved" or not application.get(
+            "restage_requested"
+        ):
+            continue
+        pid = str(proposal.get("proposal_id") or path.stem)
+        params = (proposal.get("proposed_change") or {}).get("execution_params")
+        if params:
+            instruction = (
+                f"Run `wayfinder job restage {root.name} {pid}` — params "
+                "updates re-stage mechanically from the recorded params."
+            )
+        else:
+            instruction = (
+                "Re-author this exact change against the CURRENT workspace: "
+                f"copy .wayfinder/jobs/{root.name}/workspace to a scratch dir, "
+                "apply the same change (the stale candidate at "
+                f"applications/{pid}/candidate shows what it looked like), then "
+                f"run `wayfinder job restage {root.name} {pid} "
+                "--candidate-dir <scratch>`. Do NOT alter the approved intent; "
+                "if the change no longer makes sense on the new base, reject "
+                "it (agent housekeeping) and propose fresh."
+            )
+        tasks.append(
+            {
+                "proposal_id": pid,
+                "summary": (proposal.get("proposed_change") or {}).get("summary"),
+                "base_revision": proposal.get("base_revision"),
+                "changed_files": proposal.get("changed_files") or [],
+                "instruction": instruction,
+            }
+        )
+    return tasks
+
+
 def _standing_checks_block(root: Path) -> dict[str, Any]:
     """Mechanical routine numbers, computed by the harness each wake.
 
@@ -408,6 +459,7 @@ def _build_worker_prompt_sections(
         "post_apply_shadow": _counterfactual_block(store, job_id),
         "research_substrate": _research_substrate_block(root),
         "standing_checks": _standing_checks_block(root),
+        "restage_tasks": _restage_block(root),
     }
 
     stable_prefix = (

@@ -29,6 +29,7 @@ class _ApplicationOutcome:
     promoted_revision: str | None = None
     compile_result: dict[str, Any] | None = None
     rollback: dict[str, Any] | None = None
+    restage_requested: bool = False
 
 
 def ensure_jobs_v1_contract(
@@ -224,6 +225,20 @@ def complete_application(
         promoted_revision=outcome.promoted_revision,
         rollback=outcome.rollback,
     )
+    if outcome.restage_requested:
+        # Approval carryover: the proposal stays approved; the flag marks it
+        # as awaiting an agent re-stage against the moved workspace. Wake the
+        # agent now (after loops resumed) instead of waiting out its interval.
+        proposal["application"]["restage_requested"] = True
+        store.write_proposal(job_id, proposal)
+        from wayfinder_paths.jobs.triggers import fire_triggers
+
+        fire_triggers(
+            store,
+            store.load(job_id),
+            ["proposal_restage_requested"],
+            source=f"apply:{proposal_id}",
+        )
     sync_all_jobs(store=store)
     return {
         "proposal": proposal,
@@ -245,6 +260,55 @@ def _complete_applied_application(
 ) -> _ApplicationOutcome:
     proposal = store.load_proposal(job_id, proposal_id)
     candidate_dir = _candidate_dir_from_proposal(store, job_id, proposal)
+    # A propose-time candidate is a full workspace snapshot and promotion is a
+    # wholesale replace — promoting a candidate whose base is no longer the
+    # active revision silently reverts every apply that landed in between.
+    # active == candidate revision is allowed: that is a crash-resume after the
+    # promotion itself completed, where finishing the bookkeeping is correct.
+    base_revision = str(proposal.get("base_revision") or "")
+    candidate_revision = str(
+        (proposal.get("candidate_report") or {}).get("revision") or ""
+    )
+    active_revision = compute_workspace_revision(store.job_dir(job_id))
+    if base_revision and active_revision not in (base_revision, candidate_revision):
+        final_error = (
+            f"baseline drift: candidate was staged against revision {base_revision} "
+            f"but the active workspace is now {active_revision} (moved by an "
+            "intervening apply). Promoting this candidate would revert those "
+            "changes. Approval carried over — the agent re-stages the change "
+            "against the current workspace and the apply re-queues automatically."
+        )
+        store.append_journal(
+            job_id,
+            {
+                "type": "stale_baseline_promotion_refused",
+                "proposal_id": proposal_id,
+                "base_revision": base_revision,
+                "active_revision": active_revision,
+                "candidate_revision": candidate_revision,
+                "restage_requested": True,
+            },
+        )
+        _write_apply_report(
+            store,
+            job_id,
+            proposal_id,
+            status="red",
+            summary=f"Apply deferred: {final_error}",
+            changed_files=changed_files or [],
+            validation={"status": "failed", "checks": [], "error": final_error},
+            error=final_error,
+        )
+        return _ApplicationOutcome(
+            final_status="failed",
+            final_error=final_error,
+            deterministic_validation={
+                "status": "failed",
+                "checks": [],
+                "error": final_error,
+            },
+            restage_requested=True,
+        )
     deterministic_validation = validate_candidate_application(
         repo_root=store.repo_root,
         job_dir=store.job_dir(job_id),

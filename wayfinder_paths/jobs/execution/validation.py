@@ -230,9 +230,11 @@ def _evidence_window_check(root: Path) -> list[dict[str, Any]]:
     if not bars_path.exists():
         return []  # fixture/scenario-driven validation contexts
     try:
-        metadata = json.loads(bars_path.read_text(encoding="utf-8")).get("metadata")
+        payload = json.loads(bars_path.read_text(encoding="utf-8"))
     except ValueError:
-        metadata = None
+        payload = None
+    # Legacy bars files are a bare list of rows with no metadata envelope.
+    metadata = payload.get("metadata") if isinstance(payload, dict) else None
     if not isinstance(metadata, dict) or metadata.get("days") is None:
         return [
             {
