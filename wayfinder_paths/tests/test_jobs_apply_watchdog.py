@@ -690,3 +690,111 @@ def test_watchdog_leaves_fresh_code_restage_to_the_agent(
     result = recover_stalled_applications(store=store)
     assert fired == []
     assert result["recovered"] == []
+
+
+def _write_resume_failed_proposal(
+    store: JobStore,
+    job_id: str,
+    proposal_id: str,
+    *,
+    ok: bool = False,
+    recovered: bool = False,
+    app_status: str = "applied",
+) -> None:
+    response = {"ok": True} if ok else {"ok": False, "error": "connect_failed"}
+    proposal = {
+        "proposal_id": proposal_id,
+        "job_id": job_id,
+        "status": "approved",
+        "proposed_change": {"summary": "Applied change"},
+        "intent_contract": _intent_contract(),
+        "scenario_plan": _scenario_plan(),
+        "application": {
+            "status": app_status,
+            "finished_at": _iso_ago(90),
+            "runner_responses": [
+                {
+                    "loop": "script",
+                    "runner_job_name": f"{job_id}-script",
+                    "response": response,
+                },
+                {
+                    "loop": "agent",
+                    "runner_job_name": f"{job_id}-agent",
+                    "response": response,
+                },
+            ],
+            **({"resume_recovered": True} if recovered else {}),
+        },
+    }
+    store.write_proposal(job_id, proposal)
+
+
+def test_watchdog_resumes_orphaned_pause(tmp_path: Path, monkeypatch) -> None:
+    """Resumes that timed out at apply completion are re-issued until they
+    succeed — a completed apply must never leave the lanes dark."""
+    calls = _patch_runner(monkeypatch)
+
+    # _recover_orphaned_pause constructs RunnerBridge directly — patch it there.
+    class RecordingBridge:
+        def __init__(self, *, repo_root=None):  # noqa: ANN001
+            self.repo_root = repo_root
+
+        def resume(self, name: str) -> dict:
+            calls.append(("resume", name))
+            return {"ok": True, "result": {"name": name, "status": "ACTIVE"}}
+
+    monkeypatch.setattr("wayfinder_paths.jobs.watchdog.RunnerBridge", RecordingBridge)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "orphan-pause")
+    _write_resume_failed_proposal(store, job.id, "prop_orphan")
+
+    result = recover_stalled_applications(store=store)
+
+    resumed = [name for kind, name in calls if kind == "resume"]
+    assert sorted(resumed) == ["orphan-pause-agent", "orphan-pause-script"]
+    events = [e for e in result["recovered"] if e["action"] == "resume_orphaned_pause"]
+    assert len(events) == 1 and events[0]["outcome"] == "resumed"
+    reloaded = store.load_proposal(job.id, "prop_orphan")
+    assert reloaded["application"]["resume_recovered"] is True
+
+    # Terminal: second pass never re-resumes (owner pauses stay owned).
+    calls.clear()
+    second = recover_stalled_applications(store=store)
+    assert [name for kind, name in calls if kind == "resume"] == []
+    assert all(e["action"] != "resume_orphaned_pause" for e in second["recovered"])
+
+
+def test_watchdog_ignores_healthy_resumes_and_in_flight_applies(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = _patch_runner(monkeypatch)
+
+    class RecordingBridge:
+        def __init__(self, *, repo_root=None):  # noqa: ANN001
+            self.repo_root = repo_root
+
+        def resume(self, name: str) -> dict:
+            calls.append(("resume", name))
+            return {"ok": True}
+
+    monkeypatch.setattr("wayfinder_paths.jobs.watchdog.RunnerBridge", RecordingBridge)
+    store = JobStore(repo_root=tmp_path)
+    # Healthy completion: resumes recorded ok — nothing to do.
+    job_a = _make_job(store, "orphan-healthy")
+    _write_resume_failed_proposal(store, job_a.id, "prop_ok", ok=True)
+    # Failed resume BUT another apply is queued — the live apply owns pausing.
+    job_b = _make_job(store, "orphan-inflight")
+    _write_resume_failed_proposal(store, job_b.id, "prop_bad")
+    _write_proposal(
+        store,
+        job_b.id,
+        "prop_live",
+        application={"status": "queued"},
+        candidate_report={"gate": "green"},
+    )
+
+    result = recover_stalled_applications(store=store)
+
+    assert [name for kind, name in calls if kind == "resume"] == []
+    assert all(e["action"] != "resume_orphaned_pause" for e in result["recovered"])
