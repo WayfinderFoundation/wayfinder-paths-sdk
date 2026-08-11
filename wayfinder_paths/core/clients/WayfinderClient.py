@@ -1,3 +1,4 @@
+import asyncio
 import time
 from typing import Any
 
@@ -47,6 +48,22 @@ class WayfinderClient:
         if headers:
             merged_headers.update(headers)
         resp = await self.client.request(method, url, headers=merged_headers, **kwargs)
+
+        if resp.status_code == 429:
+            # One polite retry honoring Retry-After (capped), then surface the
+            # error. Instant hammer-retries are what turned a credit blip into
+            # an hours-long 429 storm across every job on the box.
+            try:
+                delay = min(float(resp.headers.get("Retry-After") or 5.0), 30.0)
+            except ValueError:
+                delay = 5.0
+            logger.warning(
+                f"HTTP 429 for {method} {url} — retrying once in {delay:.0f}s"
+            )
+            await asyncio.sleep(delay)
+            resp = await self.client.request(
+                method, url, headers=merged_headers, **kwargs
+            )
 
         elapsed = time.time() - start_time
         if resp.status_code >= 400:

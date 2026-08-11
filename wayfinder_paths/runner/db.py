@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from wayfinder_paths.runner.constants import JobStatus, RunStatus
+from wayfinder_paths.runner.constants import (
+    ERROR_RETRY_COOLDOWN_SECONDS,
+    JobStatus,
+    RunStatus,
+)
 
 
 @dataclass(frozen=True)
@@ -326,13 +330,16 @@ class RunnerDB:
         )
 
     def record_job_success(self, *, job_id: int, ok_at: int) -> None:
+        # A success also clears ERROR: with the cooldown retry in due_jobs,
+        # ERROR means "backing off", not "dead" — recovery must be automatic.
         self._conn.cursor().execute(
             """
             UPDATE job_state
-            SET last_ok_at = ?, consecutive_failures = 0, last_error = NULL
+            SET last_ok_at = ?, consecutive_failures = 0, last_error = NULL,
+                status = CASE WHEN status = ? THEN ? ELSE status END
             WHERE job_id = ?
             """,
-            (ok_at, job_id),
+            (ok_at, JobStatus.ERROR, JobStatus.ACTIVE, job_id),
         )
 
     def record_job_failure(
@@ -368,6 +375,10 @@ class RunnerDB:
 
     def due_jobs(self, *, now: int) -> list[dict[str, Any]]:
         cur = self._conn.cursor()
+        # ERROR jobs retry after a cooldown instead of parking forever: a
+        # transient upstream failure (a 429 burst) once ERROR'd a lane that
+        # then sat dead 12 hours until a human resumed it. ERROR stays
+        # visible in the UI between retries; PAUSED alone never runs.
         cur.execute(
             """
             SELECT d.id, d.name, d.type, d.payload_json, d.interval_seconds,
@@ -376,10 +387,21 @@ class RunnerDB:
                    s.consecutive_failures, s.last_error
             FROM job_defs d
             JOIN job_state s ON s.job_id = d.id
-            WHERE s.status = ? AND s.next_run_at <= ?
+            WHERE (s.status = ? AND s.next_run_at <= ?)
+               OR (
+                    s.status = ?
+                    AND COALESCE(s.last_run_at, 0) <=
+                        ? - MAX(COALESCE(d.interval_seconds, 0) * 4, ?)
+                  )
             ORDER BY s.next_run_at ASC, d.id ASC
             """,
-            (JobStatus.ACTIVE, now),
+            (
+                JobStatus.ACTIVE,
+                now,
+                JobStatus.ERROR,
+                now,
+                ERROR_RETRY_COOLDOWN_SECONDS,
+            ),
         )
         return [
             {

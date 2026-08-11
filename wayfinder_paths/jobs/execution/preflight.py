@@ -228,8 +228,11 @@ def build_live_dataset(
         refresh_derived_features_if_stale,
     )
 
+    # refresh_dataset=False: this call runs INSIDE the dataset build — the
+    # helper's own dataset-staleness hook calling back into build_live_dataset
+    # would recurse.
     result["derived_features"] = refresh_derived_features_if_stale(
-        job_id, store=store, max_age_seconds=0
+        job_id, store=store, max_age_seconds=0, refresh_dataset=False
     )
     return result
 

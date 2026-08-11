@@ -262,3 +262,29 @@ def test_apply_lifecycle_events(tmp_path) -> None:
         entry for entry in log["entries"] if entry["title"].startswith("Apply deferred")
     )
     assert deferred["proposal_id"] == "prop-aaaaaaaa"
+
+
+def test_data_feed_events_reach_the_feed(tmp_path) -> None:
+    """Feed degradations must be owner-visible: out_of_credits names the
+    owner action, and recovery closes the episode."""
+    store, job_id = _mk(tmp_path)
+    root = store.job_dir(job_id)
+    journal = [
+        {
+            "ts": _ts(10),
+            "type": "data_feed_degraded",
+            "cause": "out_of_credits",
+            "error": "out_of_credits: HTTP 402 for candles",
+        },
+        {"ts": _ts(2), "type": "data_feed_recovered"},
+    ]
+    (root / "journal.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in journal) + "\n", encoding="utf-8"
+    )
+
+    log = build_decision_log(store, job_id)
+    titles = [entry["title"] for entry in log["entries"]]
+    degraded = next(t for t in titles if t.startswith("Data feed degraded"))
+    assert "out_of_credits" in degraded
+    assert "top up API credits" in degraded
+    assert any(t == "Data feed recovered" for t in titles)

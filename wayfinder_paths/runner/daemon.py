@@ -956,7 +956,9 @@ class RunnerDaemon:
         if not result:
             return {"ok": False, "error": f"Job not found: {name}"}
         job, state = result
-        if state.status != JobStatus.ACTIVE:
+        if state.status == JobStatus.PAUSED:
+            # ERROR is allowed: run-once is exactly how an operator (or the
+            # cooldown retry) probes whether the upstream failure cleared.
             return {"ok": False, "error": f"job is not ACTIVE (status={state.status})"}
 
         job_dict: dict[str, Any] = {
