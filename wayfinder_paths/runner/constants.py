@@ -22,6 +22,10 @@ class RunStatus(StrEnum):
 JOB_TYPE_STRATEGY: Final[str] = "strategy"
 JOB_TYPE_SCRIPT: Final[str] = "script"
 
+# ERROR lanes retry after max(4 * interval, this floor) instead of parking
+# until a human resumes them — ERROR means "backing off", not "dead".
+ERROR_RETRY_COOLDOWN_SECONDS: Final[int] = 1800
+
 # How the "add job" action appears on each surface. Both forms are used by
 # session-message discovery to find the chat that registered a job.
 ADD_JOB_CLI_VERB: Final[str] = "add-job"  # CLI command name (Click convention)

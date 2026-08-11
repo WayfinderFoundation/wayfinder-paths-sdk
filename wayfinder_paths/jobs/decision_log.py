@@ -204,6 +204,34 @@ def _journal_entries(
                     actor="owner",
                 )
             )
+        elif kind == "data_feed_degraded":
+            cause = str(event.get("cause") or "unknown")
+            hint = {
+                "out_of_credits": " — top up API credits to restore data",
+                "rate_limited": " — backing off; recovers on its own",
+                "features_stale": " — research features are not advancing",
+            }.get(cause, "")
+            entries.append(
+                _entry(
+                    ts,
+                    "halt",
+                    f"Data feed degraded ({cause}){hint}",
+                    str(event.get("error") or ""),
+                    "info",
+                    actor="system",
+                )
+            )
+        elif kind == "data_feed_recovered":
+            entries.append(
+                _entry(
+                    ts,
+                    "halt",
+                    "Data feed recovered",
+                    "",
+                    "info",
+                    actor="system",
+                )
+            )
         elif kind in ("halt_requested", "halt_flattened"):
             entries.append(
                 _entry(

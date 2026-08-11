@@ -223,3 +223,168 @@ def test_research_substrate_block_reads_disk(tmp_path) -> None:
     job2 = WayfinderJob.new("substrate-empty", agent_mode="intervene")
     store.save(job2)
     assert _research_substrate_block(store.job_dir(job2.id)) == {}
+
+
+def test_exog_fetch_is_incremental_after_backfill(tmp_path: Path) -> None:
+    """First run backfills the dataset span; later runs fetch only the tail
+    plus rolling warmup — the full-span fetch every 30 minutes was the
+    request storm behind the 429/credit burn."""
+    store, job_id = _make_job(tmp_path)
+    windows: list[tuple[int, int]] = []
+
+    def recording_fetch(coin: str, start_ms: int, end_ms: int) -> pd.Series:
+        windows.append((start_ms, end_ms))
+        return _fake_fetch(coin, start_ms, end_ms)
+
+    derive_features_job(
+        job_id, sets=("exog",), store=store, fetch_closes=recording_fetch
+    )
+    first_start, first_end = windows[0]
+
+    derive_features_job(
+        job_id, sets=("exog",), store=store, fetch_closes=recording_fetch
+    )
+    second_start, _ = windows[-1]
+
+    # The dataset spans 400 bars; the incremental window must skip most of it
+    # (tail + warmup only), never re-request the full span.
+    assert second_start > first_start
+    span = first_end - first_start
+    assert (first_end - second_start) < span / 2
+
+
+def test_refresh_escalates_after_consecutive_failures_and_recovers(tmp_path) -> None:
+    from wayfinder_paths.jobs.derived_features import (
+        REFRESH_STAMP_PATH,
+        refresh_derived_features_if_stale,
+    )
+    from wayfinder_paths.jobs.models import WayfinderJob
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("degrade-demo", agent_mode="intervene")
+    store.save(job)
+
+    def boom(job_id, **kwargs):
+        raise RuntimeError("rate_limited: HTTP 429 from candles endpoint")
+
+    for _ in range(4):
+        refresh_derived_features_if_stale(
+            job.id, store=store, derive=boom, refresh_dataset=False
+        )
+
+    journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
+    degraded = [line for line in journal.splitlines() if "data_feed_degraded" in line]
+    assert len(degraded) == 1, "escalates once per episode, not per failure"
+    assert "rate_limited" in degraded[0]
+    stamp = store.read_json(job.id, REFRESH_STAMP_PATH)
+    assert stamp["consecutive_failures"] == 4
+    assert stamp.get("degraded_since")
+
+    def healthy(job_id, **kwargs):
+        return {
+            "rows_appended": 3,
+            "sets": list(kwargs["sets"]),
+            "newest_feature_ts": pd.Timestamp.now(tz="UTC").isoformat(),
+        }
+
+    result = refresh_derived_features_if_stale(
+        job.id, store=store, derive=healthy, refresh_dataset=False
+    )
+    assert result["refreshed"] is True
+    journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
+    assert "data_feed_recovered" in journal
+    stamp = store.read_json(job.id, REFRESH_STAMP_PATH)
+    assert stamp["consecutive_failures"] == 0
+    assert not stamp.get("degraded_since")
+
+
+def test_refresh_alarms_on_stale_features_despite_success(tmp_path) -> None:
+    """A refresh that 'succeeds' while the newest feature is hours old is a
+    degradation too — the silent-wedge mode seen live (rows_appended: 0,
+    features 15h stale)."""
+    from wayfinder_paths.jobs.derived_features import (
+        refresh_derived_features_if_stale,
+    )
+    from wayfinder_paths.jobs.models import WayfinderJob
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("stale-demo", agent_mode="intervene")
+    store.save(job)
+
+    stale_ts = (pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=15)).isoformat()
+
+    def wedged(job_id, **kwargs):
+        return {
+            "rows_appended": 0,
+            "sets": list(kwargs["sets"]),
+            "newest_feature_ts": stale_ts,
+        }
+
+    refresh_derived_features_if_stale(
+        job.id, store=store, derive=wedged, refresh_dataset=False
+    )
+    journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
+    assert "data_feed_degraded" in journal
+    assert "features_stale" in journal
+
+
+def test_refresh_extends_stale_dataset_with_recorded_provenance(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs.derived_features import (
+        refresh_derived_features_if_stale,
+    )
+    from wayfinder_paths.jobs.models import WayfinderJob
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("dataset-demo", agent_mode="intervene")
+    store.save(job)
+    root = store.job_dir(job.id)
+    bars_path = root / "results" / "backtest" / "input_bars.json"
+    bars_path.parent.mkdir(parents=True, exist_ok=True)
+    old = (pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=20)).isoformat()
+    bars_path.write_text(
+        json.dumps(
+            {
+                "bars": [{"timestamp": old, "symbol": "LIT", "close": 1.0}],
+                "metadata": {
+                    "days": 120,
+                    "source": "ccxt",
+                    "exchange": "binance",
+                    "interval": "5m",
+                    "symbols": ["LIT"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fetches: list[dict] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.preflight.build_live_dataset",
+        lambda job_id, **kwargs: fetches.append({"job_id": job_id, **kwargs}),
+    )
+
+    def healthy(job_id, **kwargs):
+        return {
+            "rows_appended": 1,
+            "sets": list(kwargs["sets"]),
+            "newest_feature_ts": pd.Timestamp.now(tz="UTC").isoformat(),
+        }
+
+    result = refresh_derived_features_if_stale(job.id, store=store, derive=healthy)
+    assert result["refreshed"] is True
+    assert len(fetches) == 1
+    assert fetches[0]["days"] == 120
+    assert fetches[0]["source"] == "ccxt"
+    assert fetches[0]["exchange"] == "binance"
+
+    # refresh_dataset=False (the in-dataset-build call) never re-fetches.
+    store.write_json(job.id, "results/research/derived_refresh.json", {})
+    refresh_derived_features_if_stale(
+        job.id, store=store, derive=healthy, refresh_dataset=False
+    )
+    assert len(fetches) == 1
