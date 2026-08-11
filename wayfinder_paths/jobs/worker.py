@@ -438,6 +438,7 @@ def _build_worker_prompt_sections(
             "PnL, or trade count as a forward result."
         )
 
+    restage_tasks = _restage_block(root)
     dynamic_payload = {
         "scorecard": snapshot.get("scorecard") or {},
         "forward": forward_block,
@@ -459,7 +460,7 @@ def _build_worker_prompt_sections(
         "post_apply_shadow": _counterfactual_block(store, job_id),
         "research_substrate": _research_substrate_block(root),
         "standing_checks": _standing_checks_block(root),
-        "restage_tasks": _restage_block(root),
+        "restage_tasks": restage_tasks,
     }
 
     stable_prefix = (
@@ -730,8 +731,38 @@ def _build_worker_prompt_sections(
             "retrying.\n"
         )
     )
+    # Re-stage tasks are rendered as prompt text, never only inside the JSON
+    # snapshot: the snapshot is truncated at 12k chars with sort_keys=True, so
+    # a busy job can silently swallow a payload-only instruction — which is
+    # exactly how an agent once missed a pending re-stage and burned the
+    # owner's carried-over approval on a duplicate proposal.
+    restage_priority = ""
+    restage_task_line = ""
+    if restage_tasks:
+        restage_task_line = (
+            "- FIRST: complete the PRIORITY re-stage tasks listed above the snapshot.\n"
+        )
+        items = "".join(
+            f"  - {task['proposal_id']}: {task['instruction']}\n"
+            for task in restage_tasks
+        )
+        restage_priority = (
+            "PRIORITY — approved changes awaiting re-stage (do this FIRST):\n"
+            "The owner already approved these; an intervening apply moved the "
+            "workspace, so each candidate must be rebuilt against the CURRENT "
+            "workspace and re-staged.\n"
+            f"{items}"
+            "Use `wayfinder job restage` exactly as instructed per task. Do "
+            "NOT create a new proposal for these and do NOT use propose — a "
+            "new proposal discards the owner's approval and forces a "
+            "duplicate review. Re-staging re-runs every gate and re-queues "
+            "the apply automatically; if the change no longer makes sense on "
+            "the new base, reject it (agent housekeeping) and only then "
+            "propose fresh.\n\n"
+        )
     dynamic_context = (
         f"{DYNAMIC_CONTEXT_MARKER}\n"
+        f"{restage_priority}"
         "Current snapshot:\n"
         f"{_canonical_json(dynamic_payload, max_chars=12000)}\n\n"
         "Research agenda (research/agenda.md — cumulative exploration "
@@ -740,6 +771,7 @@ def _build_worker_prompt_sections(
         "Recent journal:\n"
         f"{recent_journal}\n\n"
         "Task:\n"
+        f"{restage_task_line}"
         f"{task_line}"
         "- Write the appropriate monitor/intervene/auto/apply report.\n"
         "- Emit a user-visible result only for meaningful state transitions, "

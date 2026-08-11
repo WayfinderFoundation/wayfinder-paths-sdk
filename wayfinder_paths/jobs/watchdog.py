@@ -43,6 +43,10 @@ QUEUED_TIMEOUT = timedelta(minutes=10)
 # A completer pid that is still alive but has made no progress for this long
 # is wedged: kill its process group, then recover.
 HARD_KILL_TIMEOUT = timedelta(minutes=45)
+# A code-change re-stage the agent has not resolved past this age gets the
+# restage wake re-fired (once per window) — one truncated prompt or dead
+# session must not strand an owner-approved change.
+RESTAGE_NAG_TIMEOUT = timedelta(minutes=30)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -178,6 +182,91 @@ def _recover_queued(
     return event
 
 
+def _recover_restage(
+    store: JobStore,
+    job_id: str,
+    proposal: dict[str, Any],
+    now: datetime,
+    *,
+    allow_mechanical: bool = True,
+) -> dict[str, Any] | None:
+    """Autonomous recovery for approval-carryover re-stages.
+
+    Params updates need no authoring — the change is the stored params dict —
+    so the watchdog re-stages them mechanically (full gate re-run + auto
+    queue) instead of waiting on an agent session. Code changes must be
+    re-authored by the agent; if one sits unresolved past the nag window
+    (a truncated prompt, a dead session, a wrong turn into propose), the
+    watchdog re-fires the restage wake so the pipeline converges without an
+    owner touch.
+    """
+    application = proposal["application"]
+    if proposal.get("status") != "approved":
+        return None
+    if not application.get("restage_requested"):
+        return None
+    if application.get("status") in {"queued", "applying", "applied"}:
+        return None
+    proposal_id = str(proposal["proposal_id"])
+    params = (proposal.get("proposed_change") or {}).get("execution_params")
+
+    if params:
+        if not allow_mechanical:
+            return None  # next pass, 5 minutes out
+        # circular import: proposals → worker → …driver → triggers → watchdog
+        from wayfinder_paths.jobs.proposals import restage_proposal
+
+        try:
+            result = restage_proposal(store, job_id, proposal_id)
+        except Exception as exc:
+            store.append_journal(
+                job_id,
+                {
+                    "type": "application_watchdog_skipped",
+                    "proposal_id": proposal_id,
+                    "reason": f"mechanical restage failed: {exc}",
+                },
+            )
+            return None
+        event = {
+            "type": "application_watchdog_recovered",
+            "proposal_id": proposal_id,
+            "stalled_status": "restage_requested",
+            "action": "mechanical_restage",
+            "outcome": result.get("application", {}).get("status")
+            or result.get("status"),
+        }
+        store.append_journal(job_id, event)
+        return event
+
+    age = _age(now, application.get("finished_at") or proposal.get("updated_at"))
+    if age < RESTAGE_NAG_TIMEOUT:
+        return None
+    last_nag = application.get("restage_nag_ts")
+    if last_nag and _age(now, last_nag) < RESTAGE_NAG_TIMEOUT:
+        return None
+    from wayfinder_paths.jobs.triggers import fire_triggers
+
+    fire_triggers(
+        store,
+        store.load(job_id),
+        ["proposal_restage_requested"],
+        source=f"watchdog-nag:{proposal_id}",
+    )
+    application["restage_nag_ts"] = now.isoformat()
+    store.write_proposal(job_id, proposal)
+    event = {
+        "type": "application_watchdog_recovered",
+        "proposal_id": proposal_id,
+        "stalled_status": "restage_requested",
+        "age_seconds": int(age.total_seconds()) if age != timedelta.max else None,
+        "action": "restage_wake_nag",
+        "outcome": "agent_renotified",
+    }
+    store.append_journal(job_id, event)
+    return event
+
+
 def recover_stalled_applications(
     *, store: JobStore | None = None, now: datetime | None = None
 ) -> dict[str, Any]:
@@ -190,6 +279,10 @@ def recover_stalled_applications(
     scanned = 0
     recovered: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    # A mechanical restage re-runs the full gate suite (a backtest) — bound
+    # each watchdog pass to one so the pass stays well inside its timeout;
+    # the 5-minute cadence picks up the rest.
+    restaged_this_pass = False
     for job in store.list_jobs():
         try:
             proposals = store.proposals(job.id)
@@ -204,6 +297,18 @@ def recover_stalled_applications(
                     event = _recover_applying(store, job.id, proposal, now)
                 elif status == "queued":
                     event = _recover_queued(store, job.id, proposal, now)
+                elif proposal["application"].get("restage_requested"):
+                    event = _recover_restage(
+                        store,
+                        job.id,
+                        proposal,
+                        now,
+                        allow_mechanical=not restaged_this_pass,
+                    )
+                    if event is not None and event.get("action") == (
+                        "mechanical_restage"
+                    ):
+                        restaged_this_pass = True
                 else:
                     event = None
             except Exception as exc:

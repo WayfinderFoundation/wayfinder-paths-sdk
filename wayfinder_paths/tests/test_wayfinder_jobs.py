@@ -1228,3 +1228,61 @@ def test_reject_proposal_records_provenance(tmp_path: Path) -> None:
     journal = (store.job_dir(job.id) / "journal.jsonl").read_text()
     assert '"rejected_by": "owner"' in journal
     assert '"rejected_by": "agent"' in journal
+
+
+def test_worker_prompt_hoists_restage_tasks_out_of_snapshot(tmp_path: Path) -> None:
+    """Pending re-stages must be PROMPT TEXT, not payload-only: the snapshot
+    JSON truncates at 12k chars (sort_keys), which once swallowed the
+    instruction and the agent burned a carried-over approval on a duplicate
+    proposal."""
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "restage-prompt-demo",
+        goal="Carry approvals over.",
+        script="workspace/src/loop.py",
+        agent_mode="intervene",
+    )
+    store.save(job)
+    proposals_dir = store.job_dir(job.id) / "proposals"
+    proposals_dir.mkdir(parents=True, exist_ok=True)
+    (proposals_dir / "prop-params-update-aaaa1111.json").write_text(
+        json.dumps(
+            {
+                "proposal_id": "prop-params-update-aaaa1111",
+                "status": "approved",
+                "proposed_change": {
+                    "summary": "Tighten stop",
+                    "execution_params": {"stop_pct": 0.01},
+                },
+                "application": {"status": "failed", "restage_requested": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sections = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
+    )
+
+    dynamic = sections["dynamic_context"]
+    priority_at = dynamic.index("PRIORITY — approved changes awaiting re-stage")
+    assert priority_at < dynamic.index("Current snapshot:")
+    assert "Do NOT create a new proposal" in dynamic
+    assert "wayfinder job restage" in dynamic
+    assert "prop-params-update-aaaa1111" in dynamic[: priority_at + 2000]
+    assert "FIRST: complete the PRIORITY re-stage tasks" in dynamic
+
+    # No pending re-stage → no priority section.
+    (proposals_dir / "prop-params-update-aaaa1111.json").unlink()
+    clean = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
+    )
+    assert (
+        "PRIORITY — approved changes awaiting re-stage" not in clean["dynamic_context"]
+    )
