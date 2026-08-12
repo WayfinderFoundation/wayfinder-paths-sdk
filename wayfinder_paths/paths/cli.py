@@ -84,24 +84,26 @@ def _sync_after_path_mutation(
     *,
     trigger: str,
     runtime_reload_intent: ShellsRuntimeReloadIntent,
-    changed_slugs: list[str | None],
+    changed_slugs: list[str],
 ) -> None:
     sync_result = sync_shells_inventory(
         trigger=trigger,
         runtime_reload_intent=runtime_reload_intent,
-        changed_slugs=[slug for slug in changed_slugs if slug],
+        changed_slugs=changed_slugs,
     )
+    if sync_result.reason in {"not_in_opencode_instance", "suppressed"}:
+        return
+
     result["shells_sync"] = {
         "status": sync_result.status,
         "reason": sync_result.reason,
         "runtime_reload_intent": sync_result.runtime_reload_intent,
         "runtime_reload_status": sync_result.runtime_reload_status,
     }
-    restart_pending = (
-        sync_result.runtime_reload_intent == "restart"
-        and sync_result.reason not in {"not_in_opencode_instance", "suppressed"}
-        and sync_result.runtime_reload_status != "restarted"
-    )
+    if sync_result.runtime_reload_intent != "restart":
+        return
+
+    restart_pending = sync_result.runtime_reload_status != "restarted"
     result["runtime_restart_pending"] = restart_pending
     if restart_pending:
         warnings = result.setdefault("warnings", [])
@@ -110,6 +112,10 @@ def _sync_after_path_mutation(
                 "Path files were updated, but OpenCode could not reload them. "
                 "Restart the Shell runtime to finish applying this change."
             )
+
+
+def _runtime_reload_intent_for_host(host: object) -> ShellsRuntimeReloadIntent:
+    return "restart" if str(host or "").strip().lower() == "opencode" else "preserve"
 
 
 def _path_install_venue(*, runtime: str) -> str:
@@ -1637,10 +1643,8 @@ def activate_cmd(
     _sync_after_path_mutation(
         result,
         trigger="activate",
-        runtime_reload_intent=(
-            "restart" if str(result.get("host") or "") == "opencode" else "preserve"
-        ),
-        changed_slugs=[slug],
+        runtime_reload_intent=_runtime_reload_intent_for_host(result.get("host")),
+        changed_slugs=[slug] if slug else [],
     )
     _echo_json({"ok": True, "result": result})
 
@@ -2496,10 +2500,8 @@ def install_cmd(
     _sync_after_path_mutation(
         result,
         trigger="install",
-        runtime_reload_intent=(
-            "restart"
-            if isinstance(activation, dict) and activation.get("host") == "opencode"
-            else "preserve"
+        runtime_reload_intent=_runtime_reload_intent_for_host(
+            activation.get("host") if isinstance(activation, dict) else None
         ),
         changed_slugs=[slug],
     )
@@ -2753,9 +2755,7 @@ def update_cmd(
     _sync_after_path_mutation(
         result,
         trigger="update",
-        runtime_reload_intent=(
-            "restart" if activation_target.host == "opencode" else "preserve"
-        ),
+        runtime_reload_intent=_runtime_reload_intent_for_host(activation_target.host),
         changed_slugs=[slug],
     )
     _echo_json({"ok": True, "result": result})
@@ -2797,8 +2797,8 @@ def remove_cmd(
     _sync_after_path_mutation(
         result,
         trigger="remove",
-        runtime_reload_intent=(
-            "restart" if result.get("activation_host") == "opencode" else "preserve"
+        runtime_reload_intent=_runtime_reload_intent_for_host(
+            result.get("activation_host")
         ),
         changed_slugs=[slug],
     )

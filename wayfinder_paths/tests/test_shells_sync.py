@@ -4,8 +4,12 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 
-from wayfinder_paths.paths.cli import _sync_after_path_mutation
+from wayfinder_paths.paths.cli import (
+    _runtime_reload_intent_for_host,
+    _sync_after_path_mutation,
+)
 from wayfinder_paths.paths.client import PathsApiClient, PathsApiError
 from wayfinder_paths.paths.shells_sync import (
     ShellsInventorySyncResult,
@@ -178,16 +182,45 @@ def test_client_translates_network_errors() -> None:
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 
-    try:
+    with pytest.raises(PathsApiError, match="Shells inventory sync failed"):
         client.submit_shells_inventory_sync(
             app_name="test-app",
             lockfile_present=True,
             paths=[],
         )
-    except PathsApiError as exc:
-        assert "Shells inventory sync failed" in str(exc)
-    else:
-        raise AssertionError("expected PathsApiError")
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("opencode", "restart"),
+        ("OpenCode", "restart"),
+        ("claude", "preserve"),
+        (None, "preserve"),
+    ],
+)
+def test_runtime_reload_intent_follows_activation_host(host, expected) -> None:
+    assert _runtime_reload_intent_for_host(host) == expected
+
+
+def test_local_mutation_does_not_change_cli_result(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.cli.sync_shells_inventory",
+        lambda **_kwargs: ShellsInventorySyncResult(
+            status="skipped",
+            reason="not_in_opencode_instance",
+        ),
+    )
+    result: dict[str, object] = {"installed": True}
+
+    _sync_after_path_mutation(
+        result,
+        trigger="install",
+        runtime_reload_intent="preserve",
+        changed_slugs=["example"],
+    )
+
+    assert result == {"installed": True}
 
 
 def test_pending_reload_is_attached_as_a_cli_warning(monkeypatch) -> None:
@@ -206,7 +239,7 @@ def test_pending_reload_is_attached_as_a_cli_warning(monkeypatch) -> None:
         result,
         trigger="activate",
         runtime_reload_intent="restart",
-        changed_slugs=[None],
+        changed_slugs=[],
     )
 
     assert result["runtime_restart_pending"] is True
