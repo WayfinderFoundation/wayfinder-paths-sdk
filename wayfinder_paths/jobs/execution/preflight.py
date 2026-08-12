@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import shutil
 from collections.abc import Sequence
 from pathlib import Path
@@ -9,7 +10,10 @@ from typing import Any
 
 import pandas as pd
 
-from wayfinder_paths.jobs.execution.ccxt_feed import fetch_ccxt_dataset_rows
+from wayfinder_paths.jobs.execution.ccxt_feed import (
+    fetch_ccxt_dataset_rows,
+    fetch_ccxt_funding_rows,
+)
 from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.paper import PaperBroker
@@ -54,6 +58,7 @@ def build_live_dataset(
     market_type: str = "swap",
     quote: str = "USDT",
     feed: Any | None = None,
+    incremental: bool = True,
 ) -> dict[str, Any]:
     """Fetch real candles and persist them as the job's backtest dataset
     (input_bars.json).
@@ -81,9 +86,28 @@ def build_live_dataset(
     if not symbols:
         raise ValueError("no symbols configured for dataset fetch")
 
+    # Incremental refresh: with 120d windows a full refetch re-downloads
+    # ~100k+ bars to add a few hours of tail. When the existing dataset has
+    # compatible provenance (same source/exchange/symbols/interval) and
+    # reaches back far enough for the requested window, fetch only the
+    # missing tail (+2-bar overlap) and merge; anything else falls back to a
+    # full fetch.
+    previous_rows: list[dict[str, Any]] = []
+    fetch_days: float = float(days)
+    if incremental:
+        previous_rows, fetch_days = _incremental_plan(
+            root,
+            source=source,
+            exchange=exchange,
+            symbols=symbols,
+            interval=str(bar_interval),
+            days=days,
+            bar_seconds=bar_seconds,
+        )
+
     if source == "ccxt":
         if feed is not None:
-            lookback_bars = max(2, int(days * 86_400 / bar_seconds))
+            lookback_bars = max(2, int(fetch_days * 86_400 / bar_seconds))
             view = asyncio.run(
                 feed.get_completed_bars(
                     symbols, str(bar_interval), lookback_bars=lookback_bars
@@ -102,7 +126,7 @@ def build_live_dataset(
                 fetch_ccxt_dataset_rows(
                     symbols,
                     str(bar_interval),
-                    days=days,
+                    days=max(1, math.ceil(fetch_days)),
                     exchange_id=exchange,
                     market_type=market_type,
                     quote=quote,
@@ -123,7 +147,7 @@ def build_live_dataset(
                 venue: build_adapter(venue, mode="paper", spec=spec, params=params)
                 for venue in (spec.venues or ["hyperliquid"])
             }
-        lookback_bars = max(2, int(days * 86_400 / bar_seconds))
+        lookback_bars = max(2, int(fetch_days * 86_400 / bar_seconds))
         rows = []
 
         async def _fetch() -> None:
@@ -142,15 +166,75 @@ def build_live_dataset(
             "days": days,
             "fetched_at": utc_now_iso(),
         }
-    if not rows:
+        # Probe the long-history source's market list so the evidence gate
+        # can distinguish "venue-capped but ccxt has years" (must refetch
+        # via ccxt) from "these symbols do not exist on ccxt at all" (HIP-3
+        # equity perps like xyz:MU) — the latter is legitimate proof of
+        # unavailability that a raising ccxt fetch can never leave behind.
+        missing = _ccxt_missing_markets(symbols, exchange=exchange, quote=quote)
+        if missing is not None:
+            metadata["ccxt_missing_markets"] = missing
+    if not rows and not previous_rows:
         raise RuntimeError("no bars returned while building live dataset")
+    if previous_rows:
+        rows = _merge_dataset_rows(previous_rows, rows, days=days)
+        metadata["incremental"] = True
+    # Requested-vs-received rides the persisted metadata: it is the PROOF the
+    # evidence-window gate accepts for "more history does not exist" (a short
+    # window is only excusable when the full target was requested and the
+    # source could not supply it).
+    stamps_all = sorted({str(row.get("timestamp")) for row in rows})
+    if stamps_all:
+        span_days = round(
+            (pd.Timestamp(stamps_all[-1]) - pd.Timestamp(stamps_all[0])).total_seconds()
+            / 86_400,
+            1,
+        )
+        metadata["days_received"] = span_days
     path = root / "results" / "backtest" / "input_bars.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({"bars": rows, "metadata": metadata}, indent=2, default=str) + "\n",
         encoding="utf-8",
     )
-    return {"path": str(path), "bars": len(rows), "metadata": metadata}
+    result: dict[str, Any] = {
+        "path": str(path),
+        "bars": len(rows),
+        "metadata": metadata,
+    }
+    # Requested-vs-received: venue feeds cap history silently — an agent asked
+    # for 720 days, got 290, and analyzed away without noticing the shortfall.
+    stamps = sorted({str(row.get("timestamp")) for row in rows})
+    if stamps:
+        first = pd.Timestamp(stamps[0])
+        last = pd.Timestamp(stamps[-1])
+        days_received = round((last - first).total_seconds() / 86_400, 1)
+        result["first_ts"] = str(first)
+        result["last_ts"] = str(last)
+        result["days_requested"] = days
+        result["days_received"] = days_received
+        if days_received < 0.9 * float(days):
+            result["warning"] = (
+                f"received {days_received} days of {days} requested — the "
+                "venue caps history. For longer windows use "
+                "dataset_source='ccxt' (exchange='binance')."
+            )
+    # Derived research columns follow the dataset unconditionally — a fresh
+    # dataset with frozen btc_trend/cross columns is the silent-staleness bug
+    # (stale values merge cleanly into every scan frame, no error anywhere).
+    # force=0 bypasses the hourly stamp gate; the helper never raises and
+    # journals failures, so a broken exog feed cannot fail the dataset build.
+    from wayfinder_paths.jobs.derived_features import (
+        refresh_derived_features_if_stale,
+    )
+
+    # refresh_dataset=False: this call runs INSIDE the dataset build — the
+    # helper's own dataset-staleness hook calling back into build_live_dataset
+    # would recurse.
+    result["derived_features"] = refresh_derived_features_if_stale(
+        job_id, store=store, max_age_seconds=0, refresh_dataset=False
+    )
+    return result
 
 
 class ReplayFeed:
@@ -582,3 +666,208 @@ def _write_report(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")
     return report
+
+
+def _ccxt_missing_markets(
+    symbols: list[str], *, exchange: str, quote: str
+) -> list[str] | None:
+    """Symbols with no swap OR spot market on the long-history exchange.
+    None = probe failed (network etc.) — record nothing so the evidence gate
+    stays conservative."""
+    try:
+        import ccxt
+
+        client = getattr(ccxt, exchange)()
+        markets = client.load_markets()
+        return [
+            coin
+            for coin in symbols
+            if not any(
+                (market := markets.get(pair)) and market.get("active")
+                for pair in (f"{coin}/{quote}:{quote}", f"{coin}/{quote}")
+            )
+        ]
+    except Exception:  # noqa: BLE001 — best-effort probe only
+        return None
+
+
+def _incremental_plan(
+    root: Path,
+    *,
+    source: str,
+    exchange: str,
+    symbols: list[str],
+    interval: str,
+    days: int,
+    bar_seconds: int,
+) -> tuple[list[dict[str, Any]], float]:
+    """(previous_rows, fetch_days): reuse the on-disk dataset when provenance
+    matches and it reaches back far enough; otherwise ([], days) = full."""
+    path = root / "results" / "backtest" / "input_bars.json"
+    if not path.exists():
+        return [], float(days)
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return [], float(days)
+    rows = doc.get("bars") if isinstance(doc, dict) else None
+    meta = doc.get("metadata") if isinstance(doc, dict) else None
+    if not isinstance(rows, list) or not rows or not isinstance(meta, dict):
+        return [], float(days)
+    if str(meta.get("source") or "") != source:
+        return [], float(days)
+    if source == "ccxt" and str(meta.get("exchange") or "") != exchange:
+        return [], float(days)
+    if str(meta.get("interval") or "") != interval:
+        return [], float(days)
+    if set(map(str, meta.get("symbols") or [])) != set(symbols):
+        return [], float(days)
+    stamps = sorted(str(row.get("timestamp")) for row in rows if row.get("timestamp"))
+    if not stamps:
+        return [], float(days)
+    now = pd.Timestamp.now(tz="UTC")
+    oldest = pd.Timestamp(stamps[0])
+    newest = pd.Timestamp(stamps[-1])
+    # The kept file must reach back far enough for the requested window —
+    # incremental fetching can only extend the tail, never backfill.
+    if oldest > now - pd.Timedelta(days=days) + pd.Timedelta(seconds=2 * bar_seconds):
+        return [], float(days)
+    gap_seconds = max((now - newest).total_seconds(), 0.0) + 2 * bar_seconds
+    fetch_days = min(float(days), gap_seconds / 86_400)
+    return list(rows), max(fetch_days, 2 * bar_seconds / 86_400)
+
+
+def _merge_dataset_rows(
+    previous_rows: list[dict[str, Any]],
+    new_rows: list[dict[str, Any]],
+    *,
+    days: int,
+) -> list[dict[str, Any]]:
+    """Union on (timestamp, symbol) — fresh rows win — trimmed to the
+    trailing window anchored on the NEWEST bar (not the wall clock: a stale
+    source or clock skew must never trim the dataset to empty)."""
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in previous_rows:
+        merged[(str(row.get("timestamp")), str(row.get("symbol")))] = row
+    for row in new_rows:
+        merged[(str(row.get("timestamp")), str(row.get("symbol")))] = row
+    newest = max(pd.Timestamp(str(row.get("timestamp"))) for row in merged.values())
+    cutoff = newest - pd.Timedelta(days=days)
+    kept = [
+        row
+        for row in merged.values()
+        if pd.Timestamp(str(row.get("timestamp"))) >= cutoff
+    ]
+    kept.sort(key=lambda row: (str(row.get("timestamp")), str(row.get("symbol"))))
+    return kept
+
+
+def fetch_funding_features(
+    job_id: str,
+    *,
+    days: int = 30,
+    exchange: str = "binance",
+    quote: str = "USDT",
+    store: JobStore | None = None,
+    exchange_client: Any | None = None,
+) -> dict[str, Any]:
+    """Fetch historical funding rates for the job's symbols into the job's
+    feature store — the first-class path for carry data.
+
+    Appends canonical rows to state/features.jsonl (deduped on
+    timestamp+name+symbol, so re-fetching extends rather than duplicates) and
+    declares the "funding" feature in execution_spec.data_contract.features
+    when missing, so both backtest and live as-of merge a `funding` column
+    onto each symbol's bars. Declaring the feature restamps the workspace
+    revision — consuming new data IS a strategy change and re-gates promotion.
+    """
+    store = store or JobStore()
+    root = store.job_dir(job_id)
+    job_data = _load_job_yaml(root)
+    spec_data, spec_path = resolve_execution_spec(root, job_data)
+    spec = ExecutionSpec.from_dict(spec_data)
+    params = dict(job_data.get("execution_params") or {})
+    symbols = [
+        str(symbol)
+        for symbol in (params.get("symbols") or spec.data_contract.get("symbols") or [])
+    ]
+    if not symbols:
+        raise ValueError("no symbols configured for funding fetch")
+
+    rows, metadata = asyncio.run(
+        fetch_ccxt_funding_rows(
+            symbols,
+            days=days,
+            exchange_id=exchange,
+            quote=quote,
+            exchange=exchange_client,
+        )
+    )
+
+    features_path = root / "state" / "features.jsonl"
+    features_path.parent.mkdir(parents=True, exist_ok=True)
+    existing: set[tuple[str, str, str]] = set()
+    if features_path.exists():
+        for line in features_path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                existing.add(
+                    (
+                        str(row.get("timestamp")),
+                        str(row.get("name")),
+                        str(row.get("symbol")),
+                    )
+                )
+    written_at = pd.Timestamp.now(tz="UTC").isoformat()
+    appended = 0
+    with features_path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            key = (str(row["timestamp"]), str(row["name"]), str(row["symbol"]))
+            if key in existing:
+                continue
+            existing.add(key)
+            handle.write(json.dumps({**row, "written_at": written_at}) + "\n")
+            appended += 1
+
+    declared = False
+    target = spec_path if spec_path is not None else root / "execution_spec.json"
+    if target.exists():
+        spec_doc = json.loads(target.read_text(encoding="utf-8"))
+        contract = spec_doc.setdefault("data_contract", {})
+        features = contract.setdefault("features", [])
+        if not any(
+            isinstance(item, dict) and item.get("name") == "funding"
+            for item in features
+        ):
+            features.append({"name": "funding"})
+            target.write_text(json.dumps(spec_doc, indent=2) + "\n", encoding="utf-8")
+            declared = True
+
+    result: dict[str, Any] = {
+        "rows_fetched": len(rows),
+        "rows_appended": appended,
+        "per_symbol": metadata.get("per_symbol", {}),
+        "features_path": str(features_path),
+        "feature_declared_now": declared,
+        "metadata": metadata,
+    }
+    stamps = sorted(str(row.get("timestamp")) for row in rows)
+    if stamps:
+        first = pd.Timestamp(stamps[0])
+        last = pd.Timestamp(stamps[-1])
+        days_received = round((last - first).total_seconds() / 86_400, 1)
+        result["first_ts"] = str(first)
+        result["last_ts"] = str(last)
+        result["days_requested"] = days
+        result["days_received"] = days_received
+        if days_received < 0.9 * float(days):
+            result["warning"] = (
+                f"funding history covers {days_received} days of {days} "
+                "requested — bars outside this span carry NaN funding, which "
+                "biases any funding-vs-price-signal comparison. Match the "
+                "candle window or note the shortfall in your analysis."
+            )
+    return result

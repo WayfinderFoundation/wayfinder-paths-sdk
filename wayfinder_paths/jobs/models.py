@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -244,11 +246,32 @@ class WayfinderJob:
             ],
             auto_limits=auto_limits_payload if normalized_mode == "auto" else {},
         )
+        # The creating agent's opencode session — the "initializer" the UI
+        # re-enters from a strategy's Conversations list. Rides the whole-spec
+        # sync, so no backend change is needed. opencode ids are `ses_<alnum>`;
+        # strip to that charset so a hostile parent-process env can't smuggle
+        # newlines/quotes/control chars downstream into frontend URLs or text.
+        initializer_session = re.sub(
+            r"[^A-Za-z0-9_-]",
+            "",
+            os.environ.get("OPENCODE_SESSION_ID")
+            or os.environ.get("OPENCODE_SESSIONID")
+            or "",
+        )
+        controller: dict[str, Any] = (
+            {
+                "initializer_session_id": initializer_session,
+                "created_at": utc_now_iso(),
+            }
+            if initializer_session
+            else {}
+        )
         return cls(
             id=jid,
             name=name or jid.replace("-", " ").title(),
             job_kind=infer_job_kind(script_enabled, normalized_mode),
             execution_contract=execution_contract,
+            controller=controller,
             goal=goal,
             versioning={
                 "active_revision": None,

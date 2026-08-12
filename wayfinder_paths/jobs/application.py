@@ -29,6 +29,7 @@ class _ApplicationOutcome:
     promoted_revision: str | None = None
     compile_result: dict[str, Any] | None = None
     rollback: dict[str, Any] | None = None
+    restage_requested: bool = False
 
 
 def ensure_jobs_v1_contract(
@@ -68,6 +69,18 @@ def claim_application(store: JobStore, job_id: str, proposal_id: str) -> dict[st
         raise ValueError(
             f"Proposal application is not queued: {proposal_id} ({application_status})"
         )
+    # Claiming pauses the job's loops — make sure the recovery owner exists
+    # before entering the risk window. Best-effort: registration failure must
+    # never block an apply. Lazy import: watchdog imports this module.
+    try:
+        from wayfinder_paths.jobs.watchdog import ensure_application_watchdog
+
+        ensure_application_watchdog(store=store)
+    except Exception as exc:
+        store.append_journal(
+            job_id,
+            {"type": "application_watchdog_ensure_failed", "error": str(exc)},
+        )
     paused = pause_job_loops(store, job_id)
     try:
         candidate = _prepare_candidate_workspace(
@@ -82,7 +95,17 @@ def claim_application(store: JobStore, job_id: str, proposal_id: str) -> dict[st
     except Exception:
         resume_job_loops(store, job_id)
         raise
-    sync_all_jobs(store=store)
+    # Best-effort: this sync is UI telemetry, but it sits between the claim
+    # (loops now paused) and the caller spawning the completer. A backend
+    # hiccup here severed that chain in production (2026-07-23): the claim
+    # stood, the completer never spawned, and the job sat dark until the
+    # watchdog's 15-minute recovery. Telemetry must never strand a claim.
+    try:
+        sync_all_jobs(store=store)
+    except Exception as exc:  # noqa: BLE001
+        store.append_journal(
+            job_id, {"type": "claim_sync_failed", "error": str(exc)[:300]}
+        )
     return {"proposal": proposal, "paused_runner_jobs": paused, "candidate": candidate}
 
 
@@ -202,6 +225,20 @@ def complete_application(
         promoted_revision=outcome.promoted_revision,
         rollback=outcome.rollback,
     )
+    if outcome.restage_requested:
+        # Approval carryover: the proposal stays approved; the flag marks it
+        # as awaiting an agent re-stage against the moved workspace. Wake the
+        # agent now (after loops resumed) instead of waiting out its interval.
+        proposal["application"]["restage_requested"] = True
+        store.write_proposal(job_id, proposal)
+        from wayfinder_paths.jobs.triggers import fire_triggers
+
+        fire_triggers(
+            store,
+            store.load(job_id),
+            ["proposal_restage_requested"],
+            source=f"apply:{proposal_id}",
+        )
     sync_all_jobs(store=store)
     return {
         "proposal": proposal,
@@ -223,6 +260,55 @@ def _complete_applied_application(
 ) -> _ApplicationOutcome:
     proposal = store.load_proposal(job_id, proposal_id)
     candidate_dir = _candidate_dir_from_proposal(store, job_id, proposal)
+    # A propose-time candidate is a full workspace snapshot and promotion is a
+    # wholesale replace — promoting a candidate whose base is no longer the
+    # active revision silently reverts every apply that landed in between.
+    # active == candidate revision is allowed: that is a crash-resume after the
+    # promotion itself completed, where finishing the bookkeeping is correct.
+    base_revision = str(proposal.get("base_revision") or "")
+    candidate_revision = str(
+        (proposal.get("candidate_report") or {}).get("revision") or ""
+    )
+    active_revision = compute_workspace_revision(store.job_dir(job_id))
+    if base_revision and active_revision not in (base_revision, candidate_revision):
+        final_error = (
+            f"baseline drift: candidate was staged against revision {base_revision} "
+            f"but the active workspace is now {active_revision} (moved by an "
+            "intervening apply). Promoting this candidate would revert those "
+            "changes. Approval carried over — the agent re-stages the change "
+            "against the current workspace and the apply re-queues automatically."
+        )
+        store.append_journal(
+            job_id,
+            {
+                "type": "stale_baseline_promotion_refused",
+                "proposal_id": proposal_id,
+                "base_revision": base_revision,
+                "active_revision": active_revision,
+                "candidate_revision": candidate_revision,
+                "restage_requested": True,
+            },
+        )
+        _write_apply_report(
+            store,
+            job_id,
+            proposal_id,
+            status="red",
+            summary=f"Apply deferred: {final_error}",
+            changed_files=changed_files or [],
+            validation={"status": "failed", "checks": [], "error": final_error},
+            error=final_error,
+        )
+        return _ApplicationOutcome(
+            final_status="failed",
+            final_error=final_error,
+            deterministic_validation={
+                "status": "failed",
+                "checks": [],
+                "error": final_error,
+            },
+            restage_requested=True,
+        )
     deterministic_validation = validate_candidate_application(
         repo_root=store.repo_root,
         job_dir=store.job_dir(job_id),
@@ -264,12 +350,18 @@ def _complete_applied_application(
 
     root = store.job_dir(job_id)
     backup_dir = root / "applications" / proposal_id / "backup"
-    if backup_dir.exists():
+    active_workspace = root / "workspace"
+    # Rebuild the backup only while the active workspace exists. After a crash
+    # mid-promotion the active workspace may be gone and the existing backup is
+    # the ONLY copy of the pre-apply state — rebuilding from the torn tree
+    # would destroy it and leave rollback with nothing to restore.
+    if backup_dir.exists() and active_workspace.exists():
         shutil.rmtree(backup_dir)
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    if (root / "workspace").exists():
-        shutil.copytree(root / "workspace", backup_dir / "workspace")
-    shutil.copy2(root / "job.yaml", backup_dir / "job.yaml")
+    if not backup_dir.exists():
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        if active_workspace.exists():
+            shutil.copytree(active_workspace, backup_dir / "workspace")
+        shutil.copy2(root / "job.yaml", backup_dir / "job.yaml")
 
     outcome = _ApplicationOutcome(
         final_status="applied",
@@ -479,6 +571,7 @@ def _promote_candidate(store: JobStore, job_id: str, candidate_dir: Path) -> Non
     for relative in (
         Path("results") / "backtest" / "latest.json",
         Path("results") / "backtest" / "visualization.json",
+        Path("results") / "backtest" / "trade_forensics.json",
         Path("reports") / "preflight" / "latest.json",
         Path("reports") / "validation" / "latest.json",
     ):

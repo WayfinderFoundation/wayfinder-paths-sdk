@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import json
 import py_compile
 import re
+import tokenize
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -173,6 +175,7 @@ def validate_execution_job(
             "path": str(script_path) if script_path else None,
         }
     )
+    checks.append(entrypoint_inside_workspace_check(root, script_path))
     if script_path and script_path.exists():
         checks.extend(_script_static_checks(script_path, spec))
         try:
@@ -202,12 +205,159 @@ def validate_execution_job(
         )
 
     checks.extend(_preflight_checks(root, job_data, spec))
+    checks.extend(_evidence_window_check(root))
+    checks.extend(_live_wallet_checks(job_data))
 
     report = _report(checks, strict=strict or spec.strict)
     report["revision"] = compute_workspace_revision(root)
     if not candidate_dir:
         store.write_json(job_id, "reports/validation/latest.json", report)
     return report
+
+
+# Evidence-window policy (owner-set 2026-07-27): a 5m strategy validated on
+# a 14-day window backtested +21% at deploy and ran -41bps/trade forward —
+# window-local noise survived every multiplicity gate because none of them
+# question the window itself. Force long history when it exists; the 30d
+# floor applies ONLY with proof of unavailability (the full target was
+# requested and the source could not supply it — e.g. a new listing).
+EVIDENCE_TARGET_DAYS = 120.0
+EVIDENCE_FLOOR_DAYS = 30.0
+
+
+def _evidence_window_check(root: Path) -> list[dict[str, Any]]:
+    bars_path = root / "results" / "backtest" / "input_bars.json"
+    if not bars_path.exists():
+        return []  # fixture/scenario-driven validation contexts
+    try:
+        payload = json.loads(bars_path.read_text(encoding="utf-8"))
+    except ValueError:
+        payload = None
+    # Legacy bars files are a bare list of rows with no metadata envelope.
+    metadata = payload.get("metadata") if isinstance(payload, dict) else None
+    if not isinstance(metadata, dict) or metadata.get("days") is None:
+        return [
+            {
+                "name": "evidence_window",
+                "passed": True,
+                "blocking": False,
+                "note": (
+                    "dataset provenance unknown (hand-written bars) — window "
+                    "policy not evaluable; prefer fetch-dataset so the window "
+                    "is auditable"
+                ),
+            }
+        ]
+    requested = float(metadata.get("days") or 0.0)
+    received = float(metadata.get("days_received") or requested)
+    if received >= 0.9 * EVIDENCE_TARGET_DAYS:
+        return [
+            {
+                "name": "evidence_window",
+                "passed": True,
+                "tier": "long_history",
+                "days_received": received,
+            }
+        ]
+    if requested < EVIDENCE_TARGET_DAYS:
+        # A short window is only excusable with PROOF the data does not
+        # exist — and proof requires having asked for the full target.
+        return [
+            {
+                "name": "evidence_window",
+                "passed": False,
+                "days_received": received,
+                "error": (
+                    f"dataset spans {received:g}d but only {requested:g}d was "
+                    f"requested — request the full target first: fetch-dataset "
+                    f"--days {EVIDENCE_TARGET_DAYS:g} --source ccxt. The "
+                    f"{EVIDENCE_FLOOR_DAYS:g}d floor applies only when the "
+                    "full target was requested and the source could not "
+                    "supply it (new listing)."
+                ),
+            }
+        ]
+    source = str(metadata.get("source") or "")
+    missing = metadata.get("ccxt_missing_markets")
+    if source != "ccxt" and isinstance(missing, list) and missing:
+        # The long-history source does not list these symbols at all (probed
+        # at fetch time) — a venue dataset is the only obtainable evidence.
+        if received >= EVIDENCE_FLOOR_DAYS:
+            return [
+                {
+                    "name": "evidence_window",
+                    "passed": True,
+                    "tier": "short_history_proven",
+                    "days_received": received,
+                    "note": (
+                        f"{received:g}d from the venue; symbols {missing} "
+                        "have no market on the long-history exchange (probed "
+                        "at fetch) — venue data is the only obtainable "
+                        "evidence. 30d floor applies; short-history caveats "
+                        "stand."
+                    ),
+                }
+            ]
+        return [
+            {
+                "name": "evidence_window",
+                "passed": False,
+                "days_received": received,
+                "error": (
+                    f"only {received:g}d of venue history and symbols "
+                    f"{missing} have no long-history market — below the "
+                    f"{EVIDENCE_FLOOR_DAYS:g}d floor; too new to validate."
+                ),
+            }
+        ]
+    if source != "ccxt":
+        # A VENUE shortfall proves nothing — venue feeds cap at days of
+        # history while the ccxt path has years. This exact hole let an
+        # Aug 2 default-source refetch replace the 120d ccxt dataset with
+        # 40d of venue data and still pass the gate as "proven".
+        return [
+            {
+                "name": "evidence_window",
+                "passed": False,
+                "days_received": received,
+                "error": (
+                    f"dataset spans {received:g}d from source {source!r} — a "
+                    "venue-capped shortfall is NOT proof of unavailability. "
+                    f"Refetch via the long-history path: fetch-dataset --days "
+                    f"{EVIDENCE_TARGET_DAYS:g} --source ccxt. Only a ccxt "
+                    "shortfall counts as proven (new listing)."
+                ),
+            }
+        ]
+    if received >= EVIDENCE_FLOOR_DAYS:
+        return [
+            {
+                "name": "evidence_window",
+                "passed": True,
+                "tier": "short_history_proven",
+                "days_received": received,
+                "note": (
+                    f"{received:g}d received of {requested:g}d requested — the "
+                    "long-history source could not supply the target (new "
+                    "symbol); the 30d floor applies. Evidence from this window "
+                    "is short-history: prefer probation sizing and re-validate "
+                    "as history grows."
+                ),
+            }
+        ]
+    return [
+        {
+            "name": "evidence_window",
+            "passed": False,
+            "days_received": received,
+            "error": (
+                f"only {received:g}d of history exists (full target "
+                "requested) — below the "
+                f"{EVIDENCE_FLOOR_DAYS:g}d floor; too new to validate any "
+                "deployment evidence"
+            ),
+        }
+    ]
 
 
 def _feature_checks(root: Path, spec: ExecutionSpec) -> list[dict[str, Any]]:
@@ -234,6 +384,35 @@ def _feature_checks(root: Path, spec: ExecutionSpec) -> list[dict[str, Any]]:
             "missing": missing,
             "blocking": False,
         },
+    ]
+
+
+def _live_wallet_checks(job_data: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Live execution signs with `execution_params.wallet_label`; the engine
+    default is 'main', which rarely exists on hosted instances — a live job
+    without an explicit label starts cleanly and then fails EVERY tick with
+    'Wallet not found: main' (observed live: three config guesses across two
+    sessions before the nested key was found). Blocking when mode is live."""
+    if str(job_data.get("execution_contract") or "legacy") != "jobs_v1":
+        return []
+    script_loop = job_data.get("script_loop") or {}
+    if str(script_loop.get("mode") or "paper") != "live":
+        return []
+    params = job_data.get("execution_params") or {}
+    label = str(params.get("wallet_label") or "").strip()
+    return [
+        {
+            "name": "wallet_label_declared",
+            "passed": bool(label),
+            "blocking": True,
+            "hint": (
+                "live mode signs with execution_params.wallet_label (the "
+                "engine default 'main' rarely exists on this instance) — set "
+                "it to a label from core_get_wallets() before going live; it "
+                "is NOT a job-root key, an env var, or an adapter config file"
+            ),
+            "details": {"wallet_label": label or None},
+        }
     ]
 
 
@@ -417,6 +596,67 @@ def _execution_spec_checks(spec: ExecutionSpec) -> list[dict[str, Any]]:
     ]
 
 
+def entrypoint_inside_workspace_check(
+    root: Path, script_path: Path | None
+) -> dict[str, Any]:
+    """Blocking: strategy code has exactly one durable, versionable home.
+
+    Revisions hash only workspace/* + job.yaml and proposals stage only
+    workspace/, so an entrypoint anywhere else can never be versioned,
+    staged, or promoted (and may not even survive an image update).
+    """
+    workspace = (root / "workspace").resolve()
+    passed = bool(
+        script_path is not None and script_path.resolve().is_relative_to(workspace)
+    )
+    check: dict[str, Any] = {
+        "name": "entrypoint_inside_workspace",
+        "passed": passed,
+        "blocking": True,
+        "path": str(script_path) if script_path else None,
+        "expected_dir": str(root / "workspace" / "src"),
+    }
+    if not passed:
+        check["hint"] = (
+            "move the strategy into <job>/workspace/src/ and set "
+            "script_loop.entrypoint to 'workspace/src/<file>.py' — revisions "
+            "hash only workspace/* + job.yaml and proposals stage only "
+            "workspace/, so code elsewhere cannot be versioned or promoted"
+        )
+    return check
+
+
+def _code_only_text(text: str) -> str:
+    """Strip comments and docstrings so static greps see only real code.
+
+    Falls back to the raw text on tokenize failures — those scripts already
+    fail execution_script_py_compile with the real error.
+    """
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    except Exception:
+        return text
+    keep: list[str] = []
+    prev_significant = tokenize.INDENT
+    for tok in tokens:
+        if tok.type == tokenize.COMMENT:
+            continue
+        if tok.type == tokenize.STRING and prev_significant in (
+            tokenize.INDENT,
+            tokenize.DEDENT,
+            tokenize.NEWLINE,
+        ):
+            # Expression-statement string == docstring; drop it.
+            prev_significant = tok.type
+            continue
+        if tok.type not in (tokenize.NL, tokenize.NEWLINE):
+            prev_significant = tok.type
+        elif tok.type == tokenize.NEWLINE:
+            prev_significant = tokenize.NEWLINE
+        keep.append(tok.string)
+    return " ".join(keep)
+
+
 def _script_static_checks(
     script_path: Path, spec: ExecutionSpec
 ) -> list[dict[str, Any]]:
@@ -451,13 +691,46 @@ def _script_static_checks(
             ),
         }
     )
-    close_stop_pattern = re.search(r"(stop|take_profit|tp).*close", text, re.IGNORECASE)
+    # Comments and docstrings must neither trip this check ("# time stop:
+    # close if held > N days") nor rescue it (a comment saying BracketEngine).
+    code_text = _code_only_text(text)
+    # Boot-relative warmup/cadence counters go dark for a full warmup period
+    # after every state reset and never fire correctly in live's sliding
+    # window — the live funding-carry job sat 27 days from one of these.
+    counter_gate = re.search(
+        r"strategy_state\s*(?:\.\s*get\s*\(|\[)\s*[\"'](?:bar|tick)_?count",
+        code_text,
+    )
+    checks.append(
+        {
+            "name": "no_boot_relative_warmup",
+            "passed": counter_gate is None,
+            "blocking": False,
+            "hint": (
+                "gate warmup on ctx.bar_index (data available in the view) and "
+                "cadence on ctx.every_n_bars(n) — tick counters in "
+                "strategy_state re-warm from zero on every state reset"
+            )
+            if counter_gate is not None
+            else None,
+        }
+    )
+    close_stop_pattern = re.search(
+        r"(stop|take_profit|tp).*close", code_text, re.IGNORECASE
+    )
+    # Intent bracket dicts ({"bracket": {"stop_loss": ...}}) delegate stop
+    # evaluation to the engine, which honors ohlc_rules (intrabar highs/lows)
+    # — pricing the level off a close is then correct, not a close-only stop.
+    # Without this escape hatch `"stop_loss": current_close * 0.98` inside a
+    # bracket trips the regex and agents contort strategy code to appease it.
+    bracket_delegation = re.search(r"[\"']bracket[\"']\s*:", code_text)
     checks.append(
         {
             "name": "no_close_only_stop_tp",
             "passed": close_stop_pattern is None
-            or "BracketEngine" in text
-            or "ohlc_" in text,
+            or "BracketEngine" in code_text
+            or "ohlc_" in code_text
+            or bracket_delegation is not None,
         }
     )
     return checks

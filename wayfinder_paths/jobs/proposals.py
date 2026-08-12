@@ -83,28 +83,7 @@ def propose_change(
         store, job_id, pid, force_fresh=True
     )
     candidate_dir = store.repo_root / candidate_descriptor["candidate_dir"]
-    if candidate_source is not None:
-        source = Path(candidate_source)
-        if not source.exists():
-            raise FileNotFoundError(f"candidate_source not found: {source}")
-        if (source / "workspace").exists():
-            # Full bundle shape: workspace/ (+ optional job.yaml).
-            _replace_tree(source / "workspace", candidate_dir / "workspace")
-            if (source / "job.yaml").exists():
-                shutil.copy2(source / "job.yaml", candidate_dir / "job.yaml")
-        else:
-            # Bare workspace tree.
-            _replace_tree(source, candidate_dir / "workspace")
-    if params:
-        yaml_path = candidate_dir / "job.yaml"
-        job_yaml = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
-        job_yaml["execution_params"] = {
-            **(job_yaml.get("execution_params") or {}),
-            **params,
-        }
-        yaml_path.write_text(
-            yaml.safe_dump(job_yaml, sort_keys=False), encoding="utf-8"
-        )
+    _overlay_change(candidate_dir, candidate_source=candidate_source, params=params)
     changed_files = _diff_workspaces(root, candidate_dir)
 
     job = store.load(job_id)
@@ -142,6 +121,82 @@ def propose_change(
         memo_path.parent.mkdir(parents=True, exist_ok=True)
         memo_path.write_text(memo.rstrip() + "\n", encoding="utf-8")
 
+    validation, candidate_report = _generate_candidate_report(
+        store, job_id, proposal, candidate_dir, base_revision=base_revision, pid=pid
+    )
+    proposal["candidate_report"] = candidate_report
+
+    store.write_proposal(job_id, proposal)
+    store.append_journal(
+        job_id,
+        {
+            "type": "proposal_created",
+            "proposal_id": pid,
+            "kind": kind,
+            "base_revision": base_revision,
+            "candidate_revision": candidate_report["revision"],
+            "validation_status": validation.get("status"),
+        },
+    )
+    store.refresh_scorecard(job_id)
+    sync_all_jobs(store=store)
+    # Surface a chat affordance (contract C5): the opencode harness turns this
+    # marker into a job_result part; the FE renders a review deep-link chip.
+    print(
+        JOB_RESULT_MARKER
+        + json.dumps(
+            {
+                "type": "job_result",
+                "severity": "info",
+                "summary": f"Proposal created: {summary}",
+                "job_id": job_id,
+                "proposal_id": pid,
+            }
+        )
+    )
+    return store.load_proposal(job_id, pid)
+
+
+def _overlay_change(
+    candidate_dir: Path,
+    *,
+    candidate_source: str | Path | None,
+    params: dict[str, Any] | None,
+) -> None:
+    """Apply the proposed change to a freshly staged candidate."""
+    if candidate_source is not None:
+        source = Path(candidate_source)
+        if not source.exists():
+            raise FileNotFoundError(f"candidate_source not found: {source}")
+        if (source / "workspace").exists():
+            # Full bundle shape: workspace/ (+ optional job.yaml).
+            _replace_tree(source / "workspace", candidate_dir / "workspace")
+            if (source / "job.yaml").exists():
+                shutil.copy2(source / "job.yaml", candidate_dir / "job.yaml")
+        else:
+            # Bare workspace tree.
+            _replace_tree(source, candidate_dir / "workspace")
+    if params:
+        yaml_path = candidate_dir / "job.yaml"
+        job_yaml = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        job_yaml["execution_params"] = {
+            **(job_yaml.get("execution_params") or {}),
+            **params,
+        }
+        yaml_path.write_text(
+            yaml.safe_dump(job_yaml, sort_keys=False), encoding="utf-8"
+        )
+
+
+def _generate_candidate_report(
+    store: JobStore,
+    job_id: str,
+    proposal: dict[str, Any],
+    candidate_dir: Path,
+    *,
+    base_revision: str,
+    pid: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     validation = validate_candidate_bundle(store, job_id, proposal, candidate_dir)
     candidate_revision = compute_workspace_revision(candidate_dir)
     comparison = _build_comparison(
@@ -163,7 +218,7 @@ def propose_change(
         }
         mode = "validation_only"
 
-    proposal["candidate_report"] = {
+    candidate_report = {
         "revision": candidate_revision,
         "base_revision": base_revision,
         "mode": mode,
@@ -182,36 +237,115 @@ def propose_change(
         ),
         "generated_at": utc_now_iso(),
     }
+    return validation, candidate_report
 
+
+def restage_proposal(
+    store: JobStore,
+    job_id: str,
+    proposal_id: str,
+    *,
+    candidate_source: str | Path | None = None,
+) -> dict[str, Any]:
+    """Re-stage an APPROVED proposal whose candidate went stale under it.
+
+    Approval carryover: the owner approved the proposal's intent; when an
+    intervening apply moves the workspace, the snapshot candidate can no
+    longer promote (stale-baseline refusal). This rebuilds the candidate
+    against the CURRENT workspace — mechanically for params updates, from an
+    agent-re-authored tree for code changes — re-runs the full propose-time
+    gates, and auto-queues the apply. The intent contract, summary, and kind
+    are carried over verbatim; a different change requires a fresh proposal
+    and a fresh approval.
+
+    If the re-staged candidate fails the approve-time gate on the new base,
+    the proposal is auto-rejected (housekeeping) — the world changed
+    materially, so the owner must review a fresh proposal instead.
+    """
+    proposal = store.load_proposal(job_id, proposal_id)
+    if proposal["status"] != "approved":
+        raise ValueError(f"Only approved proposals can be re-staged: {proposal_id}")
+    application = proposal["application"]
+    if application["status"] in {"applying", "applied"}:
+        raise ValueError(
+            f"Proposal application is {application['status']}; nothing to re-stage"
+        )
+    if not application.get("restage_requested"):
+        raise ValueError(
+            f"Proposal has no pending re-stage request: {proposal_id} "
+            "(re-stage is only for stale-baseline apply refusals)"
+        )
+    params = (proposal.get("proposed_change") or {}).get("execution_params")
+    if candidate_source is None and not params:
+        raise ValueError(
+            "code-change re-stage requires candidate_source (re-author the "
+            "change against the current workspace and pass the edited tree)"
+        )
+
+    root = store.job_dir(job_id)
+    old_base = str(proposal.get("base_revision") or "")
+    old_candidate = str((proposal.get("candidate_report") or {}).get("revision") or "")
+    base_revision = compute_workspace_revision(root)
+
+    candidate_descriptor = _prepare_candidate_workspace(
+        store, job_id, proposal_id, force_fresh=True
+    )
+    candidate_dir = store.repo_root / candidate_descriptor["candidate_dir"]
+    _overlay_change(candidate_dir, candidate_source=candidate_source, params=params)
+    changed_files = _diff_workspaces(root, candidate_dir)
+
+    proposal["base_revision"] = base_revision
+    proposal["changed_files"] = changed_files
+    application.update(candidate_descriptor)
+    application["restage_requested"] = False
+    application["error"] = None
+    _, candidate_report = _generate_candidate_report(
+        store,
+        job_id,
+        proposal,
+        candidate_dir,
+        base_revision=base_revision,
+        pid=proposal_id,
+    )
+    proposal["candidate_report"] = candidate_report
+    proposal["updated_at"] = utc_now_iso()
     store.write_proposal(job_id, proposal)
     store.append_journal(
         job_id,
         {
-            "type": "proposal_created",
-            "proposal_id": pid,
-            "kind": kind,
-            "base_revision": base_revision,
-            "candidate_revision": candidate_revision,
-            "validation_status": validation.get("status"),
+            "type": "proposal_restaged",
+            "proposal_id": proposal_id,
+            "old_base_revision": old_base,
+            "new_base_revision": base_revision,
+            "old_candidate_revision": old_candidate,
+            "new_candidate_revision": candidate_report["revision"],
+            "changed_files": changed_files,
         },
     )
-    store.refresh_scorecard(job_id)
-    sync_all_jobs(store=store)
-    # Surface a chat affordance (contract C5): the opencode harness turns this
-    # marker into a job_result part; the FE renders a review deep-link chip.
-    print(
-        JOB_RESULT_MARKER
-        + json.dumps(
-            {
-                "type": "job_result",
-                "severity": "info",
-                "summary": f"Proposal created: {summary}",
-                "job_id": job_id,
-                "proposal_id": pid,
-            }
+
+    try:
+        # Exact approve-time gate semantics (live-ready + candidate freshness).
+        store._ensure_candidate_report_gate(job_id, proposal, allow_ungated=False)
+    except ValueError as exc:
+        rejected = store.reject_proposal(
+            job_id,
+            proposal_id,
+            reason=(
+                f"re-stage gate failed on current base {base_revision}: {exc}. "
+                "The workspace changed materially since approval — propose the "
+                "change fresh so the owner can review it against the new base."
+            ),
+            rejected_by="agent",
         )
-    )
-    return store.load_proposal(job_id, pid)
+        sync_all_jobs(store=store)
+        return rejected
+
+    store.queue_proposal_application(job_id, proposal_id)
+    from wayfinder_paths.jobs.apply_launcher import launch_application
+
+    launch_application(store, job_id, proposal_id)
+    sync_all_jobs(store=store)
+    return store.load_proposal(job_id, proposal_id)
 
 
 def _replace_tree(source: Path, destination: Path) -> None:

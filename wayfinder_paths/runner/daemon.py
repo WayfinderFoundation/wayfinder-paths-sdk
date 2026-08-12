@@ -337,6 +337,11 @@ class RunnerDaemon:
                 ),
             )
 
+        # Refresh the wayfinder-jobs backend after every run so the Strategies
+        # UI (conversations, proposals, reconciled mode) tracks activity instead
+        # of only updating on ~hourly/4-hourly agent wakes.
+        self._sync_to_backend_async()
+
     def _run_side_effect(self, label: str, callback: Callable[[], None]) -> None:
         def _target() -> None:
             try:
@@ -404,27 +409,42 @@ class RunnerDaemon:
             return
 
         def _sync() -> None:
-            jobs = []
-            for j in self._db.list_jobs():
-                result = self._db.get_job(name=j["name"])
-                if not result:
+            # Two backend pushes, both required:
+            #
+            # 1. Scheduled-jobs registry (bulk_sync): registers each runner job
+            #    so the backend accepts its per-run reports — report_run 404s
+            #    for any job the backend has never seen, which empties the
+            #    Strategies UI Activity tab. #520 dropped this push believing
+            #    the /jobs/sync/ endpoint was dead; it is alive, and without
+            #    the registration every run report for jobs created since then
+            #    404'd (observed: 345 straight failures on the jobs dev box).
+            registry = []
+            for listed in self._db.list_jobs():
+                try:
+                    job, state = self._db.get_job(name=listed["name"])
+                except KeyError:
                     continue
-                job, state = result
-                jobs.append(
+                registry.append(
                     {
                         "job_name": job.name,
                         "job_type": job.type,
                         "status": state.status,
                         "interval_seconds": job.interval_seconds,
-                        "schedule_kind": job.schedule_kind,
-                        "cron_expr": job.cron_expr,
-                        "timezone": job.timezone,
                         "payload": job.payload,
                     }
                 )
-            SCHEDULED_JOBS_CLIENT.bulk_sync(jobs)
+            SCHEDULED_JOBS_CLIENT.bulk_sync(registry)
 
-        self._run_side_effect("bulk-sync", _sync)
+            # 2. Wayfinder-jobs snapshot (per-mode session ids for the
+            #    Conversations panel, proposals, and the reconciled
+            #    scorecard/mode). Lazy-imported to avoid any import cycle with
+            #    the jobs package at daemon startup.
+            from wayfinder_paths.jobs.store import JobStore
+            from wayfinder_paths.jobs.sync import sync_all_jobs
+
+            sync_all_jobs(store=JobStore(repo_root=self._paths.repo_root))
+
+        self._run_side_effect("wayfinder-sync", _sync)
 
     def _notify_session(
         self,
@@ -936,7 +956,9 @@ class RunnerDaemon:
         if not result:
             return {"ok": False, "error": f"Job not found: {name}"}
         job, state = result
-        if state.status != JobStatus.ACTIVE:
+        if state.status == JobStatus.PAUSED:
+            # ERROR is allowed: run-once is exactly how an operator (or the
+            # cooldown retry) probes whether the upstream failure cleared.
             return {"ok": False, "error": f"job is not ACTIVE (status={state.status})"}
 
         job_dict: dict[str, Any] = {

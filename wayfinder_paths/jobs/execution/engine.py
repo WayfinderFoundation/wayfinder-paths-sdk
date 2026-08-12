@@ -99,6 +99,9 @@ class EngineState:
     revision: str | None = None
     strategy_state: dict[str, Any] = field(default_factory=dict)
     liquidated_at: str | None = None
+    # Mode that produced this state ("paper" | "live"); the driver archives
+    # and resets state on a mode flip so paper test ticks can't pollute live.
+    mode: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -110,6 +113,7 @@ class EngineState:
             "revision": self.revision,
             "strategy_state": dict(self.strategy_state),
             "liquidated_at": self.liquidated_at,
+            "mode": self.mode,
         }
 
     @classmethod
@@ -130,6 +134,7 @@ class EngineState:
             revision=payload.get("revision"),
             strategy_state=dict(payload.get("strategy_state") or {}),
             liquidated_at=payload.get("liquidated_at"),
+            mode=payload.get("mode"),
         )
 
     @classmethod

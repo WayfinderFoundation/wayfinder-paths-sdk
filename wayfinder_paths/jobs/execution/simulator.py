@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import os
+import sys
+import time
 import uuid
 from collections import defaultdict
 from collections.abc import Callable, Mapping
@@ -19,6 +22,7 @@ from wayfinder_paths.jobs.execution.engine import (
     _bars_at_timestamp,
     run_tick,
 )
+from wayfinder_paths.jobs.execution.features import apply_precompute
 from wayfinder_paths.jobs.execution.primitives import (
     DEFAULT_INITIAL_CAPITAL,
     CompletedBarsView,
@@ -66,6 +70,10 @@ class ExecutionBacktestResult:
     trace: dict[str, Any]
     validation: dict[str, Any]
     visualization: dict[str, Any]
+    # Run telemetry: wall time, bars/sec, per-bar tick timing, the compute
+    # window used, and a self-diagnostic `hint` when the run looks O(N²).
+    # Additive (default {}) so older callers/readers are unaffected.
+    profile: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -82,6 +90,13 @@ class ExecutionGridResult:
     # the search settings when not an exhaustive grid.
     optimizer: str = "grid"
     search: dict[str, Any] | None = None
+    # Additive: per-factor marginal effects + interaction checks over a
+    # factorial grid (grid_factor_attribution) — the ablation summary a
+    # compound proposal must cite.
+    factor_attribution: dict[str, Any] | None = None
+    # Additive: neighbor-robustness of the top cell (grid_plateau) — only for
+    # exhaustive dict-of-lists grids; None for optuna and list-of-dicts.
+    plateau: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -201,6 +216,143 @@ def _resolve_fee_bps(params_data: Mapping[str, Any], strategy: Any = None) -> fl
     return _DEFAULT_TAKER_FEE_BPS.get(venue, 0.0)
 
 
+# Default per-bar compute window. Bounding the view the simulator hands each
+# tick keeps the DEFAULT backtest O(N·k) instead of O(N²): a strategy that
+# recomputes indicators over the whole handed frame goes quadratic when that
+# frame grows with the replay index (the classic "simple backtest pegs the
+# CPU" trap). 512 bars covers the lookback of essentially every standard
+# indicator (SMA200, ATR/ADX, long EMAs) with margin. Strategies tune it via
+# `warmup_bars`; genuine since-genesis strategies opt out with
+# `full_history: true`.
+DEFAULT_WARMUP_BARS = 512
+
+
+def _resolve_compute_window(
+    params_data: Mapping[str, Any], strategy: Any
+) -> tuple[int | None, str, bool]:
+    """Size of the trailing view handed to `decide()` each bar.
+
+    Resolution (first hit wins):
+      1. ``params['warmup_bars']``  — explicit, canonical name.
+      2. ``params['lookback_bars']`` — back-compat with the old windowing lever.
+      3. ``strategy.warmup_bars``   — strategy-declared attribute.
+      4. ``DEFAULT_WARMUP_BARS``.
+    ``params['full_history']`` truthy opts back into full-history views.
+
+    Returns ``(window_size | None, source, full_history)``; ``None`` window ⇒
+    full history (``through(index)``).
+    """
+    if params_data.get("full_history"):
+        return None, "full_history", True
+    for key in ("warmup_bars", "lookback_bars"):
+        raw = params_data.get(key)
+        if raw:
+            return max(int(raw), 1), key, False
+    attr = getattr(strategy, "warmup_bars", None)
+    if attr:
+        return max(int(attr), 1), "strategy.warmup_bars", False
+    return DEFAULT_WARMUP_BARS, "default", False
+
+
+def _percentile(values: list[float], pct: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    rank = (pct / 100.0) * (len(ordered) - 1)
+    lo = int(rank)
+    hi = min(lo + 1, len(ordered) - 1)
+    return ordered[lo] + (ordered[hi] - ordered[lo]) * (rank - lo)
+
+
+def _tick_time_growing(tick_ms: list[float]) -> bool:
+    """True when per-bar time trends up with the replay index — the fingerprint
+    of an O(history) recompute inside `decide()`. Compares the mean of the
+    first decile against the last; needs enough bars to be meaningful."""
+    if len(tick_ms) < 40:
+        return False
+    decile = max(1, len(tick_ms) // 10)
+    first = sum(tick_ms[:decile]) / decile
+    last = sum(tick_ms[-decile:]) / decile
+    return last > 5.0 and last > first * 3.0
+
+
+def _fmt_duration(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    if seconds < 90:
+        return f"{seconds:.0f}s"
+    return f"{seconds / 60:.1f}m"
+
+
+def _emit_progress(
+    done: int, total: int, wall_start: float, tick_ms: list[float]
+) -> None:
+    elapsed = time.perf_counter() - wall_start
+    rate = done / elapsed if elapsed > 0 else 0.0
+    eta = (total - done) / rate if rate > 0 else 0.0
+    p95 = _percentile(tick_ms, 95)
+    grow = " ↑growing" if _tick_time_growing(tick_ms) else ""
+    print(
+        f"[backtest] bar {done}/{total} · {rate:.0f} bars/s · "
+        f"ETA {_fmt_duration(eta)} · tick p95 {p95:.0f}ms{grow}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _build_profile(
+    *,
+    tick_ms: list[float],
+    wall_start: float,
+    total_bars: int,
+    window_size: int | None,
+    window_source: str,
+    full_history: bool,
+) -> dict[str, Any]:
+    wall_s = time.perf_counter() - wall_start
+    timed = len(tick_ms)
+    mean_ms = sum(tick_ms) / timed if timed else 0.0
+    growing = _tick_time_growing(tick_ms)
+    profile: dict[str, Any] = {
+        "wall_seconds": round(wall_s, 3),
+        "bars_total": total_bars,
+        "bars_timed": timed,
+        "bars_per_second": round(timed / wall_s, 1) if wall_s > 0 else None,
+        "tick_ms": {
+            "mean": round(mean_ms, 2),
+            "p50": round(_percentile(tick_ms, 50), 2),
+            "p95": round(_percentile(tick_ms, 95), 2),
+            "max": round(max(tick_ms), 2) if tick_ms else 0.0,
+            "last": round(tick_ms[-1], 2) if tick_ms else 0.0,
+        },
+        "compute_window": "full_history" if full_history else window_size,
+        "compute_window_source": window_source,
+        "tick_time_growing": growing,
+    }
+    # Most "why is this backtest so slow" cases are a heavy full recompute in
+    # decide() run once per bar × many bars on a small/throttled box — O(N)
+    # with a big constant, not necessarily O(N²). The projection (measured per
+    # bar × total bars) is machine-relative, so the hint fires exactly when the
+    # run is actually slow on THIS box, and stays quiet when it's fine.
+    if growing:
+        profile["hint"] = (
+            "Per-bar time is growing with the replay index — decide() is "
+            "recomputing over an ever-larger frame (heading toward O(N²)). "
+            "Compute on a bounded trailing window: set `warmup_bars` to your "
+            "longest indicator lookback + a small buffer, or slice "
+            "`ctx.view.window(...)` instead of the full `symbol_frame()`."
+        )
+    elif mean_ms >= 15.0:
+        profile["hint"] = (
+            f"Heavy per-bar work: ~{mean_ms:.0f} ms/bar × {total_bars} bars ≈ "
+            f"{_fmt_duration(mean_ms * total_bars / 1000.0)} for the full run. "
+            "decide() recomputes its indicators from scratch every bar — "
+            "compute them incrementally or on a bounded window (`warmup_bars` / "
+            "`ctx.view.window`), and iterate on a shorter backtest "
+            "(`--quick`) before running the full history."
+        )
+    return profile
+
+
 def simulate_execution(
     script_entrypoint: str | Path | Callable[..., Any],
     dataset: PreparedExecutionDataset,
@@ -210,6 +362,13 @@ def simulate_execution(
     spec = ExecutionSpec.coerce(execution_spec)
     params_data = dict(params) if params else {}
     strategy = _load_strategy(script_entrypoint, params_data)
+    # One vectorized pass for strategy-declared derived columns (optional
+    # `precompute` hook — see features.apply_precompute). Runs on the (already
+    # quick_bars-truncated, feature-merged) dataset, so the replay's per-bar
+    # decide() just reads columns instead of re-deriving indicators.
+    dataset = PreparedExecutionDataset(
+        apply_precompute(strategy, dataset.bars), dict(dataset.metadata)
+    )
     broker = BacktestBroker(
         fee_bps=_resolve_fee_bps(params_data, strategy),
         slippage_bps=float(params_data.get("slippage_bps") or 0.0),
@@ -234,12 +393,17 @@ def simulate_execution(
     )
     # None unless params["enable_liquidation"] is truthy — default-off parity.
     liquidation = LiquidationConfig.from_params(params_data)
-    # When declared, each tick sees the same bounded trailing window the live
-    # driver fetches (lookback_bars) instead of full history — this is a
-    # live-parity choice for path-dependent indicators AND turns per-tick
-    # strategy recompute from O(n) into O(k). Unset keeps full history.
-    raw_lookback = params_data.get("lookback_bars")
-    lookback_bars = int(raw_lookback) if raw_lookback else None
+    # Each tick sees a bounded trailing window (the same the live driver
+    # fetches) so per-tick strategy recompute stays O(k), not O(index). This
+    # is now the DEFAULT — full history is opt-in via `full_history: true`.
+    window_size, window_source, full_history = _resolve_compute_window(
+        params_data, strategy
+    )
+
+    total_bars = len(dataset.bars.timestamps)
+    progress_every = max(1, total_bars // 20)
+    tick_ms: list[float] = []
+    wall_start = time.perf_counter()
 
     # Running last-known close per symbol so open positions are marked at their
     # most recent price, not just symbols that printed a bar THIS timestamp. In
@@ -258,10 +422,11 @@ def simulate_execution(
             last_close_by_symbol.update(
                 {symbol: bar.close for symbol, bar in bars_by_symbol.items()}
             )
+            timestamp_iso = timestamp.isoformat()
             for symbol, bar in bars_by_symbol.items():
                 price_series[symbol].append(
                     {
-                        "timestamp": timestamp.isoformat(),
+                        "timestamp": timestamp_iso,
                         "value": bar.close,
                         "open": bar.open,
                         "high": bar.high,
@@ -270,12 +435,13 @@ def simulate_execution(
                         "volume": bar.volume,
                     }
                 )
+            tick_start = time.perf_counter()
             tick = await run_tick(
                 strategy,
                 view=(
-                    dataset.bars.window(index, lookback_bars)
-                    if lookback_bars
-                    else dataset.bars.through(index)
+                    dataset.bars.through(index)
+                    if full_history
+                    else dataset.bars.window(index, window_size)
                 ),
                 brokers={"*": broker},
                 state=state,
@@ -287,6 +453,9 @@ def simulate_execution(
                 trace=trace,
                 liquidation=liquidation,
             )
+            tick_ms.append((time.perf_counter() - tick_start) * 1000.0)
+            if total_bars and (index + 1) % progress_every == 0:
+                _emit_progress(index + 1, total_bars, wall_start, tick_ms)
             if tick.skipped:
                 continue
             trades.extend(tick.trade_rows)
@@ -349,6 +518,14 @@ def simulate_execution(
         "params": params_data,
         "validation": validation,
     }
+    profile = _build_profile(
+        tick_ms=tick_ms,
+        wall_start=wall_start,
+        total_bars=total_bars,
+        window_size=window_size,
+        window_source=window_source,
+        full_history=full_history,
+    )
     return ExecutionBacktestResult(
         run_id=uuid.uuid4().hex[:12],
         params=params_data,
@@ -359,6 +536,7 @@ def simulate_execution(
         trace=trace.to_dict(),
         validation=validation,
         visualization=visualization,
+        profile=profile,
     )
 
 
@@ -398,6 +576,193 @@ def rank_and_partition(
     return ranked[:top_n], invalid
 
 
+def grid_plateau(
+    run_rows: list[dict[str, Any]],
+    param_grid: Mapping[str, list[Any]],
+    *,
+    rank_by: str,
+) -> dict[str, Any] | None:
+    """Neighbor-robustness of the top grid cell: neighbors differ in exactly
+    one parameter by one step along that parameter's grid list, and
+    plateau_score = mean(neighbor metric) / top metric. Near 1.0 means the
+    optimum sits on a plateau; < 0.5 means a lone spike that is likely noise —
+    the walk_forward docstring's failure mode (a top cell whose neighbors all
+    lose), now measured instead of discovered out-of-sample. Returns None when
+    nothing is swept (no axis with >1 value), the top metric is <= 0 (a ratio
+    against a loss is meaningless), or the top cell has no valid neighbors."""
+    valid = [row for row in run_rows if row["validation"]["execution_valid"]]
+    axes = {key: list(values) for key, values in param_grid.items() if len(values) > 1}
+    if not valid or not axes:
+        return None
+    top = max(valid, key=lambda row: float(row[rank_by] or 0))
+    top_metric = float(top[rank_by] or 0)
+    if top_metric <= 0:
+        return None
+
+    def is_neighbor(row: dict[str, Any]) -> bool:
+        diffs = [
+            key
+            for key in param_grid
+            if row["params"].get(key) != top["params"].get(key)
+        ]
+        if len(diffs) != 1 or diffs[0] not in axes:
+            return False
+        axis = axes[diffs[0]]
+        try:
+            step = abs(
+                axis.index(row["params"][diffs[0]])
+                - axis.index(top["params"][diffs[0]])
+            )
+        except ValueError:
+            return False
+        return step == 1
+
+    neighbors = [row for row in valid if is_neighbor(row)]
+    if not neighbors:
+        return None
+    neighbor_mean = sum(float(row[rank_by] or 0) for row in neighbors) / len(neighbors)
+    score = neighbor_mean / top_metric
+    result: dict[str, Any] = {
+        "rank_by": rank_by,
+        "top_params": top["params"],
+        "top_metric": round(top_metric, 6),
+        "neighbor_count": len(neighbors),
+        "neighbor_mean": round(neighbor_mean, 6),
+        "plateau_score": round(score, 3),
+    }
+    if score < 0.5:
+        result["note"] = (
+            f"top cell is a lone spike — its one-step neighbors average "
+            f"{score:.0%} of its {rank_by}, which is likely noise. Prefer a "
+            "parameter region where the neighbors also perform (the best "
+            "plateau), and confirm with walk-forward before trusting it."
+        )
+    return result
+
+
+def grid_factor_attribution(
+    run_rows: list[dict[str, Any]],
+    param_grid: Mapping[str, list[Any]],
+    *,
+    rank_by: str,
+) -> dict[str, Any] | None:
+    """Per-factor marginal effects over a factorial grid — the ablation
+    summary a compound proposal must cite.
+
+    Treats every swept axis as a factor: per-level means of the rank_by
+    metric across ALL cells, the marginal effect for 2-level factors
+    (mean(on) - mean(off)), and a pairwise interaction check for 2-level
+    factors (does A's effect flip sign conditional on B's level). This is
+    how "the improvement is mostly the exit change; the volume gate only
+    helps when the MTF filter is on" becomes a stated, checkable claim
+    instead of a guess about the winning cell."""
+    valid = [row for row in run_rows if row["validation"]["execution_valid"]]
+    axes = {key: list(values) for key, values in param_grid.items() if len(values) > 1}
+    if not valid or not axes:
+        return None
+
+    def metric(row: dict[str, Any]) -> float:
+        return float(row.get(rank_by) or 0.0)
+
+    def mean_where(predicate: Any) -> float | None:
+        rows = [metric(r) for r in valid if predicate(r)]
+        return round(sum(rows) / len(rows), 6) if rows else None
+
+    factors: dict[str, Any] = {}
+    for axis, levels in axes.items():
+        level_means = {
+            str(level): mean_where(lambda r, a=axis, v=level: r["params"].get(a) == v)
+            for level in levels
+        }
+        entry: dict[str, Any] = {"levels": level_means}
+        if len(levels) == 2:
+            low, high = level_means[str(levels[0])], level_means[str(levels[1])]
+            if low is not None and high is not None:
+                entry["marginal_effect"] = round(high - low, 6)
+        factors[axis] = entry
+
+    interactions: list[dict[str, Any]] = []
+    two_level = [axis for axis, levels in axes.items() if len(levels) == 2]
+    for i, a in enumerate(two_level):
+        for b in two_level[i + 1 :]:
+            effects = []
+            for b_level in axes[b]:
+                on = mean_where(
+                    lambda r, a=a, b=b, bl=b_level: r["params"].get(a) == axes[a][1]
+                    and r["params"].get(b) == bl
+                )
+                off = mean_where(
+                    lambda r, a=a, b=b, bl=b_level: r["params"].get(a) == axes[a][0]
+                    and r["params"].get(b) == bl
+                )
+                effects.append(
+                    round(on - off, 6) if on is not None and off is not None else None
+                )
+            known = [e for e in effects if e is not None]
+            sign_flip = len(known) == 2 and (known[0] > 0) != (known[1] > 0)
+            interactions.append(
+                {
+                    "factor": a,
+                    "conditioner": b,
+                    "effect_by_conditioner_level": dict(
+                        zip((str(v) for v in axes[b]), effects, strict=True)
+                    ),
+                    "sign_flip": sign_flip,
+                }
+            )
+
+    top = max(valid, key=metric)
+    return {
+        "rank_by": rank_by,
+        "factors": factors,
+        "interactions": interactions,
+        "top_params": top["params"],
+        "top_metric": round(metric(top), 6),
+        "read": (
+            "Marginal effects are averaged across ALL cells (not just the "
+            "winner); a compound proposal must cite them, and a factor whose "
+            "marginal effect is negative does not ship unless a documented "
+            "sign_flip interaction is the finding itself."
+        ),
+    }
+
+
+def available_cpu_count() -> int:
+    """Usable CPUs for backtest fan-out. Respects a cgroup CPU quota (Fly
+    machines are quota-limited, and os.cpu_count() reports the host's cores,
+    not the machine's) and an explicit WAYFINDER_MAX_BACKTEST_WORKERS override.
+    Always ≥ 1."""
+    override = os.environ.get("WAYFINDER_MAX_BACKTEST_WORKERS")
+    if override:
+        try:
+            return max(1, int(override))
+        except ValueError:
+            pass
+    # cgroup v2 quota → effective cores.
+    try:
+        quota, period = (
+            open("/sys/fs/cgroup/cpu.max").read().split()
+        )  # e.g. "200000 100000" → 2 cores; "max" → unlimited
+        if quota != "max":
+            return max(1, round(int(quota) / int(period)))
+    except (OSError, ValueError):
+        pass
+    return max(1, os.cpu_count() or 1)
+
+
+def _effective_workers(workers: int, parallel: str) -> int:
+    """Clamp requested workers so a parameter sweep uses the box's cores fully
+    but never oversubscribes them — the difference between "at CPU" and the
+    thrash/peg of "out of CPU" on a small shared-vCPU machine. `workers <= 0`
+    means "use all available cores"."""
+    if parallel == "serial":
+        return 1
+    cap = available_cpu_count()
+    if workers <= 0:
+        return cap
+    return max(1, min(workers, cap))
+
+
 def run_execution_grid(
     script_entrypoint: str | Path,
     dataset: PreparedExecutionDataset,
@@ -420,6 +785,17 @@ def run_execution_grid(
                 for combo in itertools.product(*(param_grid[key] for key in keys))
             ]
     grid_id = uuid.uuid4().hex[:12]
+    # Never spawn more workers than the box has cores — oversubscribing a
+    # 2-vCPU Fly machine pegs it (each process also reloads pandas + a copy of
+    # the dataset). Threads don't help CPU-bound pandas (GIL); process is the
+    # only real parallelism, and it's now bounded.
+    workers = _effective_workers(workers, parallel)
+    print(
+        f"[grid] {len(params_list)} params · {parallel} · {workers} worker(s) "
+        f"(of {available_cpu_count()} core(s))",
+        file=sys.stderr,
+        flush=True,
+    )
     if parallel == "serial" or workers <= 1:
         results = [
             simulate_execution(script_entrypoint, dataset, execution_spec, params)
@@ -461,6 +837,22 @@ def run_execution_grid(
         runs=run_rows,
         ranked=ranked,
         invalid=invalid,
+        search={
+            "parallel": parallel,
+            "workers": workers,
+            "cpu_count": available_cpu_count(),
+            "param_count": len(params_list),
+        },
+        plateau=(
+            grid_plateau(run_rows, param_grid, rank_by=rank_by)
+            if isinstance(param_grid, Mapping)
+            else None
+        ),
+        factor_attribution=(
+            grid_factor_attribution(run_rows, param_grid, rank_by=rank_by)
+            if isinstance(param_grid, Mapping)
+            else None
+        ),
     )
 
 
@@ -488,12 +880,21 @@ def write_backtest_artifacts(
         case _:
             latest = root / "latest.json"
             visualization = root / "visualization.json"
+            # Compact separators: indent=2 on multi-MB per-bar arrays doubles
+            # both the dump's transient memory and the disk footprint, and
+            # these files are machine-read only.
             latest.write_text(
-                json.dumps({**result.to_dict(), **stamp}, indent=2, default=str) + "\n",
+                json.dumps(
+                    {**result.to_dict(), **stamp},
+                    separators=(",", ":"),
+                    default=str,
+                )
+                + "\n",
                 encoding="utf-8",
             )
             visualization.write_text(
-                json.dumps(result.visualization, indent=2, default=str) + "\n",
+                json.dumps(result.visualization, separators=(",", ":"), default=str)
+                + "\n",
                 encoding="utf-8",
             )
             return {"latest": str(latest), "visualization": str(visualization)}

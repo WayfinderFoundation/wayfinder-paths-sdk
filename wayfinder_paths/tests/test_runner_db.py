@@ -223,3 +223,51 @@ def test_runner_db_reserve_run_advances_schedule_atomically(tmp_path: Path) -> N
     assert run is not None
     assert run["reason"] == "schedule"
     assert run["scheduled_for"] == 100
+
+
+def test_error_jobs_retry_after_cooldown_and_self_heal(tmp_path: Path) -> None:
+    """ERROR means "backing off", not "dead": a transient upstream 429 burst
+    once ERROR'd a lane that then sat dark 12 hours until a human resumed
+    it. ERROR lanes come due again after max(4x interval, floor) and a
+    success flips them back to ACTIVE."""
+    from wayfinder_paths.runner.constants import ERROR_RETRY_COOLDOWN_SECONDS
+
+    db = RunnerDB(tmp_path / "state.db")
+    now = int(time.time())
+    job_id = db.add_job(
+        name="flaky-feed",
+        job_type=JOB_TYPE_STRATEGY,
+        payload={"strategy": "s"},
+        interval_seconds=60,
+        status=JobStatus.ACTIVE,
+        next_run_at=now - 1,
+    )
+    db.record_job_failure(job_id=job_id, error_text="429", max_failures=1)
+    assert db.list_jobs()[0]["status"] == JobStatus.ERROR
+
+    # Freshly failed: inside the cooldown, not due.
+    db.set_job_last_run(job_id=job_id, last_run_at=now)
+    assert db.due_jobs(now=now + 60) == []
+
+    # Past the cooldown: due again despite ERROR status.
+    cooldown = max(4 * 60, ERROR_RETRY_COOLDOWN_SECONDS)
+    due = db.due_jobs(now=now + cooldown + 1)
+    assert [j["id"] for j in due] == [job_id]
+
+    # A success self-heals the status back to ACTIVE.
+    db.record_job_success(job_id=job_id, ok_at=now + cooldown + 2)
+    assert db.list_jobs()[0]["status"] == JobStatus.ACTIVE
+
+
+def test_paused_jobs_never_come_due(tmp_path: Path) -> None:
+    db = RunnerDB(tmp_path / "state.db")
+    now = int(time.time())
+    db.add_job(
+        name="parked",
+        job_type=JOB_TYPE_STRATEGY,
+        payload={"strategy": "s"},
+        interval_seconds=60,
+        status=JobStatus.PAUSED,
+        next_run_at=now - 10_000,
+    )
+    assert db.due_jobs(now=now + 1_000_000) == []

@@ -27,6 +27,12 @@ from wayfinder_paths.jobs.execution.simulator import (
     simulate_execution,
 )
 
+# Rolling train window = this many test windows. Bounds each fold's cost to a
+# fixed size regardless of dataset length, so walk-forward stays fast enough for
+# interactive validation. Anchored/expanding windows (opt-in) re-replay all prior
+# history every fold — ~4x slower on a full dataset.
+DEFAULT_WF_TRAIN_MULTIPLE = 4
+
 
 def run_walk_forward(
     script_entrypoint: str | Path | Callable[..., Any],
@@ -51,16 +57,33 @@ def run_walk_forward(
     if folds <= 0:
         raise ValueError("walk-forward requires folds > 0")
     if train_bars is None and not anchored:
-        raise ValueError("pass train_bars or anchored=True")
+        # Default to a bounded rolling window instead of erroring — keeps fold
+        # cost independent of dataset size (fast) and removes a footgun that made
+        # callers fall back to the slow anchored path.
+        train_bars = max(warmup_bars, DEFAULT_WF_TRAIN_MULTIPLE * test_bars)
 
     timestamps = dataset.bars.timestamps  # unique + sorted (multi-symbol safe)
     total = len(timestamps)
     min_train = max(train_bars or warmup_bars, warmup_bars)
     required = folds * test_bars + min_train
     if total < required:
+        # Say what WOULD fit — agents were burning retries guessing fold sizes.
+        max_test_bars = (total - min_train) // folds if total > min_train else 0
+        max_folds = (total - min_train) // test_bars if total > min_train else 0
+        if max_test_bars >= 1:
+            feasible = (
+                f" Feasible here: test_bars<={max_test_bars} at folds={folds}, "
+                f"or folds<={max_folds} at test_bars={test_bars}."
+            )
+        else:
+            feasible = (
+                f" Dataset too small for any walk-forward at train>={min_train}; "
+                "fetch more history or lower train_bars/warmup_bars."
+            )
         raise ValueError(
             f"dataset has {total} bars; walk-forward with folds={folds}, "
-            f"test_bars={test_bars}, train>= {min_train} needs at least {required}"
+            f"test_bars={test_bars}, train>= {min_train} needs at least "
+            f"{required}.{feasible}"
         )
 
     fold_rows: list[dict[str, Any]] = []
@@ -220,10 +243,22 @@ def _summary(fold_rows: list[dict[str, Any]], rank_by: str) -> dict[str, Any]:
     ]
     is_mean = fmean(is_returns)
     oos_mean = fmean(oos_returns)
+    # Recency-weighted OOS mean (half-life = half the folds): "worked in
+    # April, fails in July" must score worse than the reverse. Weighting the
+    # EVALUATION is the honest way to favor recency — the estimation windows
+    # stay untouched. Folds are chronological; the newest fold has weight 1.
+    weights = [
+        0.5 ** ((len(ok) - 1 - i) / max(len(ok) / 2.0, 1.0)) for i in range(len(ok))
+    ]
+    weight_total = sum(weights)
+    oos_recency_weighted = (
+        sum(w * r for w, r in zip(weights, oos_returns, strict=True)) / weight_total
+    )
     return {
         "fold_count": len(ok),
         "is_return_mean": is_mean,
         "oos_return_mean": oos_mean,
+        "oos_return_recency_weighted": oos_recency_weighted,
         "is_rank_metric_mean": fmean(is_rank) if is_rank else None,
         "oos_rank_metric_mean": fmean(oos_rank) if oos_rank else None,
         # Sign-guarded: a ratio against a negative in-sample base is noise.

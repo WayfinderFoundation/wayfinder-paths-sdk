@@ -269,3 +269,165 @@ def test_grid_ranks_by_sharpe_and_rejects_unknown_keys(tmp_path: Path) -> None:
             {"threshold": [10.4]},
             rank_by="bogus_metric",
         )
+
+
+def test_entrypoint_inside_workspace_passes(tmp_path: Path) -> None:
+    store, job_id = _make_job(tmp_path, interval_seconds=300, bar_interval="5m")
+    report = validate_execution_job(job_id, store=store)
+    check = _check(report, "entrypoint_inside_workspace")
+    assert check["passed"] is True
+    assert check["blocking"] is True
+
+
+def test_entrypoint_outside_workspace_blocks_jobs_v1(tmp_path: Path) -> None:
+    """A job-root strategy can never be versioned or proposed — validation
+    must fail with the named check (this is how live jobs got stuck with
+    active_revision null)."""
+    store, job_id = _make_job(tmp_path, interval_seconds=300, bar_interval="5m")
+    root = store.job_dir(job_id)
+    rogue = root / "strategy.py"
+    rogue.write_text(
+        (root / "workspace" / "src" / "strategy.py").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    job_yaml = root / "job.yaml"
+    data = yaml.safe_load(job_yaml.read_text(encoding="utf-8"))
+    data["script_loop"]["entrypoint"] = str(rogue)
+    job_yaml.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    report = validate_execution_job(job_id, store=store)
+
+    check = _check(report, "entrypoint_inside_workspace")
+    assert check["passed"] is False
+    assert check["expected_dir"].endswith("workspace/src")
+    assert "workspace/src" in check["hint"]
+    assert report["status"] == "failed"
+
+
+def _close_stop_report(tmp_path: Path, body: str) -> dict[str, Any]:
+    store, job_id = _make_job(tmp_path, interval_seconds=300, bar_interval="5m")
+    script = store.job_dir(job_id) / "workspace" / "src" / "strategy.py"
+    script.write_text(body, encoding="utf-8")
+    return validate_execution_job(job_id, store=store)
+
+
+def test_close_stop_check_ignores_comments(tmp_path: Path) -> None:
+    report = _close_stop_report(
+        tmp_path,
+        "# time stop: close if held > N days; 0 to disable\n"
+        "def decide(ctx):\n    return []\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    assert _check(report, "no_close_only_stop_tp")["passed"] is True
+
+
+def test_close_stop_check_ignores_docstrings(tmp_path: Path) -> None:
+    report = _close_stop_report(
+        tmp_path,
+        '"""Stop logic note: we close via brackets, not manually."""\n'
+        "def decide(ctx):\n    return []\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    assert _check(report, "no_close_only_stop_tp")["passed"] is True
+
+
+def test_close_stop_check_still_fires_in_code(tmp_path: Path) -> None:
+    report = _close_stop_report(
+        tmp_path,
+        "def decide(ctx):\n"
+        "    stop_hit = ctx.view.latest('SNX')['close'] < 9\n"
+        "    if stop_hit:\n"
+        "        return [{'action': 'CLOSE'}]\n"
+        "    return []\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    assert _check(report, "no_close_only_stop_tp")["passed"] is False
+
+
+def test_close_stop_check_allows_bracket_delegation(tmp_path: Path) -> None:
+    """An intent bracket ({"bracket": {"stop_loss": ...}}) delegates stop
+    evaluation to the engine's ohlc_rules path — pricing the level off a close
+    is correct there, not a close-only stop (the xyz-scalp-lab false positive
+    that made the worker propose a cosmetic line split)."""
+    report = _close_stop_report(
+        tmp_path,
+        "def decide(ctx):\n"
+        "    current_close = 10.0\n"
+        "    return [{\n"
+        "        'action': 'OPEN',\n"
+        "        'bracket': {'stop_loss': current_close * 0.98},\n"
+        "    }]\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    assert _check(report, "no_close_only_stop_tp")["passed"] is True
+
+
+def test_bracket_escape_hatch_must_be_code_not_comment(tmp_path: Path) -> None:
+    report = _close_stop_report(
+        tmp_path,
+        "# BracketEngine handles this... eventually\n"
+        "def decide(ctx):\n"
+        "    stop_hit = ctx.view.latest('SNX')['close'] < 9\n"
+        "    if stop_hit:\n"
+        "        return [{'action': 'CLOSE'}]\n"
+        "    return []\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    assert _check(report, "no_close_only_stop_tp")["passed"] is False
+
+
+def test_boot_relative_warmup_counter_is_flagged(tmp_path: Path) -> None:
+    report = _close_stop_report(
+        tmp_path,
+        "def decide(ctx):\n"
+        "    bar_count = ctx.strategy_state.get('bar_count', 0) + 1\n"
+        "    ctx.strategy_state['bar_count'] = bar_count\n"
+        "    if bar_count < 28:\n"
+        "        return []\n"
+        "    return []\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    check = _check(report, "no_boot_relative_warmup")
+    assert check["passed"] is False
+    assert check["blocking"] is False
+    assert "every_n_bars" in check["hint"]
+
+
+def test_data_derived_warmup_passes_counter_check(tmp_path: Path) -> None:
+    report = _close_stop_report(
+        tmp_path,
+        "def decide(ctx):\n"
+        "    if ctx.bar_index < 28 or not ctx.every_n_bars(2):\n"
+        "        return []\n"
+        "    return []\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    assert _check(report, "no_boot_relative_warmup")["passed"] is True
+
+
+def test_live_mode_blocks_without_wallet_label() -> None:
+    from wayfinder_paths.jobs.execution.validation import _live_wallet_checks
+
+    live_no_wallet = {
+        "execution_contract": "jobs_v1",
+        "script_loop": {"mode": "live"},
+        "execution_params": {"venue": "hyperliquid"},
+    }
+    checks = _live_wallet_checks(live_no_wallet)
+    assert checks[0]["name"] == "wallet_label_declared"
+    assert checks[0]["passed"] is False
+    assert checks[0]["blocking"] is True
+    assert "execution_params.wallet_label" in checks[0]["hint"]
+
+    live_with_wallet = {
+        "execution_contract": "jobs_v1",
+        "script_loop": {"mode": "live"},
+        "execution_params": {"wallet_label": "funding-carry-basket"},
+    }
+    assert _live_wallet_checks(live_with_wallet)[0]["passed"] is True
+
+    # Paper mode and legacy jobs are exempt — the check exists for live only.
+    paper = {"execution_contract": "jobs_v1", "script_loop": {"mode": "paper"}}
+    assert _live_wallet_checks(paper) == []
+    legacy = {"execution_contract": "legacy", "script_loop": {"mode": "live"}}
+    assert _live_wallet_checks(legacy) == []

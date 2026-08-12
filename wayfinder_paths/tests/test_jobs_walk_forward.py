@@ -163,15 +163,18 @@ def test_insufficient_bars_raises(tmp_path: Path) -> None:
             test_bars=50,
             anchored=True,
         )
-    with pytest.raises(ValueError, match="train_bars or anchored"):
-        run_walk_forward(
-            _script(tmp_path),
-            PreparedExecutionDataset.from_rows(_bars()),
-            _spec(),
-            {"direction": ["long"]},
-            folds=1,
-            test_bars=50,
-        )
+    # Omitting train_bars/anchored no longer raises — it defaults to a bounded
+    # rolling window (see test_walk_forward_default_is_bounded_rolling_not_anchored).
+    result = run_walk_forward(
+        _script(tmp_path),
+        PreparedExecutionDataset.from_rows(_bars()),
+        _spec(),
+        {"direction": ["long"]},
+        folds=1,
+        test_bars=50,
+    )
+    assert result["spec"]["anchored"] is False
+    assert result["spec"]["train_bars"] is not None  # bounded rolling default
 
 
 def _make_bundle(tmp_path: Path) -> tuple[JobStore, str]:
@@ -225,3 +228,18 @@ def test_experiment_records_walk_forward_and_promotion_never_blocks(
     job = store.load(job_id)
     assert job.execution_params["direction"] == "long"
     assert outcome["backtest"]["walk_forward"]["summary"]["fold_count"] == 2
+
+
+def test_insufficient_bars_error_names_feasible_sizing(tmp_path: Path) -> None:
+    """The error must say what WOULD fit — agents burned five retries
+    guessing fold sizes against the bare 'needs at least N' message."""
+    with pytest.raises(ValueError, match=r"Feasible here: test_bars<=\d+"):
+        run_walk_forward(
+            _script(tmp_path),
+            PreparedExecutionDataset.from_rows(_bars(count=200)),
+            _spec(),
+            {"direction": ["long"]},
+            folds=4,
+            test_bars=100,
+            train_bars=80,
+        )

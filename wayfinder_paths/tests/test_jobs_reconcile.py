@@ -149,3 +149,44 @@ def test_reconcile_reports_data_drift_on_view_hash_mismatch(tmp_path: Path) -> N
 
     assert report["data_drift_ticks"] > 0
     assert report["ticks_compared"] == 0 or report["intent_match_rate"] is not None
+
+
+def test_live_equity_sized_intents_survive_replay(tmp_path: Path) -> None:
+    """REGRESSION for the params trap: venue account equity rides on
+    snapshot.data (recorded per tick and reconstructed at replay), NOT on
+    params — params-borne equity would replay at config capital and flag
+    false drift on every live equity-sized job."""
+    from wayfinder_paths.tests.test_jobs_live_driver import (
+        EQUITY_STRATEGY,
+        FakeLiveBroker,
+    )
+
+    store, job, root = _make_job(tmp_path, mode="live")
+    script = root / "workspace" / "src" / "strategy.py"
+    script.write_text(EQUITY_STRATEGY.lstrip(), encoding="utf-8")
+    job.execution_params = {"symbols": ["SNX"], "initial_capital": 10_000.0}
+    store.save(job)
+    bars = _bars(6)
+    (root / "results" / "backtest").mkdir(parents=True, exist_ok=True)
+    (root / "results" / "backtest" / "input_bars.json").write_text(
+        json.dumps(bars), encoding="utf-8"
+    )
+
+    async def _run() -> None:
+        broker = FakeLiveBroker(account_value=29.50)
+        for count in range(1, len(bars) + 1):
+            view = CompletedBarsView.from_rows(bars[:count])
+            await tick_job(
+                job,
+                root,
+                "live",
+                store=store,
+                adapters={"hyperliquid": FakeAdapter(view, broker)},
+                now=view.timestamps[-1],
+            )
+
+    asyncio.run(_run())
+
+    report = reconcile_job(job.id, store=store)
+    assert report["ticks_compared"] > 0
+    assert report["intent_match_rate"] == 1.0, report

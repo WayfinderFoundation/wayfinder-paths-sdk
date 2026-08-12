@@ -1,0 +1,78 @@
+# Research prior library — idea families, their priors, and how to test them
+
+Methodology, not answers: each family says HOW to look and WHICH tool
+adjudicates. Prior strength = how much benefit of the doubt a hypothesis from
+this family earns in triage (STRONG priors are well-documented market
+effects; SPECULATIVE ones need a symptom match to justify the spend). Every
+family lists the failure archetypes it treats — start from the attribution
+block's archetype counts and pick the family that treats YOUR disease.
+
+| Family | Prior | Treats | Test path |
+|---|---|---|---|
+| Volume/participation: `volz:N` at signal time (real break vs dead tape), volume dry-up before compression, `clv` rejection closes | STRONG | noise_stopout, trend_fight | campaign workspace defs / `signal-check --column` |
+| Candle path-shape: `wickratio` sweep-and-reclaim (wick through a prior level, close back inside), inside-bar/narrow-range runs | STRONG intraday | noise_stopout, adverse_entry | campaign workspace defs |
+| Anchored levels: `daylevel` (prior-day H/L), `vwapdist`, round numbers | STRONG | adverse_entry (entries far from anchors), early_exit (targets at anchors) | campaign workspace defs |
+| Funding-settlement clock (`fundclock`) + funding rate-of-change columns | STRONG (perp-documented) | session-shaped anomalies in attribution | `fundclock` spec + derive-features funding set |
+| MTF alignment: 4h/1d state gating lower-TF entries | STRONG | trend_fight | resampled workspace defs (the 30m-on-5m pattern) |
+| Vol term structure & event clocks: `rvratio:N:M` adaptive squeeze, `sigmabars:K` clustering timer, post-cascade windows | MODERATE | noise_stopout, regime-slice anomalies | specs + campaign defs |
+| Correlation state: idiosyncratic vs beta moves via `corr_*` columns | MODERATE | trend_fight (fading beta moves) | derive-features cross set + `--column` |
+| Cross-symbol structure: `ratioz_*` pair reversion, lead-lag via `panelret_lag1`, `breadth_sma*` gates | MODERATE | portfolio-level anomalies | derive-features cross set + rank-check (research — NOT gated by the forward-trade floor) |
+| Exogenous regime: `btc_trend`/`btc_ret*` columns | STRONG for alts | regime-slice anomalies | derive-features exog set |
+| Cross-venue basis: `venue_basis_bps`, funding divergence | SPECULATIVE | execution-quality anomalies | derive-features venue set |
+| Exit-structure alpha: MFE targets, trailing, breakeven, scale-out — pre-registered strategy params (`mfe_target_bps`, `trail_bps`, …) in decide(), no engine change | STRONG when forensics show avg MFE >> avg realized | early_exit | compound factorial grid + WF |
+| Sizing overlays: vol-scaled legs, signal-strength scaling, regime-conditional size — pre-registered params | MODERATE | drawdown-shape anomalies | factorial grid + WF |
+| Event-aftermath / analogs-of-losers: what do the nearest analogs of each loser's pre-entry window share? | SPECULATIVE (ideation fuel) | any clustered archetype | `analogs` + `chart` lenses → then a campaign def |
+
+## Evidence tiers
+
+- **Tier 1 — promote** (gates unchanged: pooled q<=0.10 + 3/4 folds +
+  one-shot holdout): full-size leg, and the only tier eligible for any
+  future LIVE promotion.
+- **Tier 2 — probation** (any of: q<=0.20 + 2/4 folds + edge alive in the
+  recent half; regime-conditional q<=0.15 with n>=20 in the CURRENT regime;
+  recent-window family survivor at q<=0.10): deployable at <=50% leg size
+  with PRE-REGISTERED graduate + kill criteria. Paper forward is the
+  holdout — the tier exists because a paper false positive costs nothing
+  but attention, while burying every conditional edge costs the book its
+  reason to exist. Max 2 concurrent probation legs per job; regime flip =
+  kill trigger; graduation from FORWARD trades only.
+- Everything else stays research. Prefer testing `signal | regime`
+  (`--condition-regime`) over demanding all-history stationarity; use
+  `--window-days N` for declared recent-window families.
+
+## Protocol reminders
+
+- **Diagnose before treating**: every hypothesis cites the attribution slice
+  or archetype count it treats, OR is explicitly labeled a prior-driven bet.
+- **Triage**: rank by prior strength × symptom match × cost-to-test. Each
+  ideation allocates a portfolio: >=1 cheap test, >=1 structural, <=1
+  moonshot, and >=1 family not yet in the dead map.
+- **Campaigns**: new-def sweeps run as `signal-scan --campaign NAME` — your
+  declared defs are their own BH family; the canonical library stays
+  untaxed. Declare the campaign's hypothesis families in the agenda BEFORE
+  scanning; renaming to relaunch is snooping (the ledger records it).
+- **Compound experiments** (second-order treatments): express a
+  multi-intervention causal story as 2-4 pre-registered factors (boolean
+  gates / structural params), run the factorial via the experiments grid.
+  Box discipline is TWO-STAGE: screen the full factorial with
+  `--workers 1 --quick 10000`, then full-history + walk-forward on ONLY the
+  winning cell and its one-factor neighbors. Cite `factor_attribution` in
+  the proposal; a factor with a negative marginal effect does not ship
+  unless a documented sign_flip interaction is the finding.
+- **Pre-mortem + kill criteria**: every proposal states its expected new
+  failure mode and a pre-registered kill/re-arm threshold in the intent
+  contract (the POL funding-gate pattern, generalized).
+- **Dead-map scope**: dead = the tested claim, never the asset or family;
+  owner rejections bind on the change, not its neighborhood.
+- **Long runs via CLI in-session (detached with a log), never MCP ops** —
+  the 300s op timeout cannot hold a grid.
+
+**Post-apply shadow (mechanical counterfactual).** After any applied proposal the harness replays the pre-apply strategy over the forward bars and diffs it against the actual book (`post_apply_shadow` in the wake context; `wayfinder job counterfactual <job_id>` on demand). Entry-gating changes are adjudicated HERE — a filter's cost is invisible in the live book because skipped trades never print. Shadow sustainably ahead => revert/adjust proposal citing the block; active ahead => log the forward validation in the decisions ledger. Never hand-recompute counterfactuals.
+
+**Derived-column staleness = dataset staleness.** btc_trend, cross-symbol, venue, and regime columns are derived FROM the bars dataset — if they look frozen, the dataset is old, not the feed broken. Refresh with `wayfinder job fetch-dataset <job_id> --days <N> [--source ccxt]` (your own window/source choice) and the derived columns re-derive automatically as part of the build; the agent wake also re-derives hourly over whatever dataset exists. NEVER park an exog/cross lane as starved because of stale feature timestamps — advancing the dataset is one CLI call you can run yourself.
+
+**Universe lane (symbol swaps).** The universe is NOT fixed. When exploitation lanes are exhausted, or a symbol has accumulated definitive negative evidence (funding structurally against the trade, signal families all dead, forward book persistently negative with adequate sample), run `wayfinder job universe-scan <job_id>` — it screens the venue's liquid perps with YOUR signal library and regime conditioning, pooled into one BH family. Then propose the swap in ONE proposal: remove the dead symbol (cite its accumulated evidence), admit the candidate at probation sizing with pre-registered graduate/kill criteria, and register the leg in the probation registry. Screen results are SHORTLIST evidence only — survivorship plus pooled multiplicity means q-values do not transfer; the admitted symbol earns full size through its own on-job scans and probation forward. More live symbols = faster forward-sample accumulation: when the binding constraint is sample rate, this lane IS the fix.
+
+**Evidence windows (owner policy).** Deployment evidence requires long history: request 120d via `fetch-dataset --days 120 --source ccxt` (the exchange has YEARS of 5m data — never wait for history to 'accumulate'). The validation gate enforces this: a short dataset passes only when the full target was requested and the source could not supply it (new listing), with a hard 30d floor. Walk-forward and holdouts only mean something across regimes — a 14d window validated against itself produced +21% deploy backtests that ran -41bps/trade forward. The replication monitor (`standing_checks.backtest_replication`, `wayfinder job replication`) re-tests the active revision daily: decayed=true is mechanical evidence the deployed edge was window-local noise — respond with a revert/kill or re-validation proposal.
+
+**Regime-aware aliveness (the IMX calibration).** The one strategy with a green forward book backtests -2.4% on 30d and +39% on 120d: its entry filter IS a regime gate (zero up-regime trades; down_highvol cell 63% WR, down_lowvol ~flat), and the recent 'bad' month was just its flat cell — dormant, not dead. Rules that follow: (1) NEVER judge a regime-gated edge by calendar recency — check decay WITHIN its active cells (regime scan rows compute t_recent on their own cell's events); (2) a bad unconditional backtest does not disqualify a regime-local strategy — demand regime-cell strength on a long window instead; (3) strong cells passing full gates promote as regime-GATED legs (promote_scope=regime — deployment must carry the gate; the leg idles outside its cell and that idling is correct behavior, report it as such); (4) walk-forward: prefer oos_return_recency_weighted over the raw mean when ranking — recent OOS folds matter more.

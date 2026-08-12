@@ -142,3 +142,36 @@ def test_validation_report_is_revision_stamped(tmp_path: Path) -> None:
     report = validate_execution_job(job_id, store=store)
 
     assert report["revision"] == compute_workspace_revision(root)
+
+
+def test_agent_memory_edits_do_not_move_the_revision(tmp_path: Path) -> None:
+    """workspace/memory.md is agent diary state, read by nothing in the
+    execution path — hashing it turned every routine memory update into a
+    phantom strategy change (stale gate stamps + baseline drift on staged
+    candidates, seen live 2026-08-11)."""
+    store, job_id, root = _make_job(tmp_path)
+    baseline = compute_workspace_revision(root)
+
+    memory = root / "workspace" / "memory.md"
+    memory.write_text("# Durable memory\n- one more thought\n", encoding="utf-8")
+    assert compute_workspace_revision(root) == baseline
+
+    memory.write_text("# Durable memory\n- yet another thought\n", encoding="utf-8")
+    assert compute_workspace_revision(root) == baseline
+
+    # Strategy content and execution config still move the revision.
+    script = next((root / "workspace").rglob("*.py"))
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\n# edit\n", encoding="utf-8"
+    )
+    after_code = compute_workspace_revision(root)
+    assert after_code != baseline
+
+    job_yaml = root / "job.yaml"
+    job_yaml.write_text(
+        job_yaml.read_text(encoding="utf-8").replace(
+            "goal:", "goal_note: tweaked\ngoal:", 1
+        ),
+        encoding="utf-8",
+    )
+    assert compute_workspace_revision(root) != after_code

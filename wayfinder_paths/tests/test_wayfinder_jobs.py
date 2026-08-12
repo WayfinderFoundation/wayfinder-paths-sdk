@@ -415,7 +415,9 @@ def test_worker_prompt_includes_apply_lifecycle(tmp_path: Path) -> None:
     )["prompt"]
 
     assert "Apply approved proposal `prop_001`" in prompt
-    assert "if it is applying, do not claim again" in prompt
+    assert "if it is already applying, do not claim again" in prompt
+    assert "claim it yourself" in prompt
+    assert "watchdog clock" in prompt
     assert 'core_jobs(action="claim_application"' in prompt
     assert 'core_jobs(action="validate_application"' in prompt
     assert 'core_jobs(action="complete_application"' in prompt
@@ -738,7 +740,9 @@ def test_runner_bridge_starts_daemon_with_defaults(tmp_path: Path, monkeypatch) 
     assert result["ok"] is True
     assert captured["paths"].repo_root == tmp_path.resolve()
     assert captured["tick_seconds"] == 1.0
-    assert captured["max_workers"] == 4
+    from wayfinder_paths.runner.constants import DEFAULT_MAX_WORKERS
+
+    assert captured["max_workers"] == DEFAULT_MAX_WORKERS
     assert captured["max_failures"] == 5
     assert captured["default_timeout_seconds"] == 20 * 60
     assert captured["log_level"] == "INFO"
@@ -868,3 +872,417 @@ def test_forward_detail_capped_so_ledgers_survive_prompt(tmp_path: Path) -> None
     assert '"win_rate"' in dyn  # summary survives
     # Detail rows are capped, not all 25 present.
     assert dyn.count('"reason"') <= 12
+
+
+class _FakeBridge:
+    """RunnerBridge stand-in: records calls, never touches a daemon."""
+
+    def __init__(self, *, repo_root=None):  # noqa: ANN001
+        self.repo_root = repo_root
+
+    def ensure_started(self):
+        return {"ok": True}
+
+    def add_or_update_script_job(self, **kwargs):
+        return {"ok": True, "result": {"name": kwargs["name"]}}
+
+
+def test_legacy_compile_fails_loudly_on_missing_entrypoint(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import pytest
+
+    """A legacy (runpy) wrapper against a nonexistent script must fail at
+    COMPILE time, not at 3am when the runner fires it — this exact wrapper
+    shipped broken in a live session (pointed at /wf/sdk/strategy.py)."""
+    monkeypatch.setattr("wayfinder_paths.jobs.compiler.RunnerBridge", _FakeBridge)
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "ghost-script",
+        script="strategy.py",
+        interval_seconds=60,
+        execution_contract="legacy",
+    )
+    store.save(job)
+    with pytest.raises(ValueError, match="jobs_v1"):
+        JobCompiler(store=store).compile(job, start_daemon=False)
+
+
+def test_jobs_v1_wrapper_uses_scheduled_tick_driver(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """jobs_v1 wrappers call run_scheduled_tick(JOB_DIR) — no entrypoint file
+    needs to exist because the driver resolves the strategy at tick time."""
+    monkeypatch.setattr("wayfinder_paths.jobs.compiler.RunnerBridge", _FakeBridge)
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "tick-driven",
+        script="strategy.py",
+        interval_seconds=60,
+        execution_contract="jobs_v1",
+    )
+    store.save(job)
+    JobCompiler(store=store).compile(job, start_daemon=False)
+    wrapper = tmp_path / ".wayfinder_runs/jobs/tick_driven_script.py"
+    text = wrapper.read_text(encoding="utf-8")
+    assert "run_scheduled_tick" in text
+    assert "runpy" not in text
+
+
+def test_mcp_create_defaults_to_jobs_v1(tmp_path: Path, monkeypatch) -> None:
+    """core_jobs(action='create') births jobs_v1 by default — the legacy
+    default is what compiled broken runpy wrappers for every agent-created
+    strategy job."""
+    import asyncio
+
+    from wayfinder_paths.mcp.tools import jobs as jobs_tools
+
+    monkeypatch.setattr("wayfinder_paths.jobs.compiler.RunnerBridge", _FakeBridge)
+    monkeypatch.setattr(jobs_tools, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    monkeypatch.setattr(jobs_tools, "sync_all_jobs", lambda store=None: None)
+
+    result = asyncio.run(
+        jobs_tools.core_jobs(
+            action="create",
+            job_id="fresh-strategy",
+            script="strategy.py",
+            interval_seconds=3600,
+        )
+    )
+    assert result["ok"], result
+    store = JobStore(repo_root=tmp_path)
+    job = store.load("fresh-strategy")
+    assert job.execution_contract == "jobs_v1"
+    wrapper = tmp_path / ".wayfinder_runs/jobs/fresh_strategy_script.py"
+    assert "run_scheduled_tick" in wrapper.read_text(encoding="utf-8")
+    # Create tells the agent exactly where the strategy module lives —
+    # layout guessing cost real tool calls in live sessions.
+    # The scaffold pins the module inside the versioned workspace.
+    assert result["result"]["script_entrypoint"].endswith("workspace/src/strategy.py")
+    assert "workspace/src/" in result["result"]["hint"]
+
+
+def test_mcp_sync_heals_stale_wrapper_after_contract_flip(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Agents hand-edit job.yaml (legacy -> jobs_v1); sync must recompile the
+    wrapper instead of leaving the stale runpy one to fail on schedule."""
+    import asyncio
+
+    from wayfinder_paths.mcp.tools import jobs as jobs_tools
+
+    monkeypatch.setattr("wayfinder_paths.jobs.compiler.RunnerBridge", _FakeBridge)
+    monkeypatch.setattr(jobs_tools, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    monkeypatch.setattr(jobs_tools, "sync_all_jobs", lambda store=None: None)
+
+    store = JobStore(repo_root=tmp_path)
+    # Born legacy with a real script so create-time compile succeeds.
+    root = tmp_path / ".wayfinder/jobs/flip-me"
+    script = root / "workspace" / "loop.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("print('ok')\n", encoding="utf-8")
+    job = WayfinderJob.new(
+        "flip-me",
+        script="workspace/loop.py",
+        interval_seconds=60,
+        execution_contract="legacy",
+    )
+    store.save(job)
+    JobCompiler(store=store).compile(job, start_daemon=False)
+    wrapper = tmp_path / ".wayfinder_runs/jobs/flip_me_script.py"
+    assert "runpy" in wrapper.read_text(encoding="utf-8")
+
+    # The hand edit agents actually perform:
+    job.execution_contract = "jobs_v1"
+    store.save(job)
+
+    result = asyncio.run(jobs_tools.core_jobs(action="sync"))
+    assert result["ok"], result
+    assert "flip-me" in result["result"]["recompiled"]
+    text = wrapper.read_text(encoding="utf-8")
+    assert "run_scheduled_tick" in text
+    assert "runpy" not in text
+
+
+def test_bridge_requires_env() -> None:
+    """update_job replaces the runner payload wholesale — a schedule-only
+    update without env silently reverted WAYFINDER_JOB_MODE to paper on a
+    LIVE job in production. env is now mandatory."""
+    import pytest
+
+    from wayfinder_paths.jobs.runner_bridge import RunnerBridge
+
+    bridge = RunnerBridge.__new__(RunnerBridge)  # skip daemon paths
+    with pytest.raises(ValueError, match="JobCompiler.compile"):
+        bridge.add_or_update_script_job(
+            name="x-script", script_path="x.py", interval_seconds=60, env={}
+        )
+
+
+def test_bridge_update_path_carries_env(monkeypatch) -> None:
+    from wayfinder_paths.jobs import runner_bridge as rb
+
+    calls: list[tuple[str, dict]] = []
+
+    class FakeClient:
+        def call(self, method, params):
+            calls.append((method, params))
+            if method == "add_job":
+                return {"ok": False, "error": "UNIQUE constraint failed: jobs.name"}
+            return {"ok": True}
+
+    bridge = rb.RunnerBridge.__new__(rb.RunnerBridge)
+    bridge.client = FakeClient()
+    resp = bridge.add_or_update_script_job(
+        name="x-script",
+        script_path="x.py",
+        interval_seconds=60,
+        env={"WAYFINDER_JOB_MODE": "live"},
+    )
+    assert resp["ok"]
+    update_calls = [p for m, p in calls if m == "update_job"]
+    assert update_calls and update_calls[0]["payload"]["env"] == {
+        "WAYFINDER_JOB_MODE": "live"
+    }
+
+
+def test_worker_prompt_requires_withdrawing_superseded_drafts(
+    tmp_path: Path,
+) -> None:
+    """A live wake left v1/v2 drafts of the same fix pending — the owner
+    reviewed stale drafts. The wake rules must direct the worker to reject a
+    superseded draft before proposing its replacement."""
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("draft-hygiene", agent_mode="intervene")
+    store.save(job)
+    prompt = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job),
+    )["prompt"]
+    assert "ONE open proposal per concern" in prompt
+    assert "reject_proposal" in prompt
+    assert "superseded by <new-id>" in prompt
+
+
+def test_create_job_copies_external_script_into_workspace_src(
+    tmp_path: Path,
+) -> None:
+    """Strategy code outside workspace/ is invisible to revisions and
+    proposals — create must move it to the one versionable home."""
+    from wayfinder_paths.jobs.gating import compute_workspace_revision
+
+    external = tmp_path / "elsewhere" / "momo.py"
+    external.parent.mkdir(parents=True)
+    external.write_text("def decide(ctx):\n    return []\n", encoding="utf-8")
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("scaffold-copy", script=str(external), interval_seconds=3600)
+    store.create_job(job)
+
+    assert job.script_loop.entrypoint == "workspace/src/momo.py"
+    copied = store.job_dir(job.id) / "workspace" / "src" / "momo.py"
+    assert copied.read_text(encoding="utf-8").startswith("def decide")
+    journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
+    assert "entrypoint_scaffolded" in journal
+    # The copied file is now inside the revision hash.
+    before = compute_workspace_revision(store.job_dir(job.id))
+    copied.write_text("def decide(ctx):\n    return list()\n", encoding="utf-8")
+    assert compute_workspace_revision(store.job_dir(job.id)) != before
+
+
+def test_create_job_defaults_missing_script_to_workspace_src(
+    tmp_path: Path,
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "scaffold-default", script="strategy.py", interval_seconds=3600
+    )
+    store.create_job(job)
+
+    assert job.script_loop.entrypoint == "workspace/src/strategy.py"
+    # No stub: execution_script_exists must stay honest until the agent
+    # writes the real module.
+    assert not (store.job_dir(job.id) / "workspace" / "src" / "strategy.py").exists()
+
+
+def test_create_job_keeps_workspace_relative_entrypoint(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "scaffold-noop", script="workspace/src/loop.py", interval_seconds=3600
+    )
+    store.create_job(job)
+
+    assert job.script_loop.entrypoint == "workspace/src/loop.py"
+    journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
+    assert "entrypoint_scaffolded" not in journal
+
+
+def test_compiler_journals_entrypoint_outside_workspace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr("wayfinder_paths.jobs.compiler.RunnerBridge", _FakeBridge)
+    store = JobStore(repo_root=tmp_path)
+    rogue = tmp_path / "rogue.py"
+    rogue.write_text("def decide(ctx):\n    return []\n", encoding="utf-8")
+    job = WayfinderJob.new("rogue-entrypoint", script=str(rogue), interval_seconds=3600)
+    # Raw save (no scaffold) mirrors the legacy jobs already on disk.
+    store.save(job)
+
+    JobCompiler(store=store).compile(job, start_daemon=False)
+
+    journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
+    assert "entrypoint_outside_workspace" in journal
+
+
+def test_worker_prompt_states_workspace_staging_rule(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("staging-rule", agent_mode="intervene")
+    store.save(job)
+    prompt = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job),
+    )["prompt"]
+
+    assert "Proposals stage ONLY `workspace/` + `job.yaml`" in prompt
+    assert "FIRST proposal must migrate it into" in prompt
+
+
+def test_worker_prompt_intervene_ladder_and_retry_budget(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("ladder", agent_mode="intervene")
+    store.save(job)
+    prompt = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job),
+    )["prompt"]
+
+    assert "Wake priority ladder" in prompt
+    assert "healthy, no change warranted" in prompt
+    assert "after 2 failed propose attempts in a wake" in prompt
+    # The exploration lane: sub-floor forward samples gate exploitation, not
+    # research-side analysis.
+    assert "Exploration vs exploitation" in prompt
+    assert "gates EXPLOITATION only" in prompt
+    # The ideation cadence rung + the agenda bootstrap marker (no agenda file
+    # exists in this fixture).
+    assert "Ideation cadence" in prompt
+    assert "bootstrap it on the next healthy ideation wake" in prompt
+
+    # A seeded agenda is embedded verbatim in the dynamic context.
+    agenda_dir = store.job_dir(job.id) / "research"
+    agenda_dir.mkdir(parents=True, exist_ok=True)
+    (agenda_dir / "agenda.md").write_text(
+        "# Research agenda\nLast ideation session: 2026-07-22T00:00:00Z\n"
+    )
+    seeded = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job),
+    )["prompt"]
+    assert "Last ideation session: 2026-07-22T00:00:00Z" in seeded
+    # The ladder is intervene/monitor task guidance, not part of the apply wake.
+    apply_prompt = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job),
+        apply_proposal_id="prop_x",
+    )["prompt"]
+    assert "Wake priority ladder" not in apply_prompt
+
+
+def test_reject_proposal_records_provenance(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("reject-demo", agent_mode="intervene")
+    store.save(job)
+    for pid in ("prop_owner", "prop_agent"):
+        store.write_proposal(
+            job.id,
+            {
+                "proposal_id": pid,
+                "job_id": job.id,
+                "status": "pending",
+                "proposed_change": {"summary": "x"},
+                "approval": {"required": True, "status": "pending"},
+            },
+        )
+
+    owner = store.reject_proposal(job.id, "prop_owner")
+    assert owner["rejection"]["by"] == "owner"
+    assert owner["rejection"]["reason"] is None
+
+    agent = store.reject_proposal(
+        job.id, "prop_agent", reason="superseded by v2", rejected_by="agent"
+    )
+    assert agent["rejection"] == {
+        "reason": "superseded by v2",
+        "by": "agent",
+        "ts": agent["rejection"]["ts"],
+    }
+    journal = (store.job_dir(job.id) / "journal.jsonl").read_text()
+    assert '"rejected_by": "owner"' in journal
+    assert '"rejected_by": "agent"' in journal
+
+
+def test_worker_prompt_hoists_restage_tasks_out_of_snapshot(tmp_path: Path) -> None:
+    """Pending re-stages must be PROMPT TEXT, not payload-only: the snapshot
+    JSON truncates at 12k chars (sort_keys), which once swallowed the
+    instruction and the agent burned a carried-over approval on a duplicate
+    proposal."""
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "restage-prompt-demo",
+        goal="Carry approvals over.",
+        script="workspace/src/loop.py",
+        agent_mode="intervene",
+    )
+    store.save(job)
+    proposals_dir = store.job_dir(job.id) / "proposals"
+    proposals_dir.mkdir(parents=True, exist_ok=True)
+    (proposals_dir / "prop-params-update-aaaa1111.json").write_text(
+        json.dumps(
+            {
+                "proposal_id": "prop-params-update-aaaa1111",
+                "status": "approved",
+                "proposed_change": {
+                    "summary": "Tighten stop",
+                    "execution_params": {"stop_pct": 0.01},
+                },
+                "application": {"status": "failed", "restage_requested": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    sections = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
+    )
+
+    dynamic = sections["dynamic_context"]
+    priority_at = dynamic.index("PRIORITY — approved changes awaiting re-stage")
+    assert priority_at < dynamic.index("Current snapshot:")
+    assert "Do NOT create a new proposal" in dynamic
+    assert "wayfinder job restage" in dynamic
+    assert "prop-params-update-aaaa1111" in dynamic[: priority_at + 2000]
+    assert "FIRST: complete the PRIORITY re-stage tasks" in dynamic
+
+    # No pending re-stage → no priority section.
+    (proposals_dir / "prop-params-update-aaaa1111.json").unlink()
+    clean = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
+    )
+    assert (
+        "PRIORITY — approved changes awaiting re-stage" not in clean["dynamic_context"]
+    )

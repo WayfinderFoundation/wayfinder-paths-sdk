@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from loguru import logger
 
 from wayfinder_paths.jobs.execution.engine import (
     EngineState,
@@ -17,6 +18,7 @@ from wayfinder_paths.jobs.execution.engine import (
     run_tick,
 )
 from wayfinder_paths.jobs.execution.features import (
+    apply_precompute,
     feature_staleness,
     load_feature_rows,
     merge_features,
@@ -54,12 +56,29 @@ def run_scheduled_tick(job_dir: str | Path | None = None) -> dict[str, Any]:
     mode = os.environ.get("WAYFINDER_JOB_MODE") or "paper"
     store = None
     job = None
+    divergence: dict[str, Any] | None = None
     try:
         store = JobStore()
         job = WayfinderJob.from_dict(_load_job_yaml(root))
+        # Fail-safe: never trade LIVE while the approved config (job.yaml) says
+        # paper. The runner env WAYFINDER_JOB_MODE can be flipped to live
+        # without updating job.yaml or recompiling — that split-brain once left
+        # a job live-trading real funds under a paper gate. Downgrade to paper
+        # and surface the divergence loudly so it can't happen silently.
+        declared_mode = str(job.script_loop.mode or "paper")
+        if mode == "live" and declared_mode != "live":
+            divergence = {
+                "kind": "mode_divergence",
+                "runner_mode": "live",
+                "declared_mode": declared_mode,
+                "action": "downgraded_to_paper",
+            }
+            mode = "paper"
         payload = asyncio.run(tick_job(job, root, mode, store=store))
     except Exception as exc:
         payload = {"ok": False, "error": str(exc)}
+    if divergence is not None:
+        payload.setdefault("guard_events", []).append(divergence)
     # Event-driven agent wakes fire ONLY from the scheduled entrypoint —
     # never from tick_job itself, so preflight sandbox ticks and manual
     # `wayfinder job tick` runs cannot wake the advisor.
@@ -83,6 +102,10 @@ def _tick_trigger_events(payload: dict[str, Any]) -> list[str]:
     }
     if guard_kinds & {"risk_halt", "manual_halt"}:
         events.append("risk_halt")
+    if "mode_divergence" in guard_kinds:
+        # Declared vs executed mode disagree — wake the advisor to reconcile
+        # job.yaml (reuses the reconcile_mismatch trigger).
+        events.append("reconcile_mismatch")
     return events
 
 
@@ -134,9 +157,30 @@ async def tick_job(
         or (job.versioning or {}).get("active_revision")
         or ""
     )
+    now = now if now is not None else pd.Timestamp.now(tz="UTC")
     state_path = root / ENGINE_STATE_PATH
     state_file_existed = state_path.exists()
     state = EngineState.load(state_path)
+    mode_notes: list[dict[str, Any]] = []
+    if state_file_existed and state.mode and state.mode != mode:
+        # A paper test tick otherwise pollutes live (consumed bars, stale
+        # bar_count, paper positions). Archive and start fresh; clearing
+        # state_file_existed re-arms first-run venue adoption in _reconcile.
+        archive_path = state_path.with_name(
+            f"engine_state.{state.mode}.{now.strftime('%Y%m%dT%H%M%SZ')}.json"
+        )
+        state_path.rename(archive_path)
+        mode_notes.append(
+            {
+                "kind": "mode_flip_state_reset",
+                "from_mode": state.mode,
+                "to_mode": mode,
+                "archived": str(archive_path),
+            }
+        )
+        state = EngineState()
+        state_file_existed = False
+    state.mode = mode
     state.revision = revision or state.revision
 
     if adapters is None:
@@ -145,7 +189,6 @@ async def tick_job(
             for venue in (spec.venues or ["hyperliquid"])
         }
     brokers = {name: adapter.broker for name, adapter in adapters.items()}
-    now = now if now is not None else pd.Timestamp.now(tz="UTC")
 
     lookback_bars = int(params.get("lookback_bars") or 200)
     rows: list[dict[str, Any]] = []
@@ -182,7 +225,9 @@ async def tick_job(
             {"kind": "risk_halt", "reason": halt_reason, "snapshot": risk_snapshot}
         )
         if snapshot.status == "valid":
-            snapshot = StateSnapshot(status="risk_halt", reason=halt_reason)
+            snapshot = StateSnapshot(
+                status="risk_halt", reason=halt_reason, data=snapshot.data
+            )
 
     # Manual kill switch: outranks every other status (including ambiguous)
     # — reduce-only regardless, and cancel queued OPENs before they can
@@ -191,7 +236,9 @@ async def tick_job(
     if manual_halt is not None:
         halt_note = f"manual halt: {manual_halt.get('reason') or 'unspecified'}"
         risk_notes.append({"kind": "manual_halt", "reason": halt_note})
-        snapshot = StateSnapshot(status="risk_halt", reason=halt_note)
+        snapshot = StateSnapshot(
+            status="risk_halt", reason=halt_note, data=snapshot.data
+        )
         kept_intents = []
         for intent in state.pending_intents:
             if intent.reduce_only:
@@ -217,12 +264,21 @@ async def tick_job(
     feature_guards: list[dict[str, Any]] = []
     feature_skip = False
     if feature_specs:
-        feature_frames = load_feature_rows([root], feature_specs)
+        stamps = view.timestamps
+        feature_window = (stamps[0], stamps[-1]) if stamps else None
+        feature_frames = load_feature_rows([root], feature_specs, window=feature_window)
         feature_guards, feature_skip = feature_staleness(
             feature_specs, feature_frames, now
         )
         if not feature_skip:
             view = merge_features(view, feature_frames, feature_specs)
+
+    # Strategy-precomputed indicator columns (optional `precompute` hook): one
+    # vectorized pass over the bounded window, after the exogenous feature
+    # merge so precompute() can consume those columns. The backtest applies
+    # the same hook over full history — parity by construction, and the
+    # derived columns land in view_hash/recorded rows for exact replays.
+    view = apply_precompute(strategy, view)
 
     # Captured before run_tick mutates state: the reconciler replays each tick
     # from exactly this state.
@@ -254,6 +310,7 @@ async def tick_job(
             auto_limits=dict(job.agent_loop.auto_limits or {}) or None,
             client_order_prefix=job.id,
         )
+    tick.guard_events.extend(mode_notes)
     tick.guard_events.extend(reconcile_notes)
     tick.guard_events.extend(risk_notes)
     tick.guard_events.extend(feature_guards)
@@ -310,6 +367,20 @@ async def tick_job(
         now=now,
         engine_state_pre=engine_state_pre,
     )
+    try:
+        _record_pending_trade_forensics(root, view)
+    except Exception as exc:  # noqa: BLE001 — telemetry must never fail a tick
+        logger.debug(f"trade forensics skipped: {exc}")
+    for note in mode_notes:
+        store.append_journal(
+            job.id,
+            {
+                "type": "mode_flip_state_reset",
+                "from_mode": note["from_mode"],
+                "to_mode": note["to_mode"],
+                "archived": note["archived"],
+            },
+        )
     if snapshot.status == "ambiguous":
         store.append_journal(
             job.id,
@@ -357,6 +428,7 @@ async def _reconcile(
         return StateSnapshot(status="valid"), []
     notes: list[dict[str, Any]] = []
     venue_positions: dict[str, Any] = {}
+    account_values: dict[str, float] = {}
     for name, broker in brokers.items():
         try:
             venue_state = await broker.fetch_state(symbols)
@@ -374,6 +446,22 @@ async def _reconcile(
                 ],
             )
         venue_positions.update(venue_state.positions)
+        account_value = (venue_state.balances or {}).get("accountValue")
+        if account_value is not None:
+            account_values[name] = float(account_value)
+
+    # Venue-marked equity rides the snapshot (NOT params): the drift
+    # reconciler replays ticks with raw job.yaml params, so params-borne
+    # equity would replay wrong and flag false drift. mark_to_market_equity
+    # treats snapshot.data["account_value"] as authoritative in live mode.
+    data: dict[str, Any] = (
+        {
+            "account_value": sum(account_values.values()),
+            "account_value_by_venue": dict(account_values),
+        }
+        if account_values
+        else {}
+    )
 
     if not state_file_existed and venue_positions:
         for symbol, record in venue_positions.items():
@@ -386,7 +474,10 @@ async def _reconcile(
                     "reason": "no engine state on disk; adopted venue position",
                 }
             )
-        return StateSnapshot(status="valid", reason="adopted_from_venue"), notes
+        return (
+            StateSnapshot(status="valid", reason="adopted_from_venue", data=data),
+            notes,
+        )
 
     reasons: list[str] = []
     for symbol, venue_record in venue_positions.items():
@@ -411,8 +502,11 @@ async def _reconcile(
         notes.extend(
             {"kind": "reconcile_mismatch", "reason": reason} for reason in reasons
         )
-        return StateSnapshot(status="ambiguous", reason="; ".join(reasons)), notes
-    return StateSnapshot(status="valid"), notes
+        return (
+            StateSnapshot(status="ambiguous", reason="; ".join(reasons), data=data),
+            notes,
+        )
+    return StateSnapshot(status="valid", data=data), notes
 
 
 def _record(
@@ -475,3 +569,74 @@ def _record(
 def view_hash(view: CompletedBarsView) -> str:
     encoded = json.dumps(view.to_rows(), sort_keys=True, default=str).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+FORENSICS_POST_BARS = 16
+_FORENSICS_SCAN_TRADES = 40
+_FORENSICS_SCAN_FILLS = 400
+
+
+def _read_jsonl_tail(path: Path, limit: int) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-limit:]:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _record_pending_trade_forensics(root: Path, view: CompletedBarsView) -> int:
+    """Lazily append path forensics for closed trades once the bars window
+    covers their post-exit horizon.
+
+    Post-exit excursion needs FUTURE bars, so forensics for a trade land
+    ~FORENSICS_POST_BARS bars after its close — computed from the live view
+    already in memory (no extra fetches), keyed by (symbol, exit ts) so each
+    trade is written exactly once.
+    """
+    from wayfinder_paths.jobs.trade_forensics import forensics_for_closed_trades
+
+    trades_path = root / "results" / "forward" / "trades.jsonl"
+    out_path = root / "results" / "forward" / "trade_forensics.jsonl"
+    trades = _read_jsonl_tail(trades_path, _FORENSICS_SCAN_TRADES)
+    if not trades:
+        return 0
+    done = {
+        (str(row.get("symbol")), str(row.get("exit_ts")))
+        for row in _read_jsonl_tail(out_path, _FORENSICS_SCAN_TRADES * 2)
+    }
+    timestamps = view.timestamps
+    if not timestamps:
+        return 0
+
+    pending: list[dict[str, Any]] = []
+    for trade in trades:
+        exit_ts = pd.Timestamp(str(trade.get("closed_at") or trade.get("timestamp")))
+        if exit_ts.tzinfo is None:
+            exit_ts = exit_ts.tz_localize("UTC")
+        if (str(trade.get("symbol")), exit_ts.isoformat()) in done:
+            continue
+        post_available = sum(1 for ts in timestamps if ts > exit_ts)
+        if post_available < FORENSICS_POST_BARS:
+            continue
+        pending.append(trade)
+    if not pending:
+        return 0
+
+    fills = _read_jsonl_tail(
+        root / "results" / "forward" / "fills.jsonl", _FORENSICS_SCAN_FILLS
+    )
+    bars_by_symbol = {symbol: view.symbol_frame(symbol) for symbol in view.symbols}
+    rows = forensics_for_closed_trades(bars_by_symbol, pending, fills)
+    if not rows:
+        return 0
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+    return len(rows)

@@ -9,7 +9,7 @@ from typing import Any
 from loguru import logger
 
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
-from wayfinder_paths.jobs.application import claim_application, complete_application
+from wayfinder_paths.jobs.derived_features import refresh_derived_features_if_stale
 from wayfinder_paths.jobs.forward import is_forward_empty
 from wayfinder_paths.jobs.ledger import tail_ledger
 from wayfinder_paths.jobs.memory_hygiene import sanitize_job_memory
@@ -46,6 +46,328 @@ def _canonical_json(data: Any, *, max_chars: int | None = None) -> str:
     return text
 
 
+def _trade_forensics_block(root: Path) -> dict[str, Any]:
+    """Compact exit-quality context: per-trade path metrics the agent cannot
+    read off PnL rows (MAE/MFE during the hold, post-exit excursion, stop
+    survival) plus the backtest-population aggregate that adjudicates them."""
+    block: dict[str, Any] = {}
+    forward_path = root / "results" / "forward" / "trade_forensics.jsonl"
+    if forward_path.exists():
+        rows = []
+        for line in forward_path.read_text(encoding="utf-8").splitlines()[-5:]:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                row.pop("coverage", None)
+                rows.append(row)
+        if rows:
+            block["recent_forward_trades"] = rows
+    backtest_path = root / "results" / "backtest" / "trade_forensics.json"
+    if backtest_path.exists():
+        try:
+            doc = json.loads(backtest_path.read_text(encoding="utf-8"))
+        except ValueError:
+            doc = {}
+        aggregate = doc.get("aggregate")
+        if aggregate:
+            block["backtest_aggregate"] = aggregate
+    if block:
+        block["_basis"] = (
+            "Exit-quality path metrics, bps of entry price, positive = in the "
+            "trade's favor. hold_mae/mfe = worst/best excursion DURING the "
+            "hold; post_exit_favorable = move in the trade's direction AFTER "
+            "the exit (what a later exit would have captured); "
+            "exit_reason 'bracket_stop' = the protective stop fired (bracket "
+            "fills carry no strategy label); stop_survives = that stop width "
+            "was never breached — for bracket_stop trades the scan extends "
+            "through the post-exit window (the hypothetical wider-stop hold "
+            "continues), for labeled exits it covers the actual hold. Forward "
+            "rows are single-trade ANECDOTES — hypothesis fuel only. "
+            "Adjudicate any exit tweak on backtest_aggregate + an experiments "
+            "grid over the exit params with walk-forward before proposing."
+        )
+    return block
+
+
+def _attribution_block(root: Path) -> dict[str, Any]:
+    """Compact diagnosis context: archetype counts + the top expectation
+    deltas from results/research/attribution.json (refreshed on demand via
+    core_jobs(action="attribution")). Capped hard — this rides the 12k
+    dynamic budget."""
+    path = root / "results" / "research" / "attribution.json"
+    if not path.exists():
+        return {}
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return {}
+    deltas = [d for d in doc.get("expectation_deltas") or [] if not d.get("small_n")]
+    block: dict[str, Any] = {
+        "forward_trades": doc.get("forward_trades"),
+        "archetypes_forward": (doc.get("forward") or {}).get("archetype") or {},
+        "top_expectation_deltas": deltas[:5],
+        "_basis": (
+            "Diagnosis artifact: archetype counts name the dominant failure "
+            "mode; expectation_deltas are slices where the forward book "
+            "deviates most from the SAME slice in the backtest (adequately "
+            "sampled only). Start treatment design here. Refresh with "
+            'core_jobs(action="attribution", job_id=...).'
+        ),
+    }
+    return block
+
+
+def _counterfactual_block(store: JobStore, job_id: str) -> dict[str, Any]:
+    """Mechanical post-apply A/B: the pre-apply strategy (rollback backup)
+    replayed over the forward bars since apply, diffed against the actual
+    book. Computed here (cached, ~6h refresh) so the evidence EXISTS every
+    wake — the agent reads it, it never reconstructs counterfactuals."""
+    from wayfinder_paths.jobs.counterfactual import counterfactual_job
+
+    try:
+        doc = counterfactual_job(job_id, store=store)
+    except Exception as exc:  # noqa: BLE001 — wake context must not die on this
+        return {"_status": f"unavailable: {exc}"}
+    if not doc.get("available"):
+        return {"_status": str(doc.get("reason") or "unavailable")}
+    keys = (
+        "proposal_id",
+        "applied_at",
+        "window",
+        "actual",
+        "shadow",
+        "delta_net_pnl",
+        "by_symbol",
+        "entries_skipped_by_change",
+        "entries_added_by_change",
+        "_basis",
+    )
+    return {key: doc[key] for key in keys if key in doc}
+
+
+def _research_substrate_block(root: Path) -> dict[str, Any]:
+    """Freshness of the research substrate, computed from disk EVERY wake.
+
+    Staleness must be data the agent reads, not a memory it repeats: an
+    agenda entry that parked a lane as 'feed stale' otherwise outlives the
+    fix forever, because nothing in the context ever contradicts it (the
+    2026-07-27 BTC-exog wedge — columns were refreshed, three wakes kept
+    citing the old timestamps from the agenda)."""
+    block: dict[str, Any] = {}
+    bars_path = root / "results" / "backtest" / "input_bars.json"
+    if bars_path.exists():
+        try:
+            meta = (
+                json.loads(bars_path.read_text(encoding="utf-8")).get("metadata") or {}
+            )
+            block["dataset_fetched_at"] = meta.get("fetched_at")
+            block["dataset_days"] = meta.get("days")
+        except ValueError:
+            pass
+    feats = root / "state" / "features.jsonl"
+    if feats.exists():
+        newest = ""
+        # Appends are batched chronologically — the tail bounds the newest ts.
+        for line in feats.read_text(encoding="utf-8").splitlines()[-400:]:
+            try:
+                ts = str(json.loads(line).get("timestamp") or "")
+            except ValueError:
+                continue
+            newest = max(newest, ts)
+        if newest:
+            block["derived_features_newest_ts"] = newest
+    stamp_path = root / "results" / "research" / "derived_refresh.json"
+    if stamp_path.exists():
+        try:
+            block["derived_refresh_stamp"] = json.loads(
+                stamp_path.read_text(encoding="utf-8")
+            )
+        except ValueError:
+            pass
+    if block:
+        block["_basis"] = (
+            "Substrate freshness, read from disk THIS wake. Any agenda/"
+            "dead-map entry blocked on 'stale feed/columns' must be checked "
+            "against these timestamps EVERY wake: if they are current, the "
+            "blocker no longer exists — update the agenda and run the lane. "
+            "Never repeat a staleness claim from memory when this block "
+            "contradicts it. To advance the dataset yourself: "
+            "wayfinder job fetch-dataset (derived columns re-derive "
+            "automatically as part of the build)."
+        )
+    return block
+
+
+def _restage_block(root: Path) -> list[dict[str, Any]]:
+    """Approved proposals awaiting re-stage after a stale-baseline refusal.
+
+    Approval carryover: the owner already approved these — the workspace moved
+    under the staged candidate, so the change must be re-authored against the
+    CURRENT workspace and re-staged. This is a top-priority mechanical task,
+    not a new decision."""
+    tasks: list[dict[str, Any]] = []
+    proposals_dir = root / "proposals"
+    if not proposals_dir.exists():
+        return tasks
+    for path in sorted(proposals_dir.glob("*.json")):
+        try:
+            proposal = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        application = proposal.get("application") or {}
+        if proposal.get("status") != "approved" or not application.get(
+            "restage_requested"
+        ):
+            continue
+        pid = str(proposal.get("proposal_id") or path.stem)
+        params = (proposal.get("proposed_change") or {}).get("execution_params")
+        if params:
+            instruction = (
+                f"Run `wayfinder job restage {root.name} {pid}` — params "
+                "updates re-stage mechanically from the recorded params."
+            )
+        else:
+            instruction = (
+                "Re-author this exact change against the CURRENT workspace: "
+                f"copy .wayfinder/jobs/{root.name}/workspace to a scratch dir, "
+                "apply the same change (the stale candidate at "
+                f"applications/{pid}/candidate shows what it looked like), then "
+                f"run `wayfinder job restage {root.name} {pid} "
+                "--candidate-dir <scratch>`. Do NOT alter the approved intent; "
+                "if the change no longer makes sense on the new base, reject "
+                "it (agent housekeeping) and propose fresh."
+            )
+        tasks.append(
+            {
+                "proposal_id": pid,
+                "summary": (proposal.get("proposed_change") or {}).get("summary"),
+                "base_revision": proposal.get("base_revision"),
+                "changed_files": proposal.get("changed_files") or [],
+                "instruction": instruction,
+            }
+        )
+    return tasks
+
+
+def _standing_checks_block(root: Path) -> dict[str, Any]:
+    """Mechanical routine numbers, computed by the harness each wake.
+
+    The audit found ~30 ledger entries re-deriving `funding_mean > 0` in LLM
+    sessions — threshold arithmetic done by the most expensive component in
+    the system. This block does the arithmetic mechanically; a wake READS the
+    numbers and compares them to its gates."""
+    block: dict[str, Any] = {}
+    trades_path = root / "results" / "forward" / "trades.jsonl"
+    if trades_path.exists():
+        per_symbol: dict[str, int] = {}
+        last_close = ""
+        for line in trades_path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            symbol = str(row.get("symbol") or "?")
+            per_symbol[symbol] = per_symbol.get(symbol, 0) + 1
+            last_close = max(last_close, str(row.get("closed_at") or ""))
+        if per_symbol:
+            block["closed_trades"] = {
+                "total": sum(per_symbol.values()),
+                "per_symbol": dict(sorted(per_symbol.items())),
+                "last_close_ts": last_close,
+            }
+    feats = root / "state" / "features.jsonl"
+    if feats.exists():
+        from wayfinder_paths.jobs.indicators import REGIME_LABELS
+
+        regime_newest: dict[str, tuple[str, float]] = {}
+        funding: dict[str, list[tuple[str, float]]] = {}
+        # Reverse scan with early exit: newest regime per symbol + a week of
+        # funding rows, without parsing the whole multi-MB store.
+        scanned = 0
+        for line in reversed(feats.read_text(encoding="utf-8").splitlines()):
+            scanned += 1
+            if scanned > 30_000:
+                break
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            name = str(row.get("name") or "")
+            symbol = str(row.get("symbol") or "")
+            ts = str(row.get("timestamp") or "")
+            if name == "regime_code":
+                if symbol not in regime_newest or ts > regime_newest[symbol][0]:
+                    try:
+                        regime_newest[symbol] = (ts, float(row.get("value")))
+                    except (TypeError, ValueError):
+                        pass
+            elif name == "funding":
+                rows = funding.setdefault(symbol, [])
+                if len(rows) < 42:  # ~7d of 4h readings
+                    try:
+                        rows.append((ts, float(row.get("value"))))
+                    except (TypeError, ValueError):
+                        pass
+        if regime_newest:
+            block["regime_now"] = {
+                symbol: {
+                    "label": REGIME_LABELS[int(code)]
+                    if 0 <= int(code) < len(REGIME_LABELS)
+                    else "unknown",
+                    "as_of": ts,
+                }
+                for symbol, (ts, code) in sorted(regime_newest.items())
+            }
+        if funding:
+            block["funding_recent"] = {
+                symbol: {
+                    "mean_1d": round(
+                        sum(v for _, v in rows[:6]) / max(len(rows[:6]), 1), 9
+                    ),
+                    "mean_7d": round(sum(v for _, v in rows) / len(rows), 9),
+                    "n": len(rows),
+                    "newest_ts": max(ts for ts, _ in rows),
+                }
+                for symbol, rows in sorted(funding.items())
+                if rows
+            }
+    replication = None
+    rep_path = root / "results" / "backtest" / "replication.json"
+    if rep_path.exists():
+        try:
+            rep = json.loads(rep_path.read_text(encoding="utf-8"))
+        except ValueError:
+            rep = None
+        if isinstance(rep, dict) and rep.get("available"):
+            replication = {
+                "revision": rep.get("revision"),
+                "decayed": rep.get("decayed"),
+                "baseline_net_return": (rep.get("baseline") or {}).get("net_return"),
+                "current_net_return": (rep.get("current") or {}).get("net_return"),
+                "dataset_days": (rep.get("dataset") or {}).get("days_received")
+                or (rep.get("dataset") or {}).get("days"),
+            }
+    if replication:
+        block["backtest_replication"] = replication
+    if block:
+        block["_basis"] = (
+            "Routine numbers computed mechanically THIS wake — never re-fetch "
+            "or re-derive them in-session; compare them to your gates and "
+            "cite them. A pure status observation (runner healthy, gate "
+            "still closed, no new trades) is an ops note, NOT research: "
+            "write it with family operations/monitoring/no_change and it "
+            "lands in the ops ledger automatically. The candidates ledger "
+            "is for research verdicts only. "
+            "backtest_replication.decayed=true means the ACTIVE revision's "
+            "deploy-time in-sample edge is not reproducing on refreshed data "
+            "— mechanical evidence of selection on window-local noise; treat "
+            "it as grounds for a revert/kill or re-validation proposal."
+        )
+    return block
+
+
 def _drop_volatile_stable_keys(value: Any) -> Any:
     match value:
         case dict():
@@ -70,8 +392,18 @@ def _build_worker_prompt_sections(
 ) -> dict[str, str]:
     root = store.job_dir(job_id)
     memory_md = _read_text(root / "memory.md", max_chars=6000)
+    # The research prior library: idea families, prior strengths, archetype
+    # mapping, and test paths. Lives in the STABLE prefix so it prompt-caches
+    # across wakes instead of taxing the dynamic budget.
+    research_priors = _read_text(
+        Path(__file__).parent / "prompts" / "research_priors.md", max_chars=7000
+    )
     memory_json = store.read_json(job_id, "memory.json", default={}) or {}
     recent_journal = _read_text(root / "journal.jsonl", max_chars=4000)
+    # The cumulative research state — a curated map (dead hypotheses, open
+    # ones, starved ones with unlock conditions), NOT a scrolling log. The
+    # 20-row ledger tails forget; this is what makes ideation build on itself.
+    research_agenda = _read_text(root / "research" / "agenda.md", max_chars=5000)
     stable_payload = {
         "job": _drop_volatile_stable_keys(snapshot["job"]),
         "memory_json": _drop_volatile_stable_keys(memory_json),
@@ -106,6 +438,7 @@ def _build_worker_prompt_sections(
             "PnL, or trade count as a forward result."
         )
 
+    restage_tasks = _restage_block(root)
     dynamic_payload = {
         "scorecard": snapshot.get("scorecard") or {},
         "forward": forward_block,
@@ -122,6 +455,12 @@ def _build_worker_prompt_sections(
             "candidates": tail_ledger(store, job_id, "candidates", limit=20),
             "decisions": tail_ledger(store, job_id, "decisions", limit=20),
         },
+        "trade_forensics": _trade_forensics_block(root),
+        "attribution": _attribution_block(root),
+        "post_apply_shadow": _counterfactual_block(store, job_id),
+        "research_substrate": _research_substrate_block(root),
+        "standing_checks": _standing_checks_block(root),
+        "restage_tasks": restage_tasks,
     }
 
     stable_prefix = (
@@ -136,25 +475,62 @@ def _build_worker_prompt_sections(
         "Rules:\n"
         "- Monitor mode is read-only except reports/memory.\n"
         "- Intervene mode may create candidate proposals under the job bundle, but cannot activate them.\n"
+        "- Proposals stage ONLY `workspace/` + `job.yaml`; code outside `workspace/` "
+        "cannot be versioned, proposed, or promoted. If the active script entrypoint "
+        "resolves outside `workspace/`, your FIRST proposal must migrate it into "
+        "`workspace/src/` and point `script_loop.entrypoint` at `workspace/src/<file>.py`.\n"
+        "- ONE open proposal per concern: before drafting a corrected version of a "
+        "proposal you made this wake or earlier, reject the superseded draft first "
+        "(core_jobs(action='reject_proposal', job_id=..., proposal_id=..., "
+        "reason='superseded by <new-id>')) so the owner never reviews stale drafts. "
+        "ALWAYS pass a reason on self-rejections — an unreasoned rejection is "
+        "recorded as an OWNER veto.\n"
+        "- Rejections have provenance (`rejection.by` on the proposal): an "
+        "OWNER rejection is a DECISION, not a formality. NEVER re-propose an "
+        "equivalent change after an owner rejection unless you have NAMED new "
+        "evidence that did not exist at rejection time, and the new proposal "
+        "summary must cite both the rejected proposal id and that evidence. "
+        "Your own reasoned self-rejections (superseded/stale drafts) do not "
+        "bind — iterate freely. Before proposing ANYTHING, scan the rejected "
+        "proposals for an equivalent prior ask.\n"
         "- Applying an approved proposal is a separate lifecycle: pending proposals do not pause jobs, "
         "approval only queues application, and runner loops pause only after the apply worker claims the proposal.\n"
         "- Auto mode may execute live trades only inside the configured auto_limits.\n"
         "- Never move funds, send onchain transactions, or execute contracts.\n"
+        "- Paper/live mode lives in `job.yaml` (`script_loop.mode`). Change it ONLY "
+        "by a proposal that edits `script_loop.mode` (intervene) or, out of band, "
+        "`core_jobs(action='set_script_mode', ...)` — both recompile the runner env. "
+        "NEVER patch a runner env var (`WAYFINDER_JOB_MODE`) to flip mode: the env is "
+        "baked from job.yaml, so a hand-patch is a split-brain the next recompile "
+        "reverts. If the runner mode and job.yaml disagree, the fix is a recompile "
+        "(sync/set_script_mode), not an env edit.\n"
         "- Use structured forward results first (summary, runs, trades, orders, fills); "
         "raw runner logs are fallback/debug only.\n"
+        "- Wallet/venue errors: the live wallet is `execution_params.wallet_label` in "
+        "job.yaml (the engine default 'main' rarely exists on this instance) — it is "
+        "NOT a job-root key, an env var, or an adapter config file, so never hunt for "
+        "one. Compare the trigger event's timestamp against job.yaml's updated_at "
+        "BEFORE investigating: a wake often fires on an error the current config "
+        "already fixed.\n"
         "- Always write/return a compact structured finding.\n\n"
         "Stable job spec:\n"
         f"{_canonical_json(stable_payload, max_chars=12000)}\n\n"
+        "Research prior library (idea families -> priors -> archetypes -> "
+        "test paths — pick treatments from here):\n"
+        f"{research_priors}\n\n"
         "Durable job memory:\n"
         f"{memory_md}\n\n"
         f"{STABLE_PREFIX_END_MARKER}\n"
     )
     task_line = (
-        f"- Apply approved proposal `{apply_proposal_id}`. The SDK wake path may "
-        "have already claimed it, so check `proposal_queue`/proposal application "
-        "status first. If it is still queued, call "
+        f"- Apply approved proposal `{apply_proposal_id}`. Check "
+        "`proposal_queue`/proposal application status first: if it is queued, "
+        "claim it yourself with "
         '`core_jobs(action="claim_application", job_id=..., proposal_id=...)`; '
-        "if it is applying, do not claim again. Apply edits in the candidate "
+        "if it is already applying, do not claim again. Claiming pauses the "
+        "runner loops and starts a watchdog clock: complete the application "
+        "(applied or failed) within ~60 minutes or the SDK will fail it and "
+        "resume the loops without you. Apply edits in the candidate "
         "workspace recorded on the proposal application, not the active workspace. "
         'Proposals created via `core_jobs(action="propose")` stage their change '
         "in the candidate at propose time and the claim REUSES that candidate — "
@@ -207,15 +583,195 @@ def _build_worker_prompt_sections(
             "validated candidate, runs the baseline-vs-candidate backtest "
             "comparison, and attaches the candidate_report approvals "
             "require.\n"
+            "- Wake priority ladder: (1) operational failures (script errors, "
+            "reconcile mismatches, halts — INCLUDING a live job that cannot act "
+            "for days despite full lookback data, e.g. warmup gated on "
+            "strategy_state tick counters instead of ctx.bar_index/"
+            "ctx.every_n_bars: propose the data-derived fix); (2) live-gate blockers — read "
+            "`gate.reasons` and the FAILING validation check names and fix "
+            "exactly those; (3) evidence-based strategy iteration from forward "
+            "fills/PnL vs backtest expectation. If the gate is green and forward "
+            "evidence shows no problem, report 'healthy, no change warranted' — "
+            "do not invent plumbing churn.\n"
+            "- Exploration vs exploitation: the forward-sample floor "
+            "(drift_policy.min_forward_trades) gates EXPLOITATION only — never "
+            "retune the ACTIVE strategy off a forward sample below it. It does "
+            "NOT gate EXPLORATION: on a healthy intervene/auto wake while the "
+            "forward sample is still below the floor, spend the wake on "
+            "research-side analysis instead of going idle — signal-scan/"
+            "signal-check other symbols, timeframes, or trigger families, "
+            "holdout-check FROZEN scan candidates, or run experiments grids in "
+            "research space — and record conclusions in the candidates ledger. "
+            "When the canonical library exhausts, COMPOSE: author "
+            "hypothesis-driven SignalDefs in workspace/src/signals.py (cap "
+            "12; each must cite a fingerprint quadrant, path_stats shape, or "
+            "failure-table row) and rerun signal-scan so composed trials "
+            "ride the pooled BH family — NEVER a serial one-off signal-check "
+            "mining loop (that is p-hacking). rank-check screens continuous "
+            "features; sanctioned external axes are funding "
+            "(job fetch-funding), session/time-of-day (canonical session "
+            "triggers), and cross-asset via the multi-symbol view. "
+            "Exploration writes results/research artifacts and ledger entries "
+            "only: no workspace/ or job.yaml edits, and no proposals whose "
+            "evidence is the sub-floor forward sample. Monitor-mode wakes stay "
+            "read-only.\n"
+            "- Exit-quality lane: `trade_forensics` in the dynamic context "
+            "shows each closed trade's PATH — hold MAE/MFE, post-exit "
+            "favorable excursion (what a later exit would have captured), "
+            "stop-survival counterfactuals — plus the backtest-population "
+            "aggregate by exit reason. When forward trades show a pattern "
+            "(e.g. stop-outs where price then runs far in the trade's favor, "
+            "or time-exits leaving large post-exit moves), treat it as a "
+            "HYPOTHESIS about the exit params, then adjudicate on the "
+            "population: run an experiments grid over the pre-registered exit "
+            "params (e.g. hold_scale, stop_pct) with walk-forward, require "
+            "the improvement to hold in OOS folds and across neighbor cells "
+            "(plateau), and only then propose. A handful of forward "
+            "anecdotes NEVER justifies a retune directly — but a "
+            "grid+WF-validated exit change motivated by them is a legitimate "
+            "proposal even below the forward-sample floor, because its "
+            "evidence is the backtest population, not the forward sample.\n"
+            "- Post-apply shadow lane: `post_apply_shadow` in the dynamic "
+            "context is a MECHANICAL A/B — the pre-apply strategy (rollback "
+            "backup) replayed over the forward bars since apply, diffed "
+            "against the actual book. Read it on every wake while a change "
+            "is live; never hand-recompute counterfactuals. If the shadow "
+            "outperforms the active book by a meaningful sustained margin "
+            "(>=14 days of divergence, or entries_skipped_by_change whose "
+            "shadow outcomes are clearly positive), that is first-class "
+            "evidence for a revert/adjust proposal — cite the block. If the "
+            "active book leads, record that in the decisions ledger as the "
+            "change's forward validation. This is how entry-gating changes "
+            "(filters) are adjudicated: their cost never prints in the live "
+            "book, only here.\n"
+            "- Universe lane: the symbol set is NOT fixed. When "
+            "exploitation lanes are exhausted or a symbol has accumulated "
+            "definitive negative evidence, run `wayfinder job universe-scan "
+            "<job_id>` (venue-wide screen with YOUR signal library + regime "
+            "conditioning, one pooled BH family) and propose the swap in ONE "
+            "proposal: remove the dead symbol citing its evidence, admit "
+            "the candidate at probation sizing with pre-registered "
+            "graduate/kill criteria registered in the probation registry. "
+            "Screen results are shortlist evidence ONLY — the admitted "
+            "symbol earns full size via its own on-job scans and forward "
+            "probation. When sample rate is the binding constraint, this "
+            "lane is the fix.\n"
+            "- EVIDENCE TIERS: verdict 'promote' (unchanged full gates) -> "
+            "full-size leg. Verdict 'probation' (near-miss alive NOW, "
+            "regime-conditional edge in the CURRENT regime, or a declared "
+            "recent-window survivor) -> deployable at <=50% leg size via a "
+            "proposal that PRE-REGISTERS a graduate criterion (N forward "
+            "trades in band -> propose full size) and a kill criterion "
+            "(auto-disable gate param) — paper forward IS the holdout, that "
+            "is why this tier exists. Max 2 concurrent probation legs. "
+            "Regime-conditional legs gate live via enabled_regimes and a "
+            "regime FLIP is a first-class kill trigger. recency_trend="
+            "'decaying' on a deployed leg's signal is a diagnosis; "
+            "'strengthening' near-misses are prime probation material. "
+            "Graduation uses FORWARD trades only — never re-scan history "
+            "for a better story. BOOKKEEPING: probation legs live in "
+            "probation.json (synced to the owner's UI) — on a probation "
+            "apply, register the leg via wayfinder_paths.jobs.probation."
+            "record_probation_leg; update graduate.progress and kill.status "
+            "every wake via update_probation_leg; set status "
+            "graduated/killed when a criterion trips. A leg missing from "
+            "the registry is a protocol violation.\n"
+            "- Quant loop (diagnose -> design -> ablate -> propose): start "
+            "from the `attribution` block — archetype counts name the "
+            "dominant failure mode; expectation_deltas name where forward "
+            "deviates from the model's own backtest. Every new hypothesis "
+            "cites the slice/archetype it treats or is labeled a prior-driven "
+            "bet from the Research prior library. Triage by prior x symptom "
+            "x cost; each ideation runs a PORTFOLIO (>=1 cheap, >=1 "
+            "structural, <=1 moonshot, >=1 family not in the dead map). "
+            "New-def sweeps go through `signal-scan --campaign NAME` (your "
+            "own BH family — the canonical library is untaxed, so "
+            "speculative campaigns are affordable; declare the campaign in "
+            "the agenda first). Multi-intervention treatments: 2-4 "
+            "pre-registered factors, two-stage factorial (screen "
+            "--workers 1 --quick 10000, then full-history+WF on the winner "
+            "and its one-factor neighbors), and the proposal must cite "
+            "factor_attribution. Every proposal carries a pre-mortem (its "
+            "expected new failure mode) and a pre-registered kill/re-arm "
+            "threshold. Dead-map scope: dead = the tested claim, never the "
+            "asset or family. Cross-symbol rank-check and derive-features "
+            "are RESEARCH — never gated by the forward-trade floor.\n"
+            "- Chart lenses (LOOK before hypothesizing): "
+            '`core_jobs(action="chart", job_id=..., symbol=..., '
+            'timeframe="30m", indicators=["ema:9","ema:50","rsi:14"], '
+            'around_trade="last")` renders the bars around any trade (or the '
+            "latest window) as per-bar rows with whatever indicator columns "
+            "you request, forward entries/exits annotated, plus a regime "
+            'header. `core_jobs(action="analogs", job_id=..., symbol=..., '
+            "window=24, horizon=12)` finds the nearest historical analogs of "
+            "the recent window and reports what followed them. Use chart to "
+            "eyeball every loser before proposing anything about exits; use "
+            "analogs when a pattern 'looks familiar'. Both are OBSERVATION "
+            "tools — no multiplicity control — so what they suggest becomes a "
+            "workspace SignalDef or grid hypothesis for the scan/holdout "
+            "gate, never direct evidence.\n"
+            "- Ideation cadence: research/agenda.md is the cumulative "
+            "research state — sections: Dead map (refuted, one line of "
+            "evidence each), Open hypotheses (ranked, each citing its "
+            "evidence), Starved (insufficient data, each with an explicit "
+            "unlock condition), and a Last-ideation timestamp. If that "
+            "timestamp is older than ~24h and operations are healthy, spend "
+            "THIS wake as an IDEATION session: start from the agenda plus "
+            "the durable-memory asset dossier, pull world context with the "
+            "research tools (what these assets ARE — sector links, earnings "
+            "calendar, market structure — is evidence), generate and RANK "
+            "structurally different hypotheses, append the best as Open "
+            "entries, and retire or starve stale ones. Reopening a refuted "
+            "hypothesis requires NAMED new evidence. Keep the agenda compact "
+            "(~150 lines): it is a curated map, not a log — compact it in "
+            "place as part of updating it.\n"
+            "- If propose returns a failed validation, read ALL failed check "
+            "names and fix them in ONE follow-up propose; after 2 failed propose "
+            "attempts in a wake, stop and report the blocker instead of "
+            "retrying.\n"
         )
     )
+    # Re-stage tasks are rendered as prompt text, never only inside the JSON
+    # snapshot: the snapshot is truncated at 12k chars with sort_keys=True, so
+    # a busy job can silently swallow a payload-only instruction — which is
+    # exactly how an agent once missed a pending re-stage and burned the
+    # owner's carried-over approval on a duplicate proposal.
+    restage_priority = ""
+    restage_task_line = ""
+    if restage_tasks:
+        restage_task_line = (
+            "- FIRST: complete the PRIORITY re-stage tasks listed above the snapshot.\n"
+        )
+        items = "".join(
+            f"  - {task['proposal_id']}: {task['instruction']}\n"
+            for task in restage_tasks
+        )
+        restage_priority = (
+            "PRIORITY — approved changes awaiting re-stage (do this FIRST):\n"
+            "The owner already approved these; an intervening apply moved the "
+            "workspace, so each candidate must be rebuilt against the CURRENT "
+            "workspace and re-staged.\n"
+            f"{items}"
+            "Use `wayfinder job restage` exactly as instructed per task. Do "
+            "NOT create a new proposal for these and do NOT use propose — a "
+            "new proposal discards the owner's approval and forces a "
+            "duplicate review. Re-staging re-runs every gate and re-queues "
+            "the apply automatically; if the change no longer makes sense on "
+            "the new base, reject it (agent housekeeping) and only then "
+            "propose fresh.\n\n"
+        )
     dynamic_context = (
         f"{DYNAMIC_CONTEXT_MARKER}\n"
+        f"{restage_priority}"
         "Current snapshot:\n"
         f"{_canonical_json(dynamic_payload, max_chars=12000)}\n\n"
+        "Research agenda (research/agenda.md — cumulative exploration "
+        "state; maintain it, do not restart it):\n"
+        f"{research_agenda or '(none yet — bootstrap it on the next healthy ideation wake)'}\n\n"
         "Recent journal:\n"
         f"{recent_journal}\n\n"
         "Task:\n"
+        f"{restage_task_line}"
         f"{task_line}"
         "- Write the appropriate monitor/intervene/auto/apply report.\n"
         "- Emit a user-visible result only for meaningful state transitions, "
@@ -236,9 +792,14 @@ def prepare_job_worker_prompt(
     job_id: str,
     mode: str,
     apply_proposal_id: str | None = None,
-    claim_application_before_prompt: bool = False,
 ) -> dict[str, Any]:
-    """Prepare the exact prompt payload used for a job worker wakeup."""
+    """Prepare the exact prompt payload used for a job worker wakeup.
+
+    Never claims the application: claiming pauses the runner loops, and prompt
+    delivery to an LLM session is not guaranteed — a dropped prompt after a
+    claim stalls the job (2026-07-22 incident). Deterministic applies claim in
+    apply_launcher; agent-owned applies claim from inside the live session.
+    """
     job = store.load(job_id)
     mode = normalize_agent_mode(mode) if mode else job.agent_loop.mode
     if mode == "off":
@@ -246,20 +807,25 @@ def prepare_job_worker_prompt(
     mode_typed: AgentMode = mode
 
     snapshot = snapshot_job(job.id, store=store)
-    application_claim: dict[str, Any] | None = None
-    if apply_proposal_id and claim_application_before_prompt:
-        proposal = store.load_proposal(job.id, apply_proposal_id)
-        application_claim = (
-            {"proposal": proposal, "already_claimed": True}
-            if proposal["application"]["status"] == "applying"
-            else claim_application(store, job.id, apply_proposal_id)
-        )
-        snapshot = snapshot_job(job.id, store=store)
 
     # Deterministic memory hygiene: on a wake with no forward telemetry, strip
     # unsupported performance claims from durable memory before the agent reads
     # it, so a prior wake's confabulation cannot propagate. No-op otherwise.
     sanitize_job_memory(store, job.id, forward=snapshot.get("forward"))
+
+    # Backtest replication monitor: was the evidence that justified the
+    # active revision real? Stamp-gated daily; never raises. Runs before the
+    # standing-checks block so a fresh verdict is readable this wake.
+    from wayfinder_paths.jobs.replication import replication_job
+
+    replication_job(job.id, store=store)
+
+    # Research-side derived features (cross/exog/venue/regime) refresh here
+    # because THIS wake's scans are their consumer — a one-time backfill
+    # otherwise goes silently stale (btc_trend froze for 4 days while
+    # merging cleanly into every scan frame). Stamp-gated hourly; never
+    # raises.
+    refresh_derived_features_if_stale(job.id, store=store)
 
     prompt_sections = _build_worker_prompt_sections(
         store=store,
@@ -272,7 +838,6 @@ def prepare_job_worker_prompt(
         **prompt_sections,
         "job_id": job.id,
         "mode": mode_typed,
-        "application_claim": application_claim,
     }
 
 
@@ -326,30 +891,12 @@ def run_job_worker(
     session_id = _ensure_worker_session(job.id, mode_typed)
     queued = False
     error: str | None = None
-    application_claim: dict[str, Any] | None = None
-    prompt_sections: dict[str, Any] | None = None
-    if session_id and apply_proposal_id:
-        try:
-            prompt_sections = prepare_job_worker_prompt(
-                store=store,
-                job_id=job.id,
-                mode=mode_typed,
-                apply_proposal_id=apply_proposal_id,
-                claim_application_before_prompt=True,
-            )
-            application_claim = prompt_sections["application_claim"]
-        except Exception as exc:
-            error = f"Application claim failed: {exc}"
-            session_id = None
-
-    if prompt_sections is None:
-        prompt_sections = prepare_job_worker_prompt(
-            store=store,
-            job_id=job.id,
-            mode=mode_typed,
-            apply_proposal_id=apply_proposal_id,
-            claim_application_before_prompt=False,
-        )
+    prompt_sections = prepare_job_worker_prompt(
+        store=store,
+        job_id=job.id,
+        mode=mode_typed,
+        apply_proposal_id=apply_proposal_id,
+    )
     prompt = prompt_sections["prompt"]
 
     if session_id:
@@ -361,17 +908,11 @@ def run_job_worker(
             else JOB_WORKER_AGENT_NAME,
         )
         if not queued:
+            # No cleanup needed: the wake never claims, so a dropped prompt
+            # leaves the application queued with the runner loops running.
             error = "OpenCode prompt_async failed"
-            if apply_proposal_id and application_claim:
-                complete_application(
-                    store,
-                    job.id,
-                    apply_proposal_id,
-                    status="failed",
-                    error=error,
-                )
     else:
-        error = error or "OpenCode server unavailable"
+        error = "OpenCode server unavailable"
 
     report = _write_report(
         store=store,
@@ -463,6 +1004,25 @@ def _write_report(
     (report_dir / "latest.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    # Durable session pointer. The wake agent overwrites latest.json with its
+    # own structured finding, which drops session_id/created_at — so the
+    # frontend's per-job Conversations list loses the link (observed: a job
+    # whose agent wrote rich findings showed "No linked conversations yet"
+    # while one whose envelope survived linked fine). This sidecar is never
+    # touched by the agent; snapshot_job backfills from it. The session per
+    # (job, mode) is stable (reused by title), so a stale sidecar stays
+    # correct. Only overwrite on a real session so a failed wake can't blank
+    # a good pointer.
+    if session_id:
+        (report_dir / "session.json").write_text(
+            json.dumps(
+                {"session_id": session_id, "created_at": report["created_at"]},
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     scorecard_updates: dict[str, Any] = {
         "health": status,
         "last_agent_check_at": report["created_at"],

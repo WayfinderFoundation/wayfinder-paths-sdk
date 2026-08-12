@@ -21,7 +21,7 @@ from wayfinder_paths.jobs.application import (
 from wayfinder_paths.jobs.backtest_artifacts import load_backtest_view
 from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.models import WayfinderJob
-from wayfinder_paths.jobs.proposals import propose_change
+from wayfinder_paths.jobs.proposals import propose_change, restage_proposal
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.tests.test_jobs_application_gate import _patch_runner
 from wayfinder_paths.tests.test_jobs_gating import _make_job
@@ -290,3 +290,126 @@ def test_propose_memo_writes_file_and_rides_change_summary(tmp_path: Path) -> No
     plain = _propose_params(store, job_id, params={"threshold": 11.1})
     assert plain["change_summary"] == plain["proposed_change"]["summary"]
     assert not (root / "proposals" / f"{plain['proposal_id']}.md").exists()
+
+
+def test_propose_fails_named_check_when_entrypoint_outside_workspace(
+    tmp_path: Path,
+) -> None:
+    """The exact live failure mode: strategy at the job root → candidate
+    staging can't carry it → propose must fail with a check whose name and
+    hint tell the worker how to migrate."""
+    store, job_id, root = _make_job(tmp_path)
+    rogue = root / "strategy.py"
+    rogue.write_text(
+        (root / "workspace" / "src" / "strategy.py").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    job_yaml = root / "job.yaml"
+    data = yaml.safe_load(job_yaml.read_text(encoding="utf-8"))
+    data["script_loop"]["entrypoint"] = str(rogue)
+    job_yaml.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    proposal = _propose_params(store, job_id)
+
+    summary = proposal["candidate_report"]["validation_summary"]
+    assert summary["status"] == "failed"
+    assert "entrypoint_inside_workspace" in summary["failed_checks"]
+
+
+def test_stale_baseline_apply_restages_with_approval_carryover(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bulk-approve flow: an intervening apply moves the workspace, the
+    stale candidate's completion defers to a re-stage (approval carried over),
+    the mechanical params re-stage re-queues, and the second completion
+    promotes WITHOUT reverting the intervening change."""
+    _patch_runner(monkeypatch)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.run_job_worker",
+        lambda job_id, *, mode, **k: {"status": "queued"},
+    )
+    launches: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.apply_launcher.launch_application",
+        lambda store, job_id, pid: launches.append(pid) or {"launched": pid},
+    )
+    store, job_id, root = _make_job(tmp_path)
+    proposal = _propose_params(store, job_id)
+    pid = proposal["proposal_id"]
+
+    # An intervening apply moves the active workspace after propose.
+    script = root / "workspace" / "src" / "strategy.py"
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\n# graduated sizing\n",
+        encoding="utf-8",
+    )
+
+    store.approve_proposal(job_id, pid)
+    claim_application(store, job_id, pid)
+    completed = complete_application(store, job_id, pid, status="applied")
+
+    application = completed["proposal"]["application"]
+    assert application["status"] == "failed"
+    assert "baseline drift" in str(application.get("error"))
+    reloaded = store.load_proposal(job_id, pid)
+    assert reloaded["status"] == "approved", "approval must carry over"
+    assert reloaded["application"]["restage_requested"] is True
+    assert "# graduated sizing" in script.read_text(encoding="utf-8")
+
+    from wayfinder_paths.jobs.worker import _restage_block
+
+    assert [t["proposal_id"] for t in _restage_block(root)] == [pid]
+
+    restaged = restage_proposal(store, job_id, pid)
+
+    assert restaged["status"] == "approved"
+    assert restaged["application"]["status"] == "queued"
+    assert not restaged["application"].get("restage_requested")
+    assert launches == [pid]
+    journal = (root / "journal.jsonl").read_text(encoding="utf-8")
+    assert "proposal_restaged" in journal
+
+    # The re-staged candidate promotes cleanly on the moved base.
+    claim_application(store, job_id, pid)
+    completed = complete_application(store, job_id, pid, status="applied")
+    assert completed["proposal"]["application"]["status"] == "applied"
+    # Intervening change survived AND the approved change landed.
+    assert "# graduated sizing" in script.read_text(encoding="utf-8")
+    active_yaml = yaml.safe_load((root / "job.yaml").read_text(encoding="utf-8"))
+    assert active_yaml["execution_params"]["threshold"] == 10.7
+
+
+def test_restage_gate_failure_auto_rejects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the re-staged candidate cannot pass the approve-time gate on the new
+    base, the world changed materially — auto-reject so the owner reviews a
+    fresh proposal instead of silently applying a degraded change."""
+    _patch_runner(monkeypatch)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.run_job_worker",
+        lambda job_id, *, mode, **k: {"status": "queued"},
+    )
+    store, job_id, root = _make_job(tmp_path)
+    proposal = _propose_params(store, job_id)
+    pid = proposal["proposal_id"]
+
+    script = root / "workspace" / "src" / "strategy.py"
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\n# drift\n", encoding="utf-8"
+    )
+    store.approve_proposal(job_id, pid)
+    claim_application(store, job_id, pid)
+    complete_application(store, job_id, pid, status="applied")
+    assert store.load_proposal(job_id, pid)["application"]["restage_requested"]
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.proposals.evaluate_live_gate",
+        lambda *a, **k: {"live_ready": False, "reasons": ["backtest regressed"]},
+    )
+
+    rejected = restage_proposal(store, job_id, pid)
+
+    assert rejected["status"] == "rejected"
+    assert rejected["rejection"]["by"] == "agent"
+    assert "re-stage gate failed" in str(rejected["rejection"]["reason"])

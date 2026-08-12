@@ -10,6 +10,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Literal
 
+import numpy as np
 import pandas as pd
 
 OrderAction = Literal["OPEN", "CLOSE", "STOP_LOSS", "TAKE_PROFIT", "CANCEL"]
@@ -124,13 +125,26 @@ class CompletedBarsView:
         self._bars = frame.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
         self._timestamps_cache: list[pd.Timestamp] | None = None
         self._symbols_cache: list[str] | None = None
-        # {(ts, symbol): MarketBar} + {ts: first MarketBar at ts}; shared with
-        # truncated child views (they guard lookups against their own bounds).
-        self._row_index: dict[Any, MarketBar] | None = None
+        # int64-ns timestamps of THIS frame's rows (sorted). row_at() binary-
+        # searches this instead of a {key: MarketBar} dict index — the dict
+        # retained one dataclass per row (115MB across rebuilds at the 120d
+        # 4-symbol scale, the gate backtest's OOM driver on the 2GB box).
+        self._ts_ns_cache: np.ndarray | None = None
+        # {symbol: sorted positional indices in THIS frame}; shared with child
+        # views alongside this view's absolute offset, so symbol_frame() is an
+        # integer take instead of a per-call string-equality mask.
+        self._symbol_positions: dict[str, np.ndarray] | None = None
+        self._symbol_positions_offset: int = 0
 
     @classmethod
     def from_rows(cls, rows: list[Mapping[str, Any]]) -> CompletedBarsView:
-        return cls(pd.DataFrame([dict(row) for row in rows]))
+        # Columnar extraction, not [dict(row) for row in rows]: the per-row
+        # copy doubled the 120d/4-symbol parse footprint (a second 138k-dict
+        # list co-resident with the json.loads output) on the 2GB box.
+        if not rows:
+            return cls(pd.DataFrame(columns=sorted(cls.REQUIRED_COLUMNS)))
+        columns = {key: [row.get(key) for row in rows] for key in rows[0].keys()}
+        return cls(pd.DataFrame(columns))
 
     @classmethod
     def _from_trusted(
@@ -138,18 +152,22 @@ class CompletedBarsView:
         frame: pd.DataFrame,
         *,
         timestamps: list[pd.Timestamp] | None = None,
-        row_index: dict[Any, MarketBar] | None = None,
+        ts_ns: np.ndarray | None = None,
+        symbol_positions: dict[str, np.ndarray] | None = None,
+        symbol_positions_offset: int = 0,
     ) -> CompletedBarsView:
         """Fast path for frames already coerced+sorted by a prior __init__
         (e.g. per-tick truncation). Skipping re-coercion turns the simulator's
         per-bar view construction from O(n) coercions into a plain slice.
-        Passing the parent's timestamp slice and row index makes per-tick
+        Passing the parent's timestamp slice and ts-ns array makes per-tick
         views O(1) instead of recomputing uniques/masks each bar."""
         view = object.__new__(cls)
         view._bars = frame
         view._timestamps_cache = timestamps
         view._symbols_cache = None
-        view._row_index = row_index
+        view._ts_ns_cache = ts_ns
+        view._symbol_positions = symbol_positions
+        view._symbol_positions_offset = symbol_positions_offset
         return view
 
     @property
@@ -171,24 +189,25 @@ class CompletedBarsView:
             )
         return self._timestamps_cache
 
-    def _ensure_row_index(self) -> dict[Any, MarketBar]:
-        if self._row_index is None:
-            index: dict[Any, MarketBar] = {}
-            for row in self._bars.itertuples(index=False):
-                bar = MarketBar(
-                    timestamp=pd.Timestamp(row.timestamp),
-                    symbol=str(row.symbol),
-                    open=float(row.open),
-                    high=float(row.high),
-                    low=float(row.low),
-                    close=float(row.close),
-                    volume=None if pd.isna(row.volume) else float(row.volume),
-                )
-                index[(bar.timestamp, bar.symbol)] = bar
-                # First row at each timestamp (frame sorted by ts, symbol).
-                index.setdefault(bar.timestamp, bar)
-            self._row_index = index
-        return self._row_index
+    def _ensure_ts_ns(self) -> np.ndarray:
+        if self._ts_ns_cache is None:
+            self._ts_ns_cache = (
+                self._bars["timestamp"].to_numpy(dtype="datetime64[ns]").astype("int64")
+            )
+        return self._ts_ns_cache
+
+    def _bar_at_position(self, position: int) -> MarketBar:
+        row = self._bars.iloc[position]
+        volume = row["volume"]
+        return MarketBar(
+            timestamp=pd.Timestamp(row["timestamp"]),
+            symbol=str(row["symbol"]),
+            open=float(row["open"]),
+            high=float(row["high"]),
+            low=float(row["low"]),
+            close=float(row["close"]),
+            volume=None if pd.isna(volume) else float(volume),
+        )
 
     def latest(self, symbol: str | None = None) -> dict[str, Any]:
         frame = self._filter_symbol(symbol)
@@ -199,7 +218,16 @@ class CompletedBarsView:
     def _filter_symbol(self, symbol: str | None) -> pd.DataFrame:
         if symbol is None:
             return self._bars
-        return self._bars[self._bars["symbol"] == symbol]
+        return self.symbol_frame(symbol)
+
+    def _ensure_symbol_positions(self) -> dict[str, np.ndarray]:
+        if self._symbol_positions is None:
+            codes, uniques = pd.factorize(self._bars["symbol"])
+            self._symbol_positions = {
+                str(uniques[i]): np.flatnonzero(codes == i) for i in range(len(uniques))
+            }
+            self._symbol_positions_offset = 0
+        return self._symbol_positions
 
     def feature(self, name: str, symbol: str | None = None) -> Any:
         """Latest non-null value of an exogenous feature column (merged by
@@ -258,7 +286,9 @@ class CompletedBarsView:
         return CompletedBarsView._from_trusted(
             self._bars.iloc[start_pos:end_pos],
             timestamps=timestamps[start : end + 1],
-            row_index=self._ensure_row_index(),
+            ts_ns=self._ensure_ts_ns()[start_pos:end_pos],
+            symbol_positions=self._ensure_symbol_positions(),
+            symbol_positions_offset=self._symbol_positions_offset + start_pos,
         )
 
     def row_at(self, timestamp: pd.Timestamp, symbol: str | None = None) -> MarketBar:
@@ -270,12 +300,19 @@ class CompletedBarsView:
         except TypeError:  # uncomparable input (naive ts, junk) == no bar
             in_bounds = False
         if in_bounds:
-            key = (timestamp, symbol) if symbol is not None else timestamp
-            bar = self._ensure_row_index().get(key)
-            if bar is not None:
-                # MarketBar is frozen, so sharing index instances across
-                # callers is safe — no defensive copy needed.
-                return bar
+            try:
+                ts_ns = int(pd.Timestamp(timestamp).value)
+            except (TypeError, ValueError):
+                ts_ns = None
+            if ts_ns is not None:
+                column = self._ensure_ts_ns()
+                left = int(np.searchsorted(column, ts_ns, side="left"))
+                right = int(np.searchsorted(column, ts_ns, side="right"))
+                for position in range(left, right):
+                    if symbol is None or str(self._bars["symbol"].iat[position]) == str(
+                        symbol
+                    ):
+                        return self._bar_at_position(position)
         raise ValueError(f"No bar at {timestamp} for {symbol or 'any symbol'}")
 
     def __len__(self) -> int:
@@ -286,8 +323,25 @@ class CompletedBarsView:
 
     def symbol_frame(self, symbol: str) -> pd.DataFrame:
         """Rows for one symbol WITHOUT the defensive whole-frame copy of
-        to_frame(). Callers must treat the result as read-only."""
-        return self._bars[self._bars["symbol"] == symbol]
+        to_frame(). Callers must treat the result as read-only.
+
+        Positional take over cached per-symbol indices (shared root→child via
+        _from_trusted) instead of a per-call string-equality mask — the mask
+        made this the top engine cost for multi-symbol strategies (14 symbols
+        = 14 full-window scans per tick)."""
+        positions = self._ensure_symbol_positions()
+        pos = positions.get(symbol)
+        if pos is None and not isinstance(symbol, str):
+            pos = positions.get(str(symbol))
+        if pos is None or not len(pos):
+            return self._bars.iloc[0:0]
+        offset = self._symbol_positions_offset
+        lo = int(np.searchsorted(pos, offset, side="left"))
+        hi = int(np.searchsorted(pos, offset + len(self._bars), side="left"))
+        window_pos = pos[lo:hi]
+        if offset:
+            window_pos = window_pos - offset
+        return self._bars.iloc[window_pos]
 
     def to_rows(self) -> list[dict[str, Any]]:
         return self._bars.to_dict(orient="records")
@@ -329,7 +383,21 @@ class OrderIntent:
                 )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        # Manual dict: asdict() deep-copies recursively and was a measured
+        # per-tick engine cost (trace/rows serialize intents and fills).
+        return {
+            "action": self.action,
+            "venue": self.venue,
+            "symbol": self.symbol,
+            "side": self.side,
+            "size": self.size,
+            "notional": self.notional,
+            "reduce_only": self.reduce_only,
+            "client_order_id": self.client_order_id,
+            "bracket": dict(self.bracket) if self.bracket else self.bracket,
+            "limit_price": self.limit_price,
+            "metadata": dict(self.metadata),
+        }
 
 
 @dataclass
@@ -353,7 +421,21 @@ class FillEvent:
         return self.status == "filled" and self.filled_size > 0
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {
+            "status": self.status,
+            "venue": self.venue,
+            "symbol": self.symbol,
+            "side": self.side,
+            "filled_size": self.filled_size,
+            "avg_price": self.avg_price,
+            "fee": self.fee,
+            "order_id": self.order_id,
+            "client_order_id": self.client_order_id,
+            "reduce_only": self.reduce_only,
+            "error": self.error,
+            "raw": dict(self.raw),
+            "timestamp": self.timestamp,
+        }
 
 
 @dataclass
@@ -394,7 +476,17 @@ class PositionRecord:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        # Ledger snapshots run up to 3x per tick over every open position —
+        # asdict() here was ~20% of total engine time on multi-leg strategies.
+        return {
+            "symbol": self.symbol,
+            "side": self.side,
+            "size": self.size,
+            "avg_price": self.avg_price,
+            "bars_held": self.bars_held,
+            "opened_at": self.opened_at,
+            "metadata": dict(self.metadata),
+        }
 
 
 class PositionLedger:
@@ -557,12 +649,51 @@ class ExecutionContext:
     execution_spec: ExecutionSpec
     strategy_state: dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def bar_index(self) -> int:
+        """1-based count of completed timestamps in the handed view.
+
+        Good for WARMUP gates (`if ctx.bar_index < warmup_bars`): it measures
+        data actually available, cheaply (no DataFrame touched). NOT a
+        cadence clock — live hands a sliding fixed-length window, so this
+        stays constant tick after tick and `bar_index % n` silently never
+        (or always) fires. Use `ctx.every_n_bars(n)` for cadence."""
+        return len(self.view._ensure_timestamps())
+
+    def every_n_bars(self, n: int, *, offset: int = 0) -> bool:
+        """Epoch-aligned cadence gate: True when the latest completed bar's
+        position in the GLOBAL bar sequence (timestamp // bar_interval) is
+        congruent to `offset` mod n. Identical in backtest and live, and
+        restart-proof — never count ticks in `strategy_state` for warmup or
+        cadence (a state reset re-warms the counter and the job goes dark
+        for a full warmup period). `offset` pins WHICH bars fire: a strategy
+        validated on a particular rebalance phase keeps that exact schedule
+        (phase can matter — a one-day shift materially changed a break-even
+        daily basket's 4-year path)."""
+        if n <= 1:
+            return True
+        timestamps = self.view._ensure_timestamps()
+        if not timestamps:
+            return False
+        interval = bar_interval_seconds(
+            self.execution_spec.data_contract.get("bar_interval")
+        )
+        if not interval:
+            return True
+        return int(timestamps[-1].timestamp() // interval) % n == offset % n
+
 
 def mark_to_market_equity(ctx: ExecutionContext) -> float:
-    """Current equity as decide() can see it: initial capital + realized PnL +
-    unrealized mark-to-market at the latest completed close. Pure (ctx data
-    only — purity-sandbox safe) and bar-identical to the simulator's equity
-    curve, so compound sizing in backtest and live use the same number."""
+    """Current equity as decide() can see it. In LIVE mode the reconcile step
+    puts the venue's marked account value on `state_snapshot.data` and that is
+    authoritative (it already embeds realized + unrealized PnL) — sizing from
+    config capital nearly fired ~$8k orders on a $29.50 account. Backtests
+    never populate snapshot data, so they keep the config-capital arithmetic:
+    initial capital + realized PnL + unrealized mark-to-market at the latest
+    completed close. Pure (ctx data only — purity-sandbox safe)."""
+    live_account_value = (ctx.state_snapshot.data or {}).get("account_value")
+    if live_account_value is not None and float(live_account_value) > 0:
+        return float(live_account_value)
     equity = (
         float(ctx.params.get("initial_capital") or DEFAULT_INITIAL_CAPITAL)
         + ctx.ledger.realized_pnl
@@ -598,9 +729,17 @@ def _load_module_from_path(path: Path) -> ModuleType:
         raise ValueError(f"Cannot load strategy script: {path}")
     module = importlib.util.module_from_spec(spec)
     old_path = list(sys.path)
+    # Register BEFORE exec: stdlib machinery resolves cls.__module__ through
+    # sys.modules — without this, a @dataclass defined in a workspace module
+    # dies inside dataclasses._process_class (hit live: an agent's signals.py
+    # using a dataclass crashed the campaign scan).
+    sys.modules[module_name] = module
     try:
         sys.path.insert(0, str(path.parent))
         spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
     finally:
         sys.path = old_path
     return module

@@ -1574,7 +1574,6 @@ def build_application_prompt(workspace: Path, case: WorkerCase) -> str:
         job_id=case.job_id,
         mode="intervene",
         apply_proposal_id=SCRIPT_AGENT_PROPOSAL_ID,
-        claim_application_before_prompt=True,
     )
     return str(sections["prompt"])
 

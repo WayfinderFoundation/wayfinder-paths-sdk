@@ -13,20 +13,34 @@ from wayfinder_paths.jobs.application import (
     ensure_jobs_v1_contract,
     validate_application_candidate,
 )
-from wayfinder_paths.jobs.backtest_artifacts import load_backtest_view
-from wayfinder_paths.jobs.compiler import JobCompiler
+from wayfinder_paths.jobs.apply_launcher import launch_application
+from wayfinder_paths.jobs.backtest_artifacts import (
+    diagnose_backtest,
+    load_backtest_view,
+)
+from wayfinder_paths.jobs.compiler import JobCompiler, compile_job
+from wayfinder_paths.jobs.counterfactual import counterfactual_job
+from wayfinder_paths.jobs.decision_log import build_decision_log
 from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.experiments import (
     list_experiments,
     promote_params,
     run_experiment,
 )
-from wayfinder_paths.jobs.execution.job import backtest_execution_job
-from wayfinder_paths.jobs.execution.preflight import build_live_dataset, run_preflight
+from wayfinder_paths.jobs.execution.job import (
+    backtest_execution_job,
+    summarize_backtest_payload,
+)
+from wayfinder_paths.jobs.execution.preflight import (
+    build_live_dataset,
+    fetch_funding_features,
+    run_preflight,
+)
 from wayfinder_paths.jobs.execution.reconcile import reconcile_job
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.execution.walk_forward import format_fold_table
 from wayfinder_paths.jobs.features import append_feature, list_features
+from wayfinder_paths.jobs.forward_artifacts import load_forward_view
 from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
 from wayfinder_paths.jobs.ledger import append_ledger_row, tail_ledger
@@ -36,10 +50,20 @@ from wayfinder_paths.jobs.models import (
     infer_job_kind,
     normalize_agent_mode,
 )
-from wayfinder_paths.jobs.proposals import propose_change
+from wayfinder_paths.jobs.proposals import propose_change, restage_proposal
+from wayfinder_paths.jobs.replication import replication_job
+from wayfinder_paths.jobs.research import (
+    holdout_check_job,
+    pair_check_job,
+    rank_check_job,
+    signal_check_job,
+    signal_scan_job,
+)
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
-from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
+from wayfinder_paths.jobs.strategies import library_catalog
+from wayfinder_paths.jobs.sync import apply_script_mode, snapshot_job, sync_all_jobs
+from wayfinder_paths.jobs.universe import universe_scan_job
 from wayfinder_paths.jobs.worker import run_job_worker
 
 
@@ -166,8 +190,11 @@ def create_cmd(
     )
     if initial_capital is not None:
         job.execution_params["initial_capital"] = float(initial_capital)
-    path = store.save(job)
+    path = store.create_job(job)
     result: dict[str, Any] = {"job": job.to_dict(), "job_yaml": str(path)}
+    entrypoint = store.resolve_script_entrypoint(job.id, job.to_dict())
+    if entrypoint is not None:
+        result["script_entrypoint"] = str(entrypoint)
     if not no_compile:
         result["compile"] = JobCompiler(store=store).compile(job)
         sync_all_jobs(store=store)
@@ -183,6 +210,16 @@ def list_cmd() -> None:
             "result": [snapshot_job(job.id, store=store) for job in store.list_jobs()],
         }
     )
+
+
+@job_cli.command(
+    name="compile",
+    help="Recompile runner wrappers/links from job.yaml (source of truth). "
+    "Run after editing script_loop schedule, mode, or execution_contract.",
+)
+@click.argument("job_id")
+def compile_cmd(job_id: str) -> None:
+    _echo_json({"ok": True, "result": compile_job(job_id)})
 
 
 @job_cli.command(name="status", help="Show a high-level job snapshot.")
@@ -208,15 +245,45 @@ def validate_cmd(job_id: str, strict: bool) -> None:
 @job_cli.command(name="backtest", help="Run an execution-contract backtest for a job.")
 @click.argument("job_id")
 @click.option("--grid", "grid_path", default=None)
-@click.option("--workers", type=int, default=1, show_default=True)
+@click.option(
+    "--workers",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Parallel backtest workers for a grid. 0 = use all available cores. "
+    "Always clamped to the box's core count — never oversubscribes.",
+)
 @click.option(
     "--parallel",
     type=click.Choice(["serial", "thread", "process"]),
     default="serial",
     show_default=True,
+    help="Grid parallelism. `process` uses multiple cores (bounded by "
+    "--workers/CPU count); `thread` won't speed up CPU-bound backtests.",
+)
+@click.option(
+    "--quick",
+    "quick_bars",
+    type=int,
+    default=None,
+    help="Backtest only the last N bars — fast iteration / parameter sweeps "
+    "before the full-history confirmation run.",
+)
+@click.option(
+    "--full",
+    is_flag=True,
+    default=False,
+    help="Print the full payload (equity curve, trades, positions, trace, "
+    "visualization) instead of the compact stats summary. The full result is "
+    "always written to results/backtest/ regardless.",
 )
 def backtest_cmd(
-    job_id: str, grid_path: str | None, workers: int, parallel: str
+    job_id: str,
+    grid_path: str | None,
+    workers: int,
+    parallel: str,
+    quick_bars: int | None,
+    full: bool,
 ) -> None:
     store = JobStore()
     result = backtest_execution_job(
@@ -224,9 +291,14 @@ def backtest_cmd(
         grid_path=grid_path,
         workers=workers,
         parallel=parallel,
+        quick_bars=quick_bars,
         store=store,
     )
-    _echo_json({"ok": True, "result": result})
+    # Default to the ~2 KB summary — the full payload is ~8 MB and lives on disk
+    # (browse it with `job backtest-view`). `--full` restores the old dump.
+    _echo_json(
+        {"ok": True, "result": result if full else summarize_backtest_payload(result)}
+    )
 
 
 @job_cli.command(
@@ -304,12 +376,26 @@ def tick_cmd(job_id: str, mode: str | None, dry_run: bool) -> None:
 @click.argument("job_id")
 @click.option("--grid", "grid_path", default=None, help="Path to a grid JSON file.")
 @click.option("--rank-by", default="net_return", show_default=True)
-@click.option("--workers", type=int, default=1, show_default=True)
+@click.option(
+    "--workers",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Grid workers; 0 = all cores (cgroup-clamped).",
+)
 @click.option(
     "--parallel",
     type=click.Choice(["serial", "thread", "process"]),
-    default="serial",
+    default="process",
     show_default=True,
+)
+@click.option(
+    "--quick",
+    "quick_bars",
+    type=int,
+    default=None,
+    help="Run the whole experiment (grid + walk-forward) on only the last N "
+    "bars — iteration-speed sweeps; omit for the final validation.",
 )
 @click.option("--list", "list_only", is_flag=True, default=False)
 @click.option(
@@ -355,6 +441,7 @@ def experiments_cmd(
     rank_by: str,
     workers: int,
     parallel: str,
+    quick_bars: int | None,
     list_only: bool,
     wf_test_bars: int | None,
     wf_train_bars: int | None,
@@ -376,7 +463,10 @@ def experiments_cmd(
             "train_bars": wf_train_bars,
             "folds": wf_folds,
             "warmup_bars": wf_warmup_bars,
-            "anchored": wf_anchored or wf_train_bars is None,
+            # Anchor (expanding train window) ONLY when explicitly asked. Default
+            # (no --wf-train-bars) → run_walk_forward's bounded rolling window,
+            # which is ~4x faster than expanding on a full dataset.
+            "anchored": wf_anchored,
         }
     optuna_options = (
         {"n_trials": n_trials, "seed": seed} if optimizer == "optuna" else None
@@ -390,6 +480,7 @@ def experiments_cmd(
         walk_forward=walk_forward,
         optimizer=optimizer,
         optuna_options=optuna_options,
+        quick_bars=quick_bars,
         store=store,
     )
     wf_report = (result.get("backtest") or {}).get("walk_forward")
@@ -466,6 +557,12 @@ def reconcile_cmd(job_id: str, limit: int) -> None:
     show_default=True,
 )
 @click.option("--quote", default="USDT", show_default=True)
+@click.option(
+    "--full",
+    is_flag=True,
+    default=False,
+    help="Force a full refetch instead of the default incremental tail merge.",
+)
 def fetch_dataset_cmd(
     job_id: str,
     days: int,
@@ -473,6 +570,7 @@ def fetch_dataset_cmd(
     exchange: str,
     market_type: str,
     quote: str,
+    full: bool,
 ) -> None:
     store = JobStore()
     result = build_live_dataset(
@@ -483,6 +581,374 @@ def fetch_dataset_cmd(
         exchange=exchange,
         market_type=market_type,
         quote=quote,
+        incremental=not full,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="pair-check",
+    help="Pre-trade pair admission gate: cointegration both directions, "
+    "rolling stability, half-life, cost hurdle, funding carry — PASS/REJECT "
+    "with numbers. Run BEFORE building any pair/spread strategy.",
+)
+@click.argument("job_id")
+@click.option("--symbols", default=None, help="Comma-separated pair, e.g. ETH,SOL.")
+@click.option("--days", type=int, default=720, show_default=True)
+@click.option("--bar", "bar_interval", default=None, help="Bar interval override.")
+@click.option("--exchange", default="binance", show_default=True)
+@click.option("--fee-bps", "fee_bps", type=float, default=None)
+@click.option("--slippage-bps", "slippage_bps", type=float, default=None)
+def pair_check_cmd(
+    job_id: str,
+    symbols: str | None,
+    days: int,
+    bar_interval: str | None,
+    exchange: str,
+    fee_bps: float | None,
+    slippage_bps: float | None,
+) -> None:
+    store = JobStore()
+    result = pair_check_job(
+        job_id,
+        symbols=[s.strip() for s in symbols.split(",")] if symbols else None,
+        days=days,
+        bar_interval=bar_interval,
+        exchange=exchange,
+        fee_bps=fee_bps,
+        slippage_bps=slippage_bps,
+        store=store,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="signal-check",
+    help="Event-study a strategy's precomputed signal column against forward "
+    "returns (vs the series' own drift) — run BEFORE building a strategy "
+    "around the signal.",
+)
+@click.argument("job_id")
+@click.option("--column", required=True, help="Precomputed signal column name.")
+@click.option(
+    "--horizons", default=None, help="Comma-separated forward horizons in bars."
+)
+@click.option(
+    "--direction",
+    type=click.Choice(["long", "short", "auto"]),
+    default="auto",
+    show_default=True,
+    help="Trade side under test. A genuine short edge has NEGATIVE forward "
+    "returns; auto reads the side from the t-stat sign (counts as 2 trials).",
+)
+def signal_check_cmd(
+    job_id: str, column: str, horizons: str | None, direction: str
+) -> None:
+    store = JobStore()
+    result = signal_check_job(
+        job_id,
+        column=column,
+        horizons=[int(h) for h in horizons.split(",")] if horizons else None,
+        direction=direction,
+        store=store,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="signal-scan",
+    help="Event-study the ENTIRE canonical trigger library against the job's "
+    "dataset in one call (both directions, multi-timeframe, BH q-values, "
+    "4-fold stability, reserved holdout tail) — run BEFORE hand-writing "
+    "trigger variants into precompute(). Needs no strategy script.",
+)
+@click.argument("job_id")
+@click.option("--symbols", default=None, help="Comma-separated symbols (default: all).")
+@click.option(
+    "--horizons", default=None, help="Comma-separated forward horizons in bars."
+)
+@click.option(
+    "--timeframes",
+    default=None,
+    help="Comma-separated resample timeframes, e.g. 1h,4h,1d "
+    "(default: the job's base bar interval only).",
+)
+@click.option(
+    "--holdout-fraction",
+    type=float,
+    default=0.15,
+    show_default=True,
+    help="Final fraction of history the scan NEVER sees — reserved for one "
+    "holdout-check per frozen candidate. 0 disables (exploratory only).",
+)
+@click.option(
+    "--no-workspace-signals",
+    is_flag=True,
+    default=False,
+    help="Skip the job's workspace/src/signals.py defs and sweep the "
+    "canonical library only.",
+)
+@click.option(
+    "--campaign",
+    default=None,
+    help="Declared campaign name: scan ONLY workspace defs as their own BH "
+    "family (canonical library untaxed). Recorded in the trial ledger.",
+)
+@click.option(
+    "--condition-regime",
+    "condition_regime",
+    is_flag=True,
+    default=False,
+    help="Also compute per-regime rows (trend x vol 2x2) and report the "
+    "CURRENT regime — regime-conditional edges in the current regime are "
+    "probation-eligible.",
+)
+@click.option(
+    "--window-days",
+    "window_days",
+    type=int,
+    default=None,
+    help="Declared recent-window family: scan only the trailing N days. "
+    "Survivors cap at PROBATION (forward paper adjudicates).",
+)
+def signal_scan_cmd(
+    job_id: str,
+    symbols: str | None,
+    horizons: str | None,
+    timeframes: str | None,
+    holdout_fraction: float,
+    no_workspace_signals: bool,
+    campaign: str | None,
+    condition_regime: bool,
+    window_days: int | None,
+) -> None:
+    store = JobStore()
+    result = signal_scan_job(
+        job_id,
+        campaign=campaign,
+        condition_regime=condition_regime,
+        window_days=window_days,
+        symbols=[s.strip() for s in symbols.split(",")] if symbols else None,
+        horizons=[int(h) for h in horizons.split(",")] if horizons else None,
+        timeframes=[t.strip() for t in timeframes.split(",")] if timeframes else None,
+        holdout_fraction=holdout_fraction,
+        include_workspace=not no_workspace_signals,
+        store=store,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="chart",
+    help="Text chart lens: per-bar OHLCV + requested indicator columns with "
+    "forward trades annotated inline and a regime header. The numeric "
+    "equivalent of dragging indicators onto the chart and zooming into the "
+    "hours around a trade.",
+)
+@click.argument("job_id")
+@click.option("--symbol", default=None, help="Symbol (default: first in dataset).")
+@click.option("--timeframe", default=None, help="Resample: 5m/15m/30m/1h/4h/1d.")
+@click.option("--bars", type=int, default=96, show_default=True)
+@click.option(
+    "--indicators",
+    default=None,
+    help="Comma-separated specs, e.g. ema:9,ema:50,rsi:14,bb:20:2,atr:14,"
+    "macd:12:26:9,don:20,vwap,volpct:14 (default ema:9,ema:50).",
+)
+@click.option(
+    "--around-trade",
+    "around_trade",
+    default=None,
+    help="'last' or a close timestamp — center the window on that forward trade.",
+)
+def chart_cmd(
+    job_id: str,
+    symbol: str | None,
+    timeframe: str | None,
+    bars: int,
+    indicators: str | None,
+    around_trade: str | None,
+) -> None:
+    from wayfinder_paths.jobs.chart import chart_job
+
+    result = chart_job(
+        job_id,
+        symbol=symbol,
+        timeframe=timeframe,
+        bars=bars,
+        indicators=[i.strip() for i in indicators.split(",")] if indicators else None,
+        around_trade=around_trade,
+        store=JobStore(),
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="analogs",
+    help="Historical analog search: z-score a recent close window, find the "
+    "nearest non-overlapping analogs in history, report the forward-outcome "
+    "distribution. EXPLORATORY — hypothesis fuel for the scan pipeline.",
+)
+@click.argument("job_id")
+@click.option("--symbol", default=None)
+@click.option("--timeframe", default=None)
+@click.option("--window", type=int, default=24, show_default=True)
+@click.option("--at", default=None, help="Query window end (default: latest bar).")
+@click.option("--top", type=int, default=15, show_default=True)
+@click.option("--horizon", type=int, default=12, show_default=True)
+def analogs_cmd(
+    job_id: str,
+    symbol: str | None,
+    timeframe: str | None,
+    window: int,
+    at: str | None,
+    top: int,
+    horizon: int,
+) -> None:
+    from wayfinder_paths.jobs.chart import analogs_job
+
+    result = analogs_job(
+        job_id,
+        symbol=symbol,
+        timeframe=timeframe,
+        window=window,
+        at=at,
+        top=top,
+        horizon=horizon,
+        store=JobStore(),
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="derive-features",
+    help="Append cross-symbol/exogenous/venue derived feature rows to the "
+    "feature store (research-side; coarse cadence; execution contract "
+    "untouched). Sets: cross, exog, venue.",
+)
+@click.argument("job_id")
+@click.option("--sets", default="cross,exog", show_default=True)
+@click.option("--exog-symbols", default="BTC", show_default=True)
+@click.option("--every-bars", type=int, default=12, show_default=True)
+def derive_features_cmd(
+    job_id: str, sets: str, exog_symbols: str, every_bars: int
+) -> None:
+    from wayfinder_paths.jobs.derived_features import derive_features_job
+
+    result = derive_features_job(
+        job_id,
+        sets=tuple(s.strip() for s in sets.split(",") if s.strip()),
+        exog_symbols=tuple(s.strip() for s in exog_symbols.split(",") if s.strip()),
+        every_bars=every_bars,
+        store=JobStore(),
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="attribution",
+    help="PnL attribution: backtest + forward decomposed by symbol/reason/"
+    "session/regime/archetype/hold-bucket, with forward-vs-backtest "
+    "expectation deltas ranked by anomaly size. The diagnosis artifact.",
+)
+@click.argument("job_id")
+def attribution_cmd(job_id: str) -> None:
+    from wayfinder_paths.jobs.attribution import attribution_job
+
+    _echo_json({"ok": True, "result": attribution_job(job_id, store=JobStore())})
+
+
+@job_cli.command(
+    name="holdout-check",
+    help="One-shot confirmation of a FROZEN scan candidate (signal + "
+    "timeframe + horizon + direction) on the reserved holdout tail. Spend "
+    "it once per candidate — the trial ledger remembers repeat looks.",
+)
+@click.argument("job_id")
+@click.option(
+    "--signal",
+    required=True,
+    help="Canonical library or workspace (workspace/src/signals.py) signal name.",
+)
+@click.option("--horizon", type=int, required=True, help="Forward horizon in bars.")
+@click.option(
+    "--direction",
+    type=click.Choice(["long", "short"]),
+    required=True,
+    help="The frozen candidate's trade side.",
+)
+@click.option(
+    "--timeframe", default=None, help="Resample timeframe (default: base interval)."
+)
+@click.option("--symbols", default=None, help="Comma-separated symbols (default: all).")
+def holdout_check_cmd(
+    job_id: str,
+    signal: str,
+    horizon: int,
+    direction: str,
+    timeframe: str | None,
+    symbols: str | None,
+) -> None:
+    store = JobStore()
+    result = holdout_check_job(
+        job_id,
+        signal=signal,
+        horizon=horizon,
+        direction=direction,
+        timeframe=timeframe,
+        symbols=[s.strip() for s in symbols.split(",")] if symbols else None,
+        store=store,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="strategy-library",
+    help="List the shipped reference strategies (verbatim ports of audited "
+    "live scripts) with their import lines and default params — when the "
+    "user references a known/live strategy, start here instead of "
+    "transcribing it from prose.",
+)
+def strategy_library_cmd() -> None:
+    _echo_json({"ok": True, "result": library_catalog()})
+
+
+@job_cli.command(
+    name="rank-check",
+    help="Rank-IC study of a precomputed cross-sectional ranking column vs "
+    "relative forward returns — run BEFORE building a long/short basket "
+    "on that ranking.",
+)
+@click.argument("job_id")
+@click.option("--column", required=True, help="Precomputed ranking column name.")
+@click.option(
+    "--horizons", default=None, help="Comma-separated forward horizons in bars."
+)
+def rank_check_cmd(job_id: str, column: str, horizons: str | None) -> None:
+    store = JobStore()
+    result = rank_check_job(
+        job_id,
+        column=column,
+        horizons=[int(h) for h in horizons.split(",")] if horizons else None,
+        store=store,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="fetch-funding",
+    help="Fetch historical funding rates into the job's feature store "
+    "(state/features.jsonl) and declare the 'funding' feature — first-class "
+    "carry data, as-of merged onto the bars in backtest AND live.",
+)
+@click.argument("job_id")
+@click.option("--days", type=int, default=30, show_default=True)
+@click.option("--exchange", default="binance", show_default=True)
+@click.option("--quote", default="USDT", show_default=True)
+def fetch_funding_cmd(job_id: str, days: int, exchange: str, quote: str) -> None:
+    store = JobStore()
+    result = fetch_funding_features(
+        job_id, days=days, exchange=exchange, quote=quote, store=store
     )
     _echo_json({"ok": True, "result": result})
 
@@ -557,6 +1023,155 @@ def backtest_view_cmd(
     _echo_json({"ok": True, "result": result})
 
 
+@job_cli.command(
+    name="forward-view",
+    help="Bounded forward (paper/live) visualization payload: price series, "
+    "PnL curve, and entry/exit markers tagged with the mode they executed in.",
+)
+@click.argument("job_id")
+@click.option(
+    "--view",
+    type=click.Choice(["all", "legs", "spread", "equity", "drawdown", "performance"]),
+    default="all",
+    show_default=True,
+)
+@click.option("--series", "series_names", multiple=True)
+@click.option("--from", "from_ts", default=None)
+@click.option("--to", "to_ts", default=None)
+@click.option("--max-points", type=int, default=1500, show_default=True)
+@click.option(
+    "--no-prices",
+    is_flag=True,
+    default=False,
+    help="Skip the on-demand candle fetch (markers + PnL curve only).",
+)
+def forward_view_cmd(
+    job_id: str,
+    view: str,
+    series_names: tuple[str, ...],
+    from_ts: str | None,
+    to_ts: str | None,
+    max_points: int,
+    no_prices: bool,
+) -> None:
+    store = JobStore()
+    result = load_forward_view(
+        job_id,
+        store=store,
+        view=view,
+        series_names=list(series_names),
+        from_ts=from_ts,
+        to_ts=to_ts,
+        max_points=max_points,
+        include_prices=not no_prices,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="counterfactual",
+    help="Post-apply shadow A/B: replay the PRE-apply strategy (rollback "
+    "backup) over the forward bars since apply and diff it against the "
+    "actual book — skipped/added entries and net-PnL delta. This is how "
+    "entry-gating changes are adjudicated; their cost never prints in the "
+    "live book.",
+)
+@click.argument("job_id")
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Recompute even if the cached artifact is fresh.",
+)
+def counterfactual_cmd(job_id: str, force: bool) -> None:
+    _echo_json(
+        {
+            "ok": True,
+            "result": counterfactual_job(job_id, store=JobStore(), force=force),
+        }
+    )
+
+
+@job_cli.command(
+    name="decision-log",
+    help="Threaded narrative feed of what the job's agent tried and why "
+    "(proposal generations with rejection reasons, research verdicts, "
+    "discoveries, shadow A/B checkpoints) — assembled from recorded events.",
+)
+@click.argument("job_id")
+@click.option("--limit", type=int, default=50, show_default=True)
+def decision_log_cmd(job_id: str, limit: int) -> None:
+    _echo_json(
+        {"ok": True, "result": build_decision_log(JobStore(), job_id, limit=limit)}
+    )
+
+
+@job_cli.command(
+    name="replication",
+    help="Backtest replication monitor: re-run the ACTIVE strategy on the "
+    "refreshed dataset and compare against this revision's first run — "
+    "decayed=true means the deploy-time edge is not reproducing (selection "
+    "on window-local noise).",
+)
+@click.argument("job_id")
+@click.option("--force", is_flag=True, default=False)
+def replication_cmd(job_id: str, force: bool) -> None:
+    _echo_json(
+        {"ok": True, "result": replication_job(job_id, store=JobStore(), force=force)}
+    )
+
+
+@job_cli.command(
+    name="universe-scan",
+    help="Screen the venue perp universe for candidate symbols: filter by "
+    "24h volume, run the canonical signal library with regime conditioning "
+    "over each candidate's recent bars, pool ALL rows into one BH family. "
+    "Output is a SHORTLIST for symbol-swap proposals — admitted symbols "
+    "must still earn deployment via their own on-job scans and probation.",
+)
+@click.argument("job_id")
+@click.option("--top", type=int, default=10, show_default=True)
+@click.option("--min-volume-usd", type=float, default=5_000_000, show_default=True)
+@click.option("--days", type=int, default=14, show_default=True)
+@click.option("--min-events", type=int, default=20, show_default=True)
+def universe_scan_cmd(
+    job_id: str, top: int, min_volume_usd: float, days: int, min_events: int
+) -> None:
+    _echo_json(
+        {
+            "ok": True,
+            "result": universe_scan_job(
+                job_id,
+                top=top,
+                min_volume_usd=min_volume_usd,
+                days=days,
+                min_events=min_events,
+                store=JobStore(),
+            ),
+        }
+    )
+
+
+@job_cli.command(
+    name="backtest-diagnose",
+    help="Framework-computed breakdown of the latest backtest (win rate + PnL "
+    "by exit reason / close hour / side, best & worst trades). Read this to find "
+    "a strategy's strong/weak spots — do NOT recompute PnL by hand; that drifts "
+    "from the backtest's own numbers.",
+)
+@click.argument("job_id")
+@click.option(
+    "--proposal", "proposal_id", default=None, help="Diagnose a candidate run."
+)
+def backtest_diagnose_cmd(job_id: str, proposal_id: str | None) -> None:
+    _echo_json(
+        {
+            "ok": True,
+            "result": diagnose_backtest(job_id, proposal_id=proposal_id),
+        }
+    )
+
+
 @job_cli.command(name="report", help="Show a compact terminal report for a job.")
 @click.argument("job_id")
 def report_cmd(job_id: str) -> None:
@@ -578,6 +1193,21 @@ def report_cmd(job_id: str) -> None:
     if latest_summary:
         click.echo("")
         click.echo(f"Latest agent check: {latest_summary}")
+
+
+@job_cli.command(
+    name="set-script-mode",
+    help="Flip the script loop between paper and live (recompiles the runner). "
+    "Going live requires a passing live gate and a wallet_label.",
+)
+@click.argument("job_id")
+@click.argument("mode", type=click.Choice(["paper", "live"]))
+def set_script_mode_cmd(job_id: str, mode: str) -> None:
+    try:
+        result = apply_script_mode(job_id, mode)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
 
 
 @job_cli.group(name="agent", help="Control a job's agent loop.")
@@ -635,12 +1265,23 @@ def proposals_cmd(job_id: str) -> None:
     _echo_json({"ok": True, "result": store.proposals(job_id)})
 
 
-def _wakeup_with_proposal(
+def _launch_with_proposal(
     store: JobStore, job_id: str, proposal_id: str, proposal: dict[str, Any]
 ) -> None:
-    wakeup = run_job_worker(job_id, mode="intervene", apply_proposal_id=proposal_id)
+    # Deterministic apply for gated proposals (claim + detached completer);
+    # ungated proposals fall back to an agent wake that claims for itself.
+    application = launch_application(store, job_id, proposal_id)
     sync_all_jobs(store=store)
-    _echo_json({"ok": True, "result": {"proposal": proposal, "wakeup": wakeup}})
+    _echo_json(
+        {
+            "ok": True,
+            "result": {
+                "proposal": proposal,
+                "application": application,
+                "wakeup": application.get("wakeup"),
+            },
+        }
+    )
 
 
 @job_cli.command(name="approve", help="Approve a pending proposal.")
@@ -674,7 +1315,7 @@ def approve_cmd(
         raise click.ClickException(
             "legacy jobs cannot enter the versioned-change flow"
         ) from exc
-    _wakeup_with_proposal(
+    _launch_with_proposal(
         store,
         job_id,
         proposal_id,
@@ -748,12 +1389,48 @@ def propose_cmd(
     _echo_json({"ok": True, "result": proposal})
 
 
+@job_cli.command(
+    name="restage",
+    help="Re-stage an approved proposal whose candidate went stale under an "
+    "intervening apply; re-runs the propose-time gates and auto-queues the "
+    "apply (approval carryover).",
+)
+@click.argument("job_id")
+@click.argument("proposal_id")
+@click.option(
+    "--candidate-dir",
+    default=None,
+    help="Re-authored change against the CURRENT workspace (bundle with "
+    "workspace/ or bare workspace). Required for code changes; params "
+    "updates re-stage mechanically.",
+)
+def restage_cmd(job_id: str, proposal_id: str, candidate_dir: str | None) -> None:
+    store = JobStore()
+    proposal = restage_proposal(
+        store, job_id, proposal_id, candidate_source=candidate_dir
+    )
+    _echo_json({"ok": True, "result": proposal})
+
+
 @job_cli.command(name="reject", help="Reject a pending proposal.")
 @click.argument("job_id")
 @click.argument("proposal_id")
-def reject_cmd(job_id: str, proposal_id: str) -> None:
+@click.option("--reason", default=None, help="Why (recorded on the proposal).")
+@click.option(
+    "--by",
+    "rejected_by",
+    type=click.Choice(["owner", "agent"]),
+    default="owner",
+    show_default=True,
+    help="Who is rejecting: owner vetoes bind the worker; agent = housekeeping.",
+)
+def reject_cmd(
+    job_id: str, proposal_id: str, reason: str | None, rejected_by: str
+) -> None:
     store = JobStore()
-    proposal = store.reject_proposal(job_id, proposal_id)
+    proposal = store.reject_proposal(
+        job_id, proposal_id, reason=reason, rejected_by=rejected_by
+    )
     sync_all_jobs(store=store)
     _echo_json({"ok": True, "result": proposal})
 
@@ -763,7 +1440,7 @@ def reject_cmd(job_id: str, proposal_id: str) -> None:
 @click.argument("proposal_id")
 def apply_proposal_cmd(job_id: str, proposal_id: str) -> None:
     store = JobStore()
-    _wakeup_with_proposal(
+    _launch_with_proposal(
         store,
         job_id,
         proposal_id,
@@ -828,6 +1505,19 @@ def complete_application_cmd(
             ),
         }
     )
+
+
+@job_cli.command(
+    name="recover-stalled-applications",
+    help="Scan every job for stalled proposal applications (applying with a "
+    "dead completer, or approved+queued with no spawn) and drive them to a "
+    "terminal status, resuming paused runner loops. Same primitive the "
+    "runner watchdog job runs every few minutes.",
+)
+def recover_stalled_applications_cmd() -> None:
+    from wayfinder_paths.jobs.watchdog import recover_stalled_applications
+
+    _echo_json({"ok": True, "result": recover_stalled_applications()})
 
 
 def _pause_resume_loops(job_id: str, action: Literal["pause", "resume"]) -> None:

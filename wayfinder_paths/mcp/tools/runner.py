@@ -13,12 +13,50 @@ from wayfinder_paths.mcp.utils import (
     repo_root,
 )
 from wayfinder_paths.runner.client import RunnerControlClient
-from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JOB_TYPE_STRATEGY
+from wayfinder_paths.runner.constants import (
+    DEFAULT_MAX_WORKERS,
+    JOB_TYPE_SCRIPT,
+    JOB_TYPE_STRATEGY,
+)
 from wayfinder_paths.runner.lifecycle import ensure_daemon_started, try_status
 from wayfinder_paths.runner.paths import RunnerPaths, get_runner_paths
 from wayfinder_paths.runner.schedule import schedule_request_params
 
 RunnerReadAction = Literal["daemon_status", "status", "job_runs", "run_report"]
+
+# Env vars the JobCompiler bakes from job.yaml for jobs_v1 runner jobs. They are
+# derived state, not user-settable: WAYFINDER_JOB_MODE (paper/live) comes from
+# script_loop.mode, WAYFINDER_JOB_AGENT_MODE from agent_loop.mode. Hand-patching
+# them here desyncs the runner from job.yaml — a split-brain the next recompile
+# silently reverts (a live-executing job once showed "paper" this way). Flip mode
+# via `core_jobs set_script_mode` / `set_agent_mode`, which edit job.yaml and
+# recompile. REVISION/DIR are compiler-managed pointers with no manual use.
+_COMPILER_OWNED_ENV = frozenset(
+    {
+        "WAYFINDER_JOB_MODE",
+        "WAYFINDER_JOB_AGENT_MODE",
+        "WAYFINDER_JOB_REVISION",
+        "WAYFINDER_JOB_DIR",
+    }
+)
+
+
+def _reject_compiler_owned_env(env: Any) -> dict[str, Any] | None:
+    """Error dict if `env` sets a compiler-owned key, else None."""
+    if not isinstance(env, dict):
+        return None
+    clashes = sorted(k for k in env if str(k) in _COMPILER_OWNED_ENV)
+    if not clashes:
+        return None
+    return err(
+        "compiler_owned_env",
+        f"cannot set {', '.join(clashes)} via core_runner — these are baked from "
+        "job.yaml by the compiler. Flip paper/live with "
+        "`core_jobs(action='set_script_mode', script_mode=...)` and the agent "
+        "watch level with `core_jobs(action='set_agent_mode', ...)`; both edit "
+        "job.yaml and recompile the runner env. Patching the env here creates a "
+        "split-brain the next recompile reverts.",
+    )
 
 
 def _default_sock_path() -> Path:
@@ -179,7 +217,9 @@ async def core_runner(
                     tick_seconds=float(tick_seconds)
                     if tick_seconds is not None
                     else 1.0,
-                    max_workers=int(max_workers) if max_workers is not None else 4,
+                    max_workers=int(max_workers)
+                    if max_workers is not None
+                    else DEFAULT_MAX_WORKERS,
                     max_failures=int(max_failures) if max_failures is not None else 5,
                     default_timeout_seconds=int(default_timeout_seconds)
                     if default_timeout_seconds is not None
@@ -365,6 +405,9 @@ async def core_runner(
                 if env is not None:
                     if not isinstance(env, dict):
                         return err("invalid_request", "env must be an object")
+                    clash = _reject_compiler_owned_env(env)
+                    if clash is not None:
+                        return clash
                     job_payload["env"] = {str(k): str(v) for k, v in env.items()}
                 if always_notify_session_on_job_completion:
                     job_payload["always_notify_session_on_job_completion"] = True
@@ -415,6 +458,10 @@ async def core_runner(
                     return err("invalid_request", "name is required for update_job")
                 if payload is not None and not isinstance(payload, dict):
                     return err("invalid_request", "payload must be an object")
+                if payload is not None:
+                    clash = _reject_compiler_owned_env(payload.get("env"))
+                    if clash is not None:
+                        return clash
                 params = {"name": str(name).strip(), "payload": payload}
                 if interval_seconds is not None or cron_expr is not None:
                     try:

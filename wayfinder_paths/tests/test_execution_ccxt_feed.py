@@ -250,3 +250,117 @@ def test_cli_fetch_dataset_source_option(monkeypatch) -> None:
     assert captured["exchange"] == "bybit"
     assert captured["market_type"] == "spot"
     assert captured["days"] == 30
+
+
+def test_build_live_dataset_reports_requested_vs_received(tmp_path: Path) -> None:
+    """Venue/exchange history caps are silent — an agent asked for 720 days,
+    got 290, and analyzed on without noticing. The result must carry both
+    numbers and warn on a shortfall."""
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "shortfall-demo",
+        script=".wayfinder/jobs/shortfall-demo/workspace/src/strategy.py",
+        interval_seconds=3600,
+        execution_contract="jobs_v1",
+    )
+    spec = ExecutionSpec()
+    spec.data_contract["bar_interval"] = "1h"
+    job.execution_spec = spec.to_dict()
+    job.execution_params = {"symbols": ["SNX"]}
+    store.save(job)
+    root = store.job_dir(job.id)
+    (root / "workspace" / "src").mkdir(parents=True, exist_ok=True)
+    (root / "workspace" / "src" / "strategy.py").write_text(
+        "def decide(ctx):\n    return []\n", encoding="utf-8"
+    )
+    end_ms = BASE_MS + 60 * HOUR_MS
+    feed = CcxtMarketFeed(
+        exchange=FakeCcxtExchange(candles={"SNX/USDT:USDT": _candles(60)})
+    )
+
+    class FrozenFeed:
+        symbol_map = feed.symbol_map
+
+        async def get_completed_bars(
+            self, symbols, interval, *, lookback_bars, as_of=None
+        ):
+            return await feed.get_completed_bars(
+                symbols,
+                interval,
+                lookback_bars=lookback_bars,
+                as_of=pd.Timestamp(end_ms, unit="ms", tz="UTC"),
+            )
+
+    # 60 hourly candles ≈ 2.5 days of data against a 30-day request.
+    result = build_live_dataset(
+        job.id, days=30, store=store, source="ccxt", feed=FrozenFeed()
+    )
+    assert result["days_requested"] == 30
+    assert result["days_received"] < 3
+    assert "warning" in result and "30" in result["warning"]
+
+    # A satisfied request carries the numbers but no warning.
+    ok = build_live_dataset(
+        job.id, days=2, store=store, source="ccxt", feed=FrozenFeed()
+    )
+    assert ok["days_received"] >= 0.9 * 2
+    assert "warning" not in ok
+
+
+def test_build_live_dataset_chains_derived_features(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A dataset refresh must re-derive research columns unconditionally —
+    a fresh dataset with frozen btc_trend/cross columns is the silent
+    staleness bug (stale values merge cleanly into scans, no error)."""
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "chain-demo",
+        script=".wayfinder/jobs/chain-demo/workspace/src/strategy.py",
+        interval_seconds=3600,
+        execution_contract="jobs_v1",
+    )
+    spec = ExecutionSpec()
+    spec.data_contract["bar_interval"] = "1h"
+    job.execution_spec = spec.to_dict()
+    job.execution_params = {"symbols": ["SNX"]}
+    store.save(job)
+    root = store.job_dir(job.id)
+    (root / "workspace" / "src").mkdir(parents=True, exist_ok=True)
+    (root / "workspace" / "src" / "strategy.py").write_text(
+        "def decide(ctx):\n    return []\n", encoding="utf-8"
+    )
+    end_ms = BASE_MS + 60 * HOUR_MS
+    feed = CcxtMarketFeed(
+        exchange=FakeCcxtExchange(candles={"SNX/USDT:USDT": _candles(60)})
+    )
+
+    class FrozenFeed:
+        symbol_map = feed.symbol_map
+
+        async def get_completed_bars(
+            self, symbols, interval, *, lookback_bars, as_of=None
+        ):
+            return await feed.get_completed_bars(
+                symbols,
+                interval,
+                lookback_bars=lookback_bars,
+                as_of=pd.Timestamp(end_ms, unit="ms", tz="UTC"),
+            )
+
+    calls: list[tuple[str, int]] = []
+
+    def fake_refresh(job_id, *, store, max_age_seconds):
+        calls.append((job_id, max_age_seconds))
+        return {"refreshed": True, "rows_appended": 3}
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.derived_features.refresh_derived_features_if_stale",
+        fake_refresh,
+    )
+    result = build_live_dataset(
+        job.id, days=2, store=store, source="ccxt", feed=FrozenFeed()
+    )
+    # force-bypass of the hourly stamp gate: the dataset just changed.
+    assert calls == [(job.id, 0)]
+    assert result["derived_features"] == {"refreshed": True, "rows_appended": 3}

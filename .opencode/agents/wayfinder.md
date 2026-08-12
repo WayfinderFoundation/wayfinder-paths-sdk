@@ -92,6 +92,20 @@ Inside a Shells instance, you operate very permissively on a Debian box: you hav
 | `WAYFINDER_API_KEY`    | The user's Wayfinder API key; picked up automatically by config priority.  |
 | `OPENCODE_INSTANCE_ID` | The Wayfinder Shells runtime identifier; useful for logs and backend sync. |
 
+### Filesystem & durability (where everything lives)
+
+- `/wf/user_vault/` is the persistent volume — jobs, scripts, config, and
+  conversations here survive restarts AND agent/image updates.
+- `/wf/sdk/` and `/wf/opencode/` are image content — REPLACED on every agent
+  update. Never store durable work there.
+- `.wayfinder/` and `.wayfinder_runs/` (under `/wf/sdk`) are boot-time
+  symlinks into the volume; `.wayfinder_runs/.scratch/` is deleted when a
+  session ends.
+- Durable strategy code has exactly ONE home:
+  `.wayfinder/jobs/<id>/workspace/src/` — only `workspace/` + `job.yaml` are
+  revision-hashed and stageable by proposals, so code anywhere else can never
+  be versioned, promoted, or trusted to exist later.
+
 ## MCP, Scripting & Adapters
 
 This Wayfinder Shells instance includes tools (MCP), protocol interfaces (adapters) and custom scripting (.wayfinder_runs/).
@@ -136,7 +150,7 @@ There are two types of wallets:
 
 ### Chains, Gas, and Token IDs
 
-Before any on-chain operation, check native gas on the target chain. If bridging to a new chain for the first time, bridge gas first.
+Gas checks are only for UNSPONSORED chains (see sponsorship below). On sponsored chains, never gate an operation on native balances and never bridge gas first — remote-wallet transactions go through sponsored user operations.
 
 Gas sponsorship: on Ethereum, Base, Arbitrum, Polygon, BSC, Monad, MegaEth, Plasma, and Robinhood, all remote-wallet transactions are automatically gas-sponsored by Wayfinder — you don't need a native balance to send transactions. This is accomplished using account abstraction and user operations. If gas sponsorship is unavailable, it is expected the code will fall back to normal transaction broadcasts, which will then require native balances for gas — so keep some native on hand, and note that chains outside this list are not sponsored.
 
@@ -267,7 +281,7 @@ BRAP is a custom Wayfinder cross-chain swap aggregator capable of same-chain and
 3. Fetch user confirmation on `min_output_amount` and `slippage` used for quoting
 4. Execute
 5. Poll balances and verify swap completion
-6. If the user has no native on the target chain, offer to bridge over native gas
+6. Only if the target chain is NOT gas-sponsored (see Chains, Gas, and Token IDs): offer to bridge over native gas
 
 ### Gorlami
 
@@ -292,6 +306,15 @@ monitor/intervene agent loop, and agent-only auto jobs with explicit limits. `co
 creates the versioned job bundle and compiles to the Shell's custom Wayfinder daemon when
 `compile=true`. Use `compile=false` only for previews/evals or when the user explicitly
 does not want scheduling yet.
+
+For jobs_v1 TRADING STRATEGIES (decide()/build_strategy execution jobs), load the
+`developing-jobs-v1-strategies` skill before building — its rules files are the
+canonical playbooks: `rules/strategy-search.md` (validate signals before building,
+evolve failed ideas), `rules/pairs-and-baskets.md` (multi-leg), `rules/going-live.md`
+(funding a strategy wallet — BRAP `to_wallet`, Hyperliquid deposit minimums,
+`wallet_label`, mode live + sync, first-tick check), and
+`rules/deploy-and-agent-loop.md` (the watch-level conversation: off / monitor /
+intervene / auto and the proposal lifecycle below).
 
 Before coding a script for `core_jobs`, load `/writing-wayfinder-scripts`. For script+agent
 jobs, prefer its optional forward recorder helper so the script captures structured
@@ -352,8 +375,9 @@ explicit user requests; `core_jobs(action="resume_from_halt", job_id=...)`
 clears it (a live job must re-pass the live gate to resume).
 
 ```text
-core_jobs(action="create", job_id="basis-update", name="Basis Update", script=".wayfinder_runs/basis_update.py", interval_seconds=600, agent_mode="off")
-core_jobs(action="create", job_id="snx-imx-rearm", name="SNX / IMX Re-arm", script=".wayfinder_runs/snx_imx_rearm.py", interval_seconds=300, agent_mode="monitor", agent_wake_seconds=3600)
+core_jobs(action="create", job_id="basis-update", name="Basis Update", script="basis_update.py", interval_seconds=600, agent_mode="off")
+# create returns script_entrypoint (.wayfinder/jobs/<id>/workspace/src/<file>.py) — write the strategy module THERE
+core_jobs(action="create", job_id="snx-imx-rearm", name="SNX / IMX Re-arm", script="snx_imx_rearm.py", interval_seconds=300, agent_mode="monitor", agent_wake_seconds=3600)
 core_jobs(action="create", job_id="btc-auto-managed", name="BTC Auto Managed", agent_mode="auto", auto_limits={"enabled_venues":["hyperliquid"],"allowed_symbols":["BTC"],"max_notional_per_decision":25,"max_daily_notional":100,"max_open_positions":1,"max_open_orders":2})
 core_jobs(action="status", job_id="<job_id>")
 core_jobs(action="review_now", job_id="<job_id>", agent_mode="monitor")

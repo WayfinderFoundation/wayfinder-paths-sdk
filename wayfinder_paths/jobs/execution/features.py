@@ -97,49 +97,113 @@ def parse_feature_specs(spec: ExecutionSpec) -> list[FeatureSpec]:
     return specs
 
 
+# Single-entry parse cache keyed on (path, mtime_ns, size, names). The live
+# driver calls load_feature_rows every tick; without this each 5-minute tick
+# re-parsed the full store (95MB / 600k+ lines observed live) once per
+# declared feature. Any append invalidates via mtime/size.
+_FEATURE_FILE_CACHE: dict[str, Any] = {}
+
+
+def _parse_feature_file(path: Path, names: set[str]) -> dict[str, dict[str, list]]:
+    """ONE streaming pass over the jsonl store collecting column lists for
+    every requested name — the store is parsed once, not once per spec."""
+    stat = path.stat()
+    key = (str(path), stat.st_mtime_ns, stat.st_size, tuple(sorted(names)))
+    if _FEATURE_FILE_CACHE.get("key") == key:
+        return _FEATURE_FILE_CACHE["columns"]
+    columns: dict[str, dict[str, list]] = {
+        name: {"timestamp": [], "value": [], "symbol": []} for name in names
+    }
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            bucket = columns.get(str(row.get("name")))
+            if bucket is None:
+                continue
+            bucket["timestamp"].append(row.get("timestamp"))
+            bucket["value"].append(row.get("value"))
+            bucket["symbol"].append(row.get("symbol"))
+    _FEATURE_FILE_CACHE["key"] = key
+    _FEATURE_FILE_CACHE["columns"] = columns
+    return columns
+
+
+def _trim_to_window(
+    frame: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp
+) -> pd.DataFrame:
+    """Rows within [start, end] plus, per symbol series (including the
+    null-symbol series), the latest row strictly before start — exactly what
+    merge_asof(direction=backward) can observe inside the window."""
+    before = frame[frame["timestamp"] < start]
+    if not before.empty:
+        anchor_idx = (
+            before.groupby(before["symbol"].astype(object), dropna=False)["timestamp"]
+            .idxmax()
+            .tolist()
+        )
+        anchors = frame.loc[anchor_idx]
+    else:
+        anchors = frame.iloc[0:0]
+    inside = frame[(frame["timestamp"] >= start) & (frame["timestamp"] <= end)]
+    return pd.concat([anchors, inside]).sort_values("timestamp").reset_index(drop=True)
+
+
 def load_feature_rows(
-    roots: list[Path], specs: list[FeatureSpec]
+    roots: list[Path],
+    specs: list[FeatureSpec],
+    *,
+    window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Per-feature frames sorted by timestamp: columns [timestamp, value,
     symbol]. Empty frame when a feature has no rows yet. First root that has
     the file wins (candidate dir before job dir — mirrors the candidate
-    dataset fallback)."""
+    dataset fallback).
+
+    `window=(start, end)` trims each frame to the bar range plus the as-of
+    anchor row per series — merge_asof(backward) sees identical values, but
+    a multi-month store no longer rides through a 120-day backtest in full."""
+    by_path: dict[Path, set[str]] = {}
+    spec_path: dict[str, Path | None] = {}
+    for spec in specs:
+        chosen: Path | None = None
+        for root in roots:
+            candidate = Path(root) / spec.path
+            if candidate.exists():
+                chosen = candidate
+                break
+        spec_path[spec.name] = chosen
+        if chosen is not None:
+            by_path.setdefault(chosen, set()).add(spec.name)
+
+    parsed = {path: _parse_feature_file(path, names) for path, names in by_path.items()}
+
     frames: dict[str, pd.DataFrame] = {}
     for spec in specs:
-        rows: list[dict[str, Any]] = []
-        for root in roots:
-            path = Path(root) / spec.path
-            if not path.exists():
-                continue
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                match row:
-                    case dict() if str(row.get("name")) == spec.name:
-                        rows.append(row)
-            break
-        if not rows:
+        path = spec_path[spec.name]
+        columns = parsed.get(path, {}).get(spec.name) if path is not None else None
+        if not columns or not columns["timestamp"]:
             frames[spec.name] = pd.DataFrame(columns=["timestamp", "value", "symbol"])
             continue
         frame = pd.DataFrame(
-            [
-                {
-                    "timestamp": row.get("timestamp"),
-                    "value": row.get("value"),
-                    "symbol": row.get("symbol"),
-                }
-                for row in rows
-            ]
-        )
-        frame["timestamp"] = pd.to_datetime(
-            frame["timestamp"], utc=True, errors="coerce"
+            {
+                "timestamp": pd.to_datetime(
+                    columns["timestamp"], utc=True, errors="coerce"
+                ),
+                "value": columns["value"],
+                "symbol": columns["symbol"],
+            }
         )
         frame = frame.dropna(subset=["timestamp"]).sort_values("timestamp")
+        if window is not None:
+            frame = _trim_to_window(frame, window[0], window[1])
         frames[spec.name] = frame.reset_index(drop=True)
     return frames
 
@@ -186,6 +250,59 @@ def merge_features(
         column = spec.column_name
         if column in bars.columns:
             bars[column] = bars[column].astype(object).where(bars[column].notna(), None)
+    return CompletedBarsView(bars)
+
+
+# Bar-contract columns a strategy may never overwrite from precompute().
+BAR_COLUMNS = frozenset(
+    {"timestamp", "symbol", "open", "high", "low", "close", "volume"}
+)
+
+
+def apply_precompute(strategy: Any, view: CompletedBarsView) -> CompletedBarsView:
+    """Merge strategy-precomputed indicator columns onto the bars.
+
+    The optional strategy hook ``precompute(frames: dict[symbol, DataFrame])
+    -> dict[symbol, DataFrame]`` runs ONE vectorized pass instead of
+    re-deriving indicators inside decide() every bar — per-bar pandas carries
+    ~5ms of fixed overhead per rolling/ewm/concat call, which is what turns
+    replays into minute-long crawls (measured live: ~30 bars/s for a 15-op
+    decide()). Backtest calls this once over full history; the live driver
+    calls it per tick over the bounded fetched window — rolling/shift columns
+    are identical in both wherever the lookback fits inside ``warmup_bars``,
+    so backtest/live parity holds. Transforms must be CAUSAL (rolling / shift
+    / expanding — nothing that reads future rows); the returned frames align
+    row-for-row with the input frames. Cross-symbol features (spreads,
+    ratios) read several input frames and attach to the traded symbol's rows.
+    Runs after the exogenous feature merge, so precompute() can consume those
+    columns (e.g. a funding-rate feed) too.
+    """
+    precompute = getattr(strategy, "precompute", None)
+    if not callable(precompute):
+        return view
+    bars = view.to_frame().sort_values(["timestamp", "symbol"]).reset_index(drop=True)
+    frames = {
+        str(symbol): bars[bars["symbol"] == symbol].reset_index(drop=True)
+        for symbol in sorted(bars["symbol"].astype(str).unique())
+    }
+    derived = precompute(frames) or {}
+    for symbol, feats in derived.items():
+        base = frames.get(str(symbol))
+        if feats is None or base is None:
+            continue
+        if len(feats) != len(base):
+            raise ValueError(
+                f"precompute() returned {len(feats)} rows for {symbol!r}; "
+                f"expected {len(base)} (one per input bar, same order)"
+            )
+        mask = (bars["symbol"] == str(symbol)).to_numpy()
+        for column in feats.columns:
+            if column in BAR_COLUMNS:
+                continue
+            if column not in bars.columns:
+                bars[column] = None
+            values = feats[column].to_numpy()
+            bars.loc[mask, column] = values
     return CompletedBarsView(bars)
 
 

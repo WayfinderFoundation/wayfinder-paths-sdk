@@ -28,6 +28,16 @@ class JobCompiler:
         job_env = self._job_env(job, root)
         if start_daemon:
             self.bridge.ensure_started()
+            # Every job that can ever carry a proposal registers the
+            # application watchdog. Best-effort — a down runner or a test
+            # FakeBridge without add_or_update_script_job must not break
+            # compile. Lazy import: watchdog -> application -> compiler.
+            try:
+                from wayfinder_paths.jobs.watchdog import ensure_application_watchdog
+
+                ensure_application_watchdog(store=self.store, bridge=self.bridge)
+            except Exception:
+                pass
 
         linked: list[dict[str, Any]] = []
         if job.script_loop.enabled:
@@ -97,7 +107,11 @@ class JobCompiler:
 
         payload = {"job_id": job.id, "jobs": linked}
         self.store.write_json(job.id, "runner_links.json", payload)
-        self.store.append_journal(job.id, {"type": "compiled", "runner_links": linked})
+        # Sync-time recompiles are routine; only journal real changes.
+        if previous_links != payload:
+            self.store.append_journal(
+                job.id, {"type": "compiled", "runner_links": linked}
+            )
         return payload
 
     def _write_wrappers(self, job: WayfinderJob, root: Path) -> dict[str, str]:
@@ -109,6 +123,28 @@ class JobCompiler:
             if entrypoint is None:
                 raise ValueError("script loop is enabled but entrypoint is missing")
             script_wrapper = self.store.runs_jobs_dir / f"{safe_module_name}_script.py"
+            workspace = (root / "workspace").resolve()
+            if entrypoint.exists() and not entrypoint.resolve().is_relative_to(
+                workspace
+            ):
+                # Non-fatal: live loops keep ticking, but the placement is
+                # unversionable — validation blocks it and the worker's first
+                # proposal should migrate the script into workspace/src/.
+                self.store.append_journal(
+                    job.id,
+                    {
+                        "type": "entrypoint_outside_workspace",
+                        "entrypoint": str(entrypoint),
+                        "expected_dir": str(root / "workspace" / "src"),
+                    },
+                )
+            if job.execution_contract != "jobs_v1" and not entrypoint.exists():
+                raise ValueError(
+                    f"script entrypoint does not exist: {entrypoint}. For jobs_v1 "
+                    "strategies (decide()/build_strategy in the job bundle) set "
+                    "execution_contract='jobs_v1' — the legacy runpy wrapper only "
+                    "works for a real standalone script."
+                )
             if job.execution_contract == "jobs_v1":
                 # SDK-owned tick driver: the strategy module only exposes
                 # decide()/build_strategy(); the driver does data fetch,
