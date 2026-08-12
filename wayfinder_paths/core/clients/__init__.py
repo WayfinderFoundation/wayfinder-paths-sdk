@@ -30,7 +30,7 @@ __all__ = [
     "TOKEN_CLIENT",
 ]
 
-_EXPORTS = {
+_EXPORTS: dict[str, tuple[str, str]] = {
     "DELTA_LAB_CLIENT": (
         "wayfinder_paths.core.clients.DeltaLabClient",
         "DELTA_LAB_CLIENT",

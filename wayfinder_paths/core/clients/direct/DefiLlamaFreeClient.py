@@ -49,6 +49,11 @@ def _path_part(value: str, field_name: str) -> str:
     return quote(normalized, safe=":-_,")
 
 
+def _result_dict(response: dict[str, Any]) -> dict[str, Any]:
+    result = response.get("result")
+    return result if isinstance(result, dict) else {}
+
+
 class DefiLlamaFreeClient:
     """Direct DeFiLlama free API client.
 
@@ -82,12 +87,13 @@ class DefiLlamaFreeClient:
 
                 payload = bytearray()
                 async for chunk in response.aiter_bytes():
-                    payload.extend(chunk)
-                    if len(payload) > MAX_UPSTREAM_RESPONSE_BYTES:
+                    received_bytes = len(payload) + len(chunk)
+                    if received_bytes > MAX_UPSTREAM_RESPONSE_BYTES:
                         raise DefiLlamaResponseTooLarge(
                             url=response_url,
-                            received_bytes=len(payload),
+                            received_bytes=received_bytes,
                         )
+                    payload.extend(chunk)
                 body = json.loads(payload)
 
         return {
@@ -206,9 +212,7 @@ class DefiLlamaFreeClient:
             f"/summary/fees/{_path_part(protocol_slug, 'protocolSlug')}",
             params={"dataType": normalized_type},
         )
-        result = (
-            response.get("result") if isinstance(response.get("result"), dict) else {}
-        )
+        result = _result_dict(response)
         rows = _last_daily_rows(result.get("totalDataChart"), days=days)
         chain_rows = _last_daily_breakdown_rows(
             result.get("totalDataChartBreakdown"), days=days
@@ -233,9 +237,7 @@ class DefiLlamaFreeClient:
         response = await self._get(
             f"/protocol/{_path_part(protocol_slug, 'protocolSlug')}"
         )
-        result = (
-            response.get("result") if isinstance(response.get("result"), dict) else {}
-        )
+        result = _result_dict(response)
         rows = _last_tvl_rows(result.get("tvl"), days=days)
         chain_summary = _chain_tvl_summary(result.get("chainTvls"), days=days)
         response["result"] = {
@@ -273,9 +275,7 @@ class DefiLlamaFreeClient:
         cursor: str = "_",
     ) -> dict[str, Any]:
         response = await self._get("/stablecoins", base_url=STABLECOINS_BASE_URL)
-        result = (
-            response.get("result") if isinstance(response.get("result"), dict) else {}
-        )
+        result = _result_dict(response)
         assets = result.get("peggedAssets")
         if not isinstance(assets, list):
             assets = []
@@ -303,9 +303,7 @@ class DefiLlamaFreeClient:
         cursor: str = "_",
     ) -> dict[str, Any]:
         response = await self._get("/pools", base_url=YIELDS_BASE_URL)
-        result = (
-            response.get("result") if isinstance(response.get("result"), dict) else {}
-        )
+        result = _result_dict(response)
         pools = result.get("data")
         if not isinstance(pools, list):
             pools = []
@@ -402,7 +400,7 @@ def _row_date(timestamp: Any) -> str | None:
 
 def _last_daily_rows(chart: Any, *, days: int) -> list[dict[str, Any]]:
     cutoff = _cutoff(days)
-    rows = []
+    rows: list[dict[str, Any]] = []
     if not isinstance(chart, list):
         return rows
     for item in chart:
@@ -422,7 +420,7 @@ def _last_daily_rows(chart: Any, *, days: int) -> list[dict[str, Any]]:
 
 def _last_daily_breakdown_rows(chart: Any, *, days: int) -> list[dict[str, Any]]:
     cutoff = _cutoff(days)
-    rows = []
+    rows: list[dict[str, Any]] = []
     if not isinstance(chart, list):
         return rows
     for item in chart:
@@ -440,7 +438,7 @@ def _last_daily_breakdown_rows(chart: Any, *, days: int) -> list[dict[str, Any]]
 
 
 def _weekly_sum_rollups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    rollups = []
+    rollups: list[dict[str, Any]] = []
     for index in range(0, len(rows), 7):
         chunk = rows[index : index + 7]
         if not chunk:
@@ -458,19 +456,22 @@ def _weekly_sum_rollups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _last_tvl_rows(chart: Any, *, days: int) -> list[dict[str, Any]]:
     cutoff = _cutoff(days)
-    rows = []
+    rows: list[dict[str, Any]] = []
     if not isinstance(chart, list):
         return rows
     for item in chart:
         if not isinstance(item, dict):
             continue
         date_value = item.get("date")
+        tvl_value = item.get("totalLiquidityUSD")
+        if date_value is None or tvl_value is None:
+            continue
         date_text = _row_date(date_value)
         if date_text is None:
             continue
         try:
             dt = datetime.fromtimestamp(int(date_value), tz=UTC)
-            value = float(item.get("totalLiquidityUSD"))
+            value = float(tvl_value)
         except (TypeError, ValueError, OSError):
             continue
         if dt < cutoff:
@@ -482,7 +483,7 @@ def _last_tvl_rows(chart: Any, *, days: int) -> list[dict[str, Any]]:
 def _chain_tvl_summary(chain_tvls: Any, *, days: int) -> list[dict[str, Any]]:
     if not isinstance(chain_tvls, dict):
         return []
-    summary = []
+    summary: list[dict[str, Any]] = []
     for chain, payload in chain_tvls.items():
         if not isinstance(payload, dict):
             continue
@@ -562,7 +563,7 @@ def _compact_overview_response(
     limit: int,
     cursor: str,
 ) -> dict[str, Any]:
-    result = response.get("result") if isinstance(response.get("result"), dict) else {}
+    result = _result_dict(response)
     protocols = result.get("protocols")
     if not isinstance(protocols, list):
         protocols = []

@@ -75,7 +75,7 @@ async def test_hyperliquid_trade_results_maps_perp_period_and_compacts_fills() -
         "pnl": 25.0,
         "account_value": 125.0,
         "volume": 5000.0,
-        "available_trade_count": 1,
+        "matching_trade_count": 1,
         "returned_trade_count": 1,
         "trade_history_may_be_truncated": False,
     }

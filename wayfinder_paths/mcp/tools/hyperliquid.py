@@ -7,7 +7,7 @@ import math
 import re
 import time
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from wayfinder_paths.adapters.hyperliquid_adapter import HyperliquidAdapter
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
@@ -91,16 +91,7 @@ HyperliquidTradePeriod = Literal[
     "perpMonth",
     "perpAllTime",
 ]
-_HYPERLIQUID_TRADE_PERIODS = (
-    "day",
-    "week",
-    "month",
-    "allTime",
-    "perpDay",
-    "perpWeek",
-    "perpMonth",
-    "perpAllTime",
-)
+_HYPERLIQUID_TRADE_PERIODS = get_args(HyperliquidTradePeriod)
 _DAY_MS = 24 * 60 * 60 * 1000
 _TRADE_PERIOD_LOOKBACK_MS = {
     "day": _DAY_MS,
@@ -2213,7 +2204,7 @@ async def hyperliquid_get_trade_results(
                     portfolio.get("accountValueHistory")
                 ),
                 "volume": _float_or_none(portfolio.get("vlm")),
-                "available_trade_count": len(fill_rows),
+                "matching_trade_count": len(fill_rows),
                 "returned_trade_count": len(trades),
                 "trade_history_may_be_truncated": (
                     isinstance(fills, list) and len(fills) >= 2_000

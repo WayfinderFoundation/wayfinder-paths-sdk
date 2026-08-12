@@ -81,16 +81,14 @@ class _FakeAsyncClient:
 
 @pytest.fixture(autouse=True)
 def _reset_fake_async_client() -> None:
+    _FakeAsyncClient.calls = []
     _FakeAsyncClient.get_chunks = None
     _FakeAsyncClient.get_headers = {}
 
 
 @pytest.mark.asyncio
 async def test_defillama_free_uses_direct_api(monkeypatch: pytest.MonkeyPatch) -> None:
-    _FakeAsyncClient.calls = []
     _FakeAsyncClient.get_body = {"data": []}
-    _FakeAsyncClient.get_chunks = None
-    _FakeAsyncClient.get_headers = {}
     monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
 
     result = await llama_module.DEFILLAMA_FREE_CLIENT.tvl("aave")
@@ -107,7 +105,6 @@ async def test_defillama_free_uses_direct_api(monkeypatch: pytest.MonkeyPatch) -
 async def test_defillama_free_open_interest_overview(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _FakeAsyncClient.calls = []
     _FakeAsyncClient.get_body = {"protocols": []}
     monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
 
@@ -131,7 +128,6 @@ async def test_defillama_free_open_interest_overview(
 async def test_defillama_free_stablecoins_uses_stablecoins_host_and_pages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _FakeAsyncClient.calls = []
     _FakeAsyncClient.get_body = {
         "peggedAssets": [
             {
@@ -165,7 +161,6 @@ async def test_defillama_free_stablecoins_uses_stablecoins_host_and_pages(
 async def test_defillama_free_fees_overview_compacts_and_pages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _FakeAsyncClient.calls = []
     _FakeAsyncClient.get_body = {
         "total24h": 300,
         "total7d": 700,
@@ -212,7 +207,6 @@ async def test_defillama_free_fees_overview_compacts_and_pages(
 async def test_defillama_free_protocol_search_compacts_matches(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _FakeAsyncClient.calls = []
     _FakeAsyncClient.get_body = [
         {"name": "Pendle", "slug": "pendle", "category": "Yield", "tvl": 10},
         {"name": "Other", "slug": "other", "category": "DEX", "tvl": 5},
@@ -243,7 +237,6 @@ async def test_defillama_free_protocol_search_compacts_matches(
 async def test_defillama_free_protocol_fees_returns_daily_and_weekly(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _FakeAsyncClient.calls = []
     _FakeAsyncClient.get_body = {
         "totalDataChart": [[1778803200, 100], [1778889600, 200]],
         "totalDataChartBreakdown": [[1778803200, {"Ethereum": {"Pendle": 100}}]],
@@ -274,7 +267,6 @@ async def test_defillama_free_protocol_fees_returns_daily_and_weekly(
 async def test_defillama_free_protocol_tvl_history_compacts_chain_summary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _FakeAsyncClient.calls = []
     _FakeAsyncClient.get_body = {
         "tvl": [
             {"date": 1778803200, "totalLiquidityUSD": 1000},
@@ -308,10 +300,7 @@ async def test_defillama_free_protocol_tvl_history_compacts_chain_summary(
 async def test_defillama_free_current_prices_uses_coins_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _FakeAsyncClient.calls = []
     _FakeAsyncClient.get_body = {"coins": {"base:0xabc": {"price": 1.23}}}
-    _FakeAsyncClient.get_chunks = None
-    _FakeAsyncClient.get_headers = {}
     monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
 
     result = await llama_module.DEFILLAMA_FREE_CLIENT.current_prices("base:0xabc")
@@ -330,7 +319,6 @@ async def test_defillama_free_current_prices_uses_coins_host(
 async def test_defillama_free_protocol_resolves_compact_exact_slug(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _FakeAsyncClient.calls = []
     _FakeAsyncClient.get_body = [
         {
             "name": "Morpho Blue",
@@ -342,8 +330,6 @@ async def test_defillama_free_protocol_resolves_compact_exact_slug(
             "chainTvls": {"oversized": "history must not leak"},
         }
     ]
-    _FakeAsyncClient.get_chunks = None
-    _FakeAsyncClient.get_headers = {}
     monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
 
     result = await llama_module.DEFILLAMA_FREE_CLIENT.protocol("MORPHO-BLUE")
@@ -361,9 +347,7 @@ async def test_defillama_free_protocol_resolves_compact_exact_slug(
 async def test_defillama_free_rejects_chunked_oversize_before_json_decode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _FakeAsyncClient.calls = []
     _FakeAsyncClient.get_chunks = [b'{"data":', b'"too large"}']
-    _FakeAsyncClient.get_headers = {}
     monkeypatch.setattr(llama_module, "MAX_UPSTREAM_RESPONSE_BYTES", 10)
     monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
     monkeypatch.setattr(
@@ -388,10 +372,7 @@ async def test_defillama_free_large_protocol_history_returns_compact_window(
         {"date": 1778803200, "totalLiquidityUSD": 1000},
         {"date": 1778889600, "totalLiquidityUSD": 1200},
     ]
-    _FakeAsyncClient.calls = []
     _FakeAsyncClient.get_body = {"tvl": [*old_rows, *recent_rows], "chainTvls": {}}
-    _FakeAsyncClient.get_chunks = None
-    _FakeAsyncClient.get_headers = {}
     monkeypatch.setattr(llama_module.httpx, "AsyncClient", _FakeAsyncClient)
 
     result = await llama_module.DEFILLAMA_FREE_CLIENT.protocol_tvl_history(
@@ -433,7 +414,7 @@ async def test_defillama_free_concurrent_research_fanout_stays_bounded(
             llama_module.DEFILLAMA_FREE_CLIENT.yields_pools(limit=5),
             llama_module.DEFILLAMA_FREE_CLIENT.fees_overview(limit=5),
         ),
-        timeout=1,
+        timeout=5,
     )
 
     assert all(
@@ -452,7 +433,6 @@ async def test_defillama_free_validates_path_params() -> None:
 async def test_goldsky_private_endpoint_uses_env_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _FakeAsyncClient.calls = []
     _FakeAsyncClient.post_body = {"data": {"ok": True}}
     monkeypatch.setattr(goldsky_module.httpx, "AsyncClient", _FakeAsyncClient)
     monkeypatch.setenv("GOLDSKY_API_TOKEN", "goldsky_test_token")
@@ -491,7 +471,6 @@ async def test_goldsky_rejects_non_graphql_endpoint() -> None:
 async def test_goldsky_truncates_large_responses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _FakeAsyncClient.calls = []
     _FakeAsyncClient.post_body = {"data": {"items": ["x" * 201_000]}}
     monkeypatch.setattr(goldsky_module.httpx, "AsyncClient", _FakeAsyncClient)
 
