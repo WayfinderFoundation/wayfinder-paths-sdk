@@ -125,9 +125,11 @@ class CompletedBarsView:
         self._bars = frame.sort_values(["timestamp", "symbol"]).reset_index(drop=True)
         self._timestamps_cache: list[pd.Timestamp] | None = None
         self._symbols_cache: list[str] | None = None
-        # {(ts, symbol): MarketBar} + {ts: first MarketBar at ts}; shared with
-        # truncated child views (they guard lookups against their own bounds).
-        self._row_index: dict[Any, MarketBar] | None = None
+        # int64-ns timestamps of THIS frame's rows (sorted). row_at() binary-
+        # searches this instead of a {key: MarketBar} dict index — the dict
+        # retained one dataclass per row (115MB across rebuilds at the 120d
+        # 4-symbol scale, the gate backtest's OOM driver on the 2GB box).
+        self._ts_ns_cache: np.ndarray | None = None
         # {symbol: sorted positional indices in THIS frame}; shared with child
         # views alongside this view's absolute offset, so symbol_frame() is an
         # integer take instead of a per-call string-equality mask.
@@ -136,7 +138,13 @@ class CompletedBarsView:
 
     @classmethod
     def from_rows(cls, rows: list[Mapping[str, Any]]) -> CompletedBarsView:
-        return cls(pd.DataFrame([dict(row) for row in rows]))
+        # Columnar extraction, not [dict(row) for row in rows]: the per-row
+        # copy doubled the 120d/4-symbol parse footprint (a second 138k-dict
+        # list co-resident with the json.loads output) on the 2GB box.
+        if not rows:
+            return cls(pd.DataFrame(columns=sorted(cls.REQUIRED_COLUMNS)))
+        columns = {key: [row.get(key) for row in rows] for key in rows[0].keys()}
+        return cls(pd.DataFrame(columns))
 
     @classmethod
     def _from_trusted(
@@ -144,20 +152,20 @@ class CompletedBarsView:
         frame: pd.DataFrame,
         *,
         timestamps: list[pd.Timestamp] | None = None,
-        row_index: dict[Any, MarketBar] | None = None,
+        ts_ns: np.ndarray | None = None,
         symbol_positions: dict[str, np.ndarray] | None = None,
         symbol_positions_offset: int = 0,
     ) -> CompletedBarsView:
         """Fast path for frames already coerced+sorted by a prior __init__
         (e.g. per-tick truncation). Skipping re-coercion turns the simulator's
         per-bar view construction from O(n) coercions into a plain slice.
-        Passing the parent's timestamp slice and row index makes per-tick
+        Passing the parent's timestamp slice and ts-ns array makes per-tick
         views O(1) instead of recomputing uniques/masks each bar."""
         view = object.__new__(cls)
         view._bars = frame
         view._timestamps_cache = timestamps
         view._symbols_cache = None
-        view._row_index = row_index
+        view._ts_ns_cache = ts_ns
         view._symbol_positions = symbol_positions
         view._symbol_positions_offset = symbol_positions_offset
         return view
@@ -181,24 +189,25 @@ class CompletedBarsView:
             )
         return self._timestamps_cache
 
-    def _ensure_row_index(self) -> dict[Any, MarketBar]:
-        if self._row_index is None:
-            index: dict[Any, MarketBar] = {}
-            for row in self._bars.itertuples(index=False):
-                bar = MarketBar(
-                    timestamp=pd.Timestamp(row.timestamp),
-                    symbol=str(row.symbol),
-                    open=float(row.open),
-                    high=float(row.high),
-                    low=float(row.low),
-                    close=float(row.close),
-                    volume=None if pd.isna(row.volume) else float(row.volume),
-                )
-                index[(bar.timestamp, bar.symbol)] = bar
-                # First row at each timestamp (frame sorted by ts, symbol).
-                index.setdefault(bar.timestamp, bar)
-            self._row_index = index
-        return self._row_index
+    def _ensure_ts_ns(self) -> np.ndarray:
+        if self._ts_ns_cache is None:
+            self._ts_ns_cache = (
+                self._bars["timestamp"].to_numpy(dtype="datetime64[ns]").astype("int64")
+            )
+        return self._ts_ns_cache
+
+    def _bar_at_position(self, position: int) -> MarketBar:
+        row = self._bars.iloc[position]
+        volume = row["volume"]
+        return MarketBar(
+            timestamp=pd.Timestamp(row["timestamp"]),
+            symbol=str(row["symbol"]),
+            open=float(row["open"]),
+            high=float(row["high"]),
+            low=float(row["low"]),
+            close=float(row["close"]),
+            volume=None if pd.isna(volume) else float(volume),
+        )
 
     def latest(self, symbol: str | None = None) -> dict[str, Any]:
         frame = self._filter_symbol(symbol)
@@ -277,7 +286,7 @@ class CompletedBarsView:
         return CompletedBarsView._from_trusted(
             self._bars.iloc[start_pos:end_pos],
             timestamps=timestamps[start : end + 1],
-            row_index=self._ensure_row_index(),
+            ts_ns=self._ensure_ts_ns()[start_pos:end_pos],
             symbol_positions=self._ensure_symbol_positions(),
             symbol_positions_offset=self._symbol_positions_offset + start_pos,
         )
@@ -291,12 +300,19 @@ class CompletedBarsView:
         except TypeError:  # uncomparable input (naive ts, junk) == no bar
             in_bounds = False
         if in_bounds:
-            key = (timestamp, symbol) if symbol is not None else timestamp
-            bar = self._ensure_row_index().get(key)
-            if bar is not None:
-                # MarketBar is frozen, so sharing index instances across
-                # callers is safe — no defensive copy needed.
-                return bar
+            try:
+                ts_ns = int(pd.Timestamp(timestamp).value)
+            except (TypeError, ValueError):
+                ts_ns = None
+            if ts_ns is not None:
+                column = self._ensure_ts_ns()
+                left = int(np.searchsorted(column, ts_ns, side="left"))
+                right = int(np.searchsorted(column, ts_ns, side="right"))
+                for position in range(left, right):
+                    if symbol is None or str(self._bars["symbol"].iat[position]) == str(
+                        symbol
+                    ):
+                        return self._bar_at_position(position)
         raise ValueError(f"No bar at {timestamp} for {symbol or 'any symbol'}")
 
     def __len__(self) -> int:

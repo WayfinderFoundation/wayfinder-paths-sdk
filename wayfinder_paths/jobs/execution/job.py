@@ -358,7 +358,12 @@ def _load_dataset(
             tuple(feature_roots or (root,)), {item.name for item in specs}
         )
     if specs:
-        frames = load_feature_rows(list(feature_roots or (root,)), specs)
+        # Window the store load to the dataset's bar range (+ as-of anchors):
+        # a multi-month features.jsonl otherwise rides through every gate
+        # backtest in full — part of the 2GB-box OOM profile.
+        stamps = dataset.bars.timestamps
+        window = (stamps[0], stamps[-1]) if stamps else None
+        frames = load_feature_rows(list(feature_roots or (root,)), specs, window=window)
         dataset = PreparedExecutionDataset(
             merge_features(dataset.bars, frames, specs),
             {

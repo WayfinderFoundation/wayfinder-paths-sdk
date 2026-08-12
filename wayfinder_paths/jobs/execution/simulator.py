@@ -382,10 +382,11 @@ def simulate_execution(
             bars_by_symbol = _bars_at_timestamp(dataset.bars, timestamp)
             if not bars_by_symbol:
                 continue
+            timestamp_iso = timestamp.isoformat()
             for symbol, bar in bars_by_symbol.items():
                 price_series[symbol].append(
                     {
-                        "timestamp": timestamp.isoformat(),
+                        "timestamp": timestamp_iso,
                         "value": bar.close,
                         "open": bar.open,
                         "high": bar.high,

@@ -97,49 +97,113 @@ def parse_feature_specs(spec: ExecutionSpec) -> list[FeatureSpec]:
     return specs
 
 
+# Single-entry parse cache keyed on (path, mtime_ns, size, names). The live
+# driver calls load_feature_rows every tick; without this each 5-minute tick
+# re-parsed the full store (95MB / 600k+ lines observed live) once per
+# declared feature. Any append invalidates via mtime/size.
+_FEATURE_FILE_CACHE: dict[str, Any] = {}
+
+
+def _parse_feature_file(path: Path, names: set[str]) -> dict[str, dict[str, list]]:
+    """ONE streaming pass over the jsonl store collecting column lists for
+    every requested name — the store is parsed once, not once per spec."""
+    stat = path.stat()
+    key = (str(path), stat.st_mtime_ns, stat.st_size, tuple(sorted(names)))
+    if _FEATURE_FILE_CACHE.get("key") == key:
+        return _FEATURE_FILE_CACHE["columns"]
+    columns: dict[str, dict[str, list]] = {
+        name: {"timestamp": [], "value": [], "symbol": []} for name in names
+    }
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            bucket = columns.get(str(row.get("name")))
+            if bucket is None:
+                continue
+            bucket["timestamp"].append(row.get("timestamp"))
+            bucket["value"].append(row.get("value"))
+            bucket["symbol"].append(row.get("symbol"))
+    _FEATURE_FILE_CACHE["key"] = key
+    _FEATURE_FILE_CACHE["columns"] = columns
+    return columns
+
+
+def _trim_to_window(
+    frame: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp
+) -> pd.DataFrame:
+    """Rows within [start, end] plus, per symbol series (including the
+    null-symbol series), the latest row strictly before start — exactly what
+    merge_asof(direction=backward) can observe inside the window."""
+    before = frame[frame["timestamp"] < start]
+    if not before.empty:
+        anchor_idx = (
+            before.groupby(before["symbol"].astype(object), dropna=False)["timestamp"]
+            .idxmax()
+            .tolist()
+        )
+        anchors = frame.loc[anchor_idx]
+    else:
+        anchors = frame.iloc[0:0]
+    inside = frame[(frame["timestamp"] >= start) & (frame["timestamp"] <= end)]
+    return pd.concat([anchors, inside]).sort_values("timestamp").reset_index(drop=True)
+
+
 def load_feature_rows(
-    roots: list[Path], specs: list[FeatureSpec]
+    roots: list[Path],
+    specs: list[FeatureSpec],
+    *,
+    window: tuple[pd.Timestamp, pd.Timestamp] | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Per-feature frames sorted by timestamp: columns [timestamp, value,
     symbol]. Empty frame when a feature has no rows yet. First root that has
     the file wins (candidate dir before job dir — mirrors the candidate
-    dataset fallback)."""
+    dataset fallback).
+
+    `window=(start, end)` trims each frame to the bar range plus the as-of
+    anchor row per series — merge_asof(backward) sees identical values, but
+    a multi-month store no longer rides through a 120-day backtest in full."""
+    by_path: dict[Path, set[str]] = {}
+    spec_path: dict[str, Path | None] = {}
+    for spec in specs:
+        chosen: Path | None = None
+        for root in roots:
+            candidate = Path(root) / spec.path
+            if candidate.exists():
+                chosen = candidate
+                break
+        spec_path[spec.name] = chosen
+        if chosen is not None:
+            by_path.setdefault(chosen, set()).add(spec.name)
+
+    parsed = {path: _parse_feature_file(path, names) for path, names in by_path.items()}
+
     frames: dict[str, pd.DataFrame] = {}
     for spec in specs:
-        rows: list[dict[str, Any]] = []
-        for root in roots:
-            path = Path(root) / spec.path
-            if not path.exists():
-                continue
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                match row:
-                    case dict() if str(row.get("name")) == spec.name:
-                        rows.append(row)
-            break
-        if not rows:
+        path = spec_path[spec.name]
+        columns = parsed.get(path, {}).get(spec.name) if path is not None else None
+        if not columns or not columns["timestamp"]:
             frames[spec.name] = pd.DataFrame(columns=["timestamp", "value", "symbol"])
             continue
         frame = pd.DataFrame(
-            [
-                {
-                    "timestamp": row.get("timestamp"),
-                    "value": row.get("value"),
-                    "symbol": row.get("symbol"),
-                }
-                for row in rows
-            ]
-        )
-        frame["timestamp"] = pd.to_datetime(
-            frame["timestamp"], utc=True, errors="coerce"
+            {
+                "timestamp": pd.to_datetime(
+                    columns["timestamp"], utc=True, errors="coerce"
+                ),
+                "value": columns["value"],
+                "symbol": columns["symbol"],
+            }
         )
         frame = frame.dropna(subset=["timestamp"]).sort_values("timestamp")
+        if window is not None:
+            frame = _trim_to_window(frame, window[0], window[1])
         frames[spec.name] = frame.reset_index(drop=True)
     return frames
 

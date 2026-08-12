@@ -22,6 +22,7 @@ import asyncio
 import datetime as dt
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -149,26 +150,28 @@ def derive_features_job(
             ).reindex(closes.index)
         columns["regime_code"] = regime_wide
 
-    # Load the store's existing keys BEFORE the fetch: appends dedup against
-    # them, and the newest existing stamp bounds the exog/venue fetch window.
+    # Newest stored stamp PER SERIES, streamed (never a per-row key set — at
+    # the live store's 600k+ rows that set alone was ~100MB+ of tuples).
+    # Dedup semantics: appends are chronological per series (incremental
+    # fetches only extend the tail), so "strictly newer than the series'
+    # newest" is equivalent to the old exact-key check.
     features_path = root / "state" / "features.jsonl"
     features_path.parent.mkdir(parents=True, exist_ok=True)
-    existing: set[tuple[str, str, str]] = set()
+    newest_by_series: dict[tuple[str, str], str] = {}
     if features_path.exists():
-        for line in features_path.read_text(encoding="utf-8").splitlines():
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(row, dict):
-                existing.add(
-                    (
-                        str(row.get("timestamp")),
-                        str(row.get("name")),
-                        str(row.get("symbol")),
-                    )
-                )
-    newest_existing = max((key[0] for key in existing), default="")
+        with features_path.open(encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict):
+                    continue
+                series = (str(row.get("name")), str(row.get("symbol")))
+                ts = str(row.get("timestamp"))
+                if ts > newest_by_series.get(series, ""):
+                    newest_by_series[series] = ts
+    newest_existing = max(newest_by_series.values(), default="")
 
     if "exog" in sets or "venue" in sets:
         start_ms = int(closes.index[0].timestamp() * 1000)
@@ -220,10 +223,10 @@ def derive_features_job(
                         raise ValueError(
                             f"append cap {MAX_APPEND_ROWS} hit — raise every_bars"
                         )
-                    key = (ts.isoformat(), name, symbol)
-                    if key in existing:
+                    ts_iso = ts.isoformat()
+                    if ts_iso <= newest_by_series.get((name, symbol), ""):
                         continue
-                    existing.add(key)
+                    newest_by_series[(name, symbol)] = ts_iso
                     handle.write(
                         json.dumps(
                             {
@@ -246,7 +249,7 @@ def derive_features_job(
         "per_feature": dict(sorted(appended.items())),
         # Newest stamp in the store after this run — rows_appended == 0 is
         # NORMAL between hourly stamps; THIS is the staleness signal.
-        "newest_feature_ts": max((key[0] for key in existing), default=""),
+        "newest_feature_ts": max(newest_by_series.values(), default=""),
         "generated_at": str(dt.datetime.now(dt.UTC)),
         "read": (
             "Research-side derived features appended to the feature store — "
@@ -273,6 +276,70 @@ _DEGRADED_AFTER_FAILURES = 3
 # Newest feature stamp older than this despite "successful" refreshes is a
 # degradation too (a wedged feed that fails silent).
 _FEATURES_STALE_ALARM_S = 6 * 3600
+
+
+# Compact the append-only store once it outgrows this — the live store hit
+# 95MB/620k rows, filled the disk once, and rode through every backtest and
+# wake in full.
+_COMPACT_THRESHOLD_BYTES = 32 * 1024 * 1024
+# Keep the full evidence window plus margin so gate backtests and scans see
+# an unchanged store.
+_COMPACT_KEEP_DAYS = 130.0
+
+
+def compact_feature_store(
+    root: Path, *, keep_days: float = _COMPACT_KEEP_DAYS
+) -> dict[str, Any] | None:
+    """Rewrite features.jsonl keeping rows newer than the cutoff plus each
+    series' as-of anchor (newest row at/before cutoff) — merge_asof(backward)
+    observes identical values everywhere inside the kept window."""
+    path = root / "state" / "features.jsonl"
+    if not path.exists():
+        return None
+    before = path.stat().st_size
+    cutoff = (dt.datetime.now(dt.UTC) - dt.timedelta(days=keep_days)).isoformat()
+    anchors: dict[tuple[str, str], tuple[str, str]] = {}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            ts = str(row.get("timestamp"))
+            if ts >= cutoff:
+                continue
+            series = (str(row.get("name")), str(row.get("symbol")))
+            if ts > anchors.get(series, ("", ""))[0]:
+                anchors[series] = (ts, line if line.endswith("\n") else line + "\n")
+    kept = 0
+    dropped = 0
+    tmp = path.with_suffix(".jsonl.compact")
+    with tmp.open("w", encoding="utf-8") as out:
+        for _, line in sorted(anchors.values()):
+            out.write(line)
+            kept += 1
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    dropped += 1
+                    continue
+                if isinstance(row, dict) and str(row.get("timestamp")) >= cutoff:
+                    out.write(line if line.endswith("\n") else line + "\n")
+                    kept += 1
+                else:
+                    dropped += 1
+    tmp.replace(path)
+    dropped -= len(anchors)  # anchor rows were re-written, not dropped
+    return {
+        "before_bytes": before,
+        "after_bytes": path.stat().st_size,
+        "rows_kept": kept,
+        "rows_dropped": max(dropped, 0),
+    }
 
 
 def _feed_cause(error: str) -> str:
@@ -430,6 +497,28 @@ def refresh_derived_features_if_stale(
             {"type": "data_feed_recovered", "newest_feature_ts": newest_feature},
         )
         stamp.pop("degraded_since", None)
+
+    root = store.job_dir(job_id)
+    features_path = root / "state" / "features.jsonl"
+    if (
+        features_path.exists()
+        and features_path.stat().st_size > _COMPACT_THRESHOLD_BYTES
+    ):
+        try:
+            compacted = compact_feature_store(root)
+        except Exception as exc:  # noqa: BLE001 — compaction must not kill a wake
+            compacted = None
+            store.append_journal(
+                job_id,
+                {
+                    "type": "derived_features_refresh_failed",
+                    "error": f"feature store compaction: {str(exc)[:250]}",
+                },
+            )
+        if compacted:
+            store.append_journal(
+                job_id, {"type": "feature_store_compacted", **compacted}
+            )
 
     stamp.update(
         {
