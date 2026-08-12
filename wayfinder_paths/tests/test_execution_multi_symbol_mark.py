@@ -66,3 +66,39 @@ def test_absent_symbol_marks_at_last_known_close() -> None:
 
     # Equity must not oscillate: once BBB is at 130 it stays there while absent.
     assert at("00:20")["equity"] == at("00:25")["equity"]
+
+
+class _OpenLOAlways:
+    def __init__(self, params):
+        self.params = params
+
+    def decide(self, ctx):
+        # Try to open a LO long every bar until it holds one.
+        if "LO" not in ctx.ledger.positions:
+            return [OrderIntent(action="OPEN", venue="hyperliquid", symbol="LO",
+                                side="long", size=1)]
+        return []
+
+
+def test_absent_symbol_order_never_fills_at_another_symbols_price() -> None:
+    """An order for a symbol with no bar at the current timestamp must NOT fill
+    against a different symbol's bar. Regression for the cross-symbol fill bug:
+    an MU order filled at GOLD's ~$4,400 price because the broker fell back to
+    the first bar in the dict. Here LO (~100) must never fill at HI (~5000)."""
+    rows = [
+        _bar("2026-01-01T00:00:00Z", "HI", 5000),                                    # LO absent
+        _bar("2026-01-01T00:05:00Z", "HI", 5000),                                    # LO absent
+        _bar("2026-01-01T00:10:00Z", "HI", 5000), _bar("2026-01-01T00:10:00Z", "LO", 100),
+        _bar("2026-01-01T00:15:00Z", "HI", 5000), _bar("2026-01-01T00:15:00Z", "LO", 100),
+    ]
+    dataset = PreparedExecutionDataset.from_rows(rows)
+    result = simulate_execution(
+        lambda params: _OpenLOAlways(params), dataset, ExecutionSpec(),
+        {"initial_capital": 100_000.0},
+    )
+    lo_fills = [f for f in result.trades if f["symbol"] == "LO"]
+    assert lo_fills, "LO should eventually fill once it prints a bar"
+    for f in lo_fills:
+        assert float(f["avg_price"]) < 1000, (
+            f"LO filled at {f['avg_price']} — that's HI's price, not LO's"
+        )
