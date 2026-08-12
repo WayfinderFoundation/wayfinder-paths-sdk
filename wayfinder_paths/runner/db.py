@@ -48,6 +48,9 @@ class RunnerDB:
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
 
+    def close(self) -> None:
+        self._conn.close()
+
     def _init_schema(self) -> None:
         cur = self._conn.cursor()
         cur.execute("PRAGMA journal_mode=WAL;")
