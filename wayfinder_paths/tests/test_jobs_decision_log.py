@@ -288,3 +288,40 @@ def test_data_feed_events_reach_the_feed(tmp_path) -> None:
     assert "out_of_credits" in degraded
     assert "top up API credits" in degraded
     assert any(t == "Data feed recovered" for t in titles)
+
+
+def test_ideation_events_reach_the_feed(tmp_path) -> None:
+    """Research expeditions must be owner-visible: artifacts show ranked
+    bucket counts, and an overdue expedition names the broken contract."""
+    store, job_id = _mk(tmp_path)
+    root = store.job_dir(job_id)
+    journal = [
+        {
+            "ts": _ts(10),
+            "type": "ideation_artifact",
+            "generated_at": "2026-08-12T00:00:00+00:00",
+            "sources": 4,
+            "hypotheses": 5,
+            "buckets": {"testable": 1, "starved": 3, "refuted": 1},
+        },
+        {"ts": _ts(2), "type": "ideation_incomplete", "artifact_age_s": 180000},
+    ]
+    (root / "journal.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in journal) + "\n", encoding="utf-8"
+    )
+
+    log = build_decision_log(store, job_id)
+    by_title = {entry["title"]: entry for entry in log["entries"]}
+    artifact = next(
+        entry
+        for title, entry in by_title.items()
+        if title.startswith("Research expedition: 5 hypotheses")
+    )
+    assert "4 external sources" in artifact["title"]
+    assert "1 testable, 3 starved, 1 refuted" in artifact["detail"]
+    overdue = next(
+        entry
+        for title, entry in by_title.items()
+        if title.startswith("Research expedition overdue")
+    )
+    assert "50h old" in overdue["detail"]

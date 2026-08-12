@@ -19,6 +19,7 @@ from wayfinder_paths.jobs.worker import (
     DYNAMIC_CONTEXT_MARKER,
     STABLE_PREFIX_END_MARKER,
     _build_worker_prompt_sections,
+    _ideation_bookkeeping,
     run_job_worker,
 )
 
@@ -1333,3 +1334,188 @@ def test_worker_prompt_hoists_red_gate_out_of_snapshot(tmp_path: Path) -> None:
         ),
     )
     assert "GATE STATUS: RED" not in green["dynamic_context"]
+
+
+def _write_ideation_artifact(store: JobStore, job_id: str, *, age_hours: float) -> None:
+    import datetime as dt
+
+    path = store.job_dir(job_id) / "research" / "ideation" / "latest.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = dt.datetime.now(dt.UTC) - dt.timedelta(hours=age_hours)
+    path.write_text(
+        json.dumps(
+            {
+                "generated_at": stamp.isoformat(),
+                "sources_consulted": [
+                    {"tool": "research_search_alpha", "query": "sol unlocks", "takeaway": "none"},
+                    {"tool": "research_crypto_sentiment", "query": "SOL", "takeaway": "neutral"},
+                    {"tool": "research_social_x_search", "query": "solana catalyst", "takeaway": "fee vote"},
+                ],
+                "hypotheses": [
+                    {"title": "A", "thesis": "t", "bucket": "testable", "next_step": "scan"},
+                    {"title": "B", "thesis": "t", "bucket": "starved", "next_step": "needs events feed"},
+                    {"title": "C", "thesis": "t", "bucket": "refuted", "next_step": "no edge in 2024-2026"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_worker_prompt_forces_ideation_when_artifact_stale(tmp_path: Path) -> None:
+    """Ideation is a FORCED session: prose suggestions produced 130 straight
+    "nothing new" wakes with zero external tool calls. When the expedition
+    artifact is missing or >20h old, the wake's task IS the expedition."""
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "ideation-demo",
+        goal="Find edges.",
+        script="workspace/src/loop.py",
+        agent_mode="intervene",
+    )
+    store.save(job)
+
+    forced = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
+    )
+    dynamic = forced["dynamic_context"]
+    at = dynamic.index("IDEATION SESSION — this wake is a research EXPEDITION")
+    assert at < dynamic.index("Current snapshot:")
+    assert "research/ideation/latest.json" in dynamic
+    assert '"testable"|"starved"|"refuted"' in dynamic
+    assert "This wake is an IDEATION SESSION" in dynamic
+    assert "at least 3 DISTINCT external sources" in dynamic
+
+    # Fresh artifact → back to routine wakes.
+    _write_ideation_artifact(store, job.id, age_hours=2)
+    routine = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
+    )
+    assert "IDEATION SESSION — this wake is a research EXPEDITION" not in routine["dynamic_context"]
+
+    # Stale again after ~a day.
+    _write_ideation_artifact(store, job.id, age_hours=26)
+    stale = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
+    )
+    assert "IDEATION SESSION — this wake is a research EXPEDITION" in stale["dynamic_context"]
+    assert "26h old" in stale["dynamic_context"]
+
+
+def test_ideation_defers_to_ops_priorities(tmp_path: Path) -> None:
+    """The expedition lands on the next CLEAN wake: red gates, pending
+    re-stages, apply wakes, and monitor mode all suppress it."""
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "ideation-defer-demo",
+        goal="Ops first.",
+        script="workspace/src/loop.py",
+        agent_mode="intervene",
+    )
+    store.save(job)
+
+    red_gate = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(
+            job,
+            scorecard={"health": "green"},
+            gate={"live_ready": False, "reasons": ["backtest is stale"]},
+        ),
+    )
+    assert "IDEATION SESSION — this wake is a research EXPEDITION" not in red_gate["dynamic_context"]
+
+    monitor = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="monitor",
+        snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
+    )
+    assert "IDEATION SESSION — this wake is a research EXPEDITION" not in monitor["dynamic_context"]
+
+    apply_wake = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
+        apply_proposal_id="prop-params-update-aaaa1111",
+    )
+    assert "IDEATION SESSION — this wake is a research EXPEDITION" not in apply_wake["dynamic_context"]
+
+    proposals_dir = store.job_dir(job.id) / "proposals"
+    proposals_dir.mkdir(parents=True, exist_ok=True)
+    (proposals_dir / "prop-params-update-bbbb2222.json").write_text(
+        json.dumps(
+            {
+                "proposal_id": "prop-params-update-bbbb2222",
+                "status": "approved",
+                "proposed_change": {"summary": "s", "execution_params": {"x": 1}},
+                "application": {"status": "failed", "restage_requested": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    restage_wake = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
+    )
+    assert "IDEATION SESSION — this wake is a research EXPEDITION" not in restage_wake["dynamic_context"]
+
+
+def test_ideation_bookkeeping_journals_artifacts_and_overdue(tmp_path: Path) -> None:
+    """New artifacts journal once with bucket counts; a >48h-overdue
+    expedition escalates once per episode."""
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "ideation-books-demo",
+        goal="Honest ledger.",
+        script="workspace/src/loop.py",
+        agent_mode="intervene",
+    )
+    store.save(job)
+    journal_path = store.job_dir(job.id) / "journal.jsonl"
+
+    def journal_types() -> list[str]:
+        if not journal_path.exists():
+            return []
+        return [
+            json.loads(line)["type"]
+            for line in journal_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    # No artifact ever → escalate once, not every wake.
+    _ideation_bookkeeping(store, job.id)
+    _ideation_bookkeeping(store, job.id)
+    assert journal_types().count("ideation_incomplete") == 1
+
+    # Fresh artifact → journaled once with bucket counts, seen-stamped.
+    _write_ideation_artifact(store, job.id, age_hours=1)
+    _ideation_bookkeeping(store, job.id)
+    _ideation_bookkeeping(store, job.id)
+    assert journal_types().count("ideation_artifact") == 1
+    artifact_event = next(
+        json.loads(line)
+        for line in journal_path.read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["type"] == "ideation_artifact"
+    )
+    assert artifact_event["hypotheses"] == 3
+    assert artifact_event["sources"] == 3
+    assert artifact_event["buckets"] == {"testable": 1, "starved": 1, "refuted": 1}
+
+    # A NEW expedition (different generated_at) journals again.
+    _write_ideation_artifact(store, job.id, age_hours=0)
+    _ideation_bookkeeping(store, job.id)
+    assert journal_types().count("ideation_artifact") == 2

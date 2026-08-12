@@ -221,6 +221,41 @@ def _journal_entries(
                     actor="system",
                 )
             )
+        elif kind == "ideation_artifact":
+            buckets = event.get("buckets") or {}
+            bucket_desc = ", ".join(
+                f"{buckets[name]} {name}"
+                for name in ("testable", "starved", "refuted")
+                if buckets.get(name)
+            )
+            entries.append(
+                _entry(
+                    ts,
+                    "research",
+                    f"Research expedition: {int(event.get('hypotheses') or 0)} "
+                    f"hypotheses from {int(event.get('sources') or 0)} external sources",
+                    bucket_desc,
+                    "info",
+                    actor="agent",
+                )
+            )
+        elif kind == "ideation_incomplete":
+            age_s = event.get("artifact_age_s")
+            detail = (
+                "no expedition artifact has ever been produced"
+                if age_s is None
+                else f"last artifact is {int(age_s) // 3600}h old"
+            )
+            entries.append(
+                _entry(
+                    ts,
+                    "research",
+                    "Research expedition overdue — daily ideation contract not met",
+                    detail,
+                    "info",
+                    actor="system",
+                )
+            )
         elif kind == "data_feed_recovered":
             entries.append(
                 _entry(

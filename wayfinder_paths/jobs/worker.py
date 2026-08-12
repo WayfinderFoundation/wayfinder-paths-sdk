@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import datetime as dt
 import json
 import os
 from pathlib import Path
@@ -198,6 +199,83 @@ def _research_substrate_block(root: Path) -> dict[str, Any]:
             "automatically as part of the build)."
         )
     return block
+
+
+_IDEATION_PATH = "research/ideation/latest.json"
+_IDEATION_SEEN_PATH = "research/ideation/last_seen.json"
+# Daily expedition, stamp-gated under the wake rhythm (20h, not 24h, so a
+# 30m cadence cannot alias it to every-other-day).
+_IDEATION_DUE_S = 20 * 3600
+_IDEATION_OVERDUE_S = 48 * 3600
+
+
+def _ideation_age_s(root: Path) -> float | None:
+    path = root / _IDEATION_PATH
+    if not path.exists():
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        stamp = dt.datetime.fromisoformat(str(doc.get("generated_at")))
+    except (ValueError, TypeError):
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=dt.UTC)
+    return (dt.datetime.now(dt.UTC) - stamp).total_seconds()
+
+
+def _ideation_bookkeeping(store: JobStore, job_id: str) -> None:
+    """Mechanical accountability for the ideation contract.
+
+    Prose ideation degenerated into "nothing new, agenda stands" 130 wakes in
+    a row — no external tool was ever consulted. The contract is now an
+    ARTIFACT (research/ideation/latest.json); this journals each new artifact
+    into the decision log (owner-visible bucket counts) and escalates once
+    when the expedition is >48h overdue."""
+    root = store.job_dir(job_id)
+    path = root / _IDEATION_PATH
+    seen = store.read_json(job_id, _IDEATION_SEEN_PATH) or {}
+    doc = None
+    if path.exists():
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            doc = None
+    generated_at = str((doc or {}).get("generated_at") or "")
+    if doc and generated_at and generated_at != str(seen.get("generated_at") or ""):
+        hypotheses = [h for h in doc.get("hypotheses") or [] if isinstance(h, dict)]
+        buckets: dict[str, int] = {}
+        for h in hypotheses:
+            bucket = str(h.get("bucket") or "unbucketed")
+            buckets[bucket] = buckets.get(bucket, 0) + 1
+        store.append_journal(
+            job_id,
+            {
+                "type": "ideation_artifact",
+                "generated_at": generated_at,
+                "sources": len(doc.get("sources_consulted") or []),
+                "hypotheses": len(hypotheses),
+                "buckets": buckets,
+            },
+        )
+        store.write_json(
+            job_id, _IDEATION_SEEN_PATH, {"generated_at": generated_at}
+        )
+        return
+    age = _ideation_age_s(root)
+    overdue = age is None or age > _IDEATION_OVERDUE_S
+    if overdue and seen.get("escalated_for") != generated_at:
+        store.append_journal(
+            job_id,
+            {
+                "type": "ideation_incomplete",
+                "artifact_age_s": None if age is None else int(age),
+            },
+        )
+        store.write_json(
+            job_id,
+            _IDEATION_SEEN_PATH,
+            {**seen, "escalated_for": generated_at},
+        )
 
 
 def _restage_block(root: Path) -> list[dict[str, Any]]:
@@ -710,18 +788,17 @@ def _build_worker_prompt_sections(
             "tools — no multiplicity control — so what they suggest becomes a "
             "workspace SignalDef or grid hypothesis for the scan/holdout "
             "gate, never direct evidence.\n"
-            "- Ideation cadence: research/agenda.md is the cumulative "
-            "research state — sections: Dead map (refuted, one line of "
-            "evidence each), Open hypotheses (ranked, each citing its "
-            "evidence), Starved (insufficient data, each with an explicit "
-            "unlock condition), and a Last-ideation timestamp. If that "
-            "timestamp is older than ~24h and operations are healthy, spend "
-            "THIS wake as an IDEATION session: start from the agenda plus "
-            "the durable-memory asset dossier, pull world context with the "
-            "research tools (what these assets ARE — sector links, earnings "
-            "calendar, market structure — is evidence), generate and RANK "
-            "structurally different hypotheses, append the best as Open "
-            "entries, and retire or starve stale ones. Reopening a refuted "
+            "- Ideation cadence: ideation is a FORCED session. Roughly daily "
+            "the harness marks a wake as an IDEATION SESSION via a block "
+            "above the snapshot — when present, execute it exactly: named "
+            "external research tools, ranked hypotheses, and the "
+            "research/ideation/latest.json artifact (mechanically checked; "
+            "buckets: testable / starved / refuted). Do NOT run ideation on "
+            "other wakes. research/agenda.md remains the cumulative research "
+            "state — sections: Dead map (refuted, one line of evidence "
+            "each), Open hypotheses (ranked, each citing its evidence), "
+            "Starved (insufficient data, each with an explicit unlock "
+            "condition), and a Last-ideation timestamp. Reopening a refuted "
             "hypothesis requires NAMED new evidence. Keep the agenda compact "
             "(~150 lines): it is a curated map, not a log — compact it in "
             "place as part of updating it.\n"
@@ -751,6 +828,66 @@ def _build_worker_prompt_sections(
             "it as a strategy failure, but DO NOT report the gate as green. "
             "For any other reason, fixing the gate is a priority this wake.\n\n"
         )
+    # Ideation is a FORCED session, not a prose suggestion: 130 consecutive
+    # "nothing new, agenda stands" wakes proved the agent never consults an
+    # external tool unless the wake's task IS the expedition. Stamp-gated on
+    # the artifact itself (~daily); skipped while ops need attention (red
+    # gate, pending re-stage, apply wake) so it lands on the next clean wake.
+    ideation_directive = ""
+    ideation_task_line = ""
+    ideation_age = _ideation_age_s(root)
+    ideation_due = ideation_age is None or ideation_age > _IDEATION_DUE_S
+    if (
+        ideation_due
+        and mode == "intervene"
+        and apply_proposal_id is None
+        and not restage_tasks
+        and not (gate_state and gate_state.get("live_ready") is False)
+    ):
+        age_desc = (
+            "missing (no expedition has ever produced one)"
+            if ideation_age is None
+            else f"{ideation_age / 3600:.0f}h old"
+        )
+        ideation_directive = (
+            "IDEATION SESSION — this wake is a research EXPEDITION, not a "
+            "routine review.\n"
+            f"The external-research artifact ({_IDEATION_PATH}) is {age_desc}; "
+            "the contract is one expedition per day.\n"
+            "Give routine ops ONE glance (act only if something is red), then:\n"
+            "1. Consult at least 3 DISTINCT external sources via named research "
+            "tool calls — research_search_alpha, research_crypto_sentiment, "
+            "research_social_x_search, research_search_perp, web search/fetch. "
+            "Re-reading the agenda, memory, or internal scan results does NOT "
+            "count as a source.\n"
+            "2. Look OUTWARD at the next 1-2 weeks for YOUR symbols and their "
+            "sector: scheduled events, token unlocks, listings, macro prints, "
+            "funding-regime shifts, narrative rotation.\n"
+            "3. Write research/ideation/latest.json with exactly this shape: "
+            '{"generated_at": "<UTC ISO8601>", "sources_consulted": [{"tool": '
+            '..., "query": ..., "takeaway": ...}], "hypotheses": [{"title": '
+            '..., "thesis": ..., "bucket": "testable"|"starved"|"refuted", '
+            '"next_step": ...}]} — hypotheses ranked best-first, at least 3, '
+            "every one bucketed honestly:\n"
+            "   - testable: next_step names the exact scan/SignalDef/feature "
+            "run to do NOW with data you already have.\n"
+            "   - starved: next_step names the unlock condition — the data or "
+            "feature that must exist first (e.g. an events/catalyst feed that "
+            "is not built yet). Naming missing data is a VALID and valuable "
+            "outcome, not a failure.\n"
+            "   - refuted: next_step names the disqualifying evidence.\n"
+            "4. Fold the artifact into research/agenda.md (curated + compact, "
+            "as usual).\n"
+            "A 'nothing actionable' expedition is valid ONLY if "
+            "sources_consulted proves you looked. The artifact is checked "
+            "mechanically each wake; a missing or stale artifact is journaled "
+            "as ideation_incomplete for the owner to see.\n\n"
+        )
+        ideation_task_line = (
+            "- This wake is an IDEATION SESSION: execute the IDEATION SESSION "
+            "block above the snapshot, including writing "
+            "research/ideation/latest.json.\n"
+        )
     restage_priority = ""
     restage_task_line = ""
     if restage_tasks:
@@ -779,6 +916,7 @@ def _build_worker_prompt_sections(
         f"{DYNAMIC_CONTEXT_MARKER}\n"
         f"{gate_alert}"
         f"{restage_priority}"
+        f"{ideation_directive}"
         "Current snapshot:\n"
         f"{_canonical_json(dynamic_payload, max_chars=12000)}\n\n"
         "Research agenda (research/agenda.md — cumulative exploration "
@@ -788,6 +926,7 @@ def _build_worker_prompt_sections(
         f"{recent_journal}\n\n"
         "Task:\n"
         f"{restage_task_line}"
+        f"{ideation_task_line}"
         f"{task_line}"
         "- Write the appropriate monitor/intervene/auto/apply report.\n"
         "- Emit a user-visible result only for meaningful state transitions, "
@@ -842,6 +981,11 @@ def prepare_job_worker_prompt(
     # merging cleanly into every scan frame). Stamp-gated hourly; never
     # raises.
     refresh_derived_features_if_stale(job.id, store=store)
+
+    # Ideation accountability: journal freshly produced expedition artifacts
+    # (owner-visible bucket counts) and escalate once when the daily research
+    # expedition is >48h overdue. Never raises.
+    _ideation_bookkeeping(store, job.id)
 
     prompt_sections = _build_worker_prompt_sections(
         store=store,
