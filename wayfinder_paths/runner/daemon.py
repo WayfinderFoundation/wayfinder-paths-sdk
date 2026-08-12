@@ -341,8 +341,12 @@ class RunnerDaemon:
         def _target() -> None:
             try:
                 callback()
-            except Exception as exc:  # noqa: BLE001
-                logger.debug(f"Runner side effect {label} failed: {exc}")
+            except Exception:  # noqa: BLE001
+                # WARNING, not debug: a silently dying side effect is how the
+                # backend job mirror went stale for a week — the sync thread
+                # crashed on every run and nothing surfaced at the daemon's
+                # INFO log level.
+                logger.opt(exception=True).warning(f"Runner side effect {label} failed")
 
         thread = threading.Thread(
             target=_target,
@@ -402,26 +406,37 @@ class RunnerDaemon:
     def _sync_to_backend_async(self) -> None:
         if not is_opencode_instance():
             return
+        db_path = self._paths.db_path
 
         def _sync() -> None:
-            jobs = []
-            for j in self._db.list_jobs():
-                result = self._db.get_job(name=j["name"])
-                if not result:
-                    continue
-                job, state = result
-                jobs.append(
-                    {
-                        "job_name": job.name,
-                        "job_type": job.type,
-                        "status": state.status,
-                        "interval_seconds": job.interval_seconds,
-                        "schedule_kind": job.schedule_kind,
-                        "cron_expr": job.cron_expr,
-                        "timezone": job.timezone,
-                        "payload": job.payload,
-                    }
-                )
+            # Read through a private connection. self._db is one shared sqlite
+            # connection used concurrently by the scheduler tick loop and the
+            # control server; using it from this thread as well killed the
+            # sync mid-read — before bulk_sync could POST or log — so the
+            # backend job mirror went permanently stale while report_run
+            # 404-warned about jobs the backend had never seen.
+            db = RunnerDB(db_path)
+            try:
+                jobs = []
+                for j in db.list_jobs():
+                    result = db.get_job(name=j["name"])
+                    if not result:
+                        continue
+                    job, state = result
+                    jobs.append(
+                        {
+                            "job_name": job.name,
+                            "job_type": job.type,
+                            "status": state.status,
+                            "interval_seconds": job.interval_seconds,
+                            "schedule_kind": job.schedule_kind,
+                            "cron_expr": job.cron_expr,
+                            "timezone": job.timezone,
+                            "payload": job.payload,
+                        }
+                    )
+            finally:
+                db.close()
             SCHEDULED_JOBS_CLIENT.bulk_sync(jobs)
 
         self._run_side_effect("bulk-sync", _sync)

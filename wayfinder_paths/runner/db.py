@@ -48,6 +48,12 @@ class RunnerDB:
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
 
+    def close(self) -> None:
+        """Close the underlying connection. For short-lived private
+        connections (e.g. the backend-sync thread) — the daemon's main
+        RunnerDB lives for the process lifetime and never calls this."""
+        self._conn.close()
+
     def _init_schema(self) -> None:
         cur = self._conn.cursor()
         cur.execute("PRAGMA journal_mode=WAL;")
