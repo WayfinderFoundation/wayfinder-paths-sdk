@@ -342,10 +342,8 @@ class RunnerDaemon:
             try:
                 callback()
             except Exception:  # noqa: BLE001
-                # WARNING, not debug: a silently dying side effect is how the
-                # backend job mirror went stale for a week — the sync thread
-                # crashed on every run and nothing surfaced at the daemon's
-                # INFO log level.
+                # Warning, not debug: crashes here are invisible at the
+                # daemon's INFO log level otherwise.
                 logger.opt(exception=True).warning(f"Runner side effect {label} failed")
 
         thread = threading.Thread(
@@ -409,12 +407,9 @@ class RunnerDaemon:
         db_path = self._paths.db_path
 
         def _sync() -> None:
-            # Read through a private connection. self._db is one shared sqlite
-            # connection used concurrently by the scheduler tick loop and the
-            # control server; using it from this thread as well killed the
-            # sync mid-read — before bulk_sync could POST or log — so the
-            # backend job mirror went permanently stale while report_run
-            # 404-warned about jobs the backend had never seen.
+            # Private connection: self._db is shared with the scheduler loop
+            # and control server, and cross-thread use kills this thread
+            # mid-read before the POST.
             db = RunnerDB(db_path)
             try:
                 jobs = []

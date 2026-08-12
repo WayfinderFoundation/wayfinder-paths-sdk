@@ -133,8 +133,7 @@ def _wait_for(predicate, timeout_s: float = 5.0) -> bool:
 def test_sync_to_backend_delivers_full_registry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """End-to-end through _sync_to_backend_async (the earlier tests hand-built
-    the payload and never exercised the async path that was silently dying)."""
+    """Exercises _sync_to_backend_async end-to-end, not a hand-built payload."""
     monkeypatch.setenv("OPENCODE_INSTANCE_ID", "inst-xyz")
 
     daemon = RunnerDaemon(paths=_paths(tmp_path))
@@ -160,11 +159,8 @@ def test_sync_to_backend_delivers_full_registry(
 def test_sync_does_not_use_the_daemons_shared_connection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Regression: the sync thread used self._db — one sqlite connection
-    shared with the 1s scheduler loop and the control server — and died
-    mid-read on every sync, before bulk_sync could POST or log. The backend
-    mirror froze for a week on a production box. The sync must read through
-    a private connection, so poisoning the shared one must not matter."""
+    """The sync thread must read through its own connection: poisoning the
+    daemon's shared one must not affect delivery."""
     monkeypatch.setenv("OPENCODE_INSTANCE_ID", "inst-xyz")
 
     daemon = RunnerDaemon(paths=_paths(tmp_path))
@@ -190,8 +186,7 @@ def test_sync_does_not_use_the_daemons_shared_connection(
 def test_side_effect_failure_logs_at_warning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Regression: side-effect crashes were logged at DEBUG — invisible at the
-    daemon's INFO level — which is how the dying sync went unnoticed."""
+    """Side-effect crashes must surface at WARNING, not debug."""
     from loguru import logger
 
     daemon = RunnerDaemon(paths=_paths(tmp_path))
