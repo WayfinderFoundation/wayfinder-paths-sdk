@@ -381,21 +381,30 @@ class PathsApiClient:
         app_name: str,
         lockfile_present: bool,
         paths: list[dict[str, Any]],
-        trigger: str,
-        source: str,
-        changed_slugs: list[str],
+        trigger: str | None = None,
+        source: str | None = None,
+        runtime_reload_intent: str | None = None,
+        changed_slugs: list[str] | None = None,
     ) -> dict[str, Any]:
         """Push this Fly machine's installed-paths state to vault-backend.
         Called by path CLI mutations and boot reconciliation."""
         url = f"{self.base_url}/api/v1/opencode/instances/{app_name}/inventory-sync/"
-        body = {
+        body: dict[str, Any] = {
             "lockfile_present": lockfile_present,
             "paths": paths,
-            "trigger": trigger,
-            "source": source,
-            "changed_slugs": changed_slugs,
         }
-        resp = self._client.post(url, json=body, headers=self._headers())
+        if runtime_reload_intent is not None:
+            body["runtime_reload_intent"] = runtime_reload_intent
+        if changed_slugs is not None:
+            body["changed_slugs"] = changed_slugs
+        if trigger is not None:
+            body["trigger"] = trigger
+        if source is not None:
+            body["source"] = source
+        try:
+            resp = self._client.post(url, json=body, headers=self._headers())
+        except httpx.HTTPError as exc:
+            raise PathsApiError(f"Shells inventory sync failed: {exc}") from exc
         if resp.status_code >= 400:
             raise PathsApiError(
                 f"Shells inventory sync failed ({resp.status_code}): {resp.text}"

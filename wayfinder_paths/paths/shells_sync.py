@@ -3,8 +3,8 @@ per-machine inventory matches disk in real time. No-op outside an OpenCode
 instance, mirroring the `wallets.load_remote_wallets` pattern.
 
 Called by path CLI mutations after they modify `.wayfinder/paths.lock.json`.
-The mutation source lets vault-backend distinguish boot reconciliation from
-backend-managed and direct in-machine changes so runtime reloads happen once.
+The caller reports the runtime effect so vault-backend can reconcile disk state
+without guessing whether OpenCode needs to reload.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from loguru import logger
 
@@ -28,8 +28,9 @@ from wayfinder_paths.paths.heartbeat import (
 )
 
 _HOST = "opencode"
-_SYNC_SOURCE_ENV = "WAYFINDER_SHELLS_SYNC_SOURCE"
-ShellsInventorySyncSource = Literal["boot", "managed", "direct"]
+_RUNTIME_RELOAD_INTENT_ENV = "WAYFINDER_SHELLS_RUNTIME_RELOAD_INTENT"
+_SKIP_SYNC_ENV = "WAYFINDER_SKIP_SHELLS_INVENTORY_SYNC"
+ShellsRuntimeReloadIntent = Literal["fresh", "preserve", "restart"]
 
 
 @dataclass(frozen=True)
@@ -40,18 +41,25 @@ class ShellsInventorySyncResult:
     upserted: int = 0
     deleted: int = 0
     trigger: str = ""
+    runtime_reload_intent: ShellsRuntimeReloadIntent = "preserve"
+    runtime_reload_status: str = ""
 
 
-def _sync_source() -> ShellsInventorySyncSource:
-    value = os.getenv(_SYNC_SOURCE_ENV, "").strip().lower()
-    if value in {"boot", "managed"}:
-        return value
-    return "direct"
+def _runtime_reload_intent(
+    requested: ShellsRuntimeReloadIntent,
+) -> ShellsRuntimeReloadIntent:
+    override = os.getenv(_RUNTIME_RELOAD_INTENT_ENV, "").strip().lower()
+    if override in {"fresh", "preserve", "restart"}:
+        return cast(ShellsRuntimeReloadIntent, override)
+    return requested
+
+
+def _sync_suppressed() -> bool:
+    return os.getenv(_SKIP_SYNC_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
 def _collect(lock: dict[str, Any]) -> list[dict[str, Any]]:
-    """Lockfile → BE payload. Must stay in sync with the polling daemon's
-    collector at vault-backend `services/scripts/inventory_sync_daemon.py`."""
+    """Convert the canonical or legacy install lock to the backend payload."""
     items: list[dict[str, Any]] = []
     for slug, entry in _normalized_lock_paths(lock).items():
         if not isinstance(entry, dict):
@@ -78,20 +86,29 @@ def _collect(lock: dict[str, Any]) -> list[dict[str, Any]]:
 def sync_shells_inventory(
     *,
     trigger: str,
+    runtime_reload_intent: ShellsRuntimeReloadIntent = "preserve",
     changed_slugs: list[str] | None = None,
-    source: ShellsInventorySyncSource | None = None,
     cwd: Path | None = None,
     client: PathsApiClient | None = None,
 ) -> ShellsInventorySyncResult:
     """Self-gated: returns immediately when not inside a Fly OpenCode instance,
     so local CLI users / non-Shells consumers pay zero cost. Errors are caught
     and returned via the result; never raised."""
-    sync_source = source or _sync_source()
+    reload_intent = _runtime_reload_intent(runtime_reload_intent)
+    if _sync_suppressed():
+        return ShellsInventorySyncResult(
+            status="skipped",
+            reason="suppressed",
+            trigger=trigger,
+            runtime_reload_intent=reload_intent,
+        )
+
     if not is_opencode_instance():
         return ShellsInventorySyncResult(
             status="skipped",
             reason="not_in_opencode_instance",
             trigger=trigger,
+            runtime_reload_intent=reload_intent,
         )
 
     try:
@@ -101,6 +118,7 @@ def sync_shells_inventory(
             status="skipped",
             reason="missing_instance_id",
             trigger=trigger,
+            runtime_reload_intent=reload_intent,
         )
 
     state_dir = _find_wayfinder_dir(start=cwd)
@@ -114,7 +132,10 @@ def sync_shells_inventory(
             lockfile_present=lockfile_present,
             paths=paths,
             trigger=trigger,
-            source=sync_source,
+            source={"fresh": "boot", "preserve": "managed", "restart": "direct"}[
+                reload_intent
+            ],
+            runtime_reload_intent=reload_intent,
             changed_slugs=changed_slugs or [],
         )
     except PathsApiError as exc:
@@ -124,7 +145,12 @@ def sync_shells_inventory(
             reason="request_failed",
             attempted=len(paths),
             trigger=trigger,
+            runtime_reload_intent=reload_intent,
         )
+
+    runtime_reload_status = str(response.get("runtime_reload_status") or "")
+    if not runtime_reload_status and response.get("runtime_restarted") is True:
+        runtime_reload_status = "restarted"
 
     return ShellsInventorySyncResult(
         status="recorded",
@@ -133,4 +159,6 @@ def sync_shells_inventory(
         upserted=int(response.get("upserted") or 0),
         deleted=int(response.get("deleted") or 0),
         trigger=trigger,
+        runtime_reload_intent=reload_intent,
+        runtime_reload_status=runtime_reload_status,
     )
