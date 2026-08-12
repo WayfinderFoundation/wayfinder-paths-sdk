@@ -290,18 +290,25 @@ async def _run_tick_inner(
         result.skipped = True
         result.skip_reason = "no_bars_at_timestamp"
         return result
-    default_bar = next(iter(bars_by_symbol.values()))
-
     state.ledger.on_bar_tick(bar_ts)
 
+    # A symbol absent from this timestamp's bars has no market to fill against.
+    # Never fall back to another symbol's bar (previously `default_bar`, the first
+    # bar in the dict) — that fills e.g. an MU order at GOLD's price. Next-bar-open
+    # intents are deferred until the symbol prints; immediate intents (below) are
+    # dropped and the strategy re-emits when it can be priced honestly.
+    deferred_intents: list[OrderIntent] = []
     for intent in state.pending_intents:
-        bar = bars_by_symbol.get(intent.symbol, default_bar)
+        bar = bars_by_symbol.get(intent.symbol)
+        if bar is None:
+            deferred_intents.append(intent)
+            continue
         fill = await _place(
             brokers, intent, price=bar.open, timestamp=bar_iso, result=result
         )
         if fill is not None:
             _record_fill(fill, state=state, trace=trace, result=result)
-    state.pending_intents = []
+    state.pending_intents = deferred_intents
 
     for event in events or []:
         _apply_market_event(
@@ -406,7 +413,17 @@ async def _run_tick_inner(
                 }
             )
             continue
-        ref_price = bars_by_symbol.get(intent.symbol, default_bar).close
+        bar = bars_by_symbol.get(intent.symbol)
+        # Price/validate against the symbol's OWN last-known close when it has no
+        # bar this timestamp — never another symbol's bar (the old `default_bar`
+        # fallback filled e.g. an MU order at GOLD's price). The fill itself is
+        # dropped below when there's no current bar.
+        if bar is not None:
+            ref_price = bar.close
+        elif intent.symbol in view.symbols:
+            ref_price = float(view.latest(intent.symbol)["close"])
+        else:
+            ref_price = 0.0
         rejection = _validate_intent(
             intent,
             brokers=brokers,
@@ -420,6 +437,19 @@ async def _run_tick_inner(
                 {
                     "kind": "intent_rejected",
                     "reason": rejection,
+                    "intent": intent.to_dict(),
+                    "timestamp": bar_iso,
+                }
+            )
+            continue
+        if bar is None:
+            # Passed validation but there's no market for this symbol this bar —
+            # do not fill against another symbol's price. Drop it; the strategy
+            # re-emits next bar when the symbol prints and can be priced honestly.
+            result.guard_events.append(
+                {
+                    "kind": "intent_rejected",
+                    "reason": f"no bar for {intent.symbol} at this timestamp",
                     "intent": intent.to_dict(),
                     "timestamp": bar_iso,
                 }
