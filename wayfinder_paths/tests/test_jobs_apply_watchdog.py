@@ -798,3 +798,109 @@ def test_watchdog_ignores_healthy_resumes_and_in_flight_applies(
 
     assert [name for kind, name in calls if kind == "resume"] == []
     assert all(e["action"] != "resume_orphaned_pause" for e in result["recovered"])
+
+
+def _gate(live_ready: bool, reasons: list[str]) -> dict:
+    return {"live_ready": live_ready, "reasons": reasons}
+
+
+_MISMATCH = "backtest is for revision aaaa11112222, workspace is bbbb33334444"
+
+
+def test_watchdog_restamps_revision_mismatch_gate(tmp_path: Path, monkeypatch) -> None:
+    """Gate red PURELY from revision mismatch → the watchdog re-runs the
+    stamp chain; substantive reds are never touched."""
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "gate-stale")
+
+    gates = iter([_gate(False, [_MISMATCH]), _gate(True, [])])
+    chain: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.gating.evaluate_live_gate",
+        lambda job_id, store=None, **k: next(gates),
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.gating.compute_workspace_revision",
+        lambda root: "bbbb33334444",
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.job.backtest_execution_job",
+        lambda job_id, store=None, **k: chain.append("backtest"),
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.preflight.run_preflight",
+        lambda job_id, store=None, **k: chain.append("preflight"),
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.validation.validate_execution_job",
+        lambda job_id, store=None, **k: chain.append("validate"),
+    )
+
+    result = recover_stalled_applications(store=store)
+
+    assert chain == ["backtest", "preflight", "validate"]
+    events = [e for e in result["recovered"] if e["action"] == "gate_restamp"]
+    assert len(events) == 1 and events[0]["outcome"] == "green"
+    marker = store.read_json(job.id, "state/gate_restamp.json")
+    assert marker["revision"] == "bbbb33334444"
+
+
+def test_watchdog_never_touches_substantive_red_gate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    _make_job(store, "gate-real-red")
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.gating.evaluate_live_gate",
+        lambda job_id, store=None, **k: _gate(
+            False, [_MISMATCH, "candidate validation is not passed: failed"]
+        ),
+    )
+    chain: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.job.backtest_execution_job",
+        lambda job_id, store=None, **k: chain.append("backtest"),
+    )
+
+    result = recover_stalled_applications(store=store)
+
+    assert chain == []
+    assert all(e.get("stalled_status") != "stale_gate" for e in result["recovered"])
+
+
+def test_watchdog_gate_restamp_escalates_instead_of_looping(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Red at a revision we already re-stamped → one escalation event, then
+    stand down — never a backtest every 5 minutes."""
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "gate-loop")
+    store.write_json(job.id, "state/gate_restamp.json", {"revision": "bbbb33334444"})
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.gating.evaluate_live_gate",
+        lambda job_id, store=None, **k: _gate(False, [_MISMATCH]),
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.gating.compute_workspace_revision",
+        lambda root: "bbbb33334444",
+    )
+    chain: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.job.backtest_execution_job",
+        lambda job_id, store=None, **k: chain.append("backtest"),
+    )
+
+    first = recover_stalled_applications(store=store)
+    second = recover_stalled_applications(store=store)
+
+    assert chain == []
+    escalations = [
+        e
+        for r in (first, second)
+        for e in r["recovered"]
+        if e["action"] == "gate_restamp_not_converging"
+    ]
+    assert len(escalations) == 1, "escalates once, then stands down"

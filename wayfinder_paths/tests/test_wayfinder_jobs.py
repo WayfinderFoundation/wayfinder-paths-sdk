@@ -1286,3 +1286,50 @@ def test_worker_prompt_hoists_restage_tasks_out_of_snapshot(tmp_path: Path) -> N
     assert (
         "PRIORITY — approved changes awaiting re-stage" not in clean["dynamic_context"]
     )
+
+
+def test_worker_prompt_hoists_red_gate_out_of_snapshot(tmp_path: Path) -> None:
+    """A red gate must be PROMPT TEXT above the snapshot: buried in the
+    truncated JSON, a wake once reported "gate green" while approvals were
+    blocked for 28 hours."""
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "gate-alert-demo",
+        goal="See the truth.",
+        script="workspace/src/loop.py",
+        agent_mode="intervene",
+    )
+    store.save(job)
+
+    red = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(
+            job,
+            scorecard={"health": "green"},
+            gate={
+                "live_ready": False,
+                "reasons": [
+                    "backtest is for revision aaaa11112222, workspace is bbbb33334444"
+                ],
+            },
+        ),
+    )
+    dynamic = red["dynamic_context"]
+    alert_at = dynamic.index("GATE STATUS: RED")
+    assert alert_at < dynamic.index("Current snapshot:")
+    assert "DO NOT report the gate as green" in dynamic
+    assert "revision aaaa11112222" in dynamic[: alert_at + 600]
+
+    green = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(
+            job,
+            scorecard={"health": "green"},
+            gate={"live_ready": True, "reasons": []},
+        ),
+    )
+    assert "GATE STATUS: RED" not in green["dynamic_context"]
