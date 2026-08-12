@@ -736,6 +736,21 @@ def _build_worker_prompt_sections(
     # a busy job can silently swallow a payload-only instruction — which is
     # exactly how an agent once missed a pending re-stage and burned the
     # owner's carried-over approval on a duplicate proposal.
+    # Gate state renders as prompt text too: a red gate buried in the
+    # truncated snapshot JSON let a wake report "gate green" while approvals
+    # were actually blocked for 28 hours (2026-08-12).
+    gate_alert = ""
+    gate_state = snapshot.get("gate") or {}
+    if gate_state and gate_state.get("live_ready") is False:
+        gate_reasons = "; ".join(str(r) for r in (gate_state.get("reasons") or [])[:4])
+        gate_alert = (
+            "GATE STATUS: RED — approvals and go-live are blocked.\n"
+            f"Reasons: {gate_reasons}\n"
+            "If every reason is a revision mismatch (stamps older than the "
+            "workspace), the watchdog re-stamps automatically — do not treat "
+            "it as a strategy failure, but DO NOT report the gate as green. "
+            "For any other reason, fixing the gate is a priority this wake.\n\n"
+        )
     restage_priority = ""
     restage_task_line = ""
     if restage_tasks:
@@ -762,6 +777,7 @@ def _build_worker_prompt_sections(
         )
     dynamic_context = (
         f"{DYNAMIC_CONTEXT_MARKER}\n"
+        f"{gate_alert}"
         f"{restage_priority}"
         "Current snapshot:\n"
         f"{_canonical_json(dynamic_payload, max_chars=12000)}\n\n"

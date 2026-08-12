@@ -17,6 +17,7 @@ failed after a longer window; claim allows retry from "failed".
 from __future__ import annotations
 
 import os
+import re
 import signal
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -267,6 +268,107 @@ def _recover_restage(
     return event
 
 
+# Matches "backtest is for revision ab12cd34ef56, workspace is 0f1e2d3c4b5a" —
+# the gate reason shape for pure stamp staleness (evidence fine, fingerprint
+# old). Substantive failures (validation failed, contract, missing dataset)
+# do NOT match and are never auto-repaired.
+_REVISION_MISMATCH_RE = re.compile(
+    r"is for revision [0-9a-f]{6,}, workspace is [0-9a-f]{6,}"
+)
+_GATE_RESTAMP_MARKER = "state/gate_restamp.json"
+
+
+def _recover_stale_gate(
+    store: JobStore,
+    job_id: str,
+    proposals: list[dict[str, Any]],
+    *,
+    allow_restamp: bool = True,
+) -> dict[str, Any] | None:
+    """Re-stamp gate evidence when it is red PURELY from revision mismatch.
+
+    Config edits and (historically) agent memory writes move the workspace
+    revision without touching the stamped artifacts; the gate then blocks
+    approvals until someone re-runs backtest -> preflight -> validate. That
+    "someone" was a human three times in one week. Re-running the chain only
+    regenerates evidence at the current workspace — if the current code is
+    genuinely worse, the fresh artifacts say so and the gate stays red for
+    REAL reasons. A convergence marker stops the repair from looping: red at
+    a revision we already re-stamped escalates once instead of burning a
+    backtest every pass.
+    """
+    if any(p["application"].get("status") in {"queued", "applying"} for p in proposals):
+        return None  # promotion re-stamps as a side effect; let the apply run
+    # circular import: gating -> store; job/preflight/validation import deeply
+    from wayfinder_paths.jobs.gating import (
+        compute_workspace_revision,
+        evaluate_live_gate,
+    )
+
+    root = store.job_dir(job_id)
+    marker = store.read_json(job_id, _GATE_RESTAMP_MARKER) or {}
+    gate = evaluate_live_gate(job_id, store=store)
+    if gate.get("live_ready"):
+        if marker:
+            store.write_json(job_id, _GATE_RESTAMP_MARKER, {})
+        return None
+    reasons = [str(r) for r in gate.get("reasons") or []]
+    if not reasons or not all(_REVISION_MISMATCH_RE.search(r) for r in reasons):
+        return None  # substantive red — must stay visible, never masked
+    revision = compute_workspace_revision(root)
+    if str(marker.get("revision") or "") == revision:
+        # Already re-stamped at this exact revision and the gate is still
+        # red: repair does not converge — escalate once, then stand down.
+        if not marker.get("escalated"):
+            marker["escalated"] = True
+            store.write_json(job_id, _GATE_RESTAMP_MARKER, marker)
+            event = {
+                "type": "application_watchdog_recovered",
+                "stalled_status": "stale_gate",
+                "action": "gate_restamp_not_converging",
+                "outcome": "needs_attention",
+                "revision": revision,
+                "reasons": reasons[:4],
+            }
+            store.append_journal(job_id, event)
+            return event
+        return None
+    if not allow_restamp:
+        return None  # one re-stamp (a backtest) per pass; next pass retries
+
+    from wayfinder_paths.jobs.compute_lock import ComputeLockBusy
+    from wayfinder_paths.jobs.execution.job import backtest_execution_job
+    from wayfinder_paths.jobs.execution.preflight import run_preflight
+    from wayfinder_paths.jobs.execution.validation import validate_execution_job
+
+    try:
+        backtest_execution_job(job_id, store=store)
+        run_preflight(job_id, store=store)
+        validate_execution_job(job_id, store=store)
+    except ComputeLockBusy:
+        return None  # heavy compute in progress; retry next pass
+    except Exception as exc:
+        store.append_journal(
+            job_id,
+            {
+                "type": "application_watchdog_skipped",
+                "reason": f"gate restamp failed: {str(exc)[:250]}",
+            },
+        )
+        return None
+    after = evaluate_live_gate(job_id, store=store)
+    store.write_json(job_id, _GATE_RESTAMP_MARKER, {"revision": revision})
+    event = {
+        "type": "application_watchdog_recovered",
+        "stalled_status": "stale_gate",
+        "action": "gate_restamp",
+        "outcome": "green" if after.get("live_ready") else "still_red",
+        "revision": revision,
+    }
+    store.append_journal(job_id, event)
+    return event
+
+
 def _recover_orphaned_pause(
     store: JobStore,
     job_id: str,
@@ -354,6 +456,8 @@ def recover_stalled_applications(
     # each watchdog pass to one so the pass stays well inside its timeout;
     # the 5-minute cadence picks up the rest.
     restaged_this_pass = False
+    # A gate re-stamp runs a full backtest — same one-per-pass budget rule.
+    restamped_this_pass = False
     for job in store.list_jobs():
         try:
             proposals = store.proposals(job.id)
@@ -400,6 +504,17 @@ def recover_stalled_applications(
             pause_event = None
         if pause_event is not None:
             recovered.append({"job_id": job.id, **pause_event})
+        try:
+            gate_event = _recover_stale_gate(
+                store, job.id, proposals, allow_restamp=not restamped_this_pass
+            )
+        except Exception as exc:
+            errors.append({"job_id": job.id, "error": str(exc)})
+            gate_event = None
+        if gate_event is not None:
+            recovered.append({"job_id": job.id, **gate_event})
+            if gate_event.get("action") == "gate_restamp":
+                restamped_this_pass = True
     return {"scanned": scanned, "recovered": recovered, "errors": errors}
 
 
