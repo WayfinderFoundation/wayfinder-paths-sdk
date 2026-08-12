@@ -1598,7 +1598,7 @@ def activate_cmd(
             activation_recorded = True
 
     result["activation_recorded"] = activation_recorded
-    sync_shells_inventory(trigger="activate")
+    sync_shells_inventory(trigger="activate", changed_slugs=[slug])
     _echo_json({"ok": True, "result": result})
 
 
@@ -2448,7 +2448,7 @@ def install_cmd(
         include_dependencies=include_dependencies,
         api_url=api_url,
     )
-    sync_shells_inventory(trigger="install")
+    sync_shells_inventory(trigger="install", changed_slugs=[slug])
     _echo_json({"ok": True, "result": result})
 
 
@@ -2485,7 +2485,7 @@ def pull_cmd(
         no_verify=no_verify,
         api_url=api_url,
     )
-    sync_shells_inventory(trigger="pull")
+    sync_shells_inventory(trigger="pull", changed_slugs=[slug])
     _echo_json({"ok": True, "result": result})
 
 
@@ -2609,7 +2609,7 @@ def update_cmd(
         result["manual_activate_command"] = _manual_activate_command(
             path_dir=installed_path
         )
-        sync_shells_inventory(trigger="update")
+        sync_shells_inventory(trigger="update", changed_slugs=[slug])
         _echo_json({"ok": True, "result": result})
         return
 
@@ -2686,7 +2686,7 @@ def update_cmd(
     result["activated"] = True
     result["activation_source"] = activation_target.source
     result["activation"] = activation_result
-    sync_shells_inventory(trigger="update")
+    sync_shells_inventory(trigger="update", changed_slugs=[slug])
     _echo_json({"ok": True, "result": result})
 
 
@@ -2723,7 +2723,7 @@ def remove_cmd(
         host=host,
         scope=scope,
     )
-    sync_shells_inventory(trigger="remove")
+    sync_shells_inventory(trigger="remove", changed_slugs=[slug])
     _echo_json({"ok": True, "result": result})
 
 

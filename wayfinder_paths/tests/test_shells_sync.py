@@ -61,13 +61,19 @@ def test_sync_skips_when_not_in_opencode(tmp_path: Path, monkeypatch) -> None:
 
 def test_sync_posts_payload_when_in_opencode(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCODE_INSTANCE_ID", "test-app-789")
+    monkeypatch.delenv("WAYFINDER_SHELLS_SYNC_SOURCE", raising=False)
     _write_lockfile(
         tmp_path,
         {"alpha": {"version": "0.1.0", "activation": {"host": "opencode"}}},
     )
     client = _FakeClient(response={"upserted": 1, "deleted": 0})
 
-    result = sync_shells_inventory(trigger="install", cwd=tmp_path, client=client)
+    result = sync_shells_inventory(
+        trigger="install",
+        changed_slugs=["alpha", "alpha"],
+        cwd=tmp_path,
+        client=client,
+    )
 
     assert result.status == "recorded"
     assert result.upserted == 1
@@ -77,15 +83,21 @@ def test_sync_posts_payload_when_in_opencode(tmp_path: Path, monkeypatch) -> Non
     assert call["lockfile_present"] is True
     assert call["paths"][0]["slug"] == "alpha"
     assert call["paths"][0]["enabled"] is True
+    assert call["trigger"] == "install"
+    assert call["source"] == "direct"
+    assert call["changed_slugs"] == ["alpha"]
+    assert result.source == "direct"
 
 
 def test_sync_reports_missing_lockfile(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCODE_INSTANCE_ID", "test-app-789")
+    monkeypatch.setenv("WAYFINDER_SHELLS_SYNC_SOURCE", "boot")
     client = _FakeClient()
     result = sync_shells_inventory(trigger="boot", cwd=tmp_path, client=client)
     assert result.status == "recorded"
     assert client.calls[0]["lockfile_present"] is False
     assert client.calls[0]["paths"] == []
+    assert client.calls[0]["source"] == "boot"
 
 
 def test_sync_swallows_api_errors(tmp_path: Path, monkeypatch) -> None:
