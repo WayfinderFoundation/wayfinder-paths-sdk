@@ -8,6 +8,7 @@ from urllib.parse import quote
 import httpx
 
 BASE_URL = "https://api.llama.fi"
+COINS_BASE_URL = "https://coins.llama.fi"
 STABLECOINS_BASE_URL = "https://stablecoins.llama.fi"
 YIELDS_BASE_URL = "https://yields.llama.fi"
 TIMEOUT_SECONDS = 20
@@ -15,10 +16,28 @@ ATTRIBUTION = "Data from DeFiLlama free API"
 DEFAULT_PAGE_LIMIT = 25
 MAX_PAGE_LIMIT = 100
 MAX_RESPONSE_CHARACTERS = 250_000
+MAX_UPSTREAM_RESPONSE_BYTES = 16 * 1024 * 1024
 OVERVIEW_PARAMS = {
     "excludeTotalDataChart": "true",
     "excludeTotalDataChartBreakdown": "true",
 }
+
+
+class DefiLlamaResponseTooLarge(RuntimeError):
+    """Raised before decoding an unexpectedly large upstream response."""
+
+    code = "upstream_response_too_large"
+
+    def __init__(self, *, url: str, received_bytes: int) -> None:
+        self.details = {
+            "url": url,
+            "receivedBytes": received_bytes,
+            "maxBytes": MAX_UPSTREAM_RESPONSE_BYTES,
+        }
+        super().__init__(
+            "DeFiLlama response exceeded the safe download limit "
+            f"of {MAX_UPSTREAM_RESPONSE_BYTES} bytes"
+        )
 
 
 def _path_part(value: str, field_name: str) -> str:
@@ -44,19 +63,42 @@ class DefiLlamaFreeClient:
         base_url: str = BASE_URL,
     ) -> dict[str, Any]:
         async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
-            response = await client.get(f"{base_url}{path}", params=params or {})
-            response.raise_for_status()
-            body = response.json()
+            async with client.stream(
+                "GET", f"{base_url}{path}", params=params or {}
+            ) as response:
+                response.raise_for_status()
+                response_url = str(response.url)
+                content_length = response.headers.get("content-length")
+                if content_length is not None:
+                    try:
+                        declared_bytes = int(content_length)
+                    except ValueError:
+                        declared_bytes = 0
+                    if declared_bytes > MAX_UPSTREAM_RESPONSE_BYTES:
+                        raise DefiLlamaResponseTooLarge(
+                            url=response_url,
+                            received_bytes=declared_bytes,
+                        )
+
+                payload = bytearray()
+                async for chunk in response.aiter_bytes():
+                    payload.extend(chunk)
+                    if len(payload) > MAX_UPSTREAM_RESPONSE_BYTES:
+                        raise DefiLlamaResponseTooLarge(
+                            url=response_url,
+                            received_bytes=len(payload),
+                        )
+                body = json.loads(payload)
 
         return {
             "provider": "defillama_free",
-            "url": str(response.url),
+            "url": response_url,
             "result": body,
             "evidence": [
                 {
                     "provider": "defillama_free",
                     "sourceType": "api",
-                    "url": str(response.url),
+                    "url": response_url,
                     "clientDirect": True,
                     "attributionRequired": True,
                     "attribution": ATTRIBUTION,
@@ -108,36 +150,47 @@ class DefiLlamaFreeClient:
             ).lower()
             if normalized not in haystack:
                 continue
-            matches.append(
-                {
-                    "name": protocol.get("name"),
-                    "slug": protocol.get("slug"),
-                    "symbol": protocol.get("symbol"),
-                    "category": protocol.get("category"),
-                    "chains": protocol.get("chains"),
-                    "tvl": protocol.get("tvl"),
-                    "change_1d": protocol.get("change_1d"),
-                    "change_7d": protocol.get("change_7d"),
-                    "url": protocol.get("url"),
-                }
-            )
+            matches.append(_compact_protocol(protocol))
             if len(matches) >= max(1, min(int(limit), 25)):
                 break
 
-        return {
-            **response,
-            "result": {
-                "query": query,
-                "matches": matches,
-                "count": len(matches),
-            },
-        }
+        return _enforce_response_budget(
+            {
+                **response,
+                "result": {
+                    "query": query,
+                    "matches": matches,
+                    "count": len(matches),
+                },
+            }
+        )
 
     async def protocol(self, protocol_slug: str) -> dict[str, Any]:
-        return await self._get(f"/protocol/{_path_part(protocol_slug, 'protocolSlug')}")
+        normalized_slug = str(protocol_slug).strip().casefold()
+        if not normalized_slug:
+            raise ValueError("protocolSlug is required")
+        response = await self.protocols()
+        protocols = response.get("result")
+        if not isinstance(protocols, list):
+            protocols = []
+        match = next(
+            (
+                protocol
+                for protocol in protocols
+                if isinstance(protocol, dict)
+                and str(protocol.get("slug") or "").casefold() == normalized_slug
+            ),
+            None,
+        )
+        if match is None:
+            raise ValueError(f"Unknown protocolSlug: {protocol_slug}")
+        response["result"] = _compact_protocol_detail(match)
+        return _enforce_response_budget(response)
 
     async def tvl(self, protocol_slug: str) -> dict[str, Any]:
-        return await self._get(f"/tvl/{_path_part(protocol_slug, 'protocolSlug')}")
+        return _enforce_response_budget(
+            await self._get(f"/tvl/{_path_part(protocol_slug, 'protocolSlug')}")
+        )
 
     async def protocol_fees(
         self,
@@ -169,7 +222,7 @@ class DefiLlamaFreeClient:
             "chainDailyRows": chain_rows,
             "latestDaily": rows[-1] if rows else None,
         }
-        return response
+        return _enforce_response_budget(response)
 
     async def protocol_tvl_history(
         self,
@@ -177,7 +230,9 @@ class DefiLlamaFreeClient:
         *,
         days: int = 30,
     ) -> dict[str, Any]:
-        response = await self.protocol(protocol_slug)
+        response = await self._get(
+            f"/protocol/{_path_part(protocol_slug, 'protocolSlug')}"
+        )
         result = (
             response.get("result") if isinstance(response.get("result"), dict) else {}
         )
@@ -190,7 +245,7 @@ class DefiLlamaFreeClient:
             "latestDaily": rows[-1] if rows else None,
             "chainSummary": chain_summary,
         }
-        return response
+        return _enforce_response_budget(response)
 
     async def chains(
         self, *, limit: int = DEFAULT_PAGE_LIMIT, cursor: str = "_"
@@ -267,7 +322,12 @@ class DefiLlamaFreeClient:
         return _enforce_response_budget(response)
 
     async def current_prices(self, coins: str) -> dict[str, Any]:
-        return await self._get(f"/prices/current/{_path_part(coins, 'coins')}")
+        return _enforce_response_budget(
+            await self._get(
+                f"/prices/current/{_path_part(coins, 'coins')}",
+                base_url=COINS_BASE_URL,
+            )
+        )
 
     async def dex_overview(
         self,
@@ -567,6 +627,23 @@ def _compact_protocol(protocol: dict[str, Any]) -> dict[str, Any]:
         "change_1d": protocol.get("change_1d"),
         "change_7d": protocol.get("change_7d"),
         "url": protocol.get("url"),
+    }
+
+
+def _compact_protocol_detail(protocol: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **_compact_protocol(protocol),
+        "description": protocol.get("description"),
+        "change_1m": protocol.get("change_1m"),
+        "mcap": protocol.get("mcap"),
+        "twitter": protocol.get("twitter"),
+        "audits": protocol.get("audits"),
+        "auditLinks": protocol.get("audit_links"),
+        "listedAt": protocol.get("listedAt"),
+        "parentProtocol": protocol.get("parentProtocol"),
+        "parentProtocolSlug": protocol.get("parentProtocolSlug"),
+        "rawPayloadOmitted": True,
+        "attribution": ATTRIBUTION,
     }
 
 

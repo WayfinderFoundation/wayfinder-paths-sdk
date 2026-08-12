@@ -15,6 +15,9 @@ from wayfinder_paths.adapters.hyperliquid_adapter.adapter import (
     outcome_asset_id,
 )
 from wayfinder_paths.core.clients.HyperliquidDataClient import HYPERLIQUID_DATA_CLIENT
+from wayfinder_paths.core.clients.HyperliquidInfoClient import (
+    HYPERLIQUID_INFO_CLIENT,
+)
 from wayfinder_paths.core.config import CONFIG
 from wayfinder_paths.core.constants.hyperliquid import (
     ARBITRUM_USDC_ADDRESS,
@@ -32,7 +35,11 @@ from wayfinder_paths.core.constants.hyperliquid import (
 )
 from wayfinder_paths.core.utils.tokens import build_send_transaction
 from wayfinder_paths.core.utils.transaction import send_transaction
-from wayfinder_paths.mcp.arg_validation import optional_int
+from wayfinder_paths.mcp.arg_validation import (
+    normalize_enum,
+    normalize_int,
+    optional_int,
+)
 from wayfinder_paths.mcp.scripting import get_adapter
 from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
@@ -73,6 +80,37 @@ HIP4_GENERIC_QUERY_TERMS = {
     "v",
     "vs",
     "world",
+}
+HyperliquidTradePeriod = Literal[
+    "day",
+    "week",
+    "month",
+    "allTime",
+    "perpDay",
+    "perpWeek",
+    "perpMonth",
+    "perpAllTime",
+]
+_HYPERLIQUID_TRADE_PERIODS = (
+    "day",
+    "week",
+    "month",
+    "allTime",
+    "perpDay",
+    "perpWeek",
+    "perpMonth",
+    "perpAllTime",
+)
+_DAY_MS = 24 * 60 * 60 * 1000
+_TRADE_PERIOD_LOOKBACK_MS = {
+    "day": _DAY_MS,
+    "week": 7 * _DAY_MS,
+    "month": 30 * _DAY_MS,
+    "allTime": None,
+    "perpDay": _DAY_MS,
+    "perpWeek": 7 * _DAY_MS,
+    "perpMonth": 30 * _DAY_MS,
+    "perpAllTime": None,
 }
 
 
@@ -312,6 +350,59 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _latest_history_value(history: Any) -> float | None:
+    if not isinstance(history, list):
+        return None
+    latest_timestamp = -1
+    latest_value: float | None = None
+    for row in history:
+        if not isinstance(row, list) or len(row) < 2:
+            continue
+        timestamp = _int_or_none(row[0])
+        value = _float_or_none(row[1])
+        if timestamp is not None and value is not None and timestamp > latest_timestamp:
+            latest_timestamp = timestamp
+            latest_value = value
+    return latest_value
+
+
+def _portfolio_for_period(portfolios: Any, period: str) -> dict[str, Any]:
+    if not isinstance(portfolios, list):
+        return {}
+    for row in portfolios:
+        if (
+            isinstance(row, list)
+            and len(row) >= 2
+            and row[0] == period
+            and isinstance(row[1], dict)
+        ):
+            return row[1]
+    return {}
+
+
+def _is_perp_fill(fill: dict[str, Any]) -> bool:
+    coin = str(fill.get("coin") or "")
+    return bool(coin) and not coin.startswith(("@", "+"))
+
+
+def _compact_fill(fill: dict[str, Any]) -> dict[str, Any]:
+    side = str(fill.get("side") or "")
+    return {
+        "asset": fill.get("coin"),
+        "direction": fill.get("dir") or {"B": "buy", "A": "sell"}.get(side),
+        "side": side or None,
+        "price": _float_or_none(fill.get("px")),
+        "size": _float_or_none(fill.get("sz")),
+        "closed_pnl": _float_or_none(fill.get("closedPnl")),
+        "fee": _float_or_none(fill.get("fee")),
+        "fee_token": fill.get("feeToken"),
+        "timestamp_ms": _int_or_none(fill.get("time")),
+        "order_id": fill.get("oid"),
+        "trade_id": fill.get("tid"),
+        "transaction_hash": fill.get("hash"),
+    }
 
 
 def _time_range_ms(
@@ -2047,6 +2138,88 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
             "spot_positions": spot_positions,
             "outcome_positions": outcome_positions,
             "open_orders": orders,
+        }
+    )
+
+
+@catch_errors
+async def hyperliquid_get_trade_results(
+    label: str,
+    period: HyperliquidTradePeriod = "day",
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Return compact Hyperliquid trade outcomes and authoritative period PnL.
+
+    PnL, account value, and volume come from Hyperliquid's portfolio period;
+    fills provide recent realized outcomes and fees without deriving a second
+    PnL figure. Use a ``perp*`` period to exclude spot and outcome fills.
+    """
+    address, requested_label = await resolve_wallet_address(wallet_label=label)
+    if not address:
+        return err("not_found", f"Wallet not found: {requested_label or label}")
+
+    normalized_period = normalize_enum(
+        period,
+        field_name="period",
+        allowed_values=_HYPERLIQUID_TRADE_PERIODS,
+    )
+    bounded_limit = normalize_int(
+        limit,
+        field_name="limit",
+        min_value=1,
+        max_value=500,
+    )
+    end_ms = int(time.time() * 1000)
+    lookback_ms = _TRADE_PERIOD_LOOKBACK_MS[normalized_period]
+    start_ms = 0 if lookback_ms is None else end_ms - lookback_ms
+
+    fills, portfolios = await asyncio.gather(
+        HYPERLIQUID_INFO_CLIENT.post(
+            {
+                "type": "userFillsByTime",
+                "user": address,
+                "startTime": start_ms,
+                "endTime": end_ms,
+                "aggregateByTime": True,
+            }
+        ),
+        HYPERLIQUID_INFO_CLIENT.post({"type": "portfolio", "user": address}),
+    )
+    fill_rows = (
+        [row for row in fills if isinstance(row, dict)]
+        if isinstance(fills, list)
+        else []
+    )
+    if normalized_period.startswith("perp"):
+        fill_rows = [row for row in fill_rows if _is_perp_fill(row)]
+    fill_rows.sort(key=lambda row: _int_or_none(row.get("time")) or 0, reverse=True)
+
+    portfolio = _portfolio_for_period(portfolios, normalized_period)
+    if not portfolio:
+        return err(
+            "upstream_response_invalid",
+            f"Hyperliquid did not return portfolio period {normalized_period}",
+        )
+
+    trades = [_compact_fill(row) for row in fill_rows[:bounded_limit]]
+    return ok(
+        {
+            "label": label,
+            "address": address,
+            "summary": {
+                "period": normalized_period,
+                "pnl": _latest_history_value(portfolio.get("pnlHistory")),
+                "account_value": _latest_history_value(
+                    portfolio.get("accountValueHistory")
+                ),
+                "volume": _float_or_none(portfolio.get("vlm")),
+                "available_trade_count": len(fill_rows),
+                "returned_trade_count": len(trades),
+                "trade_history_may_be_truncated": (
+                    isinstance(fills, list) and len(fills) >= 2_000
+                ),
+            },
+            "trades": trades,
         }
     )
 
