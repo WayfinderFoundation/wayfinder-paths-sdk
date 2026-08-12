@@ -40,7 +40,6 @@ class ShellsInventorySyncResult:
     upserted: int = 0
     deleted: int = 0
     trigger: str = ""
-    source: str = ""
 
 
 def _sync_source() -> ShellsInventorySyncSource:
@@ -93,7 +92,6 @@ def sync_shells_inventory(
             status="skipped",
             reason="not_in_opencode_instance",
             trigger=trigger,
-            source=sync_source,
         )
 
     try:
@@ -103,7 +101,6 @@ def sync_shells_inventory(
             status="skipped",
             reason="missing_instance_id",
             trigger=trigger,
-            source=sync_source,
         )
 
     state_dir = _find_wayfinder_dir(start=cwd)
@@ -118,7 +115,7 @@ def sync_shells_inventory(
             paths=paths,
             trigger=trigger,
             source=sync_source,
-            changed_slugs=list(dict.fromkeys(changed_slugs or [])),
+            changed_slugs=changed_slugs or [],
         )
     except PathsApiError as exc:
         logger.debug("Shells inventory sync skipped after API error: {}", exc)
@@ -127,7 +124,6 @@ def sync_shells_inventory(
             reason="request_failed",
             attempted=len(paths),
             trigger=trigger,
-            source=sync_source,
         )
 
     return ShellsInventorySyncResult(
@@ -137,5 +133,4 @@ def sync_shells_inventory(
         upserted=int(response.get("upserted") or 0),
         deleted=int(response.get("deleted") or 0),
         trigger=trigger,
-        source=sync_source,
     )

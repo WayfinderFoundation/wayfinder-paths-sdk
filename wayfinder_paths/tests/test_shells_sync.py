@@ -70,7 +70,7 @@ def test_sync_posts_payload_when_in_opencode(tmp_path: Path, monkeypatch) -> Non
 
     result = sync_shells_inventory(
         trigger="install",
-        changed_slugs=["alpha", "alpha"],
+        changed_slugs=["alpha"],
         cwd=tmp_path,
         client=client,
     )
@@ -86,7 +86,6 @@ def test_sync_posts_payload_when_in_opencode(tmp_path: Path, monkeypatch) -> Non
     assert call["trigger"] == "install"
     assert call["source"] == "direct"
     assert call["changed_slugs"] == ["alpha"]
-    assert result.source == "direct"
 
 
 def test_sync_reports_missing_lockfile(tmp_path: Path, monkeypatch) -> None:

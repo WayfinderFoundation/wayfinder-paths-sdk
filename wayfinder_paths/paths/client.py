@@ -386,8 +386,7 @@ class PathsApiClient:
         changed_slugs: list[str],
     ) -> dict[str, Any]:
         """Push this Fly machine's installed-paths state to vault-backend.
-        Called by `path install` / `path activate` (zero-latency) in addition
-        to the BE-side polling daemon (catch-all)."""
+        Called by path CLI mutations and boot reconciliation."""
         url = f"{self.base_url}/api/v1/opencode/instances/{app_name}/inventory-sync/"
         body = {
             "lockfile_present": lockfile_present,
