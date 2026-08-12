@@ -264,7 +264,9 @@ async def tick_job(
     feature_guards: list[dict[str, Any]] = []
     feature_skip = False
     if feature_specs:
-        feature_frames = load_feature_rows([root], feature_specs)
+        stamps = view.timestamps
+        feature_window = (stamps[0], stamps[-1]) if stamps else None
+        feature_frames = load_feature_rows([root], feature_specs, window=feature_window)
         feature_guards, feature_skip = feature_staleness(
             feature_specs, feature_frames, now
         )
