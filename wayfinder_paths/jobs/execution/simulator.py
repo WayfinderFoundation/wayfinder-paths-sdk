@@ -241,11 +241,23 @@ def simulate_execution(
     raw_lookback = params_data.get("lookback_bars")
     lookback_bars = int(raw_lookback) if raw_lookback else None
 
+    # Running last-known close per symbol so open positions are marked at their
+    # most recent price, not just symbols that printed a bar THIS timestamp. In
+    # a multi-symbol book where symbols do not all print every bar, marking an
+    # absent symbol at avg_price (zero unrealized) makes equity oscillate as
+    # symbols appear/disappear — corrupting net_return/drawdown/sharpe. Matches
+    # mark_to_market_equity() (what decide() sees), which already uses the view's
+    # latest close.
+    last_close_by_symbol: dict[str, float] = {}
+
     async def _run_simulation() -> None:
         for index, timestamp in enumerate(dataset.bars.timestamps):
             bars_by_symbol = _bars_at_timestamp(dataset.bars, timestamp)
             if not bars_by_symbol:
                 continue
+            last_close_by_symbol.update(
+                {symbol: bar.close for symbol, bar in bars_by_symbol.items()}
+            )
             for symbol, bar in bars_by_symbol.items():
                 price_series[symbol].append(
                     {
@@ -281,10 +293,7 @@ def simulate_execution(
             positions.append(
                 {"timestamp": timestamp.isoformat(), **tick.ledger_snapshot}
             )
-            mark_to_market = _mark_to_market(
-                state.ledger,
-                {symbol: bar.close for symbol, bar in bars_by_symbol.items()},
-            )
+            mark_to_market = _mark_to_market(state.ledger, last_close_by_symbol)
             equity = initial_capital + state.ledger.realized_pnl + mark_to_market
             equity_curve.append(
                 {
