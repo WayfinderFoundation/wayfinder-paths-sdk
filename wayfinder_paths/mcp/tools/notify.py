@@ -37,7 +37,9 @@ async def notification_send(
     are plain text, hard cap 500 chars. Quiet hours and a frequency budget
     gate unprompted mobile sends: a blocked call returns a warning instead of
     sending, and only a repeat call with override=true pushes through — do
-    that only for genuinely urgent information.
+    that only for genuinely urgent information. Replies while the user is
+    actively texting are never rate-limited, and near-duplicates of texts you
+    already sent are rejected, so answering the user is always safe.
 
     delivery="email" (default) requires a verified email address and renders
     Markdown into a themed HTML email.
