@@ -79,6 +79,14 @@ def _split(key: str) -> tuple[str, str | None]:
     return key, None
 
 
+def _row_ts(row: Mapping[str, Any]) -> str:
+    # Forward trade rows stamp `ts`/`closed_at` (execution schema), not
+    # `timestamp` — checking only the latter silently excluded every row and
+    # froze adjudication at pending (found on live xyz data, 24 real closes
+    # measured as 0).
+    return str(row.get("timestamp") or row.get("closed_at") or row.get("ts") or "")
+
+
 def forward_metrics(
     trades: list[Mapping[str, Any]],
     *,
@@ -97,7 +105,7 @@ def forward_metrics(
         row
         for row in trades
         if (symbol is None or str(row.get("symbol")) == symbol)
-        and (since is None or str(row.get("timestamp") or "") >= since)
+        and (since is None or _row_ts(row) >= since)
     ]
     pnls = [float(row.get("net_pnl") or row.get("pnl") or 0.0) for row in rows]
     wins = sum(1 for value in pnls if value > 0)

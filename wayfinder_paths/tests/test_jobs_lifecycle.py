@@ -59,6 +59,24 @@ def test_predicates_ops_prerequisites_and_missing_metrics() -> None:
     assert evaluate_predicates({}, {})["status"] == "pending"
 
 
+def test_forward_metrics_reads_execution_schema_timestamps() -> None:
+    # Real forward rows stamp ts/closed_at, never `timestamp` — the filter
+    # must read all three or it judges on zero data.
+    trades = [
+        {"symbol": "xyz:SNDK", "closed_at": "2026-08-01T00:00:00+00:00", "net_pnl": -1.0},
+        {"symbol": "xyz:SNDK", "ts": "2026-08-02T00:00:00+00:00", "net_pnl": 2.0},
+        {"symbol": "xyz:SNDK", "ts": "2026-07-01T00:00:00+00:00", "net_pnl": 9.0},
+    ]
+    metrics = forward_metrics(
+        trades,
+        symbol=None,
+        since="2026-07-15T00:00:00+00:00",
+        now_iso="2026-08-05T00:00:00+00:00",
+    )
+    assert metrics["closed_trades"] == 2
+    assert metrics["net_pnl"] == pytest.approx(1.0)
+
+
 def test_forward_metrics_filters_and_measures() -> None:
     trades = [
         {"symbol": "IMX", "timestamp": "2026-08-01T00:00:00+00:00", "net_pnl": -1.0},
