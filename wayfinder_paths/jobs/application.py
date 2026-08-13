@@ -610,6 +610,12 @@ def _record_promoted_revision(
             "validation_status": validation_status,
         },
     )
+    try:
+        from wayfinder_paths.jobs.archive import set_incumbent
+
+        set_incumbent(store, job_id, proposal_id)
+    except Exception:  # noqa: BLE001 — archive bookkeeping never breaks promotion
+        pass
     revisions_path = root / "versions" / "revisions.jsonl"
     revisions_path.parent.mkdir(parents=True, exist_ok=True)
     revisions_path.open("a", encoding="utf-8").write(

@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import re
 import signal
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from textwrap import dedent
@@ -440,6 +441,94 @@ def _recover_orphaned_pause(
     return event
 
 
+# Lifecycle evaluation is cheap (json reads + arithmetic) but its decisions
+# are consequential — a 6h cadence matches the counterfactual cycle and keeps
+# kill/graduate flips out of the 5-minute noise floor.
+_LIFECYCLE_MARKER = "state/lifecycle_pass.json"
+_LIFECYCLE_INTERVAL_S = 6 * 3600
+
+
+def _run_lifecycle_pass(
+    store: JobStore, job_id: str, now: datetime
+) -> list[dict[str, Any]]:
+    """Deterministic demotion/retirement: evaluate typed probation predicates
+    against measured forward metrics and flip leg status mechanically. The
+    agent registers the rules; the controller enforces them — a rule that
+    fires only if someone re-reads it is not a rule."""
+    from wayfinder_paths.jobs.models import utc_now_iso
+    from wayfinder_paths.jobs.predicates import evaluate_predicates, forward_metrics
+    from wayfinder_paths.jobs.probation import load_probation, update_probation_leg
+
+    marker = store.read_json(job_id, _LIFECYCLE_MARKER) or {}
+    if _age(now, marker.get("ran_at")) < timedelta(seconds=_LIFECYCLE_INTERVAL_S):
+        return []
+    store.write_json(job_id, _LIFECYCLE_MARKER, {"ran_at": now.isoformat()})
+
+    doc = load_probation(store, job_id)
+    active = [leg for leg in doc.get("legs") or [] if leg.get("status") == "active"]
+    if not active:
+        return []
+    trades_path = store.job_dir(job_id) / "results" / "forward" / "trades.jsonl"
+    trades: list[dict[str, Any]] = []
+    if trades_path.exists():
+        for line in trades_path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                trades.append(row)
+
+    events: list[dict[str, Any]] = []
+    for leg in active:
+        name = str(leg.get("name"))
+        metrics = forward_metrics(
+            trades,
+            symbol=str(leg.get("symbol")) or None,
+            since=str(leg.get("deployed_at") or "") or None,
+            now_iso=utc_now_iso(),
+        )
+        kill = evaluate_predicates((leg.get("kill") or {}).get("rules"), metrics)
+        graduate = evaluate_predicates(
+            (leg.get("graduate") or {}).get("rules"), metrics
+        )
+        update_probation_leg(
+            store,
+            job_id,
+            name,
+            progress=(
+                f"controller {now.date()}: kill={kill['status']} "
+                f"graduate={graduate['status']} "
+                f"trades={metrics['closed_trades']} pnl={metrics['net_pnl']}"
+            ),
+        )
+        # Kill outranks graduate: if both fire, the leg dies — pre-registered
+        # risk rules are senior to reward rules.
+        decision = (
+            ("killed", kill) if kill["status"] == "met"
+            else ("graduated", graduate) if graduate["status"] == "met"
+            else None
+        )
+        if decision is None:
+            continue
+        status, evaluation = decision
+        update_probation_leg(store, job_id, name, status=status)
+        store.append_journal(
+            job_id,
+            {
+                "type": "lifecycle_decision",
+                "leg": name,
+                "decision": status,
+                "metrics": metrics,
+                "checks": evaluation["checks"],
+            },
+        )
+        events.append(
+            {"action": f"lifecycle_{status}", "leg": name, "metrics": metrics}
+        )
+    return events
+
+
 def recover_stalled_applications(
     *, store: JobStore | None = None, now: datetime | None = None
 ) -> dict[str, Any]:
@@ -515,6 +604,11 @@ def recover_stalled_applications(
             recovered.append({"job_id": job.id, **gate_event})
             if gate_event.get("action") == "gate_restamp":
                 restamped_this_pass = True
+        try:
+            for lifecycle_event in _run_lifecycle_pass(store, job.id, now):
+                recovered.append({"job_id": job.id, **lifecycle_event})
+        except Exception as exc:
+            errors.append({"job_id": job.id, "error": f"lifecycle: {exc}"})
     return {"scanned": scanned, "recovered": recovered, "errors": errors}
 
 

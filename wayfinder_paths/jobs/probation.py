@@ -31,6 +31,8 @@ def record_probation_leg(
     size_fraction: float,
     graduate_criterion: str,
     kill_criterion: str,
+    graduate_rules: dict[str, Any] | None = None,
+    kill_rules: dict[str, Any] | None = None,
     proposal_id: str | None = None,
     notes: str | None = None,
 ) -> dict[str, Any]:
@@ -52,8 +54,19 @@ def record_probation_leg(
         "deployed_at": utc_now_iso(),
         "size_fraction": float(size_fraction),
         "proposal_id": proposal_id,
-        "graduate": {"criterion": graduate_criterion, "progress": None},
-        "kill": {"criterion": kill_criterion, "status": None},
+        # criterion = human-readable rendering; rules = the machine-evaluable
+        # predicates the lifecycle controller actually enforces. A leg without
+        # rules is legacy: visible but never auto-graduated/killed.
+        "graduate": {
+            "criterion": graduate_criterion,
+            "rules": dict(graduate_rules or {}),
+            "progress": None,
+        },
+        "kill": {
+            "criterion": kill_criterion,
+            "rules": dict(kill_rules or {}),
+            "status": None,
+        },
         "notes": notes,
     }
     doc["legs"].append(leg)

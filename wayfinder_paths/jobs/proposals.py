@@ -138,6 +138,28 @@ def propose_change(
             "validation_status": validation.get("status"),
         },
     )
+    try:
+        from wayfinder_paths.jobs.archive import record_candidate
+
+        change = proposal.get("proposed_change") or {}
+        economic = candidate_report.get("economic") or {}
+        record_candidate(
+            store,
+            job_id,
+            candidate_id=pid,
+            family=(
+                "probation" if change.get("probation")
+                else "params" if change.get("execution_params")
+                else str(kind or "code")
+            ),
+            summary=str(summary or ""),
+            status="probation" if change.get("probation") else "archived",
+            objective=(economic.get("objective") or {}).get("candidate"),
+            revision=candidate_report.get("revision"),
+            parent_id=base_revision,
+        )
+    except Exception:  # noqa: BLE001 — archive bookkeeping never breaks propose
+        pass
     store.refresh_scorecard(job_id)
     sync_all_jobs(store=store)
     # Surface a chat affordance (contract C5): the opencode harness turns this

@@ -329,6 +329,17 @@ def _restage_block(root: Path) -> list[dict[str, Any]]:
     return tasks
 
 
+def _archive_block(store: JobStore, job_id: str) -> dict[str, Any]:
+    """Frontier + refuted branches: exploration cites archive state, not
+    memory. Never raises."""
+    try:
+        from wayfinder_paths.jobs.archive import archive_snapshot_block
+
+        return archive_snapshot_block(store, job_id)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def _evolution_block(store: JobStore, job_id: str) -> dict[str, Any]:
     """Promotion-reliability scoreboard: the improver reads its own audited
     outcomes instead of its memory of them. Never raises."""
@@ -550,6 +561,7 @@ def _build_worker_prompt_sections(
         "research_substrate": _research_substrate_block(root),
         "standing_checks": _standing_checks_block(root),
         "evolution": _evolution_block(store, job_id),
+        "archive": _archive_block(store, job_id),
         "restage_tasks": restage_tasks,
     }
 
@@ -814,6 +826,12 @@ def _build_worker_prompt_sections(
             "hypothesis requires NAMED new evidence. Keep the agenda compact "
             "(~150 lines): it is a curated map, not a log — compact it in "
             "place as part of updating it.\n"
+            "- Probation legs carry TYPED graduate/kill rules "
+            "(graduate_rules/kill_rules predicate dicts, e.g. "
+            "win_rate__lt: 0.2 with min_closed_trades: 10). The lifecycle "
+            "controller evaluates them mechanically every ~6h and flips leg "
+            "status itself — register honest rules at leg creation; do not "
+            "hand-adjudicate outcomes the controller owns.\n"
             "- Economic promotion gate: full-size promotion requires the "
             "candidate to beat the incumbent on paired OOS folds under the "
             "owner constitution (LCB > 0); it is computed by gate code and "
