@@ -47,7 +47,7 @@ async def test_notify_client_default_email_payload_omits_delivery(
 
 
 @pytest.mark.asyncio
-async def test_notify_client_text_alias_requests_sms(
+async def test_notify_client_mobile_posts_message_and_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -58,13 +58,11 @@ async def test_notify_client_text_alias_requests_sms(
     client = NotifyClient()
     client._authed_request = AsyncMock(return_value=_Response({"sent": True}))  # type: ignore[method-assign]
 
-    await client.notify(title="Alert", message="Body", delivery="text")
+    await client.notify_mobile(message="Body", override=True)
 
-    assert client._authed_request.await_args.kwargs["json"] == {
-        "title": "Alert",
-        "message": "Body",
-        "delivery": "sms",
-    }
+    args = client._authed_request.await_args
+    assert args.args[1].endswith("/opencode/sendblue/agent-notify/")
+    assert args.kwargs["json"] == {"message": "Body", "override": True}
 
 
 def test_normalize_notify_delivery_rejects_unknown_delivery() -> None:
@@ -73,21 +71,17 @@ def test_normalize_notify_delivery_rejects_unknown_delivery() -> None:
 
 
 @pytest.mark.asyncio
-async def test_notification_send_passes_sms_delivery(
+async def test_notification_send_routes_text_alias_to_mobile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_client = AsyncMock()
-    fake_client.notify.return_value = {"sent": True, "delivery": "sms"}
+    fake_client.notify_mobile.return_value = {"sent": True}
     monkeypatch.setattr(notify_tool_module, "NOTIFY_CLIENT", fake_client)
 
     out = await notify_tool_module.notification_send("Alert", "Body", delivery="text")
 
-    assert out == {"ok": True, "result": {"sent": True, "delivery": "sms"}}
-    fake_client.notify.assert_awaited_once_with(
-        title="Alert",
-        message="Body",
-        delivery="sms",
-    )
+    assert out == {"ok": True, "result": {"sent": True}}
+    fake_client.notify_mobile.assert_awaited_once_with(message="Body", override=False)
 
 
 @pytest.mark.asyncio

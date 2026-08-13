@@ -10,37 +10,12 @@ from wayfinder_paths.mcp.utils import catch_errors, err, ok, throw_if_empty_str
 
 TITLE_MAX = 200
 MESSAGE_MAX = 20_000
+MOBILE_MESSAGE_MAX = 500
 
 
-@catch_errors
-async def notification_send(title: str, message: str, delivery: str = "email") -> dict:
-    """Notify the OpenCode instance owner by email or SMS.
-
-    Email requires a verified email address and renders Markdown into a themed
-    HTML email. SMS requires a verified phone number and sends plain text.
-
-    Args:
-        title: Short subject line (<= 200 chars).
-        message: Markdown body (<= 20 000 chars).
-        delivery: "email" (default), "sms", or "text".
-    """
-    title_s = throw_if_empty_str("title is required", title)
-    if len(title_s) > TITLE_MAX:
-        raise ValueError(f"title exceeds {TITLE_MAX} chars")
-    throw_if_empty_str("message is required", message)
-    if len(message) > MESSAGE_MAX:
-        raise ValueError(f"message exceeds {MESSAGE_MAX} chars")
+async def _relay(request) -> dict:
     try:
-        delivery_s = normalize_notify_delivery(delivery)
-    except ValueError as exc:
-        return err("invalid_request", str(exc))
-
-    try:
-        data = await NOTIFY_CLIENT.notify(
-            title=title_s,
-            message=message,
-            delivery=delivery_s,
-        )
+        data = await request
     except httpx.HTTPStatusError as exc:
         try:
             body = exc.response.json()
@@ -48,3 +23,50 @@ async def notification_send(title: str, message: str, delivery: str = "email") -
             body = {"detail": exc.response.text}
         return err("notify_http_error", f"HTTP {exc.response.status_code}", body)
     return ok(data)
+
+
+@catch_errors
+async def notification_send(
+    title: str, message: str, delivery: str = "email", override: bool = False
+) -> dict:
+    """Notify the OpenCode instance owner by email or by texting their phone.
+
+    delivery="mobile" sends `message` as a text into the user's active mobile
+    conversation (iMessage/SMS) — this actually lands on their phone, so it is
+    for finished, user-facing updates only, never progress notes. Mobile texts
+    are plain text, hard cap 500 chars. Quiet hours and a frequency budget
+    gate unprompted mobile sends: a blocked call returns a warning instead of
+    sending, and only a repeat call with override=true pushes through — do
+    that only for genuinely urgent information.
+
+    delivery="email" (default) requires a verified email address and renders
+    Markdown into a themed HTML email.
+
+    Args:
+        title: Short subject line (<= 200 chars).
+        message: Body — Markdown for email, plain text (<= 500 chars) for
+            mobile.
+        delivery: "email" (default) or "mobile".
+        override: Mobile only — set true ONLY on a re-call after this tool
+            returned a quiet-hours or frequency warning, and only when the
+            message is genuinely urgent.
+    """
+    title_s = throw_if_empty_str("title is required", title)
+    if len(title_s) > TITLE_MAX:
+        raise ValueError(f"title exceeds {TITLE_MAX} chars")
+    throw_if_empty_str("message is required", message)
+    try:
+        delivery_s = normalize_notify_delivery(delivery)
+    except ValueError as exc:
+        return err("invalid_request", str(exc))
+
+    if delivery_s == "mobile":
+        if len(message) > MOBILE_MESSAGE_MAX:
+            raise ValueError(f"mobile message exceeds {MOBILE_MESSAGE_MAX} chars")
+        return await _relay(
+            NOTIFY_CLIENT.notify_mobile(message=message, override=override)
+        )
+
+    if len(message) > MESSAGE_MAX:
+        raise ValueError(f"message exceeds {MESSAGE_MAX} chars")
+    return await _relay(NOTIFY_CLIENT.notify(title=title_s, message=message))
