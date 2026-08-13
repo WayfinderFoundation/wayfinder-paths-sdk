@@ -132,7 +132,62 @@ def counterfactual_job(
         "actual_closes_total": actual_closes_total,
     }
     store.write_json(job_id, COUNTERFACTUAL_PATH, artifact)
+    _maybe_record_promotion_verdict(store, job_id, artifact)
     return artifact
+
+
+# Verdict maturity: enough forward window that beat/hurt is not one bar of
+# noise, sized to our jobs' trade cadence (days between closes).
+_VERDICT_MIN_DAYS = 3.0
+_VERDICT_MIN_CLOSES = 3
+_VERDICTS_PATH = "state/promotion_verdicts.json"
+
+
+def _maybe_record_promotion_verdict(
+    store: JobStore, job_id: str, artifact: dict[str, Any]
+) -> None:
+    """Once per promotion: classify the forward shadow comparison as
+    beat/neutral/hurt and persist it — the promotion-reliability datapoint
+    the evolution ledger aggregates. Never raises."""
+    try:
+        proposal_id = str(artifact.get("proposal_id") or "")
+        window = artifact.get("window") or {}
+        if not proposal_id or not artifact.get("available"):
+            return
+        closes = max(
+            int((artifact.get("actual") or {}).get("closes") or 0),
+            int((artifact.get("shadow") or {}).get("closes") or 0),
+        )
+        if float(window.get("days") or 0.0) < _VERDICT_MIN_DAYS:
+            return
+        if closes < _VERDICT_MIN_CLOSES:
+            return
+        verdicts = store.read_json(job_id, _VERDICTS_PATH) or {}
+        if proposal_id in verdicts:
+            return
+        delta = float(artifact.get("delta_net_pnl") or 0.0)
+        shadow_pnl = float((artifact.get("shadow") or {}).get("net_pnl") or 0.0)
+        threshold = max(0.25, 0.02 * abs(shadow_pnl))
+        verdict = "beat" if delta > threshold else "hurt" if delta < -threshold else "neutral"
+        record = {
+            "verdict": verdict,
+            "delta_net_pnl": delta,
+            "window_days": window.get("days"),
+            "closes": closes,
+            "recorded_at": utc_now_iso(),
+        }
+        verdicts[proposal_id] = record
+        store.write_json(job_id, _VERDICTS_PATH, verdicts)
+        store.append_journal(
+            job_id,
+            {
+                "type": "promotion_verdict",
+                "proposal_id": proposal_id,
+                **record,
+            },
+        )
+    except Exception:  # noqa: BLE001 — bookkeeping must not break the wake
+        return
 
 
 def _compute(

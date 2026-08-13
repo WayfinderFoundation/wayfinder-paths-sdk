@@ -179,6 +179,97 @@ def evaluate_live_gate(
     }
 
 
+def evaluate_economic_gate(
+    job_id: str,
+    *,
+    candidate_dir: str | Path,
+    store: JobStore | None = None,
+    probation: bool = False,
+) -> dict[str, Any]:
+    """Independent economic acceptance: paired candidate-vs-incumbent replay
+    on identical OOS folds under the owner constitution. Computed by gate
+    code — the model cannot self-certify `economic_ready`."""
+    from wayfinder_paths.jobs.constitution import load_constitution
+    from wayfinder_paths.jobs.economics import (
+        evaluate_economic_readiness,
+        paired_fold_evaluation,
+    )
+    from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
+    from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+    from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+
+    store = store or JobStore()
+    root = store.job_dir(job_id)
+    candidate_root = Path(candidate_dir)
+    constitution = load_constitution(root)
+
+    baseline_yaml = _load_job_yaml(root)
+    candidate_yaml = _load_job_yaml(candidate_root)
+    spec_data, _ = resolve_execution_spec(candidate_root, candidate_yaml)
+    if not spec_data:
+        return _economic_unavailable(constitution, "no execution spec", probation)
+    spec = ExecutionSpec.from_dict(spec_data)
+    baseline_script = store.resolve_script_entrypoint(job_id, baseline_yaml)
+    candidate_script = store.resolve_script_entrypoint(
+        job_id, candidate_yaml, candidate_dir=candidate_root
+    )
+    if baseline_script is None or candidate_script is None:
+        return _economic_unavailable(constitution, "no script entrypoint", probation)
+    dataset = _load_dataset(candidate_root, spec, candidate_yaml)
+
+    evaluation = paired_fold_evaluation(
+        baseline_script=baseline_script,
+        candidate_script=candidate_script,
+        dataset=dataset,
+        spec=spec,
+        baseline_params=baseline_yaml.get("execution_params") or {},
+        candidate_params=candidate_yaml.get("execution_params") or {},
+        constitution=constitution,
+    )
+    readiness = evaluate_economic_readiness(
+        evaluation, constitution, probation=probation
+    )
+    return {
+        "ready": readiness["ready"],
+        "reasons": readiness["reasons"],
+        "probation": probation,
+        "enforcement": constitution["enforcement"],
+        "constitution_revision": constitution.get("revision"),
+        "objective": (evaluation.get("objective") if evaluation.get("status") == "ok" else None),
+        "paired_incumbent_delta": evaluation.get("paired_incumbent_delta"),
+        "positive_folds": evaluation.get("positive_folds"),
+        "fold_count": evaluation.get("fold_count"),
+        "audit_slice": _audit_summary(evaluation.get("audit_slice")),
+        "status": evaluation.get("status"),
+        "checked_at": utc_now_iso(),
+    }
+
+
+def _audit_summary(audit: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not audit:
+        return None
+    return {
+        "start": audit["start"],
+        "end": audit["end"],
+        "bars": audit["bars"],
+        "delta_utility": audit["delta_utility"],
+    }
+
+
+def _economic_unavailable(
+    constitution: dict[str, Any], reason: str, probation: bool
+) -> dict[str, Any]:
+    return {
+        "ready": None,
+        "reasons": [f"economic evaluation unavailable: {reason}"],
+        "probation": probation,
+        "enforcement": constitution["enforcement"],
+        "constitution_revision": constitution.get("revision"),
+        "status": "unavailable",
+        "checked_at": utc_now_iso(),
+    }
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     if not path.exists():
         return None

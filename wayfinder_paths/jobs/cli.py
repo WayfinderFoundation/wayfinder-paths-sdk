@@ -981,6 +981,17 @@ def gate_cmd(job_id: str) -> None:
 
 
 @job_cli.command(
+    name="evolution",
+    help="Full update path + promotion reliability (evolution ledger).",
+)
+@click.argument("job_id")
+def evolution_cmd(job_id: str) -> None:
+    from wayfinder_paths.jobs.evolution_ledger import build_evolution_report
+
+    _echo_json({"ok": True, "result": build_evolution_report(JobStore(), job_id)})
+
+
+@job_cli.command(
     name="backtest-view", help="Read a bounded backtest visualization payload."
 )
 @click.argument("job_id")

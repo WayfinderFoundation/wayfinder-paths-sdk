@@ -329,6 +329,17 @@ def _restage_block(root: Path) -> list[dict[str, Any]]:
     return tasks
 
 
+def _evolution_block(store: JobStore, job_id: str) -> dict[str, Any]:
+    """Promotion-reliability scoreboard: the improver reads its own audited
+    outcomes instead of its memory of them. Never raises."""
+    try:
+        from wayfinder_paths.jobs.evolution_ledger import evolution_snapshot_block
+
+        return evolution_snapshot_block(store, job_id)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def _standing_checks_block(root: Path) -> dict[str, Any]:
     """Mechanical routine numbers, computed by the harness each wake.
 
@@ -538,6 +549,7 @@ def _build_worker_prompt_sections(
         "post_apply_shadow": _counterfactual_block(store, job_id),
         "research_substrate": _research_substrate_block(root),
         "standing_checks": _standing_checks_block(root),
+        "evolution": _evolution_block(store, job_id),
         "restage_tasks": restage_tasks,
     }
 
@@ -802,6 +814,14 @@ def _build_worker_prompt_sections(
             "hypothesis requires NAMED new evidence. Keep the agenda compact "
             "(~150 lines): it is a curated map, not a log — compact it in "
             "place as part of updating it.\n"
+            "- Economic promotion gate: full-size promotion requires the "
+            "candidate to beat the incumbent on paired OOS folds under the "
+            "owner constitution (LCB > 0); it is computed by gate code and "
+            "you can NEVER claim or negotiate economic_ready yourself. "
+            "Weak-but-positive evidence: set proposed_change.probation=true "
+            "for a reduced-size canary leg (clears on point estimate). "
+            "Forward results ADJUDICATE changes — never fit parameters to "
+            "the forward stream.\n"
             "- If propose returns a failed validation, read ALL failed check "
             "names and fix them in ONE follow-up propose; after 2 failed propose "
             "attempts in a wake, stop and report the blocker instead of "
