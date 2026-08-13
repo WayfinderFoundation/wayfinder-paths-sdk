@@ -50,7 +50,22 @@ def objective_vector(
         else 0.0
     )
     base_equity = float(equity_curve[0]["equity"]) if equity_curve else 0.0
-    pnls = [float(row.get("pnl") or 0.0) for row in trades]
+    # Engine fill rows carry realized_pnl_delta (openers ~-fee, closers the
+    # realized result); forward rows carry net_pnl. Reading only "pnl" made
+    # tail_loss silently 0 — the tail ceiling could never trip.
+    closes_only = [row for row in trades if row.get("reduce_only") is True]
+    counted = closes_only if closes_only else trades
+    pnls = [
+        float(
+            row.get("pnl")
+            if row.get("pnl") is not None
+            else row.get("net_pnl")
+            if row.get("net_pnl") is not None
+            else row.get("realized_pnl_delta")
+            or 0.0
+        )
+        for row in counted
+    ]
     worst_k = max(1, len(pnls) // 10)
     tail_loss = (
         abs(sum(sorted(pnls)[:worst_k])) / base_equity if base_equity > 0 else 0.0
@@ -64,7 +79,7 @@ def objective_vector(
         "tail_loss": tail_loss,
         "fee_load": fee_load,
         "max_drawdown_pct": max_dd,
-        "trade_count": len(trades),
+        "trade_count": len(counted),
         "day_count": len(returns),
     }
 
