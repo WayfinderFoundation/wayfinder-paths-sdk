@@ -93,7 +93,17 @@ def build_world_bundle(
     dataset_dir.mkdir(parents=True, exist_ok=True)
     rows = [row for path_rows in world.dev_rows for row in path_rows]
     (dataset_dir / "input_bars.json").write_text(
-        json.dumps(rows, default=str)
+        json.dumps(
+            {
+                "bars": rows,
+                "metadata": {
+                    "source": "wob-benchmark",
+                    "world_id": world.world_id,
+                    "interval": "1h",
+                },
+            },
+            default=str,
+        )
     )
     return job.id
 
@@ -117,7 +127,9 @@ def run_agent_wakes(
     store = JobStore(repo_root=sandbox)
     sessions: list[dict[str, Any]] = []
     for wake in range(wakes):
-        prepared = prepare_job_worker_prompt(job_id, mode="intervene", store=store)
+        prepared = prepare_job_worker_prompt(
+            store=store, job_id=job_id, mode="intervene"
+        )
         title = f"wob-{job_id}-wake-{wake}"
         command = [
             str(opencode), "run", "--agent", agent, "-m", model,
