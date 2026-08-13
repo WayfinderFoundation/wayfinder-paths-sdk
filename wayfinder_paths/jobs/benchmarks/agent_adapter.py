@@ -31,6 +31,15 @@ from wayfinder_paths.jobs.benchmarks.grammar import Genome
 DEFAULT_OPENCODE = Path.home() / ".opencode" / "bin" / "opencode"
 DEFAULT_SESSION_DB = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
 DEFAULT_AGENT = "wayfinder-job-worker"
+# opencode.json (provider config) is untracked; worktrees lack it. Fall back
+# to the primary checkout when the given repo_root is a bare worktree.
+PRIMARY_CHECKOUT = Path("/Users/adrianhaldenby/Documents/wayfinder-paths-sdk")
+
+
+def _config_source(repo_root: Path) -> Path:
+    if (repo_root / ".opencode" / "opencode.json").exists():
+        return repo_root
+    return PRIMARY_CHECKOUT
 
 
 def build_world_bundle(
@@ -47,16 +56,42 @@ def build_world_bundle(
     from wayfinder_paths.jobs.store import JobStore
 
     sandbox.mkdir(parents=True, exist_ok=True)
-    # Agent definitions + MCP config: the sandbox must BE an opencode-able
-    # workspace with the production agent available.
-    for name in (".opencode", ".mcp.json"):
-        source = repo_root / name
-        target = sandbox / name
-        if source.exists() and not target.exists():
-            if source.is_dir():
-                shutil.copytree(source, target)
-            else:
-                shutil.copy(source, target)
+    # The sandbox must BE an opencode-able SDK workspace: agent definitions
+    # + provider config (opencode.json is UNTRACKED — source it from a real
+    # checkout, not a bare worktree), the venv + package symlinked so the
+    # `wayfinder job` CLI works, and MCP servers disabled (file-based
+    # worlds; the worker falls back to the CLI — eval-harness pattern).
+    config_source = _config_source(repo_root)
+    target = sandbox / ".opencode"
+    if not target.exists():
+        shutil.copytree(
+            config_source / ".opencode", target,
+            ignore=shutil.ignore_patterns("node_modules"),
+            symlinks=False,
+        )
+    opencode_json = target / "opencode.json"
+    if opencode_json.exists():
+        config = json.loads(opencode_json.read_text())
+        for server in (config.get("mcp") or {}).values():
+            if isinstance(server, dict):
+                server["enabled"] = False
+        opencode_json.write_text(json.dumps(config, indent=2) + "\n")
+    # Code must be INSIDE the sandbox (symlinks trip opencode's
+    # external_directory permission wall — found live on pilot wake 0);
+    # the venv stays a symlink, agents execute it but rarely read it.
+    for name in ("pyproject.toml", "poetry.lock"):
+        source = config_source / name
+        if source.exists() and not (sandbox / name).exists():
+            shutil.copy(source, sandbox / name)
+    package = sandbox / "wayfinder_paths"
+    if not package.exists():
+        shutil.copytree(
+            config_source / "wayfinder_paths", package,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests"),
+        )
+    venv_source = config_source / ".venv"
+    if venv_source.exists() and not (sandbox / ".venv").exists():
+        (sandbox / ".venv").symlink_to(venv_source)
 
     store = JobStore(repo_root=sandbox)
     job = WayfinderJob.new(
@@ -144,6 +179,7 @@ def run_agent_wakes(
                 "wake": wake,
                 "title": title,
                 "exit_code": result.returncode,
+                "stdout_tail": result.stdout[-800:],
                 "stderr_tail": result.stderr[-500:],
             }
         )
