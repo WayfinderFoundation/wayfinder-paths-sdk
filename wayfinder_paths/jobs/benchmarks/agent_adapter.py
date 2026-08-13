@@ -97,10 +97,16 @@ def build_world_bundle(
     job = WayfinderJob.new(
         f"wob-{world.world_id}",
         goal=(
-            "Maximize risk-adjusted return of this strategy by improving its "
-            "genome parameters (signal/filter/exit/sizing in "
-            "execution_params.genome_spec). The dataset is fixed; there is "
-            "no live venue."
+            "BENCHMARK JOB: maximize risk-adjusted return by improving the "
+            "genome parameters in execution_params.genome_spec (fields: "
+            "signal, direction, confirm_filter, exit_family+exit_params, "
+            "sizing_family). Method: run `wayfinder job backtest` / grid "
+            "sweeps over genome variants on the FIXED dataset in "
+            "results/backtest/input_bars.json, then `wayfinder job propose` "
+            "the best genome as an execution_params change. There is no "
+            "live venue, no external data, and nothing useful outside this "
+            "job bundle — do not research the benchmark itself; optimize "
+            "within it."
         ),
         script="workspace/src/strategy.py",
         agent_mode="intervene",
@@ -124,9 +130,53 @@ def build_world_bundle(
     job_yaml["script_loop"] = {"enabled": True, "entrypoint": "workspace/src/strategy.py"}
     job_yaml_path.write_text(yaml.safe_dump(job_yaml, sort_keys=False))
 
+    # Benchmark jobs must not burn wakes on production side-quests: a fresh
+    # ideation artifact parks the forced-expedition contract (external
+    # research tools are absent in sandboxes — found on pilot wake 0).
+    ideation_dir = root / "research" / "ideation"
+    ideation_dir.mkdir(parents=True, exist_ok=True)
+    from wayfinder_paths.jobs.models import utc_now_iso
+
+    (ideation_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "generated_at": utc_now_iso(),
+                "sources_consulted": [
+                    {
+                        "tool": "benchmark_bundle",
+                        "query": "n/a",
+                        "takeaway": "Benchmark world: no external research "
+                        "surface exists; optimize the genome on the fixed "
+                        "dataset instead.",
+                    }
+                ],
+                "hypotheses": [
+                    {
+                        "title": "Genome search on the fixed dataset",
+                        "thesis": "The only improvable surface is "
+                        "execution_params.genome_spec.",
+                        "bucket": "testable",
+                        "next_step": "wayfinder job backtest/grid, then "
+                        "propose better genome params",
+                    }
+                ],
+            }
+        )
+    )
+
+    # The backtest CLI needs an execution spec at the job root — without it
+    # the agent cannot evaluate anything (found on the first e2b run).
+    from wayfinder_paths.jobs.execution import ExecutionSpec
+
+    spec = ExecutionSpec()
+    spec.data_contract["bar_interval"] = "1h"
+    (root / "execution_spec.json").write_text(json.dumps(spec.to_dict(), indent=2))
+
     dataset_dir = root / "results" / "backtest"
     dataset_dir.mkdir(parents=True, exist_ok=True)
-    rows = [row for path_rows in world.dev_rows for row in path_rows]
+    # ONE dev path only: the paths share a timeline, so concatenating them
+    # creates duplicate timestamps (pandas reindex failures downstream).
+    rows = list(world.dev_rows[0])
     (dataset_dir / "input_bars.json").write_text(
         json.dumps(
             {
