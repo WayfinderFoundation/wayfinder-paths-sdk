@@ -186,8 +186,15 @@ def _mechanism_for(archetype: str, rng: random.Random) -> Mechanism:
         )
     if archetype == "interaction_edge":
         return Mechanism(
-            rules=[{"trigger": "high20", "drift": strong, "bars": 3,
-                    "vol_state": "high", "probability": 0.35}]
+            rules=[
+                {"trigger": "high20", "drift": strong, "bars": 3,
+                 "vol_state": "high", "probability": 0.35},
+                # Low-vol penalty on the SAME trigger: the unfiltered basin
+                # is strictly worse than the gated one — filtering must be
+                # necessary, not incidental.
+                {"trigger": "high20", "drift": -strong * 0.5, "bars": 3,
+                 "vol_state": "low", "probability": 0.35},
+            ]
         )
     if archetype == "session_edge":
         session = rng.randrange(3)

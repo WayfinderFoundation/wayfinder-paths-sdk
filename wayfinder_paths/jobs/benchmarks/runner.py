@@ -34,11 +34,25 @@ ORACLE_PATHS = 64
 
 
 def run_world_job(job: dict[str, Any]) -> dict[str, Any]:
-    """One world end-to-end (worker-process safe: primitives in, dicts out)."""
+    """One world end-to-end (worker-process safe: primitives in, dicts out).
+    A world that cannot calibrate returns a rejection record — one stubborn
+    seed must never kill a 66-world suite."""
     from wayfinder_paths.jobs.benchmarks.adapters import ADAPTERS
     from wayfinder_paths.jobs.benchmarks.worlds import generate_world
 
-    world = generate_world(job["archetype"], job["seed"])
+    try:
+        world = generate_world(job["archetype"], job["seed"])
+    except RuntimeError as exc:
+        return {
+            "world_id": f"{job['archetype']}-{job['seed']:06d}",
+            "archetype": job["archetype"],
+            "visibility": job["visibility"],
+            "rejected": str(exc)[:300],
+            "manifest": None,
+            "public_payload": None,
+            "sealed_payload": None,
+            "rows": [],
+        }
     genomes = enumerate_genomes()
     fee = world.mechanism.fee_bps
     hidden = [
@@ -132,6 +146,8 @@ def run_suite(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     all_rows: list[dict[str, Any]] = []
+    rejected = [r for r in results if r.get("rejected")]
+    results = [r for r in results if not r.get("rejected")]
     for result in results:
         world_dir = out_dir / "worlds" / result["world_id"]
         world_dir.mkdir(parents=True, exist_ok=True)
@@ -159,6 +175,9 @@ def run_suite(
     report = {
         "suite": "exact-v0",
         "worlds": len(results),
+        "rejected_worlds": [
+            {"world_id": r["world_id"], "reason": r["rejected"]} for r in rejected
+        ],
         "rows": len(all_rows),
         "by_optimizer": aggregate(all_rows),
         "by_budget": {
