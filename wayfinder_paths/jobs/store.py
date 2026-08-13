@@ -372,6 +372,12 @@ class JobStore:
         if gate.get("live_ready") is not True:
             reasons = "; ".join(gate.get("reasons") or ["unknown"])
             raise ValueError(f"candidate gate is not live-ready: {reasons}")
+        economic = report.get("economic") or {}
+        # ready=None (advisory constitution, unavailable, or crashed eval)
+        # never blocks — only a computed False under a blocking constitution.
+        if economic.get("enforcement") == "blocking" and economic.get("ready") is False:
+            reasons = "; ".join(economic.get("reasons") or ["unknown"])
+            raise ValueError(f"candidate is not economic-ready: {reasons}")
         self._ensure_candidate_matches_report(job_id, proposal, report)
 
     def _ensure_candidate_matches_report(

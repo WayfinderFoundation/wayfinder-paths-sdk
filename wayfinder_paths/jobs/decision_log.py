@@ -221,6 +221,26 @@ def _journal_entries(
                     actor="system",
                 )
             )
+        elif kind == "promotion_verdict":
+            verdict = str(event.get("verdict") or "unknown")
+            delta = float(event.get("delta_net_pnl") or 0.0)
+            label = {
+                "beat": "beat the incumbent",
+                "neutral": "ran even with the incumbent",
+                "hurt": "underperformed the incumbent",
+            }.get(verdict, verdict)
+            entries.append(
+                _entry(
+                    ts,
+                    "proposal",
+                    f"Forward verdict: promoted change {label} ({delta:+.2f} USD)",
+                    f"{event.get('window_days')}d shadow window, "
+                    f"{event.get('closes')} closes",
+                    "info",
+                    actor="system",
+                    proposal_id=str(event.get("proposal_id") or "") or None,
+                )
+            )
         elif kind == "ideation_artifact":
             buckets = event.get("buckets") or {}
             bucket_desc = ", ".join(

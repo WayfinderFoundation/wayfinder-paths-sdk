@@ -33,7 +33,7 @@ from wayfinder_paths.jobs.execution.job import (
     synthesize_scenario_plan,
 )
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
-from wayfinder_paths.jobs.gating import compute_workspace_revision, evaluate_live_gate
+from wayfinder_paths.jobs.gating import compute_workspace_revision, evaluate_live_gate, evaluate_economic_gate
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import sync_all_jobs
@@ -209,6 +209,22 @@ def _generate_candidate_report(
             "reasons": gate.get("reasons") or [],
         }
         mode = "full"
+        probation = bool((proposal.get("proposed_change") or {}).get("probation"))
+        try:
+            economic = evaluate_economic_gate(
+                job_id,
+                candidate_dir=candidate_dir,
+                store=store,
+                probation=probation,
+            )
+        except Exception as exc:  # noqa: BLE001 — a crashed economic eval must
+            # degrade to advisory-unavailable, never break propose.
+            economic = {
+                "ready": None,
+                "reasons": [f"economic evaluation failed: {exc}"[:300]],
+                "enforcement": "advisory",
+                "status": "error",
+            }
     else:
         # Research-only / no-dataset jobs: nothing to backtest or gate — the
         # proposal is judged on validation alone (contract C1).
@@ -217,12 +233,14 @@ def _generate_candidate_report(
             "reasons": ["no execution backtest; validation-only proposal"],
         }
         mode = "validation_only"
+        economic = None
 
     candidate_report = {
         "revision": candidate_revision,
         "base_revision": base_revision,
         "mode": mode,
         "gate": gate_payload,
+        "economic": economic,
         "validation_summary": validation_summary(validation),
         # Stats/deltas only — never point series (sync payload discipline).
         "comparison": (
