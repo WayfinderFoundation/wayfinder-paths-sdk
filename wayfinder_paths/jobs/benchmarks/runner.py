@@ -70,10 +70,27 @@ def run_world_job(job: dict[str, Any]) -> dict[str, Any]:
         adapter = ADAPTERS[lane]
         for budget in job["budgets"]:
             for repeat in range(job["repeats"]):
-                run = adapter(
-                    genomes, dev, budget=budget, fee_bps=fee,
-                    seed=job["seed"] * 1000 + budget + repeat,
-                )
+                # Optuna requires 32-bit seeds; private world seeds reach 1e7.
+                lane_seed = (job["seed"] * 1009 + budget * 31 + repeat) % (2**32 - 1)
+                try:
+                    run = adapter(
+                        genomes, dev, budget=budget, fee_bps=fee, seed=lane_seed
+                    )
+                except Exception as exc:  # noqa: BLE001 — one lane crash must
+                    # not kill a suite; the row records the failure.
+                    rows.append(
+                        {
+                            "optimizer": lane,
+                            "world_id": world.world_id,
+                            "archetype": world.archetype,
+                            "budget": budget,
+                            "repeat": repeat,
+                            "error": str(exc)[:200],
+                            "is_null_world": world.archetype == "null_world",
+                            "visibility": job["visibility"],
+                        }
+                    )
+                    continue
                 scored = score_run(run, oracle)
                 scored.update(
                     {

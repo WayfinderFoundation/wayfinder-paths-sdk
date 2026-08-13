@@ -90,6 +90,7 @@ def aggregate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         return ordered[min(int(q * (len(ordered) - 1)), len(ordered) - 1)]
 
     by_optimizer: dict[str, dict[str, Any]] = {}
+    rows = [row for row in rows if "error" not in row]
     for row in rows:
         bucket = by_optimizer.setdefault(
             str(row["optimizer"]),
