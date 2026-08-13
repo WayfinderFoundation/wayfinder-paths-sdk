@@ -183,7 +183,9 @@ def utility_from_trades(
     log_steps = np.diff(np.log(np.concatenate([[initial_equity], equity])))
     growth = float(log_steps.sum())
     negatives = log_steps[log_steps < 0]
-    downside = float(np.sqrt(np.mean(negatives**2))) if len(log_steps) else 0.0
+    downside = (
+        float(np.sqrt(np.mean(negatives**2))) if len(negatives) else 0.0
+    )
     worst_k = max(1, len(pnls) // 10)
     tail = float(abs(np.sort(np.asarray(pnls))[:worst_k].sum())) / initial_equity
     fees_proxy = 0.0  # fees are inside pnls; turnover term deferred to v1
