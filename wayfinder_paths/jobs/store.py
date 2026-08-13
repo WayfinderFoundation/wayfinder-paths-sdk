@@ -502,6 +502,18 @@ class JobStore:
             self._set_application_status(proposal, "canceled")
         proposal["updated_at"] = utc_now_iso()
         self.write_proposal(job_id, proposal)
+        try:
+            from wayfinder_paths.jobs.archive import set_candidate_status
+
+            set_candidate_status(
+                self,
+                job_id,
+                proposal_id,
+                "refuted",
+                evidence=f"rejected by {rejected_by or 'owner'}: {reason or ''}"[:160],
+            )
+        except Exception:  # noqa: BLE001 — archive bookkeeping never breaks reject
+            pass
         self.append_journal(
             job_id,
             {

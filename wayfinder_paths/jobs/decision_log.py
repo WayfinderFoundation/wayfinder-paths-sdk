@@ -221,6 +221,22 @@ def _journal_entries(
                     actor="system",
                 )
             )
+        elif kind == "lifecycle_decision":
+            decision = str(event.get("decision") or "")
+            metrics = event.get("metrics") or {}
+            entries.append(
+                _entry(
+                    ts,
+                    "proposal",
+                    f"Lifecycle controller {decision} probation leg "
+                    f"{event.get('leg')}",
+                    f"{metrics.get('closed_trades')} trades, "
+                    f"WR {metrics.get('win_rate')}, net {metrics.get('net_pnl')} USD "
+                    "— pre-registered rules, evaluated mechanically",
+                    "info",
+                    actor="system",
+                )
+            )
         elif kind == "promotion_verdict":
             verdict = str(event.get("verdict") or "unknown")
             delta = float(event.get("delta_net_pnl") or 0.0)

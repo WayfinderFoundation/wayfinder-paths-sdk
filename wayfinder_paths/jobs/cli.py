@@ -992,6 +992,17 @@ def evolution_cmd(job_id: str) -> None:
 
 
 @job_cli.command(
+    name="archive",
+    help="Candidate archive: Pareto frontier, branches, refuted lineage.",
+)
+@click.argument("job_id")
+def archive_cmd(job_id: str) -> None:
+    from wayfinder_paths.jobs.archive import load_archive
+
+    _echo_json({"ok": True, "result": load_archive(JobStore(), job_id)})
+
+
+@job_cli.command(
     name="backtest-view", help="Read a bounded backtest visualization payload."
 )
 @click.argument("job_id")
