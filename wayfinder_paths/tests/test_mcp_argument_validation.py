@@ -41,6 +41,16 @@ async def test_alpha_returns_allowed_values_for_bad_scan_type() -> None:
 
 
 @pytest.mark.asyncio
+async def test_alpha_returns_allowed_values_for_bad_sort() -> None:
+    result = await research_search_alpha(sort="score")
+
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_argument"
+    assert result["error"]["details"]["field"] == "sort"
+    assert "-created" in result["error"]["details"]["allowed_values"]
+
+
+@pytest.mark.asyncio
 async def test_delta_lab_limit_type_errors_are_structured() -> None:
     result = await research_search_delta_lab_assets(query="ETH", limit="many")
 

@@ -1921,8 +1921,25 @@ async def hyperliquid_place_limit_order(
 
 @catch_errors
 async def hyperliquid_get_state(label: str) -> dict[str, Any]:
-    """Return perp + spot + outcome state and all open orders (including
-    untriggered TP/SL trigger orders) for a Hyperliquid wallet in one shot."""
+    """Return a Hyperliquid account snapshot: money `summary`, open
+    `perp_positions` / `spot_positions` / `outcome_positions`, and all
+    `open_orders` (including untriggered TP/SL trigger orders).
+
+    `summary` is the only place balances appear. Unified accounts hold one
+    USDC ledger that backs both perp margin and spot; the fields mirror HL's
+    own Unified Account card: `unified_usdc_equity` (cash + unrealized PnL —
+    HL's Portfolio Value; quote this as "the balance"),
+    `unified_usdc_unrealized_pnl`, `unified_usdc_margin_used` (margin
+    committed to open positions), `unified_usdc_margin_available` (free
+    collateral for new positions, spot spends, and withdrawals — per-asset
+    caps via `hyperliquid_get_trade_asset`),
+    `unified_usdc_liquidation_floor` (cross liquidates when equity falls to
+    this), `unified_maintenance_ratio` (floor/equity — liquidation near
+    1.0), and `unified_account_leverage` (position notional / equity). Classic
+    `"default"` accounts keep separate `perp_account_value` /
+    `perp_withdrawable` / `spot_usdc_total` ledgers. For per-market sizing
+    use `hyperliquid_get_trade_asset`.
+    """
     addr, _ = await resolve_wallet_address(wallet_label=label)
     if not addr:
         return err("not_found", f"Wallet not found: {label}")
@@ -1941,10 +1958,11 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
         adapter.get_frontend_open_orders(addr),
         adapter.get_spot_assets(),
     )
+    if not (perp_ok and spot_ok and abstraction_ok and orders_ok):
+        return err("state_error", "Could not fetch Hyperliquid state")
 
-    # Stamp the canonical `asset_name` onto every market-identifier field so
-    # state is interchangeable with search/quote/order tools — the agent reads
-    # one format and never re-guesses `-USDC`. `coin` (raw HL) is preserved.
+    # Stamp the canonical `asset_name` next to the raw `coin` so positions and
+    # orders feed straight into search/quote/order tools.
     spot_index_to_pair = {f"@{aid - 10000}": name for name, aid in spot_map.items()}
 
     def _stamp(row: dict[str, Any]) -> None:
@@ -1952,56 +1970,83 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
         if coin:
             row["asset_name"] = adapter.canonical_asset_name(coin, spot_index_to_pair)
 
-    if perp_ok and isinstance(perp, dict):
-        for entry in perp.get("assetPositions", []):
-            if isinstance(entry.get("position"), dict):
-                _stamp(entry["position"])
-    if orders_ok and isinstance(orders, list):
-        for order in orders:
-            if isinstance(order, dict):
-                _stamp(order)
+    perp_positions = [entry["position"] for entry in perp["assetPositions"]]
+    for position in perp_positions:
+        _stamp(position)
+    for order in orders:
+        _stamp(order)
 
-    spot_balances: list[dict[str, Any]] = []
+    usdc_total = 0.0
+    spot_positions: list[dict[str, Any]] = []
     outcome_positions: list[dict[str, Any]] = []
-    if spot_ok and isinstance(spot, dict):
-        for bal in spot.get("balances", []):
-            coin = str(bal.get("coin") or "")
-            if coin.startswith("+"):
-                if float(bal.get("total") or 0) == 0:
-                    continue
-                encoding = int(coin[1:])
-                outcome_positions.append(
-                    {
-                        "coin": coin,
-                        # Canonical HIP-4 path — feed straight to order tools to
-                        # close. Not routable through canonical_asset_name (a
-                        # `+` coin would wrongly resolve to `+enc-USDC`).
-                        "asset_name": f"#{coin[1:]}",
-                        "outcome_id": encoding // 10,
-                        "side": encoding % 10,
-                        "total": bal.get("total"),
-                        "hold": bal.get("hold"),
-                        "entryNtl": bal.get("entryNtl"),
-                    }
-                )
-            else:
-                spot_balances.append(bal)
-        spot["balances"] = spot_balances
+    for bal in spot["balances"]:
+        coin = str(bal["coin"])
+        if coin == "USDC":
+            usdc_total = float(bal["total"])
+        elif coin.startswith("+"):
+            if float(bal["total"]) == 0:
+                continue
+            encoding = int(coin[1:])
+            outcome_positions.append(
+                {
+                    "coin": coin,
+                    # Not routable through canonical_asset_name — a `+` coin
+                    # would wrongly resolve to `+enc-USDC`.
+                    "asset_name": f"#{coin[1:]}",
+                    "outcome_id": encoding // 10,
+                    "side": encoding % 10,
+                    "total": bal["total"],
+                    "hold": bal["hold"],
+                    "entryNtl": bal["entryNtl"],
+                }
+            )
+        elif float(bal["total"]) != 0:
+            spot_positions.append(bal)
+
+    if abstraction == "unifiedAccount":
+        # Perp margin is held out of spot USDC, so spot USDC is THE balance —
+        # perp accountValue only reflects margin committed to open positions.
+        unrealized_pnl = sum(float(p["unrealizedPnl"]) for p in perp_positions)
+        equity = usdc_total + unrealized_pnl
+        margin_used = float(perp["marginSummary"]["totalMarginUsed"])
+        floor = float(perp["crossMaintenanceMarginUsed"])
+        notional = sum(float(p["positionValue"]) for p in perp_positions)
+        summary = {
+            # Equity (cash + unrealized PnL) — HL's "Portfolio Value"; quote
+            # this as "the balance".
+            "unified_usdc_equity": equity,
+            "unified_usdc_unrealized_pnl": unrealized_pnl,
+            # Margin committed to open positions (notional / leverage) — held
+            # out of spot USDC.
+            "unified_usdc_margin_used": margin_used,
+            # Free collateral: capacity for new cross positions, spot spends,
+            # and withdrawals. Per-asset caps via hyperliquid_get_trade_asset.
+            "unified_usdc_margin_available": equity - margin_used,
+            # Cross liquidates when equity falls to this (maintenance margin).
+            "unified_usdc_liquidation_floor": floor,
+            # HL's "Unified Account Ratio" (shown there as a percent) —
+            # liquidation as it approaches 1.0.
+            "unified_maintenance_ratio": floor / equity if equity > 0 else 0.0,
+            # Position notional / equity — HL's "Unified Account Leverage".
+            "unified_account_leverage": notional / equity if equity > 0 else 0.0,
+        }
+    else:
+        summary = {
+            "perp_account_value": float(perp["marginSummary"]["accountValue"]),
+            "perp_withdrawable": float(perp["withdrawable"]),
+            "spot_usdc_total": usdc_total,
+        }
 
     return ok(
         {
             "label": label,
             "address": addr,
-            "perp": {"success": perp_ok, "state": perp},
-            "spot": {"success": spot_ok, "state": spot},
-            # frontendOpenOrders rows: resting limit orders plus untriggered
-            # trigger orders (isTrigger/triggerPx/orderType/isPositionTpsl).
-            "open_orders": {"success": orders_ok, "orders": orders},
-            "account_abstraction": {
-                "success": abstraction_ok,
-                "state": abstraction,
-            },
-            "outcomes": {"success": spot_ok, "positions": outcome_positions},
+            "account_abstraction": abstraction,
+            "summary": summary,
+            "perp_positions": perp_positions,
+            "spot_positions": spot_positions,
+            "outcome_positions": outcome_positions,
+            "open_orders": orders,
         }
     )
 

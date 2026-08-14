@@ -11,6 +11,9 @@ CHAIN_ID_KATANA = 747474
 CHAIN_ID_MONAD = 143
 CHAIN_ID_MEGAETH = 4326
 CHAIN_ID_ROBINHOOD = 4663
+# Internal chain id for Solana mainnet-beta. Li.Fi's external id
+# 1151111081099710 maps to/from 900 at service boundaries only.
+CHAIN_ID_SOLANA = 900
 
 CHAIN_CODE_TO_ID = {
     "base": CHAIN_ID_BASE,
@@ -28,7 +31,14 @@ CHAIN_CODE_TO_ID = {
     "monad": CHAIN_ID_MONAD,
     "megaeth": CHAIN_ID_MEGAETH,
     "robinhood": CHAIN_ID_ROBINHOOD,
+    "solana": CHAIN_ID_SOLANA,
 }
+
+# SVM (Solana Virtual Machine) chains. Deliberately kept OUT of the EVM-only
+# sets below (SUPPORTED_CHAINS, GAS_SPONSORED_CHAIN_IDS, POA/pre-1559 sets):
+# those gate EVM code paths (nonce/gas handling, middleware). Solana flows go
+# through wayfinder_paths.core.utils.svm instead.
+SVM_CHAIN_IDS: set[int] = {CHAIN_ID_SOLANA}
 
 CHAIN_ID_TO_CODE: dict[int, str] = {
     v: k for k, v in CHAIN_CODE_TO_ID.items() if k not in ("arbitrum-one", "mainnet")

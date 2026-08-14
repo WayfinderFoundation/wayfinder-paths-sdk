@@ -40,7 +40,10 @@ from wayfinder_paths.paths.renderer import (
     render_skill_exports,
 )
 from wayfinder_paths.paths.scaffold import PathScaffoldError, init_path, slugify
-from wayfinder_paths.paths.shells_sync import sync_shells_inventory
+from wayfinder_paths.paths.shells_sync import (
+    ShellsRuntimeReloadIntent,
+    sync_shells_inventory,
+)
 
 _INSTALL_DIRNAME = "paths"
 _LEGACY_INSTALL_DIRNAME = "packs"
@@ -74,6 +77,45 @@ def _echo_json(data: Any) -> None:
 
 def _iso_utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _sync_after_path_mutation(
+    result: dict[str, Any],
+    *,
+    trigger: str,
+    runtime_reload_intent: ShellsRuntimeReloadIntent,
+    changed_slugs: list[str],
+) -> None:
+    sync_result = sync_shells_inventory(
+        trigger=trigger,
+        runtime_reload_intent=runtime_reload_intent,
+        changed_slugs=changed_slugs,
+    )
+    if sync_result.reason in {"not_in_opencode_instance", "suppressed"}:
+        return
+
+    result["shells_sync"] = {
+        "status": sync_result.status,
+        "reason": sync_result.reason,
+        "runtime_reload_intent": sync_result.runtime_reload_intent,
+        "runtime_reload_status": sync_result.runtime_reload_status,
+    }
+    if sync_result.runtime_reload_intent != "restart":
+        return
+
+    restart_pending = sync_result.runtime_reload_status != "restarted"
+    result["runtime_restart_pending"] = restart_pending
+    if restart_pending:
+        warnings = result.setdefault("warnings", [])
+        if isinstance(warnings, list):
+            warnings.append(
+                "Path files were updated, but OpenCode could not reload them. "
+                "Restart the Shell runtime to finish applying this change."
+            )
+
+
+def _runtime_reload_intent_for_host(host: object) -> ShellsRuntimeReloadIntent:
+    return "restart" if str(host or "").strip().lower() == "opencode" else "preserve"
 
 
 def _path_install_venue(*, runtime: str) -> str:
@@ -1598,7 +1640,12 @@ def activate_cmd(
             activation_recorded = True
 
     result["activation_recorded"] = activation_recorded
-    sync_shells_inventory(trigger="activate")
+    _sync_after_path_mutation(
+        result,
+        trigger="activate",
+        runtime_reload_intent=_runtime_reload_intent_for_host(result.get("host")),
+        changed_slugs=[slug] if slug else [],
+    )
     _echo_json({"ok": True, "result": result})
 
 
@@ -2358,6 +2405,7 @@ def _remove_path_install(
         scope=scope,
         cwd=Path.cwd(),
     )
+    result["activation_host"] = activation_target.host if activation_target else None
     if activation_target is not None and installed_path.exists():
         activation_options = _activation_options_from_entry(entry)
         activation_root = _activation_root_from_entry(entry, target=activation_target)
@@ -2448,7 +2496,15 @@ def install_cmd(
         include_dependencies=include_dependencies,
         api_url=api_url,
     )
-    sync_shells_inventory(trigger="install")
+    activation = result.get("activation")
+    _sync_after_path_mutation(
+        result,
+        trigger="install",
+        runtime_reload_intent=_runtime_reload_intent_for_host(
+            activation.get("host") if isinstance(activation, dict) else None
+        ),
+        changed_slugs=[slug],
+    )
     _echo_json({"ok": True, "result": result})
 
 
@@ -2485,7 +2541,12 @@ def pull_cmd(
         no_verify=no_verify,
         api_url=api_url,
     )
-    sync_shells_inventory(trigger="pull")
+    _sync_after_path_mutation(
+        result,
+        trigger="pull",
+        runtime_reload_intent="preserve",
+        changed_slugs=[slug],
+    )
     _echo_json({"ok": True, "result": result})
 
 
@@ -2609,7 +2670,12 @@ def update_cmd(
         result["manual_activate_command"] = _manual_activate_command(
             path_dir=installed_path
         )
-        sync_shells_inventory(trigger="update")
+        _sync_after_path_mutation(
+            result,
+            trigger="update",
+            runtime_reload_intent="preserve",
+            changed_slugs=[slug],
+        )
         _echo_json({"ok": True, "result": result})
         return
 
@@ -2686,7 +2752,12 @@ def update_cmd(
     result["activated"] = True
     result["activation_source"] = activation_target.source
     result["activation"] = activation_result
-    sync_shells_inventory(trigger="update")
+    _sync_after_path_mutation(
+        result,
+        trigger="update",
+        runtime_reload_intent=_runtime_reload_intent_for_host(activation_target.host),
+        changed_slugs=[slug],
+    )
     _echo_json({"ok": True, "result": result})
 
 
@@ -2723,7 +2794,14 @@ def remove_cmd(
         host=host,
         scope=scope,
     )
-    sync_shells_inventory(trigger="remove")
+    _sync_after_path_mutation(
+        result,
+        trigger="remove",
+        runtime_reload_intent=_runtime_reload_intent_for_host(
+            result.get("activation_host")
+        ),
+        changed_slugs=[slug],
+    )
     _echo_json({"ok": True, "result": result})
 
 

@@ -13,7 +13,15 @@ metadata:
 from wayfinder_paths.core.clients.DeltaLabClient import DELTA_LAB_CLIENT
 
 # Core discovery
-await DELTA_LAB_CLIENT.get_basis_apy_sources(basis_symbol="BTC", lookback_days=7)   # analytic opps
+apy_sources = await DELTA_LAB_CLIENT.get_basis_apy_sources(
+    basis_symbol="BTC",
+    lookback_days=7,
+)
+long_opps = apy_sources["directions"]["LONG"]
+valid_long_opps = [
+    opp for opp in long_opps if (opp.get("apy") or {}).get("value") is not None
+]
+
 await DELTA_LAB_CLIENT.get_best_delta_neutral_pairs(basis_symbol="ETH", limit=20)
 
 # v2 surface (also on DELTA_LAB_CLIENT — see rules/v2-surface.md for the full list)
@@ -28,7 +36,8 @@ from wayfinder_paths.core.clients.delta_lab_types import DeltaLabAPIError
 
 **Critical gotchas:**
 - Use uppercase symbols: `"BTC"` not `"bitcoin"` or `"btc"`
-- APY can be `null` - always filter: `[o for o in opps if o["apy"]["value"] is not None]`
+- `get_basis_apy_sources(...)` returns an envelope, not a list. Read opportunities from `result["directions"]["LONG"]` / `["SHORT"]`; there is no top-level `result["opportunities"]`.
+- APY can be `null` - filter the selected direction before sorting, as shown above.
 - Delta Lab is **read-only** (no execution, just discovery)
 - Two "opportunity" shapes: `search_opportunities` = trimmed discovery (~14 fields, scan); `get_basis_apy_sources` = enriched analytic (apy/risk/summary, decide). Don't mix them up.
 - `*_latest(...)` returns `None` on sparse-data 404 (not an error). Use `DeltaLabAPIError` for real failures.

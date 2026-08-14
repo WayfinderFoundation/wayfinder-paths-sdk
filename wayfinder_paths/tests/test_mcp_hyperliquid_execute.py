@@ -54,6 +54,7 @@ class _FakeExecutionAdapter:
         self.user_state = user_state or {
             "assetPositions": [],
             "marginSummary": {"accountValue": "20.56"},
+            "crossMaintenanceMarginUsed": "0.0",
         }
         self.active_asset_data = active_asset_data or {
             "availableToTrade": ["12.34", "56.78"],
@@ -489,6 +490,8 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
     }
     fake = _FakeExecutionAdapter(
         user_state={
+            "crossMaintenanceMarginUsed": "1.25",
+            "marginSummary": {"totalMarginUsed": "20.57"},
             "assetPositions": [
                 {
                     "position": {
@@ -497,10 +500,11 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
                         "entryPx": "100",
                         "positionValue": "25",
                         "marginUsed": "5",
+                        "unrealizedPnl": "-1.5",
                         "leverage": {"type": "cross", "value": 5},
                     }
                 }
-            ]
+            ],
         },
         frontend_open_orders=[stop_loss, resting_limit],
     )
@@ -519,24 +523,35 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
 
     assert out["ok"] is True
     result = out["result"]
-    assert "trade_context" not in result
-    assert "account_collateral" not in result
-    assert result["account_abstraction"]["state"] == "unifiedAccount"
+    assert result["account_abstraction"] == "unifiedAccount"
+    # Unified mode: spot USDC is THE balance. The summary is the only place
+    # money appears — raw marginSummary/withdrawable/USDC rows are stripped so
+    # a perp accountValue of ~0 can never be misread as "no funds".
+    assert result["summary"] == {
+        "unified_usdc_equity": 20.0,  # 21.50 cash + (-1.5) uPnL
+        "unified_usdc_unrealized_pnl": -1.5,
+        # Margin committed to positions — matches the spot USDC hold.
+        "unified_usdc_margin_used": 20.57,
+        "unified_usdc_margin_available": 20.0 - 20.57,
+        "unified_usdc_liquidation_floor": 1.25,
+        "unified_maintenance_ratio": 1.25 / 20.0,
+        "unified_account_leverage": 25.0 / 20.0,  # positionValue 25 / equity
+    }
     # Positions and orders carry the canonical asset_name every other tool
     # speaks (interchangeable format), with the raw HL coin preserved.
-    position = result["perp"]["state"]["assetPositions"][0]["position"]
+    position = result["perp_positions"][0]
     assert position["coin"] == "BTC"
     assert position["asset_name"] == "BTC-USDC"
-    assert [bal["coin"] for bal in result["spot"]["state"]["balances"]] == ["USDC"]
+    # USDC row lives in the summary; +41 is an outcome — nothing left in spot.
+    assert result["spot_positions"] == []
     # Trigger (TP/SL) orders and resting limits surface directly in state —
     # agents must not need a second call to discover them.
-    assert result["open_orders"]["success"] is True
-    assert result["open_orders"]["orders"] == [stop_loss, resting_limit]
-    assert [o["asset_name"] for o in result["open_orders"]["orders"]] == [
+    assert result["open_orders"] == [stop_loss, resting_limit]
+    assert [o["asset_name"] for o in result["open_orders"]] == [
         "HYPE-USDC",
         "BTC-USDC",
     ]
-    assert result["outcomes"]["positions"] == [
+    assert result["outcome_positions"] == [
         {
             "coin": "+41",
             "asset_name": "#41",
@@ -550,16 +565,67 @@ async def test_hyperliquid_get_state_returns_compact_account_state():
 
 
 @pytest.mark.asyncio
+async def test_hyperliquid_get_state_classic_account_summary():
+    # "default" abstraction keeps separate perp/spot ledgers, so the summary
+    # switches to perp-ledger fields instead of the unified USDC trio.
+    fake = _FakeExecutionAdapter(
+        user_state={
+            "assetPositions": [],
+            "marginSummary": {"accountValue": "150.25"},
+            "withdrawable": "120.10",
+        },
+        spot_state={"balances": []},
+    )
+    fake.get_user_abstraction = AsyncMock(return_value=(True, "default"))
+
+    with (
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.resolve_wallet_address",
+            new=AsyncMock(return_value=("0x1234", None)),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid.HyperliquidAdapter",
+            return_value=fake,
+        ),
+    ):
+        out = await hyperliquid_get_state(label="main")
+
+    result = out["result"]
+    assert result["account_abstraction"] == "default"
+    assert result["summary"] == {
+        "perp_account_value": 150.25,
+        "perp_withdrawable": 120.10,
+        "spot_usdc_total": 0.0,
+    }
+
+
+@pytest.mark.asyncio
 async def test_hyperliquid_get_state_canonicalizes_every_market_type():
     # The kBONK incident: a bare k-prefix perp coin from state must come back
     # canonical so it feeds straight into search/quote/order tools. hip3 stays
     # as-is; a spot @index order resolves to its pair via the spot map.
     fake = _FakeExecutionAdapter(
         user_state={
+            "crossMaintenanceMarginUsed": "0.0",
+            "marginSummary": {"totalMarginUsed": "0.0"},
             "assetPositions": [
-                {"position": {"coin": "kBONK", "szi": "1000"}},
-                {"position": {"coin": "xyz:SP500", "szi": "-2"}},
-            ]
+                {
+                    "position": {
+                        "coin": "kBONK",
+                        "szi": "1000",
+                        "unrealizedPnl": "0",
+                        "positionValue": "10",
+                    }
+                },
+                {
+                    "position": {
+                        "coin": "xyz:SP500",
+                        "szi": "-2",
+                        "unrealizedPnl": "0",
+                        "positionValue": "20",
+                    }
+                },
+            ],
         },
         frontend_open_orders=[
             {"coin": "kBONK", "oid": 1, "side": "B", "sz": "500"},
@@ -579,14 +645,14 @@ async def test_hyperliquid_get_state_canonicalizes_every_market_type():
     ):
         out = await hyperliquid_get_state(label="main")
 
-    positions = out["result"]["perp"]["state"]["assetPositions"]
-    assert [p["position"]["asset_name"] for p in positions] == [
+    positions = out["result"]["perp_positions"]
+    assert [p["asset_name"] for p in positions] == [
         "kBONK-USDC",
         "xyz:SP500",
     ]
     # raw coin preserved alongside the canonical name
-    assert positions[0]["position"]["coin"] == "kBONK"
-    assert [o["asset_name"] for o in out["result"]["open_orders"]["orders"]] == [
+    assert positions[0]["coin"] == "kBONK"
+    assert [o["asset_name"] for o in out["result"]["open_orders"]] == [
         "kBONK-USDC",
         "KNTQ/USDH",  # @1 → spot pair at index 1
     ]

@@ -21,7 +21,7 @@ from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
-    find_wallet_by_label,
+    load_wallet_ring,
     load_wallets,
     normalize_address,
     ok,
@@ -252,8 +252,9 @@ async def core_wallets(
                     {
                         "wallets": [public_wallet_view(x) for x in refreshed],
                         "created": {
-                            "label": result.get("label", want),
-                            "address": result["wallet_address"],
+                            "label": result["evm"]["label"],
+                            "evm_address": result["evm"]["wallet_address"],
+                            "svm_address": result["svm"]["wallet_address"],
                         },
                     }
                 )
@@ -416,42 +417,17 @@ async def core_wallets(
             return err("invalid_request", f"Unknown action: {action}")
 
 
-def _balance_usd(entry: dict[str, Any]) -> float:
-    val = entry.get("balanceUSD", 0)
+async def _fetch_balances(address: str, chain_type: str) -> dict[str, Any] | None:
+    # Solana wallets are base58 and must go to the svm_address param — the
+    # default address param is the EVM path and returns nothing for them.
     try:
-        return float(val or 0)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _strip_solana(data: Any) -> Any:
-    """Drop Solana entries from an enriched-balances response (EVM-only view)."""
-    if not isinstance(data, dict) or not isinstance(data.get("balances"), list):
-        return data
-    balances_list = [b for b in data["balances"] if isinstance(b, dict)]
-    filtered = [
-        b for b in balances_list if str(b.get("network", "")).lower() != "solana"
-    ]
-    if len(filtered) == len(balances_list):
-        return data
-    out = dict(data)
-    out["balances"] = filtered
-    out["total_balance_usd"] = sum(_balance_usd(b) for b in filtered)
-    breakdown: dict[str, float] = {}
-    for b in filtered:
-        net = str(b.get("network") or "").strip()
-        if net:
-            breakdown[net] = breakdown.get(net, 0.0) + _balance_usd(b)
-    out["chain_breakdown"] = breakdown
-    return out
-
-
-async def _fetch_balances(address: str) -> dict[str, Any] | None:
-    try:
-        data = await BALANCE_CLIENT.get_enriched_wallet_balances(
+        if chain_type == "solana":
+            return await BALANCE_CLIENT.get_enriched_wallet_balances(
+                svm_address=address, exclude_spam_tokens=True
+            )
+        return await BALANCE_CLIENT.get_enriched_wallet_balances(
             wallet_address=address, exclude_spam_tokens=True
         )
-        return _strip_solana(data)
     except Exception as exc:  # noqa: BLE001
         return {"error": str(exc)}
 
@@ -462,8 +438,8 @@ async def core_get_wallets(
 ) -> dict[str, Any]:
     """List configured wallets with profile + protocols + current balances.
 
-    No args → every wallet. Pass `label` to filter to a single wallet (returns the same
-    shape, list with one entry, or an `err(...)` response if not found).
+    No args → every wallet. Pass `label` to filter to one wallet ring (one entry per
+    available chain leg, or an `err(...)` response if not found).
 
     Args:
         label: Optional wallet label filter.
@@ -473,15 +449,14 @@ async def core_get_wallets(
     """
     store = WalletProfileStore.default()
     if label is not None:
-        w = await find_wallet_by_label(label)
-        if not w:
+        existing = await load_wallet_ring(label)
+        if not existing:
             return err("not_found", f"Wallet not found: {label}")
-        existing = [w]
     else:
         existing = await load_wallets()
 
     views: list[dict[str, Any]] = []
-    addresses: list[str | None] = []
+    addr_chains: list[tuple[str | None, str]] = []
     for w in existing:
         view = public_wallet_view(w)
         addr = normalize_address(w.get("address"))
@@ -493,10 +468,13 @@ async def core_get_wallets(
         else:
             view["protocols"] = []
         views.append(view)
-        addresses.append(addr)
+        addr_chains.append((addr, w.get("chain_type") or "ethereum"))
 
     balances = await asyncio.gather(
-        *(_fetch_balances(a) if a else asyncio.sleep(0, result=None) for a in addresses)
+        *(
+            _fetch_balances(a, ct) if a else asyncio.sleep(0, result=None)
+            for a, ct in addr_chains
+        )
     )
     for view, bal in zip(views, balances, strict=True):
         view["balances"] = bal
@@ -511,14 +489,18 @@ async def onchain_get_wallet_activity(
     limit: int = 20,
     offset: str | None = None,
 ) -> dict[str, Any]:
-    """Return on-chain transactions for a wallet across supported chains.
+    """Return indexed EVM transactions for a wallet.
 
-    Pass either a configured wallet label or a raw wallet address. To crawl
-    further back, pass the previous response's next_offset as offset.
+    Wallet labels resolve to their EVM leg. Solana addresses and SVM activity
+    are not supported by this endpoint yet. To crawl further back, pass the
+    previous response's next_offset as offset.
+
+    TODO: Add Solana activity indexing and resolve wallet labels to both ring
+    legs once the backend exposes an SVM activity source.
 
     Args:
         label: Wallet label as configured in config.json, e.g. main.
-        wallet_address: Raw wallet address; takes precedence over label.
+        wallet_address: Raw EVM wallet address; takes precedence over label.
         limit: Number of transactions to return (default 20).
         offset: Pagination cursor from a prior response's next_offset.
     """

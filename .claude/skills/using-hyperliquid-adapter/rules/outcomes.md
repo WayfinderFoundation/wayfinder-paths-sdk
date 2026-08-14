@@ -38,14 +38,15 @@ Helpers exported from `wayfinder_paths.adapters.hyperliquid_adapter.adapter`:
 - Mid prices: `adapter.get_all_mid_prices()` returns a dict keyed by `#<encoding>` for outcome sides.
 - **Positions live in spot user state.** `HyperliquidAdapter.get_spot_user_state(address)` returns `balances[]` with `+<encoding>` entries — there's no dedicated outcome-positions endpoint upstream.
 
-### MCP — `hyperliquid_get_state(label)` returns all four surfaces
+### MCP — `hyperliquid_get_state(label)` returns the whole account
 
-`mcp__wayfinder__hyperliquid_get_state(label)` returns a single dict with `perp`, `spot`, `open_orders`, and `outcomes` keys:
+`mcp__wayfinder__hyperliquid_get_state(label)` returns a single dict with `summary`, `perp_positions`, `spot_positions`, `outcome_positions`, and `open_orders` keys:
 
-- `perp.state` — perp clearinghouse (cross/isolated margin, asset positions, withdrawable).
-- `spot.state.balances` — pure spot balances (`USDC`, `HYPE`, `USDH`, …). `+N` outcome entries are filtered out into the `outcomes` bucket.
-- `open_orders.orders` — all open orders (resting limits + untriggered TP/SL trigger orders) from `frontendOpenOrders`.
-- `outcomes.positions` — outcome positions only (parsed `outcome_id` / `side`, plus `total` / `hold` / `entryNtl`).
+- `summary` — account money (unified USDC total/available/equity, or perp/spot ledgers for `"default"` accounts). See `rules/high-value-reads.md`.
+- `perp_positions` — open perp/HIP-3 positions.
+- `spot_positions` — non-zero, non-USDC spot balances (`HYPE`, `USDH`, …). `+N` outcome entries are filtered out into `outcome_positions`.
+- `outcome_positions` — outcome positions only (parsed `outcome_id` / `side`, plus `total` / `hold` / `entryNtl`).
+- `open_orders` — all open orders (resting limits + untriggered TP/SL trigger orders) from `frontendOpenOrders`.
 
 Other reads:
 

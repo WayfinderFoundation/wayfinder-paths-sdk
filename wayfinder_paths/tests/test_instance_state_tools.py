@@ -9,6 +9,102 @@ from wayfinder_paths.mcp.tools import instance_state
 
 
 @pytest.mark.asyncio
+async def test_pattern_match_overlay_resolves_compact_pointer(monkeypatch) -> None:
+    monkeypatch.setattr(instance_state, "is_opencode_instance", lambda: True)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        instance_state,
+        "get_pattern_match_visual_spec",
+        lambda match_id: {
+            "operation": "upsert_overlay",
+            "chart_id": "hl-perp-aero",
+            "overlay": {
+                "id": f"pattern-match-{match_id}",
+                "type": "pattern_match_distribution",
+            },
+        },
+    )
+
+    async def fake_add_overlay(
+        chart_id: str, overlay: dict[str, object]
+    ) -> dict[str, object]:
+        captured["chart_id"] = chart_id
+        captured["overlay"] = overlay
+        return {"large_frontend_state": "not returned to the agent"}
+
+    monkeypatch.setattr(
+        instance_state.INSTANCE_STATE_CLIENT,
+        "add_workspace_chart_overlay",
+        fake_add_overlay,
+    )
+
+    result = await instance_state.visual_add_workspace_chart_overlay(
+        match_id="match-123"
+    )
+
+    assert result == {
+        "ok": True,
+        "result": {
+            "applied": True,
+            "match_id": "match-123",
+            "chart_id": "hl-perp-aero",
+            "overlay_id": "pattern-match-match-123",
+        },
+    }
+    assert captured == {
+        "chart_id": "hl-perp-aero",
+        "overlay": {
+            "id": "pattern-match-match-123",
+            "type": "pattern_match_distribution",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_pattern_match_overlay_reports_a_superseded_pointer(monkeypatch) -> None:
+    monkeypatch.setattr(instance_state, "is_opencode_instance", lambda: True)
+    monkeypatch.setattr(
+        instance_state,
+        "get_pattern_match_visual_spec",
+        lambda _match_id: {
+            "chart_id": "hl-perp-aero",
+            "overlay": {
+                "id": "pattern-match-old",
+                "type": "pattern_match_distribution",
+                "request_id": "request-1",
+            },
+        },
+    )
+
+    async def reject_overlay(
+        _chart_id: str, _overlay: dict[str, object]
+    ) -> dict[str, object]:
+        return {"overlay_applied": False, "reason": "superseded"}
+
+    monkeypatch.setattr(
+        instance_state.INSTANCE_STATE_CLIENT,
+        "add_workspace_chart_overlay",
+        reject_overlay,
+    )
+
+    result = await instance_state.visual_add_workspace_chart_overlay(
+        match_id="match-old"
+    )
+
+    assert result == {
+        "ok": True,
+        "result": {
+            "match_id": "match-old",
+            "chart_id": "hl-perp-aero",
+            "overlay_id": "pattern-match-old",
+            "applied": False,
+            "reason": "superseded",
+        },
+    }
+
+
+@pytest.mark.asyncio
 async def test_visual_get_frontend_context_passes_include_health(monkeypatch) -> None:
     monkeypatch.setattr(instance_state, "is_opencode_instance", lambda: True)
 

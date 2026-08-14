@@ -5,7 +5,6 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import httpx
-from eth_account import Account
 from loguru import logger
 from web3 import AsyncWeb3
 
@@ -63,15 +62,8 @@ def _raise_revert_error(
     transaction: dict[str, Any],
     cause: Exception | None = None,
 ) -> None:
-    try:
-        gas_used = int(receipt.get("gasUsed") or 0)
-    except (TypeError, ValueError):
-        gas_used = 0
-
-    try:
-        gas_limit = int(transaction.get("gas") or 0)
-    except (TypeError, ValueError):
-        gas_limit = 0
+    gas_used = int(receipt.get("gasUsed") or 0)
+    gas_limit = int(transaction.get("gas") or 0)
 
     oogs = bool(gas_used and gas_limit and gas_used >= gas_limit)
     suffix = (
@@ -157,21 +149,17 @@ async def gas_price_transaction(transaction: dict):
             )
 
             base_fee = max(base_fees)
-            priority_fee = max(priority_fees)
-
-            transaction["maxFeePerGas"] = int(
-                base_fee * MAX_BASE_FEE_GROWTH_MULTIPLIER
-                + max(
-                    priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER,
-                    MIN_PRIORITY_FEE_BY_CHAIN_ID.get(chain_id, 0),
-                )
-            )
-            transaction["maxPriorityFeePerGas"] = int(
+            priority_fee = int(
                 max(
-                    priority_fee * SUGGESTED_PRIORITY_FEE_MULTIPLIER,
+                    max(priority_fees) * SUGGESTED_PRIORITY_FEE_MULTIPLIER,
                     MIN_PRIORITY_FEE_BY_CHAIN_ID.get(chain_id, 0),
                 )
             )
+
+            transaction["maxFeePerGas"] = (
+                int(base_fee * MAX_BASE_FEE_GROWTH_MULTIPLIER) + priority_fee
+            )
+            transaction["maxPriorityFeePerGas"] = priority_fee
 
     return transaction
 
@@ -265,6 +253,39 @@ async def sponsorship_enabled() -> bool:
         return False
 
 
+async def wait_for_sponsored_transaction(
+    wallet_address: str, result: dict, timeout: int = 120
+) -> str:
+    """Poll a sponsored submission until it yields an on-chain hash/signature.
+
+    Sponsored sends confirm asynchronously: the broadcaster returns a
+    ``transaction_id`` and the hash lags the submit, so poll until it lands. A
+    ``failed`` status is pre-broadcast (nothing reached the chain), raised as
+    sponsorship-unavailable so callers can fall back to a normal broadcast; an
+    on-chain revert still yields a hash and is caught by the later confirmation
+    wait. Shared by the EVM and SVM sponsored paths — only the submit envelope
+    differs, this wait is identical.
+    """
+    txn_hash = result["hash"]
+    deadline = time.monotonic() + timeout
+    while not txn_hash:
+        if time.monotonic() > deadline:
+            raise TimeoutError(
+                f"Sponsored transaction {result['transaction_id']} has no hash "
+                f"after {timeout}s"
+            )
+        await asyncio.sleep(2)
+        status = await WALLET_CLIENT.get_privy_transaction_status(
+            wallet_address, result["transaction_id"]
+        )
+        if status["status"] == "failed":
+            raise SponsorshipUnavailableError(
+                f"Sponsored transaction {result['transaction_id']} failed before broadcast"
+            )
+        txn_hash = status["hash"]
+    return txn_hash
+
+
 async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> str:
     """Submit via the backend's sponsored broadcast and return the tx hash.
 
@@ -288,26 +309,7 @@ async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> 
                 f"Sponsored send rejected with {exc.response.status_code}"
             ) from exc
         raise
-    txn_hash = result["hash"]
-    deadline = time.monotonic() + 120
-    while not txn_hash:
-        if time.monotonic() > deadline:
-            raise TimeoutError(
-                f"Sponsored transaction {result['transaction_id']} has no hash "
-                f"after 120s"
-            )
-        await asyncio.sleep(2)
-        status = await WALLET_CLIENT.get_privy_transaction_status(
-            wallet_address, result["transaction_id"]
-        )
-        # "failed" is pre-broadcast (no hash will ever land); an on-chain
-        # revert still yields a hash and is caught by the receipt wait.
-        if status["status"] == "failed":
-            raise SponsorshipUnavailableError(
-                f"Sponsored transaction {result['transaction_id']} failed before broadcast"
-            )
-        txn_hash = status["hash"]
-    return txn_hash
+    return await wait_for_sponsored_transaction(wallet_address, result)
 
 
 async def wait_for_transaction_receipt(
@@ -406,27 +408,6 @@ async def send_transaction(
         if status is not None and int(status) == 0:
             _raise_revert_error(txn_hash, receipt, transaction)
     return txn_hash
-
-
-async def sign_and_send_transaction(
-    transaction: dict,
-    private_key: str,
-    wait_for_receipt: bool = True,
-    confirmations: int = 0,
-) -> str:
-    account = Account.from_key(private_key)
-
-    async def sign_callback(tx: dict) -> bytes:
-        signed = account.sign_transaction(tx)
-        return signed.raw_transaction
-
-    sign_callback.wallet_address = None
-    return await send_transaction(
-        transaction,
-        sign_callback,
-        wait_for_receipt=wait_for_receipt,
-        confirmations=confirmations,
-    )
 
 
 async def encode_call(
