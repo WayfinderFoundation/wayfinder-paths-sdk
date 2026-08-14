@@ -36,7 +36,7 @@ def main() -> int:
     parser.add_argument(
         "--suite",
         default="smoke",
-        choices=["smoke", "exact-v0-public", "exact-v0"],
+        choices=["smoke", "exact-v0-public", "exact-v0", "stress"],
     )
     parser.add_argument("--out", default=".wayfinder_runs/benchmarks/latest")
     parser.add_argument("--sealed-out", default=None)
@@ -49,6 +49,13 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--oracle-paths", type=int, default=64)
     args = parser.parse_args()
+
+    if args.suite == "stress":
+        from wayfinder_paths.jobs.benchmarks.stress import run_stress_suite
+
+        report = run_stress_suite(Path(args.out))
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report["grade"] == "GOVERNANCE_VALID" else 1
 
     if args.suite == "smoke":
         plan = {

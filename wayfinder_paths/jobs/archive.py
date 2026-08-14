@@ -55,11 +55,18 @@ def record_candidate(
     existing = _find(doc, candidate_id)
     if existing is not None:
         # Same candidate re-evaluated: update evidence/status, keep lineage.
+        # Terminal verdicts are STICKY — re-recording a refuted/retired family
+        # (the resubmit-a-dead-idea move) must not silently reset it to
+        # archived and re-open it for promotion. Reopening a refutation
+        # requires an explicit set_candidate_status with named new evidence.
+        sticky = existing.get("status") in {"refuted", "retired"}
         existing.update(
             {
-                "status": status,
+                "status": existing["status"] if sticky else status,
                 "objective": objective or existing.get("objective"),
-                "evidence": evidence or existing.get("evidence"),
+                "evidence": existing.get("evidence") if sticky else (
+                    evidence or existing.get("evidence")
+                ),
                 "updated_at": utc_now_iso(),
             }
         )
