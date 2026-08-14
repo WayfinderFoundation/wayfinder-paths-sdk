@@ -84,8 +84,12 @@ def main() -> int:
     parser.add_argument("--world", default="smooth_optimum")
     parser.add_argument("--seed", type=int, default=777001)
     parser.add_argument("--model", default="wayfinder/deepseek-v4-pro")
-    parser.add_argument("--wake-seconds", type=int, default=300)
-    parser.add_argument("--hours", type=float, default=3.0)
+    parser.add_argument("--wake-seconds", type=int, default=240)
+    # This e2b plan caps TOTAL sandbox lifetime at ~1h (extensions cannot
+    # outrun it — learned when a 2h campaign died at the 60-minute mark).
+    # Campaigns must fit inside one VM life; longer runs need cross-VM
+    # resume (harvest + rebuild), not yet built.
+    parser.add_argument("--hours", type=float, default=0.9)
     parser.add_argument("--poll-seconds", type=int, default=600)
     args = parser.parse_args()
 
