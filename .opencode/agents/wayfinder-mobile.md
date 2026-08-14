@@ -28,8 +28,6 @@ permission:
   wayfinder_contracts_*: allow
   wayfinder_contracts_deploy: allow
   wayfinder_contracts_execute: allow
-  # notify (mobile texting rides this tool)
-  wayfinder_notification_send: allow
   # core_*
   wayfinder_core_*: allow
   wayfinder_core_run_script: allow

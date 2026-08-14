@@ -13,18 +13,6 @@ MESSAGE_MAX = 20_000
 MOBILE_MESSAGE_MAX = 500
 
 
-async def _relay(request) -> dict:
-    try:
-        data = await request
-    except httpx.HTTPStatusError as exc:
-        try:
-            body = exc.response.json()
-        except Exception:  # noqa: BLE001
-            body = {"detail": exc.response.text}
-        return err("notify_http_error", f"HTTP {exc.response.status_code}", body)
-    return ok(data)
-
-
 @catch_errors
 async def notification_send(
     title: str, message: str, delivery: str = "email", override: bool = False
@@ -65,8 +53,14 @@ async def notification_send(
     limit = MOBILE_MESSAGE_MAX if delivery_s == "mobile" else MESSAGE_MAX
     if len(message) > limit:
         raise ValueError(f"message exceeds {limit} chars")
-    return await _relay(
-        NOTIFY_CLIENT.notify(
+    try:
+        data = await NOTIFY_CLIENT.notify(
             title=title_s, message=message, delivery=delivery_s, override=override
         )
-    )
+    except httpx.HTTPStatusError as exc:
+        try:
+            body = exc.response.json()
+        except Exception:  # noqa: BLE001
+            body = {"detail": exc.response.text}
+        return err("notify_http_error", f"HTTP {exc.response.status_code}", body)
+    return ok(data)
