@@ -136,43 +136,126 @@ def counterfactual_job(
     return artifact
 
 
-# Verdict maturity: enough forward window that beat/hurt is not one bar of
-# noise, sized to our jobs' trade cadence (days between closes).
-_VERDICT_MIN_DAYS = 3.0
-_VERDICT_MIN_CLOSES = 3
 _VERDICTS_PATH = "state/promotion_verdicts.json"
+# Verdict maturity defaults — overridable per job via the constitution's
+# `verdict:` block (a universal 3-day/3-close rule mis-times both scalpers
+# and slow holders). maximum_days caps how long a verdict may stay pending
+# before it is finalized as insufficient_evidence.
+_VERDICT_DEFAULTS = {
+    "minimum_days": 3.0,
+    "minimum_closed_trades": 3,
+    "maximum_days": 30.0,
+    "minimum_material_delta": 0.25,
+}
+
+VERDICT_STATES = (
+    "pending",
+    "insufficient_evidence",
+    "beat",
+    "neutral",
+    "hurt",
+    "censored_by_next_change",
+)
+
+
+def _verdict_config(root: Path) -> dict[str, Any]:
+    from wayfinder_paths.jobs.constitution import load_constitution
+
+    constitution = load_constitution(root)
+    block = constitution.get("verdict")
+    merged = dict(_VERDICT_DEFAULTS)
+    if isinstance(block, dict):
+        merged.update({k: block[k] for k in _VERDICT_DEFAULTS if k in block})
+    return merged
 
 
 def _maybe_record_promotion_verdict(
     store: JobStore, job_id: str, artifact: dict[str, Any]
 ) -> None:
-    """Once per promotion: classify the forward shadow comparison as
-    beat/neutral/hurt and persist it — the promotion-reliability datapoint
-    the evolution ledger aggregates. Never raises."""
+    """Once per promotion: classify the forward shadow comparison and persist
+    it — the promotion-reliability datapoint the evolution ledger aggregates.
+
+    States: beat/neutral/hurt (mature evidence); insufficient_evidence (the
+    window aged out before enough closes); censored_by_next_change (a newer
+    promotion re-anchored the shadow before this verdict matured — recorded,
+    never silently dropped). Never raises."""
     try:
         proposal_id = str(artifact.get("proposal_id") or "")
         window = artifact.get("window") or {}
         if not proposal_id or not artifact.get("available"):
             return
+        root = store.job_dir(job_id)
+        config = _verdict_config(root)
+        verdicts = store.read_json(job_id, _VERDICTS_PATH) or {}
+
+        # CENSORING: any prior promotion still without a verdict when a NEW
+        # promotion re-anchors the shadow gets censored_by_next_change — its
+        # forward window is now confounded by the newer change.
+        censored = []
+        for prior_id, prior in list(verdicts.items()):
+            if prior_id != proposal_id and prior.get("verdict") == "pending":
+                prior.update(
+                    {
+                        "verdict": "censored_by_next_change",
+                        "censored_by": proposal_id,
+                        "recorded_at": utc_now_iso(),
+                    }
+                )
+                censored.append(prior_id)
+        for prior_id in censored:
+            store.append_journal(
+                job_id,
+                {
+                    "type": "promotion_verdict",
+                    "proposal_id": prior_id,
+                    **verdicts[prior_id],
+                },
+            )
+
+        existing = verdicts.get(proposal_id)
+        if existing and existing.get("verdict") != "pending":
+            if censored:
+                store.write_json(job_id, _VERDICTS_PATH, verdicts)
+            return
+
+        days = float(window.get("days") or 0.0)
         closes = max(
             int((artifact.get("actual") or {}).get("closes") or 0),
             int((artifact.get("shadow") or {}).get("closes") or 0),
         )
-        if float(window.get("days") or 0.0) < _VERDICT_MIN_DAYS:
+        mature = days >= float(config["minimum_days"]) and closes >= int(
+            config["minimum_closed_trades"]
+        )
+        aged_out = days >= float(config["maximum_days"])
+        if not mature and not aged_out:
+            # Track the open verdict so censoring has something to censor.
+            verdicts[proposal_id] = {
+                "verdict": "pending",
+                "window_days": days,
+                "closes": closes,
+                "recorded_at": utc_now_iso(),
+            }
+            store.write_json(job_id, _VERDICTS_PATH, verdicts)
             return
-        if closes < _VERDICT_MIN_CLOSES:
-            return
-        verdicts = store.read_json(job_id, _VERDICTS_PATH) or {}
-        if proposal_id in verdicts:
-            return
-        delta = float(artifact.get("delta_net_pnl") or 0.0)
-        shadow_pnl = float((artifact.get("shadow") or {}).get("net_pnl") or 0.0)
-        threshold = max(0.25, 0.02 * abs(shadow_pnl))
-        verdict = "beat" if delta > threshold else "hurt" if delta < -threshold else "neutral"
+
+        if not mature and aged_out:
+            verdict = "insufficient_evidence"
+            delta = float(artifact.get("delta_net_pnl") or 0.0)
+        else:
+            delta = float(artifact.get("delta_net_pnl") or 0.0)
+            shadow_pnl = float((artifact.get("shadow") or {}).get("net_pnl") or 0.0)
+            threshold = max(
+                float(config["minimum_material_delta"]), 0.02 * abs(shadow_pnl)
+            )
+            verdict = (
+                "beat" if delta > threshold
+                else "hurt" if delta < -threshold
+                else "neutral"
+            )
         record = {
             "verdict": verdict,
             "delta_net_pnl": delta,
-            "window_days": window.get("days"),
+            "window_days": days,
             "closes": closes,
             "recorded_at": utc_now_iso(),
         }

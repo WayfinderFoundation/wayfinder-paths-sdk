@@ -227,7 +227,10 @@ def test_promotion_verdict_records_once_when_mature(tmp_path: Path) -> None:
         "delta_net_pnl": 1.0,
     }
     _maybe_record_promotion_verdict(store, job_id, immature)
-    assert store.read_json(job_id, "state/promotion_verdicts.json") is None
+    # Immature windows now TRACK as pending (so censoring has a target)
+    # instead of leaving no record.
+    verdicts = store.read_json(job_id, "state/promotion_verdicts.json")
+    assert verdicts["prop-young"]["verdict"] == "pending"
 
     mature = {
         "available": True,
@@ -241,8 +244,13 @@ def test_promotion_verdict_records_once_when_mature(tmp_path: Path) -> None:
     _maybe_record_promotion_verdict(store, job_id, mature)
     verdicts = store.read_json(job_id, "state/promotion_verdicts.json")
     assert verdicts["prop-mature"]["verdict"] == "beat"
+    # The maturing promotion CENSORS the still-pending prior verdict.
+    assert verdicts["prop-young"]["verdict"] == "censored_by_next_change"
+    assert verdicts["prop-young"]["censored_by"] == "prop-mature"
     journal = (store.job_dir(job_id) / "journal.jsonl").read_text(encoding="utf-8")
-    assert journal.count("promotion_verdict") == 1
+    # Two journal entries — the censor record + the beat verdict — and the
+    # repeated call added neither twice (dedup holds).
+    assert journal.count("promotion_verdict") == 2
 
     hurt = {**mature, "proposal_id": "prop-hurt", "delta_net_pnl": -2.0}
     _maybe_record_promotion_verdict(store, job_id, hurt)
@@ -298,3 +306,93 @@ def test_evolution_report_aggregates_path_and_reliability(tmp_path: Path) -> Non
     assert reliability["beat"] == 1 and reliability["beat_rate"] == 1.0
     promoted_row = next(r for r in report["proposals"] if r["proposal_id"] == "prop-a")
     assert promoted_row["forward_verdict"] == "beat"
+
+
+def test_verdict_ages_out_to_insufficient_evidence(tmp_path: Path) -> None:
+    """A promotion whose window exceeds maximum_days without reaching the
+    trade floor finalizes as insufficient_evidence — never a fake neutral."""
+    store, job_id = _store_with_job(tmp_path)
+    aged = {
+        "available": True,
+        "proposal_id": "prop-sparse",
+        "window": {"days": 45.0},
+        "actual": {"closes": 1, "net_pnl": 0.2},
+        "shadow": {"closes": 1, "net_pnl": 0.1},
+        "delta_net_pnl": 0.1,
+    }
+    _maybe_record_promotion_verdict(store, job_id, aged)
+    verdicts = store.read_json(job_id, "state/promotion_verdicts.json")
+    assert verdicts["prop-sparse"]["verdict"] == "insufficient_evidence"
+
+
+def test_trial_lineage_records_every_run(tmp_path: Path) -> None:
+    from wayfinder_paths.jobs.execution.experiments import record_trial_lineage
+
+    store, job_id = _store_with_job(tmp_path)
+    payload = {
+        "revision": "abc123",
+        "result": {
+            "grid_id": "g1",
+            "optimizer": "grid",
+            "rank_by": "net_return",
+            "runs": [
+                {"run_id": f"r{i}", "params": {"x": i},
+                 "stats": {"net_return": i / 100, "trade_count": 10 + i,
+                           "win_rate": 0.5, "max_drawdown_pct": 0.05}}
+                for i in range(7)
+            ],
+        },
+    }
+    recorded = record_trial_lineage(job_id, payload, store=store)
+    assert recorded == 7
+    path = store.job_dir(job_id) / "results" / "backtest" / "trials.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert len(rows) == 7
+    assert rows[3]["behavior"]["trade_count"] == 13.0
+    assert rows[3]["rank_metric"] == 0.03
+
+
+def test_evolution_reliability_ci_and_opportunity_recall(tmp_path: Path) -> None:
+    from wayfinder_paths.jobs.archive import record_candidate, set_incumbent
+    from wayfinder_paths.jobs.evolution_ledger import build_evolution_report
+
+    store, job_id = _store_with_job(tmp_path)
+    store.write_json(
+        job_id,
+        "state/promotion_verdicts.json",
+        {
+            "p1": {"verdict": "beat", "delta_net_pnl": 2.0},
+            "p2": {"verdict": "hurt", "delta_net_pnl": -1.0},
+            "p3": {"verdict": "pending"},
+        },
+    )
+    vec = lambda g: {  # noqa: E731
+        "net_log_growth": g, "downside_deviation": 0.01,
+        "tail_loss": 0.01, "max_drawdown_pct": 0.05,
+    }
+    record_candidate(store, job_id, candidate_id="inc", family="params",
+                     summary="incumbent", status="archived", objective=vec(0.02))
+    set_incumbent(store, job_id, "inc")
+    record_candidate(store, job_id, candidate_id="better", family="params",
+                     summary="unpromoted better", status="archived",
+                     objective=vec(0.09))
+
+    report = build_evolution_report(store, job_id)
+    reliability = report["promotion_reliability"]
+    assert reliability["judged"] == 2
+    assert reliability["pending"] == 1
+    low, high = reliability["beat_rate_ci95"]
+    assert 0.0 <= low < 0.5 < high <= 1.0  # n=2: wide interval, honest
+    recall = report["opportunity_recall"]
+    assert recall["missed"] is True and recall["best_candidate_id"] == "better"
+
+
+def test_benchmark_constitution_profile_loads_strict() -> None:
+    from wayfinder_paths.jobs.constitution import load_benchmark_constitution
+
+    profile = load_benchmark_constitution()
+    assert profile["enforcement"] == "blocking"
+    assert profile["evaluation"]["confidence"] == 0.95
+    assert profile["promotion"]["probation_requires_lcb"] is True
+    assert profile["verdict"]["maximum_days"] == 30.0
+    assert profile["revision"]
