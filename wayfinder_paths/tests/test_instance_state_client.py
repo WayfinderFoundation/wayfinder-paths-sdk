@@ -154,6 +154,140 @@ async def test_event_markers_overlay_accepts_legacy_markers_key(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_add_overlay_replaces_existing_overlay_with_same_id(monkeypatch) -> None:
+    client = InstanceStateClient()
+    captured: dict[str, object] = {}
+
+    async def fake_get_state() -> dict:
+        return {
+            "frontend_context": {"chart": {"id": "hl-perp-sol"}},
+            "chart_workspace": {
+                "version": 3,
+                "activeChartId": None,
+                "charts": [],
+                "defaultAnnotations": {
+                    "hl-perp-sol": [
+                        {
+                            "id": "pattern-match-abc",
+                            "type": "pattern_match_distribution",
+                            "series": [{"id": "same_market"}],
+                        }
+                    ]
+                },
+            },
+        }
+
+    async def fake_patch_chart_workspace(workspace: dict) -> dict:
+        captured["workspace"] = workspace
+        return {"chart_workspace": workspace}
+
+    monkeypatch.setattr(client, "get_state", fake_get_state)
+    monkeypatch.setattr(client, "patch_chart_workspace", fake_patch_chart_workspace)
+
+    replacement = {
+        "id": "pattern-match-abc",
+        "type": "pattern_match_distribution",
+        "series": [{"id": "same_market"}, {"id": "same_asset_proxy"}],
+    }
+    await client.add_workspace_chart_overlay("hl-perp-sol", replacement)
+
+    overlays = captured["workspace"]["defaultAnnotations"]["hl-perp-sol"]  # type: ignore[index]
+    assert overlays == [replacement]
+
+
+@pytest.mark.asyncio
+async def test_pattern_match_overlay_replaces_the_active_forecast(monkeypatch) -> None:
+    client = InstanceStateClient()
+    captured: dict[str, object] = {}
+    request = {
+        "id": "active-pattern-match",
+        "type": "pattern_match_request",
+        "request_id": "request-2",
+        "accept_results": True,
+    }
+
+    async def fake_get_state() -> dict:
+        return {
+            "frontend_context": {"chart": {"id": "hl-perp-sol"}},
+            "chart_workspace": {
+                "version": 3,
+                "activeChartId": None,
+                "charts": [],
+                "defaultAnnotations": {
+                    "hl-perp-sol": [
+                        request,
+                        {
+                            "id": "pattern-match-old",
+                            "type": "pattern_match_distribution",
+                            "request_id": "request-1",
+                        },
+                    ]
+                },
+            },
+        }
+
+    async def fake_patch_chart_workspace(workspace: dict) -> dict:
+        captured["workspace"] = workspace
+        return {"chart_workspace": workspace}
+
+    monkeypatch.setattr(client, "get_state", fake_get_state)
+    monkeypatch.setattr(client, "patch_chart_workspace", fake_patch_chart_workspace)
+
+    forecast = {
+        "id": "pattern-match-new",
+        "type": "pattern_match_distribution",
+        "request_id": "request-2",
+    }
+    result = await client.add_workspace_chart_overlay("hl-perp-sol", forecast)
+
+    assert result["overlay_applied"] is True
+    overlays = captured["workspace"]["defaultAnnotations"]["hl-perp-sol"]  # type: ignore[index]
+    assert overlays == [request, forecast]
+
+
+@pytest.mark.asyncio
+async def test_pattern_match_overlay_rejects_a_superseded_request(monkeypatch) -> None:
+    client = InstanceStateClient()
+
+    async def fake_get_state() -> dict:
+        return {
+            "frontend_context": {"chart": {"id": "hl-perp-sol"}},
+            "chart_workspace": {
+                "version": 3,
+                "activeChartId": None,
+                "charts": [],
+                "defaultAnnotations": {
+                    "hl-perp-sol": [
+                        {
+                            "id": "active-pattern-match",
+                            "type": "pattern_match_request",
+                            "request_id": "request-2",
+                            "accept_results": True,
+                        }
+                    ]
+                },
+            },
+        }
+
+    async def fail_patch(_workspace: dict) -> dict:
+        pytest.fail("superseded overlays must not be persisted")
+
+    monkeypatch.setattr(client, "get_state", fake_get_state)
+    monkeypatch.setattr(client, "patch_chart_workspace", fail_patch)
+
+    result = await client.add_workspace_chart_overlay(
+        "hl-perp-sol",
+        {
+            "id": "pattern-match-old",
+            "type": "pattern_match_distribution",
+            "request_id": "request-1",
+        },
+    )
+
+    assert result == {"overlay_applied": False, "reason": "superseded"}
+
+
+@pytest.mark.asyncio
 async def test_set_chart_indicators_resolves_live_chart_alias(monkeypatch) -> None:
     client = InstanceStateClient()
     captured: dict[str, object] = {}

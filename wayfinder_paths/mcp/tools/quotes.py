@@ -8,7 +8,8 @@ from wayfinder_paths.core.utils.token_resolver import TokenResolver
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
-    find_wallet_by_label,
+    leg_for_chain,
+    load_wallet_ring,
     normalize_address,
     ok,
     parse_amount_to_raw,
@@ -51,7 +52,9 @@ def _unwrap_brap_quote_response(
 
         quote_count = raw_quotes.get("quote_count")
         try:
-            quote_count_i = int(quote_count)
+            quote_count_i = (
+                int(quote_count) if quote_count is not None else len(all_quotes)
+            )
         except (TypeError, ValueError):
             quote_count_i = len(all_quotes)
 
@@ -70,6 +73,7 @@ async def onchain_quote_swap(
     slippage_bps: int = 50,
     recipient: str | None = None,
     include_calldata: bool = False,
+    allow_unverified_output: bool = False,
 ) -> dict[str, Any]:
     """Quote a BRAP cross-chain/cross-DEX swap without broadcasting.
 
@@ -85,20 +89,21 @@ async def onchain_quote_swap(
             not wei. Must include a decimal point; integer-looking strings like
             "1000" are rejected.
         slippage_bps: Slippage cap in basis points (50 = 0.50%).
-        recipient: Destination address (defaults to sender).
+        recipient: Optional destination override. Defaults to the destination-chain
+            leg of the same wallet ring.
         include_calldata: Include the raw tx calldata in the response (off by default to keep
             payload small; only the `len` is reported when false).
+        allow_unverified_output: Override a protected-identity safety block. Set
+            true only after the user explicitly confirms the exact destination
+            contract and acknowledges that it is not a canonical asset.
 
     Returns:
         `{preview, quote: {best_quote, quote_count, providers}, suggested_swap_request, ...}`.
         `preview` flags `⚠ RECIPIENT DIFFERS FROM SENDER` when applicable.
     """
-    w = await find_wallet_by_label(wallet_label)
-    if not w:
+    ring = await load_wallet_ring(wallet_label)
+    if not ring:
         return err("not_found", f"Unknown wallet_label: {wallet_label}")
-    sender = normalize_address(w.get("address"))
-    if not sender:
-        return err("invalid_wallet", f"Wallet {wallet_label} missing address")
 
     try:
         from_meta, to_meta = await asyncio.gather(
@@ -131,7 +136,22 @@ async def onchain_quote_swap(
     except ValueError as exc:
         return err("invalid_amount", str(exc))
 
-    rcpt = normalize_address(recipient) or sender
+    # Cross-chain swaps send from the source-chain leg and land on the
+    # destination-chain leg of the same wallet ring (e.g. EVM→Solana pays out to
+    # the ring's SVM address). Same-chain swaps resolve both to the one leg;
+    # missing a chain-specific leg falls back to the default (EVM) leg.
+    from_leg = leg_for_chain(ring, from_chain_id) or ring[0]
+    to_leg = leg_for_chain(ring, to_chain_id) or ring[0]
+    sender = normalize_address(from_leg.get("address"))
+    if not sender:
+        return err("invalid_wallet", f"Wallet {wallet_label} missing address")
+
+    rcpt = normalize_address(recipient) or normalize_address(to_leg.get("address"))
+    if not rcpt:
+        return err(
+            "invalid_wallet",
+            f"Wallet {wallet_label} has no destination address for chain {to_chain_id}",
+        )
     slip = _slippage_float(slippage_bps)
 
     try:
@@ -141,13 +161,24 @@ async def onchain_quote_swap(
             from_chain=from_chain_id,
             to_chain=to_chain_id,
             from_wallet=sender,
+            to_wallet=rcpt,
             from_amount=str(amount_raw),
             slippage=slip,
+            allow_unverified_output=allow_unverified_output,
         )
     except Exception as exc:  # noqa: BLE001
         return err("quote_error", str(exc))
 
     all_quotes, best_quote, quote_count = _unwrap_brap_quote_response(data)
+    if not best_quote:
+        errors = data.get("errors") if isinstance(data, dict) else None
+        return err(
+            "quote_rejected" if errors else "no_route",
+            "The route was rejected by token-output safety checks."
+            if errors
+            else "No route is available for this swap.",
+            {"errors": errors or []},
+        )
 
     providers: list[str] = []
     seen: set[str] = set()
@@ -178,6 +209,8 @@ async def onchain_quote_swap(
             "fee_estimate": best_quote.get("fee_estimate"),
             "native_input": best_quote.get("native_input"),
             "native_output": best_quote.get("native_output"),
+            "safety_warnings": best_quote.get("safety_warnings"),
+            "output_validation": best_quote.get("output_validation"),
         }
 
         # Strip data fields from wrap/unwrap transactions to reduce response size
@@ -226,7 +259,7 @@ async def onchain_quote_swap(
             "amount": str(amount),
             "slippage_bps": int(slippage_bps),
             "recipient": rcpt,
+            "allow_unverified_output": allow_unverified_output,
         },
     }
-
     return ok(result)

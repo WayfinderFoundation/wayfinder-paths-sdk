@@ -14,7 +14,7 @@ Common mistakes and important considerations when using Delta Lab.
 | `candidate["net_apy"]["value"]` | `candidate["net_apy"]` | net_apy is a float, not a dict |
 | `basis_symbol="bitcoin"` | `basis_symbol="BTC"` | Use root symbol, not coingecko ID |
 | **Negative funding = good for shorts** | **Negative funding = shorts PAY longs** | **CRITICAL: Sign is backwards from intuition** |
-| `max(opps, key=lambda x: x["apy"]["value"])` | `max([o for o in opps if o["apy"]["value"]], ...)` | APY can be null |
+| `max(opps, key=lambda x: x["apy"]["value"])` | `max([o for o in opps if o["apy"]["value"] is not None], ...)` | APY can be null |
 | Using `candidates[0]` for lowest risk | Use `pareto_frontier` | Candidates sorted by APY, not risk |
 | Ignoring `warnings` field | Always check `result["warnings"]` | Data quality issues affect decisions |
 | `get_asset_timeseries(symbol="USDC", series="lending", limit=1000)` (no venue) | Add `venue="moonwell"` when you want one venue | Without venue filter, limit is shared across all venues — data gets cut off |
@@ -44,7 +44,10 @@ Common mappings: USDC/USDT/DAI → `USD`, wstETH/cbETH → `ETH`, cbBTC/WBTC →
 
 ## 0b. apy-sources Is Cross-Instrument, Not Venue-Specific
 
-`get_basis_apy_sources()` returns a **ranked cross-instrument list** (perps, LPs, lending, Pendle, Boros) sorted by APY. A small `limit` (e.g. 20) will only show the highest-APY instruments — standard lending markets at 2-5% get crowded out by perps at 20%+.
+`get_basis_apy_sources()` returns an envelope with ranked cross-instrument lists
+under `directions.LONG` and `directions.SHORT` (perps, LPs, lending, Pendle,
+Boros). A small `limit` (e.g. 20) will only show the highest-APY instruments —
+standard lending markets at 2-5% get crowded out by perps at 20%+.
 
 **If you want lending rates specifically:**
 - Use `screen_lending(basis="USD")` for a cross-venue snapshot
@@ -123,22 +126,23 @@ The API accepts lowercase but prefers uppercase root symbols.
 
 **WRONG:**
 ```python
-opportunities = result["opportunities"]
+opportunities = result["directions"]["LONG"]
 highest = max(opportunities, key=lambda x: x["apy"]["value"])  # Crashes if value is null!
 ```
 
 **RIGHT:**
 ```python
-opportunities = result["opportunities"]
+opportunities = result["directions"]["LONG"]
 # Filter out null APYs first
-valid_opps = [o for o in opportunities if o["apy"]["value"] is not None]
+valid_opps = [
+    opp
+    for opp in opportunities
+    if (opp.get("apy") or {}).get("value") is not None
+]
 if valid_opps:
     highest = max(valid_opps, key=lambda x: x["apy"]["value"])
 else:
     print("No opportunities with valid APY")
-
-# Or use a default
-highest = max(opportunities, key=lambda x: x["apy"]["value"] or 0)
 ```
 
 APY can be `null` for several reasons:

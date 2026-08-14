@@ -20,6 +20,7 @@ Namespaces:
   - polymarket   prediction markets reads + writes
   - sports       provider-agnostic sports data + betting backtests (backend-mediated)
   - contracts    contract compile/deploy/call/abi
+  - quant        hidden deterministic analytics for the quant worker
   - core         cross-persona tools every subagent should allowlist
                  (discovery, wallet reads, web search/fetch, run_script, runner)
 """
@@ -103,6 +104,10 @@ from wayfinder_paths.mcp.tools.instance_state import (
 )
 from wayfinder_paths.mcp.tools.jobs import core_jobs
 from wayfinder_paths.mcp.tools.notify import notification_send
+from wayfinder_paths.mcp.tools.pattern_match import (
+    quant_pattern_match,
+    quant_pattern_match_ccxt_proxy,
+)
 from wayfinder_paths.mcp.tools.polymarket import (
     polymarket_cancel_order,
     polymarket_deposit_pusd,
@@ -131,6 +136,7 @@ from wayfinder_paths.mcp.tools.strategies import core_run_strategy
 from wayfinder_paths.mcp.tools.tokens import (
     onchain_fuzzy_search_tokens,
     onchain_get_gas_token,
+    onchain_get_settlement_assets,
     onchain_list_tokens,
     onchain_resolve_token,
 )
@@ -171,6 +177,10 @@ def build_mcp(
     mcp.tool()(core_runner_status)
     mcp.tool()(core_runner)
 
+    # ─── quant_* (hidden quant-worker analytics) ──────────────────────
+    mcp.tool()(quant_pattern_match)
+    mcp.tool()(quant_pattern_match_ccxt_proxy)
+
     # ─── hyperliquid_* ─────────────────────────────────────────────────
     # Coin naming reference: /using-hyperliquid-adapter/rules/coin-naming.md.
     mcp.tool()(hyperliquid_get_state)
@@ -192,6 +202,7 @@ def build_mcp(
     mcp.tool()(onchain_get_wallet_activity)
     mcp.tool()(onchain_resolve_token)
     mcp.tool()(onchain_get_gas_token)
+    mcp.tool()(onchain_get_settlement_assets)
     mcp.tool()(onchain_fuzzy_search_tokens)
     mcp.tool()(onchain_list_tokens)
     mcp.tool()(onchain_quote_swap)

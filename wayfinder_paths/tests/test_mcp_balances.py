@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
@@ -8,48 +8,65 @@ from wayfinder_paths.mcp.tools.wallets import core_get_wallets
 
 
 @pytest.fixture
-def mock_wallet():
-    return {"label": "test", "address": "0x000000000000000000000000000000000000dEaD"}
+def mock_wallet_ring():
+    return [
+        {
+            "label": "test",
+            "address": "0x000000000000000000000000000000000000dEaD",
+            "chain_type": "ethereum",
+        },
+        {
+            "label": "test",
+            "address": "BTXGZD6APaEPLUnELUT3Q1HWUYaWatu42WXT3YCU1vxY",
+            "chain_type": "solana",
+        },
+    ]
 
 
 @pytest.mark.asyncio
-async def test_get_wallets_filters_solana(mock_wallet):
+async def test_get_wallets_label_fetches_all_ring_legs(mock_wallet_ring):
     fake_client = AsyncMock()
     fake_client.get_enriched_wallet_balances = AsyncMock(
-        return_value={
-            "balances": [
-                {"network": "base", "balanceUSD": 1.5},
-                {"network": "solana", "balanceUSD": 999.0},
-                {"network": "arbitrum", "balanceUSD": 2.0},
-            ],
-            "total_balance_usd": 1002.5,
-        }
+        side_effect=[
+            {"balances": [{"chain": "base", "symbol": "ETH", "value_usd": 1.0}]},
+            {"balances": [{"chain": "solana", "symbol": "SOL", "value_usd": 8.0}]},
+        ]
     )
 
     with (
         patch("wayfinder_paths.mcp.tools.wallets.BALANCE_CLIENT", fake_client),
         patch(
-            "wayfinder_paths.mcp.tools.wallets.find_wallet_by_label",
-            new=AsyncMock(return_value=mock_wallet),
+            "wayfinder_paths.mcp.tools.wallets.load_wallet_ring",
+            new=AsyncMock(return_value=mock_wallet_ring),
         ),
     ):
         out = await core_get_wallets(label="test")
 
     assert out["ok"] is True
-    data = out["result"]
-    assert len(data["wallets"]) == 1
-    balances_data = data["wallets"][0]["balances"]
-    assert balances_data["total_balance_usd"] == pytest.approx(3.5)
-    assert balances_data["chain_breakdown"]["base"] == pytest.approx(1.5)
-    assert balances_data["chain_breakdown"]["arbitrum"] == pytest.approx(2.0)
-    assert all(b["network"].lower() != "solana" for b in balances_data["balances"])
+    assert fake_client.get_enriched_wallet_balances.await_args_list == [
+        call(
+            wallet_address=mock_wallet_ring[0]["address"],
+            exclude_spam_tokens=True,
+        ),
+        call(
+            svm_address=mock_wallet_ring[1]["address"],
+            exclude_spam_tokens=True,
+        ),
+    ]
+    wallets = out["result"]["wallets"]
+    assert [(wallet["address"], wallet["chain_type"]) for wallet in wallets] == [
+        (mock_wallet_ring[0]["address"], "ethereum"),
+        (mock_wallet_ring[1]["address"], "solana"),
+    ]
+    assert wallets[0]["balances"]["balances"][0]["symbol"] == "ETH"
+    assert wallets[1]["balances"]["balances"][0]["symbol"] == "SOL"
 
 
 @pytest.mark.asyncio
 async def test_get_wallets_label_not_found():
     with patch(
-        "wayfinder_paths.mcp.tools.wallets.find_wallet_by_label",
-        new=AsyncMock(return_value=None),
+        "wayfinder_paths.mcp.tools.wallets.load_wallet_ring",
+        new=AsyncMock(return_value=[]),
     ):
         out = await core_get_wallets(label="nonexistent")
 

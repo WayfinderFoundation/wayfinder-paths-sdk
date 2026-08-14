@@ -9,6 +9,9 @@ import httpx
 from wayfinder_paths.core.clients.InstanceStateClient import INSTANCE_STATE_CLIENT
 from wayfinder_paths.core.config import is_opencode_instance
 from wayfinder_paths.mcp.utils import catch_errors, err, ok, repo_root
+from wayfinder_paths.quant.pattern_match_pipeline import (
+    get_pattern_match_visual_spec,
+)
 
 _NOT_OPENCODE_ERR = ("not_opencode_instance", "Not running on an OpenCode instance")
 _VISUAL_SPEC_DIR = Path(".wayfinder_runs") / "visual_specs"
@@ -680,10 +683,19 @@ async def visual_add_workspace_chart_annotation(
 
 @catch_errors
 async def visual_add_workspace_chart_overlay(
-    chart_id: str,
-    overlay: dict[str, Any],
+    chart_id: str | None = None,
+    overlay: dict[str, Any] | None = None,
+    match_id: str | None = None,
 ) -> dict[str, Any]:
-    """Append a raw overlay or event marker set to a workspace or default chart.
+    """Upsert a raw overlay or event marker set on a workspace or default chart.
+
+    For Pattern Match, pass only ``match_id`` from the quant result. The dense
+    overlay is resolved from the short-lived cache and never enters model
+    context. A successful pointer application returns a compact acknowledgement.
+
+    Overlays with an ``id`` replace the prior overlay with that id; overlays
+    without one append. Raw ``chart_id`` plus ``overlay`` remains available for
+    other bounded overlays.
 
     For event marker sets, use overlay = {"type": "event_markers", "data": [...]}
     with each event using {time, price?, label?/text?, color?}. The legacy
@@ -691,9 +703,39 @@ async def visual_add_workspace_chart_overlay(
     """
     if not is_opencode_instance():
         return err(*_NOT_OPENCODE_ERR)
+    pointer_result: dict[str, Any] | None = None
+    if match_id is not None:
+        if chart_id is not None or overlay is not None:
+            return err(
+                "invalid_argument",
+                "Pass match_id alone, or pass chart_id with overlay",
+            )
+        visual_spec = get_pattern_match_visual_spec(match_id)
+        chart_id = str(visual_spec["chart_id"])
+        overlay = visual_spec["overlay"]
+        pointer_result = {
+            "match_id": match_id,
+            "chart_id": chart_id,
+            "overlay_id": overlay.get("id"),
+        }
+    if chart_id is None or overlay is None:
+        return err(
+            "invalid_argument",
+            "Pass match_id alone, or pass chart_id with overlay",
+        )
     try:
+        result = await INSTANCE_STATE_CLIENT.add_workspace_chart_overlay(
+            chart_id, overlay
+        )
+        if pointer_result is None:
+            return ok(result)
+        applied = result.get("overlay_applied", True)
         return ok(
-            await INSTANCE_STATE_CLIENT.add_workspace_chart_overlay(chart_id, overlay)
+            {
+                **pointer_result,
+                "applied": applied,
+                **({"reason": "superseded"} if not applied else {}),
+            }
         )
     except httpx.HTTPStatusError as exc:
         return err("chart_workspace_http_error", f"HTTP {exc.response.status_code}")

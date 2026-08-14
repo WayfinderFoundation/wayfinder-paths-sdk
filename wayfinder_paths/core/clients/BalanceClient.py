@@ -8,14 +8,16 @@ class BalanceClient(WayfinderClient):
     async def get_enriched_wallet_balances(
         self,
         *,
-        wallet_address: str,
+        wallet_address: str | None = None,
+        svm_address: str | None = None,
         exclude_spam_tokens: bool = True,
     ) -> dict:
         url = f"{get_api_base_url()}/blockchain/balances/enriched/"
-        params = {
-            "address": wallet_address,
-            "exclude_spam_tokens": str(exclude_spam_tokens).lower(),
-        }
+        params = {"exclude_spam_tokens": str(exclude_spam_tokens).lower()}
+        if wallet_address:
+            params["address"] = wallet_address
+        if svm_address:
+            params["svm_address"] = svm_address
         response = await self._authed_request("GET", url, params=params)
         return response.json()
 

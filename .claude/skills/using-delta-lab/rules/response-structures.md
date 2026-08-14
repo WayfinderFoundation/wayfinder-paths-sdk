@@ -15,6 +15,49 @@ Detailed breakdown of Delta Lab response types.
 
 **Applies to all fields:** `apy.value`, `net_apy`, `funding_rate`, `implied_apy`, `underlying_apy`, `reward_apr`, `fixed_rate_mark`, etc.
 
+## Basis APY Sources Envelope
+
+`get_basis_apy_sources(...)` returns a dictionary containing metadata and two
+ranked opportunity lists. It does not return a list directly and does not have
+a top-level `opportunities` field.
+
+```python
+{
+    "as_of": "2024-02-12T12:00:00Z",
+    "basis": {
+        "input_symbol": "BTC",
+        "root_symbol": "BTC",
+        "root_asset_id": 1,
+        "basis_group_id": 42,
+        "basis_asset_ids": [1, 123, 456],
+    },
+    "summary": {
+        "instrument_type_counts": {
+            "PERP": 15,
+            "LENDING_SUPPLY": 8,
+        },
+    },
+    "warnings": [],
+    "directions": {
+        "LONG": [...],
+        "SHORT": [...],
+    },
+}
+```
+
+Select a direction before filtering or iterating:
+
+```python
+result = await DELTA_LAB_CLIENT.get_basis_apy_sources(
+    basis_symbol="BTC",
+    limit=25,
+)
+long_opps = result["directions"]["LONG"]
+valid_long_opps = [
+    opp for opp in long_opps if (opp.get("apy") or {}).get("value") is not None
+]
+```
+
 ## Opportunity Object
 
 The core data structure representing a yield opportunity.

@@ -1,22 +1,13 @@
-"""The runner daemon keeps the backend fresh with TWO pushes per sync.
-
-1. Scheduled-jobs registry (ScheduledJobsClient.bulk_sync): registers each
-   runner job so the backend accepts its per-run reports — report_run 404s for
-   unregistered jobs, which empties the Strategies UI Activity tab. (#520
-   removed this push believing /jobs/sync/ was dead; the endpoint is alive.)
-2. Wayfinder-jobs snapshot (sync_all_jobs): conversations, proposals, and the
-   reconciled scorecard/mode, so the UI doesn't go stale between agent wakes.
-"""
-
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
-from unittest.mock import Mock
 
 import pytest
 
-from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JobStatus, RunStatus
-from wayfinder_paths.runner.daemon import RunnerDaemon, RunningProcess
+from wayfinder_paths.core.clients.ScheduledJobsClient import SCHEDULED_JOBS_CLIENT
+from wayfinder_paths.runner.constants import JOB_TYPE_SCRIPT, JobStatus
+from wayfinder_paths.runner.daemon import RunnerDaemon
 from wayfinder_paths.runner.paths import RunnerPaths
 
 
@@ -44,96 +35,169 @@ def _add_local(daemon: RunnerDaemon, name: str) -> None:
     )
 
 
-def test_sync_pushes_registry_and_wayfinder_snapshot(
+def test_bulk_sync_sends_all_local_jobs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("OPENCODE_INSTANCE_ID", "inst-xyz")
+
     daemon = RunnerDaemon(paths=_paths(tmp_path))
     _add_local(daemon, "job-a")
     _add_local(daemon, "job-b")
 
-    stores: list[object] = []
+    synced: list[list[dict]] = []
     monkeypatch.setattr(
-        "wayfinder_paths.jobs.sync.sync_all_jobs",
-        lambda *, store: stores.append(store),
+        SCHEDULED_JOBS_CLIENT, "bulk_sync", lambda jobs: synced.append(jobs)
     )
-    registries: list[list[dict]] = []
-    monkeypatch.setattr(
-        "wayfinder_paths.runner.daemon.SCHEDULED_JOBS_CLIENT.bulk_sync",
-        lambda jobs: registries.append(jobs),
-    )
-    # Run the side-effect callback inline so the assertion is deterministic.
-    monkeypatch.setattr(daemon, "_run_side_effect", lambda _label, cb: cb())
 
-    daemon._sync_to_backend_async()
+    jobs = []
+    for j in daemon._db.list_jobs():
+        job, state = daemon._db.get_job(name=j["name"])
+        jobs.append(
+            {
+                "job_name": job.name,
+                "job_type": job.type,
+                "status": state.status,
+                "interval_seconds": job.interval_seconds,
+                "payload": job.payload,
+            }
+        )
+    SCHEDULED_JOBS_CLIENT.bulk_sync(jobs)
 
-    assert len(stores) == 1
-    # The store is rooted at the daemon's repo_root so it resolves the job dirs.
-    assert stores[0].repo_root == tmp_path.resolve()
-    # Registry push carries every local runner job so subsequent report_run
-    # calls do not 404 (the Activity-tab regression from #520).
-    assert len(registries) == 1
-    assert {j["job_name"] for j in registries[0]} == {"job-a", "job-b"}
-    sample = next(j for j in registries[0] if j["job_name"] == "job-a")
-    assert sample["job_type"] == JOB_TYPE_SCRIPT
-    assert sample["interval_seconds"] == 60
-    assert sample["payload"] == {"script_path": "x.py"}
+    assert len(synced) == 1
+    names = {j["job_name"] for j in synced[0]}
+    assert names == {"job-a", "job-b"}
 
 
-def test_sync_noop_when_not_opencode(
+def test_bulk_sync_noop_when_not_opencode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("OPENCODE_INSTANCE_ID", raising=False)
+
     daemon = RunnerDaemon(paths=_paths(tmp_path))
     _add_local(daemon, "job-a")
 
-    stores: list[object] = []
-    monkeypatch.setattr(
-        "wayfinder_paths.jobs.sync.sync_all_jobs",
-        lambda *, store: stores.append(store),
-    )
-    registries: list[list[dict]] = []
-    monkeypatch.setattr(
-        "wayfinder_paths.runner.daemon.SCHEDULED_JOBS_CLIENT.bulk_sync",
-        lambda jobs: registries.append(jobs),
-    )
-    monkeypatch.setattr(daemon, "_run_side_effect", lambda _label, cb: cb())
+    called = False
+
+    def _fail(jobs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(SCHEDULED_JOBS_CLIENT, "bulk_sync", _fail)
 
     daemon._sync_to_backend_async()
 
-    assert stores == []
-    assert registries == []
+    assert not called
 
 
-def test_finish_run_triggers_backend_sync(
+def test_bulk_sync_empty_when_no_jobs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("OPENCODE_INSTANCE_ID", "inst-xyz")
+
+    daemon = RunnerDaemon(paths=_paths(tmp_path))
+
+    synced: list[list[dict]] = []
+    monkeypatch.setattr(
+        SCHEDULED_JOBS_CLIENT, "bulk_sync", lambda jobs: synced.append(jobs)
+    )
+
+    jobs = []
+    for j in daemon._db.list_jobs():
+        job, state = daemon._db.get_job(name=j["name"])
+        jobs.append(
+            {
+                "job_name": job.name,
+                "job_type": job.type,
+                "status": state.status,
+                "interval_seconds": job.interval_seconds,
+                "payload": job.payload,
+            }
+        )
+    SCHEDULED_JOBS_CLIENT.bulk_sync(jobs)
+
+    assert len(synced) == 1
+    assert synced[0] == []
+
+
+def _wait_for(predicate, timeout_s: float = 5.0) -> bool:
+    import time
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_sync_to_backend_delivers_full_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exercises _sync_to_backend_async end-to-end, not a hand-built payload."""
+    monkeypatch.setenv("OPENCODE_INSTANCE_ID", "inst-xyz")
+
     daemon = RunnerDaemon(paths=_paths(tmp_path))
     _add_local(daemon, "job-a")
-    job, _ = daemon._db.get_job(name="job-a")
-    run_id = daemon._db.reserve_run(
-        job_id=job.id, started_at=0, next_run_at=60, reason="schedule", scheduled_for=0
-    )
-    rp = RunningProcess(
-        run_id=run_id,
-        job_id=job.id,
-        job_name="job-a",
-        started_at=0,
-        reason="schedule",
-        scheduled_for=0,
-        timeout_seconds=None,
-        popen=Mock(),
-        log_path=tmp_path / "x.log",
-    )
-    daemon._running[run_id] = rp
+    _add_local(daemon, "job-b")
 
-    synced = Mock()
-    monkeypatch.setattr(daemon, "_sync_to_backend_async", synced)
-    # Neutralize the notify/report side-effect threads for a focused assertion.
-    monkeypatch.setattr(daemon, "_run_side_effect", lambda _label, _cb: None)
-
-    daemon._finish_run(
-        rp, finished_at=100, status=RunStatus.OK, exit_code=0, error_text=None
+    synced: list[list[dict]] = []
+    monkeypatch.setattr(
+        SCHEDULED_JOBS_CLIENT, "bulk_sync", lambda jobs: synced.append(jobs)
     )
 
-    synced.assert_called_once()
+    daemon._sync_to_backend_async()
+
+    assert _wait_for(lambda: len(synced) == 1)
+    names = {j["job_name"] for j in synced[0]}
+    assert names == {"job-a", "job-b"}
+    row = next(j for j in synced[0] if j["job_name"] == "job-a")
+    assert row["status"] == JobStatus.ACTIVE
+    assert row["interval_seconds"] == 60
+    assert row["payload"] == {"script_path": "x.py"}
+
+
+def test_sync_does_not_use_the_daemons_shared_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sync thread must read through its own connection: poisoning the
+    daemon's shared one must not affect delivery."""
+    monkeypatch.setenv("OPENCODE_INSTANCE_ID", "inst-xyz")
+
+    daemon = RunnerDaemon(paths=_paths(tmp_path))
+    _add_local(daemon, "job-a")
+
+    def _poisoned(*args, **kwargs):
+        raise sqlite3.ProgrammingError("shared connection used across threads")
+
+    monkeypatch.setattr(daemon._db, "list_jobs", _poisoned)
+    monkeypatch.setattr(daemon._db, "get_job", _poisoned)
+
+    synced: list[list[dict]] = []
+    monkeypatch.setattr(
+        SCHEDULED_JOBS_CLIENT, "bulk_sync", lambda jobs: synced.append(jobs)
+    )
+
+    daemon._sync_to_backend_async()
+
+    assert _wait_for(lambda: len(synced) == 1)
+    assert {j["job_name"] for j in synced[0]} == {"job-a"}
+
+
+def test_side_effect_failure_logs_at_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Side-effect crashes must surface at WARNING, not debug."""
+    from loguru import logger
+
+    daemon = RunnerDaemon(paths=_paths(tmp_path))
+
+    records: list[str] = []
+    sink_id = logger.add(lambda message: records.append(str(message)), level="WARNING")
+    try:
+        daemon._run_side_effect(
+            "explode", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+        )
+        assert _wait_for(lambda: any("explode" in r for r in records))
+    finally:
+        logger.remove(sink_id)
+    assert any("Runner side effect explode failed" in r for r in records)

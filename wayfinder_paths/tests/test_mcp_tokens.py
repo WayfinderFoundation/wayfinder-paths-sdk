@@ -5,9 +5,13 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
+from wayfinder_paths.core.clients.TokenClient import TokenClient
+from wayfinder_paths.core.constants.chains import CHAIN_ID_SOLANA
+from wayfinder_paths.core.utils.svm_tokens import SOL_DECIMALS
 from wayfinder_paths.mcp.tools.tokens import (
     onchain_fuzzy_search_tokens,
     onchain_get_gas_token,
+    onchain_get_settlement_assets,
     onchain_list_tokens,
     onchain_resolve_token,
 )
@@ -61,6 +65,68 @@ async def test_get_gas_token_happy_path():
 
 
 @pytest.mark.asyncio
+async def test_solana_gas_token_uses_canonical_sdk_metadata():
+    client = TokenClient()
+    response = httpx.Response(
+        200,
+        json={
+            "data": {
+                "asset_id": "solana",
+                "symbol": "SOL",
+                "decimals": 18,
+                "address": None,
+                "chain": {
+                    "id": 1,
+                    "code": "ethereum",
+                    "name": "Ethereum",
+                },
+            }
+        },
+        request=httpx.Request("GET", "https://example.test/tokens/gas/"),
+    )
+    try:
+        with patch.object(
+            client,
+            "_authed_request",
+            new=AsyncMock(return_value=response),
+        ):
+            token = await client.get_gas_token("solana")
+    finally:
+        await client.client.aclose()
+
+    assert token["symbol"] == "SOL"
+    assert token["decimals"] == SOL_DECIMALS
+    assert token["chain"] == {
+        "id": CHAIN_ID_SOLANA,
+        "code": "solana",
+        "name": "Solana",
+    }
+
+
+@pytest.mark.asyncio
+async def test_token_candles_returns_rows():
+    client = TokenClient()
+    response = httpx.Response(
+        200,
+        json={"rows": [{"t": 1, "c": "1.0"}]},
+        request=httpx.Request("GET", "https://example.test/tokens/candles/"),
+    )
+    request = AsyncMock(return_value=response)
+    try:
+        with patch.object(client, "_authed_request", new=request):
+            rows = await client.get_candles("0xabc", "5m", chain_id=8453)
+    finally:
+        await client.client.aclose()
+
+    assert rows == [{"t": 1, "c": "1.0"}]
+    assert request.await_args.kwargs["params"] == {
+        "coin": "0xabc",
+        "interval": "5m",
+        "chain_id": 8453,
+    }
+
+
+@pytest.mark.asyncio
 async def test_fuzzy_search_tokens_happy_path():
     fake_client = AsyncMock()
     fake_client.fuzzy_search = AsyncMock(return_value={"results": [{"id": "foo"}]})
@@ -70,6 +136,69 @@ async def test_fuzzy_search_tokens_happy_path():
 
     assert out["ok"] is True
     assert out["result"]["results"][0]["id"] == "foo"
+
+
+def test_fuzzy_xml_parses_safety_metadata_and_compatibility_score():
+    response = TokenClient()._parse_fuzzy_xml(
+        """<?xml version="1.0"?>
+        <tokens>
+          <notice>Verified USDT0 on hyperevm.</notice>
+          <token>
+            <address>0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb</address>
+            <chain>hyperevm</chain>
+            <symbol>USDT0</symbol>
+            <match_score>100</match_score>
+            <confidence>100</confidence>
+            <is_canonical>true</is_canonical>
+            <verification>usdt0</verification>
+            <suspicious>false</suspicious>
+            <canonical_asset>
+              <chain_code>hyperevm</chain_code>
+              <chain_id>999</chain_id>
+              <symbol>USDT0</symbol>
+              <name>USDT0</name>
+              <address>0xB8CE59FC3717ada4C02eaDF9682A9e934F625ebb</address>
+              <decimals>6</decimals>
+            </canonical_asset>
+          </token>
+        </tokens>"""
+    )
+
+    assert response["notice"] == "Verified USDT0 on hyperevm."
+    token = response["tokens"][0]
+    assert token["match_score"] == 100
+    assert token["confidence"] == 100
+    assert token["is_canonical"] is True
+    assert token["suspicious"] is False
+    assert token["canonical_asset"]["chain_id"] == 999
+
+
+def test_fuzzy_xml_backfills_match_score_from_legacy_confidence():
+    response = TokenClient()._parse_fuzzy_xml(
+        "<tokens><token><symbol>RANDOM</symbol><confidence>72</confidence></token></tokens>"
+    )
+
+    assert response["tokens"][0]["match_score"] == 72
+
+
+@pytest.mark.asyncio
+async def test_get_settlement_assets_happy_path():
+    fake_client = AsyncMock()
+    fake_client.get_canonical_assets = AsyncMock(
+        return_value={
+            "success": True,
+            "chain_code": "hyperevm",
+            "assets": [],
+            "settlement_assets": [{"symbol": "USDT0"}, {"symbol": "USDC"}],
+        }
+    )
+
+    with patch("wayfinder_paths.mcp.tools.tokens.TOKEN_CLIENT", fake_client):
+        out = await onchain_get_settlement_assets("hyperevm")
+
+    assert out["ok"] is True
+    assert out["result"]["settlement_assets"][0]["symbol"] == "USDT0"
+    fake_client.get_canonical_assets.assert_awaited_once_with("hyperevm")
 
 
 @pytest.mark.asyncio

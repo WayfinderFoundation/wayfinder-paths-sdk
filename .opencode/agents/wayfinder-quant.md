@@ -11,7 +11,11 @@ permission:
   write: allow
   external_directory:
     "*": allow
+  skill:
+    pattern-match: allow
   wayfinder_*: deny
+  wayfinder_quant_pattern_match: allow
+  wayfinder_quant_pattern_match_ccxt_proxy: allow
   # core_*
   wayfinder_core_get_adapters_and_strategies: allow
   wayfinder_core_run_script: allow
@@ -53,6 +57,28 @@ approval-gated, or unavailable, stop and return a compact blocker instead of wai
 hidden subagent approval prompts can strand the parent workflow.
 
 ## Data and Scripts
+
+### Pattern Match fast path
+
+When Known Context has `mode="pattern_match"`, load `/pattern-match` and follow
+that workflow before the general skill and scripting rules below. Start with
+the exact chart identifiers and `wayfinder_quant_pattern_match`. If the
+baseline is weak, choose any additional comparisons yourself from the market
+context and fetch only their histories. Prefer
+`wayfinder_quant_pattern_match_ccxt_proxy` for a defensible same-asset
+perpetual comparison. It uses strict perp markets and returns the chosen venue;
+do not replace it with spot. Return the tool-provided `visual_match_id` as
+`visualMatchId`; never reconstruct or inline its cached overlay, repeat the
+exact candle pull, or present proxy matches as exact evidence.
+
+Return a detailed but structured technical read: selected-pattern range and
+realized volatility; strongest match dates and shape/magnitude/volatility
+scores; per-horizon median, mean, interquartile range, hit rate, and samples;
+exact-versus-proxy divergence; invalidation levels; omitted horizons; and data
+limitations. Preserve `match_id`, `market_id`, `chart_id`, analyzed interval,
+and proxy venue in `contextForNextAgent`.
+
+This fast path takes precedence over the general routing rules below.
 
 Required skill loads:
 
