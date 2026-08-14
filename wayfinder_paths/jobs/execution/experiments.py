@@ -13,6 +13,62 @@ from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
 EXPERIMENTS_FILE = "results/backtest/experiments.jsonl"
+TRIALS_FILE = "results/backtest/trials.jsonl"
+
+
+def _behavior_descriptor(stats: Mapping[str, Any]) -> dict[str, Any]:
+    """Compact behavioral fingerprint per trial — the population-search axes
+    (how a candidate TRADES, not just how much it made). Defensive: stats
+    keys vary by engine version; absent fields stay None."""
+    def _num(key: str) -> float | None:
+        value = stats.get(key)
+        return float(value) if isinstance(value, (int, float)) else None
+
+    return {
+        "trade_count": _num("trade_count"),
+        "win_rate": _num("win_rate"),
+        "avg_hold_bars": _num("avg_hold_bars") or _num("avg_holding_bars"),
+        "max_drawdown_pct": _num("max_drawdown_pct"),
+        "net_return": _num("net_return"),
+    }
+
+
+def record_trial_lineage(
+    job_id: str,
+    grid_payload: Mapping[str, Any],
+    *,
+    store: JobStore | None = None,
+    cap: int = 500,
+) -> int:
+    """EVERY evaluated trial becomes a lineage row — the archive-of-record a
+    global-search benchmark needs (the ranked top-N alone hides where search
+    actually went). One compact row per run, appended per grid/optuna
+    campaign; `cap` bounds pathological sweeps."""
+    store = store or JobStore()
+    result = grid_payload["result"]
+    rows = []
+    for run in list(result.get("runs") or [])[:cap]:
+        stats = run.get("stats") or {}
+        rows.append(
+            {
+                "ts": utc_now_iso(),
+                "grid_id": result.get("grid_id"),
+                "revision": grid_payload.get("revision"),
+                "optimizer": result.get("optimizer") or "grid",
+                "run_id": run.get("run_id"),
+                "params": run.get("params"),
+                "rank_metric": stats.get(result.get("rank_by") or "net_return"),
+                "behavior": _behavior_descriptor(stats),
+            }
+        )
+    if not rows:
+        return 0
+    path = store.job_dir(job_id) / TRIALS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+    return len(rows)
 
 
 def record_experiment(
@@ -54,6 +110,7 @@ def record_experiment(
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+    row["trials_recorded"] = record_trial_lineage(job_id, grid_payload, store=store)
     return row
 
 

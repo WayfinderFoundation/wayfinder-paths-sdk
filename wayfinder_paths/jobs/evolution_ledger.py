@@ -55,14 +55,26 @@ def build_evolution_report(store: JobStore, job_id: str) -> dict[str, Any]:
             }
         )
 
-    verdict_counts = {"beat": 0, "neutral": 0, "hurt": 0}
+    verdict_counts = {
+        "beat": 0, "neutral": 0, "hurt": 0,
+        "pending": 0, "censored_by_next_change": 0, "insufficient_evidence": 0,
+    }
+    deltas: list[float] = []
     for record in verdicts.values():
         verdict = str(record.get("verdict") or "")
         if verdict in verdict_counts:
             verdict_counts[verdict] += 1
-    judged = sum(verdict_counts.values())
+        if verdict in ("beat", "neutral", "hurt"):
+            deltas.append(float(record.get("delta_net_pnl") or 0.0))
+    judged = verdict_counts["beat"] + verdict_counts["neutral"] + verdict_counts["hurt"]
+    beat_rate = (verdict_counts["beat"] / judged) if judged else None
+
+    # A raw beat_rate on 2 datapoints reads as certainty it does not have —
+    # the Wilson interval keeps small samples honest.
+    ci = _wilson_interval(verdict_counts["beat"], judged) if judged else None
 
     replication = _replication_summary(root)
+    promoted_total = sum(bucket["promoted"] for bucket in by_family.values())
     return {
         "job_id": job_id,
         "proposals_total": len(proposals),
@@ -73,12 +85,70 @@ def build_evolution_report(store: JobStore, job_id: str) -> dict[str, Any]:
             # Of promotions old enough to judge, how many actually beat the
             # incumbent forward — the single trackable scalar for whether the
             # improve loop is earning its keep.
-            "beat_rate": (verdict_counts["beat"] / judged) if judged else None,
+            "beat_rate": beat_rate,
+            "beat_rate_ci95": ci,
+            "mean_judged_delta_usd": (
+                sum(deltas) / len(deltas) if deltas else None
+            ),
         },
+        # A high beat_rate with near-zero promotions is not a working loop —
+        # yield pairs reliability with throughput.
+        "improvement_yield": {
+            "promoted": promoted_total,
+            "promoted_per_proposal": (
+                promoted_total / len(proposals) if proposals else None
+            ),
+        },
+        "opportunity_recall": _opportunity_recall(store, job_id),
         "replication": replication,
         "proposals": rows[-50:],
         "generated_at": utc_now_iso(),
     }
+
+
+def _wilson_interval(successes: int, n: int, z: float = 1.96) -> list[float]:
+    if n == 0:
+        return [0.0, 1.0]
+    p = successes / n
+    denominator = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denominator
+    margin = (z / denominator) * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5)
+    return [round(max(0.0, center - margin), 4), round(min(1.0, center + margin), 4)]
+
+
+def _opportunity_recall(store: JobStore, job_id: str) -> dict[str, Any] | None:
+    """Selection-regret telemetry: does the archive hold a LIVE candidate that
+    outscores the current incumbent but was never promoted? A yes is a
+    measured missed opportunity, not a vibe."""
+    try:
+        from wayfinder_paths.jobs.archive import load_archive
+
+        doc = load_archive(store, job_id)
+        candidates = [
+            entry for entry in doc.get("candidates") or []
+            if isinstance(entry.get("objective"), dict)
+            and entry.get("status") not in ("refuted", "retired")
+        ]
+        if not candidates:
+            return None
+        incumbent = next(
+            (e for e in candidates if e.get("status") == "incumbent"), None
+        )
+
+        def growth(entry: dict[str, Any]) -> float:
+            return float(entry["objective"].get("net_log_growth") or 0.0)
+
+        best = max(candidates, key=growth)
+        if incumbent is None or best is incumbent:
+            return {"missed": False}
+        gap = growth(best) - growth(incumbent)
+        return {
+            "missed": gap > 0,
+            "best_candidate_id": best.get("candidate_id"),
+            "growth_gap": round(gap, 6),
+        }
+    except Exception:  # noqa: BLE001 — telemetry never breaks the report
+        return None
 
 
 def evolution_snapshot_block(store: JobStore, job_id: str) -> dict[str, Any]:

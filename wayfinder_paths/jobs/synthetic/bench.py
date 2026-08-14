@@ -49,9 +49,18 @@ def _spec() -> ExecutionSpec:
 
 
 def _constitution() -> dict[str, Any]:
-    constitution = json.loads(json.dumps(DEFAULT_CONSTITUTION))
-    constitution["enforcement"] = "blocking"
-    constitution["revision"] = "synthetic-bench"
+    from wayfinder_paths.jobs.constitution import load_benchmark_constitution
+
+    constitution = load_benchmark_constitution()
+    # Smoke worlds are small: the certification fold/iteration counts price
+    # them out — keep the certification RULES, scale the evaluation budget.
+    constitution["evaluation"] = {
+        **constitution["evaluation"], "folds": 4, "bootstrap_iterations": 500,
+        "confidence": 0.90,
+    }
+    constitution["promotion"] = {
+        **constitution["promotion"], "required_positive_folds": 2,
+    }
     return constitution
 
 

@@ -1,0 +1,30 @@
+# WOB certification constitution — the standard ALL certification runs gate
+# against. Deliberately stricter than production defaults: production jobs
+# balance movability against rigor; certification claims must not.
+version: 1
+enforcement: blocking
+objective:
+  weights:
+    downside: 0.5
+    tail: 1.0
+    turnover: 0.25
+evaluation:
+  folds: 5
+  confidence: 0.95
+  bootstrap_iterations: 5000
+  block_days: 5
+  audit_days: 7
+promotion:
+  required_positive_folds: 4
+  min_oos_trades: 8
+  audit_min_delta_utility: 0.0
+  # No probation escape valve in certification: every promotion pays the LCB.
+  probation_requires_lcb: true
+hard_constraints:
+  max_drawdown_pct: 0.25
+  max_tail_loss: 0.15
+verdict:
+  minimum_days: 3.0
+  minimum_closed_trades: 3
+  maximum_days: 30.0
+  minimum_material_delta: 0.25

@@ -74,6 +74,19 @@ def load_constitution(root: Path) -> dict[str, Any]:
     return merged
 
 
+def load_benchmark_constitution() -> dict[str, Any]:
+    """The certification profile (stricter than production defaults): all WOB
+    certification runs gate against this one versioned standard."""
+    path = (
+        Path(__file__).parent / "benchmarks" / "constitution.benchmark.yaml"
+    )
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    merged = _merge(DEFAULT_CONSTITUTION, loaded)
+    merged["revision"] = constitution_revision(path)
+    merged["source"] = "benchmark_profile"
+    return merged
+
+
 def constitution_revision(path: Path) -> str | None:
     if not path.exists():
         return None
