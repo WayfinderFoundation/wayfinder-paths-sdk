@@ -55,7 +55,8 @@ async def test_notify_client_sms_posts_delivery_and_override(
     client = NotifyClient()
     client._authed_request = AsyncMock(return_value=_Response({"sent": True}))  # type: ignore[method-assign]
 
-    await client.notify(title="Alert", message="Body", delivery="sms", override=True)
+    # Script-style call: override defaults on for direct client callers.
+    await client.notify(title="Alert", message="Body", delivery="sms")
 
     args = client._authed_request.await_args
     assert args.args[1].endswith("/opencode/notify/")
