@@ -38,6 +38,7 @@ def _wallet_client():
 
     return WALLET_CLIENT
 
+
 _DEFAULT_CONFIRMATIONS = 3
 
 
