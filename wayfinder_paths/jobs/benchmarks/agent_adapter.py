@@ -48,6 +48,8 @@ def build_world_bundle(
     sandbox: Path,
     repo_root: Path,
     initial_genome: Genome,
+    agent_mode: str = "auto",
+    agent_wake_seconds: int = 300,
 ) -> str:
     """Sandbox job bundle: SDK-visible workspace + the world's dev data as
     the job dataset + the interpreter as the strategy. Hidden rows and the
@@ -94,22 +96,35 @@ def build_world_bundle(
         (sandbox / ".venv").symlink_to(venv_source)
 
     store = JobStore(repo_root=sandbox)
+    # A NORMAL job with a normal goal — the harness under test must see the
+    # same kind of job it sees in production, not benchmark-flavored prompt
+    # text. The agent discovers its situation with its own tools.
     job = WayfinderJob.new(
         f"wob-{world.world_id}",
         goal=(
-            "BENCHMARK JOB: maximize risk-adjusted return by improving the "
-            "genome parameters in execution_params.genome_spec (fields: "
-            "signal, direction, confirm_filter, exit_family+exit_params, "
-            "sizing_family). Method: run `wayfinder job backtest` / grid "
-            "sweeps over genome variants on the FIXED dataset in "
-            "results/backtest/input_bars.json, then `wayfinder job propose` "
-            "the best genome as an execution_params change. There is no "
-            "live venue, no external data, and nothing useful outside this "
-            "job bundle — do not research the benchmark itself; optimize "
-            "within it."
+            "Maximize risk-adjusted return of this strategy. Improve it "
+            "through the standard evidence loop: backtests, grids, "
+            "walk-forward, and gated proposals."
         ),
         script="workspace/src/strategy.py",
-        agent_mode="intervene",
+        # The script lane needs a schedule to compile; it gets paused
+        # immediately in campaigns (no live venue), but registration must
+        # succeed for the agent lane to register after it.
+        interval_seconds=3600,
+        agent_mode=agent_mode,
+        agent_wake_seconds=agent_wake_seconds,
+        # Auto mode refuses to run with empty limits (production guard).
+        # Benchmark worlds have no live venue: the backtest venue with
+        # bounded paper limits satisfies the guard without enabling any
+        # real execution surface.
+        auto_limits={
+            "enabled_venues": ["backtest"],
+            "allowed_symbols": ["SYN"],
+            "max_notional_per_decision": 1000,
+            "max_daily_notional": 10000,
+            "max_open_positions": 1,
+            "max_open_orders": 2,
+        },
         execution_contract="jobs_v1",
     )
     store.save(job)
@@ -127,7 +142,9 @@ def build_world_bundle(
         "genome_spec": initial_genome.to_dict(),
         "fee_bps": world.mechanism.fee_bps,
     }
-    job_yaml["script_loop"] = {"enabled": True, "entrypoint": "workspace/src/strategy.py"}
+    # NEVER touch script_loop: WayfinderJob.new already configured it fully;
+    # a hand-replacement dropped interval_seconds and crashed `job compile`
+    # before the agent lane could register (found live).
     job_yaml_path.write_text(yaml.safe_dump(job_yaml, sort_keys=False))
 
     # Benchmark jobs must not burn wakes on production side-quests: a fresh
