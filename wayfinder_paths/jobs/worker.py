@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import datetime as dt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -121,9 +121,10 @@ def _attribution_block(root: Path) -> dict[str, Any]:
 
 
 def _counterfactual_block(store: JobStore, job_id: str) -> dict[str, Any]:
-    """Mechanical post-apply A/B: the pre-apply strategy (rollback backup)
-    replayed over the forward bars since apply, diffed against the actual
-    book. Computed here (cached, ~6h refresh) so the evidence EXISTS every
+    """Mechanical post-apply three-book: pre-apply shadow (A) and promoted
+    shadow (B) replayed over the forward bars since apply, diffed against
+    the actual book (C) — strategy effect (B-A) split from execution effect
+    (C-B). Computed here (cached, ~6h refresh) so the evidence EXISTS every
     wake — the agent reads it, it never reconstructs counterfactuals."""
     from wayfinder_paths.jobs.counterfactual import counterfactual_job
 
@@ -139,10 +140,14 @@ def _counterfactual_block(store: JobStore, job_id: str) -> dict[str, Any]:
         "window",
         "actual",
         "shadow",
+        "active_shadow",
         "delta_net_pnl",
+        "effects",
         "by_symbol",
         "entries_skipped_by_change",
         "entries_added_by_change",
+        "entries_execution_missed",
+        "entries_execution_extra",
         "_basis",
     )
     return {key: doc[key] for key in keys if key in doc}
@@ -257,9 +262,7 @@ def _ideation_bookkeeping(store: JobStore, job_id: str) -> None:
                 "buckets": buckets,
             },
         )
-        store.write_json(
-            job_id, _IDEATION_SEEN_PATH, {"generated_at": generated_at}
-        )
+        store.write_json(job_id, _IDEATION_SEEN_PATH, {"generated_at": generated_at})
         return
     age = _ideation_age_s(root)
     overdue = age is None or age > _IDEATION_OVERDUE_S

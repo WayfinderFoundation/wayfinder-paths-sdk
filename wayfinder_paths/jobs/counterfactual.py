@@ -1,18 +1,26 @@
-"""Post-apply shadow counterfactual: replay the pre-apply strategy over the
-forward window and diff it against the actual book.
+"""Post-apply THREE-BOOK prospective: incumbent shadow (A), candidate shadow
+(B), and the actual book (C) over identical forward bars.
 
 A proposal that gates or reshapes entries leaves no live evidence of what it
 cost — skipped trades never print. This module makes the counterfactual
 mechanical instead of something the agent must remember to reconstruct: after
 any promoted proposal, the rollback backup (`applications/{pid}/backup/`)
-holds the exact pre-apply strategy, so we run it through the same simulator
-the backtests use, over venue bars covering the forward window, and diff the
-shadow book against the actual one. The wake prompt renders the result, so
-"the old revision is beating the new one" is read, not recomputed.
+holds the exact pre-apply strategy (A) and the active workspace holds the
+promoted one (B); both run through the same simulator the backtests use over
+the same venue bars, and are diffed against the live book (C). The two-book
+delta (C − A) cannot say WHY a promotion underperforms — three books can:
 
-Basis caveat (recorded in the artifact): the shadow sizes off the simulator's
-base equity while the live book sizes off its own equity at apply time, so
-absolute PnL is comparable in direction and rough magnitude, not to the cent.
+  strategy_effect  = B − A   (both simulated — pure effect of the change)
+  execution_effect = C − B   (same strategy, real fills vs simulated fills)
+
+The wake prompt renders the result, so "the old revision is beating the new
+one, and it is an execution problem, not a strategy problem" is read, not
+recomputed.
+
+Basis caveat (recorded in the artifact): both shadows size off the
+simulator's base equity while the live book sizes off its own equity at
+apply time, so absolute PnL is comparable in direction and rough magnitude,
+not to the cent.
 """
 
 from __future__ import annotations
@@ -38,13 +46,20 @@ _LOCK_TIMEOUT_S = 60.0
 _EXAMPLE_LIMIT = 5
 
 BASIS_NOTE = (
-    "Shadow book = the PRE-apply strategy (rollback backup) replayed by the "
-    "backtest simulator over the same forward bars; actual = the live paper "
-    "book. delta_net_pnl = actual - shadow: negative means the pre-change "
-    "revision would have done better since apply. Shadow sizes off simulator "
-    "base equity, so compare direction and magnitude, not cents. "
-    "entries_skipped_by_change fired in the shadow but not the live book "
-    "(what the change suppressed); entries_added_by_change is the reverse."
+    "Three books over identical forward bars. shadow (A) = the PRE-apply "
+    "strategy (rollback backup) replayed by the backtest simulator; "
+    "active_shadow (B) = the PROMOTED strategy through the same simulator; "
+    "actual (C) = the live paper book. effects.strategy_effect = B - A "
+    "(what the change itself did, execution held equal); "
+    "effects.execution_effect = C - B (same strategy, real fills vs "
+    "simulated — slippage, missed entries, sizing base). delta_net_pnl = "
+    "C - A = their sum: negative means the pre-change revision would have "
+    "done better since apply. Shadows size off simulator base equity, so "
+    "compare direction and magnitude, not cents. entries_skipped_by_change "
+    "fired in shadow A but not the live book; entries_added_by_change is "
+    "the reverse. entries_execution_missed fired in active_shadow B but "
+    "not the live book (the strategy wanted them; execution never printed "
+    "them); entries_execution_extra is the reverse."
 )
 
 
@@ -248,8 +263,10 @@ def _maybe_record_promotion_verdict(
                 float(config["minimum_material_delta"]), 0.02 * abs(shadow_pnl)
             )
             verdict = (
-                "beat" if delta > threshold
-                else "hurt" if delta < -threshold
+                "beat"
+                if delta > threshold
+                else "hurt"
+                if delta < -threshold
                 else "neutral"
             )
         record = {
@@ -259,6 +276,13 @@ def _maybe_record_promotion_verdict(
             "closes": closes,
             "recorded_at": utc_now_iso(),
         }
+        # Three-book split, when the artifact has it: a "hurt" verdict whose
+        # delta is execution_effect is an execution problem, not evidence
+        # against the strategy change — the ledger aggregates both.
+        effects = artifact.get("effects") or {}
+        if effects:
+            record["strategy_effect"] = effects.get("strategy_effect")
+            record["execution_effect"] = effects.get("execution_effect")
         verdicts[proposal_id] = record
         store.write_json(job_id, _VERDICTS_PATH, verdicts)
         store.append_journal(
@@ -319,6 +343,11 @@ def _compute(
 
     spec = ExecutionSpec.from_dict(backup_spec_data)
     params = dict(backup_data.get("execution_params") or {})
+    active_spec = ExecutionSpec.from_dict(active_spec_data)
+    active_params = dict(active_data.get("execution_params") or {})
+    active_script = store.resolve_script_entrypoint(job_id, active_data)
+    if active_script is None or not active_script.exists():
+        raise RuntimeError(f"active entrypoint not found: {active_script}")
     bar_interval = spec.data_contract.get("bar_interval")
     interval_seconds = bar_interval_seconds(bar_interval)
     if not interval_seconds:
@@ -385,17 +414,16 @@ def _compute(
         timeout_s=_LOCK_TIMEOUT_S,
     ):
         result = run(script, dataset, spec, params)
+        active_result = run(active_script, dataset, active_spec, active_params)
     shadow_rows = [dict(row) for row in result.trades]
+    active_rows = [dict(row) for row in active_result.trades]
 
     shadow_entries = _entries(shadow_rows, effective_from, interval_seconds)
-    shadow_closes = [
-        row
-        for row in shadow_rows
-        if row.get("reduce_only") and _ts(row.get("timestamp")) >= effective_from
-    ]
-    shadow_net = sum(
-        float(row.get("realized_pnl_delta") or 0.0) for row in shadow_closes
-    )
+    active_shadow_entries = _entries(active_rows, effective_from, interval_seconds)
+    shadow_closes = _sim_closes(shadow_rows, effective_from)
+    active_shadow_closes = _sim_closes(active_rows, effective_from)
+    shadow_net = _sim_net(shadow_closes)
+    active_shadow_net = _sim_net(active_shadow_closes)
 
     actual_close_rows = [
         row
@@ -412,6 +440,8 @@ def _compute(
 
     skipped = sorted(set(shadow_entries) - set(actual_entries))
     added = sorted(set(actual_entries) - set(shadow_entries))
+    execution_missed = sorted(set(active_shadow_entries) - set(actual_entries))
+    execution_extra = sorted(set(actual_entries) - set(active_shadow_entries))
 
     by_symbol: dict[str, dict[str, Any]] = {}
     for symbol in symbols:
@@ -432,11 +462,22 @@ def _compute(
                 ),
                 4,
             ),
+            "active_shadow_net_pnl": round(
+                sum(
+                    float(row.get("realized_pnl_delta") or 0.0)
+                    for row in active_shadow_closes
+                    if str(row.get("symbol")) == symbol
+                ),
+                4,
+            ),
             "actual_closes": sum(
                 1 for row in actual_close_rows if str(row.get("symbol")) == symbol
             ),
             "shadow_closes": sum(
                 1 for row in shadow_closes if str(row.get("symbol")) == symbol
+            ),
+            "active_shadow_closes": sum(
+                1 for row in active_shadow_closes if str(row.get("symbol")) == symbol
             ),
         }
 
@@ -453,7 +494,16 @@ def _compute(
         },
         "actual": {"closes": len(actual_close_rows), "net_pnl": round(actual_net, 4)},
         "shadow": {"closes": len(shadow_closes), "net_pnl": round(shadow_net, 4)},
+        "active_shadow": {
+            "closes": len(active_shadow_closes),
+            "net_pnl": round(active_shadow_net, 4),
+        },
         "delta_net_pnl": round(actual_net - shadow_net, 4),
+        "effects": {
+            "strategy_effect": round(active_shadow_net - shadow_net, 4),
+            "execution_effect": round(actual_net - active_shadow_net, 4),
+            "total_delta": round(actual_net - shadow_net, 4),
+        },
         "by_symbol": by_symbol,
         "entries_skipped_by_change": {
             "count": len(skipped),
@@ -462,6 +512,18 @@ def _compute(
         "entries_added_by_change": {
             "count": len(added),
             "examples": [_entry_dict(item) for item in added[:_EXAMPLE_LIMIT]],
+        },
+        "entries_execution_missed": {
+            "count": len(execution_missed),
+            "examples": [
+                _entry_dict(item) for item in execution_missed[:_EXAMPLE_LIMIT]
+            ],
+        },
+        "entries_execution_extra": {
+            "count": len(execution_extra),
+            "examples": [
+                _entry_dict(item) for item in execution_extra[:_EXAMPLE_LIMIT]
+            ],
         },
         "_basis": BASIS_NOTE,
         "computed_at": utc_now_iso(),
@@ -496,6 +558,20 @@ def _fetch_venue_bars(
         return CompletedBarsView.from_rows(rows).to_rows()
 
     return asyncio.run(_fetch())
+
+
+def _sim_closes(
+    rows: list[dict[str, Any]], effective_from: Any
+) -> list[dict[str, Any]]:
+    return [
+        row
+        for row in rows
+        if row.get("reduce_only") and _ts(row.get("timestamp")) >= effective_from
+    ]
+
+
+def _sim_net(closes: list[dict[str, Any]]) -> float:
+    return sum(float(row.get("realized_pnl_delta") or 0.0) for row in closes)
 
 
 def _entries(
