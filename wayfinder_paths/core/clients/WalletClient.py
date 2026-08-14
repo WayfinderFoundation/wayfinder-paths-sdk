@@ -17,11 +17,35 @@ class WalletClient(WayfinderClient):
     async def list_wallets(
         self, instance_id: str | None = None
     ) -> list[dict[str, Any]]:
-        url = f"{get_api_base_url()}/wallets/"
+        """Flat wallet rows via the backend's ring read.
+
+        The 2026-07-16 backend refactor removed the collection GET (405) and
+        consolidated the wallet read on `GET /wallets/rings` — one entry per
+        ring: {label, evm: {leg}, svm: {leg}}, instance-scoped, ring label as
+        the source of truth. Every SDK caller expects flat per-wallet rows,
+        so flatten each ring into one row per leg here. (The unpatched 405
+        made every shell agent wallet-blind: load_remote_wallets swallowed it
+        and reported an empty wallet list.)"""
+        url = f"{get_api_base_url()}/wallets/rings"
         if instance_id:
             url += f"?instance_id={instance_id}"
         resp = await self._authed_request("GET", url)
-        return resp.json()
+        rings = resp.json()
+        wallets: list[dict[str, Any]] = []
+        for ring in rings if isinstance(rings, list) else []:
+            label = ring.get("label")
+            for chain_key, chain_type in (("evm", "ethereum"), ("svm", "solana")):
+                leg = ring.get(chain_key)
+                if not isinstance(leg, dict) or not leg.get("wallet_address"):
+                    continue
+                wallets.append(
+                    {
+                        **leg,
+                        "label": label,
+                        "chain_type": leg.get("chain_type") or chain_type,
+                    }
+                )
+        return wallets
 
     async def create_wallet(
         self,
