@@ -1,5 +1,6 @@
-"""Post-apply shadow counterfactual: replay the pre-apply strategy over the
-forward window, diff against the actual book, surface skipped/added entries."""
+"""Post-apply three-book prospective: replay the pre-apply strategy (A) and
+the promoted strategy (B) over the forward window, diff against the actual
+book (C) — strategy effect (B-A) split from execution effect (C-B)."""
 
 from __future__ import annotations
 
@@ -43,6 +44,13 @@ def _mk_job(tmp_path, *, applied_hours_ago: float = 24.0) -> tuple[JobStore, str
         "def build_strategy():\n    raise NotImplementedError\n", encoding="utf-8"
     )
     (backup / "job.yaml").write_text(yaml.safe_dump(job_yaml), encoding="utf-8")
+
+    # The promoted revision lives in the ACTIVE workspace — book B's script.
+    active_src = root / "workspace" / "src"
+    active_src.mkdir(parents=True, exist_ok=True)
+    (active_src / "strategy.py").write_text(
+        "def build_strategy():\n    raise NotImplementedError\n", encoding="utf-8"
+    )
 
     applied = pd.Timestamp.now(tz="UTC") - pd.Timedelta(hours=applied_hours_ago)
     versions = root / "versions"
@@ -95,10 +103,11 @@ def test_counterfactual_diffs_shadow_against_actual(tmp_path) -> None:
     now = pd.Timestamp.now(tz="UTC").floor("5min")
     t_shared = now - pd.Timedelta(hours=6)
     t_skipped = now - pd.Timedelta(hours=4)
+    t_unfilled = now - pd.Timedelta(hours=2)
 
-    # Shadow (pre-apply strategy) trades BOTH entries; the live book only took
-    # the shared one — t_skipped is what the change suppressed, and its shadow
-    # close won +0.9.
+    # Shadow A (pre-apply strategy) trades BOTH entries; the live book only
+    # took the shared one — t_skipped is what the change suppressed, and its
+    # shadow close won +0.9.
     shadow_trades = [
         _fill(t_shared, side="sell", reduce_only=False),
         _fill(
@@ -107,6 +116,18 @@ def test_counterfactual_diffs_shadow_against_actual(tmp_path) -> None:
         _fill(t_skipped, side="sell", reduce_only=False),
         _fill(
             t_skipped + pd.Timedelta(minutes=80), side="buy", reduce_only=True, pnl=0.9
+        ),
+    ]
+    # Shadow B (promoted strategy, simulated) takes the shared entry plus one
+    # at t_unfilled that the live book never printed — an execution miss.
+    active_trades = [
+        _fill(t_shared, side="sell", reduce_only=False),
+        _fill(
+            t_shared + pd.Timedelta(minutes=80), side="buy", reduce_only=True, pnl=-0.2
+        ),
+        _fill(t_unfilled, side="sell", reduce_only=False),
+        _fill(
+            t_unfilled + pd.Timedelta(minutes=40), side="buy", reduce_only=True, pnl=0.3
         ),
     ]
     forward = root / "results" / "forward"
@@ -136,32 +157,49 @@ def test_counterfactual_diffs_shadow_against_actual(tmp_path) -> None:
         return _bars()
 
     def fake_sim(script, dataset, spec, params):
-        captured["script"] = str(script)
-        return SimpleNamespace(trades=shadow_trades)
+        captured.setdefault("scripts", []).append(str(script))
+        if "backup" in str(script):
+            return SimpleNamespace(trades=shadow_trades)
+        return SimpleNamespace(trades=active_trades)
 
     doc = counterfactual_job(
         job_id, store=store, fetch_bars=fake_fetch, simulate=fake_sim
     )
     assert doc["available"] is True
     assert doc["proposal_id"] == "prop-x"
-    assert "applications/prop-x/backup" in captured["script"]
+    # Both books simulated: A from the rollback backup, B from the active
+    # workspace, over the same dataset.
+    assert any("applications/prop-x/backup" in s for s in captured["scripts"])
+    assert any("backup" not in s for s in captured["scripts"])
 
     assert doc["actual"] == {"closes": 1, "net_pnl": -0.25}
     assert doc["shadow"] == {"closes": 2, "net_pnl": 0.7}
+    assert doc["active_shadow"] == {"closes": 2, "net_pnl": 0.1}
     assert doc["delta_net_pnl"] == -0.95
+    # Three-book split: the change itself cost -0.6 (B-A); execution lost a
+    # further -0.35 (C-B); the two sum to the two-book delta.
+    assert doc["effects"] == {
+        "strategy_effect": -0.6,
+        "execution_effect": -0.35,
+        "total_delta": -0.95,
+    }
     assert doc["entries_skipped_by_change"]["count"] == 1
     assert doc["entries_skipped_by_change"]["examples"][0]["side"] == "short"
     assert doc["entries_added_by_change"]["count"] == 0
+    assert doc["entries_execution_missed"]["count"] == 1
+    assert doc["entries_execution_extra"]["count"] == 0
     assert doc["by_symbol"]["LIT"]["shadow_closes"] == 2
+    assert doc["by_symbol"]["LIT"]["active_shadow_closes"] == 2
+    assert doc["by_symbol"]["LIT"]["active_shadow_net_pnl"] == 0.1
 
     # Artifact persisted and served from cache while inputs are unchanged.
     assert load_counterfactual(store, job_id)["delta_net_pnl"] == -0.95
-    captured["script"] = None
+    captured["scripts"] = []
     again = counterfactual_job(
         job_id, store=store, fetch_bars=fake_fetch, simulate=fake_sim
     )
     assert again["computed_at"] == doc["computed_at"]
-    assert captured["script"] is None  # sim was not re-run
+    assert captured["scripts"] == []  # sims were not re-run
 
     # A new actual close invalidates the fingerprint and recomputes.
     with (forward / "trades.jsonl").open("a", encoding="utf-8") as fh:
@@ -181,7 +219,7 @@ def test_counterfactual_diffs_shadow_against_actual(tmp_path) -> None:
         job_id, store=store, fetch_bars=fake_fetch, simulate=fake_sim
     )
     assert recomputed["actual"]["closes"] == 2
-    assert captured["script"] is not None
+    assert len(captured["scripts"]) == 2  # both books re-simulated
 
 
 def test_counterfactual_unavailable_paths(tmp_path) -> None:
@@ -224,10 +262,18 @@ def test_worker_block_renders_topline(tmp_path) -> None:
             "window": {"days": 3.0},
             "actual": {"closes": 4, "net_pnl": -0.5},
             "shadow": {"closes": 6, "net_pnl": 0.4},
+            "active_shadow": {"closes": 5, "net_pnl": -0.1},
             "delta_net_pnl": -0.9,
+            "effects": {
+                "strategy_effect": -0.5,
+                "execution_effect": -0.4,
+                "total_delta": -0.9,
+            },
             "by_symbol": {},
             "entries_skipped_by_change": {"count": 2, "examples": []},
             "entries_added_by_change": {"count": 0, "examples": []},
+            "entries_execution_missed": {"count": 1, "examples": []},
+            "entries_execution_extra": {"count": 0, "examples": []},
             "_basis": "note",
             "computed_at": pd.Timestamp.now(tz="UTC").isoformat(),
             "fingerprint": {"revision": "rev-new", "actual_closes_total": 0},
@@ -236,4 +282,7 @@ def test_worker_block_renders_topline(tmp_path) -> None:
     block = _counterfactual_block(store, job_id)
     assert block["delta_net_pnl"] == -0.9
     assert block["proposal_id"] == "prop-x"
+    assert block["effects"]["execution_effect"] == -0.4
+    assert block["active_shadow"]["net_pnl"] == -0.1
+    assert block["entries_execution_missed"]["count"] == 1
     assert "fingerprint" not in block and "computed_at" not in block

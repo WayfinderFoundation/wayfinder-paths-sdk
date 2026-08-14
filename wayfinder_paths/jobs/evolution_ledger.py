@@ -56,16 +56,26 @@ def build_evolution_report(store: JobStore, job_id: str) -> dict[str, Any]:
         )
 
     verdict_counts = {
-        "beat": 0, "neutral": 0, "hurt": 0,
-        "pending": 0, "censored_by_next_change": 0, "insufficient_evidence": 0,
+        "beat": 0,
+        "neutral": 0,
+        "hurt": 0,
+        "pending": 0,
+        "censored_by_next_change": 0,
+        "insufficient_evidence": 0,
     }
     deltas: list[float] = []
+    strategy_effects: list[float] = []
+    execution_effects: list[float] = []
     for record in verdicts.values():
         verdict = str(record.get("verdict") or "")
         if verdict in verdict_counts:
             verdict_counts[verdict] += 1
         if verdict in ("beat", "neutral", "hurt"):
             deltas.append(float(record.get("delta_net_pnl") or 0.0))
+            if record.get("strategy_effect") is not None:
+                strategy_effects.append(float(record["strategy_effect"]))
+            if record.get("execution_effect") is not None:
+                execution_effects.append(float(record["execution_effect"]))
     judged = verdict_counts["beat"] + verdict_counts["neutral"] + verdict_counts["hurt"]
     beat_rate = (verdict_counts["beat"] / judged) if judged else None
 
@@ -87,8 +97,18 @@ def build_evolution_report(store: JobStore, job_id: str) -> dict[str, Any]:
             # improve loop is earning its keep.
             "beat_rate": beat_rate,
             "beat_rate_ci95": ci,
-            "mean_judged_delta_usd": (
-                sum(deltas) / len(deltas) if deltas else None
+            "mean_judged_delta_usd": (sum(deltas) / len(deltas) if deltas else None),
+            # Three-book split (when recorded): a hurt-leaning mean driven by
+            # execution_effect indicts the fill path, not the strategy loop.
+            "mean_strategy_effect_usd": (
+                sum(strategy_effects) / len(strategy_effects)
+                if strategy_effects
+                else None
+            ),
+            "mean_execution_effect_usd": (
+                sum(execution_effects) / len(execution_effects)
+                if execution_effects
+                else None
             ),
         },
         # A high beat_rate with near-zero promotions is not a working loop —
@@ -125,7 +145,8 @@ def _opportunity_recall(store: JobStore, job_id: str) -> dict[str, Any] | None:
 
         doc = load_archive(store, job_id)
         candidates = [
-            entry for entry in doc.get("candidates") or []
+            entry
+            for entry in doc.get("candidates") or []
             if isinstance(entry.get("objective"), dict)
             and entry.get("status") not in ("refuted", "retired")
         ]
