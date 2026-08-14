@@ -8,7 +8,6 @@ import httpx
 from loguru import logger
 from web3 import AsyncWeb3
 
-from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
 from wayfinder_paths.core.config import get_rpc_urls
 from wayfinder_paths.core.constants.base import (
     GAS_BUFFER_MULTIPLIER,
@@ -21,13 +20,24 @@ from wayfinder_paths.core.constants.chains import (
     MIN_PRIORITY_FEE_BY_CHAIN_ID,
     PRE_EIP_1559_CHAIN_IDS,
 )
-from wayfinder_paths.core.utils.wallets import _prepare_tx_for_privy
 from wayfinder_paths.core.utils.web3 import (
     _is_gorlami_fork_rpc,
     get_transaction_chain_id,
     web3_from_chain_id,
     web3s_from_chain_id,
 )
+
+
+def _wallet_client():
+    # Lazy: importing WalletClient runs clients/__init__, which transitively
+    # imports tokens.py -> this module. A top-level import here (or of
+    # _prepare_tx_for_privy below) makes whichever of wallets/transaction is
+    # imported first blow up on a partially-initialized cycle — found live on
+    # the box as "cannot import name '_prepare_tx_for_privy'".
+    from wayfinder_paths.core.clients.WalletClient import WALLET_CLIENT
+
+    return WALLET_CLIENT
+
 
 _DEFAULT_CONFIRMATIONS = 3
 
@@ -247,7 +257,7 @@ async def broadcast_transaction(chain_id, signed_transaction: bytes) -> str:
 async def sponsorship_enabled() -> bool:
     # Fetch failure falls back to the local sign-and-broadcast path.
     try:
-        features = await WALLET_CLIENT.get_features()
+        features = await _wallet_client().get_features()
         return "privy_gas_sponsorship_enabled" in features["enabledSwitches"]
     except Exception:
         return False
@@ -275,7 +285,7 @@ async def wait_for_sponsored_transaction(
                 f"after {timeout}s"
             )
         await asyncio.sleep(2)
-        status = await WALLET_CLIENT.get_privy_transaction_status(
+        status = await _wallet_client().get_privy_transaction_status(
             wallet_address, result["transaction_id"]
         )
         if status["status"] == "failed":
@@ -295,7 +305,10 @@ async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> 
     tx = dict(transaction)
     tx["from"] = wallet_address
     try:
-        result = await WALLET_CLIENT.send_privy_transaction_sponsored(
+        # Lazy for the same cycle _wallet_client() documents.
+        from wayfinder_paths.core.utils.wallets import _prepare_tx_for_privy
+
+        result = await _wallet_client().send_privy_transaction_sponsored(
             wallet_address, _prepare_tx_for_privy(tx)
         )
     except httpx.HTTPStatusError as exc:
