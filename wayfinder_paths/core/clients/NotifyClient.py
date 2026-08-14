@@ -20,22 +20,16 @@ class NotifyClient(WayfinderClient):
         self,
         title: str,
         message: str,
-    ) -> dict[str, Any]:
-        url = f"{get_api_base_url()}/opencode/notify/"
-        response = await self._authed_request(
-            "POST", url, json={"title": title, "message": message}
-        )
-        return response.json()
-
-    async def notify_mobile(
-        self,
-        message: str,
+        delivery: str = "email",
         override: bool = False,
     ) -> dict[str, Any]:
-        url = f"{get_api_base_url()}/opencode/sendblue/agent-notify/"
-        response = await self._authed_request(
-            "POST", url, json={"message": message, "override": override}
-        )
+        url = f"{get_api_base_url()}/opencode/notify/"
+        payload: dict[str, Any] = {"title": title, "message": message}
+        if delivery != "email":
+            payload["delivery"] = delivery
+        if override:
+            payload["override"] = True
+        response = await self._authed_request("POST", url, json=payload)
         return response.json()
 
 

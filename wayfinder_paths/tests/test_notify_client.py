@@ -58,11 +58,16 @@ async def test_notify_client_mobile_posts_message_and_override(
     client = NotifyClient()
     client._authed_request = AsyncMock(return_value=_Response({"sent": True}))  # type: ignore[method-assign]
 
-    await client.notify_mobile(message="Body", override=True)
+    await client.notify(title="Alert", message="Body", delivery="mobile", override=True)
 
     args = client._authed_request.await_args
-    assert args.args[1].endswith("/opencode/sendblue/agent-notify/")
-    assert args.kwargs["json"] == {"message": "Body", "override": True}
+    assert args.args[1].endswith("/opencode/notify/")
+    assert args.kwargs["json"] == {
+        "title": "Alert",
+        "message": "Body",
+        "delivery": "mobile",
+        "override": True,
+    }
 
 
 def test_normalize_notify_delivery_rejects_unknown_delivery() -> None:
@@ -75,13 +80,15 @@ async def test_notification_send_routes_text_alias_to_mobile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_client = AsyncMock()
-    fake_client.notify_mobile.return_value = {"sent": True}
+    fake_client.notify.return_value = {"sent": True}
     monkeypatch.setattr(notify_tool_module, "NOTIFY_CLIENT", fake_client)
 
     out = await notify_tool_module.notification_send("Alert", "Body", delivery="text")
 
     assert out == {"ok": True, "result": {"sent": True}}
-    fake_client.notify_mobile.assert_awaited_once_with(message="Body", override=False)
+    fake_client.notify.assert_awaited_once_with(
+        title="Alert", message="Body", delivery="mobile", override=False
+    )
 
 
 @pytest.mark.asyncio

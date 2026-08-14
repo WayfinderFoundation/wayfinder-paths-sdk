@@ -62,13 +62,11 @@ async def notification_send(
     except ValueError as exc:
         return err("invalid_request", str(exc))
 
-    if delivery_s == "mobile":
-        if len(message) > MOBILE_MESSAGE_MAX:
-            raise ValueError(f"mobile message exceeds {MOBILE_MESSAGE_MAX} chars")
-        return await _relay(
-            NOTIFY_CLIENT.notify_mobile(message=message, override=override)
+    limit = MOBILE_MESSAGE_MAX if delivery_s == "mobile" else MESSAGE_MAX
+    if len(message) > limit:
+        raise ValueError(f"message exceeds {limit} chars")
+    return await _relay(
+        NOTIFY_CLIENT.notify(
+            title=title_s, message=message, delivery=delivery_s, override=override
         )
-
-    if len(message) > MESSAGE_MAX:
-        raise ValueError(f"message exceeds {MESSAGE_MAX} chars")
-    return await _relay(NOTIFY_CLIENT.notify(title=title_s, message=message))
+    )
