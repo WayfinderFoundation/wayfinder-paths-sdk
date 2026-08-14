@@ -16,6 +16,13 @@ permission:
     wayfinder-sports: deny
 
   write: allow
+  # Override opencode's built-in ask defaults: a permission prompt is
+  # unanswerable over the messaging channel, so an ask freezes the turn (and
+  # the reply) forever. Paths outside the workspace are part of this agent's
+  # normal working surface; doom-loop protection stays on but as a hard stop
+  # the model can react to instead of a question nobody can answer.
+  external_directory: allow
+  doom_loop: deny
   wayfinder_*: deny
   # contracts_*
   wayfinder_contracts_*: allow
