@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
+from pathlib import Path
 from typing import Any, Literal
 
 from wayfinder_paths.jobs.application import (
@@ -21,6 +23,7 @@ from wayfinder_paths.jobs.models import (
     WayfinderJob,
     infer_job_kind,
     normalize_agent_mode,
+    utc_now_iso,
 )
 from wayfinder_paths.jobs.proposals import propose_change
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
@@ -52,6 +55,7 @@ JobAction = Literal[
     "rank_check",
     "strategy_library",
     "backtest_job",
+    "op_status",
     "backtest_diagnose",
     "experiments",
     "promote_params",
@@ -108,6 +112,155 @@ async def _run_job_op(op: str, kwargs: dict[str, Any]) -> dict[str, Any]:
     return ok(json.loads(stdout.decode()))
 
 
+# Reaper tasks must be referenced or the event loop may GC them mid-await.
+_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _background_ops_dir(store: JobStore, job_id: str) -> Path:
+    return store.job_dir(job_id) / "state" / "background_ops"
+
+
+def _op_status_hint(job_id: str, op: str) -> str:
+    return (
+        f"core_jobs(action='op_status', job_id='{job_id}', op='{op}') — "
+        "poll every ~60s (bash sleep between checks); the run survives this "
+        "request ending."
+    )
+
+
+def _pid_alive(pid: Any) -> bool:
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _load_json_file(path: Path) -> dict[str, Any] | None:
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+async def _start_background_op(
+    store: JobStore, job_id: str, op: str, kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    """Detached variant of _run_job_op: spawn the same op_runner child but
+    return immediately, leaving a status file for op_status to poll.
+
+    A synchronous backtest cannot fit through the MCP request window on this
+    box (observed live: client timed out at 300s, the run died with it, and
+    the memory spike OOM-killed the conversation server). Detached, the run
+    survives the request, the client, and even an MCP server restart."""
+    ops_dir = _background_ops_dir(store, job_id)
+    ops_dir.mkdir(parents=True, exist_ok=True)
+    status_path = ops_dir / f"{op}.json"
+    existing = _load_json_file(status_path)
+    if (
+        existing
+        and existing.get("state") == "running"
+        and _pid_alive(existing.get("pid"))
+    ):
+        return ok(
+            {
+                "already_running": True,
+                **existing,
+                "check": _op_status_hint(job_id, op),
+            }
+        )
+
+    log_path = ops_dir / f"{op}.log"
+    result_path = ops_dir / f"{op}.result.json"
+    result_path.unlink(missing_ok=True)
+    with log_path.open("wb") as log_handle, result_path.open("wb") as result_handle:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            "wayfinder_paths.jobs.execution.op_runner",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=result_handle,
+            stderr=log_handle,
+            start_new_session=True,
+        )
+    assert proc.stdin is not None
+    proc.stdin.write(json.dumps({"op": op, "kwargs": kwargs}).encode())
+    await proc.stdin.drain()
+    proc.stdin.close()
+    status = {
+        "op": op,
+        "job_id": job_id,
+        "state": "running",
+        "pid": proc.pid,
+        "started_at": utc_now_iso(),
+    }
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    task = asyncio.get_running_loop().create_task(
+        _reap_background_op(proc, status_path)
+    )
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return ok(
+        {
+            "started": True,
+            "op": op,
+            "pid": proc.pid,
+            "note": (
+                "running detached — this request is done; results land in the "
+                "job dir as usual when the run finishes"
+            ),
+            "check": _op_status_hint(job_id, op),
+        }
+    )
+
+
+async def _reap_background_op(proc: Any, status_path: Path) -> None:
+    code = await proc.wait()
+    status = _load_json_file(status_path) or {}
+    status.update(
+        {
+            "state": "done" if code == 0 else ("killed" if code < 0 else "failed"),
+            "exit_code": code,
+            "finished_at": utc_now_iso(),
+        }
+    )
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+
+
+def _background_op_status(store: JobStore, job_id: str, op: str) -> dict[str, Any]:
+    ops_dir = _background_ops_dir(store, job_id)
+    status = _load_json_file(ops_dir / f"{op}.json")
+    if not status:
+        return err("not_found", f"no background {op} run recorded for {job_id}")
+    if status.get("state") == "running" and not _pid_alive(status.get("pid")):
+        # The reaper lived in an MCP server that restarted mid-run. The child
+        # was detached (own session), so a parseable result file means it
+        # finished anyway; otherwise the run is lost.
+        result = _load_json_file(ops_dir / f"{op}.result.json")
+        status["state"] = "done" if result is not None else "lost"
+        (ops_dir / f"{op}.json").write_text(json.dumps(status), encoding="utf-8")
+    payload = dict(status)
+    log_path = ops_dir / f"{op}.log"
+    if log_path.exists():
+        lines = (
+            log_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+        )
+        payload["log_tail"] = lines[-5:]
+    if payload.get("state") == "done":
+        result = _load_json_file(ops_dir / f"{op}.result.json")
+        if result is not None:
+            payload["result"] = result
+    elif payload.get("state") in ("failed", "killed", "lost"):
+        payload["hint"] = (
+            "see log_tail; killed/lost usually means OOM — retry with "
+            "quick_bars or a smaller grid"
+        )
+    return ok(payload)
+
+
 @catch_errors
 async def core_jobs(
     action: JobAction,
@@ -148,6 +301,8 @@ async def core_jobs(
     compile: bool = True,  # noqa: A002
     full: bool = False,
     quick_bars: int | None = None,
+    background: bool | None = None,
+    op: str | None = None,
     days: int = 14,
     dataset_source: Literal["venues", "ccxt"] = "venues",
     exchange: str = "binance",
@@ -235,7 +390,9 @@ async def core_jobs(
         job; `dataset_source="ccxt"` + `exchange="binance"` for long history),
         `fetch_funding` (historical funding rates into the job's feature
         store — first-class carry data, as-of merged onto the bars as a
-        `funding` column), `backtest_job` (use `quick_bars` while iterating),
+        `funding` column), `backtest_job` (runs DETACHED by
+        default — it returns immediately; poll `op_status` until done, or
+        pass `background=False` only for quick_bars-sized runs),
         `backtest_diagnose` (ranked next steps), `experiments` (param grid via
         `grid` inline or `grid_path`; pass `wf_test_bars`/`wf_folds` for
         walk-forward out-of-sample validation), then `promote_params`
@@ -491,19 +648,25 @@ async def core_jobs(
                 "folds": wf_folds,
                 "anchored": False,
             }
-        return await _run_job_op(
-            "experiments",
-            {
-                "job_id": job_id,
-                "grid": chosen_grid,
-                "rank_by": rank_by,
-                "workers": workers,
-                "parallel": parallel,
-                "walk_forward": walk_forward,
-                "quick_bars": quick_bars,
-                "full": full,
-            },
-        )
+        experiments_kwargs = {
+            "job_id": job_id,
+            "grid": chosen_grid,
+            "rank_by": rank_by,
+            "workers": workers,
+            "parallel": parallel,
+            "walk_forward": walk_forward,
+            "quick_bars": quick_bars,
+            "full": full,
+        }
+        # Grid sweeps dwarf single backtests — same detached escape hatch,
+        # opt-in here (inline quick grids stay synchronous by default).
+        if background:
+            if not job_id:
+                return err("invalid_request", "experiments requires job_id")
+            return await _start_background_op(
+                store, job_id, "experiments", experiments_kwargs
+            )
+        return await _run_job_op("experiments", experiments_kwargs)
 
     if action == "promote_params":
         return await _run_job_op(
@@ -520,17 +683,29 @@ async def core_jobs(
     if action == "backtest_job":
         # The child summarizes unless full=True — the compact summary is ~2 KB
         # vs ~8 MB of per-bar arrays (all persisted under results/backtest/).
-        return await _run_job_op(
-            "backtest_job",
-            {
-                "job_id": job_id,
-                "grid_path": grid_path,
-                "workers": workers,
-                "parallel": parallel,
-                "quick_bars": quick_bars,
-                "full": full,
-            },
+        backtest_kwargs = {
+            "job_id": job_id,
+            "grid_path": grid_path,
+            "workers": workers,
+            "parallel": parallel,
+            "quick_bars": quick_bars,
+            "full": full,
+        }
+        # Detached by default: a full backtest cannot fit through the MCP
+        # request window (client timeout kills the run mid-grind). Sync only
+        # on explicit background=False for quick_bars-sized runs.
+        if background is False:
+            return await _run_job_op("backtest_job", backtest_kwargs)
+        if not job_id:
+            return err("invalid_request", "backtest_job requires job_id")
+        return await _start_background_op(
+            store, job_id, "backtest_job", backtest_kwargs
         )
+
+    if action == "op_status":
+        if not job_id:
+            return err("invalid_request", "op_status requires job_id")
+        return _background_op_status(store, job_id, op or "backtest_job")
 
     if action == "backtest_diagnose":
         return ok(diagnose_backtest(job_id, proposal_id=proposal_id, store=store))
