@@ -328,6 +328,39 @@ def apply_script_mode(
     return {"job_id": job_id, "mode": mode, "set_by": set_by, "compile": result}
 
 
+# Operator sizing ceiling — venue max leverage on majors is higher, but an
+# operator fat-fingering 40x through a UI control is not a trade thesis.
+MAX_OPERATOR_LEVERAGE = 25.0
+
+
+def apply_execution_leverage(
+    job_id: str, leverage: float, *, store: JobStore | None = None
+) -> dict[str, Any]:
+    """Operator-owned sizing knob: write ``execution_params.leverage``.
+
+    Params are re-read from job.yaml every tick, so the change takes effect
+    on the next tick without a recompile (unlike script mode, which is baked
+    into the runner env). Journaled so wake context shows who changed sizing
+    and from what."""
+    value = float(leverage)
+    if not value > 0 or value > MAX_OPERATOR_LEVERAGE:
+        raise ValueError(
+            f"leverage must be in (0, {MAX_OPERATOR_LEVERAGE:g}], got {value:g}"
+        )
+    store = store or JobStore()
+    job = store.load(job_id)
+    previous = job.execution_params.get("leverage")
+    job.execution_params["leverage"] = value
+    job.touch()
+    store.save(job)
+    store.append_journal(
+        job_id,
+        {"type": "operator_leverage_set", "from": previous, "to": value},
+    )
+    sync_all_jobs(store=store)
+    return {"job_id": job_id, "leverage": value, "previous": previous}
+
+
 def _shadow_topline(store: JobStore, job_id: str) -> dict[str, Any]:
     """Read-only topline of the post-apply counterfactual for the UI — the
     artifact is computed on the wake path, never during sync."""

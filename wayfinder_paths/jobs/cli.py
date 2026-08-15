@@ -62,7 +62,12 @@ from wayfinder_paths.jobs.research import (
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.strategies import library_catalog
-from wayfinder_paths.jobs.sync import apply_script_mode, snapshot_job, sync_all_jobs
+from wayfinder_paths.jobs.sync import (
+    apply_execution_leverage,
+    apply_script_mode,
+    snapshot_job,
+    sync_all_jobs,
+)
 from wayfinder_paths.jobs.universe import universe_scan_job
 from wayfinder_paths.jobs.worker import run_job_worker
 
@@ -1240,6 +1245,21 @@ def report_cmd(job_id: str) -> None:
 def set_script_mode_cmd(job_id: str, mode: str, set_by: str, force: bool) -> None:
     try:
         result = apply_script_mode(job_id, mode, set_by=set_by, force=force)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="set-leverage",
+    help="Operator sizing knob: set execution_params.leverage (takes effect "
+    "next tick, no recompile).",
+)
+@click.argument("job_id")
+@click.argument("leverage", type=float)
+def set_leverage_cmd(job_id: str, leverage: float) -> None:
+    try:
+        result = apply_execution_leverage(job_id, leverage)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     _echo_json({"ok": True, "result": result})
