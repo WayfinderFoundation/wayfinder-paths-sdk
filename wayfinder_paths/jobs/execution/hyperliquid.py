@@ -306,13 +306,21 @@ class HyperliquidPerpBroker:
         )
 
     async def fetch_state(self, symbols: Sequence[str] | Any = ()) -> VenueState:
+        # _hl_state_result raises on any failed leg (the tool errs whole-hog),
+        # so a returned result IS a successful fetch. The tool speaks the
+        # UnifiedAccount shape: flat `perp_positions` rows + a money `summary`
+        # — parsing the pre-unified `perp.state.assetPositions` shape here
+        # made every live tick raise "perp state fetch unsuccessful", which
+        # fired reconcile_mismatch wakes until the advisor reverted the
+        # operator's live switch (observed live on majors-5m-lab).
         result = await _hl_state_result(self.wallet_label)
-        perp = (result.get("perp") or {}).get("state") or {}
-        if not (result.get("perp") or {}).get("success"):
-            raise RuntimeError("hyperliquid perp state fetch unsuccessful")
+        if "perp_positions" not in result:
+            raise RuntimeError(
+                "hyperliquid state fetch returned unexpected shape "
+                f"(keys: {sorted(result)})"
+            )
         positions: dict[str, PositionRecord] = {}
-        for item in perp.get("assetPositions") or []:
-            position = item.get("position") or {}
+        for position in result.get("perp_positions") or []:
             szi = _float_or_none(position.get("szi"))
             coin = str(position.get("coin") or "")
             if not coin or not szi:
@@ -324,9 +332,11 @@ class HyperliquidPerpBroker:
                 avg_price=_float_or_none(position.get("entryPx")) or 0.0,
                 metadata={"source": "hyperliquid"},
             )
+        summary = result.get("summary") or {}
+        account_value = _float_or_none(summary.get("unified_usdc_equity"))
+        if account_value is None:  # classic (non-unified) account ledgers
+            account_value = _float_or_none(summary.get("perp_account_value"))
         balances: dict[str, float] = {}
-        margin = perp.get("crossMarginSummary") or {}
-        account_value = _float_or_none(margin.get("accountValue"))
         if account_value is not None:
             balances["accountValue"] = account_value
         return VenueState(
