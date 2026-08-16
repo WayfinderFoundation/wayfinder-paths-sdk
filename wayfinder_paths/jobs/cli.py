@@ -1224,9 +1224,22 @@ def report_cmd(job_id: str) -> None:
 )
 @click.argument("job_id")
 @click.argument("mode", type=click.Choice(["paper", "live"]))
-def set_script_mode_cmd(job_id: str, mode: str) -> None:
+@click.option(
+    "--by",
+    "set_by",
+    type=click.Choice(["owner", "agent"]),
+    default="owner",
+    help="Who is making this change (recorded in state/operator.json).",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    default=False,
+    help="Leave live even if the engine holds open positions (orphans them).",
+)
+def set_script_mode_cmd(job_id: str, mode: str, set_by: str, force: bool) -> None:
     try:
-        result = apply_script_mode(job_id, mode)
+        result = apply_script_mode(job_id, mode, set_by=set_by, force=force)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     _echo_json({"ok": True, "result": result})

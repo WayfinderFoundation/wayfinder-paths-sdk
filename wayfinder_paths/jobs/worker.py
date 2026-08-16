@@ -120,6 +120,24 @@ def _attribution_block(root: Path) -> dict[str, Any]:
     return block
 
 
+def _operator_block(store: JobStore, job_id: str) -> dict[str, Any]:
+    """Operator decisions of record (state/operator.json) — who last set the
+    script mode and when. Rendered in the stable prefix so agents can tell an
+    authorized owner decision from the unexplained-flip incidents their halt
+    discipline was built on."""
+    doc = store.read_json(job_id, "state/operator.json") or {}
+    if not isinstance(doc, dict) or not doc:
+        return {}
+    return {
+        **doc,
+        "_basis": (
+            "Operator decisions of record. script_mode.set_by=owner means the "
+            "current mode is an AUTHORIZED operator decision — never revert "
+            "it, never halt solely because it changed."
+        ),
+    }
+
+
 def _counterfactual_block(store: JobStore, job_id: str) -> dict[str, Any]:
     """Mechanical post-apply three-book: pre-apply shadow (A) and promoted
     shadow (B) replayed over the forward bars since apply, diffed against
@@ -554,6 +572,7 @@ def _build_worker_prompt_sections(
         # re-explore a logged no_edge/rejected candidate family unchanged).
         "backtest": backtest_block,
         "gate": snapshot.get("gate") or {},
+        "operator": _operator_block(store, job_id),
         "ledgers": {
             "candidates": tail_ledger(store, job_id, "candidates", limit=20),
             "decisions": tail_ledger(store, job_id, "decisions", limit=20),
@@ -609,6 +628,14 @@ def _build_worker_prompt_sections(
         "baked from job.yaml, so a hand-patch is a split-brain the next recompile "
         "reverts. If the runner mode and job.yaml disagree, the fix is a recompile "
         "(sync/set_script_mode), not an env edit.\n"
+        "- script_loop.mode is OPERATOR-OWNED. The stable spec's `operator."
+        "script_mode` block records who last set it and when. When set_by is "
+        "`owner`, the mode is an AUTHORIZED decision: NEVER flip it back and "
+        "NEVER halt solely because the mode changed — halt is for concrete "
+        "risk (mounting losses, venue failure, runaway sizing), and mode "
+        "concerns belong in your wake report for the owner to read. Only a "
+        "mode change with NO operator record is the split-brain incident "
+        "case — reconcile that via recompile and say so in the report.\n"
         "- Use structured forward results first (summary, runs, trades, orders, fills); "
         "raw runner logs are fallback/debug only.\n"
         "- Wallet/venue errors: the live wallet is `execution_params.wallet_label` in "
