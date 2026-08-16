@@ -19,6 +19,7 @@ from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.forward import load_forward_snapshot
 from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.halt import read_halt
+from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 
@@ -237,8 +238,16 @@ def sync_all_jobs(*, store: JobStore | None = None) -> None:
     WAYFINDER_JOBS_CLIENT.sync(snapshots)
 
 
+OPERATOR_STATE_PATH = "state/operator.json"
+
+
 def apply_script_mode(
-    job_id: str, mode: str, *, store: JobStore | None = None
+    job_id: str,
+    mode: str,
+    *,
+    store: JobStore | None = None,
+    set_by: str = "owner",
+    force: bool = False,
 ) -> dict[str, Any]:
     """Flip a job's script-loop mode (paper<->live) the compiler-safe way.
 
@@ -250,8 +259,17 @@ def apply_script_mode(
 
     Going live is gated: the job must pass ``evaluate_live_gate`` (``live_ready``)
     and declare ``execution_params.wallet_label``. A blocked gate raises
-    ``ValueError`` naming the blocker and writes nothing. Reverting to paper is
-    always allowed.
+    ``ValueError`` naming the blocker and writes nothing.
+
+    Leaving live is guarded: if the live engine state holds open positions,
+    the flip is REFUSED unless ``force=True`` — a live->paper flip resets the
+    engine state, which orphans real venue positions with no stop and no
+    manager (observed live: a reverted canary left a HYPE short unmanaged
+    for 26 hours). Flatten first (halt --flatten), or force explicitly.
+
+    Every flip records WHO made it in ``state/operator.json`` — the wake
+    prompt renders it, so agents can distinguish an operator decision from
+    the unexplained-flip incidents their halt discipline was built on.
     """
     if mode not in SCRIPT_MODES:
         raise ValueError(f"script mode must be one of {SCRIPT_MODES}, got {mode!r}")
@@ -270,11 +288,44 @@ def apply_script_mode(
             reasons = "; ".join(gate["reasons"]) or "live gate not ready"
             raise ValueError(f"cannot go live: {reasons}")
 
+    if mode == "paper" and str(job.script_loop.mode) == "live" and not force:
+        engine = store.read_json(job_id, "state/engine_state.json") or {}
+        open_positions = {
+            symbol: position
+            for symbol, position in (engine.get("positions") or {}).items()
+            if position
+        }
+        if str(engine.get("mode")) == "live" and open_positions:
+            raise ValueError(
+                "cannot leave live: the live engine holds open positions "
+                f"({', '.join(sorted(open_positions))}) — flipping to paper "
+                "resets the engine and orphans them on the venue with no "
+                "stop and no manager. Flatten first (wayfinder job halt "
+                "--flatten), or pass force=True to orphan deliberately."
+            )
+
     job.script_loop.mode = mode
     store.save(job)
     result = JobCompiler(store=store).compile(job)
+    operator_state = store.read_json(job_id, OPERATOR_STATE_PATH) or {}
+    operator_state["script_mode"] = {
+        "mode": mode,
+        "set_by": set_by,
+        "set_at": utc_now_iso(),
+        "forced": bool(force),
+    }
+    store.write_json(job_id, OPERATOR_STATE_PATH, operator_state)
+    store.append_journal(
+        job_id,
+        {
+            "type": "script_mode_set",
+            "mode": mode,
+            "set_by": set_by,
+            "forced": bool(force),
+        },
+    )
     sync_all_jobs(store=store)
-    return {"job_id": job_id, "mode": mode, "compile": result}
+    return {"job_id": job_id, "mode": mode, "set_by": set_by, "compile": result}
 
 
 def _shadow_topline(store: JobStore, job_id: str) -> dict[str, Any]:

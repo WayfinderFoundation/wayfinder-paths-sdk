@@ -493,7 +493,11 @@ async def core_jobs(
                 "set_script_mode requires script_mode='live' or 'paper'",
             )
         try:
-            return ok(apply_script_mode(job_id, script_mode, store=store))
+            # MCP callers are agents (wake workers, conversation sessions);
+            # the operator surfaces (CLI, backend button) default to "owner".
+            return ok(
+                apply_script_mode(job_id, script_mode, store=store, set_by="agent")
+            )
         except ValueError as exc:
             # Live-gate / wallet blockers name the missing precondition; surface
             # them as an actionable error rather than a generic failure.
