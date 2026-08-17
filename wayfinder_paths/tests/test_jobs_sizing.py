@@ -45,14 +45,28 @@ def _opens(result) -> list[dict[str, Any]]:
     return [row for row in result.trace["intents"] if row["action"] == "OPEN"]
 
 
-def test_fixed_notional_default_is_unchanged() -> None:
+def test_fixed_notional_unset_leverage_unchanged() -> None:
     implicit = _run({})
-    explicit = _run({"sizing": "fixed_notional", "leverage": 3.0})
+    explicit = _run({"sizing": "fixed_notional", "leverage": 1.0})
 
     assert [o["size"] for o in _opens(implicit)] == [
         o["size"] for o in _opens(explicit)
-    ], "leverage must be inert under fixed_notional sizing"
+    ], "leverage 1.0 must be a no-op under fixed_notional sizing"
     assert implicit.trace["fills"] == explicit.trace["fills"]
+
+
+def test_fixed_notional_scales_with_operator_leverage() -> None:
+    # The engine-level knob: fixed-notional strategies ignore leverage
+    # themselves, so the engine scales their intents — same entries, 3x size.
+    base = _run({})
+    levered = _run({"sizing": "fixed_notional", "leverage": 3.0})
+
+    base_opens = _opens(base)
+    lev_opens = _opens(levered)
+    assert [o["symbol"] for o in base_opens] == [o["symbol"] for o in lev_opens]
+    for base_open, lev_open in zip(base_opens, lev_opens, strict=True):
+        assert lev_open["size"] == pytest.approx(base_open["size"] * 3.0)
+        assert lev_open["metadata"]["leverage_applied"] is True
 
 
 def test_compound_sizing_scales_with_equity_and_leverage() -> None:

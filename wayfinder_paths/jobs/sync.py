@@ -224,7 +224,7 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
             if validation
             else {}
         ),
-        "gate": evaluate_live_gate(job_id, store=store),
+        "gate": _gate_with_restamp(job_id, store),
         # Manual kill-switch detail (contract C4): scorecard already reports
         # live_execution_status="halted" while set; this carries reason/ts.
         "halt": read_halt(store.job_dir(job_id)),
@@ -333,6 +333,36 @@ def apply_script_mode(
 MAX_OPERATOR_LEVERAGE = 25.0
 
 
+def _gate_with_restamp(job_id: str, store: JobStore) -> dict[str, Any]:
+    """Live gate + pending-not-red context: while a detached restamp is
+    running the gate is transiently red by construction — surface that so
+    UIs and wake agents render 'refreshing' instead of alarming. The
+    authoritative live_ready stays strict."""
+    gate = evaluate_live_gate(job_id, store=store)
+    try:
+        import json as _json
+        import os
+
+        status_path = (
+            store.job_dir(job_id) / "state" / "background_ops" / "restamp.json"
+        )
+        status = _json.loads(status_path.read_text(encoding="utf-8"))
+        pid = status.get("pid")
+        alive = False
+        if isinstance(pid, int) and pid > 0:
+            try:
+                os.kill(pid, 0)
+                alive = True
+            except OSError:
+                alive = False
+        if status.get("state") == "running" and alive:
+            gate["restamp_in_progress"] = True
+            gate["restamp_started_at"] = status.get("started_at")
+    except (OSError, ValueError):
+        pass
+    return gate
+
+
 def apply_execution_leverage(
     job_id: str, leverage: float, *, store: JobStore | None = None
 ) -> dict[str, Any]:
@@ -358,7 +388,27 @@ def apply_execution_leverage(
         {"type": "operator_leverage_set", "from": previous, "to": value},
     )
     sync_all_jobs(store=store)
-    return {"job_id": job_id, "leverage": value, "previous": previous}
+    restamp: dict[str, Any] | None = None
+    if previous != value:
+        # The params edit bumped the workspace revision, so the
+        # validation/backtest/preflight stamps just went stale and the live
+        # gate is red until they re-run. Kick the refresh detached — the
+        # knob applies next tick regardless; op_status(op="restamp") polls.
+        try:
+            from wayfinder_paths.jobs.background import spawn_detached_op
+
+            restamp = spawn_detached_op(store, job_id, "restamp", {"job_id": job_id})
+            store.append_journal(
+                job_id, {"type": "gate_restamp_kicked", "trigger": "set_leverage"}
+            )
+        except Exception as exc:  # noqa: BLE001 — knob must not fail on this
+            restamp = {"error": str(exc)[:200]}
+    return {
+        "job_id": job_id,
+        "leverage": value,
+        "previous": previous,
+        "restamp": restamp,
+    }
 
 
 def _shadow_topline(store: JobStore, job_id: str) -> dict[str, Any]:

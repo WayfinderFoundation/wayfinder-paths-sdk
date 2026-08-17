@@ -13,6 +13,7 @@ import pandas as pd
 
 from wayfinder_paths.jobs.execution.primitives import (
     DEFAULT_INITIAL_CAPITAL,
+    REDUCE_ONLY_ACTIONS,
     BracketEngine,
     CompletedBarsView,
     ExecutionContext,
@@ -390,6 +391,7 @@ async def _run_tick_inner(
         case _:
             decided = list(decided)
     intents = [OrderIntent.from_any(item) for item in decided]
+    _apply_engine_leverage(intents, params)
 
     for index, intent in enumerate(intents):
         if client_order_prefix and intent.client_order_id is None:
@@ -500,6 +502,37 @@ async def _run_tick_inner(
         }
     )
     return result
+
+
+def _apply_engine_leverage(
+    intents: list[OrderIntent], params: Mapping[str, Any]
+) -> None:
+    """Operator leverage knob, applied at the ONE seam backtest and live
+    share. Scales unstamped, non-reduce-only intents by params.leverage so
+    the knob works for every strategy with no strategy-code changes.
+    Compound-mode strategies already multiply equity x leverage themselves
+    and stamp `leverage_applied` — the stamp guarantees leverage is applied
+    exactly once wherever the sizing happens. Defensive-inert: bad values
+    never raise mid-tick (the knob validates its own range upstream)."""
+    try:
+        leverage = float(params.get("leverage") or 1.0)
+    except (TypeError, ValueError):
+        return
+    if leverage == 1.0 or leverage <= 0:
+        return
+    for intent in intents:
+        if intent.reduce_only or str(intent.action).upper() in REDUCE_ONLY_ACTIONS:
+            continue
+        if (intent.metadata or {}).get("leverage_applied"):
+            continue
+        if intent.notional is not None:
+            intent.notional = float(intent.notional) * leverage
+        if intent.size is not None:
+            intent.size = float(intent.size) * leverage
+        metadata = dict(intent.metadata or {})
+        metadata["leverage_applied"] = True
+        metadata["engine_leverage"] = leverage
+        intent.metadata = metadata
 
 
 def _record_fill(
