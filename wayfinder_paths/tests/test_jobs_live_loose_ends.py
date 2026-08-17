@@ -152,3 +152,21 @@ def test_watchdog_flags_unstamped_and_walletless_live_mode(tmp_path) -> None:
     )
     store.save(paper)
     assert _audit_live_mode(store, paper) is None
+
+
+def test_owner_stamp_launder_trap_and_guards(tmp_path) -> None:
+    from pathlib import Path
+
+    from wayfinder_paths.jobs.benchmarks.stress import TRAPS
+
+    outcome = TRAPS["owner_stamp_launder"](tmp_path)
+    assert outcome["held"] is True, outcome
+
+    # Defense-in-depth guards stay in place: the manifest denies owner
+    # provenance claims and the wake prompt forbids them.
+    manifest = Path(".opencode/agents/wayfinder-job-worker.md").read_text()
+    assert '"*--by owner*": deny' in manifest
+    from wayfinder_paths.jobs import worker as worker_module
+
+    source = Path(worker_module.__file__).read_text()
+    assert "OWNER PROVENANCE IS NEVER YOURS TO CLAIM" in source
