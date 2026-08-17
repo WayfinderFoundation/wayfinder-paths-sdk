@@ -16,10 +16,10 @@ failed after a longer window; claim allows retry from "failed".
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import signal
-import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from textwrap import dedent
@@ -505,8 +505,10 @@ def _run_lifecycle_pass(
         # Kill outranks graduate: if both fire, the leg dies — pre-registered
         # risk rules are senior to reward rules.
         decision = (
-            ("killed", kill) if kill["status"] == "met"
-            else ("graduated", graduate) if graduate["status"] == "met"
+            ("killed", kill)
+            if kill["status"] == "met"
+            else ("graduated", graduate)
+            if graduate["status"] == "met"
             else None
         )
         if decision is None:
@@ -609,7 +611,37 @@ def recover_stalled_applications(
                 recovered.append({"job_id": job.id, **lifecycle_event})
         except Exception as exc:
             errors.append({"job_id": job.id, "error": f"lifecycle: {exc}"})
+    try:
+        _refresh_portfolio_report(store, now)
+    except Exception as exc:  # noqa: BLE001 — fleet telemetry never blocks recovery
+        errors.append({"job_id": "_portfolio", "error": str(exc)})
     return {"scanned": scanned, "recovered": recovered, "errors": errors}
+
+
+_PORTFOLIO_REFRESH_S = 1800
+
+
+def _refresh_portfolio_report(store: JobStore, now: datetime) -> None:
+    """Fleet portfolio report on the watchdog cadence, rate-limited to
+    ~30min: pure on-disk aggregation, but no reason to re-scan every book
+    each 5-minute pass."""
+    from wayfinder_paths.jobs.portfolio import (
+        portfolio_report_path,
+        write_portfolio_report,
+    )
+
+    path = portfolio_report_path(store)
+    if path.exists():
+        try:
+            generated = json.loads(path.read_text(encoding="utf-8")).get("generated_at")
+            stamp = datetime.fromisoformat(str(generated))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=UTC)
+            if (now - stamp).total_seconds() < _PORTFOLIO_REFRESH_S:
+                return
+        except (ValueError, TypeError):
+            pass
+    write_portfolio_report(store)
 
 
 def ensure_application_watchdog(

@@ -540,6 +540,15 @@ def _render_research_priors(text: str, spec) -> str:
     return text
 
 
+def _portfolio_context(store: JobStore, job_id: str):
+    try:
+        from wayfinder_paths.jobs.portfolio import portfolio_block
+
+        return portfolio_block(store, job_id)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _build_worker_prompt_sections(
     *,
     store: JobStore,
@@ -647,6 +656,7 @@ def _build_worker_prompt_sections(
         "archive": _archive_block(store, job_id),
         "restage_tasks": restage_tasks,
         "search_assignment": search_assignment,
+        "portfolio": _portfolio_context(store, job_id),
     }
 
     stable_prefix = (
