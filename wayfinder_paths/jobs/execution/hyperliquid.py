@@ -262,9 +262,19 @@ class HyperliquidPerpBroker:
 
     capabilities = HYPERLIQUID_CAPABILITIES
 
-    def __init__(self, *, wallet_label: str = "main", slippage: float = 0.01) -> None:
+    def __init__(
+        self,
+        *,
+        wallet_label: str = "main",
+        slippage: float = 0.01,
+        fee_bps: float = 4.5,
+    ) -> None:
         self.wallet_label = wallet_label
         self.slippage = slippage
+        # Fallback taker rate when the user-fills fee lookup cannot resolve
+        # the actual venue fee — a fee_bps estimate beats recording 0.0
+        # (observed live: gross-of-fee trade rows overstated PnL ~2x).
+        self.fee_bps = fee_bps
         self.snapshot = StateSnapshot(status="valid")
 
     async def place(
@@ -303,6 +313,7 @@ class HyperliquidPerpBroker:
             size=intent.size,
             usd_amount=intent.notional if intent.size is None else None,
             slippage=self.slippage,
+            fee_bps=self.fee_bps,
         )
 
     async def fetch_state(self, symbols: Sequence[str] | Any = ()) -> VenueState:
@@ -330,7 +341,14 @@ class HyperliquidPerpBroker:
                 side="long" if szi > 0 else "short",
                 size=abs(szi),
                 avg_price=_float_or_none(position.get("entryPx")) or 0.0,
-                metadata={"source": "hyperliquid"},
+                metadata={
+                    "source": "hyperliquid",
+                    # Observability only — exact funding accounting uses the
+                    # user-funding ledger (cumFunding vanishes at close).
+                    "cum_funding_since_open": _float_or_none(
+                        (position.get("cumFunding") or {}).get("sinceOpen")
+                    ),
+                },
             )
         summary = result.get("summary") or {}
         account_value = _float_or_none(summary.get("unified_usdc_equity"))
@@ -350,6 +368,20 @@ class HyperliquidPerpBroker:
     async def get_capacity(self, symbol: str, side: str) -> TradeCapacity:
         return await get_trade_capacity(self.wallet_label, symbol, side=side)
 
+    async def get_funding_payments(self, since_ms: int) -> list[dict[str, Any]]:
+        """Signed user funding rows since `since_ms` ({time_ms, coin, usdc,
+        funding_rate, szi}; usdc negative = paid). Exceptions bubble — the
+        driver treats funding collection as best-effort telemetry."""
+        # lazy: keeps execution/ decoupled from the MCP tool stack
+        from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_get_user_funding
+
+        outcome = await hyperliquid_get_user_funding(self.wallet_label, since_ms)
+        match outcome:
+            case {"ok": True, "result": {"rows": list() as rows}}:
+                return rows
+            case _:
+                raise RuntimeError(f"user funding fetch failed: {_mcp_error(outcome)}")
+
     async def cancel(self, client_order_id: str) -> FillEvent:
         return _cancel_needs_asset_context("hyperliquid", client_order_id)
 
@@ -365,6 +397,11 @@ class HyperliquidPerpAdapter:
             self.broker: Any = HyperliquidPerpBroker(
                 wallet_label=str(params.get("wallet_label") or "main"),
                 slippage=float(params.get("live_slippage") or 0.01),
+                fee_bps=(
+                    float(params["fee_bps"])
+                    if params.get("fee_bps") is not None
+                    else 4.5
+                ),
             )
         else:
             self.broker = _paper_broker(HYPERLIQUID_CAPABILITIES, params)
@@ -399,6 +436,7 @@ async def _submit_market_order(
     size: float | None,
     usd_amount: float | None,
     slippage: float,
+    fee_bps: float = 0.0,
 ) -> FillEvent:
     """Shared MCP submit -> FillEvent normalization for the perp and HIP-4
     brokers. Transport failures and missing exchange results return
@@ -406,6 +444,7 @@ async def _submit_market_order(
     # lazy: keeps execution/ decoupled from the MCP tool stack and patchable in tests
     from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_place_market_order
 
+    submit_ms = int(time.time() * 1000)
     try:
         outcome = await hyperliquid_place_market_order(
             wallet_label=wallet_label,
@@ -456,7 +495,82 @@ async def _submit_market_order(
         intent, state_snapshot=snapshot, capacity=capacity, raw_result=raw
     )
     fill.timestamp = timestamp
+    if fill.status == "filled":
+        await _attach_fill_fee(
+            fill, wallet_label=wallet_label, submit_ms=submit_ms, fee_bps=fee_bps
+        )
     return fill
+
+
+async def _user_fills_result(wallet_label: str, start_ms: int) -> list[dict[str, Any]]:
+    # lazy: keeps execution/ decoupled from the MCP tool stack and patchable in tests
+    from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_get_user_fills
+
+    outcome = await hyperliquid_get_user_fills(wallet_label, start_ms=start_ms)
+    match outcome:
+        case {"ok": True, "result": {"rows": list() as rows}}:
+            return rows
+    raise RuntimeError(f"user fills fetch failed: {_mcp_error(outcome)}")
+
+
+# userFills can lag the order ack; bounded backoff, then estimate.
+_FEE_LOOKUP_DELAYS_S = (0.0, 1.5, 3.0)
+_FEE_LOOKUP_EARLY_MS = 5_000
+_FEE_LOOKUP_LATE_MS = 30_000
+
+
+async def _attach_fill_fee(
+    fill: FillEvent, *, wallet_label: str, submit_ms: int, fee_bps: float
+) -> None:
+    """Resolve the ACTUAL venue fee for a filled order via the user-fills
+    ledger (the HL order ack carries no fee — recording 0.0 made live trade
+    PnL gross of fees, overstating it ~2x in the observed sample). Falls
+    back to a fee_bps estimate when the ledger has not caught up; the
+    source is tagged either way for audit."""
+    matched_fee = None
+    try:
+        for delay in _FEE_LOOKUP_DELAYS_S:
+            if delay:
+                await asyncio.sleep(delay)
+            rows = await _user_fills_result(
+                wallet_label, submit_ms - _FEE_LOOKUP_EARLY_MS
+            )
+            fee_total = 0.0
+            size_total = 0.0
+            for row in rows:
+                time_ms = row.get("time")
+                if (
+                    isinstance(time_ms, (int, float))
+                    and time_ms > submit_ms + _FEE_LOOKUP_LATE_MS
+                ):
+                    continue
+                oid_match = fill.order_id is not None and str(row.get("oid")) == str(
+                    fill.order_id
+                )
+                cloid_match = fill.client_order_id is not None and row.get(
+                    "cloid"
+                ) == str(fill.client_order_id)
+                if not (oid_match or cloid_match):
+                    continue
+                fee_total += float(row.get("fee") or 0.0) + float(
+                    row.get("builderFee") or 0.0
+                )
+                size_total += abs(float(row.get("sz") or 0.0))
+            if size_total > 0:
+                # Ledger may not carry every partial yet — pro-rata up.
+                if size_total < abs(fill.filled_size) * 0.99:
+                    fee_total *= abs(fill.filled_size) / size_total
+                matched_fee = fee_total
+                break
+    except Exception:
+        matched_fee = None
+    if matched_fee is not None:
+        fill.fee = matched_fee
+        fill.raw["fee_source"] = "user_fills"
+    else:
+        notional = abs(fill.filled_size * (fill.avg_price or 0.0))
+        fill.fee = notional * fee_bps / 10_000
+        fill.raw["fee_source"] = "estimate"
 
 
 async def _hl_state_result(wallet_label: str) -> dict[str, Any]:

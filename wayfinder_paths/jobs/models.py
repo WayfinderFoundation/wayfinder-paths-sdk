@@ -13,6 +13,7 @@ DEFAULT_FORWARD_RUNS = "results/forward/runs.jsonl"
 DEFAULT_FORWARD_TRADES = "results/forward/trades.jsonl"
 DEFAULT_FORWARD_ORDERS = "results/forward/orders.jsonl"
 DEFAULT_FORWARD_FILLS = "results/forward/fills.jsonl"
+DEFAULT_FORWARD_FUNDING = "results/forward/funding.jsonl"
 DEFAULT_FORWARD_TICKS = "results/forward/ticks.jsonl"
 DEFAULT_FORWARD_SUMMARY = "results/forward/summary.json"
 

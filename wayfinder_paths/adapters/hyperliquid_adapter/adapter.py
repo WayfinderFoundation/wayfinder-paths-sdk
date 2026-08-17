@@ -1372,6 +1372,37 @@ class HyperliquidAdapter(BaseAdapter):
             self.logger.error(f"Failed to fetch user_fills for {address}: {exc}")
             return False, str(exc)
 
+    async def get_user_fills_by_time(
+        self, address: str, start_ms: int, end_ms: int | None = None
+    ) -> tuple[bool, list[dict[str, Any]]] | tuple[Literal[False], str]:
+        try:
+            data = get_info().user_fills_by_time(
+                address, start_ms, end_ms or int(time.time() * 1000)
+            )
+            return True, data if isinstance(data, list) else []
+        except Exception as exc:
+            self.logger.error(
+                f"Failed to fetch user_fills_by_time for {address}: {exc}"
+            )
+            return False, str(exc)
+
+    async def get_user_funding_history(
+        self, address: str, start_ms: int, end_ms: int | None = None
+    ) -> tuple[bool, list[dict[str, Any]]] | tuple[Literal[False], str]:
+        """Signed user funding payments (delta.usdc: negative = paid) — the
+        only exact source; position cumFunding vanishes when the position
+        closes."""
+        try:
+            data = get_info().user_funding_history(
+                address, start_ms, end_ms or int(time.time() * 1000)
+            )
+            return True, data if isinstance(data, list) else []
+        except Exception as exc:
+            self.logger.error(
+                f"Failed to fetch user_funding_history for {address}: {exc}"
+            )
+            return False, str(exc)
+
     async def check_recent_liquidations(
         self, address: str, since_ms: int
     ) -> tuple[bool, list[dict[str, Any]]]:

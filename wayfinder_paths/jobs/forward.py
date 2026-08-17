@@ -8,6 +8,7 @@ from typing import Any
 
 from wayfinder_paths.jobs.models import (
     DEFAULT_FORWARD_FILLS,
+    DEFAULT_FORWARD_FUNDING,
     DEFAULT_FORWARD_ORDERS,
     DEFAULT_FORWARD_RUNS,
     DEFAULT_FORWARD_SUMMARY,
@@ -23,6 +24,7 @@ FORWARD_FILES = {
     "trade": DEFAULT_FORWARD_TRADES,
     "order": DEFAULT_FORWARD_ORDERS,
     "fill": DEFAULT_FORWARD_FILLS,
+    "funding": DEFAULT_FORWARD_FUNDING,
     "tick": DEFAULT_FORWARD_TICKS,
 }
 
@@ -49,7 +51,10 @@ def default_forward_summary(job_id: str | None = None) -> dict[str, Any]:
             "current_loss_streak": 0,
         },
         "orders": {"count": 0, "last_order_at": None, "pending_count": 0},
-        "fills": {"count": 0, "last_fill_at": None},
+        "fills": {"count": 0, "last_fill_at": None, "fees_total": 0.0},
+        # Signed usd funding payments (negative = paid) — real PnL that never
+        # appears in trade rows; the reconciliation block needs it.
+        "funding": {"count": 0, "total_usd": 0.0, "last_funding_at": None},
     }
 
 
@@ -224,6 +229,12 @@ class ForwardRecorder:
     ) -> dict[str, Any]:
         return self.append("fill", _merge_payload(payload, fields))
 
+    def record_funding(
+        self, payload: Mapping[str, Any] | None = None, **fields: Any
+    ) -> dict[str, Any]:
+        """One signed venue funding payment ({time_ms, coin, usdc, ...})."""
+        return self.append("funding", _merge_payload(payload, fields))
+
     def record_tick(
         self, payload: Mapping[str, Any] | None = None, **fields: Any
     ) -> dict[str, Any]:
@@ -231,6 +242,10 @@ class ForwardRecorder:
         replay the decision: bar timestamp, view hash, snapshot, intents,
         fills, and guard events."""
         return self.append("tick", _merge_payload(payload, fields))
+
+    def summary(self) -> dict[str, Any]:
+        path = self.forward_dir / Path(DEFAULT_FORWARD_SUMMARY).name
+        return _read_json(path, default_forward_summary(self.job_id))
 
     def append(self, kind: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         if kind not in FORWARD_FILES:
@@ -316,6 +331,16 @@ class ForwardRecorder:
             fills = summary.setdefault("fills", {})
             fills["count"] = int(fills.get("count") or 0) + 1
             fills["last_fill_at"] = row.get("ts")
+            fills["fees_total"] = float(fills.get("fees_total") or 0.0) + float(
+                row.get("fee") or 0.0
+            )
+        elif kind == "funding":
+            funding = summary.setdefault("funding", {})
+            funding["count"] = int(funding.get("count") or 0) + 1
+            funding["total_usd"] = float(funding.get("total_usd") or 0.0) + float(
+                row.get("usdc") or 0.0
+            )
+            funding["last_funding_at"] = row.get("ts")
         elif kind == "tick":
             ticks = summary.setdefault("ticks", {})
             ticks["count"] = int(ticks.get("count") or 0) + 1
@@ -326,6 +351,10 @@ class ForwardRecorder:
                 ticks["guard_event_count"] = int(
                     ticks.get("guard_event_count") or 0
                 ) + len(row["guard_events"])
+            if row.get("reconciliation"):
+                # Last-write-wins: each live tick carries the current
+                # trades/fees/funding vs venue-equity decomposition.
+                summary["reconciliation"] = row["reconciliation"]
         _write_json(path, summary)
 
 
