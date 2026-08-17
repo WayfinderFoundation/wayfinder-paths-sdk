@@ -41,6 +41,45 @@ block's archetype counts and pick the family that treats YOUR disease.
   (`--condition-regime`) over demanding all-history stationarity; use
   `--window-days N` for declared recent-window families.
 
+## Global-search discipline (why this is an optimizer, not a tinkerer)
+
+- **Classify every research move**: does this wake reduce SEARCH regret
+  (sampling a region never tried — new family, new symbol, new sizing axis,
+  archived branch) or SELECTION regret (better evidence on candidates
+  already found)? Say which in the report. A loop that only ever refines
+  the incumbent's neighborhood is a local optimizer with a good diary.
+- **Branch revival**: the archive is a frontier, not a graveyard. When
+  `evolution.opportunity_recall.missed` is true, a LIVE archived candidate
+  outscores the incumbent and was never promoted — investigating it
+  OUTRANKS inventing a new hypothesis. Cite the candidate_id.
+- **Consult lineage before proposing**: `results/backtest/trials.jsonl`
+  records every evaluated trial with behavior descriptors. Re-sampling a
+  known-flat neighborhood is spent budget; a proposal whose params sit
+  inside a well-sampled flat region must say why this time is different.
+- **Behavioral diversity**: concurrent probation legs should differ in
+  BEHAVIOR (holding period, direction bias, entry frequency — the trial
+  descriptors), not just parameters. A book of clones is one bet wearing
+  several names.
+- **Stuck rule**: two consecutive neutral/hurt verdicts on same-family
+  refinements means the local basin is flat or hostile — JUMP: new family,
+  universe-scan, archived branch, or the sizing/leverage axis. Do not
+  propose a third refinement of the same neighborhood.
+
+## Evidence discipline (dev vs audit)
+
+- Evidence that guided candidate GENERATION or SELECTION is development
+  evidence; it cannot also be the evidence that promotes the same change.
+  Every proposal names which is which — the gate's holdout/walk-forward
+  exists precisely to supply audit evidence the search never touched.
+- **Promotion is a hypothesis, not a result.** An applied change has proven
+  only that it could be applied; the forward window and its verdict are
+  the experiment. Plan the next move for BOTH outcomes at proposal time.
+- **Interference check**: every treatment names the slices it must NOT
+  degrade (other symbols' books, other regime cells, the untreated
+  archetypes) and the post-apply artifact that will show it (by-symbol
+  shadow, factor attribution). Fixing one cell by silently breaking two
+  others is how aggregate metrics rot.
+
 ## Protocol reminders
 
 - **Diagnose before treating**: every hypothesis cites the attribution slice
