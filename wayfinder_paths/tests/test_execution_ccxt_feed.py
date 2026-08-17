@@ -350,7 +350,7 @@ def test_build_live_dataset_chains_derived_features(
 
     calls: list[tuple[str, int]] = []
 
-    def fake_refresh(job_id, *, store, max_age_seconds):
+    def fake_refresh(job_id, *, store, max_age_seconds, **kwargs):
         calls.append((job_id, max_age_seconds))
         return {"refreshed": True, "rows_appended": 3}
 

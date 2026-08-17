@@ -171,14 +171,30 @@ def propose_change(
         },
     )
     try:
-        from wayfinder_paths.jobs.archive import record_candidate
+        from wayfinder_paths.jobs.archive import load_archive, record_candidate
+        from wayfinder_paths.jobs.execution.experiments import _behavior_descriptor
 
         change = proposal.get("proposed_change") or {}
         economic = candidate_report.get("economic") or {}
+        candidate_revision = str(candidate_report.get("revision") or "")
+        # Content-derived id: the same workspace content re-proposed lands on
+        # the SAME entry (dedup + sticky refutation), while every proposal
+        # UUID accumulates on it. Parent edge resolves base_revision to the
+        # archived candidate it points at, falling back to the raw revision.
+        candidate_id = f"cand-{candidate_revision}" if candidate_revision else pid
+        parent_entry = next(
+            (
+                entry
+                for entry in load_archive(store, job_id).get("candidates") or []
+                if entry.get("revision") == base_revision
+            ),
+            None,
+        )
+        comparison = candidate_report.get("comparison") or {}
         record_candidate(
             store,
             job_id,
-            candidate_id=pid,
+            candidate_id=candidate_id,
             family=(
                 "probation"
                 if change.get("probation")
@@ -189,8 +205,13 @@ def propose_change(
             summary=str(summary or ""),
             status="probation" if change.get("probation") else "archived",
             objective=(economic.get("objective") or {}).get("candidate"),
-            revision=candidate_report.get("revision"),
+            revision=candidate_revision or None,
             parent_id=base_revision,
+            parent_candidate_ids=[
+                parent_entry["candidate_id"] if parent_entry else base_revision
+            ],
+            proposal_id=pid,
+            behavior=_behavior_descriptor(comparison.get("candidate") or {}),
         )
     except Exception:  # noqa: BLE001 — archive bookkeeping never breaks propose
         pass

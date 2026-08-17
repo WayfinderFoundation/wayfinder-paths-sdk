@@ -62,6 +62,7 @@ def record_trial_lineage(
                 "run_id": run.get("run_id"),
                 "params": run.get("params"),
                 "rank_metric": stats.get(result.get("rank_by") or "net_return"),
+                "pareto": run.get("pareto"),
                 "behavior": _behavior_descriptor(stats),
             }
         )

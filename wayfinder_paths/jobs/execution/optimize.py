@@ -58,6 +58,10 @@ def is_search_space(payload: Any) -> bool:
             return False
 
 
+# Grid-row axes where smaller is better; every other rank key maximizes.
+_MINIMIZE_AXES = frozenset({"max_drawdown_pct"})
+
+
 def run_optuna_search(
     script_entrypoint: str | Path,
     dataset: PreparedExecutionDataset,
@@ -70,7 +74,14 @@ def run_optuna_search(
     timeout: float | None = None,
     sampler: str = "tpe",
     top_n_artifacts: int = 10,
+    objectives: list[str] | None = None,
 ) -> ExecutionGridResult:
+    """Single-objective TPE by default. Pass ``objectives=[axis, ...]`` (2+
+    grid rank keys) for multi-objective search: NSGA-II over the requested
+    axes, ``ranked`` leads with the Pareto front (rank_by breaks ties inside
+    it), every run row carries ``pareto: bool``. A search ranked on one
+    scalar collapses the risk/return trade-off the constitution actually
+    scores — MOO returns the frontier and lets the economic gate choose."""
     try:
         import optuna  # lazy: optional --with ml dep; grid path never pays it
     except ImportError as exc:
@@ -79,6 +90,14 @@ def run_optuna_search(
         ) from exc
 
     check_rank_key(rank_by)
+    objectives = list(objectives or [])
+    if len(objectives) == 1:
+        raise ValueError(
+            "objectives needs 2+ axes for multi-objective search; for a "
+            "single axis pass rank_by instead"
+        )
+    for axis in objectives:
+        check_rank_key(axis)
     dimensions = {
         name: dict(value)
         for name, value in search_space.items()
@@ -96,7 +115,7 @@ def run_optuna_search(
 
     run_rows: list[dict[str, Any]] = []
 
-    def objective(trial: Any) -> float:
+    def objective(trial: Any) -> float | tuple[float, ...]:
         params = dict(constants)
         for name, dim in dimensions.items():
             params[name] = _suggest(trial, name, dim)
@@ -106,17 +125,47 @@ def run_optuna_search(
         run_rows.append(row)
         if not row["validation"]["execution_valid"]:
             raise optuna.TrialPruned("execution trace invalid for these params")
+        if objectives:
+            return tuple(float(row.get(axis) or 0) for axis in objectives)
         return float(row[rank_by] or 0)  # same coercion as grid ranking
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-    match sampler:
-        case "tpe":
-            sampler_impl = optuna.samplers.TPESampler(seed=seed)
-        case "random":
-            sampler_impl = optuna.samplers.RandomSampler(seed=seed)
-        case _:
-            raise ValueError(f"sampler must be tpe or random, got {sampler!r}")
-    study = optuna.create_study(direction="maximize", sampler=sampler_impl)
+    if objectives:
+        # NSGA-II handles mixed int/float/categorical spaces; an explicit
+        # sampler="motpe" opts into optuna's multi-objective TPE instead.
+        match sampler:
+            case "tpe" | "nsga2":
+                sampler_name = "nsga2"
+                sampler_impl = optuna.samplers.NSGAIISampler(seed=seed)
+            case "motpe":
+                sampler_name = "motpe"
+                sampler_impl = optuna.samplers.TPESampler(seed=seed)
+            case "random":
+                sampler_name = "random"
+                sampler_impl = optuna.samplers.RandomSampler(seed=seed)
+            case _:
+                raise ValueError(
+                    f"sampler must be nsga2, motpe, or random for multi-"
+                    f"objective search, got {sampler!r}"
+                )
+        study = optuna.create_study(
+            directions=[
+                "minimize" if axis in _MINIMIZE_AXES else "maximize"
+                for axis in objectives
+            ],
+            sampler=sampler_impl,
+        )
+    else:
+        match sampler:
+            case "tpe":
+                sampler_name = "tpe"
+                sampler_impl = optuna.samplers.TPESampler(seed=seed)
+            case "random":
+                sampler_name = "random"
+                sampler_impl = optuna.samplers.RandomSampler(seed=seed)
+            case _:
+                raise ValueError(f"sampler must be tpe or random, got {sampler!r}")
+        study = optuna.create_study(direction="maximize", sampler=sampler_impl)
     # n_jobs=1 is REQUIRED (see module docstring), not a performance choice.
     study.optimize(objective, n_trials=n_trials, timeout=timeout, n_jobs=1)
 
@@ -124,7 +173,22 @@ def run_optuna_search(
         run_rows, rank_by=rank_by, top_n=top_n_artifacts
     )
     best_trial = None
-    if ranked:  # study.best_trial raises when every trial was pruned/invalid
+    pareto = None
+    if objectives:
+        front_numbers = {trial.number for trial in study.best_trials}
+        for row in run_rows:
+            row["pareto"] = row["trial"] in front_numbers
+        # Pareto members lead the ranking; rank_by orders inside each part.
+        ranked = sorted(ranked, key=lambda row: bool(row.get("pareto")), reverse=True)
+        pareto = [
+            {
+                "number": trial.number,
+                "values": list(trial.values),
+                "params": dict(trial.params),
+            }
+            for trial in study.best_trials[:top_n_artifacts]
+        ]
+    elif ranked:  # study.best_trial raises when every trial was pruned/invalid
         best_trial = {
             "number": study.best_trial.number,
             "value": study.best_trial.value,
@@ -136,12 +200,15 @@ def run_optuna_search(
         runs=run_rows,
         ranked=ranked,
         invalid=invalid,
-        optimizer="optuna",
+        optimizer="nsga2" if sampler_name == "nsga2" else "optuna",
         search={
             "n_trials": len(run_rows),
             "seed": seed,
-            "sampler": sampler,
+            "sampler": sampler_name,
             "best_trial": best_trial,
+            **(
+                {"objectives": objectives, "pareto_front": pareto} if objectives else {}
+            ),
         },
     )
 
