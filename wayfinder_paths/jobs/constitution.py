@@ -53,12 +53,21 @@ DEFAULT_CONSTITUTION: dict[str, Any] = {
 
 
 def load_constitution(root: Path) -> dict[str, Any]:
-    """Load the job's constitution, merged over defaults.
+    """Load the job's economic standard, merged over defaults.
 
-    Returns the DEFAULT_CONSTITUTION (enforcement=advisory) when the file is
-    absent or unparseable — a broken constitution must degrade to advisory,
-    never brick promotion or silently enforce garbage.
+    Prefers the protected governance namespace (``governance/<job_id>/`` at
+    the repo root — OUTSIDE the agent-writable job tree; see governance.py)
+    when it exists; falls back to the legacy job-root ``constitution.yaml``.
+    Returns the DEFAULT_CONSTITUTION (enforcement=advisory) when neither
+    exists or the legacy file is unparseable — a broken constitution must
+    degrade to advisory, never brick promotion or silently enforce garbage.
     """
+    gov_dir = _governance_dir_for_job_root(root)
+    if gov_dir is not None:
+        from wayfinder_paths.jobs.governance import load_governance_from_dir
+
+        return load_governance_from_dir(gov_dir)
+
     path = root / CONSTITUTION_FILENAME
     if not path.exists():
         return {**DEFAULT_CONSTITUTION, "revision": None, "source": "defaults"}
@@ -77,9 +86,7 @@ def load_constitution(root: Path) -> dict[str, Any]:
 def load_benchmark_constitution() -> dict[str, Any]:
     """The certification profile (stricter than production defaults): all WOB
     certification runs gate against this one versioned standard."""
-    path = (
-        Path(__file__).parent / "benchmarks" / "constitution.benchmark.yaml"
-    )
+    path = Path(__file__).parent / "benchmarks" / "constitution.benchmark.yaml"
     loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     merged = _merge(DEFAULT_CONSTITUTION, loaded)
     merged["revision"] = constitution_revision(path)
@@ -91,6 +98,22 @@ def constitution_revision(path: Path) -> str | None:
     if not path.exists():
         return None
     return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+
+
+def _governance_dir_for_job_root(root: Path) -> Path | None:
+    """Map a job root to its protected governance dir, ONLY for the canonical
+    ``<repo_root>/.wayfinder/jobs/<job_id>`` layout. Anything else (test
+    fixtures, ad-hoc dirs) keeps legacy behavior — the mapping must never
+    guess."""
+    root = Path(root)
+    parent = root.parent
+    if parent.name == "jobs" and parent.parent.name == ".wayfinder":
+        from wayfinder_paths.jobs.governance import governance_dir, has_governance
+
+        repo_root = parent.parent.parent
+        if has_governance(repo_root, root.name):
+            return governance_dir(repo_root, root.name)
+    return None
 
 
 def _merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

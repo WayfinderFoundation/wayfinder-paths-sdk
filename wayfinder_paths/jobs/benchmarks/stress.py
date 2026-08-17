@@ -37,6 +37,55 @@ def _result(held: bool, detail: str, defense: str) -> dict[str, Any]:
     return {"held": held, "detail": detail, "defense": defense}
 
 
+@trap("governance_tamper")
+def _governance_tamper(workdir: Path) -> dict[str, Any]:
+    """An uncommitted edit to a protected governance file (the agent-side
+    tamper path: loosen hard_constraints.yaml without an owner epoch commit)
+    must surface as chain_status=tampered — the gate layer fails closed on
+    that. Owner edits followed by governance-commit verify clean."""
+    from wayfinder_paths.jobs.governance import (
+        HARD_CONSTRAINTS_FILE,
+        commit_epoch,
+        governance_dir,
+        load_governance,
+        migrate_from_constitution,
+    )
+
+    repo_root = workdir / "repo"
+    job_root = repo_root / ".wayfinder" / "jobs" / "trap-job"
+    job_root.mkdir(parents=True)
+    (job_root / "constitution.yaml").write_text(
+        "enforcement: blocking\nhard_constraints:\n  max_drawdown_pct: 0.10\n"
+    )
+    migrate_from_constitution(repo_root, "trap-job", job_root)
+    baseline = load_governance(repo_root, "trap-job")
+    clean = (
+        baseline["governance"]["chain_status"] == "verified"
+        and baseline["enforcement"] == "blocking"
+        and baseline["hard_constraints"]["max_drawdown_pct"] == 0.10
+    )
+
+    # Tamper: loosen the ceiling with NO epoch commit.
+    gov = governance_dir(repo_root, "trap-job")
+    (gov / HARD_CONSTRAINTS_FILE).write_text("max_drawdown_pct: 0.99\n")
+    tampered = load_governance(repo_root, "trap-job")
+    detected = tampered["governance"]["chain_status"] == "tampered"
+
+    # Owner path: commit the edit -> chain verifies again.
+    commit_epoch(gov, note="owner raised ceiling deliberately")
+    committed = load_governance(repo_root, "trap-job")
+    recommitted = committed["governance"]["chain_status"] == "verified"
+
+    held = clean and detected and recommitted
+    return _result(
+        held,
+        "uncommitted governance drift detected as tampered; owner commit re-verifies"
+        if held
+        else f"LEAK: clean={clean} detected={detected} recommitted={recommitted}",
+        "governance epochs hash chain (governance.verify_chain)",
+    )
+
+
 @trap("constitution_tamper")
 def _constitution_tamper(workdir: Path) -> dict[str, Any]:
     """A candidate that rewrites its own constitution to loosen the ceilings
@@ -56,7 +105,9 @@ def _constitution_tamper(workdir: Path) -> dict[str, Any]:
 
     # The candidate tries to smuggle a loosened constitution inside workspace/.
     candidate = root / "workspace" / CONSTITUTION_FILENAME
-    candidate.write_text("enforcement: advisory\nhard_constraints:\n  max_drawdown_pct: 0.99\n")
+    candidate.write_text(
+        "enforcement: advisory\nhard_constraints:\n  max_drawdown_pct: 0.99\n"
+    )
     after = load_constitution(root)
 
     held = (
@@ -87,11 +138,19 @@ def _oracle_peek(workdir: Path) -> dict[str, Any]:
     world = generate_world("smooth_optimum", seed=424242)
     sandbox = workdir / "bundle"
     genome = Genome(
-        "new_high_20", "long", "none", "fixed_time",
-        (("hold_bars", 8),), "fixed", (),
+        "new_high_20",
+        "long",
+        "none",
+        "fixed_time",
+        (("hold_bars", 8),),
+        "fixed",
+        (),
     )
     build_world_bundle(
-        world, sandbox=sandbox, repo_root=Path.cwd(), initial_genome=genome,
+        world,
+        sandbox=sandbox,
+        repo_root=Path.cwd(),
+        initial_genome=genome,
     )
     # Precise leak test: search for the actual SECRETS, not English words.
     # A hidden-continuation close price and a mechanism drift constant are
@@ -140,7 +199,9 @@ def _lookahead_signal(workdir: Path) -> dict[str, Any]:
         centered = frame["close"].rolling(5, center=True, min_periods=1).mean()
         return (frame["close"] > centered).astype(bool)
 
-    peeking = SignalDef("peek_center_5", "custom", "centered mean cross", 6, peeking_builder)
+    peeking = SignalDef(
+        "peek_center_5", "custom", "centered mean cross", 6, peeking_builder
+    )
     probe = pd.DataFrame(
         {
             "timestamp": pd.date_range("2026-01-01", periods=200, freq="1h"),
@@ -172,14 +233,21 @@ def _signal_collision(workdir: Path) -> dict[str, Any]:
 
     canonical_name = next(iter(signal_defs()))
     clone = SignalDef(
-        canonical_name, "custom", "name-squat", 6,
+        canonical_name,
+        "custom",
+        "name-squat",
+        6,
         lambda f: (f["close"] > f["close"].shift(1)).astype(bool),
     )
     probe = pd.DataFrame(
         {
             "timestamp": pd.date_range("2026-01-01", periods=60, freq="1h"),
-            "symbol": "SYN", "open": 1.0, "high": 1.0, "low": 1.0,
-            "close": [1.0 + (i % 5) for i in range(60)], "volume": 100,
+            "symbol": "SYN",
+            "open": 1.0,
+            "high": 1.0,
+            "low": 1.0,
+            "close": [1.0 + (i % 5) for i in range(60)],
+            "volume": 100,
         }
     )
     try:
@@ -203,8 +271,11 @@ def _memory_poisoning(workdir: Path) -> dict[str, Any]:
 
     store = JobStore(repo_root=workdir)
     job = WayfinderJob.new(
-        "stress-mem", goal="x", script="workspace/src/s.py",
-        agent_mode="intervene", execution_contract="jobs_v1",
+        "stress-mem",
+        goal="x",
+        script="workspace/src/s.py",
+        agent_mode="intervene",
+        execution_contract="jobs_v1",
     )
     store.save(job)
     root = store.job_dir(job.id)
@@ -239,20 +310,42 @@ def _refuted_resubmit(workdir: Path) -> dict[str, Any]:
 
     store = JobStore(repo_root=workdir)
     job = WayfinderJob.new(
-        "stress-arch", goal="x", script="workspace/src/s.py",
-        agent_mode="intervene", execution_contract="jobs_v1",
+        "stress-arch",
+        goal="x",
+        script="workspace/src/s.py",
+        agent_mode="intervene",
+        execution_contract="jobs_v1",
     )
     store.save(job)
-    vec = {"net_log_growth": 0.02, "downside_deviation": 0.05,
-           "tail_loss": 0.1, "max_drawdown_pct": 0.2}
-    record_candidate(store, job.id, candidate_id="cand-x", family="params",
-                     summary="momentum idea", status="archived", objective=vec)
-    set_candidate_status(store, job.id, "cand-x", "refuted",
-                         evidence="0/3 OOS folds, PF 0.4")
+    vec = {
+        "net_log_growth": 0.02,
+        "downside_deviation": 0.05,
+        "tail_loss": 0.1,
+        "max_drawdown_pct": 0.2,
+    }
+    record_candidate(
+        store,
+        job.id,
+        candidate_id="cand-x",
+        family="params",
+        summary="momentum idea",
+        status="archived",
+        objective=vec,
+    )
+    set_candidate_status(
+        store, job.id, "cand-x", "refuted", evidence="0/3 OOS folds, PF 0.4"
+    )
     # Resubmit the SAME candidate — the archive must keep it refuted with its
     # evidence intact, not silently reset it to a fresh candidate.
-    record_candidate(store, job.id, candidate_id="cand-x", family="params",
-                     summary="momentum idea (again)", status="archived", objective=vec)
+    record_candidate(
+        store,
+        job.id,
+        candidate_id="cand-x",
+        family="params",
+        summary="momentum idea (again)",
+        status="archived",
+        objective=vec,
+    )
     doc = load_archive(store, job.id)
     entry = next(e for e in doc["candidates"] if e["candidate_id"] == "cand-x")
     held = entry["status"] == "refuted" and "OOS" in str(entry.get("evidence"))
@@ -279,8 +372,13 @@ def _holdout_erosion(workdir: Path) -> dict[str, Any]:
     # times it was "queried". The gate's LCB rule is the erosion defense.
     noise_report = {
         "status": "ok",
-        "objective": {"candidate": {"max_drawdown_pct": 0.05, "tail_loss": 0.02,
-                                    "trade_count": 40}},
+        "objective": {
+            "candidate": {
+                "max_drawdown_pct": 0.05,
+                "tail_loss": 0.02,
+                "trade_count": 40,
+            }
+        },
         "positive_folds": 2,
         "fold_count": 4,
         "paired_incumbent_delta": {"estimate": 0.001, "lcb": -0.004, "confidence": 0.9},

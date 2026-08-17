@@ -1223,6 +1223,42 @@ def report_cmd(job_id: str) -> None:
 
 
 @job_cli.command(
+    name="migrate-governance",
+    help="Split the legacy job-root constitution into the protected "
+    "governance/<job_id>/ namespace (outside the agent-writable tree) and "
+    "commit epoch 0 of the tamper-evidence chain.",
+)
+@click.argument("job_id")
+def migrate_governance_cmd(job_id: str) -> None:
+    from wayfinder_paths.jobs.governance import migrate_from_constitution
+
+    store = JobStore()
+    result = migrate_from_constitution(store.repo_root, job_id, store.job_dir(job_id))
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="governance-commit",
+    help="Record the current governance file hashes as a new tamper-evidence "
+    "chain epoch. Run after every deliberate owner edit — uncommitted drift "
+    "loads as chain_status=tampered.",
+)
+@click.argument("job_id")
+@click.option("--note", default="", help="Why this epoch exists.")
+def governance_commit_cmd(job_id: str, note: str) -> None:
+    from wayfinder_paths.jobs.governance import commit_epoch, governance_dir
+
+    store = JobStore()
+    gov_dir = governance_dir(store.repo_root, job_id)
+    if not gov_dir.is_dir():
+        raise click.ClickException(
+            f"no governance dir for {job_id} — run migrate-governance first"
+        )
+    row = commit_epoch(gov_dir, note=note)
+    _echo_json({"ok": True, "result": row})
+
+
+@job_cli.command(
     name="set-script-mode",
     help="Flip the script loop between paper and live (recompiles the runner). "
     "Going live requires a passing live gate and a wallet_label.",
