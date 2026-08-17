@@ -258,5 +258,40 @@ def migrate_from_constitution(
     }
 
 
+AUDIT_DIRNAME = "audit"
+
+
+def record_evidence_access(
+    repo_root: Path, job_id: str, op: str, detail: dict[str, Any] | None = None
+) -> None:
+    """Append one row to the protected evidence-access ledger
+    (``audit/<job_id>/evidence_access.jsonl`` — same manifest-denied plane
+    as governance). Every validation query a revision makes is on the
+    record; the gate can report how mined the evidence is. Never raises —
+    the ledger is telemetry, the op must not fail on it."""
+    try:
+        audit_dir = Path(repo_root) / AUDIT_DIRNAME / job_id
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        row = {"op": op, "ts": utc_now_iso(), **(detail or {})}
+        with (audit_dir / "evidence_access.jsonl").open(
+            "a", encoding="utf-8"
+        ) as handle:
+            handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+    except Exception:  # noqa: BLE001
+        return
+
+
+def evidence_access_count(repo_root: Path, job_id: str) -> int:
+    try:
+        path = Path(repo_root) / AUDIT_DIRNAME / job_id / "evidence_access.jsonl"
+        if not path.exists():
+            return 0
+        return sum(
+            1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+        )
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def _write_yaml(path: Path, data: dict[str, Any]) -> None:
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
