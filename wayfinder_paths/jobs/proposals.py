@@ -33,7 +33,11 @@ from wayfinder_paths.jobs.execution.job import (
     synthesize_scenario_plan,
 )
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
-from wayfinder_paths.jobs.gating import compute_workspace_revision, evaluate_live_gate, evaluate_economic_gate
+from wayfinder_paths.jobs.gating import (
+    compute_workspace_revision,
+    evaluate_economic_gate,
+    evaluate_live_gate,
+)
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import sync_all_jobs
@@ -148,8 +152,10 @@ def propose_change(
             job_id,
             candidate_id=pid,
             family=(
-                "probation" if change.get("probation")
-                else "params" if change.get("execution_params")
+                "probation"
+                if change.get("probation")
+                else "params"
+                if change.get("execution_params")
                 else str(kind or "code")
             ),
             summary=str(summary or ""),
@@ -240,12 +246,20 @@ def _generate_candidate_report(
                 probation=probation,
             )
         except Exception as exc:  # noqa: BLE001 — a crashed economic eval must
-            # degrade to advisory-unavailable, never break propose.
+            # not break propose; the record carries the REAL enforcement so
+            # the approval gate can fail closed on live-capable jobs
+            # (previously the crash forced "advisory" — the review's central
+            # fail-open finding).
+            from wayfinder_paths.jobs.constitution import load_constitution
+
+            constitution = load_constitution(store.job_dir(job_id))
             economic = {
                 "ready": None,
                 "reasons": [f"economic evaluation failed: {exc}"[:300]],
-                "enforcement": "advisory",
+                "enforcement": constitution.get("enforcement") or "advisory",
+                "constitution_revision": constitution.get("revision"),
                 "status": "error",
+                "escalate": True,
             }
     else:
         # Research-only / no-dataset jobs: nothing to backtest or gate — the

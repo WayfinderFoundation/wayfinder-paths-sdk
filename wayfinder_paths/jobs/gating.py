@@ -235,7 +235,9 @@ def evaluate_economic_gate(
         "probation": probation,
         "enforcement": constitution["enforcement"],
         "constitution_revision": constitution.get("revision"),
-        "objective": (evaluation.get("objective") if evaluation.get("status") == "ok" else None),
+        "objective": (
+            evaluation.get("objective") if evaluation.get("status") == "ok" else None
+        ),
         "paired_incumbent_delta": evaluation.get("paired_incumbent_delta"),
         "positive_folds": evaluation.get("positive_folds"),
         "fold_count": evaluation.get("fold_count"),
@@ -266,6 +268,9 @@ def _economic_unavailable(
         "enforcement": constitution["enforcement"],
         "constitution_revision": constitution.get("revision"),
         "status": "unavailable",
+        # Unavailable evidence is an escalation, not an approval: the gate
+        # fails closed on live-capable blocking jobs.
+        "escalate": True,
         "checked_at": utc_now_iso(),
     }
 

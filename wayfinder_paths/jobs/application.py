@@ -61,6 +61,14 @@ def resume_job_loops(store: JobStore, job_id: str) -> list[dict[str, Any]]:
 
 
 def claim_application(store: JobStore, job_id: str, proposal_id: str) -> dict[str, Any]:
+    from wayfinder_paths.jobs.constitution import load_constitution
+
+    constitution = load_constitution(store.job_dir(job_id))
+    if (constitution.get("governance") or {}).get("chain_status") == "tampered":
+        raise ValueError(
+            "ESCALATE: governance chain is tampered — no application may be "
+            "claimed until the owner inspects and re-commits"
+        )
     proposal = store.load_proposal(job_id, proposal_id)
     application_status = proposal["application"]["status"]
     if proposal["status"] != "approved":

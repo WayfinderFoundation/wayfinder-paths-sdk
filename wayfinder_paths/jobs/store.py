@@ -373,12 +373,77 @@ class JobStore:
             reasons = "; ".join(gate.get("reasons") or ["unknown"])
             raise ValueError(f"candidate gate is not live-ready: {reasons}")
         economic = report.get("economic") or {}
-        # ready=None (advisory constitution, unavailable, or crashed eval)
-        # never blocks — only a computed False under a blocking constitution.
-        if economic.get("enforcement") == "blocking" and economic.get("ready") is False:
-            reasons = "; ".join(economic.get("reasons") or ["unknown"])
-            raise ValueError(f"candidate is not economic-ready: {reasons}")
+        self._ensure_governance_gate(job_id, economic)
         self._ensure_candidate_matches_report(job_id, proposal, report)
+
+    def _ensure_governance_gate(self, job_id: str, economic: dict[str, Any]) -> None:
+        """Fail-closed economic gating for live-capable jobs.
+
+        The old semantics blocked only on an explicit ready=False under a
+        blocking constitution — a crashed evaluator, missing constitution,
+        or a constitution swapped between evaluation and approval all
+        promoted freely (observed as the review's central fail-open finding).
+        For a job whose script loop has entered paper/live:
+        - blocking + ready is not True  -> ESCALATE (None = missing evidence)
+        - governance changed since evaluation -> ESCALATE (re-run the report)
+        - governance chain tampered -> ESCALATE
+        Advisory jobs keep the old behavior (report, never block)."""
+        from wayfinder_paths.jobs.constitution import load_constitution
+
+        current = load_constitution(self.job_dir(job_id))
+        live_capable = self._job_is_live_capable(job_id)
+
+        chain_status = (current.get("governance") or {}).get("chain_status")
+        if live_capable and chain_status == "tampered":
+            raise ValueError(
+                "ESCALATE: governance chain is tampered (uncommitted edit to "
+                "a protected file) — owner must inspect and re-commit "
+                "(wayfinder job governance-commit) before any promotion"
+            )
+
+        enforcement = str(
+            current.get("enforcement") or economic.get("enforcement") or "advisory"
+        )
+        if enforcement != "blocking" or not live_capable:
+            # Pre-live/advisory: old semantics — only an explicit False blocks.
+            if (
+                economic.get("enforcement") == "blocking"
+                and economic.get("ready") is False
+            ):
+                reasons = "; ".join(economic.get("reasons") or ["unknown"])
+                raise ValueError(f"candidate is not economic-ready: {reasons}")
+            return
+
+        # Live-capable + blocking: fail closed.
+        evaluated_revision = economic.get("constitution_revision")
+        if evaluated_revision and evaluated_revision != current.get("revision"):
+            raise ValueError(
+                "ESCALATE: governance changed since the candidate was "
+                f"evaluated (report {evaluated_revision} vs current "
+                f"{current.get('revision')}) — re-run the economic report"
+            )
+        if economic.get("ready") is not True:
+            reasons = "; ".join(
+                economic.get("reasons")
+                or ["economic evidence unavailable (ready is not True)"]
+            )
+            raise ValueError(
+                "ESCALATE: blocking governance requires economic_ready=True "
+                f"for a live-capable job; got {economic.get('ready')!r}: "
+                f"{reasons}"
+            )
+
+    def _job_is_live_capable(self, job_id: str) -> bool:
+        """A job that has entered paper/live operation: script loop enabled
+        with any recorded forward runs. Never raises."""
+        try:
+            job = self.load(job_id)
+            if not job.script_loop.enabled:
+                return False
+            summary = self.read_json(job_id, "results/forward/summary.json") or {}
+            return int(((summary.get("runs") or {}).get("count")) or 0) > 0
+        except Exception:
+            return False
 
     def _ensure_candidate_matches_report(
         self, job_id: str, proposal: dict[str, Any], report: dict[str, Any]
