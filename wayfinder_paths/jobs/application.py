@@ -11,6 +11,10 @@ import yaml
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.gating import compute_workspace_revision, evaluate_live_gate
+from wayfinder_paths.jobs.improver.spec import (
+    IMPROVER_FILENAME,
+    improver_revision,
+)
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
@@ -61,6 +65,14 @@ def resume_job_loops(store: JobStore, job_id: str) -> list[dict[str, Any]]:
 
 
 def claim_application(store: JobStore, job_id: str, proposal_id: str) -> dict[str, Any]:
+    from wayfinder_paths.jobs.constitution import load_constitution
+
+    constitution = load_constitution(store.job_dir(job_id))
+    if (constitution.get("governance") or {}).get("chain_status") == "tampered":
+        raise ValueError(
+            "ESCALATE: governance chain is tampered — no application may be "
+            "claimed until the owner inspects and re-commits"
+        )
     proposal = store.load_proposal(job_id, proposal_id)
     application_status = proposal["application"]["status"]
     if proposal["status"] != "approved":
@@ -362,6 +374,8 @@ def _complete_applied_application(
         if active_workspace.exists():
             shutil.copytree(active_workspace, backup_dir / "workspace")
         shutil.copy2(root / "job.yaml", backup_dir / "job.yaml")
+        if (root / IMPROVER_FILENAME).exists():
+            shutil.copy2(root / IMPROVER_FILENAME, backup_dir / IMPROVER_FILENAME)
 
     outcome = _ApplicationOutcome(
         final_status="applied",
@@ -370,6 +384,8 @@ def _complete_applied_application(
     post_apply_gate: dict[str, Any] | None = None
     try:
         _promote_candidate(store, job_id, candidate_dir)
+        if proposal.get("kind") == "improver_change":
+            _apply_improver_change(store, job_id, proposal)
         job = store.load(job_id)
         outcome.promoted_revision = _record_promoted_revision(
             store,
@@ -394,6 +410,12 @@ def _complete_applied_application(
         if (backup_dir / "workspace").exists():
             shutil.copytree(backup_dir / "workspace", active_workspace)
         shutil.copy2(backup_dir / "job.yaml", root / "job.yaml")
+        if (backup_dir / IMPROVER_FILENAME).exists():
+            shutil.copy2(backup_dir / IMPROVER_FILENAME, root / IMPROVER_FILENAME)
+        elif (root / IMPROVER_FILENAME).exists():
+            # This apply created the file (job previously ran on defaults) —
+            # restoring the pre-apply state means removing it.
+            (root / IMPROVER_FILENAME).unlink()
         outcome.rollback = {
             "restored": True,
             "backup_dir": str(backup_dir.relative_to(store.repo_root)),
@@ -429,6 +451,41 @@ def _complete_applied_application(
             rollback=outcome.rollback,
         )
     return outcome
+
+
+def _apply_improver_change(store: JobStore, job_id: str, proposal: dict) -> None:
+    """Write the approved search-policy spec to improver.yaml — the ONLY
+    write path for the file. Refuses when the spec moved since propose time
+    (same stale-baseline semantics as workspace promotion; the raise lands in
+    the rollback path)."""
+    import yaml
+
+    root = store.job_dir(job_id)
+    payload = (proposal.get("proposed_change") or {}).get("improver")
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError(
+            "improver_change proposal carries no proposed_change.improver spec"
+        )
+    base = str(proposal.get("base_improver_revision") or "")
+    current = improver_revision(root)
+    if base and current != base:
+        raise ValueError(
+            f"improver spec drift: proposal was staged against revision {base} "
+            f"but the active spec is now {current} — re-propose against the "
+            "current spec"
+        )
+    (root / IMPROVER_FILENAME).write_text(
+        yaml.safe_dump(payload, sort_keys=False), encoding="utf-8"
+    )
+    store.append_journal(
+        job_id,
+        {
+            "type": "improver_spec_applied",
+            "proposal_id": proposal.get("proposal_id"),
+            "previous_improver_revision": current,
+            "applied_improver_revision": improver_revision(root),
+        },
+    )
 
 
 def _apply_runner_action(

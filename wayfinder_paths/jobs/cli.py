@@ -1442,6 +1442,11 @@ def approve_cmd(
     help="Pre-edited candidate (bundle with workspace/ or bare workspace).",
 )
 @click.option("--scenario-json", default=None, help="Explicit scenario plan JSON.")
+@click.option(
+    "--improver-json",
+    default=None,
+    help="Full proposed improver spec JSON (kind=improver_change only).",
+)
 @click.option("--proposal-id", default=None)
 @click.option("--memo", default=None, help="Markdown proposal memo (inline).")
 @click.option(
@@ -1458,6 +1463,7 @@ def propose_cmd(
     params_json: str | None,
     candidate_dir: str | None,
     scenario_json: str | None,
+    improver_json: str | None,
     proposal_id: str | None,
     memo: str | None,
     memo_file: str | None,
@@ -1474,6 +1480,7 @@ def propose_cmd(
         params=json.loads(params_json) if params_json else None,
         candidate_source=candidate_dir,
         scenario_plan=json.loads(scenario_json) if scenario_json else None,
+        improver=json.loads(improver_json) if improver_json else None,
         proposal_id=proposal_id,
         memo=memo,
     )

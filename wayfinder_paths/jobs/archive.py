@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from wayfinder_paths.jobs.improver.spec import revision_stamp
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
@@ -64,9 +65,9 @@ def record_candidate(
             {
                 "status": existing["status"] if sticky else status,
                 "objective": objective or existing.get("objective"),
-                "evidence": existing.get("evidence") if sticky else (
-                    evidence or existing.get("evidence")
-                ),
+                "evidence": existing.get("evidence")
+                if sticky
+                else (evidence or existing.get("evidence")),
                 "updated_at": utc_now_iso(),
             }
         )
@@ -83,6 +84,7 @@ def record_candidate(
             "behavior": behavior or {},
             "evidence": evidence,
             "created_at": utc_now_iso(),
+            **revision_stamp(store.job_dir(job_id)),
         }
         doc["candidates"].append(entry)
     _refresh_frontier(doc)

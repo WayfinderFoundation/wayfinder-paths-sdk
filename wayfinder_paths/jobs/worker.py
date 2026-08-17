@@ -40,6 +40,18 @@ def _read_text(path: Path, *, max_chars: int = 12_000) -> str:
     return text[-max_chars:]
 
 
+def _read_doc_head(path: Path, *, max_chars: int) -> str:
+    """Tail-keeping _read_text is for logs (recent lines matter). Reference
+    docs lead with their core content — when one outgrows the budget, keep
+    the HEAD. The curriculum growth in research_priors.md silently dropped
+    the entire family table for weeks because the read kept the tail."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    return text[:max_chars]
+
+
 def _canonical_json(data: Any, *, max_chars: int | None = None) -> str:
     text = json.dumps(data, indent=2, sort_keys=True, default=str)
     if max_chars is not None and len(text) > max_chars:
@@ -226,10 +238,16 @@ def _research_substrate_block(root: Path) -> dict[str, Any]:
 
 _IDEATION_PATH = "research/ideation/latest.json"
 _IDEATION_SEEN_PATH = "research/ideation/last_seen.json"
-# Daily expedition, stamp-gated under the wake rhythm (20h, not 24h, so a
-# 30m cadence cannot alias it to every-other-day).
-_IDEATION_DUE_S = 20 * 3600
-_IDEATION_OVERDUE_S = 48 * 3600
+
+
+def _ideation_thresholds(root: Path) -> tuple[int, int]:
+    """(due_s, overdue_s) from the active improver spec — daily expedition,
+    stamp-gated under the wake rhythm (20h, not 24h, so a 30m cadence cannot
+    alias it to every-other-day)."""
+    from wayfinder_paths.jobs.improver.spec import ImproverSpec
+
+    spec = ImproverSpec.load(root)
+    return spec.ideation_due_s, spec.ideation_overdue_s
 
 
 def _ideation_age_s(root: Path) -> float | None:
@@ -283,7 +301,7 @@ def _ideation_bookkeeping(store: JobStore, job_id: str) -> None:
         store.write_json(job_id, _IDEATION_SEEN_PATH, {"generated_at": generated_at})
         return
     age = _ideation_age_s(root)
-    overdue = age is None or age > _IDEATION_OVERDUE_S
+    overdue = age is None or age > _ideation_thresholds(root)[1]
     if overdue and seen.get("escalated_for") != generated_at:
         store.append_journal(
             job_id,
@@ -503,6 +521,25 @@ def _drop_volatile_stable_keys(value: Any) -> Any:
             return value
 
 
+def _render_research_priors(text: str, spec) -> str:
+    tier1, tier2 = spec.tier("tier1"), spec.tier("tier2")
+    tokens = {
+        "%%T1_Q%%": f"{float(tier1['max_q']):.2f}",
+        "%%T1_FOLDS%%": str(tier1["folds"]),
+        "%%T2_Q%%": f"{float(tier2['max_q']):.2f}",
+        "%%T2_FOLDS%%": str(tier2["folds"]),
+        "%%T2_REGIME_Q%%": f"{float(tier2['regime_max_q']):.2f}",
+        "%%T2_REGIME_N%%": str(int(tier2["regime_min_n"])),
+        "%%T2_RECENT_Q%%": f"{float(tier2['recent_window_max_q']):.2f}",
+        "%%PROB_SIZE_PCT%%": f"{spec.probation_max_size_fraction:.0%}",
+        "%%PROB_LEGS%%": str(spec.probation_max_active_legs),
+        "%%STUCK_N%%": str(spec.stuck_same_family_non_wins),
+    }
+    for token, value in tokens.items():
+        text = text.replace(token, value)
+    return text
+
+
 def _build_worker_prompt_sections(
     *,
     store: JobStore,
@@ -512,12 +549,20 @@ def _build_worker_prompt_sections(
     apply_proposal_id: str | None = None,
 ) -> dict[str, str]:
     root = store.job_dir(job_id)
+    from wayfinder_paths.jobs.improver.spec import ImproverSpec
+
+    improver_spec = ImproverSpec.load(root)
     memory_md = _read_text(root / "memory.md", max_chars=6000)
     # The research prior library: idea families, prior strengths, archetype
     # mapping, and test paths. Lives in the STABLE prefix so it prompt-caches
-    # across wakes instead of taxing the dynamic budget.
-    research_priors = _read_text(
-        Path(__file__).parent / "prompts" / "research_priors.md", max_chars=7000
+    # across wakes instead of taxing the dynamic budget. Policy numbers
+    # (tier thresholds, probation caps, stuck rule) interpolate from the
+    # active improver spec — a spec change is a real behavior change.
+    research_priors = _render_research_priors(
+        _read_doc_head(
+            Path(__file__).parent / "prompts" / "research_priors.md", max_chars=16_000
+        ),
+        improver_spec,
     )
     memory_json = store.read_json(job_id, "memory.json", default={}) or {}
     recent_journal = _read_text(root / "journal.jsonl", max_chars=4000)
@@ -528,6 +573,11 @@ def _build_worker_prompt_sections(
     stable_payload = {
         "job": _drop_volatile_stable_keys(snapshot["job"]),
         "memory_json": _drop_volatile_stable_keys(memory_json),
+        "improver": {
+            "revision": improver_spec.revision,
+            "source": improver_spec.source,
+            "policy": improver_spec.policy,
+        },
     }
     # Compact each recent_* detail list to its last 6 rows (25 raw trade/run
     # rows can blow the 12k canonical-json budget and, since keys serialize
@@ -651,12 +701,21 @@ def _build_worker_prompt_sections(
         "report precisely why not. A neutral verdict means the change did "
         "nothing: that is license to try the next candidate, not to wait.\n"
         "- Research staleness (`evolution.research_staleness`) is visible "
-        "state. When the job is healthy, no verdict is pending, and research "
-        "is stale (no experiment in >3 days, or >100 wakes since the last "
+        "state. When the job is healthy, no verdict is pending, and "
+        "`research_staleness.stale` is true (no experiment in "
+        f">{improver_spec.staleness_experiment_days:g} days, or "
+        f">{improver_spec.staleness_wakes} wakes since the last "
         "proposal), a complete wake MUST advance one research lane "
         "(signal_scan / experiment grid / holdout_check / analogs) or state "
         "in the report why research is not warranted. 'Healthy, no change' "
         "alone is NOT a complete wake when research is stale.\n"
+        "- The improver is a VERSIONED artifact: the stable spec's `improver` "
+        "block is the active search policy (staleness thresholds, tier "
+        "numbers, probation caps, island weights) and every artifact you "
+        "produce is stamped with `improver.revision`. To change search "
+        "policy, file a `kind='improver_change'` proposal carrying the full "
+        "proposed spec via `improver={...}` — owner approval applies it. "
+        "NEVER edit improver.yaml directly.\n"
         "- Always write/return a compact structured finding.\n\n"
         "Stable job spec:\n"
         f"{_canonical_json(stable_payload, max_chars=12000)}\n\n"
@@ -917,7 +976,7 @@ def _build_worker_prompt_sections(
     ideation_directive = ""
     ideation_task_line = ""
     ideation_age = _ideation_age_s(root)
-    ideation_due = ideation_age is None or ideation_age > _IDEATION_DUE_S
+    ideation_due = ideation_age is None or ideation_age > _ideation_thresholds(root)[0]
     if (
         ideation_due
         and mode == "intervene"

@@ -182,10 +182,28 @@ def _research_staleness(root: Path, proposals: list[dict[str, Any]]) -> dict[str
             if str(row.get("ts") or "") > last_proposal_ts:
                 wakes_since += 1
 
+    from wayfinder_paths.jobs.improver.spec import ImproverSpec
+
+    spec = ImproverSpec.load(root)
+    days_experiment = _days_since(last_experiment_ts)
+    wakes = wakes_since if last_proposal_ts else None
+    stale = bool(
+        days_experiment is None
+        or days_experiment > spec.staleness_experiment_days
+        or (wakes is not None and wakes > spec.staleness_wakes)
+    )
     return {
         "days_since_last_proposal": _days_since(last_proposal_ts),
-        "days_since_last_experiment": _days_since(last_experiment_ts),
-        "wakes_since_last_proposal": wakes_since if last_proposal_ts else None,
+        "days_since_last_experiment": days_experiment,
+        "wakes_since_last_proposal": wakes,
+        # Computed against the ACTIVE improver spec — a spec change moves this
+        # flag, which moves the wake mandate. Prose thresholds no longer bind.
+        "stale": stale,
+        "thresholds": {
+            "experiment_days": spec.staleness_experiment_days,
+            "wakes_since_proposal": spec.staleness_wakes,
+            "improver_revision": spec.revision,
+        },
     }
 
 

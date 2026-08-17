@@ -26,16 +26,16 @@ block's archetype counts and pick the family that treats YOUR disease.
 
 ## Evidence tiers
 
-- **Tier 1 — promote** (gates unchanged: pooled q<=0.10 + 3/4 folds +
+- **Tier 1 — promote** (gates unchanged: pooled q<=%%T1_Q%% + %%T1_FOLDS%% folds +
   one-shot holdout): full-size leg, and the only tier eligible for any
   future LIVE promotion.
-- **Tier 2 — probation** (any of: q<=0.20 + 2/4 folds + edge alive in the
-  recent half; regime-conditional q<=0.15 with n>=20 in the CURRENT regime;
-  recent-window family survivor at q<=0.10): deployable at <=50% leg size
+- **Tier 2 — probation** (any of: q<=%%T2_Q%% + %%T2_FOLDS%% folds + edge alive in the
+  recent half; regime-conditional q<=%%T2_REGIME_Q%% with n>=%%T2_REGIME_N%% in the CURRENT regime;
+  recent-window family survivor at q<=%%T2_RECENT_Q%%): deployable at <=%%PROB_SIZE_PCT%% leg size
   with PRE-REGISTERED graduate + kill criteria. Paper forward is the
   holdout — the tier exists because a paper false positive costs nothing
   but attention, while burying every conditional edge costs the book its
-  reason to exist. Max 2 concurrent probation legs per job; regime flip =
+  reason to exist. Max %%PROB_LEGS%% concurrent probation legs per job; regime flip =
   kill trigger; graduation from FORWARD trades only.
 - Everything else stays research. Prefer testing `signal | regime`
   (`--condition-regime`) over demanding all-history stationarity; use
@@ -60,7 +60,7 @@ block's archetype counts and pick the family that treats YOUR disease.
   BEHAVIOR (holding period, direction bias, entry frequency — the trial
   descriptors), not just parameters. A book of clones is one bet wearing
   several names.
-- **Stuck rule**: two consecutive neutral/hurt verdicts on same-family
+- **Stuck rule**: %%STUCK_N%% consecutive neutral/hurt verdicts on same-family
   refinements means the local basin is flat or hostile — JUMP: new family,
   universe-scan, archived branch, or the sizing/leverage axis. Do not
   propose a third refinement of the same neighborhood.

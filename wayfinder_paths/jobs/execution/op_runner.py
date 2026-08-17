@@ -25,8 +25,36 @@ import json
 import sys
 from typing import Any
 
+_EVIDENCE_OPS = {
+    "backtest_job",
+    "experiments",
+    "signal_scan",
+    "holdout_check",
+    "restamp",
+}
+
 
 def _run(op: str, kwargs: dict[str, Any]) -> Any:
+    if op in _EVIDENCE_OPS and kwargs.get("job_id"):
+        # Every validation query is on the protected record (audit/<job_id>/)
+        # — the review's evidence-access ledger. Best-effort, never blocks.
+        from wayfinder_paths.jobs.governance import record_evidence_access
+        from wayfinder_paths.jobs.store import JobStore
+
+        try:
+            store = JobStore()
+            record_evidence_access(
+                store.repo_root,
+                str(kwargs["job_id"]),
+                op,
+                {"kwargs_keys": sorted(k for k in kwargs if k != "job_id")},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return _run_op(op, kwargs)
+
+
+def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
     # Imports live inside each branch so the child only pays for what it runs.
     if op == "__echo__":
         # Health-check / test op: round-trips kwargs through the full pipe.

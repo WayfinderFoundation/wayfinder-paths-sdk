@@ -85,6 +85,13 @@ def has_governance(repo_root: Path, job_id: str) -> bool:
     return gov.is_dir() and any((gov / name).exists() for name in GOVERNANCE_FILES)
 
 
+def composite_revision(gov_dir: Path) -> str:
+    revisions = {name: file_revision(gov_dir / name) for name in GOVERNANCE_FILES}
+    return hashlib.sha256(
+        "|".join(f"{name}:{revisions[name]}" for name in GOVERNANCE_FILES).encode()
+    ).hexdigest()[:12]
+
+
 def load_governance(repo_root: Path, job_id: str) -> dict[str, Any]:
     """Compose the four governance files into the legacy constitution shape
     (so every existing consumer keeps working) plus a ``governance`` metadata
@@ -121,9 +128,7 @@ def load_governance_from_dir(gov_dir: Path) -> dict[str, Any]:
     )
 
     revisions = {name: file_revision(gov_dir / name) for name in GOVERNANCE_FILES}
-    composite = hashlib.sha256(
-        "|".join(f"{name}:{revisions[name]}" for name in GOVERNANCE_FILES).encode()
-    ).hexdigest()[:12]
+    composite = composite_revision(gov_dir)
     chain_status, epoch = verify_chain(gov_dir)
 
     composed["revision"] = composite
@@ -185,9 +190,7 @@ def commit_epoch(gov_dir: Path, *, note: str = "") -> dict[str, Any]:
                 rows.append(json.loads(line))
     prev_hash = _row_hash(rows[-1]) if rows else ""
     revisions = {name: file_revision(gov_dir / name) for name in GOVERNANCE_FILES}
-    composite = hashlib.sha256(
-        "|".join(f"{name}:{revisions[name]}" for name in GOVERNANCE_FILES).encode()
-    ).hexdigest()[:12]
+    composite = composite_revision(gov_dir)
     row = {
         "epoch": len(rows),
         "ts": utc_now_iso(),
@@ -256,6 +259,41 @@ def migrate_from_constitution(
         "source": "legacy_constitution" if legacy else "defaults",
         "warnings": warnings,
     }
+
+
+AUDIT_DIRNAME = "audit"
+
+
+def record_evidence_access(
+    repo_root: Path, job_id: str, op: str, detail: dict[str, Any] | None = None
+) -> None:
+    """Append one row to the protected evidence-access ledger
+    (``audit/<job_id>/evidence_access.jsonl`` — same manifest-denied plane
+    as governance). Every validation query a revision makes is on the
+    record; the gate can report how mined the evidence is. Never raises —
+    the ledger is telemetry, the op must not fail on it."""
+    try:
+        audit_dir = Path(repo_root) / AUDIT_DIRNAME / job_id
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        row = {"op": op, "ts": utc_now_iso(), **(detail or {})}
+        with (audit_dir / "evidence_access.jsonl").open(
+            "a", encoding="utf-8"
+        ) as handle:
+            handle.write(json.dumps(row, sort_keys=True, default=str) + "\n")
+    except Exception:  # noqa: BLE001
+        return
+
+
+def evidence_access_count(repo_root: Path, job_id: str) -> int:
+    try:
+        path = Path(repo_root) / AUDIT_DIRNAME / job_id / "evidence_access.jsonl"
+        if not path.exists():
+            return 0
+        return sum(
+            1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+        )
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def _write_yaml(path: Path, data: dict[str, Any]) -> None:
