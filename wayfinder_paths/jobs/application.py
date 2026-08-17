@@ -670,7 +670,9 @@ def _record_promoted_revision(
     try:
         from wayfinder_paths.jobs.archive import set_incumbent
 
-        set_incumbent(store, job_id, proposal_id)
+        # Content id first; set_incumbent's resolver falls back to the
+        # proposal UUID for legacy entries recorded before content ids.
+        set_incumbent(store, job_id, f"cand-{revision}" if revision else proposal_id)
     except Exception:  # noqa: BLE001 — archive bookkeeping never breaks promotion
         pass
     revisions_path = root / "versions" / "revisions.jsonl"

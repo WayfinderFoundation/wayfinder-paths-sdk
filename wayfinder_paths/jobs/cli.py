@@ -440,6 +440,15 @@ def tick_cmd(job_id: str, mode: str | None, dry_run: bool) -> None:
     show_default=True,
     help="Optuna sampler seed for reproducible searches.",
 )
+@click.option(
+    "--objectives",
+    default=None,
+    help=(
+        "Comma-separated grid metrics for multi-objective search (NSGA-II "
+        "Pareto front), e.g. net_return,max_drawdown_pct. Requires "
+        "--optimizer optuna; --rank-by becomes the tie-break."
+    ),
+)
 def experiments_cmd(
     job_id: str,
     grid_path: str | None,
@@ -456,6 +465,7 @@ def experiments_cmd(
     optimizer: str,
     n_trials: int,
     seed: int,
+    objectives: str | None,
 ) -> None:
     store = JobStore()
     if list_only or not grid_path:
@@ -474,8 +484,20 @@ def experiments_cmd(
             "anchored": wf_anchored,
         }
     optuna_options = (
-        {"n_trials": n_trials, "seed": seed} if optimizer == "optuna" else None
+        {
+            "n_trials": n_trials,
+            "seed": seed,
+            **(
+                {"objectives": [x.strip() for x in objectives.split(",") if x.strip()]}
+                if objectives
+                else {}
+            ),
+        }
+        if optimizer == "optuna"
+        else None
     )
+    if objectives and optimizer != "optuna":
+        raise click.UsageError("--objectives requires --optimizer optuna")
     result = run_experiment(
         job_id,
         grid_path,

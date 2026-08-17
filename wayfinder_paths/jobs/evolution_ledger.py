@@ -208,11 +208,15 @@ def _research_staleness(root: Path, proposals: list[dict[str, Any]]) -> dict[str
 
 
 def _opportunity_recall(store: JobStore, job_id: str) -> dict[str, Any] | None:
-    """Selection-regret telemetry: does the archive hold a LIVE candidate that
-    outscores the current incumbent but was never promoted? A yes is a
-    measured missed opportunity, not a vibe."""
+    """Selection-regret telemetry, CONSTRAINED: a raw net_log_growth max
+    flags high-growth candidates the constitution would never promote
+    (drawdown/tail violators) as missed opportunities. Filter by the hard
+    constraints, score with the constitution's utility weights, and flag
+    missed only when the best passing candidate utility-beats or
+    Pareto-dominates the incumbent."""
     try:
-        from wayfinder_paths.jobs.archive import load_archive
+        from wayfinder_paths.jobs.archive import _dominates, load_archive
+        from wayfinder_paths.jobs.constitution import load_constitution
 
         doc = load_archive(store, job_id)
         candidates = [
@@ -223,21 +227,54 @@ def _opportunity_recall(store: JobStore, job_id: str) -> dict[str, Any] | None:
         ]
         if not candidates:
             return None
+        constitution = load_constitution(store.job_dir(job_id))
+        hard = constitution.get("hard_constraints") or {}
+        weights = (constitution.get("objective") or {}).get("weights") or {}
+
+        def _violates(entry: dict[str, Any]) -> bool:
+            vector = entry["objective"]
+            checks = (
+                ("max_drawdown_pct", hard.get("max_drawdown_pct")),
+                ("tail_loss", hard.get("max_tail_loss")),
+            )
+            for axis, ceiling in checks:
+                value = vector.get(axis)
+                if ceiling is not None and value is not None:
+                    if float(value) > float(ceiling):
+                        return True
+            return False
+
+        def _utility(entry: dict[str, Any]) -> float:
+            vector = entry["objective"]
+
+            def axis(name: str) -> float:
+                return float(vector.get(name) or 0.0)
+
+            return (
+                axis("net_log_growth")
+                - float(weights.get("downside", 0.0)) * axis("downside_deviation")
+                - float(weights.get("tail", 0.0)) * axis("tail_loss")
+                - float(weights.get("turnover", 0.0)) * axis("fee_load")
+            )
+
         incumbent = next(
             (e for e in candidates if e.get("status") == "incumbent"), None
         )
-
-        def growth(entry: dict[str, Any]) -> float:
-            return float(entry["objective"].get("net_log_growth") or 0.0)
-
-        best = max(candidates, key=growth)
+        passing = [e for e in candidates if not _violates(e)]
+        excluded = len(candidates) - len(passing)
+        if not passing:
+            return {"missed": False, "violating_excluded": excluded}
+        best = max(passing, key=_utility)
         if incumbent is None or best is incumbent:
-            return {"missed": False}
-        gap = growth(best) - growth(incumbent)
+            return {"missed": False, "violating_excluded": excluded}
+        utility_gap = _utility(best) - _utility(incumbent)
+        missed = utility_gap > 0 or _dominates(best, incumbent)
         return {
-            "missed": gap > 0,
+            "missed": missed,
             "best_candidate_id": best.get("candidate_id"),
-            "growth_gap": round(gap, 6),
+            "utility_gap": round(utility_gap, 6),
+            "violating_excluded": excluded,
+            "basis": "constitution_utility+pareto over constraint-passing candidates",
         }
     except Exception:  # noqa: BLE001 — telemetry never breaks the report
         return None

@@ -103,6 +103,12 @@ block's archetype counts and pick the family that treats YOUR disease.
   coarse lattice cannot, on the same budget. A search that only ever runs
   3x3 grids is a local optimizer by construction; TPE-first on wide spaces
   is how the search stays global. Rank with walk-forward either way.
+  For STRUCTURAL sweeps (exit structure, sizing overlays, leverage — anything
+  that reshapes risk, not just return) default to MULTI-OBJECTIVE:
+  `objectives=["net_return","max_drawdown_pct"]` (CLI `--objectives`) runs
+  NSGA-II and returns the Pareto FRONT instead of a single scalar winner —
+  a one-metric ranking silently collapses the risk/return trade-off the
+  constitution actually scores. Trial rows record `pareto: true/false`.
 - **Compound experiments** (second-order treatments): express a
   multi-intervention causal story as 2-4 pre-registered factors (boolean
   gates / structural params), run the factorial via the experiments grid.

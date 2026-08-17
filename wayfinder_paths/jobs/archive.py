@@ -47,6 +47,8 @@ def record_candidate(
     objective: dict[str, Any] | None,
     revision: str | None = None,
     parent_id: str | None = None,
+    parent_candidate_ids: list[str] | None = None,
+    proposal_id: str | None = None,
     behavior: dict[str, Any] | None = None,
     evidence: str | None = None,
 ) -> dict[str, Any]:
@@ -71,6 +73,19 @@ def record_candidate(
                 "updated_at": utc_now_iso(),
             }
         )
+        # Content-derived IDs dedup re-proposals of the same workspace: the
+        # entry accumulates every proposal UUID and parent edge instead of
+        # duplicating. Behavior is content-derived too — fill it once.
+        if proposal_id:
+            ids = existing.setdefault("proposal_ids", [])
+            if proposal_id not in ids:
+                ids.append(proposal_id)
+        for parent in parent_candidate_ids or []:
+            parents = existing.setdefault("parent_candidate_ids", [])
+            if parent and parent not in parents:
+                parents.append(parent)
+        if behavior and not existing.get("behavior"):
+            existing["behavior"] = behavior
         entry = existing
     else:
         entry = {
@@ -81,6 +96,8 @@ def record_candidate(
             "objective": objective,
             "revision": revision,
             "parent_id": parent_id,
+            "parent_candidate_ids": [p for p in (parent_candidate_ids or []) if p],
+            "proposal_ids": [proposal_id] if proposal_id else [],
             "behavior": behavior or {},
             "evidence": evidence,
             "created_at": utc_now_iso(),
@@ -117,9 +134,11 @@ def set_candidate_status(
 
 def set_incumbent(store: JobStore, job_id: str, candidate_id: str) -> None:
     """Promote one entry to incumbent; previous incumbents become archived
-    branches (still ranked on the frontier — that is the point)."""
+    branches (still ranked on the frontier — that is the point). The id
+    resolves as content id first, then proposal UUID, then raw revision —
+    promotion callers hold different handles across archive generations."""
     doc = load_archive(store, job_id)
-    promoted = _find(doc, candidate_id)
+    promoted = _resolve(doc, candidate_id)
     if promoted is None:
         return
     for entry in doc.get("candidates") or []:
@@ -170,6 +189,43 @@ def archive_snapshot_block(store: JobStore, job_id: str) -> dict[str, Any]:
             "revival candidate before any novel divergent search."
         ),
     }
+
+
+def lineage_of(store: JobStore, job_id: str, candidate_id: str) -> list[dict[str, Any]]:
+    """Ancestry walk over parent_candidate_ids (legacy parent_id as
+    fallback edge), nearest parent first. Cycle-safe; unknown parents end
+    the walk — the DAG only knows what was archived."""
+    doc = load_archive(store, job_id)
+    entry = _resolve(doc, candidate_id)
+    lineage: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    frontier = list((entry or {}).get("parent_candidate_ids") or []) or [
+        str((entry or {}).get("parent_id") or "")
+    ]
+    while frontier:
+        parent_id = frontier.pop(0)
+        if not parent_id or parent_id in seen:
+            continue
+        seen.add(parent_id)
+        parent = _resolve(doc, parent_id)
+        if parent is None:
+            continue
+        lineage.append(parent)
+        frontier.extend(parent.get("parent_candidate_ids") or [parent.get("parent_id")])
+    return lineage
+
+
+def _resolve(doc: dict[str, Any], candidate_id: str) -> dict[str, Any] | None:
+    exact = _find(doc, candidate_id)
+    if exact is not None:
+        return exact
+    for entry in doc.get("candidates") or []:
+        if candidate_id in (entry.get("proposal_ids") or []):
+            return entry
+    for entry in doc.get("candidates") or []:
+        if entry.get("revision") and entry["revision"] == candidate_id:
+            return entry
+    return None
 
 
 def _find(doc: dict[str, Any], candidate_id: str) -> dict[str, Any] | None:
