@@ -29,15 +29,25 @@ def test_apply_execution_leverage_writes_and_journals(tmp_path, monkeypatch) -> 
         "wayfinder_paths.jobs.sync.sync_all_jobs",
         lambda **kwargs: synced.append(True),
     )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.spawn_detached_op",
+        lambda *args: {"started": True},
+    )
 
     result = apply_execution_leverage(job_id, 3.5, store=store)
-    assert result == {"job_id": job_id, "leverage": 3.5, "previous": 2.0}
+    assert result["job_id"] == job_id
+    assert result["leverage"] == 3.5
+    assert result["previous"] == 2.0
+    # A changed value kicks the detached gate restamp.
+    assert result["restamp"] == {"started": True}
     assert store.load(job_id).execution_params["leverage"] == 3.5
     journal = (store.job_dir(job_id) / "journal.jsonl").read_text(encoding="utf-8")
-    row = json.loads(journal.strip().splitlines()[-1])
-    assert row["type"] == "operator_leverage_set"
-    assert row["from"] == 2.0
-    assert row["to"] == 3.5
+    rows = [json.loads(line) for line in journal.strip().splitlines()[-2:]]
+    types = {row["type"] for row in rows}
+    assert types == {"operator_leverage_set", "gate_restamp_kicked"}
+    leverage_row = next(r for r in rows if r["type"] == "operator_leverage_set")
+    assert leverage_row["from"] == 2.0
+    assert leverage_row["to"] == 3.5
     assert synced  # snapshot pushed so backend/frontend see the new value
 
 

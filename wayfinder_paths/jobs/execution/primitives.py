@@ -347,6 +347,11 @@ class CompletedBarsView:
         return self._bars.to_dict(orient="records")
 
 
+# Actions that only ever shrink an existing position — never sized up by
+# engine-level leverage, never blocked as fresh exposure.
+REDUCE_ONLY_ACTIONS = frozenset({"CLOSE", "STOP_LOSS", "TAKE_PROFIT"})
+
+
 @dataclass
 class OrderIntent:
     action: OrderAction

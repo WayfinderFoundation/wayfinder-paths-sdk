@@ -226,7 +226,16 @@ class ShortMomentumStrategy:
                 "bracket": {
                     "stop_loss": current_close * (1 + float(self.params["stop_pct"]))
                 },
-                "metadata": {"entry_reason": "new_low_5"},
+                "metadata": {
+                    "entry_reason": "new_low_5",
+                    # Compound sizing already multiplied equity x leverage —
+                    # the stamp stops the engine-level knob from scaling twice.
+                    **(
+                        {"leverage_applied": True}
+                        if self.params["sizing"] == "compound"
+                        else {}
+                    ),
+                },
             }
         ]
 

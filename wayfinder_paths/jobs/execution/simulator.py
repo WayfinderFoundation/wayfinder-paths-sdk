@@ -25,6 +25,7 @@ from wayfinder_paths.jobs.execution.engine import (
 from wayfinder_paths.jobs.execution.features import apply_precompute
 from wayfinder_paths.jobs.execution.primitives import (
     DEFAULT_INITIAL_CAPITAL,
+    REDUCE_ONLY_ACTIONS,
     CompletedBarsView,
     ExecutionSpec,
     ExecutionTrace,
@@ -38,8 +39,6 @@ from wayfinder_paths.jobs.execution.primitives import (
 )
 from wayfinder_paths.jobs.execution.validation import validate_execution_trace
 from wayfinder_paths.jobs.execution.venues import VenueCapabilities, VenueState
-
-REDUCE_ONLY_ACTIONS = frozenset({"CLOSE", "STOP_LOSS", "TAKE_PROFIT"})
 
 
 @dataclass

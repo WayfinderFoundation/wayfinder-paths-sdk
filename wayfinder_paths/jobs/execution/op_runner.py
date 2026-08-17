@@ -94,6 +94,30 @@ def _run(op: str, kwargs: dict[str, Any]) -> Any:
         if isinstance(backtest, dict) and not full:
             result["backtest"] = summarize_backtest_payload(backtest)
         return result
+    if op == "restamp":
+        # Full gate refresh after an execution_params change (leverage knob):
+        # any job.yaml edit bumps the workspace revision and invalidates the
+        # validation/backtest/preflight stamps — re-run all three and report
+        # the resulting gate. backtest takes the heavy-compute lock itself.
+        from wayfinder_paths.jobs.execution.job import backtest_execution_job
+        from wayfinder_paths.jobs.execution.preflight import run_preflight
+        from wayfinder_paths.jobs.execution.validation import (
+            validate_execution_job,
+        )
+        from wayfinder_paths.jobs.gating import evaluate_live_gate
+
+        job_id = kwargs.pop("job_id")
+        validation = validate_execution_job(job_id)
+        backtest = backtest_execution_job(job_id)
+        preflight = run_preflight(job_id)
+        return {
+            "validation": (validation or {}).get("status"),
+            "backtest": ((backtest.get("result") or {}).get("stats") or {}).get(
+                "net_return"
+            ),
+            "preflight": (preflight or {}).get("status"),
+            "gate": evaluate_live_gate(job_id),
+        }
     if op == "promote_params":
         from wayfinder_paths.jobs.execution.experiments import promote_params
 
