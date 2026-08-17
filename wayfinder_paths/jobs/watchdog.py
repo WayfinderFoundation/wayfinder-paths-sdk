@@ -26,6 +26,7 @@ from textwrap import dedent
 from typing import Any
 
 from wayfinder_paths.jobs.application import complete_application
+from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 
@@ -611,11 +612,59 @@ def recover_stalled_applications(
                 recovered.append({"job_id": job.id, **lifecycle_event})
         except Exception as exc:
             errors.append({"job_id": job.id, "error": f"lifecycle: {exc}"})
+        try:
+            audit_event = _audit_live_mode(store, job)
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"job_id": job.id, "error": f"live_audit: {exc}"})
+            audit_event = None
+        if audit_event is not None:
+            recovered.append({"job_id": job.id, **audit_event})
     try:
         _refresh_portfolio_report(store, now)
     except Exception as exc:  # noqa: BLE001 — fleet telemetry never blocks recovery
         errors.append({"job_id": "_portfolio", "error": str(exc)})
     return {"scanned": scanned, "recovered": recovered, "errors": errors}
+
+
+_LIVE_AUDIT_PATH = "state/live_mode_audit.json"
+
+
+def _audit_live_mode(store: JobStore, job: Any) -> dict[str, Any] | None:
+    """Flag live-mode misconfiguration the guardrails grandfathered in.
+
+    funding-carry-basket ran mode=live for five weeks with the engine-default
+    wallet label — set before operator-owned mode existed, so nothing was
+    stamped and nothing ever re-audited it. Two conditions, checked every
+    pass, journaled only when the flag set CHANGES:
+    - live with no owner stamp in state/operator.json (unattributed mode)
+    - live with no explicit execution_params.wallet_label (engine default
+      'main' rarely exists on a box — the job cannot actually trade)
+    """
+    loop = getattr(job, "script_loop", None)
+    flags: list[str] = []
+    if (
+        loop is not None
+        and getattr(loop, "enabled", False)
+        and (str(getattr(loop, "mode", "") or "") == "live")
+    ):
+        operator = store.read_json(job.id, "state/operator.json") or {}
+        set_by = ((operator.get("script_mode") or {}).get("set_by")) or None
+        if set_by != "owner":
+            flags.append("unstamped_live_mode")
+        execution_params = dict(getattr(job, "execution_params", None) or {})
+        if not str(execution_params.get("wallet_label") or "").strip():
+            flags.append("live_wallet_label_missing")
+    previous = store.read_json(job.id, _LIVE_AUDIT_PATH) or {}
+    if sorted(previous.get("flags") or []) == sorted(flags):
+        return None
+    store.write_json(
+        job.id, _LIVE_AUDIT_PATH, {"flags": flags, "checked_at": utc_now_iso()}
+    )
+    store.append_journal(
+        job.id,
+        {"type": "live_mode_audit", "flags": flags, "cleared": not flags},
+    )
+    return {"action": "live_mode_audit", "flags": flags} if flags else None
 
 
 _PORTFOLIO_REFRESH_S = 1800
