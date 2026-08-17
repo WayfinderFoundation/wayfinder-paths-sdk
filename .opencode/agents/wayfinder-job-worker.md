@@ -6,6 +6,10 @@ temperature: 0.1
 steps: 64
 permission:
   task:
+    # Quant subagent dispatch (L3c): heavy grids/scans/analytics run in a
+    # bounded subagent; the wake stays the orchestrator. Everything else
+    # stays denied.
+    "wayfinder-quant": allow
     "*": deny
   question: deny
 
