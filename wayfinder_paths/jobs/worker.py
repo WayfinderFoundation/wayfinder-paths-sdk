@@ -610,6 +610,17 @@ def _build_worker_prompt_sections(
         )
 
     restage_tasks = _restage_block(root)
+    # Island rotation: routine research wakes get a deterministic search
+    # assignment; apply/restage wakes and trigger wakes (bypass inside)
+    # handle their event instead. Never blocks the wake.
+    search_assignment = None
+    if mode == "intervene" and apply_proposal_id is None and not restage_tasks:
+        try:
+            from wayfinder_paths.jobs.improver.scheduler import assign_island
+
+            search_assignment = assign_island(store, job_id)
+        except Exception:  # noqa: BLE001
+            search_assignment = None
     dynamic_payload = {
         "scorecard": snapshot.get("scorecard") or {},
         "forward": forward_block,
@@ -635,6 +646,7 @@ def _build_worker_prompt_sections(
         "evolution": _evolution_block(store, job_id),
         "archive": _archive_block(store, job_id),
         "restage_tasks": restage_tasks,
+        "search_assignment": search_assignment,
     }
 
     stable_prefix = (
@@ -709,6 +721,19 @@ def _build_worker_prompt_sections(
         "(signal_scan / experiment grid / holdout_check / analogs) or state "
         "in the report why research is not warranted. 'Healthy, no change' "
         "alone is NOT a complete wake when research is stale.\n"
+        "- Routine research wakes carry a `search_assignment` (dynamic "
+        "context): one island among exploit / adjacent / divergent / "
+        "diversification / falsifier / historian, rotated deterministically "
+        "by the improver's allocation weights. The island's directive says "
+        "WHAT KIND of search this wake advances — follow it. Maintain the "
+        "island's persistent agenda (`research/islands/<island>.md`): read "
+        "it first, append what you did and learned. If ops consume the wake "
+        "(halt, errors), say so in the report — the rotation still counts "
+        "this island as served.\n"
+        "- Heavy quant work (signal scans, grids, walk-forwards, bulk "
+        "analytics) SHOULD be delegated to the `wayfinder-quant` subagent "
+        "with a bounded brief; you stay the orchestrator — synthesize its "
+        "results, decide, and keep this session light.\n"
         "- The improver is a VERSIONED artifact: the stable spec's `improver` "
         "block is the active search policy (staleness thresholds, tier "
         "numbers, probation caps, island weights) and every artifact you "
