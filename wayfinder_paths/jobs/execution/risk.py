@@ -88,6 +88,9 @@ def build_risk_snapshot(
     summary = _read_json(Path(root) / FORWARD_SUMMARY_PATH) or {}
     trades_summary = summary.get("trades") or {}
     net_pnl = float(trades_summary.get("net_pnl") or 0.0)
+    # Funding is real PnL that never appears in trade rows — excluding it
+    # fires false drawdown halts on funding-heavy shorts (and vice versa).
+    funding_total = float((summary.get("funding") or {}).get("total_usd") or 0.0)
 
     unrealized = 0.0
     gross_exposure = 0.0
@@ -104,7 +107,7 @@ def build_risk_snapshot(
         gross_exposure += abs(notional)
         positions_usd[symbol] = direction * notional
 
-    equity = initial_capital + net_pnl + unrealized
+    equity = initial_capital + net_pnl + funding_total + unrealized
     risk_state = _read_json(Path(root) / RISK_STATE_PATH)
     peak_equity = float(risk_state["peak_equity"]) if risk_state else None
     if peak_equity is None or equity > peak_equity:

@@ -356,6 +356,7 @@ async def tick_job(
             )
 
     state.save(state_path)
+    funding_rows = await _collect_funding(brokers, root, mode, now)
     _record(
         recorder
         or ForwardRecorder(
@@ -366,6 +367,9 @@ async def tick_job(
         params=params,
         now=now,
         engine_state_pre=engine_state_pre,
+        funding_rows=funding_rows,
+        root=root,
+        mode=mode,
     )
     try:
         _record_pending_trade_forensics(root, view)
@@ -509,6 +513,143 @@ async def _reconcile(
     return StateSnapshot(status="valid", data=data), notes
 
 
+_FUNDING_STATE_PATH = "state/funding_state.json"
+_EQUITY_RECON_PATH = "state/equity_recon.json"
+
+
+async def _collect_funding(
+    brokers: Mapping[str, Any],
+    root: Path,
+    mode: str,
+    now: pd.Timestamp,
+) -> list[dict[str, Any]]:
+    """Best-effort venue funding rows since the persisted cursor. Funding is
+    real PnL that never appears in trade rows; it is recorded ONLY on the
+    forward side (never the engine ledger — the drift reconciler replays
+    ticks offline and network-injected PnL would flag false drift). The
+    cursor seeds at now on first run: pre-go-live funding is not this
+    job's."""
+    if mode != "live":
+        return []
+    state_path = root / _FUNDING_STATE_PATH
+    now_ms = int(now.timestamp() * 1000)
+    try:
+        cursor_doc = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cursor_doc = {}
+    cursor = cursor_doc.get("cursor_ms")
+    if not isinstance(cursor, (int, float)):
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps({"cursor_ms": now_ms}), encoding="utf-8")
+        return []
+    rows: list[dict[str, Any]] = []
+    max_seen = int(cursor)
+    for broker in brokers.values():
+        fetch = getattr(broker, "get_funding_payments", None)
+        if fetch is None:
+            continue
+        try:
+            for row in await fetch(int(cursor) + 1):
+                time_ms = row.get("time_ms")
+                if not isinstance(time_ms, (int, float)) or time_ms <= cursor:
+                    continue
+                rows.append(dict(row))
+                max_seen = max(max_seen, int(time_ms))
+        except Exception:  # noqa: BLE001 — telemetry must never fail a tick
+            continue
+    if max_seen > cursor:
+        state_path.write_text(json.dumps({"cursor_ms": max_seen}), encoding="utf-8")
+    return rows
+
+
+def _reconciliation_block(
+    tick: TickResult,
+    *,
+    root: Path,
+    recorder: ForwardRecorder,
+    mode: str,
+    view: CompletedBarsView,
+) -> dict[str, Any] | None:
+    """Per-tick decomposition of venue equity vs what the books explain:
+    expected = equity_start + ledger_realized_delta + funding + unrealized.
+    Drift is the unexplained remainder (deposits/withdrawals land here by
+    design). Uses ledger realized — NOT trades net — because entry fees sit
+    in non-reduce-only rows the trade-close recorder skips."""
+    if mode != "live":
+        return None
+    account_value = (tick.snapshot.data or {}).get("account_value")
+    if account_value is None:
+        return None
+    try:
+        recon_path = root / _EQUITY_RECON_PATH
+        ledger = tick.ledger_snapshot or {}
+        realized = float(ledger.get("realized_pnl") or 0.0)
+        reset_fired = any(
+            event.get("kind") == "mode_flip_state_reset"
+            for event in tick.guard_events or []
+        )
+        try:
+            seed = json.loads(recon_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            seed = {}
+        if reset_fired or "venue_equity_start" not in seed:
+            # Mode flips archive the engine state — the realized baseline
+            # restarts with it.
+            seed = {
+                "venue_equity_start": float(account_value),
+                "ledger_realized_at_seed": realized,
+                "seeded_at": pd.Timestamp.now(tz="UTC").isoformat(),
+            }
+            recon_path.parent.mkdir(parents=True, exist_ok=True)
+            recon_path.write_text(json.dumps(seed), encoding="utf-8")
+
+        unrealized = 0.0
+        for symbol, position in (ledger.get("positions") or {}).items():
+            latest = view.latest(symbol)
+            close = (
+                float(latest.get("close"))
+                if latest and latest.get("close") is not None
+                else None
+            )
+            if close is None:
+                continue
+            avg = float(position.get("avg_price") or 0.0)
+            size = float(position.get("size") or 0.0)
+            direction = 1.0 if str(position.get("side")) == "long" else -1.0
+            unrealized += direction * (close - avg) * size
+
+        summary = recorder.summary()
+        funding_total = float((summary.get("funding") or {}).get("total_usd") or 0.0)
+        trades_net = float((summary.get("trades") or {}).get("net_pnl") or 0.0)
+        fees_total = float((summary.get("fills") or {}).get("fees_total") or 0.0)
+        realized_delta = realized - float(seed.get("ledger_realized_at_seed") or 0.0)
+        expected = (
+            float(seed.get("venue_equity_start") or 0.0)
+            + realized_delta
+            + funding_total
+            + unrealized
+        )
+        return {
+            "venue_equity_start": seed.get("venue_equity_start"),
+            "venue_equity_now": float(account_value),
+            "ledger_realized_delta": round(realized_delta, 6),
+            "unrealized": round(unrealized, 6),
+            "funding_total": round(funding_total, 6),
+            "trades_net": round(trades_net, 6),
+            "fees_total": round(fees_total, 6),
+            "expected_equity": round(expected, 6),
+            "drift": round(float(account_value) - expected, 6),
+            "_basis": (
+                "expected = equity_start + ledger_realized_delta + funding + "
+                "unrealized; drift = venue - expected (deposits/withdrawals "
+                "surface as drift by design). trades_net/fees_total are "
+                "reported for visibility, not used in drift."
+            ),
+        }
+    except Exception:  # noqa: BLE001 — telemetry must never fail a tick
+        return None
+
+
 def _record(
     recorder: ForwardRecorder,
     tick: TickResult,
@@ -517,11 +658,39 @@ def _record(
     params: Mapping[str, Any],
     now: pd.Timestamp,
     engine_state_pre: Mapping[str, Any] | None = None,
+    funding_rows: list[dict[str, Any]] | None = None,
+    root: Path | None = None,
+    mode: str | None = None,
 ) -> None:
     intents = [intent.to_dict() for intent in tick.intents]
     fills = [fill.to_dict() for fill in tick.fills]
     timestamps = view.timestamps
+    for intent in intents:
+        recorder.record_order(intent)
+    for row in fills:
+        recorder.record_fill(row)
+    # trade_rows are FillEvent.to_dict() + realized_pnl_delta: fixed shape.
+    for row in tick.trade_rows:
+        if row["reduce_only"]:
+            recorder.record_trade_close(
+                symbol=row["symbol"],
+                side=row["side"],
+                size=row["filled_size"],
+                price=row["avg_price"],
+                net_pnl=row["realized_pnl_delta"],
+                closed_at=row["timestamp"],
+            )
+    for row in funding_rows or []:
+        recorder.record_funding(row)
+    # Reconciliation runs AFTER the rows above so summary totals include
+    # this tick's fees/funding.
+    reconciliation = (
+        _reconciliation_block(tick, root=root, recorder=recorder, mode=mode, view=view)
+        if root is not None and mode is not None
+        else None
+    )
     recorder.record_tick(
+        reconciliation=reconciliation,
         ts=now.isoformat(),
         bar_ts=tick.bar_timestamp,
         skipped=tick.skipped,
@@ -549,21 +718,6 @@ def _record(
         reason=tick.skip_reason,
         metrics={"fill_count": len(fills), "guard_event_count": len(tick.guard_events)},
     )
-    for intent in intents:
-        recorder.record_order(intent)
-    for row in fills:
-        recorder.record_fill(row)
-    # trade_rows are FillEvent.to_dict() + realized_pnl_delta: fixed shape.
-    for row in tick.trade_rows:
-        if row["reduce_only"]:
-            recorder.record_trade_close(
-                symbol=row["symbol"],
-                side=row["side"],
-                size=row["filled_size"],
-                price=row["avg_price"],
-                net_pnl=row["realized_pnl_delta"],
-                closed_at=row["timestamp"],
-            )
 
 
 def view_hash(view: CompletedBarsView) -> str:

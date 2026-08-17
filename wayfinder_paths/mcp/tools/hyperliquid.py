@@ -1920,6 +1920,60 @@ async def hyperliquid_place_limit_order(
 
 
 @catch_errors
+async def hyperliquid_get_user_fills(
+    label: str, start_ms: int | None = None, end_ms: int | None = None
+) -> dict[str, Any]:
+    """User fill rows (they carry the actual `fee` the order ack omits).
+    With start_ms, uses the time-windowed endpoint; otherwise full history."""
+    addr, _ = await resolve_wallet_address(wallet_label=label)
+    if not addr:
+        return err("not_found", f"Wallet not found: {label}")
+    adapter = HyperliquidAdapter()
+    if start_ms is not None:
+        ok_flag, rows = await adapter.get_user_fills_by_time(addr, start_ms, end_ms)
+    else:
+        ok_flag, rows = await adapter.get_user_fills(addr)
+    if not ok_flag:
+        return err("state_error", f"Could not fetch user fills: {rows}")
+    return ok({"label": label, "address": addr, "rows": rows})
+
+
+@catch_errors
+async def hyperliquid_get_user_funding(
+    label: str, start_ms: int, end_ms: int | None = None
+) -> dict[str, Any]:
+    """Signed user funding payments, flattened: {time_ms, coin, usdc,
+    funding_rate, szi}. usdc negative = paid by the account."""
+    addr, _ = await resolve_wallet_address(wallet_label=label)
+    if not addr:
+        return err("not_found", f"Wallet not found: {label}")
+    adapter = HyperliquidAdapter()
+    ok_flag, rows = await adapter.get_user_funding_history(addr, start_ms, end_ms)
+    if not ok_flag:
+        return err("state_error", f"Could not fetch user funding: {rows}")
+    normalized = []
+    for row in rows if isinstance(rows, list) else []:
+        delta = row.get("delta") or {}
+        normalized.append(
+            {
+                "time_ms": row.get("time"),
+                "coin": delta.get("coin"),
+                "usdc": _float_or_none_tool(delta.get("usdc")),
+                "funding_rate": _float_or_none_tool(delta.get("fundingRate")),
+                "szi": _float_or_none_tool(delta.get("szi")),
+            }
+        )
+    return ok({"label": label, "address": addr, "rows": normalized})
+
+
+def _float_or_none_tool(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@catch_errors
 async def hyperliquid_get_state(label: str) -> dict[str, Any]:
     """Return a Hyperliquid account snapshot: money `summary`, open
     `perp_positions` / `spot_positions` / `outcome_positions`, and all
