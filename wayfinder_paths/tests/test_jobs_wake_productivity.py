@@ -146,6 +146,9 @@ def test_snapshot_block_renders_staleness(tmp_path) -> None:
     store, job_id = _job(tmp_path)
     block = evolution_snapshot_block(store, job_id)
     assert "research_staleness" in block
+    # Branch-revival lane needs the missed-opportunity signal in the wake
+    # context, not buried in the full report.
+    assert "opportunity_recall" in block
 
 
 def test_worker_stable_rules_carry_research_mandate(tmp_path) -> None:

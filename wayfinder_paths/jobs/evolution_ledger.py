@@ -232,6 +232,9 @@ def evolution_snapshot_block(store: JobStore, job_id: str) -> dict[str, Any]:
         "by_family": report["by_family"],
         "promotion_reliability": report["promotion_reliability"],
         "research_staleness": report["research_staleness"],
+        # A LIVE archived candidate outscoring the incumbent is a measured
+        # missed opportunity — the branch-revival lane reads this.
+        "opportunity_recall": report["opportunity_recall"],
         "_basis": (
             "Full update path + forward promotion verdicts. Low beat_rate in a "
             "family means that family's evidence bar is too weak — raise your "
