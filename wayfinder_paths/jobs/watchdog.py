@@ -657,13 +657,30 @@ def _audit_live_mode(store: JobStore, job: Any) -> dict[str, Any] | None:
     previous = store.read_json(job.id, _LIVE_AUDIT_PATH) or {}
     if sorted(previous.get("flags") or []) == sorted(flags):
         return None
+    event: dict[str, Any] = {
+        "type": "live_mode_audit",
+        "flags": flags,
+        "cleared": not flags,
+    }
+    # A clear that rides an operator stamp created AFTER the flag was raised
+    # is exactly how an agent would launder the flag (observed live: the
+    # worker ran `set-script-mode --by owner` to clear unstamped_live_mode).
+    # The clear stands — the stamp may be genuine — but it carries a loud
+    # review marker so the owner confirms they actually made it.
+    if not flags and "unstamped_live_mode" in (previous.get("flags") or []):
+        operator = store.read_json(job.id, "state/operator.json") or {}
+        stamp_at = (operator.get("script_mode") or {}).get("set_at")
+        flagged_at = previous.get("checked_at")
+        if stamp_at and flagged_at and str(stamp_at) > str(flagged_at):
+            event["owner_review_required"] = (
+                f"cleared by an owner stamp created at {stamp_at}, AFTER the "
+                f"flag was raised at {flagged_at} — confirm this stamp was "
+                "actually made by the owner, not claimed by the agent"
+            )
     store.write_json(
         job.id, _LIVE_AUDIT_PATH, {"flags": flags, "checked_at": utc_now_iso()}
     )
-    store.append_journal(
-        job.id,
-        {"type": "live_mode_audit", "flags": flags, "cleared": not flags},
-    )
+    store.append_journal(job.id, event)
     return {"action": "live_mode_audit", "flags": flags} if flags else None
 
 

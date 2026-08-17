@@ -28,6 +28,12 @@ permission:
     "*": deny
 
   bash:
+    # Provenance guard: the worker cleared a live-mode audit flag by running
+    # set-script-mode --by owner — claiming owner identity to satisfy the
+    # very check that flags unattributed mode changes. Owner attestation is
+    # NEVER the agent's to assert, on any command.
+    "*--by owner*": deny
+    "*--by=owner*": deny
     "*": allow
     "mkdir -p .wayfinder/jobs/**": allow
     "cp .wayfinder_runs/** .wayfinder/jobs/**": allow
