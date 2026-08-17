@@ -38,13 +38,19 @@ from wayfinder_paths.jobs.gating import (
     evaluate_economic_gate,
     evaluate_live_gate,
 )
+from wayfinder_paths.jobs.improver.spec import (
+    ImproverSpec,
+    improver_revision,
+    merge_over_defaults,
+    revision_stamp,
+)
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import sync_all_jobs
 from wayfinder_paths.jobs.validation import validation_summary
 from wayfinder_paths.jobs.worker import JOB_RESULT_MARKER
 
-PROPOSAL_KINDS = {"code_change", "params_update", "model_update"}
+PROPOSAL_KINDS = {"code_change", "params_update", "model_update", "improver_change"}
 
 
 def propose_change(
@@ -56,6 +62,7 @@ def propose_change(
     intent_contract: dict[str, Any],
     params: dict[str, Any] | None = None,
     candidate_source: str | Path | None = None,
+    improver: dict[str, Any] | None = None,
     scenario_plan: dict[str, Any] | None = None,
     proposal_id: str | None = None,
     memo: str | None = None,
@@ -75,7 +82,21 @@ def propose_change(
     """
     if kind not in PROPOSAL_KINDS:
         raise ValueError(f"kind must be one of {sorted(PROPOSAL_KINDS)}: {kind}")
-    if params is None and candidate_source is None:
+    if kind == "improver_change":
+        if not isinstance(improver, dict) or not improver:
+            raise ValueError(
+                "improver_change proposals require the full proposed spec via "
+                "improver={...}"
+            )
+        if params is not None or candidate_source is not None:
+            raise ValueError(
+                "improver_change proposals change search policy only — no "
+                "params or candidate_source"
+            )
+        _validate_improver_payload(improver)
+    elif improver is not None:
+        raise ValueError("improver payload is only valid for kind='improver_change'")
+    elif params is None and candidate_source is None:
         raise ValueError("pass params and/or candidate_source — nothing to propose")
     ensure_jobs_v1_contract(store, job_id)
 
@@ -112,10 +133,17 @@ def propose_change(
         "proposed_change": {
             "summary": summary,
             **({"execution_params": dict(params)} if params else {}),
+            **({"improver": dict(improver)} if improver else {}),
         },
         "intent_contract": dict(intent_contract),
         "scenario_plan": resolved_plan or {"scenarios": []},
         "base_revision": base_revision,
+        **(
+            {"base_improver_revision": improver_revision(root)}
+            if kind == "improver_change"
+            else {}
+        ),
+        **revision_stamp(root),
         "changed_files": changed_files,
         "change_summary": memo or summary,
         "application": {"status": "not_requested", **candidate_descriptor},
@@ -183,6 +211,29 @@ def propose_change(
         )
     )
     return store.load_proposal(job_id, pid)
+
+
+def _validate_improver_payload(improver: dict[str, Any]) -> None:
+    """Fail at propose time, not at apply time: the merged spec must satisfy
+    every typed accessor the code consumes."""
+    probe = ImproverSpec(
+        revision="proposed", source="proposal", policy=merge_over_defaults(improver)
+    )
+    if probe.staleness_experiment_days <= 0 or probe.staleness_wakes < 1:
+        raise ValueError("staleness thresholds must be positive")
+    if probe.ideation_due_s <= 0 or probe.ideation_overdue_s < probe.ideation_due_s:
+        raise ValueError("ideation cadence must be positive with overdue >= due")
+    if probe.stuck_same_family_non_wins < 1:
+        raise ValueError("stuck_rule.same_family_non_wins must be >= 1")
+    if probe.probation_max_active_legs < 1:
+        raise ValueError("probation.max_active_legs must be >= 1")
+    if not 0 < probe.probation_max_size_fraction <= 1:
+        raise ValueError("probation.max_size_fraction must be in (0, 1]")
+    weights = probe.island_weights
+    if weights and abs(sum(weights.values()) - 1.0) > 0.01:
+        raise ValueError(f"island weights must sum to 1.0, got {sum(weights.values())}")
+    if not 0 <= probe.exploration_floor <= 1:
+        raise ValueError("islands.exploration_floor must be in [0, 1]")
 
 
 def _overlay_change(

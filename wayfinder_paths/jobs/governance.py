@@ -85,6 +85,13 @@ def has_governance(repo_root: Path, job_id: str) -> bool:
     return gov.is_dir() and any((gov / name).exists() for name in GOVERNANCE_FILES)
 
 
+def composite_revision(gov_dir: Path) -> str:
+    revisions = {name: file_revision(gov_dir / name) for name in GOVERNANCE_FILES}
+    return hashlib.sha256(
+        "|".join(f"{name}:{revisions[name]}" for name in GOVERNANCE_FILES).encode()
+    ).hexdigest()[:12]
+
+
 def load_governance(repo_root: Path, job_id: str) -> dict[str, Any]:
     """Compose the four governance files into the legacy constitution shape
     (so every existing consumer keeps working) plus a ``governance`` metadata
@@ -121,9 +128,7 @@ def load_governance_from_dir(gov_dir: Path) -> dict[str, Any]:
     )
 
     revisions = {name: file_revision(gov_dir / name) for name in GOVERNANCE_FILES}
-    composite = hashlib.sha256(
-        "|".join(f"{name}:{revisions[name]}" for name in GOVERNANCE_FILES).encode()
-    ).hexdigest()[:12]
+    composite = composite_revision(gov_dir)
     chain_status, epoch = verify_chain(gov_dir)
 
     composed["revision"] = composite
@@ -185,9 +190,7 @@ def commit_epoch(gov_dir: Path, *, note: str = "") -> dict[str, Any]:
                 rows.append(json.loads(line))
     prev_hash = _row_hash(rows[-1]) if rows else ""
     revisions = {name: file_revision(gov_dir / name) for name in GOVERNANCE_FILES}
-    composite = hashlib.sha256(
-        "|".join(f"{name}:{revisions[name]}" for name in GOVERNANCE_FILES).encode()
-    ).hexdigest()[:12]
+    composite = composite_revision(gov_dir)
     row = {
         "epoch": len(rows),
         "ts": utc_now_iso(),

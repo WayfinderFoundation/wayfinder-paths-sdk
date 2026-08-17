@@ -10,12 +10,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from wayfinder_paths.jobs.improver.spec import ImproverSpec, revision_stamp
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
 PROBATION_PATH = "probation.json"
 PROBATION_STATUSES = {"active", "graduated", "killed"}
-MAX_ACTIVE_LEGS = 2
 
 
 def load_probation(store: JobStore, job_id: str) -> dict[str, Any]:
@@ -36,14 +36,16 @@ def record_probation_leg(
     proposal_id: str | None = None,
     notes: str | None = None,
 ) -> dict[str, Any]:
-    if not 0 < size_fraction <= 0.5:
-        raise ValueError("probation size_fraction must be in (0, 0.5]")
+    spec = ImproverSpec.load(store.job_dir(job_id))
+    max_fraction = spec.probation_max_size_fraction
+    max_legs = spec.probation_max_active_legs
+    if not 0 < size_fraction <= max_fraction:
+        raise ValueError(f"probation size_fraction must be in (0, {max_fraction}]")
     doc = load_probation(store, job_id)
     active = [leg for leg in doc["legs"] if leg.get("status") == "active"]
-    if len(active) >= MAX_ACTIVE_LEGS:
+    if len(active) >= max_legs:
         raise ValueError(
-            f"max {MAX_ACTIVE_LEGS} concurrent probation legs — graduate or "
-            "kill one first"
+            f"max {max_legs} concurrent probation legs — graduate or kill one first"
         )
     if any(leg.get("name") == name for leg in doc["legs"]):
         raise ValueError(f"probation leg {name!r} already exists")
@@ -68,6 +70,7 @@ def record_probation_leg(
             "status": None,
         },
         "notes": notes,
+        **revision_stamp(store.job_dir(job_id)),
     }
     doc["legs"].append(leg)
     store.write_json(job_id, PROBATION_PATH, doc)

@@ -9,6 +9,7 @@ from typing import Any
 from wayfinder_paths.jobs.execution.job import backtest_execution_job
 from wayfinder_paths.jobs.execution.preflight import run_preflight
 from wayfinder_paths.jobs.gating import compute_workspace_revision
+from wayfinder_paths.jobs.improver.spec import revision_stamp
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
@@ -20,6 +21,7 @@ def _behavior_descriptor(stats: Mapping[str, Any]) -> dict[str, Any]:
     """Compact behavioral fingerprint per trial — the population-search axes
     (how a candidate TRADES, not just how much it made). Defensive: stats
     keys vary by engine version; absent fields stay None."""
+
     def _num(key: str) -> float | None:
         value = stats.get(key)
         return float(value) if isinstance(value, (int, float)) else None
@@ -46,12 +48,14 @@ def record_trial_lineage(
     campaign; `cap` bounds pathological sweeps."""
     store = store or JobStore()
     result = grid_payload["result"]
+    stamp = revision_stamp(store.job_dir(job_id))
     rows = []
     for run in list(result.get("runs") or [])[:cap]:
         stats = run.get("stats") or {}
         rows.append(
             {
                 "ts": utc_now_iso(),
+                **stamp,
                 "grid_id": result.get("grid_id"),
                 "revision": grid_payload.get("revision"),
                 "optimizer": result.get("optimizer") or "grid",
@@ -85,6 +89,7 @@ def record_experiment(
     best = ranked[0] if ranked else None
     row = {
         "ts": utc_now_iso(),
+        **revision_stamp(store.job_dir(job_id)),
         "grid_id": result["grid_id"],
         "revision": grid_payload["revision"],
         "dataset": grid_payload["dataset"],

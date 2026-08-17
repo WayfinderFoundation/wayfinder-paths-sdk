@@ -263,8 +263,18 @@ class JobStore:
     def append_journal(self, job_id: str, event: dict[str, Any]) -> None:
         path = self.job_dir(job_id) / "journal.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Central provenance stamp: every journal row records which improver
+        # revision and governance standard it was produced under. Stamping
+        # must never break journaling.
+        stamp: dict[str, Any] = {}
+        try:
+            from wayfinder_paths.jobs.improver.spec import revision_stamp
+
+            stamp = revision_stamp(self.job_dir(job_id))
+        except Exception:  # noqa: BLE001
+            pass
         path.open("a", encoding="utf-8").write(
-            json.dumps({"ts": utc_now_iso(), **event}, sort_keys=True) + "\n"
+            json.dumps({"ts": utc_now_iso(), **stamp, **event}, sort_keys=True) + "\n"
         )
 
     def proposals(self, job_id: str) -> list[dict[str, Any]]:

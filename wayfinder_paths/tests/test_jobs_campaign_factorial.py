@@ -117,6 +117,10 @@ def test_worker_prompt_carries_priors_and_quant_loop(tmp_path: Path) -> None:
     stable, prompt = sections["stable_prefix"], sections["prompt"]
     assert "Research prior library" in stable  # cached, not dynamic-budget
     assert "sweep-and-reclaim" in stable
+    # Head AND tail of the priors doc must survive the read budget — the
+    # curriculum growth once tail-truncated away the entire family table.
+    assert "Regime-aware aliveness" in stable
+    assert "%%" not in stable  # spec tokens fully rendered
     assert "Quant loop (diagnose -> design -> ablate -> propose)" in prompt
     assert "signal-scan --campaign" in prompt
     assert "factor_attribution" in prompt

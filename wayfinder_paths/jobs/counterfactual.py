@@ -30,6 +30,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from wayfinder_paths.jobs.improver.spec import revision_stamp
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
@@ -275,6 +276,7 @@ def _maybe_record_promotion_verdict(
             "window_days": days,
             "closes": closes,
             "recorded_at": utc_now_iso(),
+            **revision_stamp(store.job_dir(job_id)),
         }
         # Three-book split, when the artifact has it: a "hurt" verdict whose
         # delta is execution_effect is an execution problem, not evidence
