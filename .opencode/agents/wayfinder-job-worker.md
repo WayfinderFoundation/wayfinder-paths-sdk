@@ -16,6 +16,9 @@ permission:
 
   write: allow
   edit:
+    # The governance plane (owner targets, hard constraints, audit policy)
+    # is capability-protected: outside the job tree AND explicitly denied.
+    "governance/**": deny
     ".wayfinder/jobs/**": allow
     ".wayfinder_runs/**": ask
     "*": deny
