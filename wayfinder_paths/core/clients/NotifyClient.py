@@ -17,8 +17,7 @@ class NotifyClient(WayfinderClient):
         """Direct callers (scripts, monitors, jobs) are trusted senders —
         override defaults on, so quiet hours and the frequency budget don't
         gate them. The agent's notification tool passes override=False and
-        goes through the warning handshake instead. Near-duplicate rejection
-        applies to everyone."""
+        goes through the warning handshake instead."""
         url = f"{get_api_base_url()}/opencode/notify/"
         payload: dict[str, Any] = {"title": title, "message": message}
         if delivery != "email":
