@@ -5,10 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from wayfinder_paths.core.clients.NotifyClient import (
-    NotifyClient,
-    normalize_notify_delivery,
-)
+from wayfinder_paths.core.clients.NotifyClient import NotifyClient
 
 
 class _Response:
@@ -47,7 +44,7 @@ async def test_notify_client_default_email_payload_omits_delivery(
 
 
 @pytest.mark.asyncio
-async def test_notify_client_text_alias_requests_sms(
+async def test_notify_client_sms_posts_delivery_and_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -58,18 +55,24 @@ async def test_notify_client_text_alias_requests_sms(
     client = NotifyClient()
     client._authed_request = AsyncMock(return_value=_Response({"sent": True}))  # type: ignore[method-assign]
 
-    await client.notify(title="Alert", message="Body", delivery="text")
+    # Script-style call: override defaults on for direct client callers.
+    await client.notify(title="Alert", message="Body", delivery="sms")
 
-    assert client._authed_request.await_args.kwargs["json"] == {
+    args = client._authed_request.await_args
+    assert args.args[1].endswith("/opencode/notify/")
+    assert args.kwargs["json"] == {
         "title": "Alert",
         "message": "Body",
         "delivery": "sms",
+        "override": True,
     }
 
 
-def test_normalize_notify_delivery_rejects_unknown_delivery() -> None:
-    with pytest.raises(ValueError):
-        normalize_notify_delivery("fax")
+@pytest.mark.asyncio
+async def test_notification_send_guards_delivery_choices() -> None:
+    out = await notify_tool_module.notification_send("Alert", "Body", delivery="fax")
+    assert out["ok"] is False
+    assert out["error"]["code"] == "invalid_request"
 
 
 @pytest.mark.asyncio
@@ -77,16 +80,14 @@ async def test_notification_send_passes_sms_delivery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_client = AsyncMock()
-    fake_client.notify.return_value = {"sent": True, "delivery": "sms"}
+    fake_client.notify.return_value = {"sent": True}
     monkeypatch.setattr(notify_tool_module, "NOTIFY_CLIENT", fake_client)
 
-    out = await notify_tool_module.notification_send("Alert", "Body", delivery="text")
+    out = await notify_tool_module.notification_send("Alert", "Body", delivery="sms")
 
-    assert out == {"ok": True, "result": {"sent": True, "delivery": "sms"}}
+    assert out == {"ok": True, "result": {"sent": True}}
     fake_client.notify.assert_awaited_once_with(
-        title="Alert",
-        message="Body",
-        delivery="sms",
+        title="Alert", message="Body", delivery="sms", override=False
     )
 
 
