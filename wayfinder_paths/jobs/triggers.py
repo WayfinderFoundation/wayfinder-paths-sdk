@@ -23,7 +23,9 @@ DEFAULT_DEBOUNCE_SECONDS = 600
 # Infrastructure events wake the agent regardless of the job's configured
 # trigger list: they represent work the pipeline is waiting on the agent for
 # (not market conditions the owner opted into watching).
-ALWAYS_WAKE_EVENTS = {"proposal_restage_requested"}
+# verdict_matured fires at most once per promotion — a matured forward
+# verdict is a research event every job should act on, config or not.
+ALWAYS_WAKE_EVENTS = {"proposal_restage_requested", "verdict_matured"}
 
 
 def fire_triggers(

@@ -120,6 +120,7 @@ def build_evolution_report(store: JobStore, job_id: str) -> dict[str, Any]:
             ),
         },
         "opportunity_recall": _opportunity_recall(store, job_id),
+        "research_staleness": _research_staleness(root, proposals),
         "replication": replication,
         "proposals": rows[-50:],
         "generated_at": utc_now_iso(),
@@ -134,6 +135,58 @@ def _wilson_interval(successes: int, n: int, z: float = 1.96) -> list[float]:
     center = (p + z * z / (2 * n)) / denominator
     margin = (z / denominator) * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5)
     return [round(max(0.0, center - margin), 4), round(min(1.0, center + margin), 4)]
+
+
+def _research_staleness(root: Path, proposals: list[dict[str, Any]]) -> dict[str, Any]:
+    """How long the improvement machinery has been idle — the visible metric
+    behind the idle-wake research mandate. Observed live: ~450 healthy wakes
+    across a 10-day proposal/experiment drought, with the archive and trial
+    lineage never fired because everything upstream was starved."""
+    import pandas as pd
+
+    now = pd.Timestamp.now(tz="UTC")
+
+    def _days_since(ts: str | None) -> float | None:
+        if not ts:
+            return None
+        try:
+            stamp = pd.Timestamp(ts)
+        except ValueError:
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.tz_localize("UTC")
+        return round((now - stamp).total_seconds() / 86400.0, 2)
+
+    last_proposal_ts = str(proposals[-1].get("created_at") or "") if proposals else None
+
+    last_experiment_ts = None
+    experiments_path = root / "results" / "backtest" / "experiments.jsonl"
+    if experiments_path.exists():
+        lines = experiments_path.read_text(encoding="utf-8").strip().splitlines()
+        if lines:
+            try:
+                last_experiment_ts = str(json.loads(lines[-1]).get("ts") or "") or None
+            except ValueError:
+                last_experiment_ts = None
+
+    wakes_since = 0
+    journal_path = root / "journal.jsonl"
+    if journal_path.exists() and last_proposal_ts:
+        for line in journal_path.read_text(encoding="utf-8").splitlines():
+            if '"agent_wakeup"' not in line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if str(row.get("ts") or "") > last_proposal_ts:
+                wakes_since += 1
+
+    return {
+        "days_since_last_proposal": _days_since(last_proposal_ts),
+        "days_since_last_experiment": _days_since(last_experiment_ts),
+        "wakes_since_last_proposal": wakes_since if last_proposal_ts else None,
+    }
 
 
 def _opportunity_recall(store: JobStore, job_id: str) -> dict[str, Any] | None:
@@ -178,6 +231,7 @@ def evolution_snapshot_block(store: JobStore, job_id: str) -> dict[str, Any]:
     return {
         "by_family": report["by_family"],
         "promotion_reliability": report["promotion_reliability"],
+        "research_staleness": report["research_staleness"],
         "_basis": (
             "Full update path + forward promotion verdicts. Low beat_rate in a "
             "family means that family's evidence bar is too weak — raise your "

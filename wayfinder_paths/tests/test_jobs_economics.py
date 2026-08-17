@@ -46,7 +46,11 @@ def test_objective_vector_prefers_downside_over_variance() -> None:
 
 
 def test_objective_vector_tail_and_fees() -> None:
-    trades = [{"pnl": -5.0, "fee": 0.5}, {"pnl": 2.0, "fee": 0.5}, {"pnl": -1.0, "fee": 0.5}]
+    trades = [
+        {"pnl": -5.0, "fee": 0.5},
+        {"pnl": 2.0, "fee": 0.5},
+        {"pnl": -1.0, "fee": 0.5},
+    ]
     vector = objective_vector(_equity([100, 99, 98, 100]), trades)
     assert vector["tail_loss"] == pytest.approx(5.0 / 100)
     assert vector["fee_load"] == pytest.approx(1.5 / 100)
@@ -82,7 +86,9 @@ def test_block_bootstrap_lcb_is_deterministic_and_ordered() -> None:
     assert lcb_mixed is not None and lcb_mixed < lcb_up
     again = block_bootstrap_lcb(mixed, block_len=5, iterations=200, confidence=0.9)
     assert again == lcb_mixed
-    assert block_bootstrap_lcb([0.01], block_len=5, iterations=50, confidence=0.9) is None
+    assert (
+        block_bootstrap_lcb([0.01], block_len=5, iterations=50, confidence=0.9) is None
+    )
 
 
 def _ok_report(**overrides) -> dict:
@@ -250,7 +256,9 @@ def test_promotion_verdict_records_once_when_mature(tmp_path: Path) -> None:
     journal = (store.job_dir(job_id) / "journal.jsonl").read_text(encoding="utf-8")
     # Two journal entries — the censor record + the beat verdict — and the
     # repeated call added neither twice (dedup holds).
-    assert journal.count("promotion_verdict") == 2
+    # Count typed rows exactly — trigger wakes fired by matured verdicts
+    # reference source="promotion_verdict" in their own journal rows.
+    assert journal.count('"type": "promotion_verdict"') == 2
 
     hurt = {**mature, "proposal_id": "prop-hurt", "delta_net_pnl": -2.0}
     _maybe_record_promotion_verdict(store, job_id, hurt)
@@ -336,9 +344,16 @@ def test_trial_lineage_records_every_run(tmp_path: Path) -> None:
             "optimizer": "grid",
             "rank_by": "net_return",
             "runs": [
-                {"run_id": f"r{i}", "params": {"x": i},
-                 "stats": {"net_return": i / 100, "trade_count": 10 + i,
-                           "win_rate": 0.5, "max_drawdown_pct": 0.05}}
+                {
+                    "run_id": f"r{i}",
+                    "params": {"x": i},
+                    "stats": {
+                        "net_return": i / 100,
+                        "trade_count": 10 + i,
+                        "win_rate": 0.5,
+                        "max_drawdown_pct": 0.05,
+                    },
+                }
                 for i in range(7)
             ],
         },
@@ -367,15 +382,30 @@ def test_evolution_reliability_ci_and_opportunity_recall(tmp_path: Path) -> None
         },
     )
     vec = lambda g: {  # noqa: E731
-        "net_log_growth": g, "downside_deviation": 0.01,
-        "tail_loss": 0.01, "max_drawdown_pct": 0.05,
+        "net_log_growth": g,
+        "downside_deviation": 0.01,
+        "tail_loss": 0.01,
+        "max_drawdown_pct": 0.05,
     }
-    record_candidate(store, job_id, candidate_id="inc", family="params",
-                     summary="incumbent", status="archived", objective=vec(0.02))
+    record_candidate(
+        store,
+        job_id,
+        candidate_id="inc",
+        family="params",
+        summary="incumbent",
+        status="archived",
+        objective=vec(0.02),
+    )
     set_incumbent(store, job_id, "inc")
-    record_candidate(store, job_id, candidate_id="better", family="params",
-                     summary="unpromoted better", status="archived",
-                     objective=vec(0.09))
+    record_candidate(
+        store,
+        job_id,
+        candidate_id="better",
+        family="params",
+        summary="unpromoted better",
+        status="archived",
+        objective=vec(0.09),
+    )
 
     report = build_evolution_report(store, job_id)
     reliability = report["promotion_reliability"]

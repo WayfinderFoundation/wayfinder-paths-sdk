@@ -293,6 +293,21 @@ def _maybe_record_promotion_verdict(
                 **record,
             },
         )
+        # A matured verdict is a research event: "that change did nothing"
+        # (or hurt/beat) is the license to advance the next candidate —
+        # observed live: a neutral verdict was followed by days of pure
+        # health-check wakes because nothing said "act on it".
+        try:
+            from wayfinder_paths.jobs.triggers import fire_triggers
+
+            fire_triggers(
+                store,
+                store.load(job_id),
+                ["verdict_matured"],
+                source="promotion_verdict",
+            )
+        except Exception:  # noqa: BLE001
+            pass
     except Exception:  # noqa: BLE001 — bookkeeping must not break the wake
         return
 
