@@ -434,18 +434,32 @@ async def _reconcile(
     venue_positions: dict[str, Any] = {}
     account_values: dict[str, float] = {}
     for name, broker in brokers.items():
-        try:
-            venue_state = await broker.fetch_state(symbols)
-        except Exception as exc:
+        # A transient backend blip must not become a reconcile_mismatch wake:
+        # every ambiguous snapshot journals + triggers the (expensive) agent,
+        # and 13 of 13 recent mismatches on the live canary were one-shot
+        # fetch failures, not state divergence. Retry briefly; a PERSISTENT
+        # failure still goes ambiguous -> reduce-only, unchanged.
+        venue_state = None
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                venue_state = await broker.fetch_state(symbols)
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+        if venue_state is None:
             return (
                 StateSnapshot(
-                    status="ambiguous", reason=f"venue state fetch failed: {exc}"
+                    status="ambiguous",
+                    reason=f"venue state fetch failed: {last_error}",
                 ),
                 [
                     {
                         "kind": "reconcile_fetch_failed",
                         "venue": name,
-                        "reason": str(exc),
+                        "reason": str(last_error),
                     }
                 ],
             )
