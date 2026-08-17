@@ -21,6 +21,7 @@ block's archetype counts and pick the family that treats YOUR disease.
 | Cross-venue basis: `venue_basis_bps`, funding divergence | SPECULATIVE | execution-quality anomalies | derive-features venue set |
 | Exit-structure alpha: MFE targets, trailing, breakeven, scale-out — pre-registered strategy params (`mfe_target_bps`, `trail_bps`, …) in decide(), no engine change | STRONG when forensics show avg MFE >> avg realized | early_exit | compound factorial grid + WF |
 | Sizing overlays: vol-scaled legs, signal-strength scaling, regime-conditional size — pre-registered params | MODERATE | drawdown-shape anomalies | factorial grid + WF |
+| Leverage as a tunable: `execution_params.leverage` scales ALL sizing engine-wide (backtest + live identically, set-leverage auto-restamps the gate). Sweep it in experiments against drawdown/margin constraints — the risk-adjusted optimum is rarely 1.0. Final setting is operator-owned. | MODERATE | under-utilized equity, drawdown-shape | experiments over leverage values + WF; propose via params_update |
 | Event-aftermath / analogs-of-losers: what do the nearest analogs of each loser's pre-entry window share? | SPECULATIVE (ideation fuel) | any clustered archetype | `analogs` + `chart` lenses → then a campaign def |
 
 ## Evidence tiers
@@ -47,10 +48,22 @@ block's archetype counts and pick the family that treats YOUR disease.
 - **Triage**: rank by prior strength × symptom match × cost-to-test. Each
   ideation allocates a portfolio: >=1 cheap test, >=1 structural, <=1
   moonshot, and >=1 family not yet in the dead map.
+- **Canonical signal library first**: before hand-writing workspace defs,
+  sweep the vetted vectorized library (`signal-scan` runs it; 40+
+  causality-checked families). Hand-rolled defs are for hypotheses the
+  library cannot express — not for re-deriving what it already has.
 - **Campaigns**: new-def sweeps run as `signal-scan --campaign NAME` — your
   declared defs are their own BH family; the canonical library stays
   untaxed. Declare the campaign's hypothesis families in the agenda BEFORE
   scanning; renaming to relaunch is snooping (the ledger records it).
+- **Optimizer selection**: the experiments tool has TWO optimizers and grid
+  is not the default answer. GRID is for factorial ATTRIBUTION (2-4 factors,
+  you need every cell + `factor_attribution`). OPTUNA (TPE,
+  `optimizer="optuna"` with the same search-space file) is for EXPLORATION:
+  any continuous/mixed space, >2 params, or >30 cells — it covers ground a
+  coarse lattice cannot, on the same budget. A search that only ever runs
+  3x3 grids is a local optimizer by construction; TPE-first on wide spaces
+  is how the search stays global. Rank with walk-forward either way.
 - **Compound experiments** (second-order treatments): express a
   multi-intervention causal story as 2-4 pre-registered factors (boolean
   gates / structural params), run the factorial via the experiments grid.
@@ -64,8 +77,10 @@ block's archetype counts and pick the family that treats YOUR disease.
   contract (the POL funding-gate pattern, generalized).
 - **Dead-map scope**: dead = the tested claim, never the asset or family;
   owner rejections bind on the change, not its neighborhood.
-- **Long runs via CLI in-session (detached with a log), never MCP ops** —
-  the 300s op timeout cannot hold a grid.
+- **Long runs detach**: `backtest_job` via MCP runs detached by default —
+  kick it, poll `op_status`, keep working. Grids/experiments via CLI
+  in-session detach with a log the same way. Never sit synchronously on a
+  heavy run.
 
 **Post-apply shadow (mechanical counterfactual).** After any applied proposal the harness replays the pre-apply strategy over the forward bars and diffs it against the actual book (`post_apply_shadow` in the wake context; `wayfinder job counterfactual <job_id>` on demand). Entry-gating changes are adjudicated HERE — a filter's cost is invisible in the live book because skipped trades never print. Shadow sustainably ahead => revert/adjust proposal citing the block; active ahead => log the forward validation in the decisions ledger. Never hand-recompute counterfactuals.
 
