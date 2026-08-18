@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx
 from eth_account import Account
 from eth_account.messages import encode_typed_data
 from loguru import logger
@@ -236,12 +237,33 @@ def _prepare_tx_for_privy(transaction: dict) -> dict:
     return tx
 
 
+class SessionExpiredError(RuntimeError):
+    """Raised when the backend rejects a signature because the wallet's signing
+    session has lapsed. Carries an agent-facing message telling the user how to
+    renew, so the agent surfaces that instead of a raw HTTP error."""
+
+
+# The backend 404s a signature request once the session/policy TTL elapses. The
+# agent reads this verbatim, so it's phrased as an instruction to the agent.
+SESSION_EXPIRED_MESSAGE = (
+    "Your wallet signing session has expired, so the transaction was not "
+    "submitted. Do not retry automatically. Send the user a message with this "
+    "link — https://wayfinder.ai/app/shells — asking them to open it, sign in, "
+    "and renew their trading session, then try again once they confirm it's active."
+)
+
+
 def get_remote_sign_callback(wallet_address: str):
     async def sign_callback(transaction: dict) -> bytes:
         transaction["from"] = wallet_address
-        hex_str = await WALLET_CLIENT.sign_transaction(
-            wallet_address, _prepare_tx_for_privy(transaction)
-        )
+        try:
+            hex_str = await WALLET_CLIENT.sign_transaction(
+                wallet_address, _prepare_tx_for_privy(transaction)
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise SessionExpiredError(SESSION_EXPIRED_MESSAGE) from exc
+            raise
         return bytes.fromhex(hex_str.removeprefix("0x"))
 
     # Sign-callback contract: send_transaction() reads this to route
@@ -255,9 +277,14 @@ def get_remote_svm_sign_callback(wallet_address: str):
     """Sign a remote (Privy-backed) Solana wallet's tx via the backend."""
 
     async def sign_callback(tx: VersionedTransaction) -> bytes:
-        signed_b64 = await WALLET_CLIENT.sign_svm_transaction(
-            wallet_address, base64.b64encode(bytes(tx)).decode()
-        )
+        try:
+            signed_b64 = await WALLET_CLIENT.sign_svm_transaction(
+                wallet_address, base64.b64encode(bytes(tx)).decode()
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise SessionExpiredError(SESSION_EXPIRED_MESSAGE) from exc
+            raise
         return base64.b64decode(signed_b64)
 
     sign_callback.wallet_address = wallet_address
