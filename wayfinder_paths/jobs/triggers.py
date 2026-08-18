@@ -25,7 +25,13 @@ DEFAULT_DEBOUNCE_SECONDS = 600
 # (not market conditions the owner opted into watching).
 # verdict_matured fires at most once per promotion — a matured forward
 # verdict is a research event every job should act on, config or not.
-ALWAYS_WAKE_EVENTS = {"proposal_restage_requested", "verdict_matured"}
+# successor_overdue fires when a kind=process owner rejection's expected
+# successor proposal has not appeared within the watchdog window.
+ALWAYS_WAKE_EVENTS = {
+    "proposal_restage_requested",
+    "verdict_matured",
+    "successor_overdue",
+}
 
 
 def fire_triggers(

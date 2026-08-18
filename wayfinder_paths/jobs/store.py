@@ -8,6 +8,7 @@ from typing import Any
 
 import yaml
 
+from wayfinder_paths.jobs.failures import classify_failure
 from wayfinder_paths.jobs.forward import default_forward_summary
 from wayfinder_paths.jobs.models import (
     ApplicationStatus,
@@ -26,6 +27,18 @@ APPLICATION_STATUSES = {
     "canceled",
 }
 PROPOSAL_STATUSES = {"pending", "approved", "rejected"}
+REJECTION_KINDS = {"process", "substantive"}
+# Reasons that mark a rejection as process housekeeping (mechanics of the
+# pipeline) rather than a substantive verdict on the change itself.
+_PROCESS_REJECTION_MARKERS = (
+    "superseded",
+    "re-stage",
+    "restage",
+    "oom",
+    "infrastructure",
+    "red gate",
+)
+SUCCESSOR_EXPECTED_PATH = "state/successor_expected.json"
 
 
 class JobStore:
@@ -553,6 +566,7 @@ class JobStore:
         *,
         reason: str | None = None,
         rejected_by: str | None = None,
+        kind: str | None = None,
     ) -> dict[str, Any]:
         proposal = self.load_proposal(job_id, proposal_id)
         application_status = proposal["application"]["status"]
@@ -561,18 +575,67 @@ class JobStore:
                 f"Cannot reject proposal with application status {application_status}: "
                 f"{proposal_id}"
             )
+        by = rejected_by or "owner"
+        # Durable restage: an agent cannot bury owner-approved work over a
+        # transient box failure. When the latest re-stage/validation failure
+        # is infrastructure-class (OOM, lock, timeout), the proposal stays
+        # approved with restage_requested and the watchdog retries — only the
+        # owner may abandon approved work. (Live incident: one OOM during a
+        # mechanical re-stage led the agent to self-reject an owner-approved
+        # proposal, freezing the change until a human noticed.)
+        if proposal["status"] == "approved" and by != "owner":
+            failure_text = _latest_failure_text(proposal, reason)
+            if classify_failure(failure_text) == "infrastructure":
+                proposal["application"]["restage_requested"] = True
+                proposal["updated_at"] = utc_now_iso()
+                self.write_proposal(job_id, proposal)
+                self.append_journal(
+                    job_id,
+                    {
+                        "type": "proposal_reject_refused",
+                        "proposal_id": proposal_id,
+                        "rejected_by": by,
+                        "failure_kind": "infrastructure",
+                    },
+                )
+                raise ValueError(
+                    f"refusing agent rejection of approved proposal "
+                    f"{proposal_id}: its latest re-stage/validation failure "
+                    "is infrastructure-class (OOM/lock/timeout) — a "
+                    "transient box condition, not evidence against the "
+                    "change. The proposal stays approved with "
+                    "restage_requested and the watchdog retries the "
+                    "re-stage; only the owner may abandon approved work."
+                )
+        if kind is not None and kind not in REJECTION_KINDS:
+            raise ValueError(f"rejection kind must be one of {sorted(REJECTION_KINDS)}")
+        rejection_kind = kind or _infer_rejection_kind(reason)
         proposal["status"] = "rejected"
         proposal["approval"]["status"] = "rejected"
         # Provenance is the difference between "the owner said no" (binding —
         # the worker must not re-propose an equivalent change without named
         # new evidence) and the worker's own superseded-draft housekeeping
         # (retry expected). Without it both rejections looked identical and
-        # the worker re-proposed owner-vetoed changes.
+        # the worker re-proposed owner-vetoed changes. `kind` splits owner
+        # rejections further: only kind=substantive binds as a veto;
+        # kind=process (superseded / re-stage mechanics / red-gate
+        # housekeeping) is an invitation to file a corrected successor.
         proposal["rejection"] = {
             "reason": reason,
-            "by": rejected_by or "owner",
+            "by": by,
+            "kind": rejection_kind,
             "ts": utc_now_iso(),
         }
+        if by == "owner" and rejection_kind == "process":
+            # A process rejection from the owner expects a successor
+            # proposal; the watchdog wakes the agent if none appears.
+            expected = self.read_json(job_id, SUCCESSOR_EXPECTED_PATH, default=[])
+            if not isinstance(expected, list):
+                expected = []
+            expected.append(
+                {"proposal_id": proposal_id, "ts": utc_now_iso(), "reason": reason}
+            )
+            self.write_json(job_id, SUCCESSOR_EXPECTED_PATH, expected)
         if application_status == "queued":
             self._set_application_status(proposal, "canceled")
         proposal["updated_at"] = utc_now_iso()
@@ -596,6 +659,7 @@ class JobStore:
                 "proposal_id": proposal_id,
                 "application_status": proposal["application"]["status"],
                 "rejected_by": proposal["rejection"]["by"],
+                "kind": rejection_kind,
                 "reason": reason,
             },
         )
@@ -777,6 +841,33 @@ class JobStore:
                     "ts": utc_now_iso(),
                 }
             )
+
+
+def _infer_rejection_kind(reason: str | None) -> str:
+    text = (reason or "").lower()
+    if any(marker in text for marker in _PROCESS_REJECTION_MARKERS):
+        return "process"
+    return "substantive"
+
+
+def _latest_failure_text(proposal: Mapping[str, Any], reason: str | None) -> str:
+    """Best-effort text of the proposal's most recent failure, for the
+    infrastructure-vs-evidence classification on agent self-rejections."""
+    application = proposal.get("application") or {}
+    latest_validation = application.get("latest_validation") or {}
+    parts: list[Any] = [
+        reason,
+        application.get("error"),
+        application.get("restage_last_error"),
+        latest_validation.get("error"),
+        (application.get("validation") or {}).get("error"),
+    ]
+    for check in latest_validation.get("checks") or []:
+        if isinstance(check, dict) and not check.get("passed"):
+            parts.extend([check.get("name"), check.get("detail"), check.get("error")])
+    summary = (proposal.get("candidate_report") or {}).get("validation_summary") or {}
+    parts.extend(summary.get("failed_checks") or [])
+    return " | ".join(str(part) for part in parts if part)
 
 
 def _validate_applicable_proposal(

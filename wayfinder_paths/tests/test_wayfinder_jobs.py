@@ -1224,6 +1224,7 @@ def test_reject_proposal_records_provenance(tmp_path: Path) -> None:
     assert agent["rejection"] == {
         "reason": "superseded by v2",
         "by": "agent",
+        "kind": "process",  # inferred: superseded-draft housekeeping
         "ts": agent["rejection"]["ts"],
     }
     journal = (store.job_dir(job.id) / "journal.jsonl").read_text()

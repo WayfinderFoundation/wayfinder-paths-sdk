@@ -507,6 +507,60 @@ def _standing_checks_block(root: Path) -> dict[str, Any]:
     return block
 
 
+def _compute_status_block(root: Path) -> dict[str, Any]:
+    """Mechanical box truth: is compute healthy RIGHT NOW?
+
+    One production OOM froze research for 14 hours because the agent carried
+    "OOM-blocked" claims in its agendas long after memory recovered — nothing
+    in the context ever contradicted the stale belief. This block is computed
+    from the box on every wake so an infrastructure claim can always be
+    checked against current reality. Best-effort on every field, never
+    raises."""
+    mem_available_mb: int | None = None
+    try:
+        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemAvailable:"):
+                mem_available_mb = int(line.split()[1]) // 1024
+                break
+    except Exception:  # noqa: BLE001 — non-Linux boxes have no /proc/meminfo
+        mem_available_mb = None
+    last_experiment_at: str | None = None
+    experiments_path = root / "results" / "backtest" / "experiments.jsonl"
+    try:
+        for line in reversed(experiments_path.read_text(encoding="utf-8").splitlines()):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if isinstance(row, dict):
+                last_experiment_at = str(row.get("ts") or "") or None
+            break
+    except Exception:  # noqa: BLE001
+        last_experiment_at = None
+    last_backtest_ok_at: str | None = None
+    viz_path = root / "results" / "backtest" / "visualization.json"
+    try:
+        last_backtest_ok_at = dt.datetime.fromtimestamp(
+            viz_path.stat().st_mtime, tz=dt.UTC
+        ).isoformat()
+    except Exception:  # noqa: BLE001
+        last_backtest_ok_at = None
+    return {
+        "mem_available_mb": mem_available_mb,
+        "last_experiment_at": last_experiment_at,
+        "last_backtest_ok_at": last_backtest_ok_at,
+        "_basis": (
+            "Mechanical box truth computed THIS wake. Infrastructure "
+            "failures (OOM, locks, timeouts) are TRANSIENT and "
+            "watchdog-retried — they are FORBIDDEN as reasons to mark a "
+            "research lane blocked or exhausted, in agendas or reports. "
+            "NEVER carry an infrastructure claim from memory when this "
+            "block contradicts it. If this block shows healthy memory and "
+            "recent successful compute, every 'OOM-blocked' qualifier you "
+            "have ever written is void."
+        ),
+    }
+
+
 def _drop_volatile_stable_keys(value: Any) -> Any:
     match value:
         case dict():
@@ -652,6 +706,7 @@ def _build_worker_prompt_sections(
         "post_apply_shadow": _counterfactual_block(store, job_id),
         "research_substrate": _research_substrate_block(root),
         "standing_checks": _standing_checks_block(root),
+        "compute_status": _compute_status_block(root),
         "evolution": _evolution_block(store, job_id),
         "archive": _archive_block(store, job_id),
         "restage_tasks": restage_tasks,
@@ -681,9 +736,14 @@ def _build_worker_prompt_sections(
         "reason='superseded by <new-id>')) so the owner never reviews stale drafts. "
         "ALWAYS pass a reason on self-rejections — an unreasoned rejection is "
         "recorded as an OWNER veto.\n"
-        "- Rejections have provenance (`rejection.by` on the proposal): an "
-        "OWNER rejection is a DECISION, not a formality. NEVER re-propose an "
-        "equivalent change after an owner rejection unless you have NAMED new "
+        "- Rejections have provenance (`rejection.by` + `rejection.kind` on "
+        "the proposal): an OWNER rejection with kind='substantive' is a "
+        "DECISION, not a formality — a binding veto. kind='process' owner "
+        "rejections (superseded drafts, re-stage mechanics, red-gate "
+        "housekeeping) are INVITATIONS, not vetoes: file the corrected "
+        "successor proposal promptly. NEVER re-propose an "
+        "equivalent change after a substantive owner rejection unless you "
+        "have NAMED new "
         "evidence that did not exist at rejection time, and the new proposal "
         "summary must cite both the rejected proposal id and that evidence. "
         "Your own reasoned self-rejections (superseded/stale drafts) do not "
@@ -729,6 +789,13 @@ def _build_worker_prompt_sections(
         "the next candidate, run the next experiment, or record in the "
         "report precisely why not. A neutral verdict means the change did "
         "nothing: that is license to try the next candidate, not to wait.\n"
+        "- Infrastructure failures are BOX conditions, not research "
+        "verdicts: any claim that a lane is OOM-blocked, locked, or "
+        "timed-out must cite the `compute_status` block from THIS wake — "
+        "stale infrastructure beliefs carried from memory, agendas, or "
+        "prior reports are VOID when compute_status contradicts them. "
+        "Completed background operations must be harvested and acted on "
+        "regardless of this wake's island assignment.\n"
         "- Research staleness (`evolution.research_staleness`) is visible "
         "state. When the job is healthy, no verdict is pending, and "
         "`research_staleness.stale` is true (no experiment in "
