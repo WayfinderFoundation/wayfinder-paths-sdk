@@ -11,6 +11,7 @@ from loguru import logger
 
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.jobs.derived_features import refresh_derived_features_if_stale
+from wayfinder_paths.jobs.failures import cpu_steal_pct
 from wayfinder_paths.jobs.forward import is_forward_empty
 from wayfinder_paths.jobs.ledger import tail_ledger
 from wayfinder_paths.jobs.memory_hygiene import sanitize_job_memory
@@ -544,8 +545,15 @@ def _compute_status_block(root: Path) -> dict[str, Any]:
         ).isoformat()
     except Exception:  # noqa: BLE001
         last_backtest_ok_at = None
+    steal = cpu_steal_pct()
+    try:
+        loadavg: list[float] | None = [round(v, 2) for v in os.getloadavg()]
+    except OSError:
+        loadavg = None
     return {
         "mem_available_mb": mem_available_mb,
+        "cpu_steal_pct": None if steal is None else round(steal, 1),
+        "loadavg": loadavg,
         "last_experiment_at": last_experiment_at,
         "last_backtest_ok_at": last_backtest_ok_at,
         "_basis": (
@@ -556,7 +564,11 @@ def _compute_status_block(root: Path) -> dict[str, Any]:
             "NEVER carry an infrastructure claim from memory when this "
             "block contradicts it. If this block shows healthy memory and "
             "recent successful compute, every 'OOM-blocked' qualifier you "
-            "have ever written is void."
+            "have ever written is void. cpu_steal_pct above ~60 means the "
+            "hypervisor is taking most of this box's CPU and local "
+            "subprocesses crawl — prefer resident MCP tools for reads, "
+            "defer optional heavy compute, and NEVER interpret local "
+            "timeouts (exit 124) as remote outages."
         ),
     }
 
@@ -796,6 +808,19 @@ def _build_worker_prompt_sections(
         "prior reports are VOID when compute_status contradicts them. "
         "Completed background operations must be harvested and acted on "
         "regardless of this wake's island assignment.\n"
+        "- TOOL CALLS ARE MCP-FIRST: API/research reads (research_*, "
+        "hyperliquid_*, onchain_*, core_web_search, delta lab, funding "
+        "history, prices) MUST use this session's resident MCP tools — "
+        "NEVER `wayfinder <tool-name>` CLI subprocesses, which cold-import "
+        "the whole SDK (~90s CPU and 150-250MB per call under load; the "
+        "box's OOM cascade was mostly these). The `wayfinder job ...` CLI "
+        "remains correct ONLY for job machinery and detached heavy ops "
+        "(backtests, experiments, scans) — wrap those in `timeout 300` "
+        "minimum and run them one at a time. An `exit 124` from a LOCAL "
+        "CLI command is LOCAL CPU STARVATION, never evidence a backend is "
+        "down: verify backend health ONLY via a resident MCP tool result, "
+        "and void any agenda/memory claim of 'backend DOWN' that is not "
+        "backed by an MCP-tool failure observed THIS wake.\n"
         "- Research staleness (`evolution.research_staleness`) is visible "
         "state. When the job is healthy, no verdict is pending, and "
         "`research_staleness.stale` is true (no experiment in "
