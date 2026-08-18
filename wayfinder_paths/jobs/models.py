@@ -212,6 +212,7 @@ class WayfinderJob:
         agent_wake_seconds: int | None = None,
         auto_limits: dict[str, Any] | None = None,
         execution_contract: ExecutionContract = "legacy",
+        initializer_session_id: str | None = None,
     ) -> WayfinderJob:
         jid = safe_job_id(job_id)
         normalized_mode = normalize_agent_mode(agent_mode)
@@ -255,9 +256,13 @@ class WayfinderJob:
         initializer_session = re.sub(
             r"[^A-Za-z0-9_-]",
             "",
-            os.environ.get("OPENCODE_SESSION_ID")
-            or os.environ.get("OPENCODE_SESSIONID")
-            or "",
+            initializer_session_id
+            if initializer_session_id is not None
+            else (
+                os.environ.get("OPENCODE_SESSION_ID")
+                or os.environ.get("OPENCODE_SESSIONID")
+                or ""
+            ),
         )
         controller: dict[str, Any] = (
             {

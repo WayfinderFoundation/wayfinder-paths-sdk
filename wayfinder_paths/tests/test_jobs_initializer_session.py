@@ -27,6 +27,16 @@ def test_new_accepts_legacy_env_spelling(monkeypatch) -> None:
     assert job.controller["initializer_session_id"] == "ses_legacy9"
 
 
+def test_new_accepts_explicit_initializer_session(monkeypatch) -> None:
+    monkeypatch.setenv("OPENCODE_SESSION_ID", "ses_env")
+    job = WayfinderJob.new(
+        "init-explicit",
+        interval_seconds=3600,
+        initializer_session_id="ses_explicit!dirty",
+    )
+    assert job.controller["initializer_session_id"] == "ses_explicitdirty"
+
+
 def test_new_leaves_controller_empty_without_env(monkeypatch) -> None:
     monkeypatch.delenv("OPENCODE_SESSION_ID", raising=False)
     monkeypatch.delenv("OPENCODE_SESSIONID", raising=False)

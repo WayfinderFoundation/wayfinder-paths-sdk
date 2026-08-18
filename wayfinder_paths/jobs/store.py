@@ -160,7 +160,7 @@ class JobStore:
         self._write_jsonl_if_missing(root / "results" / "forward" / "fills.jsonl")
         self._write_json_if_missing(
             root / "results" / "forward" / "summary.json",
-            default_forward_summary(job.id),
+            default_forward_summary(job.id, inception_at=job.created_at),
         )
         self._write_json_if_missing(
             root / "versions" / "active.json",

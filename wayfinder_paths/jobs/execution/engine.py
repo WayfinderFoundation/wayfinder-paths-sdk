@@ -348,6 +348,7 @@ async def _run_tick_inner(
                 {
                     "timestamp": bar_iso,
                     "visible_bar_count": len(view),
+                    "visible_latest_timestamp": _latest_visible_timestamp(view),
                     "guard_event_count": len(result.guard_events),
                 }
             )
@@ -498,10 +499,19 @@ async def _run_tick_inner(
             "timestamp": bar_iso,
             # len(view) == row count; avoids a full DataFrame copy per bar.
             "visible_bar_count": len(ctx.view),
+            # A bounded multi-symbol window can legitimately lose more sparse
+            # rows than it gains at the next timestamp. The latest visible
+            # timestamp is the invariant that actually proves causal replay.
+            "visible_latest_timestamp": _latest_visible_timestamp(ctx.view),
             "guard_event_count": len(result.guard_events),
         }
     )
     return result
+
+
+def _latest_visible_timestamp(view: CompletedBarsView) -> str | None:
+    timestamps = view._ensure_timestamps()
+    return timestamps[-1].isoformat() if timestamps else None
 
 
 def _apply_engine_leverage(
