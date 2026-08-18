@@ -29,6 +29,7 @@ they exist to handle their event, not to run the rotation.
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,9 @@ SCHEDULER_STATE_PATH = "state/scheduler.json"
 # A trigger wake stamps state/agent_wake_state.json immediately before the
 # worker runs; a stamp this fresh means THIS wake is the trigger's wake.
 _TRIGGER_WINDOW_S = 180
+# A background op that completed within this window and has not been marked
+# harvested still owns the research thread — do not rotate away from it.
+_CONTINUATION_WINDOW_S = 2 * 3600
 
 ISLAND_DIRECTIVES: dict[str, str] = {
     "exploit": (
@@ -120,6 +124,47 @@ def assign_island(
     }
     total = sum(assigned.values())
 
+    # Continuation beats rotation: an in-flight (or recently completed,
+    # unharvested) background op is a research thread mid-flight — rotating
+    # to a different island strands its results (live incident: a wake
+    # started a grid, the next wake rotated islands and the completed grid
+    # was never read). Deterministic: pure function of on-disk op status.
+    history = state.get("history") or []
+    last_island = ""
+    if history and isinstance(history[-1], dict):
+        last_island = str(history[-1].get("island") or "")
+    continuation_ops = _continuation_ops(root, now=now)
+    if continuation_ops and last_island in ISLANDS:
+        assigned[last_island] += 1
+        reasons = [
+            "continuation: in-flight/unharvested background op — finish the "
+            "thread before rotating"
+        ]
+        state = {
+            "assigned": assigned,
+            "total": total + 1,
+            "history": history[-19:]
+            + [{"island": last_island, "ts": utc_now_iso(), "reason": reasons[0]}],
+        }
+        store.write_json(job_id, SCHEDULER_STATE_PATH, state)
+        store.append_journal(
+            job_id,
+            {
+                "type": "island_assigned",
+                "island": last_island,
+                "reasons": reasons,
+                "continuation_ops": continuation_ops,
+            },
+        )
+        return {
+            "island": last_island,
+            "reasons": reasons,
+            "directive": ISLAND_DIRECTIVES[last_island],
+            "agenda": f"research/islands/{last_island}.md",
+            "assigned_counts": assigned,
+            "continuation_ops": continuation_ops,
+        }
+
     weights = {island: spec.island_weights.get(island, 0.0) for island in ISLANDS}
     boosts: list[str] = []
     if _verdict_stuck_streak(store, job_id, spec.stuck_same_family_non_wins):
@@ -176,6 +221,53 @@ def assign_island(
         "assigned_counts": assigned,
         "target_weights": {k: round(v, 3) for k, v in weights.items()},
     }
+
+
+def _continuation_ops(root: Path, *, now: datetime | None) -> list[str]:
+    """Op names with an in-flight or recently-completed-but-unharvested
+    background op (state/background_ops/<op>.json, written by the MCP
+    detached-op launcher). A running op with a dead pid is a stale marker
+    from a killed run — it must not pin the rotation forever."""
+    ops_dir = root / "state" / "background_ops"
+    if not ops_dir.exists():
+        return []
+    current = now or datetime.now(UTC)
+    ops: list[str] = []
+    for path in sorted(ops_dir.glob("*.json")):
+        if path.name.endswith(".result.json"):
+            continue
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict):
+            continue
+        state = str(doc.get("state") or "")
+        if state == "running":
+            pid = doc.get("pid")
+            if isinstance(pid, int) and pid > 0 and not _pid_alive(pid):
+                continue
+            ops.append(str(doc.get("op") or path.stem))
+            continue
+        if state != "done" or doc.get("harvested"):
+            continue
+        try:
+            finished = datetime.fromisoformat(str(doc.get("finished_at")))
+        except (TypeError, ValueError):
+            continue
+        if finished.tzinfo is None:
+            finished = finished.replace(tzinfo=UTC)
+        if (current - finished).total_seconds() <= _CONTINUATION_WINDOW_S:
+            ops.append(str(doc.get("op") or path.stem))
+    return ops
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 def _fresh_trigger(root: Path, *, now: datetime | None) -> list[str] | None:

@@ -190,12 +190,22 @@ async def _start_background_op(
     proc.stdin.write(json.dumps({"op": op, "kwargs": kwargs}).encode())
     await proc.stdin.drain()
     proc.stdin.close()
+    # Best-effort island stamp: which research thread started this op, so the
+    # scheduler's continuation check can keep the wake rotation on it.
+    scheduler_state = _load_json_file(
+        store.job_dir(job_id) / "state" / "scheduler.json"
+    )
+    history = (scheduler_state or {}).get("history") or []
+    island = (
+        history[-1].get("island") if history and isinstance(history[-1], dict) else None
+    )
     status = {
         "op": op,
         "job_id": job_id,
         "state": "running",
         "pid": proc.pid,
         "started_at": utc_now_iso(),
+        **({"island": island} if island else {}),
     }
     status_path.write_text(json.dumps(status), encoding="utf-8")
     task = asyncio.get_running_loop().create_task(
@@ -781,11 +791,14 @@ async def core_jobs(
             # attribution is therefore the agent's own housekeeping, a bare
             # one is an owner veto — which binds the worker (no equivalent
             # re-proposal without named new evidence).
+            # `kind` (process|substantive) rides the same param used by
+            # propose: process rejections expect a successor proposal.
             proposal = store.reject_proposal(
                 job_id,
                 proposal_id,
                 reason=reason,
                 rejected_by="agent" if reason else "owner",
+                kind=kind,
             )
             sync_all_jobs(store=store)
             return ok(proposal)

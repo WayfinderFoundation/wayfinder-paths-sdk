@@ -1544,12 +1544,23 @@ def restage_cmd(job_id: str, proposal_id: str, candidate_dir: str | None) -> Non
     show_default=True,
     help="Who is rejecting: owner vetoes bind the worker; agent = housekeeping.",
 )
+@click.option(
+    "--kind",
+    type=click.Choice(["process", "substantive"]),
+    default=None,
+    help="process = mechanics (superseded/re-stage), successor expected; "
+    "substantive = verdict on the change. Default: inferred from --reason.",
+)
 def reject_cmd(
-    job_id: str, proposal_id: str, reason: str | None, rejected_by: str
+    job_id: str,
+    proposal_id: str,
+    reason: str | None,
+    rejected_by: str,
+    kind: str | None,
 ) -> None:
     store = JobStore()
     proposal = store.reject_proposal(
-        job_id, proposal_id, reason=reason, rejected_by=rejected_by
+        job_id, proposal_id, reason=reason, rejected_by=rejected_by, kind=kind
     )
     sync_all_jobs(store=store)
     _echo_json({"ok": True, "result": proposal})

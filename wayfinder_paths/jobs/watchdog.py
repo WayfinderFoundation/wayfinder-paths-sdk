@@ -50,6 +50,14 @@ HARD_KILL_TIMEOUT = timedelta(minutes=45)
 # restage wake re-fired (once per window) — one truncated prompt or dead
 # session must not strand an owner-approved change.
 RESTAGE_NAG_TIMEOUT = timedelta(minutes=30)
+# Mechanical re-stages are retried across watchdog passes (one per pass) —
+# an OOM'd backtest must not strand an owner-approved change — but bounded:
+# past this many failed attempts the owner is escalated instead.
+RESTAGE_MAX_ATTEMPTS = 5
+# A kind=process owner rejection expects a corrected successor proposal.
+# None within this window → wake the agent once per entry.
+SUCCESSOR_OVERDUE_TIMEOUT = timedelta(hours=12)
+_SUCCESSOR_EXPECTED_PATH = "state/successor_expected.json"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -216,18 +224,51 @@ def _recover_restage(
     if params:
         if not allow_mechanical:
             return None  # next pass, 5 minutes out
+        attempts = int(application.get("restage_attempts") or 0)
+        if attempts >= RESTAGE_MAX_ATTEMPTS:
+            if application.get("restage_attempts_exhausted"):
+                return None
+            application["restage_attempts_exhausted"] = True
+            store.write_proposal(job_id, proposal)
+            event = {
+                "type": "application_watchdog_recovered",
+                "proposal_id": proposal_id,
+                "stalled_status": "restage_requested",
+                "action": "restage_attempts_exhausted",
+                "outcome": "needs_attention",
+                "attempts": attempts,
+            }
+            store.append_journal(job_id, event)
+            return event
         # circular import: proposals → worker → …driver → triggers → watchdog
         from wayfinder_paths.jobs.proposals import restage_proposal
 
         try:
             result = restage_proposal(store, job_id, proposal_id)
         except Exception as exc:
+            from wayfinder_paths.jobs.failures import classify_failure
+
+            failure_kind = classify_failure(str(exc))
+            # Persist the bounded retry counter on the CURRENT on-disk
+            # proposal — restage_proposal reloads and rewrites it internally,
+            # so our in-memory copy may be stale. An infrastructure-class
+            # failure keeps the re-stage request alive so later passes retry
+            # (the failed restage may have cleared the flag before dying).
+            fresh = store.load_proposal(job_id, proposal_id)
+            fresh_application = fresh["application"]
+            fresh_application["restage_attempts"] = attempts + 1
+            fresh_application["restage_last_error"] = str(exc)[:300]
+            if failure_kind == "infrastructure":
+                fresh_application["restage_requested"] = True
+            store.write_proposal(job_id, fresh)
             store.append_journal(
                 job_id,
                 {
                     "type": "application_watchdog_skipped",
                     "proposal_id": proposal_id,
                     "reason": f"mechanical restage failed: {exc}",
+                    "failure_kind": failure_kind,
+                    "restage_attempts": attempts + 1,
                 },
             )
             return None
@@ -268,6 +309,75 @@ def _recover_restage(
     }
     store.append_journal(job_id, event)
     return event
+
+
+def _check_successor_overdue(
+    store: JobStore,
+    job_id: str,
+    proposals: list[dict[str, Any]],
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Wake the agent when a process-rejection's expected successor is late.
+
+    A kind=process owner rejection (superseded draft, re-stage mechanics) is
+    an INVITATION, not a veto — the owner expects a corrected successor
+    proposal. If none has been created within the window, journal
+    `successor_overdue` once per entry and fire a trigger wake so the
+    invitation cannot silently rot.
+    """
+    expected = store.read_json(job_id, _SUCCESSOR_EXPECTED_PATH) or []
+    if not isinstance(expected, list):
+        return []
+    events: list[dict[str, Any]] = []
+    changed = False
+    for entry in expected:
+        if not isinstance(entry, dict) or entry.get("notified"):
+            continue
+        if _age(now, entry.get("ts")) < SUCCESSOR_OVERDUE_TIMEOUT:
+            continue
+        entry_ts = str(entry.get("ts") or "")
+        rejected_id = str(entry.get("proposal_id") or "")
+        # A successor is any OTHER proposal staged after the rejection —
+        # candidate_report.generated_at is the propose/restage stamp;
+        # updated_at is the fallback for report-less proposals.
+        successor_exists = any(
+            str(p.get("proposal_id")) != rejected_id
+            and str(
+                (p.get("candidate_report") or {}).get("generated_at")
+                or p.get("updated_at")
+                or ""
+            )
+            > entry_ts
+            for p in proposals
+        )
+        entry["notified"] = True
+        changed = True
+        if successor_exists:
+            continue
+        store.append_journal(
+            job_id,
+            {
+                "type": "successor_overdue",
+                "proposal_id": rejected_id,
+                "rejected_ts": entry_ts,
+                "reason": entry.get("reason"),
+            },
+        )
+        from wayfinder_paths.jobs.triggers import fire_triggers
+
+        fire_triggers(
+            store, store.load(job_id), ["successor_overdue"], source="watchdog"
+        )
+        events.append(
+            {
+                "action": "successor_overdue",
+                "proposal_id": rejected_id,
+                "outcome": "agent_woken",
+            }
+        )
+    if changed:
+        store.write_json(job_id, _SUCCESSOR_EXPECTED_PATH, expected)
+    return events
 
 
 # Matches "backtest is for revision ab12cd34ef56, workspace is 0f1e2d3c4b5a" —
@@ -596,6 +706,13 @@ def recover_stalled_applications(
             pause_event = None
         if pause_event is not None:
             recovered.append({"job_id": job.id, **pause_event})
+        try:
+            for successor_event in _check_successor_overdue(
+                store, job.id, proposals, now
+            ):
+                recovered.append({"job_id": job.id, **successor_event})
+        except Exception as exc:
+            errors.append({"job_id": job.id, "error": f"successor: {exc}"})
         try:
             gate_event = _recover_stale_gate(
                 store, job.id, proposals, allow_restamp=not restamped_this_pass
