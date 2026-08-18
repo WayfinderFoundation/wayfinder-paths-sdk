@@ -27,10 +27,14 @@ DEFAULT_DEBOUNCE_SECONDS = 600
 # verdict is a research event every job should act on, config or not.
 # successor_overdue fires when a kind=process owner rejection's expected
 # successor proposal has not appeared within the watchdog window.
+# runner_loop_gap fires when the watchdog sees a LIVE job's script loop gone
+# dark past 3x its interval — a live book nobody is managing must never wait
+# for the next timer poll.
 ALWAYS_WAKE_EVENTS = {
     "proposal_restage_requested",
     "verdict_matured",
     "successor_overdue",
+    "runner_loop_gap",
 }
 
 

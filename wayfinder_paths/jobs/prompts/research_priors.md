@@ -124,8 +124,12 @@ block's archetype counts and pick the family that treats YOUR disease.
   owner rejections bind on the change, not its neighborhood.
 - **Long runs detach**: `backtest_job` via MCP runs detached by default —
   kick it, poll `op_status`, keep working. Grids/experiments via CLI
-  in-session detach with a log the same way. Never sit synchronously on a
-  heavy run.
+  in-session detach with a log the same way (wrap CLI launches in
+  `timeout 300` minimum, one at a time). Never sit synchronously on a
+  heavy run. READS are the opposite: API/research lookups (funding,
+  prices, sentiment, perp screens) go through the session's resident MCP
+  tools — never `wayfinder <tool>` CLI wrappers, which cold-import the
+  whole SDK per call.
 
 **Post-apply shadow (mechanical counterfactual).** After any applied proposal the harness replays the pre-apply strategy over the forward bars and diffs it against the actual book (`post_apply_shadow` in the wake context; `wayfinder job counterfactual <job_id>` on demand). Entry-gating changes are adjudicated HERE — a filter's cost is invisible in the live book because skipped trades never print. Shadow sustainably ahead => revert/adjust proposal citing the block; active ahead => log the forward validation in the decisions ledger. Never hand-recompute counterfactuals.
 

@@ -26,6 +26,7 @@ from textwrap import dedent
 from typing import Any
 
 from wayfinder_paths.jobs.application import complete_application
+from wayfinder_paths.jobs.failures import cpu_steal_pct
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
@@ -388,6 +389,12 @@ _REVISION_MISMATCH_RE = re.compile(
     r"is for revision [0-9a-f]{6,}, workspace is [0-9a-f]{6,}"
 )
 _GATE_RESTAMP_MARKER = "state/gate_restamp.json"
+# A gate re-stamp is a full 120d backtest. Under heavy hypervisor CPU steal
+# (observed 81-93% on the production box) that backtest held the
+# heavy-compute lock 45-60 minutes — starving everything else for a repair
+# that is merely housekeeping. Deferral is safe-closed: the gate stays red a
+# little longer; the next 5-minute pass retries when the box breathes again.
+RESTAMP_STEAL_THRESHOLD_PCT = 60.0
 
 
 def _recover_stale_gate(
@@ -447,6 +454,17 @@ def _recover_stale_gate(
         return None
     if not allow_restamp:
         return None  # one re-stamp (a backtest) per pass; next pass retries
+    steal = cpu_steal_pct()
+    if steal is not None and steal > RESTAMP_STEAL_THRESHOLD_PCT:
+        event = {
+            "type": "restamp_deferred_load",
+            "stalled_status": "stale_gate",
+            "action": "restamp_deferred_load",
+            "cpu_steal_pct": round(steal, 1),
+            "revision": revision,
+        }
+        store.append_journal(job_id, event)
+        return event  # safe-closed: gate stays red; next pass retries
 
     from wayfinder_paths.jobs.compute_lock import ComputeLockBusy
     from wayfinder_paths.jobs.execution.job import backtest_execution_job
@@ -550,6 +568,100 @@ def _recover_orphaned_pause(
     }
     store.append_journal(job_id, event)
     return event
+
+
+# Runner-gap alerting: during one OOM cascade the LIVE job's script loop went
+# dark for 65 minutes with ZERO alerting — the runner daemon was wedged, so
+# nothing that depends on the runner could notice. The watchdog is the
+# independent observer: it compares the newest forward run/tick timestamp
+# against the loop's own interval and journals (and, for live jobs, wakes the
+# agent) when the loop has missed several beats.
+_LOOP_GAP_ALERT_PATH = "state/loop_gap_alert.json"
+LOOP_GAP_INTERVAL_MULTIPLIER = 3
+DEFAULT_LOOP_INTERVAL_SECONDS = 300
+
+
+def _tail_line(path: Path, *, chunk_bytes: int = 2048) -> str | None:
+    """Last non-empty line of a possibly multi-MB file, tail-read only."""
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            size = fh.tell()
+            fh.seek(max(0, size - chunk_bytes))
+            chunk = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    lines = [line for line in chunk.splitlines() if line.strip()]
+    return lines[-1] if lines else None
+
+
+def _last_forward_ts(root: Path) -> datetime | None:
+    newest: datetime | None = None
+    for name in ("runs.jsonl", "ticks.jsonl"):
+        line = _tail_line(root / "results" / "forward" / name)
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+            parsed = datetime.fromisoformat(str(row.get("ts")))
+        except (ValueError, TypeError, AttributeError):
+            continue  # partial/foreign last line — the other file may serve
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        if newest is None or parsed > newest:
+            newest = parsed
+    return newest
+
+
+def _check_loop_gap(store: JobStore, job: Any, now: datetime) -> dict[str, Any] | None:
+    loop = getattr(job, "script_loop", None)
+    if loop is None or not getattr(loop, "enabled", False):
+        return None
+    interval = int(
+        getattr(loop, "interval_seconds", None) or DEFAULT_LOOP_INTERVAL_SECONDS
+    )
+    last_ts = _last_forward_ts(store.job_dir(job.id))
+    if last_ts is None:
+        return None  # never ran — startup state, not an outage
+    gap = (now - last_ts).total_seconds()
+    mode = str(getattr(loop, "mode", "") or "")
+    marker = store.read_json(job.id, _LOOP_GAP_ALERT_PATH) or {}
+    if gap > LOOP_GAP_INTERVAL_MULTIPLIER * interval:
+        if str(marker.get("gap_start_ts") or "") == last_ts.isoformat():
+            return None  # already alerted for this outage
+        store.write_json(
+            job.id,
+            _LOOP_GAP_ALERT_PATH,
+            {"gap_start_ts": last_ts.isoformat(), "alerted_at": now.isoformat()},
+        )
+        store.append_journal(
+            job.id,
+            {
+                "type": "runner_loop_gap",
+                "gap_seconds": int(gap),
+                "interval": interval,
+                "mode": mode,
+            },
+        )
+        if mode == "live":
+            # circular import: worker → application → … → triggers
+            from wayfinder_paths.jobs.triggers import fire_triggers
+
+            fire_triggers(store, job, ["runner_loop_gap"], source="watchdog")
+        return {
+            "action": "runner_loop_gap",
+            "gap_seconds": int(gap),
+            "interval": interval,
+            "mode": mode,
+        }
+    if marker:
+        store.write_json(job.id, _LOOP_GAP_ALERT_PATH, {})
+        store.append_journal(
+            job.id,
+            {"type": "runner_loop_recovered", "interval": interval, "mode": mode},
+        )
+        return {"action": "runner_loop_recovered", "mode": mode}
+    return None
 
 
 # Lifecycle evaluation is cheap (json reads + arithmetic) but its decisions
@@ -724,6 +836,13 @@ def recover_stalled_applications(
             recovered.append({"job_id": job.id, **gate_event})
             if gate_event.get("action") == "gate_restamp":
                 restamped_this_pass = True
+        try:
+            loop_gap_event = _check_loop_gap(store, job, now)
+        except Exception as exc:
+            errors.append({"job_id": job.id, "error": f"loop_gap: {exc}"})
+            loop_gap_event = None
+        if loop_gap_event is not None:
+            recovered.append({"job_id": job.id, **loop_gap_event})
         try:
             for lifecycle_event in _run_lifecycle_pass(store, job.id, now):
                 recovered.append({"job_id": job.id, **lifecycle_event})
