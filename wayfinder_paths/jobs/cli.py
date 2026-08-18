@@ -60,6 +60,7 @@ from wayfinder_paths.jobs.research import (
     signal_scan_job,
 )
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
+from wayfinder_paths.jobs.starters import create_starter_job, starter_catalog
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.strategies import library_catalog
 from wayfinder_paths.jobs.sync import (
@@ -215,6 +216,41 @@ def list_cmd() -> None:
             "result": [snapshot_job(job.id, store=store) for job in store.list_jobs()],
         }
     )
+
+
+@job_cli.command(
+    name="starter-strategies",
+    help="List the selectable, paper-only jobs_v1 starter strategies.",
+)
+def starter_strategies_cmd() -> None:
+    _echo_json({"ok": True, "result": starter_catalog()})
+
+
+@job_cli.command(
+    name="create-starter",
+    help="Create a paper jobs_v1 job from a selectable starter definition.",
+)
+@click.argument("starter_id")
+@click.option("--job-id", default=None, help="Override the generated job id.")
+@click.option(
+    "--initializer-session-id",
+    default=None,
+    help="Strategy Lab session that initiated this job.",
+)
+@click.option("--no-compile", is_flag=True, default=False)
+def create_starter_cmd(
+    starter_id: str,
+    job_id: str | None,
+    initializer_session_id: str | None,
+    no_compile: bool,
+) -> None:
+    result = create_starter_job(
+        starter_id,
+        job_id=job_id,
+        initializer_session_id=initializer_session_id,
+        compile_job=not no_compile,
+    )
+    _echo_json({"ok": True, "result": result})
 
 
 @job_cli.command(

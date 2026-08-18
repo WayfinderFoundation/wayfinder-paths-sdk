@@ -6,6 +6,7 @@ import py_compile
 import re
 import tokenize
 from collections.abc import Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -51,11 +52,44 @@ def validate_execution_trace(
     warnings: list[str] = []
     critical_failures: list[str] = []
 
-    visible_counts = [item["visible_bar_count"] for item in trace["runs"]]
-    no_lookahead = visible_counts == sorted(visible_counts)
+    runs = trace["runs"]
+    if runs and all("visible_latest_timestamp" in item for item in runs):
+        replay_times = [_trace_timestamp(item.get("timestamp")) for item in runs]
+        visible_times = [
+            _trace_timestamp(item.get("visible_latest_timestamp")) for item in runs
+        ]
+        parsed_replay_times = [value for value in replay_times if value is not None]
+        parsed_visible_times = [value for value in visible_times if value is not None]
+        timestamps_parse = len(parsed_replay_times) == len(runs) and len(
+            parsed_visible_times
+        ) == len(runs)
+        replay_monotonic = timestamps_parse and parsed_replay_times == sorted(
+            parsed_replay_times
+        )
+        visible_monotonic = timestamps_parse and parsed_visible_times == sorted(
+            parsed_visible_times
+        )
+        visible_not_future = timestamps_parse and all(
+            visible <= replay
+            for visible, replay in zip(
+                parsed_visible_times, parsed_replay_times, strict=True
+            )
+        )
+        no_lookahead = bool(
+            timestamps_parse
+            and replay_monotonic
+            and visible_monotonic
+            and visible_not_future
+        )
+    else:
+        # Backward compatibility for traces recorded before the causal
+        # timestamp marker existed. Counts are valid for growing views, but
+        # not sufficient for new bounded windows containing sparse symbols.
+        visible_counts = [item["visible_bar_count"] for item in runs]
+        no_lookahead = visible_counts == sorted(visible_counts)
     if not no_lookahead:
         critical_failures.append(
-            "visible bar count moved backward or leaked future bars"
+            "visible market data moved backward or leaked future bars"
         )
 
     bracket_events = trace["bracket_events"]
@@ -108,6 +142,16 @@ def validate_execution_trace(
         "critical_failures": critical_failures,
         "auto_fix_suggestions": _suggestions(issues + critical_failures + warnings),
     }
+
+
+def _trace_timestamp(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
 
 
 def validate_execution_job(

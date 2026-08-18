@@ -29,11 +29,14 @@ FORWARD_FILES = {
 }
 
 
-def default_forward_summary(job_id: str | None = None) -> dict[str, Any]:
+def default_forward_summary(
+    job_id: str | None = None, *, inception_at: str | None = None
+) -> dict[str, Any]:
     now = utc_now_iso()
     return {
         "schema_version": FORWARD_SCHEMA_VERSION,
         "job_id": job_id,
+        "inception_at": inception_at or now,
         "updated_at": now,
         "runs": {
             "count": 0,

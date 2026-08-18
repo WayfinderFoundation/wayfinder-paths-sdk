@@ -27,6 +27,7 @@ from wayfinder_paths.jobs.models import (
 )
 from wayfinder_paths.jobs.proposals import propose_change
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
+from wayfinder_paths.jobs.starters import create_starter_job, starter_catalog
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.strategies import library_catalog
 from wayfinder_paths.jobs.sync import apply_script_mode, snapshot_job, sync_all_jobs
@@ -35,6 +36,8 @@ from wayfinder_paths.mcp.utils import catch_errors, err, ok
 
 JobAction = Literal[
     "list",
+    "starter_strategies",
+    "create_starter",
     "create",
     "status",
     "report",
@@ -276,6 +279,8 @@ async def core_jobs(
     action: JobAction,
     *,
     job_id: str | None = None,
+    starter_id: str | None = None,
+    initializer_session_id: str | None = None,
     name: str | None = None,
     goal: str | None = None,
     script: str | None = None,
@@ -359,6 +364,9 @@ async def core_jobs(
         Jobs default to `execution_contract="jobs_v1"` (decide()/build_strategy
         driven by the SDK tick driver); pass `execution_contract="legacy"` only
         for a real standalone script that runs top-to-bottom.
+      - `starter_strategies` lists the fixed, mixed crypto/equity paper
+        starters. `create_starter` with `starter_id` materializes one as a
+        normal jobs_v1 job; its own forward inception begins at selection.
       - `create` with `agent_mode="monitor"` or `"intervene"` for supervised jobs.
       - `create` with `agent_mode="auto"` and `auto_limits` for agent-only auto jobs.
       - `set_script_mode` with `script_mode="live"` / `"paper"` to flip the
@@ -414,6 +422,22 @@ async def core_jobs(
 
     if action == "list":
         return ok([snapshot_job(job.id, store=store) for job in store.list_jobs()])
+
+    if action == "starter_strategies":
+        return ok(starter_catalog())
+
+    if action == "create_starter":
+        if not starter_id:
+            return err("invalid_request", "create_starter requires starter_id")
+        return ok(
+            create_starter_job(
+                starter_id,
+                job_id=job_id,
+                store=store,
+                compile_job=compile,
+                initializer_session_id=initializer_session_id,
+            )
+        )
 
     if action == "sync":
         # Recompile runner links first: job.yaml is agent-editable (e.g.

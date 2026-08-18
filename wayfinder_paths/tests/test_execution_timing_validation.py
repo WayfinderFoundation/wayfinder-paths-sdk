@@ -12,7 +12,10 @@ from wayfinder_paths.jobs.execution.simulator import (
     run_execution_grid,
     simulate_execution,
 )
-from wayfinder_paths.jobs.execution.validation import validate_execution_job
+from wayfinder_paths.jobs.execution.validation import (
+    validate_execution_job,
+    validate_execution_trace,
+)
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
 
@@ -107,6 +110,41 @@ def _make_job(
 
 def _check(report: dict[str, Any], name: str) -> dict[str, Any]:
     return next(check for check in report["checks"] if check["name"] == name)
+
+
+def test_sparse_bounded_trace_uses_timestamps_for_lookahead_validation() -> None:
+    trace = {
+        "execution_spec": ExecutionSpec().to_dict(),
+        "runs": [
+            {
+                "timestamp": "2026-01-01T00:00:00+00:00",
+                "visible_bar_count": 3,
+                "visible_latest_timestamp": "2026-01-01T00:00:00+00:00",
+            },
+            {
+                "timestamp": "2026-01-01T01:00:00+00:00",
+                "visible_bar_count": 4,
+                "visible_latest_timestamp": "2026-01-01T01:00:00+00:00",
+            },
+            {
+                "timestamp": "2026-01-01T02:00:00+00:00",
+                # A sparse row aged out of the bounded window.
+                "visible_bar_count": 3,
+                "visible_latest_timestamp": "2026-01-01T02:00:00+00:00",
+            },
+        ],
+        "bracket_events": [],
+        "fills": [],
+        "guard_events": [],
+    }
+    result = validate_execution_trace(trace)
+    assert result["data_valid"] is True
+    assert result["execution_valid"] is True
+
+    trace["runs"][1]["visible_latest_timestamp"] = "2026-01-01T03:00:00+00:00"
+    invalid = validate_execution_trace(trace)
+    assert invalid["data_valid"] is False
+    assert invalid["execution_valid"] is False
 
 
 def test_valid_interval_schedule_passes(tmp_path: Path) -> None:
