@@ -11,6 +11,18 @@ permission:
     scout: deny
     general: deny
   write: allow
+  # opencode 1.18+ resolves symlinks and classifies vault writes
+  # (.wayfinder -> /wf/user_vault/wayfinder, .wayfinder_runs ->
+  # /wf/user_vault/scripts) as external-directory access with an "ask"
+  # default. Strategy Lab lives in those trees (job bundles, backtest
+  # scratch, box exports) — allow exactly those trees, NEVER a broad
+  # /wf/user_vault/**, and keep the governance plane fail-closed with an
+  # explicit deny.
+  external_directory:
+    "/wf/user_vault/wayfinder/**": allow
+    "/wf/user_vault/scripts/**": allow
+    "/wf/user_vault/exports/**": allow
+    "/wf/user_vault/governance/**": deny
   wayfinder_*: deny
   # core_* — needs scripting + job control for backtests/experiments
   wayfinder_core_*: allow
