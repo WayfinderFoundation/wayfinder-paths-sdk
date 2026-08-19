@@ -179,6 +179,7 @@ async def build_hyperliquid_place_trigger_order_preview(
         f"size: {tool_input.get('size')}\n"
         f"is_market_trigger: {is_market_trigger}\n"
         f"limit_price: {tool_input.get('price')}\n"
+        f"cloid: {tool_input.get('cloid')}\n"
         f"builder_wallet: {HYPE_FEE_WALLET}"
     )
     return {"summary": header + base + details}

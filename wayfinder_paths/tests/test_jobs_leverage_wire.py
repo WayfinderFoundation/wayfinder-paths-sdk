@@ -14,7 +14,12 @@ from wayfinder_paths.jobs.store import JobStore
 
 
 def _open(**kw) -> OrderIntent:
-    defaults = dict(action="OPEN", venue="hyperliquid", symbol="HYPE", side="sell")
+    defaults = {
+        "action": "OPEN",
+        "venue": "hyperliquid",
+        "symbol": "HYPE",
+        "side": "sell",
+    }
     defaults.update(kw)
     return OrderIntent.from_any(defaults)
 

@@ -41,6 +41,8 @@ def _ledger(*positions: tuple[str, str, float, float]) -> PositionLedger:
 def _ctx(
     closes: dict[str, float],
     ledger: PositionLedger | None = None,
+    *,
+    leverage: float | None = None,
 ) -> ExecutionContext:
     rows = []
     for symbol, close in closes.items():
@@ -50,7 +52,10 @@ def _ctx(
         ledger=ledger or PositionLedger(),
         state_snapshot=StateSnapshot(status="valid"),
         capacity=None,
-        params={"initial_capital": CAPITAL},
+        params={
+            "initial_capital": CAPITAL,
+            **({"leverage": leverage} if leverage is not None else {}),
+        },
         timestamp="2026-01-01T00:00:00+00:00",
         execution_spec=ExecutionSpec(),
     )
@@ -97,6 +102,20 @@ def test_same_sign_shrink_partially_closes() -> None:
     assert intents[0]["size"] == pytest.approx(25.0)
 
 
+def test_same_sign_shrink_uses_the_matching_position_side() -> None:
+    ctx = _ctx(
+        {"AAA": 10.0, "BBB": 20.0},
+        _ledger(("AAA", "long", 50.0, 10.0), ("BBB", "short", 25.0, 20.0)),
+    )
+
+    intents = target_weights_to_intents(ctx, {"AAA": 0.25, "BBB": -0.5})
+
+    assert len(intents) == 1
+    assert intents[0]["symbol"] == "AAA"
+    assert intents[0]["side"] == "sell"
+    assert intents[0]["size"] == pytest.approx(25.0)
+
+
 def test_same_sign_grow_opens_the_delta() -> None:
     ctx = _ctx({"AAA": 10.0}, _ledger(("AAA", "long", 50.0, 10.0)))
     intents = target_weights_to_intents(ctx, {"AAA": 0.75})
@@ -137,6 +156,36 @@ def test_sizing_equity_override_scales_notional() -> None:
         sizing_equity=CAPITAL * 2,  # e.g. equity * leverage
     )
     assert intents[0]["notional"] == pytest.approx(1000.0)
+
+
+def test_operator_leverage_scales_target_instead_of_rebalance_delta() -> None:
+    initial = target_weights_to_intents(_ctx({"AAA": 10.0}, leverage=2.0), {"AAA": 0.5})
+    assert initial[0]["notional"] == pytest.approx(1000.0)
+    assert initial[0]["metadata"] == {
+        "target_weight": 0.5,
+        "leverage_applied": True,
+        "engine_leverage": 2.0,
+    }
+
+    # Once the 2x target is held, the next identical decision is a no-op. If
+    # leverage multiplied the delta after this helper, it would alternately
+    # overshoot and close the position on successive bars.
+    held = _ledger(("AAA", "long", 100.0, 10.0))
+    assert (
+        target_weights_to_intents(_ctx({"AAA": 10.0}, held, leverage=2.0), {"AAA": 0.5})
+        == []
+    )
+
+
+def test_explicit_sizing_equity_is_stamped_against_engine_leverage() -> None:
+    intents = target_weights_to_intents(
+        _ctx({"AAA": 10.0}, leverage=3.0),
+        {"AAA": 0.5},
+        sizing_equity=CAPITAL * 2,
+    )
+    assert intents[0]["notional"] == pytest.approx(1000.0)
+    assert intents[0]["metadata"]["leverage_applied"] is True
+    assert "engine_leverage" not in intents[0]["metadata"]
 
 
 def test_pure_function_identical_ctx_identical_intents() -> None:

@@ -10,6 +10,7 @@ from wayfinder_paths.jobs.execution import (
     EngineState,
     ExecutionSpec,
     FillEvent,
+    NativeProtectionResult,
     OrderIntent,
     PurityViolation,
     TradeCapacity,
@@ -17,6 +18,7 @@ from wayfinder_paths.jobs.execution import (
     VenueState,
     run_tick,
 )
+from wayfinder_paths.jobs.execution.primitives import PositionRecord
 from wayfinder_paths.jobs.execution.venues import MarketEvent
 
 PERP_CAPS = VenueCapabilities(
@@ -63,6 +65,29 @@ class FakeBroker:
     async def cancel(self, client_order_id: str) -> FillEvent:
         return FillEvent(
             status="rejected", venue="fake", symbol="", side="", error="unsupported"
+        )
+
+
+class FakeNativeBroker(FakeBroker):
+    def __init__(self, *, confirm: bool = True, cancel_confirm: bool = True) -> None:
+        super().__init__()
+        self.confirm = confirm
+        self.cancel_confirm = cancel_confirm
+        self.stops: list[dict[str, Any]] = []
+
+    async def place_stop_loss(self, **kwargs: Any) -> NativeProtectionResult:
+        self.stops.append(kwargs)
+        return NativeProtectionResult(
+            status="confirmed" if self.confirm else "ambiguous",
+            symbol=str(kwargs["symbol"]),
+            client_order_id=str(kwargs["client_order_id"]),
+        )
+
+    async def cancel_stop_loss(self, **kwargs: Any) -> NativeProtectionResult:
+        return NativeProtectionResult(
+            status="confirmed" if self.cancel_confirm else "ambiguous",
+            symbol=str(kwargs["symbol"]),
+            client_order_id=str(kwargs["client_order_id"]),
         )
 
 
@@ -198,6 +223,103 @@ async def test_bracket_rejected_on_venue_without_bracket_support() -> None:
     assert any(
         "does not support brackets" in event["reason"] for event in result.guard_events
     )
+
+
+async def test_live_relative_stop_uses_fill_price_and_is_persisted() -> None:
+    broker = FakeNativeBroker()
+    state = EngineState(mode="live")
+    intent = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        size=2.0,
+        bracket={"stop_loss_pct": 0.05, "native_required": True},
+    )
+
+    await _tick(
+        _strategy([intent]),
+        _view([10.0, 10.5]),
+        state=state,
+        brokers={"hyperliquid": broker},
+    )
+
+    assert state.brackets["SNX"]["entry_price"] == 10.5
+    assert state.brackets["SNX"]["stop_loss"] == pytest.approx(9.975)
+    assert broker.stops[0]["trigger_price"] == pytest.approx(9.975)
+    assert broker.stops[0]["size"] == 2.0
+    assert state.native_protections["SNX"]["client_order_id"].startswith("0x")
+
+
+async def test_unconfirmed_live_stop_unwinds_new_risk_and_requests_halt() -> None:
+    broker = FakeNativeBroker(confirm=False)
+    state = EngineState(mode="live")
+    intent = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        size=1.0,
+        bracket={"stop_loss_pct": 0.05, "native_required": True},
+    )
+
+    result = await _tick(
+        _strategy([intent]),
+        _view([10.0, 10.5]),
+        state=state,
+        brokers={"hyperliquid": broker},
+    )
+
+    assert "SNX" not in state.ledger.positions
+    assert [intent.reduce_only for intent in broker.placed] == [False, True]
+    failure = next(
+        event
+        for event in result.guard_events
+        if event["kind"] == "native_protection_failed"
+    )
+    assert failure["halt_required"] is True
+
+
+async def test_unconfirmed_replaced_stop_cancel_requests_halt() -> None:
+    broker = FakeNativeBroker(cancel_confirm=False)
+    state = EngineState(mode="live")
+    state.ledger.positions["SNX"] = PositionRecord(
+        symbol="SNX", side="long", size=1.0, avg_price=10.0
+    )
+    state.brackets["SNX"] = {
+        "stop_loss": 9.5,
+        "native_required": True,
+        "venue": "hyperliquid",
+    }
+    state.native_protections["SNX"] = {
+        "venue": "hyperliquid",
+        "client_order_id": "0x00000000000000000000000000000001",
+        "generation": 1,
+        "size": 1.0,
+    }
+    intent = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        size=1.0,
+        bracket={"stop_loss_pct": 0.05, "native_required": True},
+    )
+
+    result = await _tick(
+        _strategy([intent]),
+        _view([10.0, 10.5]),
+        state=state,
+        brokers={"hyperliquid": broker},
+    )
+
+    event = next(
+        item
+        for item in result.guard_events
+        if item["kind"] == "native_protection_cancel_unconfirmed"
+    )
+    assert event["halt_required"] is True
+    assert state.native_protections["SNX"]["size"] == 2.0
 
 
 async def test_short_rejected_on_long_only_venue() -> None:
@@ -449,6 +571,10 @@ def test_engine_state_round_trip(tmp_path) -> None:
         )
     )
     state.brackets["SNX"] = {"stop_loss": 9.0, "venue": "hyperliquid"}
+    state.native_protections["SNX"] = {
+        "client_order_id": "0x00000000000000000000000000000001",
+        "trigger_price": 9.0,
+    }
     state.pending_intents.append(
         OrderIntent(
             action="OPEN", venue="hyperliquid", symbol="IMX", side="short", size=1
@@ -465,6 +591,7 @@ def test_engine_state_round_trip(tmp_path) -> None:
     assert restored.ledger.positions["SNX"].size == 2
     assert restored.ledger.positions["SNX"].avg_price == 10
     assert restored.brackets["SNX"]["stop_loss"] == 9.0
+    assert restored.native_protections["SNX"]["trigger_price"] == 9.0
     assert restored.pending_intents[0].symbol == "IMX"
     assert restored.last_processed_bar_ts == state.last_processed_bar_ts
     assert restored.daily_notional == {"2026-01-01": 20.0}

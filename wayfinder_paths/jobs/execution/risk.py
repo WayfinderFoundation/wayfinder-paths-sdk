@@ -5,9 +5,10 @@ reused directly so limit semantics have a single source of truth). Living in
 `workspace/` means edits change the workspace revision hash, exactly like a
 model artifact: risk limits are part of strategy identity.
 
-A breached limit downgrades a `valid` snapshot to `risk_halt`, which the
-engine already routes to reduce-only mode — positions can still exit, new
-risk cannot be added. No file == no checks == byte-identical driver behavior.
+A breached limit downgrades a `valid` snapshot to `risk_halt`; the driver also
+latches the existing durable halt file. Positions can still exit, new risk is
+blocked, and an operator must explicitly clear the halt. No file == no checks
+== byte-identical driver behavior.
 
 Division of labor vs `auto_limits`: auto_limits are per-intent caps enforced
 inside the engine at decide time; risk limits are account-level circuit
@@ -32,7 +33,9 @@ from wayfinder_paths.jobs.execution.engine import EngineState
 from wayfinder_paths.jobs.execution.primitives import (
     DEFAULT_INITIAL_CAPITAL,
     CompletedBarsView,
+    _float_or_none,
 )
+from wayfinder_paths.jobs.gating import governance_hard_constraints
 
 RISK_STATE_PATH = "state/risk_state.json"
 FORWARD_SUMMARY_PATH = "results/forward/summary.json"
@@ -46,27 +49,76 @@ def check_risk_halt(
     view: CompletedBarsView,
     params: Mapping[str, Any],
     now: pd.Timestamp,
+    account_equity: float | None = None,
 ) -> tuple[str | None, dict[str, Any]]:
     """Returns (halt_reason | None, snapshot_used). Persists peak equity to
     state/risk_state.json so drawdown is deterministic per tick."""
-    limits = RiskLimits.load_optional(Path(root) / "workspace")
+    limits = _apply_governance_caps(
+        RiskLimits.load_optional(Path(root) / "workspace"),
+        governance_hard_constraints(root),
+    )
     if limits is None:
         return None, {}
     snapshot = build_risk_snapshot(
-        state=state, view=view, params=params, root=root, now=now
+        state=state,
+        view=view,
+        params=params,
+        root=root,
+        now=now,
+        account_equity=account_equity,
     )
     reason = limits.check(snapshot)
     state_path = Path(root) / RISK_STATE_PATH
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(
         json.dumps(
-            {"peak_equity": snapshot["peak_equity"], "updated_at": now.isoformat()},
+            {
+                "peak_equity": snapshot["peak_equity"],
+                # The source the PEAK belongs to (not this tick's source):
+                # without it, the next tick's source check discards the peak
+                # and live drawdown resets to 0 every tick — a dead halt.
+                "equity_source": snapshot["peak_equity_source"],
+                "updated_at": now.isoformat(),
+            },
             indent=2,
         )
         + "\n",
         encoding="utf-8",
     )
     return reason, snapshot
+
+
+def _apply_governance_caps(
+    limits: RiskLimits | None, hard_constraints: Mapping[str, Any]
+) -> RiskLimits | None:
+    """Owner-owned ceilings (governance hard_constraints.yaml) clamp the
+    agent-writable workspace/risk_limits.json: the agent file may be STRICTER
+    than governance, never looser. ``max_drawdown`` follows the RiskLimits
+    convention (negative decimal; either sign is tolerated and normalized),
+    ``max_gross_exposure_usd`` is a plain USD cap. A governance ceiling with
+    no agent file still enforces — deleting risk_limits.json must not lift
+    the owner's ceiling. No ceilings set -> limits returned unchanged."""
+    gov_drawdown = _float_or_none(hard_constraints.get("max_drawdown"))
+    gov_exposure = _float_or_none(
+        hard_constraints.get("max_gross_exposure_usd")
+        if hard_constraints.get("max_gross_exposure_usd") is not None
+        else hard_constraints.get("max_gross_exposure")
+    )
+    if gov_drawdown is None and gov_exposure is None:
+        return limits
+    if limits is None:
+        limits = RiskLimits()
+    if gov_drawdown is not None:
+        gov_drawdown = -abs(gov_drawdown)
+        if limits.max_drawdown is None or limits.max_drawdown < gov_drawdown:
+            limits.max_drawdown = gov_drawdown
+    if gov_exposure is not None and gov_exposure > 0:
+        if (
+            limits.max_gross_exposure_usd is None
+            or limits.max_gross_exposure_usd > gov_exposure
+        ):
+            limits.max_gross_exposure_usd = gov_exposure
+    return limits
 
 
 def build_risk_snapshot(
@@ -76,13 +128,14 @@ def build_risk_snapshot(
     params: Mapping[str, Any],
     root: Path,
     now: pd.Timestamp,
+    account_equity: float | None = None,
 ) -> dict[str, Any]:
     """Maps driver-side telemetry onto the RiskLimits.check keys.
 
-    Equity = initial_capital + closed-trade net_pnl (forward summary — the
-    driver-side realized source of truth, which survives engine-state
-    adoption) + ledger unrealized marked at the latest closes. Conservative
-    vs a true venue-equity feed (fees/funding on open positions not marked).
+    Live equity comes from the reconciled venue account value. Paper equity is
+    initial capital + forward closed-trade PnL + funding + ledger unrealized at
+    the latest closes. The optional override keeps one snapshot shape across
+    both modes without treating configured capital as live collateral.
     """
     initial_capital = float(params.get("initial_capital") or DEFAULT_INITIAL_CAPITAL)
     summary = _read_json(Path(root) / FORWARD_SUMMARY_PATH) or {}
@@ -107,16 +160,49 @@ def build_risk_snapshot(
         gross_exposure += abs(notional)
         positions_usd[symbol] = direction * notional
 
-    equity = initial_capital + net_pnl + funding_total + unrealized
-    risk_state = _read_json(Path(root) / RISK_STATE_PATH)
-    peak_equity = float(risk_state["peak_equity"]) if risk_state else None
-    if peak_equity is None or equity > peak_equity:
-        peak_equity = equity  # first tick seeds peak == equity -> drawdown 0
-    drawdown = (equity / peak_equity - 1.0) if peak_equity > 0 else 0.0
+    # Live venue equity already includes realized, unrealized, fees, and
+    # funding. Config capital remains the deterministic paper/backtest source.
+    equity = (
+        float(account_equity)
+        if account_equity is not None
+        else initial_capital + net_pnl + funding_total + unrealized
+    )
+    equity_source = "venue" if account_equity is not None else "modelled"
+    risk_state = _read_json(Path(root) / RISK_STATE_PATH) or {}
+    persisted_peak = (
+        float(risk_state["peak_equity"]) if "peak_equity" in risk_state else None
+    )
+    # Legacy risk_state.json predates the source stamp: only modelled-era
+    # semantics ever wrote it, so default the recorded source to "modelled".
+    persisted_source = str(risk_state.get("equity_source") or "modelled")
+    if persisted_peak is None or (
+        persisted_source == "modelled" and equity_source == "venue"
+    ):
+        # First tick — or venue equity appearing over a modelled peak. The
+        # venue is ground truth: seed a fresh venue peak rather than comparing
+        # (or forever carrying) across sources. Drawdown starts at 0.
+        peak_equity = equity
+        peak_source = equity_source
+        drawdown = 0.0
+    elif persisted_source == equity_source:
+        peak_equity = max(persisted_peak, equity)
+        peak_source = equity_source
+        drawdown = (equity / peak_equity - 1.0) if peak_equity > 0 else 0.0
+    else:
+        # Venue peak, modelled tick (an ambiguous venue fetch fell back to
+        # modelled equity): comparing modelled equity to a venue peak is
+        # meaningless math that once latched spurious halts. Carry the venue
+        # peak untouched — don't reseed, don't compare — and skip the
+        # drawdown check for this tick only.
+        peak_equity = persisted_peak
+        peak_source = persisted_source
+        drawdown = 0.0
 
     return {
         "equity": equity,
+        "equity_source": equity_source,
         "peak_equity": peak_equity,
+        "peak_equity_source": peak_source,
         "drawdown": drawdown,
         "gross_exposure_usd": gross_exposure,
         "positions_usd": positions_usd,

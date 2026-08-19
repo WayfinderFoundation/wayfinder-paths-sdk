@@ -7,9 +7,9 @@ non-reduce-only intents are canceled, and with `flatten: true` all open
 positions are market-closed. The flag survives runner pause/resume cycles and
 proposal applies by design: resuming loops must never silently un-halt.
 
-Deliberately independent of `evaluate_live_gate` (promotion readiness) and of
-risk-limit halts (`workspace/risk_limits.json`): this is the human/agent "stop
-now" control.
+Independent of `evaluate_live_gate` (promotion readiness). Manual requests,
+account-risk breaches, and native-protection failures share this durable latch
+so none can be cleared merely by restarting or resuming a runner.
 """
 
 from __future__ import annotations
@@ -23,6 +23,10 @@ from wayfinder_paths.jobs.store import JobStore
 
 HALT_PATH = "state/halt.json"
 HALTED_EXECUTION_STATUS = "halted"
+
+# Halts latched by the risk/protection layer: owner-clearable only. The loop
+# that tripped a circuit breaker must not be able to reset it.
+RISK_LATCH_SOURCES = frozenset({"risk_limits", "native_protection"})
 
 
 def read_halt(root: Path) -> dict[str, Any] | None:
@@ -88,14 +92,27 @@ def request_halt(
     return payload
 
 
-def clear_halt(store: JobStore, job_id: str) -> dict[str, Any]:
+def clear_halt(store: JobStore, job_id: str, *, by: str) -> dict[str, Any]:
+    """Clear the durable halt. `by` records provenance ("owner" | "agent");
+    a halt whose source is a risk/protection latch refuses any non-owner
+    clear — same owner-provenance pattern as proposal rejection and script
+    mode stamps. Manual halts stay clearable by either party."""
     root = store.job_dir(job_id)
     existing = read_halt(root)
+    source = str((existing or {}).get("source") or "")
+    if existing is not None and source in RISK_LATCH_SOURCES and by != "owner":
+        store.append_journal(
+            job_id,
+            {"type": "halt_clear_refused", "source": source, "by": by},
+        )
+        raise PermissionError(
+            f"halt was latched by {source}; clearing requires by='owner'"
+        )
     path = root / HALT_PATH
     if path.exists():
         path.unlink()
     if existing is not None:
-        store.append_journal(job_id, {"type": "halt_cleared"})
+        store.append_journal(job_id, {"type": "halt_cleared", "by": by})
         store.refresh_scorecard(
             job_id,
             {"live_execution_status": existing.get("prior_live_execution_status")},

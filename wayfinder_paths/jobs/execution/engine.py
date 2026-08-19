@@ -28,7 +28,11 @@ from wayfinder_paths.jobs.execution.primitives import (
     bar_interval_seconds,
 )
 from wayfinder_paths.jobs.execution.purity import purity_sandbox
-from wayfinder_paths.jobs.execution.venues import Broker, MarketEvent
+from wayfinder_paths.jobs.execution.venues import (
+    Broker,
+    MarketEvent,
+    NativeProtectionBroker,
+)
 
 OPEN_SIDES_SHORT = frozenset({"short", "sell"})
 
@@ -94,6 +98,7 @@ class EngineState:
 
     ledger: PositionLedger = field(default_factory=PositionLedger)
     brackets: dict[str, dict[str, Any]] = field(default_factory=dict)
+    native_protections: dict[str, dict[str, Any]] = field(default_factory=dict)
     pending_intents: list[OrderIntent] = field(default_factory=list)
     last_processed_bar_ts: str | None = None
     daily_notional: dict[str, float] = field(default_factory=dict)
@@ -108,6 +113,7 @@ class EngineState:
         return {
             "ledger": self.ledger.snapshot(),
             "brackets": dict(self.brackets),
+            "native_protections": dict(self.native_protections),
             "pending_intents": [intent.to_dict() for intent in self.pending_intents],
             "last_processed_bar_ts": self.last_processed_bar_ts,
             "daily_notional": dict(self.daily_notional),
@@ -123,6 +129,7 @@ class EngineState:
         return cls(
             ledger=PositionLedger.restore(payload.get("ledger")),
             brackets=dict(payload.get("brackets") or {}),
+            native_protections=dict(payload.get("native_protections") or {}),
             pending_intents=[
                 OrderIntent.from_any(item)
                 for item in payload.get("pending_intents") or []
@@ -308,7 +315,15 @@ async def _run_tick_inner(
             brokers, intent, price=bar.open, timestamp=bar_iso, result=result
         )
         if fill is not None:
-            _record_fill(fill, state=state, trace=trace, result=result)
+            await _record_fill_and_protect(
+                fill,
+                intent=intent,
+                brokers=brokers,
+                state=state,
+                trace=trace,
+                result=result,
+                timestamp=bar_iso,
+            )
     state.pending_intents = deferred_intents
 
     for event in events or []:
@@ -459,11 +474,6 @@ async def _run_tick_inner(
             )
             continue
         result.intents.append(intent)
-        if intent.bracket:
-            state.brackets[intent.symbol] = {
-                **dict(intent.bracket),
-                "venue": intent.venue,
-            }
         if not intent.reduce_only:
             notional = _intent_notional(intent, ref_price)
             if notional is not None:
@@ -488,7 +498,15 @@ async def _run_tick_inner(
                 brokers, intent, price=price, timestamp=bar_iso, result=result
             )
             if fill is not None:
-                _record_fill(fill, state=state, trace=trace, result=result)
+                await _record_fill_and_protect(
+                    fill,
+                    intent=intent,
+                    brokers=brokers,
+                    state=state,
+                    trace=trace,
+                    result=result,
+                    timestamp=bar_iso,
+                )
 
     state.last_processed_bar_ts = bar_iso
     ledger_snapshot = state.ledger.snapshot()
@@ -548,6 +566,7 @@ def _apply_engine_leverage(
 def _record_fill(
     fill: FillEvent,
     *,
+    intent: OrderIntent | None = None,
     state: EngineState,
     trace: ExecutionTrace,
     result: TickResult,
@@ -557,9 +576,279 @@ def _record_fill(
     trace.fills.append(fill.to_dict())
     result.fills.append(fill)
     if fill.successful:
+        prune_closed_protection_groups(state)
         row = fill.to_dict()
         row["realized_pnl_delta"] = state.ledger.realized_pnl - realized_before
         result.trade_rows.append(row)
+        position = state.ledger.positions.get(fill.symbol)
+        if intent is not None and intent.bracket and not intent.reduce_only:
+            if position is not None:
+                state.brackets[fill.symbol] = _resolve_fill_bracket(
+                    intent.bracket,
+                    position.side,
+                    position.avg_price,
+                    intent.venue,
+                    intent.client_order_id,
+                )
+        elif fill.reduce_only and position is None:
+            state.brackets.pop(fill.symbol, None)
+
+
+async def _record_fill_and_protect(
+    fill: FillEvent,
+    *,
+    intent: OrderIntent,
+    brokers: Mapping[str, Broker],
+    state: EngineState,
+    trace: ExecutionTrace,
+    result: TickResult,
+    timestamp: str,
+) -> None:
+    previous_bracket = state.brackets.get(fill.symbol)
+    _record_fill(fill, intent=intent, state=state, trace=trace, result=result)
+    if not fill.successful or state.mode != "live":
+        return
+
+    if intent.reduce_only:
+        await _sync_native_protection(
+            brokers=brokers,
+            state=state,
+            symbol=fill.symbol,
+            venue=intent.venue,
+            result=result,
+        )
+        return
+
+    bracket = state.brackets.get(fill.symbol) or {}
+    if not bracket.get("native_required"):
+        return
+    installed = await _sync_native_protection(
+        brokers=brokers,
+        state=state,
+        symbol=fill.symbol,
+        venue=intent.venue,
+        result=result,
+    )
+    if installed:
+        return
+
+    # A filled entry without a confirmed venue stop is not allowed to remain
+    # open. Close only the newly filled risk; an older confirmed stop continues
+    # to protect any pre-existing position.
+    position = state.ledger.positions.get(fill.symbol)
+    unwind_size = min(abs(fill.filled_size), position.size) if position else 0.0
+    unwind_fill = None
+    if position is not None and unwind_size > 0:
+        unwind = OrderIntent(
+            action="CLOSE",
+            venue=intent.venue,
+            symbol=fill.symbol,
+            side="sell" if position.side == "long" else "buy",
+            size=unwind_size,
+            reduce_only=True,
+            metadata={
+                "exit_reason": "native_protection_unconfirmed",
+                "position_side": position.side,
+            },
+        )
+        unwind_fill = await _place(
+            brokers, unwind, price=None, timestamp=timestamp, result=result
+        )
+        if unwind_fill is not None:
+            _record_fill(
+                unwind_fill,
+                intent=unwind,
+                state=state,
+                trace=trace,
+                result=result,
+            )
+    if previous_bracket is None:
+        state.brackets.pop(fill.symbol, None)
+    else:
+        state.brackets[fill.symbol] = previous_bracket
+    result.guard_events.append(
+        {
+            "kind": "native_protection_failed",
+            "reason": "entry filled but venue stop could not be confirmed",
+            "symbol": fill.symbol,
+            "entry_client_order_id": fill.client_order_id,
+            "unwind_status": unwind_fill.status if unwind_fill is not None else None,
+            "halt_required": True,
+            "timestamp": timestamp,
+        }
+    )
+
+
+def _resolve_fill_bracket(
+    policy: Mapping[str, Any],
+    side: str,
+    entry_price: float,
+    venue: str,
+    entry_client_order_id: str | None,
+) -> dict[str, Any]:
+    resolved = dict(policy)
+    stop_pct = _float_or_none(resolved.get("stop_loss_pct"))
+    if stop_pct is not None:
+        direction = -1.0 if side == "long" else 1.0
+        resolved["stop_loss"] = entry_price * (1.0 + direction * stop_pct)
+    take_profit_pct = _float_or_none(resolved.get("take_profit_pct"))
+    if take_profit_pct is not None:
+        direction = 1.0 if side == "long" else -1.0
+        resolved["take_profit"] = entry_price * (1.0 + direction * take_profit_pct)
+    resolved["entry_price"] = entry_price
+    resolved["entry_client_order_id"] = entry_client_order_id
+    resolved["venue"] = venue
+    return resolved
+
+
+async def _sync_native_protection(
+    *,
+    brokers: Mapping[str, Broker],
+    state: EngineState,
+    symbol: str,
+    venue: str,
+    result: TickResult,
+) -> bool:
+    existing = state.native_protections.get(symbol)
+    broker = brokers.get(venue) or brokers.get("*")
+    if not isinstance(broker, NativeProtectionBroker):
+        result.guard_events.append(
+            {
+                "kind": "native_protection_unsupported",
+                "symbol": symbol,
+                "venue": venue,
+            }
+        )
+        return False
+
+    position = state.ledger.positions.get(symbol)
+    bracket = state.brackets.get(symbol) or {}
+    if position is None or not bracket.get("native_required"):
+        if existing:
+            canceled = await broker.cancel_stop_loss(
+                symbol=symbol,
+                client_order_id=str(existing["client_order_id"]),
+            )
+            result.guard_events.append(
+                {
+                    "kind": "native_protection_canceled"
+                    if canceled.confirmed
+                    else "native_protection_cancel_unconfirmed",
+                    "halt_required": not canceled.confirmed,
+                    **canceled.to_dict(),
+                }
+            )
+            if canceled.confirmed:
+                state.native_protections.pop(symbol, None)
+            return canceled.confirmed
+        return True
+
+    trigger_price = _float_or_none(bracket.get("stop_loss"))
+    if trigger_price is None or trigger_price <= 0:
+        return False
+    generation = int((existing or {}).get("generation") or 0) + 1
+    seed = (
+        f"{bracket.get('entry_client_order_id')}|{symbol}|{position.side}|"
+        f"{generation}|{trigger_price}|{position.size}"
+    )
+    client_order_id = f"0x{hashlib.sha256(seed.encode()).hexdigest()[:32]}"
+    placed = await broker.place_stop_loss(
+        symbol=symbol,
+        side="sell" if position.side == "long" else "buy",
+        size=position.size,
+        trigger_price=trigger_price,
+        client_order_id=client_order_id,
+    )
+    result.guard_events.append(
+        {
+            "kind": "native_protection_installed"
+            if placed.confirmed
+            else "native_protection_unconfirmed",
+            **placed.to_dict(),
+        }
+    )
+    if not placed.confirmed:
+        return False
+
+    state.native_protections[symbol] = {
+        "venue": venue,
+        "symbol": symbol,
+        "side": position.side,
+        "size": position.size,
+        "trigger_price": trigger_price,
+        "client_order_id": client_order_id,
+        "order_id": placed.order_id,
+        "generation": generation,
+        "protection_group": bracket.get("protection_group"),
+    }
+    _record_protection_group(state, bracket.get("protection_group"))
+    if existing and existing.get("client_order_id") != client_order_id:
+        canceled = await broker.cancel_stop_loss(
+            symbol=symbol,
+            client_order_id=str(existing["client_order_id"]),
+        )
+        result.guard_events.append(
+            {
+                "kind": (
+                    "native_protection_replaced"
+                    if canceled.confirmed
+                    else "native_protection_cancel_unconfirmed"
+                ),
+                "reason": (
+                    None
+                    if canceled.confirmed
+                    else "replacement stop installed but prior stop cancellation "
+                    "was not confirmed"
+                ),
+                "halt_required": not canceled.confirmed,
+                **canceled.to_dict(),
+            }
+        )
+    return True
+
+
+def prune_closed_protection_groups(state: EngineState) -> None:
+    """Drop recorded protection groups whose legs are ALL flat in the ledger.
+
+    Anchors (entry_account_equity, entry_gross_notional) are recorded once
+    per group id and must die with the position: without pruning, a re-entered
+    pair reuses the FIRST entry's anchors forever, so the group loss budget
+    is measured against stale equity/notional."""
+    groups = state.strategy_state.get("protection_groups")
+    if not groups:
+        return
+    for group_id in list(groups):
+        group = groups[group_id]
+        symbols = (
+            [str(value) for value in group.get("symbols") or []]
+            if isinstance(group, Mapping)
+            else []
+        )
+        if symbols and all(symbol not in state.ledger.positions for symbol in symbols):
+            groups.pop(group_id)
+
+
+def _record_protection_group(
+    state: EngineState, raw_group: Mapping[str, Any] | None
+) -> None:
+    if not raw_group:
+        return
+    group_id = str(raw_group.get("id") or "")
+    symbols = [str(value) for value in raw_group.get("symbols") or []]
+    if (
+        not group_id
+        or not symbols
+        or any(symbol not in state.ledger.positions for symbol in symbols)
+    ):
+        return
+    groups = state.strategy_state.setdefault("protection_groups", {})
+    if group_id in groups:
+        return
+    entry_gross = sum(
+        state.ledger.positions[symbol].size * state.ledger.positions[symbol].avg_price
+        for symbol in symbols
+    )
+    groups[group_id] = {**dict(raw_group), "entry_gross_notional": entry_gross}
 
 
 async def _place(
@@ -598,6 +887,10 @@ async def _evaluate_brackets(
         bar = bars_by_symbol.get(symbol)
         if not bracket or bar is None:
             continue
+        if state.mode == "live" and symbol in state.native_protections:
+            # The venue watches mark price continuously; evaluating a second
+            # OHLC stop here would race and potentially double-submit a close.
+            continue
         resolution = BracketEngine.resolve_intrabar(
             bar,
             position.side,
@@ -628,7 +921,22 @@ async def _evaluate_brackets(
             result=result,
         )
         if fill is not None:
-            _record_fill(fill, state=state, trace=trace, result=result)
+            await _record_fill_and_protect(
+                fill,
+                intent=intent,
+                brokers=brokers,
+                state=state,
+                trace=trace,
+                result=result,
+                timestamp=timestamp,
+            )
+        if resolution["exit_type"] == "STOP_LOSS":
+            cooldown_seconds = int(bracket.get("cooldown_seconds") or 0)
+            if cooldown_seconds:
+                cooldowns = state.strategy_state.setdefault("protection_cooldowns", {})
+                cooldowns[symbol] = (
+                    pd.Timestamp(timestamp) + pd.Timedelta(seconds=cooldown_seconds)
+                ).isoformat()
         state.brackets.pop(symbol, None)
 
 
@@ -735,6 +1043,7 @@ async def _check_liquidation(
     state.ledger.realized_pnl = -config.initial_capital
     state.liquidated_at = timestamp
     state.brackets = {}
+    state.native_protections = {}
     state.pending_intents = []
     result.guard_events.append(
         {
@@ -785,7 +1094,15 @@ async def flatten_positions(
             brokers, intent, price=price, timestamp=timestamp, result=result
         )
         if fill is not None:
-            _record_fill(fill, state=state, trace=trace, result=result)
+            await _record_fill_and_protect(
+                fill,
+                intent=intent,
+                brokers=brokers,
+                state=state,
+                trace=trace,
+                result=result,
+                timestamp=timestamp,
+            )
         state.brackets.pop(symbol, None)
 
 

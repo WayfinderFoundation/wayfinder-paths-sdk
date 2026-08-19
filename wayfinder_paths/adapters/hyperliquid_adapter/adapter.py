@@ -1429,7 +1429,12 @@ class HyperliquidAdapter(BaseAdapter):
         self, address: str, order_id: int | str
     ) -> tuple[Literal[True], dict[str, Any]] | tuple[Literal[False], str]:
         try:
-            data = get_info().query_order_by_oid(address, int(order_id))
+            lookup: int | str = (
+                str(order_id)
+                if isinstance(order_id, str) and order_id.startswith("0x")
+                else int(order_id)
+            )
+            data = get_info().query_order_by_oid(address, lookup)
             return True, data
         except Exception as exc:
             self.logger.error(f"Failed to fetch order_status for {order_id}: {exc}")

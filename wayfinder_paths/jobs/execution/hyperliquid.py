@@ -27,6 +27,7 @@ from wayfinder_paths.jobs.execution.primitives import (
 )
 from wayfinder_paths.jobs.execution.venues import (
     MarketEvent,
+    NativeProtectionResult,
     VenueCapabilities,
     VenueState,
     register_venue,
@@ -343,6 +344,8 @@ class HyperliquidPerpBroker:
                 avg_price=_float_or_none(position.get("entryPx")) or 0.0,
                 metadata={
                     "source": "hyperliquid",
+                    "unrealized_pnl": _float_or_none(position.get("unrealizedPnl")),
+                    "position_value": _float_or_none(position.get("positionValue")),
                     # Observability only — exact funding accounting uses the
                     # user-funding ledger (cumFunding vanishes at close).
                     "cum_funding_since_open": _float_or_none(
@@ -359,7 +362,7 @@ class HyperliquidPerpBroker:
             balances["accountValue"] = account_value
         return VenueState(
             positions=positions,
-            open_orders=[],
+            open_orders=[dict(order) for order in result.get("open_orders") or []],
             balances=balances,
             source="hyperliquid_get_state",
             fetched_at=None,
@@ -384,6 +387,120 @@ class HyperliquidPerpBroker:
 
     async def cancel(self, client_order_id: str) -> FillEvent:
         return _cancel_needs_asset_context("hyperliquid", client_order_id)
+
+    async def place_stop_loss(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        size: float,
+        trigger_price: float,
+        client_order_id: str,
+    ) -> NativeProtectionResult:
+        from wayfinder_paths.mcp.tools.hyperliquid import (
+            hyperliquid_place_trigger_order,
+        )
+
+        try:
+            outcome = await hyperliquid_place_trigger_order(
+                wallet_label=self.wallet_label,
+                asset_name=symbol,
+                tpsl="sl",
+                trigger_price=trigger_price,
+                is_buy=side.lower() in {"buy", "long"},
+                size=size,
+                is_market_trigger=True,
+                reduce_only=True,
+                cloid=client_order_id,
+            )
+        except Exception as exc:
+            return await self._resolve_stop_after_error(
+                symbol, client_order_id, f"trigger submission failed: {exc}"
+            )
+        match outcome:
+            case {"ok": True, "result": dict() as payload}:
+                status = str(payload.get("status") or "")
+                if status == "confirmed":
+                    return NativeProtectionResult(
+                        status="confirmed",
+                        symbol=symbol,
+                        client_order_id=client_order_id,
+                        order_id=_trigger_order_id(payload),
+                        raw=payload,
+                    )
+                error = str(payload)
+            case _:
+                error = str(_mcp_error(outcome) or "no trigger acknowledgement")
+        return await self._resolve_stop_after_error(symbol, client_order_id, error)
+
+    async def _resolve_stop_after_error(
+        self, symbol: str, client_order_id: str, error: str
+    ) -> NativeProtectionResult:
+        """Ambiguous submit is confirmed only when the exact cloid is open."""
+        try:
+            state = await _hl_state_result(self.wallet_label)
+            matching = next(
+                (
+                    order
+                    for order in state.get("open_orders") or []
+                    if str(order.get("cloid") or "") == client_order_id
+                ),
+                None,
+            )
+            if matching is not None:
+                return NativeProtectionResult(
+                    status="confirmed",
+                    symbol=symbol,
+                    client_order_id=client_order_id,
+                    order_id=(
+                        str(matching.get("oid"))
+                        if matching.get("oid") is not None
+                        else None
+                    ),
+                    raw={"reconciled_open_order": dict(matching)},
+                )
+        except Exception:
+            pass
+        return NativeProtectionResult(
+            status="ambiguous",
+            symbol=symbol,
+            client_order_id=client_order_id,
+            error=error,
+        )
+
+    async def cancel_stop_loss(
+        self, *, symbol: str, client_order_id: str
+    ) -> NativeProtectionResult:
+        from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_cancel_order
+
+        try:
+            outcome = await hyperliquid_cancel_order(
+                wallet_label=self.wallet_label,
+                asset_name=symbol,
+                cancel_cloid=client_order_id,
+            )
+        except Exception as exc:
+            return NativeProtectionResult(
+                status="ambiguous",
+                symbol=symbol,
+                client_order_id=client_order_id,
+                error=f"stop cancellation failed: {exc}",
+            )
+        match outcome:
+            case {"ok": True, "result": {"status": "confirmed"} as payload}:
+                return NativeProtectionResult(
+                    status="confirmed",
+                    symbol=symbol,
+                    client_order_id=client_order_id,
+                    raw=payload,
+                )
+            case _:
+                return NativeProtectionResult(
+                    status="ambiguous",
+                    symbol=symbol,
+                    client_order_id=client_order_id,
+                    error=str(_mcp_error(outcome) or "stop cancellation unconfirmed"),
+                )
 
 
 class HyperliquidPerpAdapter:
@@ -423,6 +540,20 @@ def _mcp_error(outcome: Any) -> Any:
         case dict():
             return outcome.get("message")
     return outcome
+
+
+def _trigger_order_id(payload: dict[str, Any]) -> str | None:
+    for effect in payload.get("effects") or []:
+        if effect.get("label") != "place_trigger_order":
+            continue
+        statuses = ((effect.get("result") or {}).get("response") or {}).get(
+            "data", {}
+        ).get("statuses") or []
+        for status in statuses:
+            order = status.get("resting") or status.get("filled") or {}
+            if order.get("oid") is not None:
+                return str(order["oid"])
+    return None
 
 
 async def _submit_market_order(

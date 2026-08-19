@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
@@ -70,6 +70,25 @@ class VenueState:
         }
 
 
+@dataclass
+class NativeProtectionResult:
+    """Outcome of installing or canceling a venue-native reduce-only stop."""
+
+    status: Literal["confirmed", "rejected", "ambiguous"]
+    symbol: str
+    client_order_id: str
+    order_id: str | None = None
+    error: str | None = None
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def confirmed(self) -> bool:
+        return self.status == "confirmed"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
 @runtime_checkable
 class MarketDataFeed(Protocol):
     async def get_completed_bars(
@@ -103,6 +122,25 @@ class Broker(Protocol):
     ) -> FillEvent: ...
 
     async def cancel(self, client_order_id: str) -> FillEvent: ...
+
+
+@runtime_checkable
+class NativeProtectionBroker(Protocol):
+    """Optional live-broker extension used only for native stop policies."""
+
+    async def place_stop_loss(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        size: float,
+        trigger_price: float,
+        client_order_id: str,
+    ) -> NativeProtectionResult: ...
+
+    async def cancel_stop_loss(
+        self, *, symbol: str, client_order_id: str
+    ) -> NativeProtectionResult: ...
 
 
 @runtime_checkable

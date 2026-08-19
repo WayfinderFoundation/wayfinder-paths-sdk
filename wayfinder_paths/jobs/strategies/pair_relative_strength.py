@@ -8,7 +8,13 @@ from typing import Any
 import pandas as pd
 
 from wayfinder_paths.jobs.execution.primitives import ExecutionContext
-from wayfinder_paths.jobs.strategies._starter_utils import current_rows, merge_params
+from wayfinder_paths.jobs.strategies._starter_utils import (
+    PAIR_PROTECTION_DEFAULTS,
+    add_stop_atr,
+    current_rows,
+    merge_params,
+    stop_brackets,
+)
 from wayfinder_paths.jobs.strategies.portfolio import target_weights_to_intents
 
 
@@ -34,6 +40,7 @@ class PairRelativeStrengthStrategy:
         "rebalance_offset": 4,
         "rebalance_threshold": 0.0,
         "min_trade_notional": 25.0,
+        **PAIR_PROTECTION_DEFAULTS,
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -76,7 +83,11 @@ class PairRelativeStrengthStrategy:
         features = pd.DataFrame(index=frame_a.index)
         features["pair_relative_momentum"] = timestamps.map(relative_momentum)
         features["pair_spread_volatility"] = timestamps.map(spread_volatility)
-        return {symbol_a: features}
+        return add_stop_atr(
+            {symbol_a: features},
+            frames,
+            period=int(self.params["stop_atr_period"]),
+        )
 
     def decide(self, ctx: ExecutionContext) -> list[dict[str, Any]]:
         symbol_a, symbol_b = self.params["symbols"]
@@ -136,6 +147,22 @@ class PairRelativeStrengthStrategy:
             venue=str(self.params["venue"]),
             rebalance_threshold=float(self.params["rebalance_threshold"]),
             min_trade_notional=float(self.params["min_trade_notional"]),
+            brackets=stop_brackets(
+                ctx,
+                (symbol_a, symbol_b),
+                self.params,
+                protection_group={
+                    "id": "starter_pair",
+                    "symbols": [symbol_a, symbol_b],
+                    "max_entry_equity_loss_pct": float(
+                        self.params["pair_max_entry_equity_loss_pct"]
+                    ),
+                    "max_entry_gross_loss_pct": float(
+                        self.params["pair_max_entry_gross_loss_pct"]
+                    ),
+                    "halt_after_exit": True,
+                },
+            ),
         )
         for intent in intents:
             if str(intent.get("action", "")).upper() == "CLOSE":

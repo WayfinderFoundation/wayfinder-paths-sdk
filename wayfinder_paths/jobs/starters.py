@@ -1,4 +1,4 @@
-"""Selectable, paper-only jobs_v1 starter strategies.
+"""Selectable, paper-first jobs_v1 starter strategies.
 
 The catalog owns exact rules and research provenance. Selecting a starter
 creates a normal Wayfinder job; from that point, the standard backtest and
@@ -8,15 +8,74 @@ forward-result machinery owns the user's results.
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.jobs.models import WayfinderJob, safe_job_id
+from wayfinder_paths.jobs.starter_leverage_evidence import STARTER_LEVERAGE_RESULTS
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.strategies._starter_utils import (
+    MEAN_REVERSION_STOP_DEFAULTS,
+    PAIR_PROTECTION_DEFAULTS,
+    RANKING_STOP_DEFAULTS,
+)
 
-STARTER_CATALOG_VERSION = "1.2.0"
-STARTER_STRATEGY_INCEPTION_AT = "2026-08-17T00:00:00+00:00"
+STARTER_CATALOG_VERSION = "1.4.0"
+STARTER_STRATEGY_INCEPTION_AT = "2026-08-18T00:00:00+00:00"
+STARTER_EVIDENCE_REVISION = "1.4.0"
+STARTER_LEVERAGE_DEFAULT = 1
+STARTER_LEVERAGE_MINIMUM = 1
+STARTER_LEVERAGE_MAXIMUM = 5
+STARTER_LEVERAGE_STEP = 1
+
+
+def validate_starter_leverage(value: Any) -> int:
+    """Validate the starter selector's intentionally narrow leverage range."""
+    if isinstance(value, bool):
+        raise ValueError("starter leverage must be a whole number from 1 to 5")
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("starter leverage must be a whole number from 1 to 5") from exc
+    if (
+        not math.isfinite(candidate)
+        or not candidate.is_integer()
+        or not STARTER_LEVERAGE_MINIMUM <= candidate <= STARTER_LEVERAGE_MAXIMUM
+    ):
+        raise ValueError("starter leverage must be a whole number from 1 to 5")
+    return int(candidate)
+
+
+def coerce_starter_leverage(value: Any) -> tuple[int, str | None]:
+    """Reuse-path tolerant variant of validate_starter_leverage.
+
+    An existing job whose recorded leverage drifted outside the starter dial
+    (hand edit, governance clamp) must never brick reopen: out-of-range or
+    invalid values clamp to the nearest valid whole number with a warning
+    instead of raising. New selections still go through the strict path."""
+    try:
+        return validate_starter_leverage(value), None
+    except ValueError:
+        pass
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        numeric = math.nan
+    if not math.isfinite(numeric):
+        return STARTER_LEVERAGE_DEFAULT, (
+            f"existing leverage {value!r} is not usable; using the starter "
+            f"default {STARTER_LEVERAGE_DEFAULT}"
+        )
+    clamped = int(
+        min(max(round(numeric), STARTER_LEVERAGE_MINIMUM), STARTER_LEVERAGE_MAXIMUM)
+    )
+    return clamped, (
+        f"existing leverage {value!r} is outside the starter dial "
+        f"({STARTER_LEVERAGE_MINIMUM}-{STARTER_LEVERAGE_MAXIMUM}); "
+        f"clamped to {clamped}"
+    )
 
 
 @dataclass(frozen=True)
@@ -35,8 +94,92 @@ class StarterDefinition:
     research_evidence: dict[str, Any]
     cautions: tuple[str, ...] = ()
 
+    def configured_params(self) -> dict[str, Any]:
+        if self.family == "mean_reversion":
+            protection = MEAN_REVERSION_STOP_DEFAULTS
+        elif self.family == "relative_value_pair":
+            protection = PAIR_PROTECTION_DEFAULTS
+        else:
+            protection = {
+                **RANKING_STOP_DEFAULTS,
+                "stop_atr_period": 96 if self.timeframe == "15m" else 24,
+            }
+        return {**copy.deepcopy(protection), **copy.deepcopy(self.params)}
+
+    def risk_limits(self) -> dict[str, Any]:
+        return {
+            "max_drawdown": -0.06 if self.family == "mean_reversion" else -0.20,
+            "pause_after_consecutive_losses": 5,
+        }
+
+    def risk_controls(self) -> dict[str, Any]:
+        params = self.configured_params()
+        controls: dict[str, Any] = {
+            "per_position_stop": {
+                "basis": f"{params['stop_atr_multiple']:g}x ATR({params['stop_atr_period']})",
+                "minimum_pct": params["stop_min_pct"],
+                "maximum_pct": params["stop_max_pct"],
+                "native_when_live": params["native_stop_required"],
+                "take_profit": None,
+            },
+            "account_halt": {
+                **self.risk_limits(),
+                "flatten_on_breach": False,
+                "manual_resume_required": True,
+            },
+        }
+        if params.get("stop_cooldown_seconds"):
+            controls["per_position_stop"]["cooldown_seconds"] = params[
+                "stop_cooldown_seconds"
+            ]
+        if self.family == "relative_value_pair":
+            controls["pair_group_stop"] = {
+                "monitor_interval_seconds": params[
+                    "protection_monitor_interval_seconds"
+                ],
+                "loss_budget": (
+                    f"minimum of {params['pair_max_entry_equity_loss_pct'] * 100:g}% "
+                    "of entry account equity and "
+                    f"{params['pair_max_entry_gross_loss_pct'] * 100:g}% of entry "
+                    "gross notional"
+                ),
+                "close_companion_on_leg_stop": True,
+                "cross_symbol_atomic": False,
+                "halt_after_exit": True,
+            }
+        return controls
+
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
+        payload["params"] = self.configured_params()
+        payload["risk_limits"] = self.risk_limits()
+        payload["risk_controls"] = self.risk_controls()
+        payload["leverage_control"] = {
+            "minimum": STARTER_LEVERAGE_MINIMUM,
+            "maximum": STARTER_LEVERAGE_MAXIMUM,
+            "step": STARTER_LEVERAGE_STEP,
+            "default": STARTER_LEVERAGE_DEFAULT,
+            "operator_owned": True,
+        }
+        payload["research_evidence"] = {
+            **payload["research_evidence"],
+            "strategy_revision": STARTER_EVIDENCE_REVISION,
+            "risk_overlay_backtest_status": "validated",
+            "risk_overlay_backtest_scope": "per_position_ohlc_stops",
+            "risk_overlay_note": (
+                "The jobs_v1 engine figures include the 1.4.0 per-position stop "
+                "overlay. Live pair-group and account monitors run between strategy "
+                "bars and are not included in these historical figures."
+            ),
+            "jobs_v1_leverage_sweep": {
+                "leverage_semantics": "target_exposure",
+                "liquidation_model": (
+                    "close-of-bar cross margin using venue maintenance defaults"
+                ),
+                "account_halt_simulated": False,
+                "results": copy.deepcopy(STARTER_LEVERAGE_RESULTS[self.id]),
+            },
+        }
         for key in (
             "symbols",
             "crypto_assets",
@@ -60,6 +203,12 @@ class StarterDefinition:
                     "Positive historical expectancy is not a guarantee. "
                     "Start in paper mode and evaluate forward results from "
                     "the job's own inception before considering live risk."
+                ),
+                "wallet_ownership_notice": (
+                    "Native protection reconciles only this job's exact client "
+                    "order ids. Other orders on a shared wallet are never "
+                    "canceled, but shared-wallet exposure can still affect "
+                    "account-level limits. A dedicated wallet is recommended."
                 ),
             }
         )
@@ -139,6 +288,9 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 "max_drawdown": -0.0279,
                 "trade_count": 182,
                 "total_fees_usd": 213.81,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
                 "funding_included": False,
                 "trace_valid": True,
             },
@@ -194,6 +346,9 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 "max_drawdown": -0.0162,
                 "trade_count": 164,
                 "total_fees_usd": 190.41,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
                 "funding_included": False,
                 "trace_valid": True,
             },
@@ -249,11 +404,14 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 "reserved_tail_t_stat": -0.41,
             },
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.1208,
-                "sharpe": 3.11,
+                "return_after_fees_and_slippage": 0.1230,
+                "sharpe": 3.14,
                 "max_drawdown": -0.0275,
-                "trade_count": 102,
-                "total_fees_usd": 122.04,
+                "trade_count": 104,
+                "total_fees_usd": 124.52,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
                 "funding_included": False,
                 "trace_valid": True,
             },
@@ -285,6 +443,9 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "rebalance_bars": 24,
             "rebalance_offset": 12,
             "weight_per_leg": 0.25,
+            "stop_atr_multiple": 8.0,
+            "stop_min_pct": 0.15,
+            "stop_max_pct": 0.30,
         },
         research_evidence={
             **_RESEARCH_METHOD,
@@ -296,14 +457,23 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "max_drawdown": -0.1075,
             "chronological_fold_returns": [0.0465, 0.0999, 0.0754, 0.0440],
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.2675,
-                "sharpe": 1.77,
-                "max_drawdown": -0.0946,
-                "trade_count": 217,
-                "total_fees_usd": 270.95,
+                "return_after_fees_and_slippage": 0.2310,
+                "sharpe": 1.56,
+                "max_drawdown": -0.1096,
+                "trade_count": 261,
+                "total_fees_usd": 325.04,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
                 "funding_included": False,
                 "trace_valid": True,
             },
+            "revalidation_note": (
+                "The current-revision replay did not reproduce the earlier "
+                "0.2675 return / 217-trade catalog snapshot. Its protected run "
+                "exactly matched its reconstructed no-stop baseline, and these "
+                "current-revision figures supersede the stale snapshot."
+            ),
         },
     ),
     StarterDefinition(
@@ -329,6 +499,9 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "rebalance_bars": 96,
             "rebalance_offset": 48,
             "weight_per_leg": 0.25,
+            "stop_atr_multiple": 14.0,
+            "stop_min_pct": 0.26,
+            "stop_max_pct": 0.52,
         },
         research_evidence={
             **_RESEARCH_METHOD,
@@ -341,10 +514,18 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "chronological_fold_returns": [0.1136, -0.0545, 0.1963, 0.0619],
             "jobs_v1_engine": {
                 "return_after_fees_and_slippage": 0.2587,
-                "sharpe": 1.51,
-                "max_drawdown": -0.1315,
-                "trade_count": 116,
-                "total_fees_usd": 136.39,
+                "sharpe": 1.49,
+                "max_drawdown": -0.1146,
+                "trade_count": 120,
+                "total_fees_usd": 141.12,
+                "stop_count": 2,
+                "full_period_vs_no_stop": "improved",
+                "chronological_folds_non_regressing": 4,
+                "no_stop_baseline": {
+                    "return_after_fees_and_slippage": 0.2541,
+                    "sharpe": 1.46,
+                    "max_drawdown": -0.1170,
+                },
                 "funding_included": False,
                 "trace_valid": True,
             },
@@ -385,11 +566,14 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "max_drawdown": -0.1301,
             "chronological_fold_returns": [0.0085, 0.0699, 0.0457, 0.0318],
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.2089,
-                "sharpe": 1.36,
-                "max_drawdown": -0.1010,
+                "return_after_fees_and_slippage": 0.2044,
+                "sharpe": 1.34,
+                "max_drawdown": -0.1023,
                 "trade_count": 141,
-                "total_fees_usd": 173.08,
+                "total_fees_usd": 173.02,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
                 "funding_included": False,
                 "trace_valid": True,
             },
@@ -456,11 +640,14 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 ),
             },
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.2074,
+                "return_after_fees_and_slippage": 0.2090,
                 "sharpe": 0.99,
-                "max_drawdown": -0.1103,
+                "max_drawdown": -0.1102,
                 "trade_count": 182,
-                "total_fees_usd": 56.41,
+                "total_fees_usd": 56.43,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
                 "funding_included": False,
                 "trace_valid": True,
             },
@@ -530,11 +717,14 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 ),
             },
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.2821,
-                "sharpe": 1.25,
-                "max_drawdown": -0.1080,
+                "return_after_fees_and_slippage": 0.2815,
+                "sharpe": 1.24,
+                "max_drawdown": -0.1079,
                 "trade_count": 181,
-                "total_fees_usd": 49.74,
+                "total_fees_usd": 49.76,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
                 "funding_included": False,
                 "trace_valid": True,
             },
@@ -566,6 +756,7 @@ def create_starter_job(
     store: JobStore | None = None,
     compile_job: bool = True,
     initializer_session_id: str | None = None,
+    leverage: int | float | None = None,
 ) -> dict[str, Any]:
     """Materialize a selectable starter as an ordinary paper jobs_v1 job."""
     definition = get_starter(starter_id)
@@ -578,18 +769,27 @@ def create_starter_job(
         if job_id is not None or existing_starter.get("id") != definition.id:
             raise FileExistsError(f"job already exists: {resolved_id}")
         entrypoint = store.resolve_script_entrypoint(existing.id, existing.to_dict())
+        selected_leverage, leverage_warning = coerce_starter_leverage(
+            existing.execution_params.get("leverage", STARTER_LEVERAGE_DEFAULT)
+        )
         return {
             "created": False,
             "job": existing.to_dict(),
             "job_yaml": str(job_path),
             "script_entrypoint": str(entrypoint) if entrypoint is not None else None,
             "starter": definition.to_dict(),
+            "selected_leverage": selected_leverage,
+            "leverage_warning": leverage_warning,
         }
 
     from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
 
-    interval_seconds = bar_interval_seconds(definition.timeframe)
-    if interval_seconds is None:
+    configured_params = definition.configured_params()
+    selected_leverage = validate_starter_leverage(
+        STARTER_LEVERAGE_DEFAULT if leverage is None else leverage
+    )
+    interval_seconds = int(bar_interval_seconds(definition.timeframe) or 0)
+    if interval_seconds <= 0:
         raise ValueError(f"unsupported starter timeframe: {definition.timeframe}")
     job = WayfinderJob.new(
         resolved_id,
@@ -630,13 +830,14 @@ def create_starter_job(
         "venues": ["hyperliquid"],
     }
     job.execution_params = {
-        **copy.deepcopy(definition.params),
+        **configured_params,
         "symbols": list(definition.symbols),
         "venue": "hyperliquid",
         "initial_capital": 10_000.0,
         "fee_bps": 4.5,
         "slippage_bps": 3.5,
         "min_trade_notional": 25.0,
+        "leverage": selected_leverage,
     }
     job.controller["starter"] = {
         "id": definition.id,
@@ -644,11 +845,14 @@ def create_starter_job(
         "strategy_inception_at": STARTER_STRATEGY_INCEPTION_AT,
         "job_tracking_inception_at": job.created_at,
         "paper_only": True,
+        "risk_limits": definition.risk_limits(),
+        "selected_leverage": selected_leverage,
     }
     job.performance["starter_evidence"] = "results/backtest/starter_evidence.json"
     job.performance["tracking_inception_at"] = job.created_at
 
     job_path = store.create_job(job)
+    store.write_json(job.id, "workspace/risk_limits.json", definition.risk_limits())
     entrypoint = store.resolve_script_entrypoint(job.id, job.to_dict())
     if entrypoint is None:
         raise RuntimeError("starter job has no workspace strategy entrypoint")
@@ -659,6 +863,7 @@ def create_starter_job(
     evidence = definition.to_dict()
     evidence["job_id"] = job.id
     evidence["job_tracking_inception_at"] = job.created_at
+    evidence["selected_leverage"] = selected_leverage
     store.write_json(job.id, "results/backtest/starter_evidence.json", evidence)
 
     result: dict[str, Any] = {
@@ -667,6 +872,7 @@ def create_starter_job(
         "job_yaml": str(job_path),
         "script_entrypoint": str(entrypoint),
         "starter": definition.to_dict(),
+        "selected_leverage": selected_leverage,
     }
     if compile_job:
         from wayfinder_paths.jobs.compiler import JobCompiler

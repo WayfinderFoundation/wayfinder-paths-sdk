@@ -21,6 +21,7 @@ from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.engine import EngineState
 from wayfinder_paths.jobs.execution.paper import PaperBroker
 from wayfinder_paths.jobs.execution.primitives import PositionRecord
+from wayfinder_paths.jobs.execution.protection import monitor_native_protection
 from wayfinder_paths.jobs.execution.simulator import (
     PreparedExecutionDataset,
     simulate_execution,
@@ -155,6 +156,282 @@ class FakeAdapter:
     def __init__(self, view: CompletedBarsView, broker: Any) -> None:
         self.feed = FakeFeed(view)
         self.broker = broker
+
+
+async def test_pair_protection_monitor_closes_both_legs_on_group_loss() -> None:
+    state = EngineState(mode="live")
+    for symbol, side in (("BTC", "long"), ("ETH", "short")):
+        state.ledger.positions[symbol] = PositionRecord(
+            symbol=symbol, side=side, size=10.0, avg_price=10.0
+        )
+        state.native_protections[symbol] = {
+            "venue": "hyperliquid",
+            "client_order_id": f"stop-{symbol}",
+            "protection_group": {
+                "id": "pair",
+                "symbols": ["BTC", "ETH"],
+            },
+        }
+    state.strategy_state["protection_groups"] = {
+        "pair": {
+            "id": "pair",
+            "symbols": ["BTC", "ETH"],
+            "entry_account_equity": 10_000.0,
+            "entry_gross_notional": 400.0,
+            "max_entry_equity_loss_pct": 0.03,
+            "max_entry_gross_loss_pct": 0.08,
+        }
+    }
+    venue_positions = {
+        symbol: PositionRecord(
+            symbol=symbol,
+            side=side,
+            size=10.0,
+            avg_price=10.0,
+            metadata={"unrealized_pnl": -20.0},
+        )
+        for symbol, side in (("BTC", "long"), ("ETH", "short"))
+    }
+    broker = FakeLiveBroker(venue_positions=venue_positions)
+    notes, fills, _, halt_reason = await monitor_native_protection(
+        mode="live",
+        state=state,
+        brokers={"hyperliquid": broker},
+        venue_states={
+            "hyperliquid": VenueState(
+                positions=venue_positions,
+                open_orders=[{"cloid": "stop-BTC"}, {"cloid": "stop-ETH"}],
+            )
+        },
+        now=pd.Timestamp("2026-01-01T00:05:00Z"),
+    )
+
+    assert halt_reason is not None and "breached" in halt_reason
+    assert len(fills) == 2
+    assert all(intent.reduce_only for intent in broker.placed)
+    assert not state.ledger.positions
+    assert any(note["kind"] == "native_protection_group_close" for note in notes)
+
+
+async def test_protection_monitor_closes_position_without_confirmed_stop() -> None:
+    state = EngineState(mode="live")
+    position = PositionRecord(symbol="SNX", side="long", size=2.0, avg_price=10.0)
+    state.ledger.positions["SNX"] = position
+    state.brackets["SNX"] = {
+        "venue": "hyperliquid",
+        "native_required": True,
+        "cooldown_seconds": 3600,
+    }
+    broker = FakeLiveBroker(venue_positions={"SNX": position})
+
+    notes, fills, _, halt_reason = await monitor_native_protection(
+        mode="live",
+        state=state,
+        brokers={"hyperliquid": broker},
+        venue_states={"hyperliquid": VenueState(positions={"SNX": position})},
+        now=pd.Timestamp("2026-01-01T00:05:00Z"),
+    )
+
+    assert halt_reason == "no confirmed native stop for SNX"
+    assert len(fills) == 1 and fills[0].successful
+    assert broker.placed[0].reduce_only is True
+    assert "SNX" not in state.ledger.positions
+    assert "SNX" in state.strategy_state["protection_cooldowns"]
+    assert any(note["kind"] == "native_protection_breach" for note in notes)
+
+
+async def test_protection_monitor_detects_stop_size_drift() -> None:
+    state = EngineState(mode="live")
+    position = PositionRecord(symbol="SNX", side="long", size=2.0, avg_price=10.0)
+    state.ledger.positions["SNX"] = position
+    state.native_protections["SNX"] = {
+        "venue": "hyperliquid",
+        "client_order_id": "stop-SNX",
+        "size": 1.0,
+    }
+    broker = FakeLiveBroker(venue_positions={"SNX": position})
+
+    _, fills, _, halt_reason = await monitor_native_protection(
+        mode="live",
+        state=state,
+        brokers={"hyperliquid": broker},
+        venue_states={
+            "hyperliquid": VenueState(
+                positions={"SNX": position},
+                open_orders=[{"cloid": "stop-SNX"}],
+            )
+        },
+        now=pd.Timestamp("2026-01-01T00:05:00Z"),
+    )
+
+    assert halt_reason == "native stop size does not match the SNX position"
+    assert len(fills) == 1 and fills[0].successful
+
+
+async def test_protection_monitor_bounds_close_to_job_ledger_size() -> None:
+    """Shared wallet: the venue reports the WHOLE wallet's position; the
+    monitor must close only what this job's ledger attributes to it."""
+    state = EngineState(mode="live")
+    state.ledger.positions["SNX"] = PositionRecord(
+        symbol="SNX", side="long", size=3.0, avg_price=10.0
+    )
+    state.brackets["SNX"] = {"venue": "hyperliquid", "native_required": True}
+    venue_position = PositionRecord(
+        symbol="SNX", side="long", size=10.0, avg_price=10.0
+    )
+    broker = FakeLiveBroker(venue_positions={"SNX": venue_position})
+
+    _, fills, _, halt_reason = await monitor_native_protection(
+        mode="live",
+        state=state,
+        brokers={"hyperliquid": broker},
+        venue_states={"hyperliquid": VenueState(positions={"SNX": venue_position})},
+        now=pd.Timestamp("2026-01-01T00:05:00Z"),
+    )
+
+    assert halt_reason == "no confirmed native stop for SNX"
+    assert len(fills) == 1 and fills[0].filled_size == 3.0
+    assert broker.placed[0].size == 3.0  # never the whole-wallet size
+    assert "SNX" not in state.ledger.positions
+
+
+async def test_protection_monitor_skips_close_without_ledger_position() -> None:
+    state = EngineState(mode="live")
+    state.native_protections["SNX"] = {
+        "venue": "hyperliquid",
+        "client_order_id": "stop-SNX",
+    }
+    venue_position = PositionRecord(
+        symbol="SNX", side="long", size=10.0, avg_price=10.0
+    )
+    broker = FakeLiveBroker(venue_positions={"SNX": venue_position})
+
+    notes, fills, _, halt_reason = await monitor_native_protection(
+        mode="live",
+        state=state,
+        brokers={"hyperliquid": broker},
+        venue_states={"hyperliquid": VenueState(positions={"SNX": venue_position})},
+        now=pd.Timestamp("2026-01-01T00:05:00Z"),
+    )
+
+    assert halt_reason == "owned native stop missing for SNX"
+    assert fills == [] and broker.placed == []
+    skip_notes = [
+        note for note in notes if note["kind"] == "native_protection_close_skipped"
+    ]
+    assert skip_notes and skip_notes[0]["symbol"] == "SNX"
+
+
+async def test_group_loss_budget_scoped_to_job_ledger_exposure() -> None:
+    """Whole-wallet venue PnL must not trip this job's group loss budget:
+    the ledger holds 1/10th of each venue leg, so the attributed loss is
+    -4 against a -32 budget — no breach, no closes."""
+    state = EngineState(mode="live")
+    for symbol, side in (("BTC", "long"), ("ETH", "short")):
+        state.ledger.positions[symbol] = PositionRecord(
+            symbol=symbol, side=side, size=1.0, avg_price=10.0
+        )
+        state.native_protections[symbol] = {
+            "venue": "hyperliquid",
+            "client_order_id": f"stop-{symbol}",
+            "protection_group": {"id": "pair", "symbols": ["BTC", "ETH"]},
+        }
+    state.strategy_state["protection_groups"] = {
+        "pair": {
+            "id": "pair",
+            "symbols": ["BTC", "ETH"],
+            "entry_gross_notional": 400.0,
+            "max_entry_gross_loss_pct": 0.08,
+        }
+    }
+    venue_positions = {
+        symbol: PositionRecord(
+            symbol=symbol,
+            side=side,
+            size=10.0,
+            avg_price=10.0,
+            metadata={"unrealized_pnl": -20.0},
+        )
+        for symbol, side in (("BTC", "long"), ("ETH", "short"))
+    }
+    broker = FakeLiveBroker(venue_positions=venue_positions)
+
+    _, fills, _, halt_reason = await monitor_native_protection(
+        mode="live",
+        state=state,
+        brokers={"hyperliquid": broker},
+        venue_states={
+            "hyperliquid": VenueState(
+                positions=venue_positions,
+                open_orders=[{"cloid": "stop-BTC"}, {"cloid": "stop-ETH"}],
+            )
+        },
+        now=pd.Timestamp("2026-01-01T00:05:00Z"),
+    )
+
+    assert halt_reason is None
+    assert fills == [] and broker.placed == []
+    assert set(state.ledger.positions) == {"BTC", "ETH"}
+
+
+def test_protection_group_reanchors_after_full_close() -> None:
+    from wayfinder_paths.jobs.execution.engine import (
+        TickResult,
+        _record_fill,
+        _record_protection_group,
+    )
+    from wayfinder_paths.jobs.execution.primitives import (
+        ExecutionTrace,
+        StateSnapshot,
+    )
+
+    state = EngineState(mode="live")
+    for symbol in ("BTC", "ETH"):
+        state.ledger.positions[symbol] = PositionRecord(
+            symbol=symbol, side="long", size=1.0, avg_price=10.0
+        )
+    group = {"id": "pair", "symbols": ["BTC", "ETH"], "entry_account_equity": 10_000.0}
+    _record_protection_group(state, group)
+    recorded = state.strategy_state["protection_groups"]["pair"]
+    assert recorded["entry_account_equity"] == 10_000.0
+    assert recorded["entry_gross_notional"] == 20.0
+
+    # While the pair is open, anchors are sticky (first entry wins).
+    _record_protection_group(state, {**group, "entry_account_equity": 11_000.0})
+    assert (
+        state.strategy_state["protection_groups"]["pair"]["entry_account_equity"]
+        == 10_000.0
+    )
+
+    # Fully closing both legs through the engine fill path clears the group.
+    trace = ExecutionTrace(execution_spec={})
+    result = TickResult(snapshot=StateSnapshot(status="valid"))
+    for symbol in ("BTC", "ETH"):
+        _record_fill(
+            FillEvent(
+                status="filled",
+                venue="hyperliquid",
+                symbol=symbol,
+                side="sell",
+                filled_size=1.0,
+                avg_price=10.0,
+                reduce_only=True,
+            ),
+            state=state,
+            trace=trace,
+            result=result,
+        )
+    assert "pair" not in state.strategy_state["protection_groups"]
+
+    # Re-entry re-records FRESH anchors instead of reusing the stale ones.
+    for symbol in ("BTC", "ETH"):
+        state.ledger.positions[symbol] = PositionRecord(
+            symbol=symbol, side="long", size=1.0, avg_price=12.0
+        )
+    _record_protection_group(state, {**group, "entry_account_equity": 12_000.0})
+    reanchored = state.strategy_state["protection_groups"]["pair"]
+    assert reanchored["entry_account_equity"] == 12_000.0
+    assert reanchored["entry_gross_notional"] == 24.0
 
 
 def _make_job(

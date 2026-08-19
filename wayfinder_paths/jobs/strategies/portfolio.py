@@ -7,13 +7,17 @@ target weights inside decide(), call target_weights_to_intents(ctx, weights),
 return the result. Pure — it reads only ctx — so it is purity-sandbox safe
 and byte-deterministic for identical inputs.
 
-Leverage is the caller's concern: either scale the weights (gross > 1 with
-normalize_gross=False) or pass sizing_equity = equity * leverage.
+When ``ctx.params.leverage`` is set, the helper scales sizing equity so the
+requested leverage changes the target exposure rather than multiplying each
+rebalance delta. Opens are stamped so the engine-level fallback does not apply
+the same leverage a second time.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from wayfinder_paths.jobs.execution.primitives import (
@@ -31,6 +35,7 @@ def target_weights_to_intents(
     sizing_equity: float | None = None,
     normalize_gross: bool = True,
     min_trade_notional: float = 0.0,
+    brackets: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Diff target weights against the current ledger and emit intents.
 
@@ -46,8 +51,17 @@ def target_weights_to_intents(
     gross so the portfolio never implicitly levers. Pass False when leverage
     via weights is intentional.
     """
+    leverage = 1.0
+    try:
+        candidate = float(ctx.params.get("leverage") or 1.0)
+        if math.isfinite(candidate) and candidate > 0:
+            leverage = candidate
+    except (TypeError, ValueError):
+        pass
     equity = float(
-        sizing_equity if sizing_equity is not None else mark_to_market_equity(ctx)
+        sizing_equity
+        if sizing_equity is not None
+        else mark_to_market_equity(ctx) * leverage
     )
     if equity <= 0:
         return []
@@ -79,31 +93,60 @@ def target_weights_to_intents(
         if abs(delta) * equity < min_trade_notional:
             continue
 
-        position = ctx.ledger.positions.get(symbol)
+        held_position = ctx.ledger.positions.get(symbol)
         flips = held and target and (held > 0) != (target > 0)
-        if position is not None and (target == 0 or flips):
-            intents.append(_close(symbol, position, venue, size=position.size))
+        if held_position is not None and (target == 0 or flips):
+            intents.append(
+                _close(symbol, held_position, venue, size=held_position.size)
+            )
             held = 0.0
-        elif position is not None and abs(target) < abs(held):
+        elif held_position is not None and abs(target) < abs(held):
             # Same-sign shrink: close (|held| - |target|) worth of units.
             # symbol is in closes whenever a position exists (built above).
             size = (abs(held) - abs(target)) * equity / closes[symbol]
-            intents.append(_close(symbol, position, venue, size=size))
+            intents.append(_close(symbol, held_position, venue, size=size))
             continue
 
         grow = target - held
         if target and abs(grow) > 0:
-            intents.append(
-                {
-                    "action": "OPEN",
-                    "venue": venue,
-                    "symbol": symbol,
-                    "side": "buy" if target > 0 else "sell",
-                    "notional": abs(grow) * equity,
-                    "metadata": {"target_weight": target},
-                }
-            )
+            if _cooldown_active(ctx, symbol):
+                continue
+            metadata: dict[str, Any] = {"target_weight": target}
+            if sizing_equity is not None:
+                # An explicit sizing-equity override already owns the target
+                # exposure; protect it from the engine's generic intent scaler.
+                metadata["leverage_applied"] = True
+            elif leverage != 1.0:
+                metadata.update({"leverage_applied": True, "engine_leverage": leverage})
+            intent: dict[str, Any] = {
+                "action": "OPEN",
+                "venue": venue,
+                "symbol": symbol,
+                "side": "buy" if target > 0 else "sell",
+                "notional": abs(grow) * equity,
+                "metadata": metadata,
+            }
+            if brackets and symbol in brackets:
+                intent["bracket"] = dict(brackets[symbol])
+            intents.append(intent)
     return intents
+
+
+def _cooldown_active(ctx: ExecutionContext, symbol: str) -> bool:
+    cooldowns = ctx.strategy_state.get("protection_cooldowns") or {}
+    raw_expiry = cooldowns.get(symbol) if isinstance(cooldowns, Mapping) else None
+    if not raw_expiry:
+        return False
+    try:
+        expiry = datetime.fromisoformat(str(raw_expiry).replace("Z", "+00:00"))
+        now = datetime.fromisoformat(str(ctx.timestamp).replace("Z", "+00:00"))
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=UTC)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=UTC)
+    except ValueError:
+        return True
+    return now < expiry
 
 
 def _close(symbol: str, position: Any, venue: str, *, size: float) -> dict[str, Any]:
