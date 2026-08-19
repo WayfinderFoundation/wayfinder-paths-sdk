@@ -20,6 +20,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     StateSnapshot,
 )
 from wayfinder_paths.jobs.starters import (
+    coerce_starter_leverage,
     create_starter_job,
     starter_catalog,
     validate_starter_leverage,
@@ -454,6 +455,43 @@ def test_create_starter_reuses_its_canonical_job_id(tmp_path) -> None:
     assert second["job"]["id"] == "mixed-rsi-snapback-1h"
     assert second["job"]["controller"]["initializer_session_id"] == "ses_first"
     assert second["selected_leverage"] == 1
+    assert second["leverage_warning"] is None
+
+
+def test_create_starter_reuse_tolerates_out_of_range_leverage(tmp_path) -> None:
+    """Reopen must never brick on a job whose recorded leverage drifted
+    outside the starter dial (hand edit, governance clamp): clamp + warn."""
+    store = JobStore(repo_root=tmp_path)
+    create_starter_job("mixed-rsi-snapback-1h", store=store, compile_job=False)
+    job = store.load("mixed-rsi-snapback-1h")
+    job.execution_params["leverage"] = 7
+    store.save(job)
+
+    reused = create_starter_job("mixed-rsi-snapback-1h", store=store, compile_job=False)
+
+    assert reused["created"] is False
+    assert reused["selected_leverage"] == 5
+    assert "clamped to 5" in reused["leverage_warning"]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected", "warns"),
+    [
+        (3, 3, False),
+        (0, 1, True),
+        (7, 5, True),
+        (2.4, 2, True),
+        ("five", 1, True),
+        (float("nan"), 1, True),
+        (None, 1, True),
+    ],
+)
+def test_coerce_starter_leverage_clamps_instead_of_raising(
+    value, expected, warns
+) -> None:
+    coerced, warning = coerce_starter_leverage(value)
+    assert coerced == expected
+    assert (warning is not None) is warns
 
 
 @pytest.mark.parametrize("value", [0, 6, 1.5, True, "five", float("nan")])

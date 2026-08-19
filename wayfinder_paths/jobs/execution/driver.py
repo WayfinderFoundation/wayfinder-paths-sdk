@@ -33,7 +33,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     bar_interval_seconds,
 )
 from wayfinder_paths.jobs.execution.protection import monitor_native_protection
-from wayfinder_paths.jobs.execution.risk import check_risk_halt
+from wayfinder_paths.jobs.execution.risk import RISK_STATE_PATH, check_risk_halt
 from wayfinder_paths.jobs.execution.simulator import _load_strategy
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.execution.venues import (
@@ -42,6 +42,7 @@ from wayfinder_paths.jobs.execution.venues import (
     build_adapter,
 )
 from wayfinder_paths.jobs.forward import ForwardRecorder
+from wayfinder_paths.jobs.gating import clamp_leverage, governance_hard_constraints
 from wayfinder_paths.jobs.halt import read_halt, request_halt
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
@@ -161,6 +162,28 @@ async def tick_job(
         entrypoint = store.resolve_script_entrypoint(job.id, job_data)
     if entrypoint is None or not entrypoint.exists():
         raise FileNotFoundError(f"execution script not found for job {job.id}")
+
+    # Owner-owned ceiling over the agent-writable leverage knob. Clamped
+    # BEFORE the strategy is constructed and before _apply_engine_leverage
+    # consumes params, so both engine-scaled and compound-mode strategies see
+    # the governed value. No governance ceiling -> params untouched.
+    leverage_notes: list[dict[str, Any]] = []
+    requested_leverage = params.get("leverage")
+    effective_leverage, leverage_ceiling = clamp_leverage(
+        requested_leverage, governance_hard_constraints(root)
+    )
+    if leverage_ceiling is not None:
+        params["leverage"] = effective_leverage
+        clamp_payload = {
+            "requested": requested_leverage,
+            "max_leverage": leverage_ceiling,
+            "effective": effective_leverage,
+        }
+        leverage_notes.append({"kind": "leverage_clamped", **clamp_payload})
+        store.append_journal(
+            job.id, {"type": "leverage_clamped", "mode": mode, **clamp_payload}
+        )
+
     strategy = _load_strategy(entrypoint, params)
 
     revision = str(
@@ -181,6 +204,16 @@ async def tick_job(
             f"engine_state.{state.mode}.{now.strftime('%Y%m%dT%H%M%SZ')}.json"
         )
         state_path.rename(archive_path)
+        # Peak equity is source-scoped (venue vs modelled): a paper-modelled
+        # peak surviving into live would make every live tick cross-source,
+        # permanently skipping the drawdown check. Archive it with the mode.
+        risk_state_path = root / RISK_STATE_PATH
+        if risk_state_path.exists():
+            risk_state_path.rename(
+                risk_state_path.with_name(
+                    f"risk_state.{state.mode}.{now.strftime('%Y%m%dT%H%M%SZ')}.json"
+                )
+            )
         mode_notes.append(
             {
                 "kind": "mode_flip_state_reset",
@@ -360,6 +393,7 @@ async def tick_job(
             client_order_prefix=job.id,
         )
     tick.guard_events.extend(mode_notes)
+    tick.guard_events.extend(leverage_notes)
     tick.guard_events.extend(reconcile_notes)
     tick.guard_events.extend(protection_notes)
     tick.guard_events.extend(risk_notes)

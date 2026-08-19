@@ -870,7 +870,13 @@ async def core_jobs(
         return ok(payload)
 
     if action == "resume_from_halt":
-        payload = clear_halt(store, job_id)
+        # The MCP tool is the agent surface (same convention as
+        # apply_script_mode's set_by="agent"): risk/protection-latched halts
+        # refuse the clear — the owner resumes via the CLI with --by owner.
+        try:
+            payload = clear_halt(store, job_id, by="agent")
+        except PermissionError as exc:
+            return err("forbidden", str(exc))
         sync_all_jobs(store=store)
         return ok(payload)
 

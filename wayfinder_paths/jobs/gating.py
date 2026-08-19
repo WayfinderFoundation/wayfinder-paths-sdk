@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,40 @@ from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
 DEFAULT_MAX_BACKTEST_AGE_DAYS = 30
+
+
+def governance_hard_constraints(root: Path) -> dict[str, Any]:
+    """Owner-owned risk ceilings for a job, loaded via the constitution
+    facade (governance/<job_id>/hard_constraints.yaml when the protected
+    namespace exists, legacy job-root constitution.yaml otherwise).
+
+    Callers use these as CLAMPS over agent-writable knobs: ``max_leverage``
+    (execution_params.leverage), ``max_drawdown`` / ``max_gross_exposure_usd``
+    (workspace/risk_limits.json). The shipped defaults carry none of these
+    keys, so jobs without owner-set ceilings behave byte-identically."""
+    from wayfinder_paths.jobs.constitution import load_constitution
+
+    hard = load_constitution(Path(root)).get("hard_constraints")
+    return dict(hard) if isinstance(hard, Mapping) else {}
+
+
+def clamp_leverage(
+    leverage: Any, hard_constraints: Mapping[str, Any]
+) -> tuple[float, float | None]:
+    """Clamp an agent-writable leverage knob to the owner's ``max_leverage``
+    ceiling. Returns (effective_leverage, ceiling) — ceiling is None when no
+    clamp fired (no governance ceiling, or already within it)."""
+    try:
+        requested = float(leverage if leverage is not None else 1.0)
+    except (TypeError, ValueError):
+        requested = 1.0
+    try:
+        ceiling = float(hard_constraints["max_leverage"])
+    except (KeyError, TypeError, ValueError):
+        return requested, None
+    if ceiling > 0 and requested > ceiling:
+        return ceiling, ceiling
+    return requested, None
 
 
 def compute_workspace_revision(root: Path) -> str:

@@ -8,7 +8,10 @@ from typing import Any
 
 import pandas as pd
 
-from wayfinder_paths.jobs.execution.engine import EngineState
+from wayfinder_paths.jobs.execution.engine import (
+    EngineState,
+    prune_closed_protection_groups,
+)
 from wayfinder_paths.jobs.execution.primitives import FillEvent, OrderIntent
 from wayfinder_paths.jobs.execution.venues import VenueState
 
@@ -117,19 +120,16 @@ async def monitor_native_protection(
             close_symbols.update(held)
             reasons.append(f"protection group {group_id} has an orphan leg")
             continue
-        unrealized_values = [
-            venue_positions[symbol].metadata.get("unrealized_pnl") for symbol in symbols
-        ]
-        if any(value is None for value in unrealized_values):
+        combined_pnl = _ledger_attributed_group_pnl(state, venue_positions, symbols)
+        if combined_pnl is None:
             continue
-        combined_pnl = sum(float(value) for value in unrealized_values)
         loss_limit = _group_loss_limit(raw_group)
         if loss_limit is not None and combined_pnl <= -loss_limit:
             breached_groups.add(str(group_id))
             close_symbols.update(symbols)
             reasons.append(
-                f"protection group {group_id} loss {combined_pnl:.2f} "
-                f"breached {-loss_limit:.2f}"
+                f"protection group {group_id} ledger-attributed loss "
+                f"{combined_pnl:.2f} breached {-loss_limit:.2f}"
             )
 
     if not reasons:
@@ -148,6 +148,27 @@ async def monitor_native_protection(
     for symbol in sorted(close_symbols):
         position = venue_positions.get(symbol)
         if position is None:
+            continue
+        # Mirror the engine's own unwind bound (_record_fill_and_protect):
+        # never close more than the JOB LEDGER attributes to this job. On a
+        # shared wallet the venue position includes other owners' size; with
+        # no ledger position at all there is nothing of ours to close —
+        # journal the skip instead of touching the wallet.
+        ledger_position = state.ledger.positions.get(symbol)
+        close_size = (
+            min(position.size, ledger_position.size)
+            if ledger_position is not None
+            else 0.0
+        )
+        if close_size <= 0:
+            notes.append(
+                {
+                    "kind": "native_protection_close_skipped",
+                    "symbol": symbol,
+                    "reason": "no job-ledger position; venue position left untouched",
+                    "venue_size": position.size,
+                }
+            )
             continue
         protection = protections.get(symbol) or {}
         bracket = state.brackets.get(symbol) or {}
@@ -169,7 +190,7 @@ async def monitor_native_protection(
             venue=venue or next(iter(brokers)),
             symbol=symbol,
             side="sell" if position.side == "long" else "buy",
-            size=position.size,
+            size=close_size,
             reduce_only=True,
             client_order_id=_monitor_cloid(symbol, now),
             metadata={"exit_reason": "native_protection_breach"},
@@ -179,6 +200,7 @@ async def monitor_native_protection(
         realized_before = state.ledger.realized_pnl
         state.ledger.apply_fill(fill)
         if fill.successful:
+            prune_closed_protection_groups(state)
             row = fill.to_dict()
             row["realized_pnl_delta"] = state.ledger.realized_pnl - realized_before
             trade_rows.append(row)
@@ -207,6 +229,51 @@ def _start_cooldown(state: EngineState, symbol: str, now: pd.Timestamp) -> None:
     if cooldown_seconds:
         cooldowns = state.strategy_state.setdefault("protection_cooldowns", {})
         cooldowns[symbol] = (now + pd.Timedelta(seconds=cooldown_seconds)).isoformat()
+
+
+def _ledger_attributed_group_pnl(
+    state: EngineState,
+    venue_positions: Mapping[str, Any],
+    symbols: list[str],
+) -> float | None:
+    """Group PnL scoped to this JOB's ledger exposure, not the whole wallet.
+
+    Venue unrealized PnL covers every position on a (possibly shared) wallet;
+    the group loss budget must only count the job's own risk. Each leg
+    contributes ledger size (bounded by venue size) x the mark move off the
+    LEDGER entry price — i.e. ledger notional x mark move — with the mark
+    derived from venue telemetry (position_value / size, falling back to
+    inverting the venue's unrealized PnL). Legs the ledger does not hold
+    contribute nothing. Returns None when a mark cannot be derived for a held
+    leg: the check skips that tick, same as the old missing-PnL skip."""
+    total = 0.0
+    for symbol in symbols:
+        ledger_position = state.ledger.positions.get(symbol)
+        if ledger_position is None or ledger_position.size <= 0:
+            continue
+        venue_position = venue_positions[symbol]
+        mark = _venue_mark_price(venue_position)
+        if mark is None:
+            return None
+        direction = 1.0 if ledger_position.side == "long" else -1.0
+        size = min(ledger_position.size, venue_position.size)
+        total += direction * (mark - ledger_position.avg_price) * size
+    return total
+
+
+def _venue_mark_price(position: Any) -> float | None:
+    size = float(position.size or 0.0)
+    if size <= 0:
+        return None
+    value = _optional_positive_float(position.metadata.get("position_value"))
+    if value is not None:
+        return value / size
+    try:
+        unrealized = float(position.metadata.get("unrealized_pnl"))
+    except (TypeError, ValueError):
+        return None
+    direction = 1.0 if position.side == "long" else -1.0
+    return float(position.avg_price) + direction * unrealized / size
 
 
 def _group_loss_limit(group: Mapping[str, Any]) -> float | None:

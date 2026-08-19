@@ -576,6 +576,7 @@ def _record_fill(
     trace.fills.append(fill.to_dict())
     result.fills.append(fill)
     if fill.successful:
+        prune_closed_protection_groups(state)
         row = fill.to_dict()
         row["realized_pnl_delta"] = state.ledger.realized_pnl - realized_before
         result.trade_rows.append(row)
@@ -804,6 +805,27 @@ async def _sync_native_protection(
             }
         )
     return True
+
+
+def prune_closed_protection_groups(state: EngineState) -> None:
+    """Drop recorded protection groups whose legs are ALL flat in the ledger.
+
+    Anchors (entry_account_equity, entry_gross_notional) are recorded once
+    per group id and must die with the position: without pruning, a re-entered
+    pair reuses the FIRST entry's anchors forever, so the group loss budget
+    is measured against stale equity/notional."""
+    groups = state.strategy_state.get("protection_groups")
+    if not groups:
+        return
+    for group_id in list(groups):
+        group = groups[group_id]
+        symbols = (
+            [str(value) for value in group.get("symbols") or []]
+            if isinstance(group, Mapping)
+            else []
+        )
+        if symbols and all(symbol not in state.ledger.positions for symbol in symbols):
+            groups.pop(group_id)
 
 
 def _record_protection_group(

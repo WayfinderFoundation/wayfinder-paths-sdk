@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from wayfinder_paths.jobs.execution import FillEvent, PositionLedger
 from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.engine import EngineState
@@ -117,7 +119,7 @@ async def test_resume_from_halt_restores_trading(tmp_path: Path) -> None:
     halted = await _tick(job, root, store, view_count=1)
     assert halted["snapshot"]["status"] == "risk_halt"
 
-    clear_halt(store, job.id)
+    clear_halt(store, job.id, by="owner")
     resumed = await _tick(job, root, store, view_count=2)
 
     assert resumed["snapshot"]["status"] == "valid"
@@ -143,14 +145,46 @@ def test_halt_lifecycle_scorecard_and_idempotence(tmp_path: Path) -> None:
     assert journal.count("halt_requested") == 1
     assert journal.count("halt_flatten_requested") == 1
 
-    cleared = clear_halt(store, job.id)
+    cleared = clear_halt(store, job.id, by="owner")
     assert cleared["cleared"] is True
     assert read_halt(root) is None
     scorecard = store.read_json(job.id, "scorecard.json", default={})
     assert scorecard["live_execution_status"] == "ok"  # prior status restored
 
     # Clearing again is a no-op.
-    assert clear_halt(store, job.id)["cleared"] is False
+    assert clear_halt(store, job.id, by="owner")["cleared"] is False
+
+
+def test_risk_latched_halt_requires_owner_clear(tmp_path: Path) -> None:
+    store, job, root = _make_job(tmp_path)
+    request_halt(store, job.id, reason="drawdown breach", source="risk_limits")
+
+    with pytest.raises(PermissionError):
+        clear_halt(store, job.id, by="agent")
+    assert read_halt(root) is not None, "refused clear must leave the halt latched"
+    journal = (root / "journal.jsonl").read_text(encoding="utf-8")
+    assert "halt_clear_refused" in journal
+
+    cleared = clear_halt(store, job.id, by="owner")
+    assert cleared["cleared"] is True
+    assert read_halt(root) is None
+
+
+def test_protection_latched_halt_requires_owner_clear(tmp_path: Path) -> None:
+    store, job, root = _make_job(tmp_path)
+    request_halt(store, job.id, reason="stop missing", source="native_protection")
+
+    with pytest.raises(PermissionError):
+        clear_halt(store, job.id, by="agent")
+    assert clear_halt(store, job.id, by="owner")["cleared"] is True
+
+
+def test_manual_halt_stays_agent_clearable(tmp_path: Path) -> None:
+    store, job, root = _make_job(tmp_path)
+    request_halt(store, job.id, reason="routine pause")  # source="manual"
+
+    assert clear_halt(store, job.id, by="agent")["cleared"] is True
+    assert read_halt(root) is None
 
 
 def test_unreadable_halt_file_fails_safe(tmp_path: Path) -> None:
@@ -175,5 +209,5 @@ def test_halt_snapshot_key_in_sync(tmp_path: Path) -> None:
     assert snapshot["halt"]["reason"] == "sync me"
     assert snapshot["scorecard"]["live_execution_status"] == "halted"
 
-    clear_halt(store, job.id)
+    clear_halt(store, job.id, by="owner")
     assert snapshot_job(job.id, store=store)["halt"] is None

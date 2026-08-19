@@ -1814,9 +1814,20 @@ def halt_cmd(job_id: str, reason: str | None, flatten: bool) -> None:
 
 @job_cli.command(name="resume-from-halt", help="Clear a manual halt.")
 @click.argument("job_id")
-def resume_from_halt_cmd(job_id: str) -> None:
+@click.option(
+    "--by",
+    "cleared_by",
+    type=click.Choice(["owner", "agent"]),
+    default="owner",
+    show_default=True,
+    help="Who is clearing: risk/protection-latched halts are owner-only.",
+)
+def resume_from_halt_cmd(job_id: str, cleared_by: str) -> None:
     store = JobStore()
-    payload = clear_halt(store, job_id)
+    try:
+        payload = clear_halt(store, job_id, by=cleared_by)
+    except PermissionError as exc:
+        raise click.ClickException(str(exc)) from exc
     sync_all_jobs(store=store)
     _echo_json({"ok": True, "result": payload})
 

@@ -48,6 +48,36 @@ def validate_starter_leverage(value: Any) -> int:
     return int(candidate)
 
 
+def coerce_starter_leverage(value: Any) -> tuple[int, str | None]:
+    """Reuse-path tolerant variant of validate_starter_leverage.
+
+    An existing job whose recorded leverage drifted outside the starter dial
+    (hand edit, governance clamp) must never brick reopen: out-of-range or
+    invalid values clamp to the nearest valid whole number with a warning
+    instead of raising. New selections still go through the strict path."""
+    try:
+        return validate_starter_leverage(value), None
+    except ValueError:
+        pass
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        numeric = math.nan
+    if not math.isfinite(numeric):
+        return STARTER_LEVERAGE_DEFAULT, (
+            f"existing leverage {value!r} is not usable; using the starter "
+            f"default {STARTER_LEVERAGE_DEFAULT}"
+        )
+    clamped = int(
+        min(max(round(numeric), STARTER_LEVERAGE_MINIMUM), STARTER_LEVERAGE_MAXIMUM)
+    )
+    return clamped, (
+        f"existing leverage {value!r} is outside the starter dial "
+        f"({STARTER_LEVERAGE_MINIMUM}-{STARTER_LEVERAGE_MAXIMUM}); "
+        f"clamped to {clamped}"
+    )
+
+
 @dataclass(frozen=True)
 class StarterDefinition:
     id: str
@@ -739,7 +769,7 @@ def create_starter_job(
         if job_id is not None or existing_starter.get("id") != definition.id:
             raise FileExistsError(f"job already exists: {resolved_id}")
         entrypoint = store.resolve_script_entrypoint(existing.id, existing.to_dict())
-        selected_leverage = validate_starter_leverage(
+        selected_leverage, leverage_warning = coerce_starter_leverage(
             existing.execution_params.get("leverage", STARTER_LEVERAGE_DEFAULT)
         )
         return {
@@ -749,6 +779,7 @@ def create_starter_job(
             "script_entrypoint": str(entrypoint) if entrypoint is not None else None,
             "starter": definition.to_dict(),
             "selected_leverage": selected_leverage,
+            "leverage_warning": leverage_warning,
         }
 
     from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds

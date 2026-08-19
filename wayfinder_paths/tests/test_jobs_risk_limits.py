@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import yaml
 
 from wayfinder_paths.jobs.execution import FillEvent, PositionLedger
 from wayfinder_paths.jobs.execution.driver import tick_job
@@ -53,6 +54,12 @@ def _write_peak(root: Path, peak: float) -> None:
     path = root / "state" / "risk_state.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"peak_equity": peak}), encoding="utf-8")
+
+
+def _write_governance(tmp_path: Path, job_id: str, hard: dict) -> None:
+    gov = tmp_path / "governance" / job_id
+    gov.mkdir(parents=True, exist_ok=True)
+    (gov / "hard_constraints.yaml").write_text(yaml.safe_dump(hard), encoding="utf-8")
 
 
 def _seed_position(root: Path, *, size: float = 1.0, price: float = 9.0) -> None:
@@ -163,6 +170,84 @@ async def test_peak_equity_persists_across_ticks(tmp_path: Path) -> None:
     second = await _tick(job, root, store, view_count=2)
     assert second["snapshot"]["status"] == "risk_halt"
     assert "max_drawdown" in second["snapshot"]["reason"]
+
+
+def test_venue_peak_persists_across_ticks_and_drawdown_fires(tmp_path: Path) -> None:
+    """Live regression: the venue peak must survive between ticks (with its
+    source stamp) so drawdown ACCUMULATES — before the fix, the unstamped
+    peak was discarded every tick and the live drawdown halt was dead."""
+    root = tmp_path / "job"
+    _write_limits(root, {"max_drawdown": -0.1})
+
+    first_reason, first = check_risk_halt(
+        root,
+        state=EngineState(),
+        view=_view(1),
+        params={},
+        now=pd.Timestamp("2026-01-01T00:00:00Z"),
+        account_equity=10_000.0,
+    )
+    assert first_reason is None
+    assert first["drawdown"] == 0.0
+    saved = json.loads((root / "state" / "risk_state.json").read_text())
+    assert saved["peak_equity"] == 10_000.0
+    assert saved["equity_source"] == "venue"
+
+    second_reason, second = check_risk_halt(
+        root,
+        state=EngineState(),
+        view=_view(2),
+        params={},
+        now=pd.Timestamp("2026-01-01T00:05:00Z"),
+        account_equity=8_000.0,
+    )
+    assert second_reason is not None and "max_drawdown" in second_reason
+    assert second["peak_equity"] == 10_000.0
+    assert second["drawdown"] == pytest.approx(-0.2)
+
+
+def test_modelled_blip_neither_halts_nor_reseeds_venue_peak(tmp_path: Path) -> None:
+    """An ambiguous venue fetch falls back to modelled equity for one tick.
+    Comparing modelled equity to the venue peak must not latch a halt, and
+    the blip must not reseed (or drop) the venue peak."""
+    root = tmp_path / "job"
+    _write_limits(root, {"max_drawdown": -0.1})
+    check_risk_halt(
+        root,
+        state=EngineState(),
+        view=_view(1),
+        params={},
+        now=pd.Timestamp("2026-01-01T00:00:00Z"),
+        account_equity=10_000.0,
+    )
+
+    blip_reason, blip = check_risk_halt(
+        root,
+        state=EngineState(),
+        view=_view(2),
+        params={"initial_capital": 100.0},  # modelled equity 100 vs venue peak 10k
+        now=pd.Timestamp("2026-01-01T00:05:00Z"),
+        account_equity=None,
+    )
+    assert blip_reason is None
+    assert blip["equity_source"] == "modelled"
+    assert blip["drawdown"] == 0.0
+    saved = json.loads((root / "state" / "risk_state.json").read_text())
+    assert saved["peak_equity"] == 10_000.0
+    assert saved["equity_source"] == "venue"
+
+    # Venue equity returns: drawdown resumes against the carried venue peak.
+    third_reason, third = check_risk_halt(
+        root,
+        state=EngineState(),
+        view=_view(3),
+        params={},
+        now=pd.Timestamp("2026-01-01T00:10:00Z"),
+        account_equity=8_500.0,
+    )
+    assert third_reason is not None and "max_drawdown" in third_reason
+    assert third["peak_equity"] == 10_000.0
+    assert third["drawdown"] == pytest.approx(-0.15)
 
 
 def test_venue_equity_does_not_reuse_modelled_peak(tmp_path: Path) -> None:
@@ -290,3 +375,81 @@ def test_live_account_equity_overrides_configured_capital(tmp_path: Path) -> Non
     )
     assert snapshot["equity"] == 750.0
     assert snapshot["peak_equity"] == 750.0
+
+
+async def test_governance_clamps_looser_agent_risk_limits(tmp_path: Path) -> None:
+    """Agent risk_limits.json may be stricter than the owner's governance
+    ceilings, never looser: effective limit is the stricter of the two."""
+    store, job, root = _make_job(tmp_path, params={"initial_capital": 10_000.0})
+    _write_limits(root, {"max_drawdown": -0.5})  # agent loosened to -50%
+    _write_governance(tmp_path, job.id, {"max_drawdown": 0.1})
+    _write_summary(root, {"net_pnl": -2000.0})
+    _write_peak(root, 10_000.0)  # dd -0.2: inside agent's -0.5, past owner's -0.1
+
+    result = await _tick(job, root, store)
+
+    assert result["snapshot"]["status"] == "risk_halt"
+    assert "max_drawdown" in result["snapshot"]["reason"]
+
+
+async def test_agent_risk_limits_stricter_than_governance_kept(
+    tmp_path: Path,
+) -> None:
+    store, job, root = _make_job(tmp_path, params={"initial_capital": 10_000.0})
+    _write_limits(root, {"max_drawdown": -0.05})
+    _write_governance(tmp_path, job.id, {"max_drawdown": 0.5})
+    _write_summary(root, {"net_pnl": -1000.0})
+    _write_peak(root, 10_000.0)  # dd -0.1: past the agent's stricter -0.05
+
+    result = await _tick(job, root, store)
+
+    assert result["snapshot"]["status"] == "risk_halt"
+    assert "max_drawdown" in result["snapshot"]["reason"]
+
+
+async def test_governance_caps_enforce_without_agent_limits_file(
+    tmp_path: Path,
+) -> None:
+    """Deleting workspace/risk_limits.json must not lift the owner ceiling."""
+    store, job, root = _make_job(tmp_path, params={"initial_capital": 10_000.0})
+    _write_governance(tmp_path, job.id, {"max_drawdown": 0.1})
+    _write_summary(root, {"net_pnl": -2000.0})
+    _write_peak(root, 10_000.0)
+
+    result = await _tick(job, root, store)
+
+    assert result["snapshot"]["status"] == "risk_halt"
+    assert "max_drawdown" in result["snapshot"]["reason"]
+
+
+async def test_governance_max_leverage_clamps_engine_knob_and_journals(
+    tmp_path: Path,
+) -> None:
+    store, job, root = _make_job(tmp_path, params={"leverage": 4.0})
+    _write_governance(tmp_path, job.id, {"max_leverage": 2})
+
+    result = await _tick(job, root, store, view_count=1)
+
+    clamps = [e for e in result["guard_events"] if e["kind"] == "leverage_clamped"]
+    assert clamps == [
+        {
+            "kind": "leverage_clamped",
+            "requested": 4.0,
+            "max_leverage": 2.0,
+            "effective": 2.0,
+        }
+    ]
+    # The engine seam applied the GOVERNED value: OPEN sized x2, not x4.
+    assert result["intents"][0]["size"] == 2.0
+    journal = (root / "journal.jsonl").read_text(encoding="utf-8")
+    assert "leverage_clamped" in journal
+
+
+async def test_leverage_within_governance_ceiling_untouched(tmp_path: Path) -> None:
+    store, job, root = _make_job(tmp_path, params={"leverage": 2.0})
+    _write_governance(tmp_path, job.id, {"max_leverage": 3})
+
+    result = await _tick(job, root, store, view_count=1)
+
+    assert not any(e["kind"] == "leverage_clamped" for e in result["guard_events"])
+    assert result["intents"][0]["size"] == 2.0
