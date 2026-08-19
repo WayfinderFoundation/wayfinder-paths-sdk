@@ -223,6 +223,9 @@ class JobCompiler:
             "WAYFINDER_FORWARD_DIR": str(root / "results" / "forward"),
             "WAYFINDER_JOB_MODE": str(job.script_loop.mode or "paper"),
             "WAYFINDER_JOB_REVISION": str(job.versioning.get("active_revision") or ""),
+            # The runner daemon gates the warm forkserver tick path on this:
+            # only jobs_v1 script ticks are eligible.
+            "WAYFINDER_JOB_EXECUTION_CONTRACT": str(job.execution_contract or "legacy"),
         }
         spec_path = root / "execution_spec.json"
         if job.execution_spec:

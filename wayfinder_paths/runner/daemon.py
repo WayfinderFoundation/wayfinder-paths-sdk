@@ -7,11 +7,14 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from wayfinder_paths.runner.warm_spawn import WarmChild
 
 from loguru import logger
 
@@ -39,6 +42,7 @@ from wayfinder_paths.runner.schedule import (
 from wayfinder_paths.runner.script_resolver import resolve_script_path
 
 JOB_RESULT_MARKER = "WAYFINDER_JOB_RESULT "
+DEFAULT_SYNC_DEBOUNCE_SECONDS = 90.0
 JOB_LOCK_TIMEOUT_SECONDS = 3
 JOB_LOCK_BUSY_MSG = (
     "Runner Daemon lock is busy, no operations were completed, please try again later"
@@ -130,6 +134,75 @@ def _kill_process_group(pid: int, *, sig: int) -> None:
         logger.debug(f"Failed to kill process group {pid}: {exc}")
 
 
+def _sync_debounce_seconds() -> float:
+    raw = os.environ.get("WAYFINDER_SYNC_DEBOUNCE_SECONDS")
+    if raw is None or not str(raw).strip():
+        return DEFAULT_SYNC_DEBOUNCE_SECONDS
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            f"Invalid WAYFINDER_SYNC_DEBOUNCE_SECONDS={raw!r}; "
+            f"using {DEFAULT_SYNC_DEBOUNCE_SECONDS}s"
+        )
+        return DEFAULT_SYNC_DEBOUNCE_SECONDS
+
+
+class _SyncDebouncer:
+    """Trailing-edge coalescer for the backend sync push.
+
+    Every run finish used to fire a full-SDK sync thread; under a busy runner
+    that is almost pure overhead. `request()` arms a single trailing timer:
+    requests that arrive while the timer is pending coalesce into the one fire
+    (the sync reads current state at fire time, so nothing is lost) and the
+    push happens at most `delay_seconds` after the first request. `flush=True`
+    cancels any pending timer and runs the action immediately — control-plane
+    mutations keep their synchronous-feeling sync. A non-positive delay
+    disables debouncing entirely.
+    """
+
+    def __init__(self, *, action: Callable[[], None], delay_seconds: float) -> None:
+        self._action = action
+        self._delay_seconds = float(delay_seconds)
+        self._lock = threading.Lock()
+        self._timer: threading.Timer | None = None
+        self._stopped = False
+
+    def request(self, *, flush: bool = False) -> None:
+        if flush or self._delay_seconds <= 0:
+            self._cancel_pending()
+            self._action()
+            return
+        with self._lock:
+            if self._stopped or self._timer is not None:
+                return
+            timer = threading.Timer(self._delay_seconds, self._fire)
+            timer.name = "wayfinder-sync-debounce"
+            timer.daemon = True
+            self._timer = timer
+            timer.start()
+
+    def _fire(self) -> None:
+        with self._lock:
+            self._timer = None
+            if self._stopped:
+                return
+        self._action()
+
+    def _cancel_pending(self) -> None:
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stopped = True
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+
+
 @dataclass
 class RunningProcess:
     run_id: int
@@ -139,7 +212,9 @@ class RunningProcess:
     reason: str
     scheduled_for: int | None
     timeout_seconds: int | None
-    popen: subprocess.Popen[bytes]
+    # Popen for cold workers, WarmChild for forked jobs_v1 ticks — the daemon
+    # only touches the shared duck-typed surface (.pid, .poll(), .returncode).
+    popen: subprocess.Popen[bytes] | WarmChild
     log_path: Path
 
 
@@ -171,7 +246,13 @@ class RunnerDaemon:
         self._running_by_job: dict[int, int] = {}
 
         self._control = None
+        self._view_server: Any | None = None
         self._daemon_log_sink_id: int | None = None
+        self._warm_spawner: Any | None = None
+        self._sync_debouncer = _SyncDebouncer(
+            action=lambda: self._start_backend_sync(),
+            delay_seconds=_sync_debounce_seconds(),
+        )
 
     def _lock_for_job(self, job_id: int) -> threading.Lock:
         lock = self._job_locks.get(job_id)
@@ -211,6 +292,19 @@ class RunnerDaemon:
             f"Runner daemon v{__version__} listening on {self._paths.sock_path}"
         )
 
+        # Warm view endpoint for the jobs UI (starters/backtest/forward).
+        # Best-effort: bind failure or a broken module must never stop the
+        # scheduler — callers fall back to the cold CLI.
+        try:
+            from wayfinder_paths.runner.view_server import RunnerViewServer
+
+            view_server = RunnerViewServer(repo_root=self._paths.repo_root)
+            view_server.start()
+            self._view_server = view_server
+        except Exception:  # noqa: BLE001
+            logger.opt(exception=True).warning("View server failed to start")
+            self._view_server = None
+
         try:
             for sig in (signal.SIGINT, signal.SIGTERM):
                 signal.signal(sig, lambda *_: self.stop())
@@ -220,7 +314,14 @@ class RunnerDaemon:
             self._loop()
         finally:
             self._shutdown.set()
+            self._sync_debouncer.stop()
             self._control.stop()
+            if self._view_server is not None:
+                try:
+                    self._view_server.stop()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._view_server = None
             for rp in self._running.values():
                 _kill_process_group(rp.popen.pid, sig=signal.SIGTERM)
             self._db._conn.close()
@@ -231,6 +332,7 @@ class RunnerDaemon:
                     pass
 
     def stop(self) -> None:
+        self._sync_debouncer.stop()
         self._shutdown.set()
 
     def _loop(self) -> None:
@@ -337,10 +439,12 @@ class RunnerDaemon:
                 ),
             )
 
-        # Refresh the wayfinder-jobs backend after every run so the Strategies
-        # UI (conversations, proposals, reconciled mode) tracks activity instead
-        # of only updating on ~hourly/4-hourly agent wakes.
-        self._sync_to_backend_async()
+        # Refresh the wayfinder-jobs backend after runs so the Strategies UI
+        # (conversations, proposals, reconciled mode) tracks activity instead
+        # of only updating on ~hourly/4-hourly agent wakes. Debounced: a burst
+        # of run finishes coalesces into one push per quiet window instead of
+        # one full-SDK sync thread per run.
+        self._sync_to_backend_async(flush=False)
 
     def _run_side_effect(self, label: str, callback: Callable[[], None]) -> None:
         def _target() -> None:
@@ -406,9 +510,15 @@ class RunnerDaemon:
 
         self._run_side_effect(f"bind-runner-session-{name}", _bind)
 
-    def _sync_to_backend_async(self) -> None:
+    def _sync_to_backend_async(self, *, flush: bool = True) -> None:
+        # flush=True (default) keeps control-plane mutations and direct callers
+        # immediate; only the per-run-finish push opts into the trailing-edge
+        # debounce (flush=False).
         if not is_opencode_instance():
             return
+        self._sync_debouncer.request(flush=flush)
+
+    def _start_backend_sync(self) -> None:
         db_path = self._paths.db_path
 
         def _sync() -> None:
@@ -606,14 +716,30 @@ class RunnerDaemon:
                         f"reason={reason} scheduled_for={scheduled_for}\n"
                     ).encode()
                 )
-                popen = subprocess.Popen(  # noqa: S603
-                    cmd,
-                    cwd=str(self._paths.repo_root),
-                    env=env,
-                    stdout=log_f,
-                    stderr=subprocess.STDOUT,
-                    start_new_session=True,
-                )
+                popen: subprocess.Popen[bytes] | WarmChild | None = None
+                if self._warm_spawn_eligible(job_type=str(job.get("type")), env=env):
+                    # ANY warm-path failure (forkserver dead, import error,
+                    # pickling, ...) must land on the battle-tested Popen path:
+                    # these ticks trade real money.
+                    try:
+                        popen = self._spawn_warm_child(
+                            job_name=job_name, env=env, log_path=log_path
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.opt(exception=True).warning(
+                            f"Warm spawn failed for job {job_name}; "
+                            "falling back to subprocess"
+                        )
+                        popen = None
+                if popen is None:
+                    popen = subprocess.Popen(  # noqa: S603
+                        cmd,
+                        cwd=str(self._paths.repo_root),
+                        env=env,
+                        stdout=log_f,
+                        stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                    )
         except Exception as exc:  # noqa: BLE001
             err_text = f"spawn failed: {exc}"
             self._db.finish_run(
@@ -691,6 +817,39 @@ class RunnerDaemon:
             return [sys.executable, str(script), *arg_list]
 
         raise ValueError(f"Unsupported job type: {job_type}")
+
+    def _warm_spawn_eligible(self, *, job_type: str, env: Mapping[str, str]) -> bool:
+        """Only jobs_v1 script-loop ticks go warm. Legacy scripts, strategy
+        jobs, and agent wrappers stay on the cold Popen path. `env` is the
+        full run environment (os.environ copy + payload env), so the
+        WAYFINDER_RUNNER_NO_FORK kill-switch works at either the daemon or
+        the per-job level."""
+        if job_type != JOB_TYPE_SCRIPT:
+            return False
+        no_fork = str(env.get("WAYFINDER_RUNNER_NO_FORK") or "").strip().lower()
+        if no_fork not in ("", "0", "false"):
+            return False
+        if env.get("WAYFINDER_JOB_AGENT_MODE"):
+            return False
+        if env.get("WAYFINDER_JOB_EXECUTION_CONTRACT") != "jobs_v1":
+            return False
+        return bool(env.get("WAYFINDER_JOB_DIR"))
+
+    def _spawn_warm_child(
+        self, *, job_name: str, env: dict[str, str], log_path: Path
+    ) -> WarmChild:
+        # Lazy import so a broken warm_spawn module degrades to the Popen
+        # fallback instead of failing daemon startup.
+        from wayfinder_paths.runner.warm_spawn import WarmSpawner
+
+        if self._warm_spawner is None:
+            self._warm_spawner = WarmSpawner()
+        return self._warm_spawner.spawn(
+            job_name=job_name,
+            env=env,
+            log_path=log_path,
+            cwd=self._paths.repo_root,
+        )
 
     # Control-plane methods (called by runnerctl over the local socket)
     def ctl_status(self) -> dict[str, Any]:

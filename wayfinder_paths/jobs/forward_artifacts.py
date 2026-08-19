@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -100,6 +100,7 @@ def load_forward_view(
     to_ts: str | None = None,
     max_points: int = 1500,
     include_prices: bool = True,
+    price_fetcher: Callable[..., list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """Bounded forward (paper/live) visualization payload for the jobs UI.
 
@@ -127,7 +128,11 @@ def load_forward_view(
     last_closes: dict[str, float] = {}
     if include_prices:
         try:
-            price_series = _fetch_price_series(job_id, ticks, store=store)
+            # `price_fetcher` lets a resident caller (runner view server)
+            # inject a TTL-cached fetch so UI polling cannot hammer the venue;
+            # default is the direct per-call venue fetch.
+            fetch_prices = price_fetcher or _fetch_price_series
+            price_series = fetch_prices(job_id, ticks, store=store)
             series.extend(price_series)
             for entry in price_series:
                 if entry["points"]:
