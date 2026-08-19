@@ -281,6 +281,7 @@ async def core_jobs(
     job_id: str | None = None,
     starter_id: str | None = None,
     initializer_session_id: str | None = None,
+    leverage: int | None = None,
     name: str | None = None,
     goal: str | None = None,
     script: str | None = None,
@@ -436,6 +437,7 @@ async def core_jobs(
                 store=store,
                 compile_job=compile,
                 initializer_session_id=initializer_session_id,
+                leverage=leverage,
             )
         )
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import pytest
 
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.features import apply_precompute
@@ -18,7 +19,11 @@ from wayfinder_paths.jobs.execution.primitives import (
     PositionRecord,
     StateSnapshot,
 )
-from wayfinder_paths.jobs.starters import create_starter_job, starter_catalog
+from wayfinder_paths.jobs.starters import (
+    create_starter_job,
+    starter_catalog,
+    validate_starter_leverage,
+)
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.strategies.mixed_bollinger_pullback import (
     MixedBollingerPullbackStrategy,
@@ -116,6 +121,13 @@ def test_starter_catalog_has_six_mixed_and_two_pair_paper_strategies() -> None:
         assert 0 < item["params"]["stop_min_pct"] <= item["params"]["stop_max_pct"]
         assert item["params"]["native_stop_required"] is True
         assert item["risk_controls"]["account_halt"]["flatten_on_breach"] is False
+        assert item["leverage_control"] == {
+            "minimum": 1,
+            "maximum": 5,
+            "step": 1,
+            "default": 1,
+            "operator_owned": True,
+        }
         assert item["research_evidence"]["risk_overlay_backtest_status"] == "validated"
         assert (
             item["research_evidence"]["risk_overlay_backtest_scope"]
@@ -129,6 +141,14 @@ def test_starter_catalog_has_six_mixed_and_two_pair_paper_strategies() -> None:
         assert engine["full_period_vs_no_stop"] in {"unchanged", "improved"}
         assert engine["chronological_folds_non_regressing"] == 4
         assert engine["stop_count"] >= 0
+        sweep = item["research_evidence"]["jobs_v1_leverage_sweep"]
+        assert sweep["leverage_semantics"] == "target_exposure"
+        assert sweep["account_halt_simulated"] is False
+        assert [row["leverage"] for row in sweep["results"]] == [1, 2, 3, 4, 5]
+        assert all(row["liquidation_count"] == 0 for row in sweep["results"])
+        assert sweep["results"][0]["return_after_fees_and_slippage"] == pytest.approx(
+            engine["return_after_fees_and_slippage"], abs=0.0001
+        )
 
     by_id = {item["id"]: item for item in catalog}
     expected_stops = {
@@ -368,6 +388,7 @@ def test_create_starter_materializes_job_and_forward_inception(tmp_path) -> None
         store=store,
         compile_job=False,
         initializer_session_id="ses_strategy-lab!bad",
+        leverage=3,
     )
     job = store.load("my-starter")
     assert job.execution_contract == "jobs_v1"
@@ -375,6 +396,9 @@ def test_create_starter_materializes_job_and_forward_inception(tmp_path) -> None
     assert job.controller["starter"]["paper_only"] is True
     assert job.controller["starter"]["risk_limits"]["max_drawdown"] == -0.20
     assert job.controller["initializer_session_id"] == "ses_strategy-labbad"
+    assert job.controller["starter"]["selected_leverage"] == 3
+    assert job.execution_params["leverage"] == 3
+    assert result["selected_leverage"] == 3
     assert result["created"] is True
     assert job.execution_spec["data_contract"]["bar_interval"] == "1h"
     assert result["script_entrypoint"].endswith("workspace/src/strategy.py")
@@ -386,6 +410,10 @@ def test_create_starter_materializes_job_and_forward_inception(tmp_path) -> None
     )
     assert summary["inception_at"] == job.created_at
     assert (store.job_dir(job.id) / "results/backtest/starter_evidence.json").exists()
+    evidence = json.loads(
+        (store.job_dir(job.id) / "results/backtest/starter_evidence.json").read_text()
+    )
+    assert evidence["selected_leverage"] == 3
     assert json.loads(
         (store.job_dir(job.id) / "workspace/risk_limits.json").read_text()
     ) == {"max_drawdown": -0.2, "pause_after_consecutive_losses": 5}
@@ -425,6 +453,13 @@ def test_create_starter_reuses_its_canonical_job_id(tmp_path) -> None:
     assert second["created"] is False
     assert second["job"]["id"] == "mixed-rsi-snapback-1h"
     assert second["job"]["controller"]["initializer_session_id"] == "ses_first"
+    assert second["selected_leverage"] == 1
+
+
+@pytest.mark.parametrize("value", [0, 6, 1.5, True, "five", float("nan")])
+def test_starter_leverage_rejects_values_outside_discrete_dial(value) -> None:
+    with pytest.raises(ValueError, match="whole number from 1 to 5"):
+        validate_starter_leverage(value)
 
 
 def test_live_pair_compiles_at_protection_monitor_cadence(

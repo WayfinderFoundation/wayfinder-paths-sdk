@@ -8,11 +8,13 @@ forward-result machinery owns the user's results.
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.jobs.models import WayfinderJob, safe_job_id
+from wayfinder_paths.jobs.starter_leverage_evidence import STARTER_LEVERAGE_RESULTS
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.strategies._starter_utils import (
     MEAN_REVERSION_STOP_DEFAULTS,
@@ -20,9 +22,30 @@ from wayfinder_paths.jobs.strategies._starter_utils import (
     RANKING_STOP_DEFAULTS,
 )
 
-STARTER_CATALOG_VERSION = "1.3.0"
+STARTER_CATALOG_VERSION = "1.4.0"
 STARTER_STRATEGY_INCEPTION_AT = "2026-08-18T00:00:00+00:00"
-STARTER_EVIDENCE_REVISION = "1.3.0"
+STARTER_EVIDENCE_REVISION = "1.4.0"
+STARTER_LEVERAGE_DEFAULT = 1
+STARTER_LEVERAGE_MINIMUM = 1
+STARTER_LEVERAGE_MAXIMUM = 5
+STARTER_LEVERAGE_STEP = 1
+
+
+def validate_starter_leverage(value: Any) -> int:
+    """Validate the starter selector's intentionally narrow leverage range."""
+    if isinstance(value, bool):
+        raise ValueError("starter leverage must be a whole number from 1 to 5")
+    try:
+        candidate = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("starter leverage must be a whole number from 1 to 5") from exc
+    if (
+        not math.isfinite(candidate)
+        or not candidate.is_integer()
+        or not STARTER_LEVERAGE_MINIMUM <= candidate <= STARTER_LEVERAGE_MAXIMUM
+    ):
+        raise ValueError("starter leverage must be a whole number from 1 to 5")
+    return int(candidate)
 
 
 @dataclass(frozen=True)
@@ -101,16 +124,31 @@ class StarterDefinition:
         payload["params"] = self.configured_params()
         payload["risk_limits"] = self.risk_limits()
         payload["risk_controls"] = self.risk_controls()
+        payload["leverage_control"] = {
+            "minimum": STARTER_LEVERAGE_MINIMUM,
+            "maximum": STARTER_LEVERAGE_MAXIMUM,
+            "step": STARTER_LEVERAGE_STEP,
+            "default": STARTER_LEVERAGE_DEFAULT,
+            "operator_owned": True,
+        }
         payload["research_evidence"] = {
             **payload["research_evidence"],
             "strategy_revision": STARTER_EVIDENCE_REVISION,
             "risk_overlay_backtest_status": "validated",
             "risk_overlay_backtest_scope": "per_position_ohlc_stops",
             "risk_overlay_note": (
-                "The jobs_v1 engine figures include the 1.3.0 per-position stop "
+                "The jobs_v1 engine figures include the 1.4.0 per-position stop "
                 "overlay. Live pair-group and account monitors run between strategy "
                 "bars and are not included in these historical figures."
             ),
+            "jobs_v1_leverage_sweep": {
+                "leverage_semantics": "target_exposure",
+                "liquidation_model": (
+                    "close-of-bar cross margin using venue maintenance defaults"
+                ),
+                "account_halt_simulated": False,
+                "results": copy.deepcopy(STARTER_LEVERAGE_RESULTS[self.id]),
+            },
         }
         for key in (
             "symbols",
@@ -688,6 +726,7 @@ def create_starter_job(
     store: JobStore | None = None,
     compile_job: bool = True,
     initializer_session_id: str | None = None,
+    leverage: int | float | None = None,
 ) -> dict[str, Any]:
     """Materialize a selectable starter as an ordinary paper jobs_v1 job."""
     definition = get_starter(starter_id)
@@ -700,17 +739,24 @@ def create_starter_job(
         if job_id is not None or existing_starter.get("id") != definition.id:
             raise FileExistsError(f"job already exists: {resolved_id}")
         entrypoint = store.resolve_script_entrypoint(existing.id, existing.to_dict())
+        selected_leverage = validate_starter_leverage(
+            existing.execution_params.get("leverage", STARTER_LEVERAGE_DEFAULT)
+        )
         return {
             "created": False,
             "job": existing.to_dict(),
             "job_yaml": str(job_path),
             "script_entrypoint": str(entrypoint) if entrypoint is not None else None,
             "starter": definition.to_dict(),
+            "selected_leverage": selected_leverage,
         }
 
     from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
 
     configured_params = definition.configured_params()
+    selected_leverage = validate_starter_leverage(
+        STARTER_LEVERAGE_DEFAULT if leverage is None else leverage
+    )
     interval_seconds = int(bar_interval_seconds(definition.timeframe) or 0)
     if interval_seconds <= 0:
         raise ValueError(f"unsupported starter timeframe: {definition.timeframe}")
@@ -760,6 +806,7 @@ def create_starter_job(
         "fee_bps": 4.5,
         "slippage_bps": 3.5,
         "min_trade_notional": 25.0,
+        "leverage": selected_leverage,
     }
     job.controller["starter"] = {
         "id": definition.id,
@@ -768,6 +815,7 @@ def create_starter_job(
         "job_tracking_inception_at": job.created_at,
         "paper_only": True,
         "risk_limits": definition.risk_limits(),
+        "selected_leverage": selected_leverage,
     }
     job.performance["starter_evidence"] = "results/backtest/starter_evidence.json"
     job.performance["tracking_inception_at"] = job.created_at
@@ -784,6 +832,7 @@ def create_starter_job(
     evidence = definition.to_dict()
     evidence["job_id"] = job.id
     evidence["job_tracking_inception_at"] = job.created_at
+    evidence["selected_leverage"] = selected_leverage
     store.write_json(job.id, "results/backtest/starter_evidence.json", evidence)
 
     result: dict[str, Any] = {
@@ -792,6 +841,7 @@ def create_starter_job(
         "job_yaml": str(job_path),
         "script_entrypoint": str(entrypoint),
         "starter": definition.to_dict(),
+        "selected_leverage": selected_leverage,
     }
     if compile_job:
         from wayfinder_paths.jobs.compiler import JobCompiler

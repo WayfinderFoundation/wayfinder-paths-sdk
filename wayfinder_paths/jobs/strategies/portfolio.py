@@ -7,12 +7,15 @@ target weights inside decide(), call target_weights_to_intents(ctx, weights),
 return the result. Pure — it reads only ctx — so it is purity-sandbox safe
 and byte-deterministic for identical inputs.
 
-Leverage is the caller's concern: either scale the weights (gross > 1 with
-normalize_gross=False) or pass sizing_equity = equity * leverage.
+When ``ctx.params.leverage`` is set, the helper scales sizing equity so the
+requested leverage changes the target exposure rather than multiplying each
+rebalance delta. Opens are stamped so the engine-level fallback does not apply
+the same leverage a second time.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -48,8 +51,17 @@ def target_weights_to_intents(
     gross so the portfolio never implicitly levers. Pass False when leverage
     via weights is intentional.
     """
+    leverage = 1.0
+    try:
+        candidate = float(ctx.params.get("leverage") or 1.0)
+        if math.isfinite(candidate) and candidate > 0:
+            leverage = candidate
+    except (TypeError, ValueError):
+        pass
     equity = float(
-        sizing_equity if sizing_equity is not None else mark_to_market_equity(ctx)
+        sizing_equity
+        if sizing_equity is not None
+        else mark_to_market_equity(ctx) * leverage
     )
     if equity <= 0:
         return []
@@ -99,13 +111,20 @@ def target_weights_to_intents(
         if target and abs(grow) > 0:
             if _cooldown_active(ctx, symbol):
                 continue
+            metadata: dict[str, Any] = {"target_weight": target}
+            if sizing_equity is not None:
+                # An explicit sizing-equity override already owns the target
+                # exposure; protect it from the engine's generic intent scaler.
+                metadata["leverage_applied"] = True
+            elif leverage != 1.0:
+                metadata.update({"leverage_applied": True, "engine_leverage": leverage})
             intent: dict[str, Any] = {
                 "action": "OPEN",
                 "venue": venue,
                 "symbol": symbol,
                 "side": "buy" if target > 0 else "sell",
                 "notional": abs(grow) * equity,
-                "metadata": {"target_weight": target},
+                "metadata": metadata,
             }
             if brackets and symbol in brackets:
                 intent["bracket"] = dict(brackets[symbol])

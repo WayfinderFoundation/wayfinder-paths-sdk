@@ -237,17 +237,25 @@ def starter_strategies_cmd() -> None:
     default=None,
     help="Strategy Lab session that initiated this job.",
 )
+@click.option(
+    "--leverage",
+    type=click.IntRange(1, 5),
+    default=None,
+    help="Initial paper leverage (1-5x; defaults to 1x).",
+)
 @click.option("--no-compile", is_flag=True, default=False)
 def create_starter_cmd(
     starter_id: str,
     job_id: str | None,
     initializer_session_id: str | None,
+    leverage: int | None,
     no_compile: bool,
 ) -> None:
     result = create_starter_job(
         starter_id,
         job_id=job_id,
         initializer_session_id=initializer_session_id,
+        leverage=leverage,
         compile_job=not no_compile,
     )
     _echo_json({"ok": True, "result": result})
