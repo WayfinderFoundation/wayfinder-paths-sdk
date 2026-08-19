@@ -23,6 +23,19 @@ permission:
     ".wayfinder_runs/**": ask
     ".wayfinder/jobs/**": allow
 
+  # opencode 1.18+ resolves symlinks and classifies vault writes
+  # (.wayfinder -> /wf/user_vault/wayfinder, .wayfinder_runs ->
+  # /wf/user_vault/scripts) as external-directory access; the unmatched
+  # default is "ask", which stalls headless wakes. Allow exactly the vault
+  # trees wakes legitimately touch (job + runner state, run scripts, box
+  # exports) — NEVER a broad /wf/user_vault/** — and keep the governance
+  # plane fail-closed with an explicit deny.
+  external_directory:
+    "/wf/user_vault/wayfinder/**": allow
+    "/wf/user_vault/scripts/**": allow
+    "/wf/user_vault/exports/**": allow
+    "/wf/user_vault/governance/**": deny
+
   bash:
     "*": ask
     "cat > .wayfinder/jobs/**": allow

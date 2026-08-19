@@ -170,3 +170,35 @@ def test_owner_stamp_launder_trap_and_guards(tmp_path) -> None:
 
     source = Path(worker_module.__file__).read_text()
     assert "OWNER PROVENANCE IS NEVER YOURS TO CLAIM" in source
+
+
+def test_external_directory_grants_cover_vault_but_exclude_governance() -> None:
+    """opencode 1.18+ resolves the .wayfinder / .wayfinder_runs symlinks to
+    /wf/user_vault/** and gates writes behind the external_directory
+    permission (default "ask" — an unanswerable prompt on headless wakes).
+    The job agents must carry narrow allows for exactly the vault trees their
+    edit grants already imply, and the governance plane must stay fail-closed:
+    an explicit external_directory deny, never absorbed by a broad
+    /wf/user_vault/** allow that would undermine the edit-layer deny."""
+    from pathlib import Path
+
+    manifests = [
+        ".opencode/agents/wayfinder-job-worker.md",
+        ".opencode/agents/wayfinder-job-auto-worker.md",
+        ".opencode/agents/wayfinder-strategy-lab.md",
+    ]
+    for path in manifests:
+        manifest = Path(path).read_text()
+        assert "external_directory:" in manifest, path
+        assert '"/wf/user_vault/wayfinder/**": allow' in manifest, path
+        assert '"/wf/user_vault/scripts/**": allow' in manifest, path
+        assert '"/wf/user_vault/exports/**": allow' in manifest, path
+        assert '"/wf/user_vault/governance/**": deny' in manifest, path
+        # A wholesale vault grant would cover governance/ and gut the
+        # capability boundary — the allows must stay enumerated.
+        assert '"/wf/user_vault/**"' not in manifest, path
+
+    # The edit-layer governance deny is a separate, conjunctive check —
+    # external_directory grants must not be mistaken for a reason to drop it.
+    worker = Path(".opencode/agents/wayfinder-job-worker.md").read_text()
+    assert '"governance/**": deny' in worker
