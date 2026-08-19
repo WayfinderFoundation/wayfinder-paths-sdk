@@ -104,7 +104,7 @@ def target_weights_to_intents(
             # Same-sign shrink: close (|held| - |target|) worth of units.
             # symbol is in closes whenever a position exists (built above).
             size = (abs(held) - abs(target)) * equity / closes[symbol]
-            intents.append(_close(symbol, position, venue, size=size))
+            intents.append(_close(symbol, held_position, venue, size=size))
             continue
 
         grow = target - held

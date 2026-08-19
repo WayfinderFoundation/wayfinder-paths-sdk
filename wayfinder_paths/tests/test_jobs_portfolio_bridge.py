@@ -102,6 +102,20 @@ def test_same_sign_shrink_partially_closes() -> None:
     assert intents[0]["size"] == pytest.approx(25.0)
 
 
+def test_same_sign_shrink_uses_the_matching_position_side() -> None:
+    ctx = _ctx(
+        {"AAA": 10.0, "BBB": 20.0},
+        _ledger(("AAA", "long", 50.0, 10.0), ("BBB", "short", 25.0, 20.0)),
+    )
+
+    intents = target_weights_to_intents(ctx, {"AAA": 0.25, "BBB": -0.5})
+
+    assert len(intents) == 1
+    assert intents[0]["symbol"] == "AAA"
+    assert intents[0]["side"] == "sell"
+    assert intents[0]["size"] == pytest.approx(25.0)
+
+
 def test_same_sign_grow_opens_the_delta() -> None:
     ctx = _ctx({"AAA": 10.0}, _ledger(("AAA", "long", 50.0, 10.0)))
     intents = target_weights_to_intents(ctx, {"AAA": 0.75})
