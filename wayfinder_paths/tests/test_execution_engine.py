@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from wayfinder_paths.jobs.execution import (
+    BacktestBroker,
     CompletedBarsView,
     EngineState,
     ExecutionSpec,
@@ -13,6 +14,7 @@ from wayfinder_paths.jobs.execution import (
     NativeProtectionResult,
     OrderIntent,
     PurityViolation,
+    RestingOrder,
     TradeCapacity,
     VenueCapabilities,
     VenueState,
@@ -199,6 +201,359 @@ async def test_daily_notional_cap_accumulates_across_ticks() -> None:
     assert len(first.intents) == 1
     assert second.intents == []
     assert any("daily notional cap" in event["reason"] for event in second.guard_events)
+
+
+async def test_passive_limit_rests_then_fills_on_next_bar_trade_through() -> None:
+    state = EngineState()
+    broker = BacktestBroker(fee_bps=4.5, maker_fee_bps=1.5, slippage_bps=3.5)
+    intent = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        notional=95.0,
+        limit_price=9.5,
+        time_in_force="ALO",
+        expires_after_bars=2,
+    )
+
+    first = await _tick(
+        _strategy([intent]),
+        _view([10.0, 10.0]),
+        state=state,
+        brokers={"hyperliquid": broker},
+    )
+    assert first.fills == []
+    assert any(event["kind"] == "limit_resting" for event in first.guard_events)
+    assert state.ledger.positions == {}
+    assert len(state.resting_orders) == 1
+
+    second = await _tick(
+        _strategy([]),
+        CompletedBarsView.from_rows(
+            [
+                *_view([10.0, 10.0]).to_rows(),
+                {
+                    "timestamp": "2026-01-01T00:10:00Z",
+                    "symbol": "SNX",
+                    "open": 10.0,
+                    "high": 10.1,
+                    "low": 9.4,
+                    "close": 9.8,
+                    "volume": 10,
+                },
+            ]
+        ),
+        state=state,
+        brokers={"hyperliquid": broker},
+    )
+
+    assert second.fills[0].status == "filled"
+    assert second.fills[0].avg_price == 9.5
+    assert second.fills[0].fee == pytest.approx(95.0 * 0.00015)
+    assert second.fills[0].raw["liquidity"] == "maker"
+    assert state.ledger.positions["SNX"].size == pytest.approx(10.0)
+    assert state.resting_orders == {}
+
+
+async def test_passive_limit_touch_does_not_assume_queue_fill_and_expires() -> None:
+    state = EngineState()
+    broker = BacktestBroker(maker_fee_bps=1.5)
+    intent = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        notional=95.0,
+        limit_price=9.5,
+        time_in_force="ALO",
+        expires_after_bars=1,
+    )
+    await _tick(
+        _strategy([intent]),
+        _view([10.0, 10.0]),
+        state=state,
+        brokers={"hyperliquid": broker},
+    )
+    result = await _tick(
+        _strategy([]),
+        CompletedBarsView.from_rows(
+            [
+                *_view([10.0, 10.0]).to_rows(),
+                {
+                    "timestamp": "2026-01-01T00:10:00Z",
+                    "symbol": "SNX",
+                    "open": 10.0,
+                    "high": 10.1,
+                    "low": 9.5,
+                    "close": 9.8,
+                    "volume": 10,
+                },
+            ]
+        ),
+        state=state,
+        brokers={"hyperliquid": broker},
+    )
+
+    assert state.ledger.positions == {}
+    assert state.resting_orders == {}
+    assert any(event["kind"] == "limit_expired" for event in result.guard_events)
+
+
+async def test_live_limit_order_fails_closed_without_venue_reconciliation() -> None:
+    state = EngineState(mode="live")
+    broker = BacktestBroker(maker_fee_bps=1.5)
+    result = await _tick(
+        _strategy(
+            [
+                OrderIntent(
+                    action="OPEN",
+                    venue="hyperliquid",
+                    symbol="SNX",
+                    side="buy",
+                    notional=100.0,
+                    limit_price=9.5,
+                    time_in_force="ALO",
+                )
+            ]
+        ),
+        _view([10.0, 10.0]),
+        state=state,
+        brokers={"hyperliquid": broker},
+    )
+
+    assert state.resting_orders == {}
+    assert any(
+        "durable venue fill/cancel reconciliation" in event["reason"]
+        for event in result.guard_events
+        if event["kind"] == "intent_rejected"
+    )
+
+
+async def test_paper_limit_order_requires_explicit_post_only_tif() -> None:
+    state = EngineState()
+    result = await _tick(
+        _strategy(
+            [
+                OrderIntent(
+                    action="OPEN",
+                    venue="hyperliquid",
+                    symbol="SNX",
+                    side="buy",
+                    notional=100.0,
+                    limit_price=9.5,
+                    time_in_force="GTC",
+                )
+            ]
+        ),
+        _view([10.0, 10.0]),
+        state=state,
+        brokers={"hyperliquid": BacktestBroker(maker_fee_bps=1.5)},
+    )
+
+    assert state.resting_orders == {}
+    assert any(
+        event["reason"] == "paper/backtest limit orders require ALO time_in_force"
+        for event in result.guard_events
+        if event["kind"] == "intent_rejected"
+    )
+
+
+async def test_partial_maker_exit_moves_remaining_stop_to_break_even() -> None:
+    state = EngineState()
+    state.ledger.positions["SNX"] = PositionRecord(
+        symbol="SNX", side="long", size=10.0, avg_price=10.0
+    )
+    state.brackets["SNX"] = {
+        "stop_loss": 9.0,
+        "entry_price": 10.0,
+        "venue": "hyperliquid",
+    }
+    intent = OrderIntent(
+        action="TAKE_PROFIT",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="sell",
+        size=5.0,
+        reduce_only=True,
+        limit_price=11.0,
+        time_in_force="ALO",
+        client_order_id="tp-one",
+        metadata={"move_stop_to_break_even": True},
+    )
+    state.resting_orders["tp-one"] = RestingOrder(
+        intent=intent,
+        submitted_at="2026-01-01T00:05:00+00:00",
+    )
+
+    await _tick(
+        _strategy([]),
+        CompletedBarsView.from_rows(
+            [
+                {
+                    "timestamp": "2026-01-01T00:10:00Z",
+                    "symbol": "SNX",
+                    "open": 10.5,
+                    "high": 11.2,
+                    "low": 10.4,
+                    "close": 11.0,
+                    "volume": 10,
+                }
+            ]
+        ),
+        state=state,
+        brokers={"hyperliquid": BacktestBroker(maker_fee_bps=1.5)},
+    )
+
+    assert state.ledger.positions["SNX"].size == pytest.approx(5.0)
+    assert state.brackets["SNX"]["stop_loss"] == pytest.approx(10.0)
+
+
+async def test_stop_precedes_resting_take_profit_when_bar_crosses_both() -> None:
+    state = EngineState()
+    state.ledger.positions["SNX"] = PositionRecord(
+        symbol="SNX", side="long", size=10.0, avg_price=10.0
+    )
+    state.brackets["SNX"] = {
+        "stop_loss": 9.0,
+        "entry_price": 10.0,
+        "venue": "hyperliquid",
+        "policy": "conservative",
+    }
+    take_profit = OrderIntent(
+        action="TAKE_PROFIT",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="sell",
+        size=10.0,
+        reduce_only=True,
+        limit_price=11.0,
+        time_in_force="ALO",
+        client_order_id="tp-full",
+    )
+    state.resting_orders["tp-full"] = RestingOrder(
+        intent=take_profit,
+        submitted_at="2026-01-01T00:05:00+00:00",
+    )
+
+    result = await _tick(
+        _strategy([]),
+        CompletedBarsView.from_rows(
+            [
+                {
+                    "timestamp": "2026-01-01T00:10:00Z",
+                    "symbol": "SNX",
+                    "open": 10.0,
+                    "high": 11.2,
+                    "low": 8.8,
+                    "close": 10.5,
+                    "volume": 10,
+                }
+            ]
+        ),
+        state=state,
+        brokers={"hyperliquid": BacktestBroker(maker_fee_bps=1.5)},
+    )
+
+    assert state.ledger.positions == {}
+    assert state.resting_orders == {}
+    assert len(result.fills) == 1
+    assert result.fills[0].raw["intent_action"] == "STOP_LOSS"
+    assert result.fills[0].avg_price == 9.0
+
+
+async def test_stage_one_break_even_stop_precedes_second_target_same_bar() -> None:
+    state = EngineState()
+    state.ledger.positions["SNX"] = PositionRecord(
+        symbol="SNX", side="long", size=10.0, avg_price=10.0
+    )
+    state.brackets["SNX"] = {
+        "stop_loss": 9.0,
+        "entry_price": 10.0,
+        "venue": "hyperliquid",
+        "policy": "conservative",
+    }
+    for client_order_id, limit_price, move_stop in (
+        ("tp-one", 11.0, True),
+        ("tp-two", 12.0, False),
+    ):
+        intent = OrderIntent(
+            action="TAKE_PROFIT",
+            venue="hyperliquid",
+            symbol="SNX",
+            side="sell",
+            size=5.0,
+            reduce_only=True,
+            limit_price=limit_price,
+            time_in_force="ALO",
+            client_order_id=client_order_id,
+            metadata={"move_stop_to_break_even": move_stop},
+        )
+        state.resting_orders[client_order_id] = RestingOrder(
+            intent=intent,
+            submitted_at="2026-01-01T00:05:00+00:00",
+        )
+
+    result = await _tick(
+        _strategy([]),
+        CompletedBarsView.from_rows(
+            [
+                {
+                    "timestamp": "2026-01-01T00:10:00Z",
+                    "symbol": "SNX",
+                    "open": 10.5,
+                    "high": 12.2,
+                    "low": 9.8,
+                    "close": 11.5,
+                    "volume": 10,
+                }
+            ]
+        ),
+        state=state,
+        brokers={"hyperliquid": BacktestBroker(maker_fee_bps=1.5)},
+    )
+
+    assert state.ledger.positions == {}
+    assert state.resting_orders == {}
+    assert [fill.raw["intent_action"] for fill in result.fills] == [
+        "TAKE_PROFIT",
+        "STOP_LOSS",
+    ]
+    assert [fill.avg_price for fill in result.fills] == [11.0, 10.0]
+
+
+async def test_strategy_receives_isolated_copy_of_resting_order_state() -> None:
+    state = EngineState()
+    intent = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="OTHER",
+        side="buy",
+        notional=100.0,
+        limit_price=9.5,
+        time_in_force="ALO",
+        client_order_id="entry-other",
+    )
+    state.resting_orders["entry-other"] = RestingOrder(
+        intent=intent,
+        submitted_at="2026-01-01T00:05:00+00:00",
+    )
+
+    def mutate_context(ctx):  # noqa: ANN001
+        ctx.resting_orders[0].age_bars = 99
+        ctx.resting_orders[0].intent.symbol = "MUTATED"
+        return []
+
+    await _tick(
+        mutate_context,
+        _view([10.0, 10.0]),
+        state=state,
+        brokers={"hyperliquid": BacktestBroker(maker_fee_bps=1.5)},
+    )
+
+    stored = state.resting_orders["entry-other"]
+    assert stored.age_bars == 0
+    assert stored.intent.symbol == "OTHER"
 
 
 async def test_bracket_rejected_on_venue_without_bracket_support() -> None:
@@ -580,6 +935,22 @@ def test_engine_state_round_trip(tmp_path) -> None:
             action="OPEN", venue="hyperliquid", symbol="IMX", side="short", size=1
         )
     )
+    resting_intent = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="HYPE",
+        side="long",
+        size=1,
+        limit_price=9.0,
+        time_in_force="ALO",
+        expires_after_bars=2,
+        client_order_id="maker-entry-1",
+    )
+    state.resting_orders["maker-entry-1"] = RestingOrder(
+        intent=resting_intent,
+        submitted_at="2026-01-01T00:00:00+00:00",
+        age_bars=1,
+    )
     state.last_processed_bar_ts = "2026-01-01T00:00:00+00:00"
     state.daily_notional["2026-01-01"] = 20.0
     state.revision = "abc123"
@@ -593,6 +964,8 @@ def test_engine_state_round_trip(tmp_path) -> None:
     assert restored.brackets["SNX"]["stop_loss"] == 9.0
     assert restored.native_protections["SNX"]["trigger_price"] == 9.0
     assert restored.pending_intents[0].symbol == "IMX"
+    assert restored.resting_orders["maker-entry-1"].intent.time_in_force == "ALO"
+    assert restored.resting_orders["maker-entry-1"].age_bars == 1
     assert restored.last_processed_bar_ts == state.last_processed_bar_ts
     assert restored.daily_notional == {"2026-01-01": 20.0}
     assert restored.revision == "abc123"

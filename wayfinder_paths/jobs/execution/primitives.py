@@ -364,6 +364,8 @@ class OrderIntent:
     client_order_id: str | None = None
     bracket: dict[str, Any] | None = None
     limit_price: float | None = None
+    time_in_force: str | None = None
+    expires_after_bars: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -384,6 +386,16 @@ class OrderIntent:
                     client_order_id=data.get("client_order_id"),
                     bracket=dict(data["bracket"]) if data.get("bracket") else None,
                     limit_price=_float_or_none(data.get("limit_price")),
+                    time_in_force=(
+                        str(data["time_in_force"])
+                        if data.get("time_in_force") is not None
+                        else None
+                    ),
+                    expires_after_bars=(
+                        int(data["expires_after_bars"])
+                        if data.get("expires_after_bars") is not None
+                        else None
+                    ),
                     metadata=dict(data["metadata"]) if data.get("metadata") else {},
                 )
 
@@ -401,7 +413,36 @@ class OrderIntent:
             "client_order_id": self.client_order_id,
             "bracket": dict(self.bracket) if self.bracket else self.bracket,
             "limit_price": self.limit_price,
+            "time_in_force": self.time_in_force,
+            "expires_after_bars": self.expires_after_bars,
             "metadata": dict(self.metadata),
+        }
+
+
+@dataclass
+class RestingOrder:
+    """Durable state for a submitted limit order awaiting fills or expiry."""
+
+    intent: OrderIntent
+    submitted_at: str
+    age_bars: int = 0
+    order_id: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> RestingOrder:
+        return cls(
+            intent=OrderIntent.from_any(data.get("intent") or {}),
+            submitted_at=str(data.get("submitted_at") or ""),
+            age_bars=int(data.get("age_bars") or 0),
+            order_id=(str(data["order_id"]) if data.get("order_id") else None),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "intent": self.intent.to_dict(),
+            "submitted_at": self.submitted_at,
+            "age_bars": self.age_bars,
+            "order_id": self.order_id,
         }
 
 
@@ -653,6 +694,7 @@ class ExecutionContext:
     timestamp: str
     execution_spec: ExecutionSpec
     strategy_state: dict[str, Any] = field(default_factory=dict)
+    resting_orders: tuple[RestingOrder, ...] = ()
 
     @property
     def bar_index(self) -> int:

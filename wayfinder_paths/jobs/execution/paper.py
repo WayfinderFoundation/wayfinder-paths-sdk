@@ -25,10 +25,15 @@ class PaperBroker:
         *,
         capabilities: VenueCapabilities | None = None,
         fee_bps: float = 0.0,
+        maker_fee_bps: float = 0.0,
         slippage_bps: float = 0.0,
     ) -> None:
         self.capabilities = capabilities or BacktestBroker.capabilities
-        self._broker = BacktestBroker(fee_bps=fee_bps, slippage_bps=slippage_bps)
+        self._broker = BacktestBroker(
+            fee_bps=fee_bps,
+            maker_fee_bps=maker_fee_bps,
+            slippage_bps=slippage_bps,
+        )
 
     async def place(
         self,
@@ -37,7 +42,7 @@ class PaperBroker:
         timestamp: str,
         price: float | None = None,
     ) -> FillEvent:
-        return self._broker.execute(intent, price=price or 0.0, timestamp=timestamp)
+        return await self._broker.place(intent, price=price, timestamp=timestamp)
 
     async def fetch_state(self, symbols: Sequence[str] = ()) -> VenueState:
         return VenueState(source="paper")

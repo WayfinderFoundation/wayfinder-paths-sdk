@@ -737,9 +737,11 @@ def _cancel_needs_asset_context(venue: str, client_order_id: str) -> FillEvent:
 def _paper_broker(
     capabilities: VenueCapabilities, params: dict[str, Any]
 ) -> PaperBroker:
+    raw_maker_fee = params.get("maker_fee_bps")
     return PaperBroker(
         capabilities=capabilities,
         fee_bps=float(params.get("fee_bps") or 0.0),
+        maker_fee_bps=1.5 if raw_maker_fee is None else float(raw_maker_fee),
         slippage_bps=float(params.get("slippage_bps") or 0.0),
     )
 

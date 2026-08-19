@@ -5,7 +5,7 @@ import contextlib
 import hashlib
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     FillEvent,
     OrderIntent,
     PositionLedger,
+    RestingOrder,
     StateSnapshot,
     TradeCapacity,
     _float_or_none,
@@ -100,6 +101,7 @@ class EngineState:
     brackets: dict[str, dict[str, Any]] = field(default_factory=dict)
     native_protections: dict[str, dict[str, Any]] = field(default_factory=dict)
     pending_intents: list[OrderIntent] = field(default_factory=list)
+    resting_orders: dict[str, RestingOrder] = field(default_factory=dict)
     last_processed_bar_ts: str | None = None
     daily_notional: dict[str, float] = field(default_factory=dict)
     revision: str | None = None
@@ -115,6 +117,10 @@ class EngineState:
             "brackets": dict(self.brackets),
             "native_protections": dict(self.native_protections),
             "pending_intents": [intent.to_dict() for intent in self.pending_intents],
+            "resting_orders": {
+                client_order_id: order.to_dict()
+                for client_order_id, order in self.resting_orders.items()
+            },
             "last_processed_bar_ts": self.last_processed_bar_ts,
             "daily_notional": dict(self.daily_notional),
             "revision": self.revision,
@@ -134,6 +140,12 @@ class EngineState:
                 OrderIntent.from_any(item)
                 for item in payload.get("pending_intents") or []
             ],
+            resting_orders={
+                str(client_order_id): RestingOrder.from_dict(order)
+                for client_order_id, order in (
+                    payload.get("resting_orders") or {}
+                ).items()
+            },
             last_processed_bar_ts=payload.get("last_processed_bar_ts"),
             daily_notional={
                 str(key): float(value)
@@ -300,6 +312,17 @@ async def _run_tick_inner(
         return result
     state.ledger.on_bar_tick(bar_ts)
 
+    await _settle_resting_orders(
+        brokers=brokers,
+        state=state,
+        bars_by_symbol=bars_by_symbol,
+        params=params,
+        timestamp=bar_iso,
+        trace=trace,
+        result=result,
+        reduce_only=False,
+    )
+
     # A symbol absent from this timestamp's bars has no market to fill against.
     # Never fall back to another symbol's bar (previously `default_bar`, the first
     # bar in the dict) — that fills e.g. an MU order at GOLD's price. Next-bar-open
@@ -342,6 +365,20 @@ async def _run_tick_inner(
         result=result,
     )
 
+    # Conservative same-bar ordering: an existing stop wins over a resting
+    # take-profit when one OHLC candle crosses both. Entry limits settle before
+    # brackets so a newly filled position is still stopped on its fill bar.
+    await _settle_resting_orders(
+        brokers=brokers,
+        state=state,
+        bars_by_symbol=bars_by_symbol,
+        params=params,
+        timestamp=bar_iso,
+        trace=trace,
+        result=result,
+        reduce_only=True,
+    )
+
     if liquidation is not None and state.ledger.positions:
         # After settlement + funding + brackets, before decide(): legacy
         # ordering, and a breach means decide() never runs on this bar.
@@ -380,6 +417,11 @@ async def _run_tick_inner(
         # Same mutable dict as EngineState: decide() mutations persist across
         # ticks and are captured in engine_state_pre for exact replay.
         strategy_state=state.strategy_state,
+        # Strategies may inspect but must not mutate durable route state.
+        resting_orders=tuple(
+            RestingOrder.from_dict(order.to_dict())
+            for order in state.resting_orders.values()
+        ),
     )
     decide = getattr(strategy, "decide", strategy)
     network_violations: list[str] = []
@@ -410,10 +452,12 @@ async def _run_tick_inner(
     _apply_engine_leverage(intents, params)
 
     for index, intent in enumerate(intents):
-        if client_order_prefix and intent.client_order_id is None:
+        if (client_order_prefix or intent.limit_price is not None) and (
+            intent.client_order_id is None
+        ):
             # Deterministic per (job, bar, slot): an order submitted just before
             # a SIGKILL is recognized as ours on the next tick's fetch_state.
-            seed = f"{client_order_prefix}|{bar_iso}|{index}"
+            seed = f"{client_order_prefix or 'jobs-v1'}|{bar_iso}|{index}"
             digest = hashlib.sha256(seed.encode()).hexdigest()
             intent.client_order_id = f"0x{digest[:32]}"
         trace.intents.append({"timestamp": bar_iso, **intent.to_dict()})
@@ -474,6 +518,8 @@ async def _run_tick_inner(
             )
             continue
         result.intents.append(intent)
+        if intent.reduce_only and intent.limit_price is None:
+            _drop_resting_orders(state, symbol=intent.symbol, reduce_only=True)
         if not intent.reduce_only:
             notional = _intent_notional(intent, ref_price)
             if notional is not None:
@@ -481,7 +527,38 @@ async def _run_tick_inner(
                 state.daily_notional[day] = (
                     state.daily_notional.get(day, 0.0) + notional
                 )
-        if spec.fill_model == "next_bar_open":
+        if intent.limit_price is not None:
+            fill = await _place(
+                brokers, intent, price=None, timestamp=bar_iso, result=result
+            )
+            if fill is not None and fill.status == "resting":
+                if intent.client_order_id is None:  # pragma: no cover - guarded above
+                    raise RuntimeError("resting limit order missing client order id")
+                state.resting_orders[intent.client_order_id] = RestingOrder(
+                    intent=intent,
+                    submitted_at=bar_iso,
+                    order_id=fill.order_id,
+                )
+                result.guard_events.append(
+                    {
+                        "kind": "limit_resting",
+                        "client_order_id": intent.client_order_id,
+                        "order_id": fill.order_id,
+                        "symbol": intent.symbol,
+                        "timestamp": bar_iso,
+                    }
+                )
+            elif fill is not None:
+                await _record_fill_and_protect(
+                    fill,
+                    intent=intent,
+                    brokers=brokers,
+                    state=state,
+                    trace=trace,
+                    result=result,
+                    timestamp=bar_iso,
+                )
+        elif spec.fill_model == "next_bar_open":
             state.pending_intents.append(intent)
         else:
             price = (
@@ -525,6 +602,127 @@ async def _run_tick_inner(
         }
     )
     return result
+
+
+async def _settle_resting_orders(
+    *,
+    brokers: Mapping[str, Broker],
+    state: EngineState,
+    bars_by_symbol: Mapping[str, Any],
+    params: Mapping[str, Any],
+    timestamp: str,
+    trace: ExecutionTrace,
+    result: TickResult,
+    reduce_only: bool,
+) -> None:
+    """Resolve paper/backtest limit orders against the next completed OHLC bar.
+
+    A touch is not enough: the bar must trade through the limit by the declared
+    buffer.  That is deliberately conservative about queue position when the
+    historical dataset has candles rather than order-level queue events.  Live
+    orders are reconciled from venue order/fill state by the driver and must
+    never be synthesized from candles.
+    """
+    if state.mode == "live" or not state.resting_orders:
+        return
+    trade_through_bps = max(float(params.get("maker_trade_through_bps") or 1.0), 0.0)
+    buffer = trade_through_bps / 10_000.0
+    for client_order_id, order in list(state.resting_orders.items()):
+        if client_order_id not in state.resting_orders:
+            continue
+        intent = order.intent
+        if intent.reduce_only != reduce_only:
+            continue
+        bar = bars_by_symbol.get(intent.symbol)
+        if bar is None:
+            continue
+        order.age_bars += 1
+        limit_price = float(intent.limit_price or 0.0)
+        wants_buy = str(intent.side).lower() in {"buy", "long"}
+        traded_through = (
+            float(bar.low) <= limit_price * (1.0 - buffer)
+            if wants_buy
+            else float(bar.high) >= limit_price * (1.0 + buffer)
+        )
+        if traded_through:
+            state.resting_orders.pop(client_order_id, None)
+            fill_intent = replace(
+                intent,
+                metadata={**intent.metadata, "_resting_fill": True},
+            )
+            fill = await _place(
+                brokers,
+                fill_intent,
+                price=limit_price,
+                timestamp=timestamp,
+                result=result,
+            )
+            if fill is not None:
+                await _record_fill_and_protect(
+                    fill,
+                    intent=intent,
+                    brokers=brokers,
+                    state=state,
+                    trace=trace,
+                    result=result,
+                    timestamp=timestamp,
+                )
+                if (
+                    reduce_only
+                    and fill.successful
+                    and intent.metadata.get("move_stop_to_break_even")
+                    and intent.symbol in state.ledger.positions
+                ):
+                    # A stage-one fill can tighten the stop. Re-evaluate that
+                    # new stop on the same OHLC candle before a later target;
+                    # conservative ordering assumes the adverse path when the
+                    # candle contains both prices.
+                    await _evaluate_brackets(
+                        brokers=brokers,
+                        state=state,
+                        bars_by_symbol={intent.symbol: bar.to_dict()},
+                        timestamp=timestamp,
+                        trace=trace,
+                        result=result,
+                    )
+            continue
+        expires_after = intent.expires_after_bars
+        if expires_after is None or order.age_bars < expires_after:
+            continue
+        state.resting_orders.pop(client_order_id, None)
+        broker = brokers.get(intent.venue) or brokers.get("*")
+        if broker is not None:
+            try:
+                await broker.cancel(client_order_id)
+            except Exception as exc:  # noqa: BLE001 - expiry is best effort in paper
+                result.guard_events.append(
+                    {
+                        "kind": "limit_cancel_failed",
+                        "client_order_id": client_order_id,
+                        "reason": str(exc),
+                        "timestamp": timestamp,
+                    }
+                )
+        result.guard_events.append(
+            {
+                "kind": "limit_expired",
+                "client_order_id": client_order_id,
+                "symbol": intent.symbol,
+                "age_bars": order.age_bars,
+                "timestamp": timestamp,
+            }
+        )
+
+
+def _drop_resting_orders(
+    state: EngineState, *, symbol: str, reduce_only: bool | None = None
+) -> None:
+    for client_order_id, order in list(state.resting_orders.items()):
+        if order.intent.symbol != symbol:
+            continue
+        if reduce_only is not None and order.intent.reduce_only != reduce_only:
+            continue
+        state.resting_orders.pop(client_order_id, None)
 
 
 def _latest_visible_timestamp(view: CompletedBarsView) -> str | None:
@@ -590,8 +788,24 @@ def _record_fill(
                     intent.venue,
                     intent.client_order_id,
                 )
+        elif (
+            fill.reduce_only
+            and position is not None
+            and intent is not None
+            and intent.metadata.get("move_stop_to_break_even")
+        ):
+            bracket = state.brackets.get(fill.symbol)
+            if bracket is not None:
+                entry_price = float(bracket.get("entry_price") or position.avg_price)
+                current_stop = _float_or_none(bracket.get("stop_loss"))
+                bracket["stop_loss"] = (
+                    max(current_stop or 0.0, entry_price)
+                    if position.side == "long"
+                    else min(current_stop or float("inf"), entry_price)
+                )
         elif fill.reduce_only and position is None:
             state.brackets.pop(fill.symbol, None)
+            _drop_resting_orders(state, symbol=fill.symbol, reduce_only=True)
 
 
 async def _record_fill_and_protect(
@@ -938,6 +1152,7 @@ async def _evaluate_brackets(
                     pd.Timestamp(timestamp) + pd.Timedelta(seconds=cooldown_seconds)
                 ).isoformat()
         state.brackets.pop(symbol, None)
+        _drop_resting_orders(state, symbol=symbol, reduce_only=True)
 
 
 def _apply_market_event(
@@ -1123,6 +1338,8 @@ def _validate_intent(
     broker = brokers.get(intent.venue) or brokers.get("*")
     capabilities = getattr(broker, "capabilities", None)
     if capabilities is not None:
+        if intent.limit_price is not None and not capabilities.supports_limit_orders:
+            return f"venue {intent.venue!r} does not support limit orders"
         if intent.bracket and not capabilities.supports_brackets:
             return (
                 f"venue {intent.venue!r} does not support brackets; "
@@ -1136,6 +1353,23 @@ def _validate_intent(
             return f"venue {intent.venue!r} does not support short positions"
         if intent.notional is not None and not capabilities.supports_notional_sizing:
             return f"venue {intent.venue!r} requires explicit size, not notional"
+
+    if intent.limit_price is not None:
+        if state.mode == "live":
+            return (
+                "live limit orders require durable venue fill/cancel reconciliation; "
+                "use paper or backtest mode"
+            )
+        if intent.limit_price <= 0:
+            return "limit_price must be positive"
+        time_in_force = str(intent.time_in_force or "").upper()
+        if time_in_force != "ALO":
+            return "paper/backtest limit orders require ALO time_in_force"
+        intent.time_in_force = time_in_force
+        if intent.expires_after_bars is not None and intent.expires_after_bars <= 0:
+            return "expires_after_bars must be positive"
+    elif intent.time_in_force is not None or intent.expires_after_bars is not None:
+        return "time_in_force and expires_after_bars require limit_price"
 
     if not auto_limits:
         return None
