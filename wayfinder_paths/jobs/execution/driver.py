@@ -32,12 +32,17 @@ from wayfinder_paths.jobs.execution.primitives import (
     StateSnapshot,
     bar_interval_seconds,
 )
+from wayfinder_paths.jobs.execution.protection import monitor_native_protection
 from wayfinder_paths.jobs.execution.risk import check_risk_halt
 from wayfinder_paths.jobs.execution.simulator import _load_strategy
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
-from wayfinder_paths.jobs.execution.venues import VenueAdapter, build_adapter
+from wayfinder_paths.jobs.execution.venues import (
+    VenueAdapter,
+    VenueState,
+    build_adapter,
+)
 from wayfinder_paths.jobs.forward import ForwardRecorder
-from wayfinder_paths.jobs.halt import read_halt
+from wayfinder_paths.jobs.halt import read_halt, request_halt
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.triggers import fire_triggers
@@ -100,7 +105,13 @@ def _tick_trigger_events(payload: dict[str, Any]) -> list[str]:
     guard_kinds = {
         str(event.get("kind")) for event in payload.get("guard_events") or []
     }
-    if guard_kinds & {"risk_halt", "manual_halt"}:
+    if guard_kinds & {
+        "risk_halt",
+        "manual_halt",
+        "native_protection_failed",
+        "native_protection_breach",
+        "native_protection_cancel_unconfirmed",
+    }:
         events.append("risk_halt")
     if "mode_divergence" in guard_kinds:
         # Declared vs executed mode disagree — wake the advisor to reconcile
@@ -205,19 +216,50 @@ async def tick_job(
     for adapter in adapters.values():
         events.extend(await adapter.feed.get_events(symbols))
 
+    venue_states: dict[str, VenueState] = {}
     snapshot, reconcile_notes = await _reconcile(
         mode=mode,
         state=state,
         brokers=brokers,
         symbols=symbols,
         state_file_existed=state_file_existed,
+        venue_state_sink=venue_states,
     )
+
+    (
+        protection_notes,
+        protection_fills,
+        protection_rows,
+        protection_halt,
+    ) = await monitor_native_protection(
+        mode=mode,
+        state=state,
+        brokers=brokers,
+        venue_states=venue_states,
+        now=now,
+    )
+    if protection_halt:
+        request_halt(
+            store,
+            job.id,
+            reason=protection_halt,
+            flatten=False,
+            source="native_protection",
+        )
+        snapshot = StateSnapshot(
+            status="risk_halt", reason=protection_halt, data=snapshot.data
+        )
 
     # Account-level circuit breakers (workspace/risk_limits.json, optional).
     # Downgrades only a valid snapshot: an already-ambiguous state is a
     # stronger signal and must not be masked by a risk halt.
     halt_reason, risk_snapshot = check_risk_halt(
-        root, state=state, view=view, params=params, now=now
+        root,
+        state=state,
+        view=view,
+        params=params,
+        now=now,
+        account_equity=(snapshot.data or {}).get("account_value"),
     )
     risk_notes: list[dict[str, Any]] = []
     if halt_reason:
@@ -228,6 +270,13 @@ async def tick_job(
             snapshot = StateSnapshot(
                 status="risk_halt", reason=halt_reason, data=snapshot.data
             )
+        request_halt(
+            store,
+            job.id,
+            reason=halt_reason,
+            flatten=False,
+            source="risk_limits",
+        )
 
     # Manual kill switch: outranks every other status (including ambiguous)
     # — reduce-only regardless, and cancel queued OPENs before they can
@@ -312,8 +361,31 @@ async def tick_job(
         )
     tick.guard_events.extend(mode_notes)
     tick.guard_events.extend(reconcile_notes)
+    tick.guard_events.extend(protection_notes)
     tick.guard_events.extend(risk_notes)
     tick.guard_events.extend(feature_guards)
+    tick.fills = protection_fills + tick.fills
+    tick.trade_rows = protection_rows + tick.trade_rows
+
+    protection_failure = next(
+        (event for event in tick.guard_events if event.get("halt_required")),
+        None,
+    )
+    if protection_failure is not None:
+        reason = str(
+            protection_failure.get("reason")
+            or protection_failure.get("error")
+            or "native protection failed"
+        )
+        request_halt(
+            store,
+            job.id,
+            reason=reason,
+            flatten=False,
+            source="native_protection",
+        )
+        snapshot = StateSnapshot(status="risk_halt", reason=reason, data=snapshot.data)
+        tick.snapshot = snapshot
 
     if (
         manual_halt is not None
@@ -421,6 +493,7 @@ async def _reconcile(
     brokers: Mapping[str, Any],
     symbols: list[str],
     state_file_existed: bool,
+    venue_state_sink: dict[str, VenueState] | None = None,
 ) -> tuple[StateSnapshot, list[dict[str, Any]]]:
     """Compare the recorded ledger against venue ground truth.
 
@@ -463,6 +536,8 @@ async def _reconcile(
                     }
                 ],
             )
+        if venue_state_sink is not None:
+            venue_state_sink[name] = venue_state
         venue_positions.update(venue_state.positions)
         account_value = (venue_state.balances or {}).get("accountValue")
         if account_value is not None:

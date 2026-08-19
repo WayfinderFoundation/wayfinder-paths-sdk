@@ -21,6 +21,7 @@ from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.engine import EngineState
 from wayfinder_paths.jobs.execution.paper import PaperBroker
 from wayfinder_paths.jobs.execution.primitives import PositionRecord
+from wayfinder_paths.jobs.execution.protection import monitor_native_protection
 from wayfinder_paths.jobs.execution.simulator import (
     PreparedExecutionDataset,
     simulate_execution,
@@ -155,6 +156,116 @@ class FakeAdapter:
     def __init__(self, view: CompletedBarsView, broker: Any) -> None:
         self.feed = FakeFeed(view)
         self.broker = broker
+
+
+async def test_pair_protection_monitor_closes_both_legs_on_group_loss() -> None:
+    state = EngineState(mode="live")
+    for symbol, side in (("BTC", "long"), ("ETH", "short")):
+        state.ledger.positions[symbol] = PositionRecord(
+            symbol=symbol, side=side, size=10.0, avg_price=10.0
+        )
+        state.native_protections[symbol] = {
+            "venue": "hyperliquid",
+            "client_order_id": f"stop-{symbol}",
+            "protection_group": {
+                "id": "pair",
+                "symbols": ["BTC", "ETH"],
+            },
+        }
+    state.strategy_state["protection_groups"] = {
+        "pair": {
+            "id": "pair",
+            "symbols": ["BTC", "ETH"],
+            "entry_account_equity": 10_000.0,
+            "entry_gross_notional": 400.0,
+            "max_entry_equity_loss_pct": 0.03,
+            "max_entry_gross_loss_pct": 0.08,
+        }
+    }
+    venue_positions = {
+        symbol: PositionRecord(
+            symbol=symbol,
+            side=side,
+            size=10.0,
+            avg_price=10.0,
+            metadata={"unrealized_pnl": -20.0},
+        )
+        for symbol, side in (("BTC", "long"), ("ETH", "short"))
+    }
+    broker = FakeLiveBroker(venue_positions=venue_positions)
+    notes, fills, _, halt_reason = await monitor_native_protection(
+        mode="live",
+        state=state,
+        brokers={"hyperliquid": broker},
+        venue_states={
+            "hyperliquid": VenueState(
+                positions=venue_positions,
+                open_orders=[{"cloid": "stop-BTC"}, {"cloid": "stop-ETH"}],
+            )
+        },
+        now=pd.Timestamp("2026-01-01T00:05:00Z"),
+    )
+
+    assert halt_reason is not None and "breached" in halt_reason
+    assert len(fills) == 2
+    assert all(intent.reduce_only for intent in broker.placed)
+    assert not state.ledger.positions
+    assert any(note["kind"] == "native_protection_group_close" for note in notes)
+
+
+async def test_protection_monitor_closes_position_without_confirmed_stop() -> None:
+    state = EngineState(mode="live")
+    position = PositionRecord(symbol="SNX", side="long", size=2.0, avg_price=10.0)
+    state.ledger.positions["SNX"] = position
+    state.brackets["SNX"] = {
+        "venue": "hyperliquid",
+        "native_required": True,
+        "cooldown_seconds": 3600,
+    }
+    broker = FakeLiveBroker(venue_positions={"SNX": position})
+
+    notes, fills, _, halt_reason = await monitor_native_protection(
+        mode="live",
+        state=state,
+        brokers={"hyperliquid": broker},
+        venue_states={"hyperliquid": VenueState(positions={"SNX": position})},
+        now=pd.Timestamp("2026-01-01T00:05:00Z"),
+    )
+
+    assert halt_reason == "no confirmed native stop for SNX"
+    assert len(fills) == 1 and fills[0].successful
+    assert broker.placed[0].reduce_only is True
+    assert "SNX" not in state.ledger.positions
+    assert "SNX" in state.strategy_state["protection_cooldowns"]
+    assert any(note["kind"] == "native_protection_breach" for note in notes)
+
+
+async def test_protection_monitor_detects_stop_size_drift() -> None:
+    state = EngineState(mode="live")
+    position = PositionRecord(symbol="SNX", side="long", size=2.0, avg_price=10.0)
+    state.ledger.positions["SNX"] = position
+    state.native_protections["SNX"] = {
+        "venue": "hyperliquid",
+        "client_order_id": "stop-SNX",
+        "size": 1.0,
+    }
+    broker = FakeLiveBroker(venue_positions={"SNX": position})
+
+    _, fills, _, halt_reason = await monitor_native_protection(
+        mode="live",
+        state=state,
+        brokers={"hyperliquid": broker},
+        venue_states={
+            "hyperliquid": VenueState(
+                positions={"SNX": position},
+                open_orders=[{"cloid": "stop-SNX"}],
+            )
+        },
+        now=pd.Timestamp("2026-01-01T00:05:00Z"),
+    )
+
+    assert halt_reason == "native stop size does not match the SNX position"
+    assert len(fills) == 1 and fills[0].successful
 
 
 def _make_job(

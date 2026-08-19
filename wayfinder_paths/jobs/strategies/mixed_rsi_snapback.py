@@ -8,7 +8,13 @@ import pandas as pd
 
 from wayfinder_paths.jobs.execution.primitives import ExecutionContext
 from wayfinder_paths.jobs.indicators import wilder_rsi
-from wayfinder_paths.jobs.strategies._starter_utils import current_rows, merge_params
+from wayfinder_paths.jobs.strategies._starter_utils import (
+    MEAN_REVERSION_STOP_DEFAULTS,
+    add_stop_atr,
+    current_rows,
+    merge_params,
+    stop_brackets,
+)
 from wayfinder_paths.jobs.strategies.portfolio import target_weights_to_intents
 
 
@@ -24,6 +30,7 @@ class MixedRsiSnapbackStrategy:
         "weight_per_leg": 0.25,
         "rebalance_threshold": 0.10,
         "min_trade_notional": 25.0,
+        **MEAN_REVERSION_STOP_DEFAULTS,
     }
 
     def __init__(self, params: dict[str, Any] | None = None) -> None:
@@ -44,7 +51,7 @@ class MixedRsiSnapbackStrategy:
                     ).mean(),
                 }
             )
-        return derived
+        return add_stop_atr(derived, frames, period=int(self.params["stop_atr_period"]))
 
     def decide(self, ctx: ExecutionContext) -> list[dict[str, Any]]:
         symbols = list(self.params["symbols"])
@@ -91,6 +98,7 @@ class MixedRsiSnapbackStrategy:
             venue=str(self.params["venue"]),
             rebalance_threshold=float(self.params["rebalance_threshold"]),
             min_trade_notional=float(self.params["min_trade_notional"]),
+            brackets=stop_brackets(ctx, symbols, self.params),
         )
 
 

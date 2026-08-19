@@ -21,6 +21,7 @@ from wayfinder_paths.jobs.execution import (
     get_trade_capacity,
     summarize_trade_capacity,
 )
+from wayfinder_paths.jobs.execution.hyperliquid import HyperliquidPerpBroker
 from wayfinder_paths.jobs.execution.job import backtest_execution_job
 from wayfinder_paths.jobs.execution.simulator import (
     PreparedExecutionDataset,
@@ -428,3 +429,45 @@ async def test_hyperliquid_trigger_order_passes_cloid(monkeypatch) -> None:
 
     assert ok is True
     assert "client-stop-1" in json.dumps(captured["order_actions"])
+
+
+async def test_live_broker_installs_stop_with_exact_cloid(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_trigger(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "result": {
+                "status": "confirmed",
+                "effects": [
+                    {
+                        "label": "place_trigger_order",
+                        "result": {
+                            "response": {
+                                "data": {"statuses": [{"resting": {"oid": 42}}]}
+                            }
+                        },
+                    }
+                ],
+            },
+        }
+
+    monkeypatch.setattr(
+        "wayfinder_paths.mcp.tools.hyperliquid.hyperliquid_place_trigger_order",
+        fake_trigger,
+    )
+    broker = HyperliquidPerpBroker(wallet_label="risk-wallet")
+
+    result = await broker.place_stop_loss(
+        symbol="BTC",
+        side="sell",
+        size=0.1,
+        trigger_price=90_000.0,
+        client_order_id="0x00000000000000000000000000000001",
+    )
+
+    assert result.confirmed is True
+    assert result.order_id == "42"
+    assert captured["cloid"] == "0x00000000000000000000000000000001"
+    assert captured["reduce_only"] is True

@@ -8,6 +8,7 @@ from typing import Any
 
 import pandas as pd
 
+from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.features import apply_precompute
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
@@ -111,6 +112,14 @@ def test_starter_catalog_has_six_mixed_and_two_pair_paper_strategies() -> None:
         }
         assert isinstance(item["cautions"], list)
         assert item["strategy_inception_at"]
+        assert item["risk_limits"]["pause_after_consecutive_losses"] == 5
+        assert 0 < item["params"]["stop_min_pct"] <= item["params"]["stop_max_pct"]
+        assert item["params"]["native_stop_required"] is True
+        assert item["risk_controls"]["account_halt"]["flatten_on_breach"] is False
+        assert (
+            item["research_evidence"]["risk_overlay_backtest_status"]
+            == "pending_revalidation"
+        )
         assert item["research_evidence"]["return_after_costs_and_funding"] > 0
         engine = item["research_evidence"]["jobs_v1_engine"]
         assert engine["return_after_fees_and_slippage"] > 0
@@ -128,6 +137,10 @@ def test_starter_catalog_has_six_mixed_and_two_pair_paper_strategies() -> None:
         "bch-ltc-relative-strength-1d",
     }
     assert all(len(item["symbols"]) == 2 for item in pairs.values())
+    assert all(
+        item["risk_controls"]["pair_group_stop"]["cross_symbol_atomic"] is False
+        for item in pairs.values()
+    )
     assert all(not item["tokenized_equities"] for item in pairs.values())
     assert all(
         item["research_evidence"]["price_mean_reversion_gate"]["verdict"] == "REJECT"
@@ -340,6 +353,7 @@ def test_create_starter_materializes_job_and_forward_inception(tmp_path) -> None
     assert job.execution_contract == "jobs_v1"
     assert job.script_loop.mode == "paper"
     assert job.controller["starter"]["paper_only"] is True
+    assert job.controller["starter"]["risk_limits"]["max_drawdown"] == -0.20
     assert job.controller["initializer_session_id"] == "ses_strategy-labbad"
     assert result["created"] is True
     assert job.execution_spec["data_contract"]["bar_interval"] == "1h"
@@ -352,6 +366,9 @@ def test_create_starter_materializes_job_and_forward_inception(tmp_path) -> None
     )
     assert summary["inception_at"] == job.created_at
     assert (store.job_dir(job.id) / "results/backtest/starter_evidence.json").exists()
+    assert json.loads(
+        (store.job_dir(job.id) / "workspace/risk_limits.json").read_text()
+    ) == {"max_drawdown": -0.2, "pause_after_consecutive_losses": 5}
 
     pair_result = create_starter_job(
         "btc-eth-relative-strength-1d",
@@ -361,6 +378,7 @@ def test_create_starter_materializes_job_and_forward_inception(tmp_path) -> None
     )
     pair_job = store.load("daily-pair-starter")
     assert pair_job.script_loop.interval_seconds == 86_400
+    assert pair_job.execution_params["protection_monitor_interval_seconds"] == 300
     assert pair_job.execution_spec["data_contract"]["bar_interval"] == "1d"
     assert pair_job.execution_spec["data_contract"]["symbols"] == ["BTC", "ETH"]
     assert "pair_relative_strength" in Path(pair_result["script_entrypoint"]).read_text(
@@ -387,3 +405,34 @@ def test_create_starter_reuses_its_canonical_job_id(tmp_path) -> None:
     assert second["created"] is False
     assert second["job"]["id"] == "mixed-rsi-snapback-1h"
     assert second["job"]["controller"]["initializer_session_id"] == "ses_first"
+
+
+def test_live_pair_compiles_at_protection_monitor_cadence(
+    tmp_path, monkeypatch
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    class FakeBridge:
+        def __init__(self, *, repo_root=None):  # noqa: ANN001
+            self.repo_root = repo_root
+
+        def add_or_update_script_job(self, **kwargs):  # noqa: ANN003
+            calls.append(kwargs)
+            return {"ok": True}
+
+    monkeypatch.setattr("wayfinder_paths.jobs.compiler.RunnerBridge", FakeBridge)
+    store = JobStore(repo_root=tmp_path)
+    create_starter_job(
+        "btc-eth-relative-strength-1d",
+        job_id="protected-pair",
+        store=store,
+        compile_job=False,
+    )
+    job = store.load("protected-pair")
+    job.script_loop.mode = "live"
+    store.save(job)
+
+    JobCompiler(store=store).compile(job, start_daemon=False)
+
+    script_call = next(call for call in calls if call["name"].endswith("-script"))
+    assert script_call["interval_seconds"] == 300

@@ -8,6 +8,33 @@ from typing import Any
 import pandas as pd
 
 from wayfinder_paths.jobs.execution.primitives import ExecutionContext
+from wayfinder_paths.jobs.indicators import atr
+
+MEAN_REVERSION_STOP_DEFAULTS: dict[str, Any] = {
+    "stop_atr_period": 24,
+    "stop_atr_multiple": 3.0,
+    "stop_min_pct": 0.03,
+    "stop_max_pct": 0.06,
+    "stop_cooldown_seconds": 86_400,
+    "native_stop_required": True,
+}
+RANKING_STOP_DEFAULTS: dict[str, Any] = {
+    "stop_atr_multiple": 4.0,
+    "stop_min_pct": 0.06,
+    "stop_max_pct": 0.12,
+    "stop_cooldown_seconds": 86_400,
+    "native_stop_required": True,
+}
+PAIR_PROTECTION_DEFAULTS: dict[str, Any] = {
+    "stop_atr_period": 20,
+    "stop_atr_multiple": 6.0,
+    "stop_min_pct": 0.12,
+    "stop_max_pct": 0.20,
+    "native_stop_required": True,
+    "protection_monitor_interval_seconds": 300,
+    "pair_max_entry_equity_loss_pct": 0.03,
+    "pair_max_entry_gross_loss_pct": 0.08,
+}
 
 
 def merge_params(
@@ -81,6 +108,58 @@ def trailing_return_features(
         )
         for symbol, frame in frames.items()
     }
+
+
+def add_stop_atr(
+    derived: dict[str, pd.DataFrame],
+    frames: Mapping[str, pd.DataFrame],
+    *,
+    period: int,
+) -> dict[str, pd.DataFrame]:
+    """Add the shared starter ATR column without replacing other features."""
+    for symbol, frame in frames.items():
+        features = derived.setdefault(symbol, pd.DataFrame(index=frame.index))
+        features["starter_stop_atr"] = atr(frame, period)
+    return derived
+
+
+def stop_brackets(
+    ctx: ExecutionContext,
+    symbols: Sequence[str],
+    params: Mapping[str, Any],
+    *,
+    protection_group: Mapping[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Build fill-relative, volatility-scaled stop policies for OPEN intents."""
+    rows = current_rows(ctx, symbols, required_columns=("starter_stop_atr",))
+    if rows is None:
+        return {}
+    multiple = float(params["stop_atr_multiple"])
+    minimum = float(params["stop_min_pct"])
+    maximum = float(params["stop_max_pct"])
+    cooldown_seconds = int(params.get("stop_cooldown_seconds") or 0)
+    policies: dict[str, dict[str, Any]] = {}
+    for symbol, row in rows.items():
+        close = float(row["close"])
+        atr_value = float(row["starter_stop_atr"])
+        if pd.isna(atr_value) or close <= 0 or atr_value <= 0:
+            continue
+        stop_pct = min(maximum, max(minimum, multiple * atr_value / close))
+        policy: dict[str, Any] = {
+            "stop_loss_pct": stop_pct,
+            "policy": "conservative",
+            "native_required": bool(params.get("native_stop_required", True)),
+        }
+        if cooldown_seconds:
+            policy["cooldown_seconds"] = cooldown_seconds
+        if protection_group:
+            group = dict(protection_group)
+            account_value = (ctx.state_snapshot.data or {}).get("account_value")
+            if account_value is not None:
+                group["entry_account_equity"] = float(account_value)
+            policy["protection_group"] = group
+        policies[symbol] = policy
+    return policies
 
 
 def ranked_weights(

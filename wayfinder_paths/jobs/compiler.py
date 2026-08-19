@@ -48,7 +48,17 @@ class JobCompiler:
             resp = self.bridge.add_or_update_script_job(
                 name=job.script_loop.runner_job_name,
                 script_path=wrappers["script"],
-                interval_seconds=job.script_loop.interval_seconds,
+                # Pair protection must observe combined PnL and orphan legs
+                # between daily bars. Live compilation may run the normal
+                # de-duplicating driver more frequently; paper keeps the
+                # declared bar cadence and avoids needless venue reads.
+                interval_seconds=(
+                    int(job.execution_params["protection_monitor_interval_seconds"])
+                    if job.execution_contract == "jobs_v1"
+                    and job.script_loop.mode == "live"
+                    and job.execution_params.get("protection_monitor_interval_seconds")
+                    else job.script_loop.interval_seconds
+                ),
                 cron_expr=job.script_loop.cron_expr,
                 timezone=job.script_loop.timezone,
                 timeout_seconds=job.script_loop.timeout_seconds,

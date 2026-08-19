@@ -1,4 +1,4 @@
-"""Selectable, paper-only jobs_v1 starter strategies.
+"""Selectable, paper-first jobs_v1 starter strategies.
 
 The catalog owns exact rules and research provenance. Selecting a starter
 creates a normal Wayfinder job; from that point, the standard backtest and
@@ -14,9 +14,15 @@ from typing import Any
 
 from wayfinder_paths.jobs.models import WayfinderJob, safe_job_id
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.strategies._starter_utils import (
+    MEAN_REVERSION_STOP_DEFAULTS,
+    PAIR_PROTECTION_DEFAULTS,
+    RANKING_STOP_DEFAULTS,
+)
 
-STARTER_CATALOG_VERSION = "1.2.0"
-STARTER_STRATEGY_INCEPTION_AT = "2026-08-17T00:00:00+00:00"
+STARTER_CATALOG_VERSION = "1.3.0"
+STARTER_STRATEGY_INCEPTION_AT = "2026-08-18T00:00:00+00:00"
+STARTER_EVIDENCE_REVISION = "1.2.0"
 
 
 @dataclass(frozen=True)
@@ -35,8 +41,76 @@ class StarterDefinition:
     research_evidence: dict[str, Any]
     cautions: tuple[str, ...] = ()
 
+    def configured_params(self) -> dict[str, Any]:
+        if self.family == "mean_reversion":
+            protection = MEAN_REVERSION_STOP_DEFAULTS
+        elif self.family == "relative_value_pair":
+            protection = PAIR_PROTECTION_DEFAULTS
+        else:
+            protection = {
+                **RANKING_STOP_DEFAULTS,
+                "stop_atr_period": 96 if self.timeframe == "15m" else 24,
+            }
+        return {**copy.deepcopy(protection), **copy.deepcopy(self.params)}
+
+    def risk_limits(self) -> dict[str, Any]:
+        return {
+            "max_drawdown": -0.06 if self.family == "mean_reversion" else -0.20,
+            "pause_after_consecutive_losses": 5,
+        }
+
+    def risk_controls(self) -> dict[str, Any]:
+        params = self.configured_params()
+        controls: dict[str, Any] = {
+            "per_position_stop": {
+                "basis": f"{params['stop_atr_multiple']:g}x ATR({params['stop_atr_period']})",
+                "minimum_pct": params["stop_min_pct"],
+                "maximum_pct": params["stop_max_pct"],
+                "native_when_live": params["native_stop_required"],
+                "take_profit": None,
+            },
+            "account_halt": {
+                **self.risk_limits(),
+                "flatten_on_breach": False,
+                "manual_resume_required": True,
+            },
+        }
+        if params.get("stop_cooldown_seconds"):
+            controls["per_position_stop"]["cooldown_seconds"] = params[
+                "stop_cooldown_seconds"
+            ]
+        if self.family == "relative_value_pair":
+            controls["pair_group_stop"] = {
+                "monitor_interval_seconds": params[
+                    "protection_monitor_interval_seconds"
+                ],
+                "loss_budget": (
+                    f"minimum of {params['pair_max_entry_equity_loss_pct'] * 100:g}% "
+                    "of entry account equity and "
+                    f"{params['pair_max_entry_gross_loss_pct'] * 100:g}% of entry "
+                    "gross notional"
+                ),
+                "close_companion_on_leg_stop": True,
+                "cross_symbol_atomic": False,
+                "halt_after_exit": True,
+            }
+        return controls
+
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
+        payload["params"] = self.configured_params()
+        payload["risk_limits"] = self.risk_limits()
+        payload["risk_controls"] = self.risk_controls()
+        payload["research_evidence"] = {
+            **payload["research_evidence"],
+            "strategy_revision": STARTER_EVIDENCE_REVISION,
+            "risk_overlay_backtest_status": "pending_revalidation",
+            "risk_overlay_note": (
+                "Published performance figures predate the 1.3.0 protective-stop "
+                "overlay. They describe the entry/exit baseline and must not be "
+                "attributed to the protected revision until it is revalidated."
+            ),
+        }
         for key in (
             "symbols",
             "crypto_assets",
@@ -60,6 +134,12 @@ class StarterDefinition:
                     "Positive historical expectancy is not a guarantee. "
                     "Start in paper mode and evaluate forward results from "
                     "the job's own inception before considering live risk."
+                ),
+                "wallet_ownership_notice": (
+                    "Native protection reconciles only this job's exact client "
+                    "order ids. Other orders on a shared wallet are never "
+                    "canceled, but shared-wallet exposure can still affect "
+                    "account-level limits. A dedicated wallet is recommended."
                 ),
             }
         )
@@ -588,8 +668,9 @@ def create_starter_job(
 
     from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
 
-    interval_seconds = bar_interval_seconds(definition.timeframe)
-    if interval_seconds is None:
+    configured_params = definition.configured_params()
+    interval_seconds = int(bar_interval_seconds(definition.timeframe) or 0)
+    if interval_seconds <= 0:
         raise ValueError(f"unsupported starter timeframe: {definition.timeframe}")
     job = WayfinderJob.new(
         resolved_id,
@@ -630,7 +711,7 @@ def create_starter_job(
         "venues": ["hyperliquid"],
     }
     job.execution_params = {
-        **copy.deepcopy(definition.params),
+        **configured_params,
         "symbols": list(definition.symbols),
         "venue": "hyperliquid",
         "initial_capital": 10_000.0,
@@ -644,11 +725,13 @@ def create_starter_job(
         "strategy_inception_at": STARTER_STRATEGY_INCEPTION_AT,
         "job_tracking_inception_at": job.created_at,
         "paper_only": True,
+        "risk_limits": definition.risk_limits(),
     }
     job.performance["starter_evidence"] = "results/backtest/starter_evidence.json"
     job.performance["tracking_inception_at"] = job.created_at
 
     job_path = store.create_job(job)
+    store.write_json(job.id, "workspace/risk_limits.json", definition.risk_limits())
     entrypoint = store.resolve_script_entrypoint(job.id, job.to_dict())
     if entrypoint is None:
         raise RuntimeError("starter job has no workspace strategy entrypoint")

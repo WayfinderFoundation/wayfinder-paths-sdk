@@ -7,9 +7,9 @@ non-reduce-only intents are canceled, and with `flatten: true` all open
 positions are market-closed. The flag survives runner pause/resume cycles and
 proposal applies by design: resuming loops must never silently un-halt.
 
-Deliberately independent of `evaluate_live_gate` (promotion readiness) and of
-risk-limit halts (`workspace/risk_limits.json`): this is the human/agent "stop
-now" control.
+Independent of `evaluate_live_gate` (promotion readiness). Manual requests,
+account-risk breaches, and native-protection failures share this durable latch
+so none can be cleared merely by restarting or resuming a runner.
 """
 
 from __future__ import annotations

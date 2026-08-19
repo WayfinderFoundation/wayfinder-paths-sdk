@@ -1466,6 +1466,7 @@ async def hyperliquid_place_trigger_order(
     is_market_trigger: bool = True,
     price: float | None = None,
     reduce_only: bool = True,
+    cloid: str | None = None,
 ) -> dict[str, Any]:
     """Place a perp take-profit / stop-loss trigger order.
 
@@ -1491,6 +1492,8 @@ async def hyperliquid_place_trigger_order(
             Set False for opening/scaling triggers (e.g. a stop-entry that adds
             exposure on touch); the order then rests as a normal non-reduce-only
             trigger.
+        cloid: Optional 128-bit hex client order id used for idempotent
+            reconciliation and cancellation.
     """
     wallet_label = throw_if_empty_str("wallet_label is required", wallet_label)
     asset_name = throw_if_empty_str("asset_name is required", asset_name)
@@ -1557,6 +1560,7 @@ async def hyperliquid_place_trigger_order(
         limit_price=limit_px,
         builder=DEFAULT_HYPERLIQUID_BUILDER_FEE,
         reduce_only=bool(reduce_only),
+        cloid=cloid,
     )
     effects.append(
         {
@@ -1597,6 +1601,7 @@ async def hyperliquid_place_trigger_order(
                 "size_requested": float(sz),
                 "size_valid": float(sz_valid),
                 "reduce_only": bool(reduce_only),
+                "cloid": cloid,
                 "builder": DEFAULT_HYPERLIQUID_BUILDER_FEE,
             },
             "effects": effects,

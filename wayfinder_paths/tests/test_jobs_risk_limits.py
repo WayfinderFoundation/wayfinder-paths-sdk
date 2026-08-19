@@ -165,6 +165,24 @@ async def test_peak_equity_persists_across_ticks(tmp_path: Path) -> None:
     assert "max_drawdown" in second["snapshot"]["reason"]
 
 
+def test_venue_equity_does_not_reuse_modelled_peak(tmp_path: Path) -> None:
+    root = tmp_path / "job"
+    _write_peak(root, 10_000.0)
+
+    snapshot = build_risk_snapshot(
+        state=EngineState(),
+        view=_view(1),
+        params={"initial_capital": 10_000.0},
+        root=root,
+        now=_now(_view(1)),
+        account_equity=750.0,
+    )
+
+    assert snapshot["equity_source"] == "venue"
+    assert snapshot["peak_equity"] == 750.0
+    assert snapshot["drawdown"] == 0.0
+
+
 async def test_max_daily_loss_counts_only_today(tmp_path: Path) -> None:
     store, job, root = _make_job(tmp_path, params={"initial_capital": 10_000.0})
     _write_limits(root, {"max_daily_loss_usd": 500.0})
@@ -259,3 +277,16 @@ def test_build_risk_snapshot_marks_unrealized_at_latest_close(
     assert snapshot["gross_exposure_usd"] == 22.0
     assert snapshot["positions_usd"] == {"SNX": 22.0}
     assert snapshot["drawdown"] == 0.0  # first observation seeds peak
+
+
+def test_live_account_equity_overrides_configured_capital(tmp_path: Path) -> None:
+    snapshot = build_risk_snapshot(
+        state=EngineState(),
+        view=_view(2),
+        params={"initial_capital": 10_000.0},
+        root=tmp_path,
+        now=pd.Timestamp("2026-01-01T00:05:00Z"),
+        account_equity=750.0,
+    )
+    assert snapshot["equity"] == 750.0
+    assert snapshot["peak_equity"] == 750.0

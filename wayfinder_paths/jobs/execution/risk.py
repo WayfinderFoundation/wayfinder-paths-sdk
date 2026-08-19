@@ -5,9 +5,10 @@ reused directly so limit semantics have a single source of truth). Living in
 `workspace/` means edits change the workspace revision hash, exactly like a
 model artifact: risk limits are part of strategy identity.
 
-A breached limit downgrades a `valid` snapshot to `risk_halt`, which the
-engine already routes to reduce-only mode — positions can still exit, new
-risk cannot be added. No file == no checks == byte-identical driver behavior.
+A breached limit downgrades a `valid` snapshot to `risk_halt`; the driver also
+latches the existing durable halt file. Positions can still exit, new risk is
+blocked, and an operator must explicitly clear the halt. No file == no checks
+== byte-identical driver behavior.
 
 Division of labor vs `auto_limits`: auto_limits are per-intent caps enforced
 inside the engine at decide time; risk limits are account-level circuit
@@ -46,6 +47,7 @@ def check_risk_halt(
     view: CompletedBarsView,
     params: Mapping[str, Any],
     now: pd.Timestamp,
+    account_equity: float | None = None,
 ) -> tuple[str | None, dict[str, Any]]:
     """Returns (halt_reason | None, snapshot_used). Persists peak equity to
     state/risk_state.json so drawdown is deterministic per tick."""
@@ -53,7 +55,12 @@ def check_risk_halt(
     if limits is None:
         return None, {}
     snapshot = build_risk_snapshot(
-        state=state, view=view, params=params, root=root, now=now
+        state=state,
+        view=view,
+        params=params,
+        root=root,
+        now=now,
+        account_equity=account_equity,
     )
     reason = limits.check(snapshot)
     state_path = Path(root) / RISK_STATE_PATH
@@ -76,13 +83,14 @@ def build_risk_snapshot(
     params: Mapping[str, Any],
     root: Path,
     now: pd.Timestamp,
+    account_equity: float | None = None,
 ) -> dict[str, Any]:
     """Maps driver-side telemetry onto the RiskLimits.check keys.
 
-    Equity = initial_capital + closed-trade net_pnl (forward summary — the
-    driver-side realized source of truth, which survives engine-state
-    adoption) + ledger unrealized marked at the latest closes. Conservative
-    vs a true venue-equity feed (fees/funding on open positions not marked).
+    Live equity comes from the reconciled venue account value. Paper equity is
+    initial capital + forward closed-trade PnL + funding + ledger unrealized at
+    the latest closes. The optional override keeps one snapshot shape across
+    both modes without treating configured capital as live collateral.
     """
     initial_capital = float(params.get("initial_capital") or DEFAULT_INITIAL_CAPITAL)
     summary = _read_json(Path(root) / FORWARD_SUMMARY_PATH) or {}
@@ -107,15 +115,27 @@ def build_risk_snapshot(
         gross_exposure += abs(notional)
         positions_usd[symbol] = direction * notional
 
-    equity = initial_capital + net_pnl + funding_total + unrealized
+    # Live venue equity already includes realized, unrealized, fees, and
+    # funding. Config capital remains the deterministic paper/backtest source.
+    equity = (
+        float(account_equity)
+        if account_equity is not None
+        else initial_capital + net_pnl + funding_total + unrealized
+    )
+    equity_source = "venue" if account_equity is not None else "modelled"
     risk_state = _read_json(Path(root) / RISK_STATE_PATH)
-    peak_equity = float(risk_state["peak_equity"]) if risk_state else None
+    peak_equity = (
+        float(risk_state["peak_equity"])
+        if risk_state and risk_state.get("equity_source", "modelled") == equity_source
+        else None
+    )
     if peak_equity is None or equity > peak_equity:
         peak_equity = equity  # first tick seeds peak == equity -> drawdown 0
     drawdown = (equity / peak_equity - 1.0) if peak_equity > 0 else 0.0
 
     return {
         "equity": equity,
+        "equity_source": equity_source,
         "peak_equity": peak_equity,
         "drawdown": drawdown,
         "gross_exposure_usd": gross_exposure,
