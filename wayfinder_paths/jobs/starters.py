@@ -22,7 +22,7 @@ from wayfinder_paths.jobs.strategies._starter_utils import (
 
 STARTER_CATALOG_VERSION = "1.3.0"
 STARTER_STRATEGY_INCEPTION_AT = "2026-08-18T00:00:00+00:00"
-STARTER_EVIDENCE_REVISION = "1.2.0"
+STARTER_EVIDENCE_REVISION = "1.3.0"
 
 
 @dataclass(frozen=True)
@@ -104,11 +104,12 @@ class StarterDefinition:
         payload["research_evidence"] = {
             **payload["research_evidence"],
             "strategy_revision": STARTER_EVIDENCE_REVISION,
-            "risk_overlay_backtest_status": "pending_revalidation",
+            "risk_overlay_backtest_status": "validated",
+            "risk_overlay_backtest_scope": "per_position_ohlc_stops",
             "risk_overlay_note": (
-                "Published performance figures predate the 1.3.0 protective-stop "
-                "overlay. They describe the entry/exit baseline and must not be "
-                "attributed to the protected revision until it is revalidated."
+                "The jobs_v1 engine figures include the 1.3.0 per-position stop "
+                "overlay. Live pair-group and account monitors run between strategy "
+                "bars and are not included in these historical figures."
             ),
         }
         for key in (
@@ -219,6 +220,9 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 "max_drawdown": -0.0279,
                 "trade_count": 182,
                 "total_fees_usd": 213.81,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
                 "funding_included": False,
                 "trace_valid": True,
             },
@@ -274,6 +278,9 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 "max_drawdown": -0.0162,
                 "trade_count": 164,
                 "total_fees_usd": 190.41,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
                 "funding_included": False,
                 "trace_valid": True,
             },
@@ -329,11 +336,14 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 "reserved_tail_t_stat": -0.41,
             },
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.1208,
-                "sharpe": 3.11,
+                "return_after_fees_and_slippage": 0.1230,
+                "sharpe": 3.14,
                 "max_drawdown": -0.0275,
-                "trade_count": 102,
-                "total_fees_usd": 122.04,
+                "trade_count": 104,
+                "total_fees_usd": 124.52,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
                 "funding_included": False,
                 "trace_valid": True,
             },
@@ -365,6 +375,9 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "rebalance_bars": 24,
             "rebalance_offset": 12,
             "weight_per_leg": 0.25,
+            "stop_atr_multiple": 8.0,
+            "stop_min_pct": 0.15,
+            "stop_max_pct": 0.30,
         },
         research_evidence={
             **_RESEARCH_METHOD,
@@ -376,14 +389,23 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "max_drawdown": -0.1075,
             "chronological_fold_returns": [0.0465, 0.0999, 0.0754, 0.0440],
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.2675,
-                "sharpe": 1.77,
-                "max_drawdown": -0.0946,
-                "trade_count": 217,
-                "total_fees_usd": 270.95,
+                "return_after_fees_and_slippage": 0.2310,
+                "sharpe": 1.56,
+                "max_drawdown": -0.1096,
+                "trade_count": 261,
+                "total_fees_usd": 325.04,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
                 "funding_included": False,
                 "trace_valid": True,
             },
+            "revalidation_note": (
+                "The current-revision replay did not reproduce the earlier "
+                "0.2675 return / 217-trade catalog snapshot. Its protected run "
+                "exactly matched its reconstructed no-stop baseline, and these "
+                "current-revision figures supersede the stale snapshot."
+            ),
         },
     ),
     StarterDefinition(
@@ -409,6 +431,9 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "rebalance_bars": 96,
             "rebalance_offset": 48,
             "weight_per_leg": 0.25,
+            "stop_atr_multiple": 14.0,
+            "stop_min_pct": 0.26,
+            "stop_max_pct": 0.52,
         },
         research_evidence={
             **_RESEARCH_METHOD,
@@ -421,10 +446,18 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "chronological_fold_returns": [0.1136, -0.0545, 0.1963, 0.0619],
             "jobs_v1_engine": {
                 "return_after_fees_and_slippage": 0.2587,
-                "sharpe": 1.51,
-                "max_drawdown": -0.1315,
-                "trade_count": 116,
-                "total_fees_usd": 136.39,
+                "sharpe": 1.49,
+                "max_drawdown": -0.1146,
+                "trade_count": 120,
+                "total_fees_usd": 141.12,
+                "stop_count": 2,
+                "full_period_vs_no_stop": "improved",
+                "chronological_folds_non_regressing": 4,
+                "no_stop_baseline": {
+                    "return_after_fees_and_slippage": 0.2541,
+                    "sharpe": 1.46,
+                    "max_drawdown": -0.1170,
+                },
                 "funding_included": False,
                 "trace_valid": True,
             },
@@ -465,11 +498,14 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "max_drawdown": -0.1301,
             "chronological_fold_returns": [0.0085, 0.0699, 0.0457, 0.0318],
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.2089,
-                "sharpe": 1.36,
-                "max_drawdown": -0.1010,
+                "return_after_fees_and_slippage": 0.2044,
+                "sharpe": 1.34,
+                "max_drawdown": -0.1023,
                 "trade_count": 141,
-                "total_fees_usd": 173.08,
+                "total_fees_usd": 173.02,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
                 "funding_included": False,
                 "trace_valid": True,
             },
@@ -536,11 +572,14 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 ),
             },
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.2074,
+                "return_after_fees_and_slippage": 0.2090,
                 "sharpe": 0.99,
-                "max_drawdown": -0.1103,
+                "max_drawdown": -0.1102,
                 "trade_count": 182,
-                "total_fees_usd": 56.41,
+                "total_fees_usd": 56.43,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
                 "funding_included": False,
                 "trace_valid": True,
             },
@@ -610,11 +649,14 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 ),
             },
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.2821,
-                "sharpe": 1.25,
-                "max_drawdown": -0.1080,
+                "return_after_fees_and_slippage": 0.2815,
+                "sharpe": 1.24,
+                "max_drawdown": -0.1079,
                 "trade_count": 181,
-                "total_fees_usd": 49.74,
+                "total_fees_usd": 49.76,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
                 "funding_included": False,
                 "trace_valid": True,
             },

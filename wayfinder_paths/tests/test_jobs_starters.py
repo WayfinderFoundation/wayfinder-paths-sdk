@@ -116,15 +116,35 @@ def test_starter_catalog_has_six_mixed_and_two_pair_paper_strategies() -> None:
         assert 0 < item["params"]["stop_min_pct"] <= item["params"]["stop_max_pct"]
         assert item["params"]["native_stop_required"] is True
         assert item["risk_controls"]["account_halt"]["flatten_on_breach"] is False
+        assert item["research_evidence"]["risk_overlay_backtest_status"] == "validated"
         assert (
-            item["research_evidence"]["risk_overlay_backtest_status"]
-            == "pending_revalidation"
+            item["research_evidence"]["risk_overlay_backtest_scope"]
+            == "per_position_ohlc_stops"
         )
         assert item["research_evidence"]["return_after_costs_and_funding"] > 0
         engine = item["research_evidence"]["jobs_v1_engine"]
         assert engine["return_after_fees_and_slippage"] > 0
         assert engine["funding_included"] is False
         assert engine["trace_valid"] is True
+        assert engine["full_period_vs_no_stop"] in {"unchanged", "improved"}
+        assert engine["chronological_folds_non_regressing"] == 4
+        assert engine["stop_count"] >= 0
+
+    by_id = {item["id"]: item for item in catalog}
+    expected_stops = {
+        "mixed-rsi-snapback-1h": (5.0, 0.08, 0.15),
+        "mixed-momentum-rank-1h": (8.0, 0.15, 0.30),
+        "mixed-sleeve-momentum-15m": (14.0, 0.26, 0.52),
+        "mixed-low-vol-rank-15m": (12.0, 0.25, 0.50),
+        "btc-eth-relative-strength-1d": (15.0, 0.40, 0.60),
+    }
+    for starter_id, expected in expected_stops.items():
+        params = by_id[starter_id]["params"]
+        assert (
+            params["stop_atr_multiple"],
+            params["stop_min_pct"],
+            params["stop_max_pct"],
+        ) == expected
 
     pairs = {
         item["id"]: item

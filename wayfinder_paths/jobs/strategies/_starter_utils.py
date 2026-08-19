@@ -10,26 +10,31 @@ import pandas as pd
 from wayfinder_paths.jobs.execution.primitives import ExecutionContext
 from wayfinder_paths.jobs.indicators import atr
 
+# These brackets are catastrophe exits; each strategy's normal exit or rebalance
+# remains responsible for routine risk. The bands below passed full-period and
+# four-fold non-regression checks against the same jobs_v1 replay without stops.
 MEAN_REVERSION_STOP_DEFAULTS: dict[str, Any] = {
     "stop_atr_period": 24,
-    "stop_atr_multiple": 3.0,
-    "stop_min_pct": 0.03,
-    "stop_max_pct": 0.06,
+    "stop_atr_multiple": 5.0,
+    "stop_min_pct": 0.08,
+    "stop_max_pct": 0.15,
     "stop_cooldown_seconds": 86_400,
     "native_stop_required": True,
 }
 RANKING_STOP_DEFAULTS: dict[str, Any] = {
-    "stop_atr_multiple": 4.0,
-    "stop_min_pct": 0.06,
-    "stop_max_pct": 0.12,
+    "stop_atr_multiple": 12.0,
+    "stop_min_pct": 0.25,
+    "stop_max_pct": 0.50,
     "stop_cooldown_seconds": 86_400,
     "native_stop_required": True,
 }
 PAIR_PROTECTION_DEFAULTS: dict[str, Any] = {
+    # Pair-level monitoring owns the tighter 3% equity / 8% gross loss budget.
+    # The per-leg bracket is intentionally wider so one leg cannot churn the pair.
     "stop_atr_period": 20,
-    "stop_atr_multiple": 6.0,
-    "stop_min_pct": 0.12,
-    "stop_max_pct": 0.20,
+    "stop_atr_multiple": 15.0,
+    "stop_min_pct": 0.40,
+    "stop_max_pct": 0.60,
     "native_stop_required": True,
     "protection_monitor_interval_seconds": 300,
     "pair_max_entry_equity_loss_pct": 0.03,
