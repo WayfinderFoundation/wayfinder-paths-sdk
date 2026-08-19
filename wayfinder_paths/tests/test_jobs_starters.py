@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ import pytest
 
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.features import apply_precompute
+from wayfinder_paths.jobs.execution.job import _resolve_dataset
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     ExecutionContext,
@@ -94,6 +96,37 @@ def _context(
 
 def _sides(intents: list[dict[str, Any]]) -> dict[str, str]:
     return {intent["symbol"]: intent["side"] for intent in intents}
+
+
+def _journal_events(store: JobStore, job_id: str) -> list[dict[str, Any]]:
+    path = store.job_dir(job_id) / "journal.jsonl"
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+@pytest.fixture(autouse=True)
+def dataset_fetch_spawns(monkeypatch) -> list[dict[str, Any]]:
+    """Starter creation spawns a real detached fetch child; stub it so every
+    test stays hermetic, recording the calls for assertions."""
+    calls: list[dict[str, Any]] = []
+
+    def fake_spawn(store, job_id, op, kwargs):  # noqa: ANN001
+        calls.append({"job_id": job_id, "op": op, "kwargs": kwargs})
+        return {
+            "started": True,
+            "op": op,
+            "job_id": job_id,
+            "state": "running",
+            "pid": 4242,
+        }
+
+    monkeypatch.setattr("wayfinder_paths.jobs.starters.spawn_detached_op", fake_spawn)
+    return calls
 
 
 def test_starter_catalog_has_six_mixed_and_two_pair_paper_strategies() -> None:
@@ -472,6 +505,143 @@ def test_create_starter_reuse_tolerates_out_of_range_leverage(tmp_path) -> None:
     assert reused["created"] is False
     assert reused["selected_leverage"] == 5
     assert "clamped to 5" in reused["leverage_warning"]
+
+
+def test_create_starter_spawns_detached_dataset_fetch(
+    tmp_path, dataset_fetch_spawns
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    result = create_starter_job("mixed-rsi-snapback-1h", store=store, compile_job=False)
+
+    assert dataset_fetch_spawns == [
+        {
+            "job_id": "mixed-rsi-snapback-1h",
+            "op": "fetch_dataset",
+            "kwargs": {"job_id": "mixed-rsi-snapback-1h", "days": 120},
+        }
+    ]
+    assert result["dataset_fetch"] == {"spawned": True, "days": 120, "pid": 4242}
+    events = _journal_events(store, "mixed-rsi-snapback-1h")
+    spawned = next(
+        event for event in events if event["type"] == "starter_dataset_fetch_spawned"
+    )
+    assert spawned["days"] == 120
+    assert spawned["op"] == "fetch_dataset"
+    assert spawned["ts"]
+
+    reused = create_starter_job("mixed-rsi-snapback-1h", store=store, compile_job=False)
+    assert reused["created"] is False
+    assert len(dataset_fetch_spawns) == 1
+
+
+def test_create_starter_skips_dataset_fetch_when_bars_exist(
+    tmp_path, dataset_fetch_spawns
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    bars_path = (
+        store.job_dir("mixed-rsi-snapback-1h")
+        / "results"
+        / "backtest"
+        / "input_bars.json"
+    )
+    bars_path.parent.mkdir(parents=True)
+    bars_path.write_text("[]", encoding="utf-8")
+
+    result = create_starter_job("mixed-rsi-snapback-1h", store=store, compile_job=False)
+
+    assert result["created"] is True
+    assert result["dataset_fetch"] == {"spawned": False, "reason": "dataset_exists"}
+    assert dataset_fetch_spawns == []
+    skipped = next(
+        event
+        for event in _journal_events(store, "mixed-rsi-snapback-1h")
+        if event["type"] == "starter_dataset_fetch_skipped"
+    )
+    assert skipped["reason"] == "dataset_exists"
+
+
+def test_create_starter_skips_dataset_fetch_when_op_already_running(
+    tmp_path, monkeypatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.starters.spawn_detached_op",
+        lambda store, job_id, op, kwargs: {
+            "already_running": True,
+            "op": op,
+            "job_id": job_id,
+            "state": "running",
+            "pid": 999,
+        },
+    )
+
+    result = create_starter_job("mixed-rsi-snapback-1h", store=store, compile_job=False)
+
+    assert result["created"] is True
+    assert result["dataset_fetch"] == {
+        "spawned": False,
+        "reason": "fetch_already_running",
+    }
+    skipped = next(
+        event
+        for event in _journal_events(store, "mixed-rsi-snapback-1h")
+        if event["type"] == "starter_dataset_fetch_skipped"
+    )
+    assert skipped["reason"] == "fetch_already_running"
+
+
+def test_create_starter_survives_dataset_fetch_spawn_failure(
+    tmp_path, monkeypatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+
+    def boom(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise RuntimeError("no child processes")
+
+    monkeypatch.setattr("wayfinder_paths.jobs.starters.spawn_detached_op", boom)
+
+    result = create_starter_job("mixed-rsi-snapback-1h", store=store, compile_job=False)
+
+    assert result["created"] is True
+    assert result["dataset_fetch"] == {"spawned": False, "error": "no child processes"}
+    failed = next(
+        event
+        for event in _journal_events(store, "mixed-rsi-snapback-1h")
+        if event["type"] == "starter_dataset_fetch_spawn_failed"
+    )
+    assert failed["error"] == "no child processes"
+
+
+def test_missing_bars_error_reports_in_progress_dataset_fetch(tmp_path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    create_starter_job("mixed-rsi-snapback-1h", store=store, compile_job=False)
+    root = store.job_dir("mixed-rsi-snapback-1h")
+    spec = ExecutionSpec()
+
+    with pytest.raises(FileNotFoundError) as bare:
+        _resolve_dataset(root, spec, {})
+    assert "dataset fetch is in progress" not in str(bare.value)
+
+    ops_dir = root / "state" / "background_ops"
+    ops_dir.mkdir(parents=True)
+    status_path = ops_dir / "fetch_dataset.json"
+    status_path.write_text(
+        json.dumps({"op": "fetch_dataset", "state": "running", "pid": os.getpid()}),
+        encoding="utf-8",
+    )
+    with pytest.raises(
+        FileNotFoundError, match="dataset fetch is in progress; retry shortly"
+    ):
+        _resolve_dataset(root, spec, {})
+
+    # A stale status file from a dead child must not claim progress.
+    status_path.write_text(
+        json.dumps({"op": "fetch_dataset", "state": "running", "pid": 2**30}),
+        encoding="utf-8",
+    )
+    with pytest.raises(FileNotFoundError) as stale:
+        _resolve_dataset(root, spec, {})
+    assert "dataset fetch is in progress" not in str(stale.value)
 
 
 @pytest.mark.parametrize(

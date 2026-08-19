@@ -13,6 +13,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from wayfinder_paths.jobs.background import spawn_detached_op
 from wayfinder_paths.jobs.models import WayfinderJob, safe_job_id
 from wayfinder_paths.jobs.starter_leverage_evidence import STARTER_LEVERAGE_RESULTS
 from wayfinder_paths.jobs.store import JobStore
@@ -29,6 +30,8 @@ STARTER_LEVERAGE_DEFAULT = 1
 STARTER_LEVERAGE_MINIMUM = 1
 STARTER_LEVERAGE_MAXIMUM = 5
 STARTER_LEVERAGE_STEP = 1
+# Evidence-window owner policy: starter backtests/validation replay 120 days.
+STARTER_DATASET_DAYS = 120
 
 
 def validate_starter_leverage(value: Any) -> int:
@@ -749,6 +752,58 @@ def get_starter(starter_id: str) -> StarterDefinition:
     raise KeyError(f"unknown starter strategy: {starter_id}")
 
 
+def _spawn_starter_dataset_fetch(store: JobStore, job_id: str) -> dict[str, Any]:
+    """Self-provision the starter's market dataset as a detached fetch.
+
+    Launch stays fast (the child fetches bars minutes later into
+    results/backtest/input_bars.json); until then, backtests report the
+    in-progress fetch instead of a bare "no bars" error. Any failure here is
+    journaled and swallowed — dataset provisioning must never fail the launch.
+    """
+    try:
+        bars_path = store.job_dir(job_id) / "results" / "backtest" / "input_bars.json"
+        if bars_path.exists():
+            store.append_journal(
+                job_id,
+                {"type": "starter_dataset_fetch_skipped", "reason": "dataset_exists"},
+            )
+            return {"spawned": False, "reason": "dataset_exists"}
+        status = spawn_detached_op(
+            store,
+            job_id,
+            "fetch_dataset",
+            {"job_id": job_id, "days": STARTER_DATASET_DAYS},
+        )
+        if status.get("already_running"):
+            store.append_journal(
+                job_id,
+                {
+                    "type": "starter_dataset_fetch_skipped",
+                    "reason": "fetch_already_running",
+                },
+            )
+            return {"spawned": False, "reason": "fetch_already_running"}
+        store.append_journal(
+            job_id,
+            {
+                "type": "starter_dataset_fetch_spawned",
+                "op": "fetch_dataset",
+                "days": STARTER_DATASET_DAYS,
+                "pid": status.get("pid"),
+            },
+        )
+        return {"spawned": True, "days": STARTER_DATASET_DAYS, "pid": status.get("pid")}
+    except Exception as exc:  # noqa: BLE001 — never block or fail the launch
+        try:
+            store.append_journal(
+                job_id,
+                {"type": "starter_dataset_fetch_spawn_failed", "error": str(exc)},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return {"spawned": False, "error": str(exc)}
+
+
 def create_starter_job(
     starter_id: str,
     *,
@@ -880,4 +935,5 @@ def create_starter_job(
 
         result["compile"] = JobCompiler(store=store).compile(job)
         sync_all_jobs(store=store)
+    result["dataset_fetch"] = _spawn_starter_dataset_fetch(store, job.id)
     return result

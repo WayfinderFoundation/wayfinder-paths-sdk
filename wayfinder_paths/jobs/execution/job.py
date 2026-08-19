@@ -7,6 +7,7 @@ from typing import Any
 
 import yaml
 
+from wayfinder_paths.jobs.background import op_running
 from wayfinder_paths.jobs.execution.features import (
     load_feature_rows,
     merge_features,
@@ -443,11 +444,14 @@ def _resolve_dataset(
             return PreparedExecutionDataset.from_rows(
                 fixture_bars, {"source": "execution_spec.validation.fixture_bars"}
             )
-    raise FileNotFoundError(
+    message = (
         "No backtest bars found. Provide results/backtest/input_bars.json, "
         "workspace/config/backtest_bars.json, execution_scenario_plan bars, or "
         "execution_spec.validation.fixture_bars."
     )
+    if op_running(root, "fetch_dataset"):
+        message += " — dataset fetch is in progress; retry shortly."
+    raise FileNotFoundError(message)
 
 
 def synthesize_scenario_plan(

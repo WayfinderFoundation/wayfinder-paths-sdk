@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.jobs.models import utc_now_iso
@@ -27,6 +28,22 @@ def _pid_alive(pid: Any) -> bool:
     except OSError:
         return False
     return True
+
+
+def op_running(job_dir: Path, op: str) -> bool:
+    """True when `op` has a live detached child recorded for the job at
+    `job_dir` — a `running` status file whose pid is still alive. A stale
+    status file from a dead child does not count."""
+    status_path = job_dir / "state" / "background_ops" / f"{op}.json"
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (
+        isinstance(status, dict)
+        and status.get("state") == "running"
+        and _pid_alive(status.get("pid"))
+    )
 
 
 def spawn_detached_op(
