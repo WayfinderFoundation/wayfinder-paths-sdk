@@ -619,6 +619,28 @@ def test_create_starter_materializes_job_and_forward_inception(tmp_path) -> None
         encoding="utf-8"
     )
 
+    balanced_result = create_starter_job(
+        "balanced-passive-capitulation-1h",
+        job_id="balanced-maker-starter",
+        store=store,
+        compile_job=False,
+    )
+    balanced_job = store.load("balanced-maker-starter")
+    assert balanced_job.execution_spec["data_contract"]["symbols"] == [
+        "HYPE",
+        "xyz:COIN",
+        "xyz:TSLA",
+    ]
+    assert balanced_job.execution_params["entry_order_type"] == "maker"
+    assert balanced_job.execution_params["symbol_weights"] == {
+        "HYPE": 0.5,
+        "xyz:COIN": 0.25,
+        "xyz:TSLA": 0.25,
+    }
+    assert "mixed_volume_capitulation" in Path(
+        balanced_result["script_entrypoint"]
+    ).read_text(encoding="utf-8")
+
 
 def test_create_starter_reuses_its_canonical_job_id(tmp_path) -> None:
     store = JobStore(repo_root=tmp_path)
