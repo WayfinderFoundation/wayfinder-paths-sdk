@@ -43,6 +43,7 @@ from wayfinder_paths.runner.script_resolver import resolve_script_path
 
 JOB_RESULT_MARKER = "WAYFINDER_JOB_RESULT "
 DEFAULT_SYNC_DEBOUNCE_SECONDS = 90.0
+DEFAULT_MAX_RSS_MB = 900.0
 JOB_LOCK_TIMEOUT_SECONDS = 3
 JOB_LOCK_BUSY_MSG = (
     "Runner Daemon lock is busy, no operations were completed, please try again later"
@@ -132,6 +133,31 @@ def _kill_process_group(pid: int, *, sig: int) -> None:
         return
     except Exception as exc:  # noqa: BLE001
         logger.debug(f"Failed to kill process group {pid}: {exc}")
+
+
+def _max_rss_mb_from_env() -> float:
+    """RSS ceiling for the watchdog. Non-positive disables it."""
+    raw = os.environ.get("WAYFINDER_RUNNERD_MAX_RSS_MB")
+    if raw is None or not str(raw).strip():
+        return DEFAULT_MAX_RSS_MB
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            f"Invalid WAYFINDER_RUNNERD_MAX_RSS_MB={raw!r}; using {DEFAULT_MAX_RSS_MB}"
+        )
+        return DEFAULT_MAX_RSS_MB
+
+
+def _rss_mb() -> float | None:
+    """Resident set size read from /proc/self/statm (Linux). None where /proc
+    is unavailable (macOS dev boxes) — the watchdog is then a no-op."""
+    try:
+        fields = Path("/proc/self/statm").read_text().split()
+        resident_pages = int(fields[1])
+    except (OSError, IndexError, ValueError):
+        return None
+    return resident_pages * os.sysconf("SC_PAGE_SIZE") / (1024 * 1024)
 
 
 def _sync_debounce_seconds() -> float:
@@ -249,6 +275,7 @@ class RunnerDaemon:
         self._view_server: Any | None = None
         self._daemon_log_sink_id: int | None = None
         self._warm_spawner: Any | None = None
+        self._max_rss_mb = _max_rss_mb_from_env()
         self._sync_debouncer = _SyncDebouncer(
             action=lambda: self._start_backend_sync(),
             delay_seconds=_sync_debounce_seconds(),
@@ -293,12 +320,19 @@ class RunnerDaemon:
         )
 
         # Warm view endpoint for the jobs UI (starters/backtest/forward).
+        # Views are computed in short-lived children forked from the SAME warm
+        # spawner the tick path uses, so runnerd itself stays memory-flat.
         # Best-effort: bind failure or a broken module must never stop the
         # scheduler — callers fall back to the cold CLI.
         try:
             from wayfinder_paths.runner.view_server import RunnerViewServer
+            from wayfinder_paths.runner.warm_spawn import WarmSpawner
 
-            view_server = RunnerViewServer(repo_root=self._paths.repo_root)
+            if self._warm_spawner is None:
+                self._warm_spawner = WarmSpawner()
+            view_server = RunnerViewServer(
+                repo_root=self._paths.repo_root, warm_spawner=self._warm_spawner
+            )
             view_server.start()
             self._view_server = view_server
         except Exception:  # noqa: BLE001
@@ -343,6 +377,12 @@ class RunnerDaemon:
             time.sleep(max(0.0, self._tick_seconds - elapsed))
 
     def tick(self) -> None:
+        # Belt-and-braces vs the kernel OOM killer: check at the tick
+        # boundary, where the previous tick's DB writes are complete and
+        # nothing is mid-flight in the scheduler thread, so an os._exit here
+        # cannot corrupt run bookkeeping (restart marks stale RUNNING runs
+        # ABORTED via mark_stale_running_runs_aborted).
+        self._enforce_rss_limit()
         try:
             now = int(time.time())
             self._last_tick_at = now
@@ -351,6 +391,20 @@ class RunnerDaemon:
                 self._maybe_start_job(job=job, now=now, reason="schedule")
         except Exception:  # noqa: BLE001
             logger.exception("Runner tick error")
+
+    def _enforce_rss_limit(self) -> None:
+        if self._max_rss_mb <= 0:
+            return
+        rss_mb = _rss_mb()
+        if rss_mb is None or rss_mb <= self._max_rss_mb:
+            return
+        logger.critical(
+            f"runnerd RSS {rss_mb:.0f}MB exceeds WAYFINDER_RUNNERD_MAX_RSS_MB="
+            f"{self._max_rss_mb:.0f}MB; exiting now so the supervisor restarts "
+            "us cleanly between ticks instead of the kernel OOM-killing us "
+            "mid-write"
+        )
+        os._exit(1)
 
     def _reap(self, *, now: int) -> None:
         for run_id, rp in list(self._running.items()):

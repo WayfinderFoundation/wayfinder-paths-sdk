@@ -1,8 +1,13 @@
-"""The resident view server must serve the EXACT payloads the cold CLI serves
+"""The view server must serve the EXACT payloads the cold CLI serves
 (`wayfinder job backtest-view` / `forward-view` / catalog `starters`), in the
 exact CLI envelope {"ok": true, "result": ...} — backend callers swap exec'ing
-the CLI for a loopback curl byte-for-byte. Bind failure is warn-and-continue:
-the daemon scheduler must keep running without it."""
+the CLI for a loopback curl byte-for-byte. Views are computed in short-lived
+children forked from the warm forkserver so runnerd stays memory-flat: the
+parent retains nothing per request beyond a capped bytes-only price cache.
+Excess concurrency 503s, child failures become {"ok": false} envelopes (never
+hangs), and bind failure is warn-and-continue: the daemon scheduler must keep
+running without it. A parent-side RSS watchdog exits runnerd cleanly between
+ticks before the kernel OOM killer can take the live loops down mid-write."""
 
 from __future__ import annotations
 
@@ -20,24 +25,51 @@ from wayfinder_paths.jobs.backtest_artifacts import load_backtest_view
 from wayfinder_paths.jobs.forward_artifacts import load_forward_view
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
-from wayfinder_paths.runner.view_server import RunnerViewServer
+from wayfinder_paths.runner.view_server import (
+    RunnerViewServer,
+    _PriceSeriesByteCache,
+    _view_child_entry,
+)
+from wayfinder_paths.runner.warm_spawn import WarmSpawner
 
 
 def _get(port: int, path: str) -> tuple[int, dict]:
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}") as resp:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}{path}", timeout=60
+        ) as resp:
             return resp.status, json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as err:
         return err.code, json.loads(err.read().decode("utf-8"))
 
 
+@pytest.fixture(scope="module")
+def shared_spawner() -> WarmSpawner:
+    # One forkserver (with the pandas/jobs preload) for the whole module —
+    # exactly how the daemon shares its tick spawner with the view server.
+    return WarmSpawner()
+
+
 @pytest.fixture
-def server(tmp_path: Path):
-    view_server = RunnerViewServer(repo_root=tmp_path, port=0)
+def server(tmp_path: Path, shared_spawner: WarmSpawner):
+    view_server = RunnerViewServer(
+        repo_root=tmp_path, port=0, warm_spawner=shared_spawner
+    )
     view_server.start()
     assert view_server.port is not None
     yield view_server
     view_server.stop()
+
+
+def _inline_children(
+    view_server: RunnerViewServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Run view children inline (no fork) so monkeypatched seams inside the
+    jobs modules are visible to the 'child' — the parent<->child contract
+    (request kwargs, out file, price sidecar, exit codes) stays fully real."""
+    monkeypatch.setattr(
+        view_server, "_run_child", lambda kwargs: _view_child_entry(**kwargs)
+    )
 
 
 def _seed_backtest_job(tmp_path: Path) -> JobStore:
@@ -191,6 +223,8 @@ def test_starters_route_serves_the_bare_catalog_list(server: RunnerViewServer) -
 def test_backtest_view_parity_with_direct_loader(
     tmp_path: Path, server: RunnerViewServer
 ) -> None:
+    """Served through a REAL forked child — the response must still match the
+    direct loader byte-for-byte after JSON parsing."""
     _seed_backtest_job(tmp_path)
     query = (
         "job_id=carry&view=legs&series=TEST_price&max_points=100"
@@ -235,12 +269,13 @@ def test_forward_view_parity_with_direct_loader(
     assert body["result"]["summary"]["pnl_by_mode"] == {"paper": 1.4, "live": 0.0}
 
 
-def test_forward_view_price_fetch_is_ttl_cached_and_injected(
-    tmp_path: Path, server: RunnerViewServer, monkeypatch: pytest.MonkeyPatch
+def test_forward_view_price_fetch_is_byte_cached_across_children(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Two polls inside the TTL hit the venue exactly once — the server passes
-    its cached single-flight fetcher through load_forward_view's price_fetcher
-    seam."""
+    """Two polls inside the TTL hit the venue exactly once: the first child
+    hands the serialized series back through the sidecar file, the parent
+    caches ONLY those bytes, and the second child replays them without
+    fetching. Children run inline so the fake venue fetch is visible."""
     import wayfinder_paths.jobs.forward_artifacts as forward_artifacts
 
     _seed_forward_job(tmp_path)
@@ -260,14 +295,138 @@ def test_forward_view_price_fetch_is_ttl_cached_and_injected(
 
     monkeypatch.setattr(forward_artifacts, "_fetch_price_series", _fake_fetch)
 
-    for _ in range(2):
-        status, body = _get(server.port, "/forward-view?job_id=carry")
-        assert status == 200
-        assert body["ok"] is True
-        kinds = {s["kind"] for s in body["result"]["visualization"]["series"]}
-        assert "market_price" in kinds
+    view_server = RunnerViewServer(repo_root=tmp_path, port=0)
+    _inline_children(view_server, monkeypatch)
+    view_server.start()
+    try:
+        for _ in range(2):
+            status, body = _get(view_server.port, "/forward-view?job_id=carry")
+            assert status == 200
+            assert body["ok"] is True
+            kinds = {s["kind"] for s in body["result"]["visualization"]["series"]}
+            assert "market_price" in kinds
 
-    assert calls == ["carry"]  # second request served from the 90s TTL cache
+        assert calls == ["carry"]  # second request replayed the cached bytes
+        assert view_server._price_cache.get("carry") is not None
+    finally:
+        view_server.stop()
+
+
+def test_price_cache_is_bytes_only_with_hard_caps() -> None:
+    """runnerd's only per-request retention: flat bytes, capped per entry and
+    in entry count, TTL'd."""
+    cache = _PriceSeriesByteCache(ttl_seconds=0.05, max_entry_bytes=8, max_entries=2)
+
+    cache.put("big", b"123456789")  # over the entry cap -> silently dropped
+    assert cache.get("big") is None
+
+    cache.put("a", b"aa")
+    cache.put("b", b"bb")
+    cache.put("c", b"cc")  # entry-count cap evicts the oldest
+    assert cache.get("a") is None
+    assert cache.get("b") == b"bb"
+    assert cache.get("c") == b"cc"
+
+    time.sleep(0.06)
+    assert cache.get("b") is None  # TTL expired
+
+
+def test_third_concurrent_view_request_gets_a_503_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At most 2 view children run at once; a third concurrent request gets a
+    quick 503 {"ok": false} so the backend can fall back to the cold CLI."""
+    _seed_backtest_job(tmp_path)
+    view_server = RunnerViewServer(repo_root=tmp_path, port=0, busy_wait_seconds=0.2)
+    release = threading.Event()
+    started: list[str] = []
+
+    def _blocking_child(kwargs: dict) -> int:
+        Path(kwargs["out_path"]).write_bytes(
+            json.dumps({"ok": True, "result": None}).encode("utf-8")
+        )
+        started.append(kwargs["route"])
+        release.wait(timeout=30)
+        return 0
+
+    monkeypatch.setattr(view_server, "_run_child", _blocking_child)
+    view_server.start()
+    results: list[tuple[int, dict]] = []
+    threads = [
+        threading.Thread(
+            target=lambda: results.append(
+                _get(view_server.port, "/backtest-view?job_id=carry")
+            )
+        )
+        for _ in range(2)
+    ]
+    try:
+        for thread in threads:
+            thread.start()
+        deadline = time.time() + 10
+        while len(started) < 2 and time.time() < deadline:
+            time.sleep(0.02)
+        assert len(started) == 2  # both semaphore slots held
+
+        status, body = _get(view_server.port, "/backtest-view?job_id=carry")
+        assert status == 503
+        assert body["ok"] is False
+        assert "busy" in body["error"]
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(timeout=10)
+        view_server.stop()
+    assert sorted(status for status, _ in results) == [200, 200]
+
+
+def test_child_crash_is_a_500_envelope_not_a_hang(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A child that dies without writing its output file (signal death, OOM)
+    must surface as {"ok": false} immediately."""
+    _seed_backtest_job(tmp_path)
+    view_server = RunnerViewServer(repo_root=tmp_path, port=0)
+    monkeypatch.setattr(view_server, "_run_child", lambda kwargs: 1)
+    view_server.start()
+    try:
+        status, body = _get(view_server.port, "/backtest-view?job_id=carry")
+        assert status == 500
+        assert body["ok"] is False
+        assert "exit=1" in body["error"]
+    finally:
+        view_server.stop()
+
+
+def test_child_timeout_is_a_500_envelope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed_backtest_job(tmp_path)
+    view_server = RunnerViewServer(repo_root=tmp_path, port=0)
+    monkeypatch.setattr(view_server, "_run_child", lambda kwargs: None)
+    view_server.start()
+    try:
+        status, body = _get(view_server.port, "/backtest-view?job_id=carry")
+        assert status == 500
+        assert body["ok"] is False
+        assert "timed out" in body["error"]
+    finally:
+        view_server.stop()
+
+
+def test_forked_child_loader_error_is_a_500_envelope(
+    tmp_path: Path, server: RunnerViewServer
+) -> None:
+    """Real fork path: a loader exception inside the child (corrupt artifact)
+    comes back as the same 500 envelope the in-process server produced."""
+    store = _seed_forward_job(tmp_path)
+    ticks = store.job_dir("carry") / "results" / "forward" / "ticks.jsonl"
+    ticks.write_text('{"kind": "tick", not json\n', encoding="utf-8")
+
+    status, body = _get(server.port, "/forward-view?job_id=carry&no_prices=1")
+    assert status == 500
+    assert body["ok"] is False
+    assert body["error"]
 
 
 def test_missing_job_id_is_a_400_envelope(server: RunnerViewServer) -> None:
@@ -343,6 +502,9 @@ def test_daemon_starts_and_stops_the_view_server(
         assert daemon._view_server is not None
         port = daemon._view_server.port
         assert port is not None
+        # The view server shares the daemon's warm spawner: one forkserver
+        # image serves both tick forks and view forks.
+        assert daemon._view_server._warm_spawner is daemon._warm_spawner
 
         status, body = _get(port, "/health")
         assert status == 200
@@ -356,3 +518,73 @@ def test_daemon_starts_and_stops_the_view_server(
         shutil.rmtree(runner_dir, ignore_errors=True)
     assert not thread.is_alive()
     assert daemon._view_server is None
+
+
+def _daemon_paths(tmp_path: Path):
+    from wayfinder_paths.runner.paths import RunnerPaths
+
+    runner_dir = tmp_path / ".wayfinder" / "runner"
+    return RunnerPaths(
+        repo_root=tmp_path,
+        runner_dir=runner_dir,
+        db_path=runner_dir / "state.db",
+        logs_dir=runner_dir / "logs",
+        sock_path=runner_dir / "runner.sock",
+    )
+
+
+def test_memory_watchdog_exits_cleanly_when_rss_exceeds_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RSS over WAYFINDER_RUNNERD_MAX_RSS_MB -> os._exit(1) at the tick
+    boundary, where no run bookkeeping is mid-flight, so the supervisor
+    restarts runnerd cleanly instead of the kernel OOM-killing it."""
+    import os as os_module
+
+    from wayfinder_paths.runner import daemon as daemon_module
+
+    monkeypatch.setenv("WAYFINDER_RUNNERD_MAX_RSS_MB", "900")
+    daemon = daemon_module.RunnerDaemon(paths=_daemon_paths(tmp_path))
+    exits: list[int] = []
+    monkeypatch.setattr(daemon_module, "_rss_mb", lambda: 1200.0)
+    monkeypatch.setattr(os_module, "_exit", lambda code: exits.append(code))
+
+    daemon.tick()
+    assert exits == [1]
+
+
+def test_memory_watchdog_stays_quiet_below_limit_and_without_procfs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os as os_module
+
+    from wayfinder_paths.runner import daemon as daemon_module
+
+    monkeypatch.delenv("WAYFINDER_RUNNERD_MAX_RSS_MB", raising=False)
+    daemon = daemon_module.RunnerDaemon(paths=_daemon_paths(tmp_path))
+    assert daemon._max_rss_mb == daemon_module.DEFAULT_MAX_RSS_MB
+    exits: list[int] = []
+    monkeypatch.setattr(os_module, "_exit", lambda code: exits.append(code))
+
+    monkeypatch.setattr(daemon_module, "_rss_mb", lambda: 100.0)
+    daemon.tick()  # well below the limit
+    monkeypatch.setattr(daemon_module, "_rss_mb", lambda: None)
+    daemon.tick()  # no /proc (macOS) -> watchdog disabled
+    assert exits == []
+
+
+def test_memory_watchdog_disabled_by_non_positive_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os as os_module
+
+    from wayfinder_paths.runner import daemon as daemon_module
+
+    monkeypatch.setenv("WAYFINDER_RUNNERD_MAX_RSS_MB", "0")
+    daemon = daemon_module.RunnerDaemon(paths=_daemon_paths(tmp_path))
+    exits: list[int] = []
+    monkeypatch.setattr(daemon_module, "_rss_mb", lambda: 4096.0)
+    monkeypatch.setattr(os_module, "_exit", lambda code: exits.append(code))
+
+    daemon.tick()
+    assert exits == []
