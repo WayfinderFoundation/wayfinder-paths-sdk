@@ -368,6 +368,9 @@ async def core_jobs(
       - `starter_strategies` lists the fixed, mixed crypto/equity paper
         starters. `create_starter` with `starter_id` materializes one as a
         normal jobs_v1 job; its own forward inception begins at selection.
+        It also spawns a detached 120-day `fetch_dataset` op — do not re-run
+        `fetch_dataset` right after creating; poll `op_status` if a backtest
+        reports the fetch still in progress.
       - `create` with `agent_mode="monitor"` or `"intervene"` for supervised jobs.
       - `create` with `agent_mode="auto"` and `auto_limits` for agent-only auto jobs.
       - `set_script_mode` with `script_mode="live"` / `"paper"` to flip the
