@@ -22,6 +22,8 @@ stderr. Failures propagate as a traceback on stderr with a non-zero exit.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from typing import Any
 
@@ -153,7 +155,38 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
     raise ValueError(f"unknown op: {op}")
 
 
+def _lower_priority() -> None:
+    """Deprioritize this heavy op against the long-lived server + agent it
+    shares the box with, on all three contended resources: lowest CPU priority
+    (yields the core the moment the interactive path needs it), first OOM
+    victim (a memory spike kills this child, not the server), and 'idle' I/O
+    class (disk reads yield to interactive reads). All three are unprivileged
+    and best-effort — a platform missing any of them just skips that one.
+    """
+    try:
+        os.nice(19)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        with open("/proc/self/oom_score_adj", "w") as f:
+            f.write("1000")
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        # 'idle' I/O class via ionice(1). Only bites under an ioprio-aware I/O
+        # scheduler (CFQ/BFQ); a no-op elsewhere. capture_output keeps the
+        # result-only stdout contract intact.
+        subprocess.run(
+            ["ionice", "-c", "3", "-p", str(os.getpid())],
+            check=False,
+            capture_output=True,
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main() -> None:
+    _lower_priority()
     request = json.load(sys.stdin)
     result = _run(request["op"], dict(request.get("kwargs") or {}))
     json.dump(result, sys.stdout, default=str)
