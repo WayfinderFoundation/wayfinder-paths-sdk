@@ -23,9 +23,9 @@ from wayfinder_paths.jobs.strategies._starter_utils import (
     RANKING_STOP_DEFAULTS,
 )
 
-STARTER_CATALOG_VERSION = "1.5.0"
+STARTER_CATALOG_VERSION = "1.6.0"
 STARTER_STRATEGY_INCEPTION_AT = "2026-08-18T00:00:00+00:00"
-STARTER_EVIDENCE_REVISION = "1.5.0"
+STARTER_EVIDENCE_REVISION = "1.6.0"
 STARTER_LEVERAGE_DEFAULT = 1
 STARTER_LEVERAGE_MINIMUM = 1
 STARTER_LEVERAGE_MAXIMUM = 5
@@ -143,15 +143,21 @@ class StarterDefinition:
                 "stop_cooldown_seconds"
             ]
         if self.family == "maker_mean_reversion":
-            controls["per_position_stop"]["take_profit"] = (
-                (
-                    f"sell {params['take_profit_one_fraction'] * 100:g}% at "
-                    f"{params['take_profit_one_atr']:g}x entry ATR, then the "
-                    f"remainder at {params['take_profit_two_atr']:g}x"
+            if params.get("exit_mode") in {"full", "staged"}:
+                controls["per_position_stop"]["take_profit"] = (
+                    (
+                        f"sell {params['take_profit_one_fraction'] * 100:g}% at "
+                        f"{params['take_profit_one_atr']:g}x entry ATR, then the "
+                        f"remainder at {params['take_profit_two_atr']:g}x"
+                    )
+                    if params["exit_mode"] == "staged"
+                    else f"full sell at {params['take_profit_atr']:g}x entry ATR"
                 )
-                if params["exit_mode"] == "staged"
-                else f"full sell at {params['take_profit_atr']:g}x entry ATR"
-            )
+            else:
+                controls["per_position_stop"]["take_profit"] = (
+                    f"taker exit above RSI {params['exit_rsi']:g} or after "
+                    f"{params['max_hold_bars']} completed bars"
+                )
         if self.family == "relative_value_pair":
             controls["pair_group_stop"] = {
                 "monitor_interval_seconds": params[
@@ -468,6 +474,132 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         },
         cautions=(
             "The sparse raw trigger did not independently confirm in the reserved tail; forward evidence is especially important.",
+        ),
+    ),
+    StarterDefinition(
+        id="balanced-passive-capitulation-1h",
+        name="Balanced Passive Capitulation · 1h",
+        family="maker_mean_reversion",
+        summary=(
+            "Rests post-only bids on volume-confirmed oversold pullbacks across "
+            "a balanced HYPE and tokenized-equity basket."
+        ),
+        timeframe="1h",
+        module="wayfinder_paths.jobs.strategies.mixed_volume_capitulation",
+        symbols=("HYPE", "xyz:COIN", "xyz:TSLA"),
+        crypto_assets=("HYPE",),
+        tokenized_equities=("xyz:COIN", "xyz:TSLA"),
+        rules=(
+            "Enter only when RSI(7) is below 20, close remains above SMA(200), and hourly volume exceeds its trailing 24-hour median.",
+            "Rest an ALO bid 0.05 ATR(24) below the completed close for one hour; require 1 bp candle trade-through before counting a maker fill.",
+            "Allocate 50% to HYPE and 25% to each equity perp; exit above RSI 50 or after 72 hours, with a fill-relative catastrophe stop and 24-hour stop cooldown.",
+        ),
+        params={
+            "rsi_period": 7,
+            "entry_rsi": 20.0,
+            "exit_rsi": 50.0,
+            "trend_sma_period": 200,
+            "volume_median_bars": 24,
+            "volume_multiple": 1.0,
+            "max_hold_bars": 72,
+            "weight_per_leg": 0.25,
+            "symbol_weights": {
+                "HYPE": 0.50,
+                "xyz:COIN": 0.25,
+                "xyz:TSLA": 0.25,
+            },
+            "entry_order_type": "maker",
+            "entry_offset_atr": 0.05,
+            "entry_ttl_bars": 1,
+            "maker_fee_bps": 1.5,
+            "maker_trade_through_bps": 1.0,
+        },
+        research_evidence={
+            "source": (
+                "Hydromancer Reservoir 1-second Hyperliquid HYPE and HIP-3 "
+                "COIN/TSLA candles"
+            ),
+            "window_start": "2025-11-25T17:00:00+00:00",
+            "window_end": "2026-08-18T23:00:00+00:00",
+            "calendar_days": 266.25,
+            "fill_model": (
+                "decision on completed 1h close; post-only order first eligible "
+                "on the next bar; require 1bp trade-through beyond the limit"
+            ),
+            "costs": {
+                "maker_fee_bps_per_entry": 1.5,
+                "taker_fee_bps_per_exit": 4.5,
+                "taker_slippage_bps_per_exit": 3.5,
+            },
+            "funding_included": False,
+            "funding": "not included; carry remains a live risk",
+            "validation": (
+                "development through 2026-01-19; four fixed chronological "
+                "validation folds through 2026-06-21; one untouched reserved "
+                "tail through 2026-08-18"
+            ),
+            "strategy_family": "passive diversified mean reversion",
+            "return_after_costs_and_funding": 0.1995,
+            "funding_return_contribution": 0.0,
+            "sharpe": 3.67,
+            "max_drawdown": -0.0149,
+            "chronological_fold_returns": [0.0962, 0.0134, 0.0231, 0.0290],
+            "walk_forward": {
+                "oos_positive_folds": 4,
+                "fold_count": 4,
+                "oos_return_mean": 0.0404,
+                "oos_sharpe_mean": 4.13,
+                "newest_fold_return": 0.0290,
+                "newest_fold_sharpe": 3.74,
+            },
+            "allocation_robustness": {
+                "40_30_30": {
+                    "return_after_fees_and_slippage": 0.1554,
+                    "sharpe": 3.79,
+                    "positive_validation_folds": 4,
+                },
+                "60_20_20": {
+                    "return_after_fees_and_slippage": 0.2074,
+                    "sharpe": 3.96,
+                    "positive_validation_folds": 4,
+                },
+            },
+            "reserved_tail": {
+                "window_start": "2026-06-21T16:00:00+00:00",
+                "window_end": "2026-08-18T23:00:00+00:00",
+                "return_after_fees_and_slippage": 0.0155,
+                "sharpe": 2.54,
+                "max_drawdown": -0.0060,
+                "trade_count": 16,
+                "trace_valid": True,
+            },
+            "recent_120_day_replay": {
+                "window_start": "2026-04-21T00:00:00+00:00",
+                "return_after_fees_and_slippage": 0.0664,
+                "sharpe": 3.41,
+                "max_drawdown": -0.0124,
+                "trade_count": 38,
+            },
+            "jobs_v1_engine": {
+                "return_after_fees_and_slippage": 0.1995,
+                "sharpe": 3.666,
+                "max_drawdown": -0.0149,
+                "trade_count": 78,
+                "total_fees_usd": 77.31,
+                "maker_entry_fills": 39,
+                "taker_exit_fills": 39,
+                "expired_entry_orders": 4,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
+                "funding_included": False,
+                "trace_valid": True,
+            },
+        },
+        cautions=(
+            "Funding is not included in the replay and can reduce live returns.",
+            "Candle trade-through is conservative about touch fills but cannot reproduce exact queue position or partial fills.",
+            "Live ALO routing is intentionally disabled until durable venue fill/cancel reconciliation is available.",
         ),
     ),
     StarterDefinition(

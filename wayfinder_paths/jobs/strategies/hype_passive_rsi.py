@@ -12,7 +12,12 @@ from wayfinder_paths.jobs.execution.primitives import (
     mark_to_market_equity,
 )
 from wayfinder_paths.jobs.indicators import atr, wilder_rsi
-from wayfinder_paths.jobs.strategies._starter_utils import current_rows, merge_params
+from wayfinder_paths.jobs.strategies._starter_utils import (
+    MEAN_REVERSION_STOP_DEFAULTS,
+    current_rows,
+    merge_params,
+    protection_cooldown_active,
+)
 
 
 class HypePassiveRsiStrategy:
@@ -37,6 +42,7 @@ class HypePassiveRsiStrategy:
         "take_profit_one_fraction": 0.5,
         "move_stop_to_break_even": False,
         "max_hold_bars": 4,
+        **MEAN_REVERSION_STOP_DEFAULTS,
         "stop_atr_period": 14,
         "stop_atr_multiple": 3.0,
         "stop_min_pct": 0.001,
@@ -103,6 +109,8 @@ class HypePassiveRsiStrategy:
             return self._take_profit_orders(position, entry_atr)
 
         if any(not order.intent.reduce_only for order in resting):
+            return []
+        if protection_cooldown_active(ctx, self.symbol):
             return []
         if rsi > float(self.params["entry_rsi"]):
             ctx.strategy_state.pop("maker_entry", None)

@@ -53,6 +53,23 @@ STARTER_LEVERAGE_RESULTS: dict[str, tuple[dict[str, Any], ...]] = {
         _result(4, 0.5720, 3.1405, -0.1078, 104, 591.12, MEAN_REVERSION_HALT),
         _result(5, 0.7519, 3.1396, -0.1338, 104, 782.27, MEAN_REVERSION_HALT),
     ),
+    "balanced-passive-capitulation-1h": (
+        _result(
+            1, 0.1995, 3.666, -0.0149, 78, 77.31, MAKER_MEAN_REVERSION_HALT
+        ),
+        _result(
+            2, 0.4326, 3.673, -0.0297, 78, 171.22, MAKER_MEAN_REVERSION_HALT
+        ),
+        _result(
+            3, 0.7039, 3.680, -0.0445, 78, 284.54, MAKER_MEAN_REVERSION_HALT
+        ),
+        _result(
+            4, 1.0187, 3.686, -0.0593, 78, 420.41, MAKER_MEAN_REVERSION_HALT
+        ),
+        _result(
+            5, 1.3828, 3.692, -0.0740, 78, 582.43, MAKER_MEAN_REVERSION_HALT
+        ),
+    ),
     "mixed-momentum-rank-1h": (
         _result(1, 0.2310, 1.5585, -0.1096, 261, 325.04, OTHER_STARTER_HALT),
         _result(2, 0.4986, 1.6095, -0.2208, 262, 724.13, OTHER_STARTER_HALT),
