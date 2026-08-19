@@ -20,6 +20,10 @@ from wayfinder_paths.core.config import (
     write_wallet_mnemonic,
 )
 from wayfinder_paths.core.constants.chains import SVM_CHAIN_IDS
+from wayfinder_paths.core.utils.signing_errors import (
+    SESSION_EXPIRED_MESSAGE,
+    SessionExpiredError,
+)
 from wayfinder_paths.policies.session import build_session_policy, build_strategy_policy
 
 _DEFAULT_EVM_ACCOUNT_PATH_TEMPLATE = "m/44'/60'/0'/0/{index}"
@@ -235,22 +239,6 @@ def _prepare_tx_for_privy(transaction: dict) -> dict:
     if isinstance(tx.get("to"), bytes) and not tx["to"]:
         del tx["to"]
     return tx
-
-
-class SessionExpiredError(RuntimeError):
-    """Raised when the backend rejects a signature because the wallet's signing
-    session has lapsed. Carries an agent-facing message telling the user how to
-    renew, so the agent surfaces that instead of a raw HTTP error."""
-
-
-# The backend 404s a signature request once the session/policy TTL elapses. The
-# agent reads this verbatim, so it's phrased as an instruction to the agent.
-SESSION_EXPIRED_MESSAGE = (
-    "Your wallet signing session has expired, so the transaction was not "
-    "submitted. Do not retry automatically. Send the user a message with this "
-    "link — https://wayfinder.ai/app/shells — asking them to open it, sign in, "
-    "and renew their trading session, then try again once they confirm it's active."
-)
 
 
 def get_remote_sign_callback(wallet_address: str):
