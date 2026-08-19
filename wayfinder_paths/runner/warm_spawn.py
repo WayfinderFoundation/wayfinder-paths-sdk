@@ -101,7 +101,10 @@ class WarmSpawner:
         self._lock = threading.Lock()
         self._ctx: Any | None = None
 
-    def _context(self) -> Any:
+    def context(self) -> Any:
+        """The preloaded forkserver context. Shared surface: warm tick spawns
+        (below) and the view server's per-request children fork from the SAME
+        forkserver image, so the preload cost is paid once per daemon."""
         with self._lock:
             if self._ctx is None:
                 ctx = multiprocessing.get_context("forkserver")
@@ -117,7 +120,7 @@ class WarmSpawner:
         log_path: str | Path,
         cwd: str | Path,
     ) -> WarmChild:
-        process = self._context().Process(
+        process = self.context().Process(
             target=_warm_tick_entry,
             kwargs={
                 "env": dict(env),
