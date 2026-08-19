@@ -12,6 +12,7 @@ from wayfinder_paths.core.config import (
     get_opencode_instance_id,
     is_opencode_instance,
 )
+from wayfinder_paths.jobs.background import op_status_summary
 from wayfinder_paths.jobs.backtest_artifacts import summarize_backtest_artifacts
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.features import summarize_features
@@ -107,6 +108,28 @@ def _engine_mode(store: JobStore, job_id: str) -> str | None:
     return None
 
 
+def _dataset_fetch_state(store: JobStore, job_id: str) -> dict[str, Any] | None:
+    """Dataset-provisioning state for the UI: starters self-provision their
+    bars via a detached fetch_dataset op (~minutes), during which charts are
+    empty and backtests gate — without this key the FE can't tell "data on
+    the way" from an ordinary job. Reports the op status file when one exists
+    (running/done/failed); `needed` marks a starter (evidence file present)
+    whose bars never arrived and has no op recorded. None — the common case,
+    bars present and no op — omits the key so existing job snapshots stay
+    byte-identical."""
+    job_dir = store.job_dir(job_id)
+    summary = op_status_summary(job_dir, "fetch_dataset")
+    if summary is not None:
+        return summary
+    backtest_dir = job_dir / "results" / "backtest"
+    if (
+        not (backtest_dir / "input_bars.json").exists()
+        and (backtest_dir / "starter_evidence.json").exists()
+    ):
+        return {"status": "needed"}
+    return None
+
+
 def _runtime_reconciliation(job: Any, store: JobStore) -> dict[str, Any]:
     """Overlay the live runner/engine truth onto the scorecard so the UI shows
     what's ACTUALLY running, not the declared job.yaml. The driver executes the
@@ -175,6 +198,9 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
     runtime = _runtime_reconciliation(job, store)
     if runtime:
         scorecard = {**scorecard, **runtime}
+    dataset_fetch = _dataset_fetch_state(store, job_id)
+    if dataset_fetch is not None:
+        scorecard = {**scorecard, "dataset_fetch": dataset_fetch}
     runner_links = store.read_json(job_id, "runner_links.json", default={}) or {}
     latest_monitor = _report_with_session(store, job_id, "monitor")
     latest_intervene = _report_with_session(store, job_id, "intervene", "improve")

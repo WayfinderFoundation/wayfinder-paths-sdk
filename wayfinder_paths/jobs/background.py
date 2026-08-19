@@ -46,6 +46,37 @@ def op_running(job_dir: Path, op: str) -> bool:
     )
 
 
+def op_status_summary(job_dir: Path, op: str) -> dict[str, Any] | None:
+    """Compact snapshot view of a detached op: status collapsed to
+    running/done/failed plus timestamps. None when no run is recorded.
+
+    Read-only (safe from the fork-per-request view server). A `running`
+    status whose pid is dead is resolved the way op_status does — a
+    parseable result file means the detached child finished anyway,
+    otherwise the run is lost and reported failed."""
+    ops_dir = job_dir / "state" / "background_ops"
+    try:
+        status = json.loads((ops_dir / f"{op}.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(status, dict):
+        return None
+    state = status.get("state")
+    if state == "running" and not _pid_alive(status.get("pid")):
+        try:
+            json.loads((ops_dir / f"{op}.result.json").read_text(encoding="utf-8"))
+            state = "done"
+        except (OSError, ValueError):
+            state = "failed"
+    if state not in ("running", "done"):
+        state = "failed"
+    summary: dict[str, Any] = {"status": state}
+    for key in ("started_at", "finished_at"):
+        if status.get(key):
+            summary[key] = status[key]
+    return summary
+
+
 def spawn_detached_op(
     store: JobStore, job_id: str, op: str, kwargs: dict[str, Any]
 ) -> dict[str, Any]:

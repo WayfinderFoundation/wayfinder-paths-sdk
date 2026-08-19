@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from wayfinder_paths.jobs import sync as sync_mod
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.features import apply_precompute
 from wayfinder_paths.jobs.execution.job import _resolve_dataset
@@ -21,6 +22,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     PositionRecord,
     StateSnapshot,
 )
+from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.starters import (
     coerce_starter_leverage,
     create_starter_job,
@@ -49,6 +51,7 @@ from wayfinder_paths.jobs.strategies.mixed_volume_capitulation import (
 from wayfinder_paths.jobs.strategies.pair_relative_strength import (
     PairRelativeStrengthStrategy,
 )
+from wayfinder_paths.jobs.sync import snapshot_job
 
 
 def _context(
@@ -642,6 +645,138 @@ def test_missing_bars_error_reports_in_progress_dataset_fetch(tmp_path) -> None:
     with pytest.raises(FileNotFoundError) as stale:
         _resolve_dataset(root, spec, {})
     assert "dataset fetch is in progress" not in str(stale.value)
+
+
+class _DownRunnerBridge:
+    """Runner unreachable — snapshot degrades to the declared scorecard."""
+
+    def __init__(self, *, repo_root=None):  # noqa: ANN001
+        pass
+
+    def job_states(self) -> dict[str, Any]:
+        return {}
+
+
+def _snapshot_scorecard(store: JobStore, job_id: str, monkeypatch) -> dict[str, Any]:
+    monkeypatch.setattr(sync_mod, "RunnerBridge", _DownRunnerBridge)
+    return snapshot_job(job_id, store=store)["scorecard"]
+
+
+def _write_fetch_status(store: JobStore, job_id: str, status: dict[str, Any]) -> Path:
+    ops_dir = store.job_dir(job_id) / "state" / "background_ops"
+    ops_dir.mkdir(parents=True, exist_ok=True)
+    (ops_dir / "fetch_dataset.json").write_text(json.dumps(status), encoding="utf-8")
+    return ops_dir
+
+
+def test_snapshot_reports_dataset_needed_before_fetch_op_exists(
+    tmp_path, monkeypatch
+) -> None:
+    # Spawn is stubbed by the autouse fixture, so no op status file exists —
+    # exactly the window between create and the child writing its status.
+    store = JobStore(repo_root=tmp_path)
+    create_starter_job("mixed-rsi-snapback-1h", store=store, compile_job=False)
+    scorecard = _snapshot_scorecard(store, "mixed-rsi-snapback-1h", monkeypatch)
+    assert scorecard["dataset_fetch"] == {"status": "needed"}
+
+
+def test_snapshot_reports_running_dataset_fetch(tmp_path, monkeypatch) -> None:
+    store = JobStore(repo_root=tmp_path)
+    create_starter_job("mixed-rsi-snapback-1h", store=store, compile_job=False)
+    _write_fetch_status(
+        store,
+        "mixed-rsi-snapback-1h",
+        {
+            "op": "fetch_dataset",
+            "state": "running",
+            "pid": os.getpid(),
+            "started_at": "2026-08-19T00:00:00+00:00",
+        },
+    )
+    scorecard = _snapshot_scorecard(store, "mixed-rsi-snapback-1h", monkeypatch)
+    assert scorecard["dataset_fetch"] == {
+        "status": "running",
+        "started_at": "2026-08-19T00:00:00+00:00",
+    }
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [("done", "done"), ("failed", "failed"), ("killed", "failed"), ("lost", "failed")],
+)
+def test_snapshot_reports_finished_dataset_fetch(
+    tmp_path, monkeypatch, state: str, expected: str
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    create_starter_job("mixed-rsi-snapback-1h", store=store, compile_job=False)
+    _write_fetch_status(
+        store,
+        "mixed-rsi-snapback-1h",
+        {
+            "op": "fetch_dataset",
+            "state": state,
+            "pid": 4242,
+            "started_at": "2026-08-19T00:00:00+00:00",
+            "finished_at": "2026-08-19T00:02:30+00:00",
+        },
+    )
+    scorecard = _snapshot_scorecard(store, "mixed-rsi-snapback-1h", monkeypatch)
+    assert scorecard["dataset_fetch"] == {
+        "status": expected,
+        "started_at": "2026-08-19T00:00:00+00:00",
+        "finished_at": "2026-08-19T00:02:30+00:00",
+    }
+
+
+def test_snapshot_resolves_stale_running_fetch_via_result_file(
+    tmp_path, monkeypatch
+) -> None:
+    # A `running` status from a dead child means the reaper is gone: a
+    # parseable result file proves the detached fetch finished; without one
+    # the run is lost and reported failed.
+    store = JobStore(repo_root=tmp_path)
+    create_starter_job("mixed-rsi-snapback-1h", store=store, compile_job=False)
+    ops_dir = _write_fetch_status(
+        store,
+        "mixed-rsi-snapback-1h",
+        {"op": "fetch_dataset", "state": "running", "pid": 2**30},
+    )
+    scorecard = _snapshot_scorecard(store, "mixed-rsi-snapback-1h", monkeypatch)
+    assert scorecard["dataset_fetch"] == {"status": "failed"}
+
+    (ops_dir / "fetch_dataset.result.json").write_text("{}", encoding="utf-8")
+    scorecard = _snapshot_scorecard(store, "mixed-rsi-snapback-1h", monkeypatch)
+    assert scorecard["dataset_fetch"] == {"status": "done"}
+
+
+def test_snapshot_omits_dataset_fetch_when_bars_exist_and_no_op(
+    tmp_path, monkeypatch
+) -> None:
+    # The common case — dataset present, nothing in flight — must not grow a
+    # key: existing snapshots stay byte-identical.
+    store = JobStore(repo_root=tmp_path)
+    create_starter_job("mixed-rsi-snapback-1h", store=store, compile_job=False)
+    bars_path = (
+        store.job_dir("mixed-rsi-snapback-1h")
+        / "results"
+        / "backtest"
+        / "input_bars.json"
+    )
+    bars_path.write_text("[]", encoding="utf-8")
+    scorecard = _snapshot_scorecard(store, "mixed-rsi-snapback-1h", monkeypatch)
+    assert "dataset_fetch" not in scorecard
+
+
+def test_snapshot_omits_dataset_fetch_for_ordinary_jobs(tmp_path, monkeypatch) -> None:
+    # A non-starter job without bars has no evidence file — "needed" is a
+    # starter-only signal, ordinary jobs keep their snapshot unchanged.
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "carry", script="strategy.py", interval_seconds=3600, agent_mode="monitor"
+    )
+    store.create_job(job)
+    scorecard = _snapshot_scorecard(store, job.id, monkeypatch)
+    assert "dataset_fetch" not in scorecard
 
 
 @pytest.mark.parametrize(
