@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 
 import numpy as np
 import pandas as pd
@@ -408,3 +409,46 @@ def test_rank_check_op_routes(monkeypatch) -> None:
         "stub": "rank",
         "column": "mom",
     }
+
+
+def test_op_runner_lowers_its_priority() -> None:
+    """Every detached heavy op self-deprioritizes at entry so the interactive
+    server + agent on the same box keep their CPU and survive a memory spike.
+    Forked so the change lands in a throwaway child, not the test runner."""
+    import shutil
+    import subprocess
+
+    from wayfinder_paths.jobs.execution import op_runner
+
+    r, w = os.pipe()
+    pid = os.fork()
+    if pid == 0:  # child
+        os.close(r)
+        try:
+            op_runner._lower_priority()
+            nice = os.getpriority(os.PRIO_PROCESS, 0)
+            try:
+                with open("/proc/self/oom_score_adj") as f:
+                    oom = f.read().strip()
+            except OSError:
+                oom = "na"
+            io = "na"
+            if shutil.which("ionice"):
+                io = subprocess.run(
+                    ["ionice", "-p", str(os.getpid())],
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+            os.write(w, f"{nice}|{oom}|{io}".encode())
+        finally:
+            os._exit(0)
+    os.close(w)
+    out = os.read(r, 128).decode()
+    os.close(r)
+    os.waitpid(pid, 0)
+    nice_s, oom_s, io_s = out.split("|")
+    assert int(nice_s) == 19
+    if oom_s != "na":  # /proc present (Linux) — OOM-first-victim marker set
+        assert oom_s == "1000"
+    if io_s != "na":  # ionice present — moved to the idle I/O class
+        assert "idle" in io_s
