@@ -20,6 +20,10 @@ from wayfinder_paths.core.constants.chains import (
     MIN_PRIORITY_FEE_BY_CHAIN_ID,
     PRE_EIP_1559_CHAIN_IDS,
 )
+from wayfinder_paths.core.utils.signing_errors import (
+    SESSION_EXPIRED_MESSAGE,
+    SessionExpiredError,
+)
 from wayfinder_paths.core.utils.web3 import (
     _is_gorlami_fork_rpc,
     get_transaction_chain_id,
@@ -312,6 +316,11 @@ async def send_sponsored_transaction(wallet_address: str, transaction: dict) -> 
             wallet_address, _prepare_tx_for_privy(tx)
         )
     except httpx.HTTPStatusError as exc:
+        # 404 is the backend's expired/paused-session signal. The sponsored
+        # path never touches the sign callback, so translate it here too. Lazy
+        # import for the same cycle documented above.
+        if exc.response.status_code == 404:
+            raise SessionExpiredError(SESSION_EXPIRED_MESSAGE) from exc
         # A 4xx means the broadcaster refused the submission (sponsorship
         # disabled, credits depleted, chain not covered, or the daily quota is
         # spent — 429) and nothing reached the chain, so it's safe to retry

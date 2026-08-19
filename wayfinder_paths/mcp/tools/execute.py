@@ -32,6 +32,7 @@ from wayfinder_paths.core.utils.tokens import (
 from wayfinder_paths.core.utils.transaction import send_transaction
 from wayfinder_paths.core.utils.units import from_erc20_raw
 from wayfinder_paths.core.utils.wallets import (
+    SessionExpiredError,
     find_wallet_leg_for_chain,
     get_wallet_signing_callback_for_chain,
     is_solana_enabled,
@@ -145,6 +146,10 @@ async def _broadcast(
         if explorer_link:
             result["explorer_url"] = explorer_link
         return True, result
+    except SessionExpiredError:
+        # Let the expired-session signal bubble to @catch_errors instead of
+        # collapsing into a generic failed-broadcast tuple.
+        raise
     except Exception as e:
         return False, {"error": sanitize_for_json(str(e)), "chain_id": chain_id}
 
@@ -180,6 +185,10 @@ async def _broadcast_svm(
             result["fee_lamports"] = int(fee_lamports)
             result["fee_sol"] = int(fee_lamports) / 10**SOL_DECIMALS
         return True, result
+    except SessionExpiredError:
+        # Let the expired-session signal bubble to @catch_errors instead of
+        # collapsing into a generic failed-broadcast tuple.
+        raise
     except Exception as e:
         return False, {"error": sanitize_for_json(str(e)), "chain_id": chain_id}
 
