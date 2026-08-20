@@ -159,4 +159,8 @@ def test_worker_stable_rules_carry_research_mandate(tmp_path) -> None:
     source = inspect.getsource(worker)
     assert "verdict_matured" in source
     assert "research_staleness" in source
-    assert "NOT a complete wake" in source
+    # Progress constitution: a stale wake ends in an experiment, a probation
+    # leg, or a FILED exhaustion claim — the prose escape hatch is dead.
+    assert "PROGRESS CONSTITUTION" in source
+    assert "NOT a legal outcome" in source
+    assert "why research is not warranted" not in source

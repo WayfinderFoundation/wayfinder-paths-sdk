@@ -250,6 +250,12 @@ def _validate_improver_payload(improver: dict[str, Any]) -> None:
         raise ValueError("probation.max_active_legs must be >= 1")
     if not 0 < probe.probation_max_size_fraction <= 1:
         raise ValueError("probation.max_size_fraction must be in (0, 1]")
+    if probe.paper_max_active_legs < 1:
+        raise ValueError("probation.paper_max_active_legs must be >= 1")
+    if probe.paper_regression_budget_pct < 0 or probe.paper_regression_budget_frac < 0:
+        raise ValueError("paper regression budget terms must be >= 0")
+    if probe.paper_min_backtest_trades < 1 or probe.paper_floor_min_trades < 1:
+        raise ValueError("paper trade floors must be >= 1")
     weights = probe.island_weights
     if weights and abs(sum(weights.values()) - 1.0) > 0.01:
         raise ValueError(f"island weights must sum to 1.0, got {sum(weights.values())}")

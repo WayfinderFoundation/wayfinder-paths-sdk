@@ -40,7 +40,22 @@ DEFAULT_IMPROVER: dict[str, Any] = {
     # N consecutive neutral/hurt verdicts on same-family refinements => jump
     # basins (new family / universe-scan / archived branch / sizing axis).
     "stuck_rule": {"same_family_non_wins": 2},
-    "probation": {"max_active_legs": 2, "max_size_fraction": 0.5},
+    "probation": {
+        "max_active_legs": 2,
+        "max_size_fraction": 0.5,
+        # Paper entry tier: a candidate "not clearly worse" than baseline
+        # (net_return within max(pct, frac*|baseline|) on the same window,
+        # with a sane backtest trade count) may open a PAPER leg without
+        # beating baseline and without owner approval — probation is the
+        # containment; graduation to live keeps the full strict gate.
+        "paper_max_active_legs": 3,
+        "paper_regression_budget_pct": 0.02,
+        "paper_regression_budget_frac": 0.25,
+        "paper_min_backtest_trades": 10,
+        # Flat-zero retirement floor: past this many closed forward trades,
+        # a paper leg with negative net PnL is retired mechanically.
+        "paper_floor_min_trades": 5,
+    },
     # Evidence tiers rendered into the research-priors prompt; the gate
     # machinery keeps its own enforcement — these are the search policy's
     # triage numbers, one source of truth for the prose.
@@ -125,6 +140,26 @@ class ImproverSpec:
     @property
     def probation_max_size_fraction(self) -> float:
         return float(self.policy["probation"]["max_size_fraction"])
+
+    @property
+    def paper_max_active_legs(self) -> int:
+        return int(self.policy["probation"]["paper_max_active_legs"])
+
+    @property
+    def paper_regression_budget_pct(self) -> float:
+        return float(self.policy["probation"]["paper_regression_budget_pct"])
+
+    @property
+    def paper_regression_budget_frac(self) -> float:
+        return float(self.policy["probation"]["paper_regression_budget_frac"])
+
+    @property
+    def paper_min_backtest_trades(self) -> int:
+        return int(self.policy["probation"]["paper_min_backtest_trades"])
+
+    @property
+    def paper_floor_min_trades(self) -> int:
+        return int(self.policy["probation"]["paper_floor_min_trades"])
 
     @property
     def island_weights(self) -> dict[str, float]:

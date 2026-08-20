@@ -207,6 +207,14 @@ def _research_staleness(root: Path, proposals: list[dict[str, Any]]) -> dict[str
     }
 
 
+def research_staleness_report(store: JobStore, job_id: str) -> dict[str, Any]:
+    """Standalone staleness view for mechanical consumers (watchdog impasse
+    check) — same computation the wake context carries, without the cost of
+    the full evolution report."""
+    root = store.job_dir(job_id)
+    return _research_staleness(root, _load_proposals(root))
+
+
 def _opportunity_recall(store: JobStore, job_id: str) -> dict[str, Any] | None:
     """Selection-regret telemetry, CONSTRAINED: a raw net_log_growth max
     flags high-growth candidates the constitution would never promote

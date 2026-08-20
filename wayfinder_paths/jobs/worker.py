@@ -826,15 +826,26 @@ def _build_worker_prompt_sections(
         "down: verify backend health ONLY via a resident MCP tool result, "
         "and void any agenda/memory claim of 'backend DOWN' that is not "
         "backed by an MCP-tool failure observed THIS wake.\n"
-        "- Research staleness (`evolution.research_staleness`) is visible "
-        "state. When the job is healthy, no verdict is pending, and "
-        "`research_staleness.stale` is true (no experiment in "
+        "- PROGRESS CONSTITUTION: `evolution.research_staleness` is "
+        "visible state. When the job is healthy, no verdict is pending, "
+        "and `research_staleness.stale` is true (no experiment in "
         f">{improver_spec.staleness_experiment_days:g} days, or "
         f">{improver_spec.staleness_wakes} wakes since the last "
-        "proposal), a complete wake MUST advance one research lane "
-        "(signal_scan / experiment grid / holdout_check / analogs) or state "
-        "in the report why research is not warranted. 'Healthy, no change' "
-        "alone is NOT a complete wake when research is stale.\n"
+        "proposal), the wake MUST end in exactly ONE of: (a) a staged AND "
+        "executed experiment, (b) a new probation leg — the paper entry "
+        "tier accepts any candidate not clearly worse than baseline, no "
+        "owner approval needed (wayfinder_paths.jobs.probation."
+        "open_paper_probation_leg / `wayfinder job probation-open-paper`) "
+        "— or (c) an exhaustion claim FILED for owner adjudication "
+        "(`wayfinder job exhaustion file ...`). Stating that research is "
+        "not warranted is NOT a legal outcome of a stale wake — prose "
+        "never satisfies the constitution.\n"
+        "- Self-rejections are development evidence, never verdicts: a "
+        "proposal YOU rejected cannot mark a lane settled in the agenda/"
+        "dead map, and reopening bars ('requires named new evidence') may "
+        "only be set by owner-accepted exhaustion claims or executed-"
+        "experiment results. Any lane marked settled on agent-self-"
+        "rejected provenance is OPEN.\n"
         "- Routine research wakes carry a `search_assignment` (dynamic "
         "context): one island among exploit / adjacent / divergent / "
         "diversification / falsifier / historian, rotated deterministically "
@@ -1107,6 +1118,27 @@ def _build_worker_prompt_sections(
             "it as a strategy failure, but DO NOT report the gate as green. "
             "For any other reason, fixing the gate is a priority this wake.\n\n"
         )
+    # Impasse directive: written by the watchdog when a research-stale job's
+    # last K wakes produced zero progress artifacts, cleared only when one
+    # appears. Rendered as prompt text (never only snapshot JSON) with the
+    # escape hatch stripped — the hatch is how three production jobs closed
+    # every stale wake with "stated-not-advanced" prose for weeks.
+    impasse_directive = ""
+    impasse_marker = store.read_json(job_id, "state/research_impasse.json") or {}
+    if impasse_marker.get("alerted_at"):
+        impasse_directive = (
+            "RESEARCH IMPASSE — the watchdog flagged `research_impasse`: "
+            f"the last {impasse_marker.get('stale_wakes')} wakes staged zero "
+            "experiments, probation legs, staged proposals, or exhaustion "
+            "claims while research is stale.\n"
+            "This wake MUST end in exactly one of: (a) a staged+executed "
+            "experiment, (b) a new probation leg (paper entry tier "
+            "qualifies), (c) an exhaustion claim FILED for owner "
+            "adjudication. No other outcome closes an impasse wake.\n"
+            "It must also make a DIVERSITY move — resurrect an archived/"
+            "historical candidate or recombine signals across lanes. "
+            "Another audit of the incumbent does not count.\n\n"
+        )
     # Ideation is a FORCED session, not a prose suggestion: 130 consecutive
     # "nothing new, agenda stands" wakes proved the agent never consults an
     # external tool unless the wake's task IS the expedition. Stamp-gated on
@@ -1195,6 +1227,7 @@ def _build_worker_prompt_sections(
         f"{DYNAMIC_CONTEXT_MARKER}\n"
         f"{gate_alert}"
         f"{restage_priority}"
+        f"{impasse_directive}"
         f"{ideation_directive}"
         "Current snapshot:\n"
         f"{_canonical_json(dynamic_payload, max_chars=12000)}\n\n"

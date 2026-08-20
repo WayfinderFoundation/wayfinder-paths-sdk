@@ -57,9 +57,13 @@ RESTAGE_NAG_TIMEOUT = timedelta(minutes=30)
 # past this many failed attempts the owner is escalated instead.
 RESTAGE_MAX_ATTEMPTS = 5
 # A kind=process owner rejection expects a corrected successor proposal.
-# None within this window → wake the agent once per entry.
+# None within this window → wake the agent once per entry ARM.
 SUCCESSOR_OVERDUE_TIMEOUT = timedelta(hours=12)
 _SUCCESSOR_EXPECTED_PATH = "state/successor_expected.json"
+# A successor the agent itself rejected did NOT deliver the invitation — it
+# re-arms the expectation (window restarts at the self-rejection). Bounded:
+# past this many re-arms the thread is journaled as abandoned for the owner.
+SUCCESSOR_MAX_REARMS = 3
 
 
 def _pid_alive(pid: int) -> bool:
@@ -313,6 +317,20 @@ def _recover_restage(
     return event
 
 
+def _staged_after(proposal: dict[str, Any], entry_ts: str) -> bool:
+    """Whether a proposal was staged after the rejection —
+    candidate_report.generated_at is the propose/restage stamp; updated_at is
+    the fallback for report-less proposals."""
+    return (
+        str(
+            (proposal.get("candidate_report") or {}).get("generated_at")
+            or proposal.get("updated_at")
+            or ""
+        )
+        > entry_ts
+    )
+
+
 def _check_successor_overdue(
     store: JobStore,
     job_id: str,
@@ -322,10 +340,15 @@ def _check_successor_overdue(
     """Wake the agent when a process-rejection's expected successor is late.
 
     A kind=process owner rejection (superseded draft, re-stage mechanics) is
-    an INVITATION, not a veto — the owner expects a corrected successor
-    proposal. If none has been created within the window, journal
-    `successor_overdue` once per entry and fire a trigger wake so the
-    invitation cannot silently rot.
+    an INVITATION, not a veto — the owner expects a corrected successor that
+    PROCEEDS TO AUDIT. "Delivered" means: a successor proposal that is alive
+    (or that the owner adjudicated), a staged experiment run, an opened
+    probation leg, or a filed exhaustion claim. A successor the agent itself
+    rejected delivered nothing — one such self-rejection silently terminated
+    an owner-invited thread in production, because the old check counted ANY
+    staged proposal and notified exactly once. Self-rejections now RE-ARM the
+    expectation (bounded at SUCCESSOR_MAX_REARMS, then the thread is
+    journaled `successor_abandoned` for owner review).
     """
     expected = store.read_json(job_id, _SUCCESSOR_EXPECTED_PATH) or []
     if not isinstance(expected, list):
@@ -333,29 +356,106 @@ def _check_successor_overdue(
     events: list[dict[str, Any]] = []
     changed = False
     for entry in expected:
-        if not isinstance(entry, dict) or entry.get("notified"):
-            continue
-        if _age(now, entry.get("ts")) < SUCCESSOR_OVERDUE_TIMEOUT:
+        if not isinstance(entry, dict) or entry.get("delivered") or entry.get(
+            "abandoned"
+        ):
             continue
         entry_ts = str(entry.get("ts") or "")
         rejected_id = str(entry.get("proposal_id") or "")
-        # A successor is any OTHER proposal staged after the rejection —
-        # candidate_report.generated_at is the propose/restage stamp;
-        # updated_at is the fallback for report-less proposals.
-        successor_exists = any(
-            str(p.get("proposal_id")) != rejected_id
-            and str(
-                (p.get("candidate_report") or {}).get("generated_at")
-                or p.get("updated_at")
-                or ""
-            )
-            > entry_ts
+        successors = [
+            p
             for p in proposals
+            if str(p.get("proposal_id")) != rejected_id
+            and _staged_after(p, entry_ts)
+        ]
+        alive = [p for p in successors if p.get("status") != "rejected"]
+        owner_closed = [
+            p
+            for p in successors
+            if p.get("status") == "rejected"
+            and str((p.get("rejection") or {}).get("by") or "")
+            in {"owner", "user", "human"}
+        ]
+        audit_progress = _research_progress_since(
+            store.job_dir(job_id), entry_ts
         )
+        if alive or owner_closed or audit_progress["advanced"]:
+            entry["delivered"] = True
+            entry["notified"] = True
+            changed = True
+            continue
+        self_rejected = [
+            p
+            for p in successors
+            if p.get("status") == "rejected"
+            and str((p.get("rejection") or {}).get("by") or "") == "agent"
+            and str(p.get("proposal_id")) not in (entry.get("rearmed_for") or [])
+        ]
+        if self_rejected:
+            rearms = int(entry.get("rearms") or 0)
+            if rearms >= SUCCESSOR_MAX_REARMS:
+                entry["abandoned"] = True
+                changed = True
+                store.append_journal(
+                    job_id,
+                    {
+                        "type": "successor_abandoned",
+                        "proposal_id": rejected_id,
+                        "rearms": rearms,
+                        "owner_review_required": (
+                            f"the successor invited by the process rejection of "
+                            f"{rejected_id} was agent-self-rejected "
+                            f"{rearms + 1} times — the agent cannot close this "
+                            "thread itself; owner must adjudicate (accept an "
+                            "exhaustion claim or reject the ask)"
+                        ),
+                    },
+                )
+                events.append(
+                    {
+                        "action": "successor_abandoned",
+                        "proposal_id": rejected_id,
+                        "outcome": "owner_review_required",
+                    }
+                )
+                continue
+            newest = max(
+                self_rejected,
+                key=lambda p: str((p.get("rejection") or {}).get("ts") or ""),
+            )
+            rearm_ts = str(
+                (newest.get("rejection") or {}).get("ts") or now.isoformat()
+            )
+            entry["ts"] = rearm_ts
+            entry["notified"] = False
+            entry["rearms"] = rearms + 1
+            entry.setdefault("rearmed_for", []).extend(
+                str(p.get("proposal_id")) for p in self_rejected
+            )
+            changed = True
+            store.append_journal(
+                job_id,
+                {
+                    "type": "successor_rearmed",
+                    "proposal_id": rejected_id,
+                    "self_rejected_successor": str(newest.get("proposal_id")),
+                    "rearms": rearms + 1,
+                },
+            )
+            events.append(
+                {
+                    "action": "successor_rearmed",
+                    "proposal_id": rejected_id,
+                    "outcome": "expectation_rearmed",
+                }
+            )
+            continue
+        if entry.get("notified"):
+            continue
+        if _age(now, entry.get("ts")) < SUCCESSOR_OVERDUE_TIMEOUT:
+            continue
         entry["notified"] = True
         changed = True
-        if successor_exists:
-            continue
         store.append_journal(
             job_id,
             {
@@ -745,6 +845,199 @@ def _check_disk_usage(
     return None
 
 
+# Research-impasse alerting: all three production research jobs froze the
+# same way — staleness computed correctly and the wake mandate fired every
+# wake, but the mandate's "state why research is not warranted" hatch let the
+# agent close every stale wake with prose ("all sub-lanes settled on merit",
+# verbatim across wakes) while staging nothing. Staleness was never a
+# watchdog trigger, so nothing escalated. This check is the escalation: when
+# a research job is stale AND the last K wakes produced zero progress
+# artifacts (experiments, probation legs, staged proposals, exhaustion
+# claims), journal `research_impasse`, write the marker the worker prompt
+# renders as a HATCH-STRIPPED mandate, and fire a trigger wake. Debounced by
+# a re-alert window (mirrors disk_pressure); the marker clears — and journals
+# `research_impasse_resolved` — only when a progress artifact appears.
+_IMPASSE_PATH = "state/research_impasse.json"
+IMPASSE_WAKES_ENV = "WAYFINDER_IMPASSE_WAKES"
+DEFAULT_IMPASSE_WAKES = 3
+IMPASSE_REALERT_WINDOW = timedelta(hours=24)
+# Journal event types that count as research progress: the three legal
+# outcomes of a stale wake plus a staged proposal (which carries its own
+# propose-time backtest audit; self-rejected stagings are filtered out).
+_PROGRESS_JOURNAL_TYPES = {
+    "probation_leg_opened",
+    "paper_probation_opened",
+    "exhaustion_claim_filed",
+}
+
+
+def _journal_rows(root: Path, *, max_lines: int = 20_000) -> list[dict[str, Any]]:
+    path = root / "journal.jsonl"
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-max_lines:]:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _research_progress_since(
+    root: Path,
+    since_ts: str,
+    *,
+    rows: list[dict[str, Any]] | None = None,
+    proposals: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Progress artifacts after `since_ts`: executed experiments, opened
+    probation legs, filed exhaustion claims and (when `proposals` is given)
+    staged proposals that were not agent-self-rejected. Prose does not count."""
+    signals: set[str] = set()
+    for row in rows if rows is not None else _journal_rows(root):
+        if row.get("type") in _PROGRESS_JOURNAL_TYPES and (
+            str(row.get("ts") or "") > since_ts
+        ):
+            signals.add(str(row["type"]))
+    line = _tail_line(root / "results" / "backtest" / "experiments.jsonl")
+    if line:
+        try:
+            if str(json.loads(line).get("ts") or "") > since_ts:
+                signals.add("experiment_run")
+        except ValueError:
+            pass
+    for proposal in proposals or []:
+        if not _staged_after(proposal, since_ts):
+            continue
+        if (
+            proposal.get("status") == "rejected"
+            and str((proposal.get("rejection") or {}).get("by") or "") == "agent"
+        ):
+            continue  # a self-rejected staging delivered nothing
+        signals.add("staged_proposal")
+    return {"advanced": bool(signals), "signals": sorted(signals)}
+
+
+def _check_research_impasse(
+    store: JobStore,
+    job: Any,
+    proposals: list[dict[str, Any]],
+    now: datetime,
+) -> dict[str, Any] | None:
+    loop = getattr(job, "agent_loop", None)
+    if (
+        loop is None
+        or not getattr(loop, "enabled", False)
+        or str(getattr(loop, "mode", "") or "off") == "off"
+    ):
+        return None
+    root = store.job_dir(job.id)
+    rows = _journal_rows(root)
+    wake_ts = [
+        str(row.get("ts") or "") for row in rows if row.get("type") == "agent_wakeup"
+    ]
+    stale_wakes = int(os.environ.get(IMPASSE_WAKES_ENV) or DEFAULT_IMPASSE_WAKES)
+    marker = store.read_json(job.id, _IMPASSE_PATH) or {}
+    if len(wake_ts) < stale_wakes:
+        return None  # startup — not enough wakes to judge
+    basis_ts = sorted(wake_ts)[-stale_wakes]
+    progress = _research_progress_since(
+        root, basis_ts, rows=rows, proposals=proposals
+    )
+    if progress["advanced"]:
+        if marker.get("alerted_at"):
+            store.write_json(job.id, _IMPASSE_PATH, {})
+            store.append_journal(
+                job.id,
+                {
+                    "type": "research_impasse_resolved",
+                    "signals": progress["signals"],
+                },
+            )
+            return {
+                "action": "research_impasse_resolved",
+                "signals": progress["signals"],
+            }
+        return None
+    from wayfinder_paths.jobs.evolution_ledger import research_staleness_report
+
+    staleness = research_staleness_report(store, job.id)
+    if not staleness.get("stale"):
+        return None  # quiet but within policy thresholds — not an impasse
+    if marker.get("alerted_at") and (
+        _age(now, marker.get("alerted_at")) < IMPASSE_REALERT_WINDOW
+    ):
+        return None  # already alerted for this episode
+    store.write_json(
+        job.id,
+        _IMPASSE_PATH,
+        {
+            "alerted_at": now.isoformat(),
+            "basis_wake_ts": basis_ts,
+            "stale_wakes": stale_wakes,
+        },
+    )
+    store.append_journal(
+        job.id,
+        {
+            "type": "research_impasse",
+            "stale_wakes": stale_wakes,
+            "basis_wake_ts": basis_ts,
+            "days_since_last_experiment": staleness.get(
+                "days_since_last_experiment"
+            ),
+            "wakes_since_last_proposal": staleness.get("wakes_since_last_proposal"),
+        },
+    )
+    # circular import: worker → application → … → triggers
+    from wayfinder_paths.jobs.triggers import fire_triggers
+
+    fire_triggers(store, job, ["research_impasse"], source="watchdog")
+    return {
+        "action": "research_impasse",
+        "stale_wakes": stale_wakes,
+        "outcome": "agent_woken",
+    }
+
+
+# Pending exhaustion claims are owner work: surface them on the watchdog
+# cadence (journal on change; the scorecard count refreshes with every
+# scorecard write) so a filed claim cannot silently rot un-adjudicated.
+_CLAIMS_SEEN_PATH = "state/exhaustion_claims_seen.json"
+
+
+def _surface_pending_claims(store: JobStore, job_id: str) -> dict[str, Any] | None:
+    from wayfinder_paths.jobs.exhaustion import list_exhaustion_claims
+
+    pending = list_exhaustion_claims(store, job_id, status="pending")
+    ids = sorted(str(claim.get("claim_id")) for claim in pending)
+    seen = store.read_json(job_id, _CLAIMS_SEEN_PATH) or {}
+    if list(seen.get("pending") or []) == ids:
+        return None
+    store.write_json(
+        job_id, _CLAIMS_SEEN_PATH, {"pending": ids, "checked_at": utc_now_iso()}
+    )
+    if not ids:
+        return None  # a cleared queue needs no alert
+    store.append_journal(
+        job_id,
+        {
+            "type": "exhaustion_claims_pending",
+            "count": len(ids),
+            "claim_ids": ids,
+            "owner_review_required": (
+                "pending exhaustion claims await owner adjudication — accept "
+                "or reject via `wayfinder job exhaustion adjudicate`"
+            ),
+        },
+    )
+    store.refresh_scorecard(job_id)
+    return {"action": "exhaustion_claims_pending", "count": len(ids)}
+
+
 # Lifecycle evaluation is cheap (json reads + arithmetic) but its decisions
 # are consequential — a 6h cadence matches the counterfactual cycle and keeps
 # kill/graduate flips out of the 5-minute noise floor.
@@ -772,6 +1065,9 @@ def _run_lifecycle_pass(
     active = [leg for leg in doc.get("legs") or [] if leg.get("status") == "active"]
     if not active:
         return []
+    from wayfinder_paths.jobs.improver.spec import ImproverSpec
+
+    spec = ImproverSpec.load(store.job_dir(job_id))
     trades_path = store.job_dir(job_id) / "results" / "forward" / "trades.jsonl"
     trades: list[dict[str, Any]] = []
     if trades_path.exists():
@@ -806,11 +1102,30 @@ def _run_lifecycle_pass(
                 f"trades={metrics['closed_trades']} pnl={metrics['net_pnl']}"
             ),
         )
+        # Paper-tier legs carry a mechanical no-strategy-baseline floor on
+        # top of their registered kill rules: a leg that underperforms
+        # flat-zero over its window is retired regardless of what rules the
+        # agent registered — a forced-entry tier without a retirement floor
+        # turns a stall fix into a junk flood.
+        paper_floor: dict[str, Any] | None = None
+        if (
+            leg.get("tier") == "paper"
+            and int(metrics["closed_trades"]) >= spec.paper_floor_min_trades
+            and float(metrics["net_pnl"]) < 0
+        ):
+            paper_floor = {
+                "rule": "paper_flat_zero_floor",
+                "net_pnl": metrics["net_pnl"],
+                "closed_trades": metrics["closed_trades"],
+                "min_trades": spec.paper_floor_min_trades,
+            }
         # Kill outranks graduate: if both fire, the leg dies — pre-registered
         # risk rules are senior to reward rules.
         decision = (
             ("killed", kill)
             if kill["status"] == "met"
+            else ("killed", {"checks": [paper_floor]})
+            if paper_floor is not None
             else ("graduated", graduate)
             if graduate["status"] == "met"
             else None
@@ -931,6 +1246,20 @@ def recover_stalled_applications(
             disk_event = None
         if disk_event is not None:
             recovered.append({"job_id": job.id, **disk_event})
+        try:
+            impasse_event = _check_research_impasse(store, job, proposals, now)
+        except Exception as exc:
+            errors.append({"job_id": job.id, "error": f"impasse: {exc}"})
+            impasse_event = None
+        if impasse_event is not None:
+            recovered.append({"job_id": job.id, **impasse_event})
+        try:
+            claims_event = _surface_pending_claims(store, job.id)
+        except Exception as exc:
+            errors.append({"job_id": job.id, "error": f"claims: {exc}"})
+            claims_event = None
+        if claims_event is not None:
+            recovered.append({"job_id": job.id, **claims_event})
         try:
             for lifecycle_event in _run_lifecycle_pass(store, job.id, now):
                 recovered.append({"job_id": job.id, **lifecycle_event})

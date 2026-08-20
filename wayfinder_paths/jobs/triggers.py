@@ -32,12 +32,16 @@ DEFAULT_DEBOUNCE_SECONDS = 600
 # for the next timer poll.
 # disk_pressure fires when the watchdog sees the jobs volume past its alert
 # threshold — a full disk kills trading exactly like a stalled loop.
+# research_impasse fires when a research-stale job's last K wakes produced
+# zero progress artifacts — the wake it triggers carries the hatch-stripped
+# progress mandate (worker renders it from state/research_impasse.json).
 ALWAYS_WAKE_EVENTS = {
     "proposal_restage_requested",
     "verdict_matured",
     "successor_overdue",
     "runner_loop_gap",
     "disk_pressure",
+    "research_impasse",
 }
 
 
