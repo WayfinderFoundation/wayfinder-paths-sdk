@@ -110,8 +110,15 @@ class BacktestBroker:
         supports_limit_orders=True,
     )
 
-    def __init__(self, *, fee_bps: float = 0.0, slippage_bps: float = 0.0) -> None:
+    def __init__(
+        self,
+        *,
+        fee_bps: float = 0.0,
+        maker_fee_bps: float = 0.0,
+        slippage_bps: float = 0.0,
+    ) -> None:
         self.fee_bps = fee_bps
+        self.maker_fee_bps = maker_fee_bps
         self.slippage_bps = slippage_bps
 
     async def place(
@@ -121,6 +128,18 @@ class BacktestBroker:
         timestamp: str,
         price: float | None = None,
     ) -> FillEvent:
+        if intent.limit_price is not None and not intent.metadata.get("_resting_fill"):
+            return FillEvent(
+                status="resting",
+                venue=intent.venue,
+                symbol=intent.symbol,
+                side=intent.side,
+                order_id=intent.client_order_id,
+                client_order_id=intent.client_order_id,
+                reduce_only=intent.reduce_only,
+                raw={"intent_action": intent.action, "liquidity": "maker"},
+                timestamp=timestamp,
+            )
         return self.execute(intent, price=float(price or 0.0), timestamp=timestamp)
 
     async def fetch_state(self, symbols: Any = ()) -> VenueState:
@@ -165,9 +184,17 @@ class BacktestBroker:
                 client_order_id=intent.client_order_id,
                 timestamp=timestamp,
             )
+        maker_fill = bool(
+            intent.limit_price is not None and intent.metadata.get("_resting_fill")
+        )
         side_multiplier = 1 if str(intent.side).lower() in {"buy", "long"} else -1
-        fill_price = price * (1 + side_multiplier * self.slippage_bps / 10_000)
-        fee = abs(size * fill_price) * self.fee_bps / 10_000
+        fill_price = (
+            price
+            if maker_fill
+            else price * (1 + side_multiplier * self.slippage_bps / 10_000)
+        )
+        fee_bps = self.maker_fee_bps if maker_fill else self.fee_bps
+        fee = abs(size * fill_price) * fee_bps / 10_000
         return FillEvent(
             status="filled",
             venue=intent.venue,
@@ -182,6 +209,7 @@ class BacktestBroker:
                 "intent_action": intent.action,
                 "intent_metadata": intent.metadata,
                 "bracket": intent.bracket,
+                "liquidity": "maker" if maker_fill else "taker",
             },
             timestamp=timestamp,
         )
@@ -194,6 +222,7 @@ class BacktestBroker:
 # (HIP-3 / builder-deployed markets can be higher, so this is a floor).
 # Strategies override with params["fee_bps"] (e.g. 0.0 for a maker-only book).
 _DEFAULT_TAKER_FEE_BPS: dict[str, float] = {"hyperliquid": 4.5, "hl": 4.5}
+_DEFAULT_MAKER_FEE_BPS: dict[str, float] = {"hyperliquid": 1.5, "hl": 1.5}
 
 
 def _strategy_venue(strategy: Any) -> str:
@@ -213,6 +242,18 @@ def _resolve_fee_bps(params_data: Mapping[str, Any], strategy: Any = None) -> fl
         str(params_data.get("venue") or _strategy_venue(strategy) or "").strip().lower()
     )
     return _DEFAULT_TAKER_FEE_BPS.get(venue, 0.0)
+
+
+def _resolve_maker_fee_bps(
+    params_data: Mapping[str, Any], strategy: Any = None
+) -> float:
+    explicit = params_data.get("maker_fee_bps")
+    if explicit is not None:
+        return float(explicit)
+    venue = (
+        str(params_data.get("venue") or _strategy_venue(strategy) or "").strip().lower()
+    )
+    return _DEFAULT_MAKER_FEE_BPS.get(venue, 0.0)
 
 
 # Default per-bar compute window. Bounding the view the simulator hands each
@@ -370,6 +411,7 @@ def simulate_execution(
     )
     broker = BacktestBroker(
         fee_bps=_resolve_fee_bps(params_data, strategy),
+        maker_fee_bps=_resolve_maker_fee_bps(params_data, strategy),
         slippage_bps=float(params_data.get("slippage_bps") or 0.0),
     )
     state = EngineState()

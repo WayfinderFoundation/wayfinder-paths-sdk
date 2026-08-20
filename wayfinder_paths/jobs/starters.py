@@ -23,9 +23,9 @@ from wayfinder_paths.jobs.strategies._starter_utils import (
     RANKING_STOP_DEFAULTS,
 )
 
-STARTER_CATALOG_VERSION = "1.4.0"
+STARTER_CATALOG_VERSION = "1.6.0"
 STARTER_STRATEGY_INCEPTION_AT = "2026-08-18T00:00:00+00:00"
-STARTER_EVIDENCE_REVISION = "1.4.0"
+STARTER_EVIDENCE_REVISION = "1.6.0"
 STARTER_LEVERAGE_DEFAULT = 1
 STARTER_LEVERAGE_MINIMUM = 1
 STARTER_LEVERAGE_MAXIMUM = 5
@@ -98,7 +98,7 @@ class StarterDefinition:
     cautions: tuple[str, ...] = ()
 
     def configured_params(self) -> dict[str, Any]:
-        if self.family == "mean_reversion":
+        if self.family in {"mean_reversion", "maker_mean_reversion"}:
             protection = MEAN_REVERSION_STOP_DEFAULTS
         elif self.family == "relative_value_pair":
             protection = PAIR_PROTECTION_DEFAULTS
@@ -110,8 +110,15 @@ class StarterDefinition:
         return {**copy.deepcopy(protection), **copy.deepcopy(self.params)}
 
     def risk_limits(self) -> dict[str, Any]:
+        max_drawdown = (
+            -0.06
+            if self.family == "mean_reversion"
+            else -0.08
+            if self.family == "maker_mean_reversion"
+            else -0.20
+        )
         return {
-            "max_drawdown": -0.06 if self.family == "mean_reversion" else -0.20,
+            "max_drawdown": max_drawdown,
             "pause_after_consecutive_losses": 5,
         }
 
@@ -135,6 +142,22 @@ class StarterDefinition:
             controls["per_position_stop"]["cooldown_seconds"] = params[
                 "stop_cooldown_seconds"
             ]
+        if self.family == "maker_mean_reversion":
+            if params.get("exit_mode") in {"full", "staged"}:
+                controls["per_position_stop"]["take_profit"] = (
+                    (
+                        f"sell {params['take_profit_one_fraction'] * 100:g}% at "
+                        f"{params['take_profit_one_atr']:g}x entry ATR, then the "
+                        f"remainder at {params['take_profit_two_atr']:g}x"
+                    )
+                    if params["exit_mode"] == "staged"
+                    else f"full sell at {params['take_profit_atr']:g}x entry ATR"
+                )
+            else:
+                controls["per_position_stop"]["take_profit"] = (
+                    f"taker exit above RSI {params['exit_rsi']:g} or after "
+                    f"{params['max_hold_bars']} completed bars"
+                )
         if self.family == "relative_value_pair":
             controls["pair_group_stop"] = {
                 "monitor_interval_seconds": params[
@@ -170,9 +193,17 @@ class StarterDefinition:
             "risk_overlay_backtest_status": "validated",
             "risk_overlay_backtest_scope": "per_position_ohlc_stops",
             "risk_overlay_note": (
-                "The jobs_v1 engine figures include the 1.4.0 per-position stop "
-                "overlay. Live pair-group and account monitors run between strategy "
-                "bars and are not included in these historical figures."
+                (
+                    "The jobs_v1 figures include strict candle trade-through maker "
+                    "fills and the per-position OHLC stop. Live limit routing stays "
+                    "disabled until durable venue fill/cancel reconciliation lands."
+                )
+                if self.family == "maker_mean_reversion"
+                else (
+                    "The jobs_v1 engine figures include the current per-position "
+                    "stop overlay. Live pair-group and account monitors run between "
+                    "strategy bars and are not included in these historical figures."
+                )
             ),
             "jobs_v1_leverage_sweep": {
                 "leverage_semantics": "target_exposure",
@@ -245,6 +276,28 @@ _PAIR_RESEARCH_METHOD = {
     "validation": (
         "four chronological folds; conventional Monday rebalance plus all "
         "seven neighboring weekly phases checked"
+    ),
+}
+
+_MAKER_RESEARCH_METHOD = {
+    "source": "Hydromancer Reservoir 1-second Hyperliquid HYPE candles",
+    "window_start": "2025-08-01T00:00:00+00:00",
+    "window_end": "2026-08-18T23:55:00+00:00",
+    "calendar_days": 383.0,
+    "fill_model": (
+        "decision on completed 5m close; post-only order first eligible on the "
+        "next bar; require 1bp trade-through beyond the limit"
+    ),
+    "costs": {
+        "maker_fee_bps_per_side": 1.5,
+        "taker_fee_bps_per_side": 4.5,
+        "taker_slippage_bps_per_side": 3.5,
+    },
+    "funding_included": False,
+    "funding": "not included; exposure is sparse but carry remains a live risk",
+    "validation": (
+        "pooled multiple-testing correction across nine assets and 5m/15m bars; "
+        "reserved 15% tail; four rolling 187.5-day train / 46.9-day test folds"
     ),
 }
 
@@ -424,6 +477,132 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         ),
     ),
     StarterDefinition(
+        id="balanced-passive-capitulation-1h",
+        name="Balanced Passive Capitulation · 1h",
+        family="maker_mean_reversion",
+        summary=(
+            "Rests post-only bids on volume-confirmed oversold pullbacks across "
+            "a balanced HYPE and tokenized-equity basket."
+        ),
+        timeframe="1h",
+        module="wayfinder_paths.jobs.strategies.mixed_volume_capitulation",
+        symbols=("HYPE", "xyz:COIN", "xyz:TSLA"),
+        crypto_assets=("HYPE",),
+        tokenized_equities=("xyz:COIN", "xyz:TSLA"),
+        rules=(
+            "Enter only when RSI(7) is below 20, close remains above SMA(200), and hourly volume exceeds its trailing 24-hour median.",
+            "Rest an ALO bid 0.05 ATR(24) below the completed close for one hour; require 1 bp candle trade-through before counting a maker fill.",
+            "Allocate 50% to HYPE and 25% to each equity perp; exit above RSI 50 or after 72 hours, with a fill-relative catastrophe stop and 24-hour stop cooldown.",
+        ),
+        params={
+            "rsi_period": 7,
+            "entry_rsi": 20.0,
+            "exit_rsi": 50.0,
+            "trend_sma_period": 200,
+            "volume_median_bars": 24,
+            "volume_multiple": 1.0,
+            "max_hold_bars": 72,
+            "weight_per_leg": 0.25,
+            "symbol_weights": {
+                "HYPE": 0.50,
+                "xyz:COIN": 0.25,
+                "xyz:TSLA": 0.25,
+            },
+            "entry_order_type": "maker",
+            "entry_offset_atr": 0.05,
+            "entry_ttl_bars": 1,
+            "maker_fee_bps": 1.5,
+            "maker_trade_through_bps": 1.0,
+        },
+        research_evidence={
+            "source": (
+                "Hydromancer Reservoir 1-second Hyperliquid HYPE and HIP-3 "
+                "COIN/TSLA candles"
+            ),
+            "window_start": "2025-11-25T17:00:00+00:00",
+            "window_end": "2026-08-18T23:00:00+00:00",
+            "calendar_days": 266.25,
+            "fill_model": (
+                "decision on completed 1h close; post-only order first eligible "
+                "on the next bar; require 1bp trade-through beyond the limit"
+            ),
+            "costs": {
+                "maker_fee_bps_per_entry": 1.5,
+                "taker_fee_bps_per_exit": 4.5,
+                "taker_slippage_bps_per_exit": 3.5,
+            },
+            "funding_included": False,
+            "funding": "not included; carry remains a live risk",
+            "validation": (
+                "development through 2026-01-19; four fixed chronological "
+                "validation folds through 2026-06-21; one untouched reserved "
+                "tail through 2026-08-18"
+            ),
+            "strategy_family": "passive diversified mean reversion",
+            "return_after_costs_and_funding": 0.1995,
+            "funding_return_contribution": 0.0,
+            "sharpe": 3.67,
+            "max_drawdown": -0.0149,
+            "chronological_fold_returns": [0.0962, 0.0134, 0.0231, 0.0290],
+            "walk_forward": {
+                "oos_positive_folds": 4,
+                "fold_count": 4,
+                "oos_return_mean": 0.0404,
+                "oos_sharpe_mean": 4.13,
+                "newest_fold_return": 0.0290,
+                "newest_fold_sharpe": 3.74,
+            },
+            "allocation_robustness": {
+                "40_30_30": {
+                    "return_after_fees_and_slippage": 0.1554,
+                    "sharpe": 3.79,
+                    "positive_validation_folds": 4,
+                },
+                "60_20_20": {
+                    "return_after_fees_and_slippage": 0.2074,
+                    "sharpe": 3.96,
+                    "positive_validation_folds": 4,
+                },
+            },
+            "reserved_tail": {
+                "window_start": "2026-06-21T16:00:00+00:00",
+                "window_end": "2026-08-18T23:00:00+00:00",
+                "return_after_fees_and_slippage": 0.0155,
+                "sharpe": 2.54,
+                "max_drawdown": -0.0060,
+                "trade_count": 16,
+                "trace_valid": True,
+            },
+            "recent_120_day_replay": {
+                "window_start": "2026-04-21T00:00:00+00:00",
+                "return_after_fees_and_slippage": 0.0664,
+                "sharpe": 3.41,
+                "max_drawdown": -0.0124,
+                "trade_count": 38,
+            },
+            "jobs_v1_engine": {
+                "return_after_fees_and_slippage": 0.1995,
+                "sharpe": 3.666,
+                "max_drawdown": -0.0149,
+                "trade_count": 78,
+                "total_fees_usd": 77.31,
+                "maker_entry_fills": 39,
+                "taker_exit_fills": 39,
+                "expired_entry_orders": 4,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
+                "funding_included": False,
+                "trace_valid": True,
+            },
+        },
+        cautions=(
+            "Funding is not included in the replay and can reduce live returns.",
+            "Candle trade-through is conservative about touch fills but cannot reproduce exact queue position or partial fills.",
+            "Live ALO routing is intentionally disabled until durable venue fill/cancel reconciliation is available.",
+        ),
+    ),
+    StarterDefinition(
         id="mixed-momentum-rank-1h",
         name="Mixed Momentum Rank · 1h",
         family="cross_sectional_momentum",
@@ -581,6 +760,205 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 "trace_valid": True,
             },
         },
+    ),
+    StarterDefinition(
+        id="hype-passive-rsi-full-5m",
+        name="HYPE Passive RSI · Full Exit · 5m",
+        family="maker_mean_reversion",
+        summary=(
+            "Rests a deep post-only HYPE bid after an oversold close, then sells "
+            "the full position at one maker target or exits on stop/time."
+        ),
+        timeframe="5m",
+        module="wayfinder_paths.jobs.strategies.hype_passive_rsi",
+        symbols=("HYPE",),
+        crypto_assets=("HYPE",),
+        tokenized_equities=(),
+        rules=(
+            "After a completed bar with RSI(14) at or below 30, rest an ALO bid 2 ATR(14) below the close for one bar.",
+            "After fill, rest a full-position ALO sell 1.5 entry ATR above the fill.",
+            "Use a fill-relative 3 ATR stop; otherwise close at market after four completed holding bars.",
+        ),
+        params={
+            "rsi_period": 14,
+            "entry_rsi": 30.0,
+            "entry_offset_atr": 2.0,
+            "entry_ttl_bars": 1,
+            "exit_mode": "full",
+            "take_profit_atr": 1.5,
+            "max_hold_bars": 4,
+            "stop_atr_period": 14,
+            "stop_atr_multiple": 3.0,
+            "stop_min_pct": 0.001,
+            "stop_max_pct": 0.20,
+            "native_stop_required": True,
+            "maker_fee_bps": 1.5,
+            "maker_trade_through_bps": 1.0,
+        },
+        research_evidence={
+            **_MAKER_RESEARCH_METHOD,
+            "strategy_family": "passive directional mean reversion",
+            "return_after_costs_and_funding": 0.2566,
+            "funding_return_contribution": 0.0,
+            "sharpe": 1.66,
+            "max_drawdown": -0.0627,
+            "chronological_fold_returns": [0.0112, 0.0133, 0.0243, -0.0072],
+            "signal_check": {
+                "signal": "HYPE RSI(14) <= 30",
+                "horizon_minutes": 10,
+                "training_events": 2148,
+                "training_t_stat": 4.729,
+                "pooled_bh_q_value": 0.0072,
+                "training_folds_positive": 4,
+                "reserved_tail_events": 354,
+                "reserved_tail_t_stat": 1.066,
+                "reserved_tail_hit_rate": 0.5537,
+            },
+            "walk_forward": {
+                "oos_positive_folds": 3,
+                "fold_count": 4,
+                "oos_return_mean": 0.0104,
+                "oos_sharpe_mean": 0.88,
+                "newest_fold_return": -0.0072,
+                "newest_fold_sharpe": -1.00,
+            },
+            "recent_120_day_replay": {
+                "window_start": "2026-04-20T23:55:00+00:00",
+                "return_after_fees_and_slippage": 0.0236,
+                "sharpe": 0.98,
+                "max_drawdown": -0.0281,
+                "trade_count": 68,
+            },
+            "jobs_v1_engine": {
+                "return_after_fees_and_slippage": 0.2566,
+                "sharpe": 1.6639,
+                "max_drawdown": -0.0627,
+                "trade_count": 244,
+                "total_fees_usd": 613.80,
+                "stop_count": 15,
+                "full_period_vs_no_stop": "improved",
+                "chronological_folds_non_regressing": 2,
+                "stop_vs_no_stop_fold_return_deltas": [
+                    0.0036,
+                    0.0005,
+                    -0.0035,
+                    -0.0055,
+                ],
+                "no_stop_baseline": {
+                    "return_after_fees_and_slippage": 0.2531,
+                    "sharpe": 1.5170,
+                    "max_drawdown": -0.0657,
+                },
+                "funding_included": False,
+                "trace_valid": True,
+            },
+        },
+        cautions=(
+            "The newest held-out fold was negative and the full-period Sharpe remained below 2; paper-forward evidence is required.",
+            "Candle trade-through is conservative about touch fills but cannot reproduce exact queue position or partial fills.",
+            "Live ALO routing is intentionally disabled until durable venue fill/cancel reconciliation is available.",
+        ),
+    ),
+    StarterDefinition(
+        id="hype-passive-rsi-staged-5m",
+        name="HYPE Passive RSI · Staged Exit · 5m",
+        family="maker_mean_reversion",
+        summary=(
+            "Uses the same deep post-only HYPE entry, sells half at the first "
+            "maker target, then lets the balance seek a second target."
+        ),
+        timeframe="5m",
+        module="wayfinder_paths.jobs.strategies.hype_passive_rsi",
+        symbols=("HYPE",),
+        crypto_assets=("HYPE",),
+        tokenized_equities=(),
+        rules=(
+            "After a completed bar with RSI(14) at or below 30, rest an ALO bid 2 ATR(14) below the close for one bar.",
+            "Sell 50% at 1 entry ATR and the remainder at 1.5 ATR using ALO orders; keep the original stop on the remainder.",
+            "Use an initial fill-relative 3 ATR stop; otherwise close the remainder at market after four completed holding bars.",
+        ),
+        params={
+            "rsi_period": 14,
+            "entry_rsi": 30.0,
+            "entry_offset_atr": 2.0,
+            "entry_ttl_bars": 1,
+            "exit_mode": "staged",
+            "take_profit_one_atr": 1.0,
+            "take_profit_two_atr": 1.5,
+            "take_profit_one_fraction": 0.5,
+            "move_stop_to_break_even": False,
+            "max_hold_bars": 4,
+            "stop_atr_period": 14,
+            "stop_atr_multiple": 3.0,
+            "stop_min_pct": 0.001,
+            "stop_max_pct": 0.20,
+            "native_stop_required": True,
+            "maker_fee_bps": 1.5,
+            "maker_trade_through_bps": 1.0,
+        },
+        research_evidence={
+            **_MAKER_RESEARCH_METHOD,
+            "strategy_family": "passive directional mean reversion",
+            "return_after_costs_and_funding": 0.2299,
+            "funding_return_contribution": 0.0,
+            "sharpe": 1.58,
+            "max_drawdown": -0.0653,
+            "chronological_fold_returns": [0.0162, 0.0118, 0.0361, -0.0106],
+            "signal_check": {
+                "signal": "HYPE RSI(14) <= 30",
+                "horizon_minutes": 10,
+                "training_events": 2148,
+                "training_t_stat": 4.729,
+                "pooled_bh_q_value": 0.0072,
+                "training_folds_positive": 4,
+                "reserved_tail_events": 354,
+                "reserved_tail_t_stat": 1.066,
+                "reserved_tail_hit_rate": 0.5537,
+            },
+            "walk_forward": {
+                "oos_positive_folds": 3,
+                "fold_count": 4,
+                "oos_return_mean": 0.0134,
+                "oos_sharpe_mean": 1.32,
+                "newest_fold_return": -0.0106,
+                "newest_fold_sharpe": -1.53,
+            },
+            "recent_120_day_replay": {
+                "window_start": "2026-04-20T23:55:00+00:00",
+                "return_after_fees_and_slippage": 0.0317,
+                "sharpe": 1.44,
+                "max_drawdown": -0.0285,
+                "trade_count": 94,
+            },
+            "jobs_v1_engine": {
+                "return_after_fees_and_slippage": 0.2299,
+                "sharpe": 1.5785,
+                "max_drawdown": -0.0653,
+                "trade_count": 334,
+                "total_fees_usd": 561.83,
+                "stop_count": 15,
+                "full_period_vs_no_stop": "improved",
+                "chronological_folds_non_regressing": 1,
+                "stop_vs_no_stop_fold_return_deltas": [
+                    0.0013,
+                    -0.0003,
+                    -0.0018,
+                    -0.0055,
+                ],
+                "no_stop_baseline": {
+                    "return_after_fees_and_slippage": 0.2279,
+                    "sharpe": 1.4592,
+                    "max_drawdown": -0.0683,
+                },
+                "funding_included": False,
+                "trace_valid": True,
+            },
+        },
+        cautions=(
+            "The newest held-out fold was negative and the full-period Sharpe remained below 2; paper-forward evidence is required.",
+            "Candle trade-through is conservative about touch fills but cannot reproduce exact queue position or partial fills.",
+            "Live ALO routing is intentionally disabled until durable venue fill/cancel reconciliation is available.",
+        ),
     ),
     StarterDefinition(
         id="btc-eth-relative-strength-1d",

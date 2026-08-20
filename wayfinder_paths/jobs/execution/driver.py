@@ -424,7 +424,7 @@ async def tick_job(
     if (
         manual_halt is not None
         and manual_halt.get("flatten")
-        and state.ledger.positions
+        and (state.ledger.positions or state.resting_orders)
     ):
         # Market-close everything at the latest completed close. Runs even on
         # skipped ticks (no_new_bar): a flatten request must not wait for a

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 from typing import Any
 
 import pandas as pd
@@ -49,6 +50,30 @@ def merge_params(
     params.update(dict(overrides or {}))
     params["symbols"] = [str(symbol) for symbol in params.get("symbols") or []]
     return params
+
+
+def protection_cooldown_active(ctx: ExecutionContext, symbol: str) -> bool:
+    """Return whether an engine-recorded stop cooldown still blocks entry.
+
+    The engine persists ISO timestamps in ``strategy_state`` after a protected
+    stop. Strategies with custom order construction must consult the same state
+    as the shared target-weight bridge or their declared cooldown is cosmetic.
+    Malformed persisted timestamps fail closed until an operator repairs them.
+    """
+    cooldowns = ctx.strategy_state.get("protection_cooldowns") or {}
+    raw_expiry = cooldowns.get(symbol) if isinstance(cooldowns, Mapping) else None
+    if not raw_expiry:
+        return False
+    try:
+        expiry = datetime.fromisoformat(str(raw_expiry).replace("Z", "+00:00"))
+        now = datetime.fromisoformat(str(ctx.timestamp).replace("Z", "+00:00"))
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=UTC)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=UTC)
+    except ValueError:
+        return True
+    return now < expiry
 
 
 def current_feature_values(

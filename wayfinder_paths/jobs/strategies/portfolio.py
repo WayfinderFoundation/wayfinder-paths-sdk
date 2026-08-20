@@ -17,12 +17,14 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
-from datetime import UTC, datetime
 from typing import Any
 
 from wayfinder_paths.jobs.execution.primitives import (
     ExecutionContext,
     mark_to_market_equity,
+)
+from wayfinder_paths.jobs.strategies._starter_utils import (
+    protection_cooldown_active,
 )
 
 
@@ -109,7 +111,7 @@ def target_weights_to_intents(
 
         grow = target - held
         if target and abs(grow) > 0:
-            if _cooldown_active(ctx, symbol):
+            if protection_cooldown_active(ctx, symbol):
                 continue
             metadata: dict[str, Any] = {"target_weight": target}
             if sizing_equity is not None:
@@ -130,23 +132,6 @@ def target_weights_to_intents(
                 intent["bracket"] = dict(brackets[symbol])
             intents.append(intent)
     return intents
-
-
-def _cooldown_active(ctx: ExecutionContext, symbol: str) -> bool:
-    cooldowns = ctx.strategy_state.get("protection_cooldowns") or {}
-    raw_expiry = cooldowns.get(symbol) if isinstance(cooldowns, Mapping) else None
-    if not raw_expiry:
-        return False
-    try:
-        expiry = datetime.fromisoformat(str(raw_expiry).replace("Z", "+00:00"))
-        now = datetime.fromisoformat(str(ctx.timestamp).replace("Z", "+00:00"))
-        if expiry.tzinfo is None:
-            expiry = expiry.replace(tzinfo=UTC)
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=UTC)
-    except ValueError:
-        return True
-    return now < expiry
 
 
 def _close(symbol: str, position: Any, venue: str, *, size: float) -> dict[str, Any]:

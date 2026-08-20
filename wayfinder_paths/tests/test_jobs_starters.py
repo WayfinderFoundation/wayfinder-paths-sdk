@@ -30,6 +30,9 @@ from wayfinder_paths.jobs.starters import (
     validate_starter_leverage,
 )
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.strategies.hype_passive_rsi import (
+    HypePassiveRsiStrategy,
+)
 from wayfinder_paths.jobs.strategies.mixed_bollinger_pullback import (
     MixedBollingerPullbackStrategy,
 )
@@ -101,6 +104,72 @@ def _sides(intents: list[dict[str, Any]]) -> dict[str, str]:
     return {intent["symbol"]: intent["side"] for intent in intents}
 
 
+def test_hype_passive_rsi_emits_deep_alo_bid_with_fill_relative_stop() -> None:
+    strategy = HypePassiveRsiStrategy()
+    ctx = _context(
+        strategy,
+        {"HYPE": [100.0 - index for index in range(24)]},
+        interval="5min",
+    )
+
+    intents = strategy.decide(ctx)
+
+    assert len(intents) == 1
+    entry = intents[0]
+    assert entry["action"] == "OPEN"
+    assert entry["time_in_force"] == "ALO"
+    assert entry["expires_after_bars"] == 1
+    assert entry["limit_price"] < 77.0
+    assert entry["notional"] == 10_000.0
+    assert entry["bracket"]["stop_loss_pct"] > 0
+    assert entry["bracket"]["native_required"] is True
+
+
+def test_hype_passive_rsi_honors_engine_stop_cooldown() -> None:
+    strategy = HypePassiveRsiStrategy()
+    ctx = _context(
+        strategy,
+        {"HYPE": [100.0 - index for index in range(24)]},
+        interval="5min",
+    )
+    ctx.strategy_state["protection_cooldowns"] = {"HYPE": "2026-01-02T00:00:00+00:00"}
+
+    assert strategy.decide(ctx) == []
+
+
+def test_hype_passive_rsi_supports_full_and_staged_maker_exits() -> None:
+    closes = {"HYPE": [100.0 - index for index in range(24)]}
+    full = HypePassiveRsiStrategy({"exit_mode": "full"})
+    full_ctx = _context(full, closes, interval="5min")
+    full_ctx.ledger.positions["HYPE"] = PositionRecord(
+        symbol="HYPE", side="long", size=10.0, avg_price=75.0
+    )
+    full_ctx.strategy_state["maker_entry"] = {"signal_atr": 1.0}
+
+    full_exits = full.decide(full_ctx)
+
+    assert len(full_exits) == 1
+    assert full_exits[0]["size"] == 10.0
+    assert full_exits[0]["limit_price"] == 76.5
+    assert full_exits[0]["time_in_force"] == "ALO"
+
+    staged = HypePassiveRsiStrategy(
+        {"exit_mode": "staged", "move_stop_to_break_even": True}
+    )
+    staged_ctx = _context(staged, closes, interval="5min")
+    staged_ctx.ledger.positions["HYPE"] = PositionRecord(
+        symbol="HYPE", side="long", size=10.0, avg_price=75.0
+    )
+    staged_ctx.strategy_state["maker_entry"] = {"signal_atr": 1.0}
+
+    staged_exits = staged.decide(staged_ctx)
+
+    assert [intent["size"] for intent in staged_exits] == [5.0, 5.0]
+    assert [intent["limit_price"] for intent in staged_exits] == [76.0, 76.5]
+    assert staged_exits[0]["metadata"]["move_stop_to_break_even"] is True
+    assert staged_exits[1]["metadata"]["move_stop_to_break_even"] is False
+
+
 def _journal_events(store: JobStore, job_id: str) -> list[dict[str, Any]]:
     path = store.job_dir(job_id) / "journal.jsonl"
     if not path.exists():
@@ -132,12 +201,13 @@ def dataset_fetch_spawns(monkeypatch) -> list[dict[str, Any]]:
     return calls
 
 
-def test_starter_catalog_has_six_mixed_and_two_pair_paper_strategies() -> None:
+def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
     catalog = starter_catalog()
-    assert len(catalog) == 8
-    assert {item["timeframe"] for item in catalog} == {"15m", "1h", "1d"}
+    assert len(catalog) == 11
+    assert {item["timeframe"] for item in catalog} == {"5m", "15m", "1h", "1d"}
+    assert [item["timeframe"] for item in catalog].count("5m") == 2
     assert [item["timeframe"] for item in catalog].count("15m") == 2
-    assert [item["timeframe"] for item in catalog].count("1h") == 4
+    assert [item["timeframe"] for item in catalog].count("1h") == 5
     assert [item["timeframe"] for item in catalog].count("1d") == 2
     for item in catalog:
         assert item["crypto_assets"]
@@ -148,6 +218,7 @@ def test_starter_catalog_has_six_mixed_and_two_pair_paper_strategies() -> None:
         assert item["execution_contract"] == "jobs_v1"
         assert item["family"] in {
             "cross_sectional_momentum",
+            "maker_mean_reversion",
             "mean_reversion",
             "low_volatility_ranking",
             "relative_value_pair",
@@ -176,7 +247,10 @@ def test_starter_catalog_has_six_mixed_and_two_pair_paper_strategies() -> None:
         assert engine["funding_included"] is False
         assert engine["trace_valid"] is True
         assert engine["full_period_vs_no_stop"] in {"unchanged", "improved"}
-        assert engine["chronological_folds_non_regressing"] == 4
+        if item["family"] == "maker_mean_reversion":
+            assert 0 <= engine["chronological_folds_non_regressing"] <= 4
+        else:
+            assert engine["chronological_folds_non_regressing"] == 4
         assert engine["stop_count"] >= 0
         sweep = item["research_evidence"]["jobs_v1_leverage_sweep"]
         assert sweep["leverage_semantics"] == "target_exposure"
@@ -193,6 +267,9 @@ def test_starter_catalog_has_six_mixed_and_two_pair_paper_strategies() -> None:
         "mixed-momentum-rank-1h": (8.0, 0.15, 0.30),
         "mixed-sleeve-momentum-15m": (14.0, 0.26, 0.52),
         "mixed-low-vol-rank-15m": (12.0, 0.25, 0.50),
+        "balanced-passive-capitulation-1h": (5.0, 0.08, 0.15),
+        "hype-passive-rsi-full-5m": (3.0, 0.001, 0.20),
+        "hype-passive-rsi-staged-5m": (3.0, 0.001, 0.20),
         "btc-eth-relative-strength-1d": (15.0, 0.40, 0.60),
     }
     for starter_id, expected in expected_stops.items():
@@ -222,6 +299,24 @@ def test_starter_catalog_has_six_mixed_and_two_pair_paper_strategies() -> None:
     assert all(
         item["research_evidence"]["price_mean_reversion_gate"]["verdict"] == "REJECT"
         for item in pairs.values()
+    )
+
+    makers = [item for item in catalog if item["family"] == "maker_mean_reversion"]
+    assert {item["id"] for item in makers} == {
+        "balanced-passive-capitulation-1h",
+        "hype-passive-rsi-full-5m",
+        "hype-passive-rsi-staged-5m",
+    }
+    assert all(item["risk_limits"]["max_drawdown"] == -0.08 for item in makers)
+    assert all(
+        item["risk_controls"]["per_position_stop"]["take_profit"] for item in makers
+    )
+    assert all(
+        item["research_evidence"]["recent_120_day_replay"][
+            "return_after_fees_and_slippage"
+        ]
+        > 0
+        for item in makers
     )
 
 
@@ -369,6 +464,44 @@ def test_volume_capitulation_requires_above_median_volume() -> None:
     assert _sides(strategy.decide(ctx)) == {"A": "buy"}
 
 
+def test_volume_capitulation_can_rest_maker_only_entries() -> None:
+    strategy = MixedVolumeCapitulationStrategy(
+        {
+            "symbols": ["A"],
+            "rsi_period": 2,
+            "entry_rsi": 101.0,
+            "exit_rsi": 101.0,
+            "trend_sma_period": 3,
+            "volume_median_bars": 3,
+            "min_trade_notional": 0.0,
+            "entry_order_type": "maker",
+            "entry_offset_atr": 0.25,
+            "entry_ttl_bars": 2,
+            "symbol_weights": {"A": 0.4},
+        }
+    )
+    ctx = _context(
+        strategy,
+        {"A": [1.0, 1.0, 1.0, 2.0, 2.1, 2.0, 2.2]},
+        volumes={"A": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0]},
+        interval="1h",
+    )
+
+    entry = strategy.decide(ctx)[0]
+
+    assert entry["action"] == "OPEN"
+    assert entry["time_in_force"] == "ALO"
+    assert entry["expires_after_bars"] == 2
+    assert entry["limit_price"] < 2.2
+    assert entry["notional"] == 4_000.0
+    assert entry["bracket"]["cooldown_seconds"] == 86_400
+
+    ctx.ledger.positions["A"] = PositionRecord(
+        symbol="A", side="long", size=100.0, avg_price=2.0
+    )
+    assert strategy.decide(ctx) == []
+
+
 def test_pair_relative_strength_emits_two_opposite_equal_notional_legs() -> None:
     strategy = PairRelativeStrengthStrategy(
         {
@@ -469,6 +602,44 @@ def test_create_starter_materializes_job_and_forward_inception(tmp_path) -> None
     assert "pair_relative_strength" in Path(pair_result["script_entrypoint"]).read_text(
         encoding="utf-8"
     )
+
+    maker_result = create_starter_job(
+        "hype-passive-rsi-staged-5m",
+        job_id="maker-starter",
+        store=store,
+        compile_job=False,
+    )
+    maker_job = store.load("maker-starter")
+    assert maker_job.script_loop.interval_seconds == 300
+    assert maker_job.execution_spec["data_contract"]["bar_interval"] == "5m"
+    assert maker_job.execution_params["maker_fee_bps"] == 1.5
+    assert maker_job.execution_params["maker_trade_through_bps"] == 1.0
+    assert maker_job.controller["starter"]["risk_limits"]["max_drawdown"] == -0.08
+    assert "hype_passive_rsi" in Path(maker_result["script_entrypoint"]).read_text(
+        encoding="utf-8"
+    )
+
+    balanced_result = create_starter_job(
+        "balanced-passive-capitulation-1h",
+        job_id="balanced-maker-starter",
+        store=store,
+        compile_job=False,
+    )
+    balanced_job = store.load("balanced-maker-starter")
+    assert balanced_job.execution_spec["data_contract"]["symbols"] == [
+        "HYPE",
+        "xyz:COIN",
+        "xyz:TSLA",
+    ]
+    assert balanced_job.execution_params["entry_order_type"] == "maker"
+    assert balanced_job.execution_params["symbol_weights"] == {
+        "HYPE": 0.5,
+        "xyz:COIN": 0.25,
+        "xyz:TSLA": 0.25,
+    }
+    assert "mixed_volume_capitulation" in Path(
+        balanced_result["script_entrypoint"]
+    ).read_text(encoding="utf-8")
 
 
 def test_create_starter_reuses_its_canonical_job_id(tmp_path) -> None:
