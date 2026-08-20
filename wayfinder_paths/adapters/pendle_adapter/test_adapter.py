@@ -269,6 +269,38 @@ class TestPendleAdapter:
         assert captured_skips == ["0", "100"]
 
     @pytest.mark.asyncio
+    async def test_fetch_market_history_uses_v3_and_breakdown_flags(self):
+        captured: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            captured["params"] = dict(request.url.params)
+            return httpx.Response(200, json={"total": 0, "results": []})
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        adapter = PendleAdapter(config={}, client=client)
+
+        resp = await adapter.fetch_market_history(
+            chain_id=42161,
+            market_address="0xMarket",
+            time_frame="week",
+            fields="all",
+            include_apy_breakdown=True,
+            include_fee_breakdown=False,
+        )
+
+        await client.aclose()
+
+        assert captured["path"] == "/core/v3/42161/markets/0xMarket/historical-data"
+        assert captured["params"] == {
+            "time_frame": "week",
+            "fields": "all",
+            "includeApyBreakdown": "true",
+            "includeFeeBreakdown": "false",
+        }
+        assert resp["results"] == []
+
+    @pytest.mark.asyncio
     async def test_pendle_api_get_helper_sets_user_agent_and_rate_limit(self):
         captured: dict[str, Any] = {}
 
