@@ -18,12 +18,15 @@ async def notification_send(
 
     delivery="sms" sends `message` as a text to the user's phone — for
     finished, user-facing updates only, never progress notes. Plain text, hard
-    cap 500 chars. Quiet hours and a frequency budget gate unprompted texts: a
+    cap 500 chars. Quiet hours and a daily budget gate unprompted texts: a
     blocked call returns a warning instead of sending, and only a repeat call
     with override=true pushes through — do that only for genuinely urgent
-    information. Replies while the user is actively texting are never
-    rate-limited, and near-duplicates of texts you already sent are rejected,
-    so answering the user is always safe.
+    information. A successful sms send reports the remaining daily budget and
+    average spacing (daily_budget, remaining_budget,
+    avg_seconds_between_messages) — pace unprompted texts across the day rather
+    than spending the budget at once. Replies while the user is actively texting
+    are never rate-limited, and near-duplicates of texts you already sent are
+    rejected, so answering the user is always safe.
 
     delivery="email" (default) requires a verified email address and renders
     Markdown into a themed HTML email.
