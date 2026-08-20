@@ -28,6 +28,7 @@ class WalletClient(WayfinderClient):
         policies: list[dict],
         wallet_type: str,
         label: str,
+        instance_id: str,
         *,
         chain_type: str = "ethereum",
     ) -> dict[str, Any]:
@@ -37,6 +38,7 @@ class WalletClient(WayfinderClient):
             "wallet_type": wallet_type,
             "chain_type": chain_type,
             "label": label,
+            "instance_id": instance_id,
         }
         resp = await self._authed_request("POST", url, json=body)
         return resp.json()

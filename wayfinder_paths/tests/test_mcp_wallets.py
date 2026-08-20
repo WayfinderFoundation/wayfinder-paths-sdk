@@ -5,11 +5,40 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from wayfinder_paths.core.utils.wallets import create_remote_wallet
 from wayfinder_paths.mcp.tools.wallets import (
     core_wallets,
     onchain_get_wallet_activity,
 )
 from wayfinder_paths.mcp.utils import resolve_wallet_address
+
+
+@pytest.mark.asyncio
+async def test_create_remote_wallet_sends_instance_id_and_skips_separate_bind():
+    ring = {
+        "evm": {"wallet_address": "0xEVM", "label": "ring-1"},
+        "svm": {"wallet_address": "SoLsvm"},
+    }
+    create = AsyncMock(return_value=ring)
+    bind = AsyncMock()
+    with (
+        patch("wayfinder_paths.core.utils.wallets.WALLET_CLIENT.create_wallet", create),
+        patch(
+            "wayfinder_paths.core.utils.wallets.WALLET_CLIENT.bind_to_instance", bind
+        ),
+        patch(
+            "wayfinder_paths.core.utils.wallets.get_opencode_instance_id",
+            return_value="oc-instance-123",
+        ),
+    ):
+        result = await create_remote_wallet(
+            label="ring-1", wallet_type="session", policies=[{"x": 1}]
+        )
+
+    assert result is ring
+    assert create.await_args.kwargs["instance_id"] == "oc-instance-123"
+    # The backend create binds the EVM leg atomically — no separate bind call.
+    bind.assert_not_awaited()
 
 
 @pytest.mark.asyncio
