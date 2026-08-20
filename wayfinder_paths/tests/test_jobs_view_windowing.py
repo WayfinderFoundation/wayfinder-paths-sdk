@@ -160,7 +160,19 @@ def test_validation_flags_missing_lookback() -> None:
 
     missing = check({"execution_contract": "jobs_v1", "execution_params": {}})
     assert missing["passed"] is False
-    assert missing["blocking"] is False  # warn, never block
+    assert missing["blocking"] is False  # warn-only for hand-built jobs
+
+    starter_missing = check(
+        {
+            "execution_contract": "jobs_v1",
+            "execution_params": {},
+            "controller": {"starter": {"id": "mixed-momentum-rank-1h"}},
+        }
+    )
+    assert starter_missing["passed"] is False
+    # Blocking for starters: most catalog entries have warmup_bars > the
+    # 200-bar driver default, so an undeclared lookback means never trading.
+    assert starter_missing["blocking"] is True
 
     declared = check(
         {"execution_contract": "jobs_v1", "execution_params": {"lookback_bars": 200}}

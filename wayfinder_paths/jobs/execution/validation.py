@@ -533,6 +533,8 @@ def _timing_checks(
     unobservable in a fixture backtest, so they are validated structurally here.
     """
     is_jobs_v1 = str(job_data.get("execution_contract") or "legacy") == "jobs_v1"
+    controller = job_data.get("controller")
+    is_starter = isinstance(controller, Mapping) and bool(controller.get("starter"))
     bar_seconds = bar_interval_seconds(spec.data_contract.get("bar_interval"))
     params = job_data.get("execution_params") or {}
     checks: list[dict[str, Any]] = [
@@ -561,11 +563,13 @@ def _timing_checks(
             # bars); an undeclared lookback means backtests see full history
             # while live sees 200 — path-dependent indicators (Wilder ATR,
             # SuperTrend) will diverge. Declaring it aligns both AND bounds
-            # per-tick backtest cost.
+            # per-tick backtest cost. Blocking for starter jobs: most catalog
+            # starters have warmup_bars > 200, so an undeclared lookback caps
+            # ctx.bar_index below warmup and the job silently never trades.
             "name": "lookback_bars_declared",
             "passed": bool(params.get("lookback_bars")) or not is_jobs_v1,
             "value": params.get("lookback_bars"),
-            "blocking": False,
+            "blocking": is_jobs_v1 and is_starter,
         },
     ]
 
