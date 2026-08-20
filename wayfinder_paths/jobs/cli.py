@@ -39,6 +39,12 @@ from wayfinder_paths.jobs.execution.preflight import (
 from wayfinder_paths.jobs.execution.reconcile import reconcile_job
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.execution.walk_forward import format_fold_table
+from wayfinder_paths.jobs.exhaustion import (
+    CLAIM_PROVENANCES,
+    adjudicate_exhaustion_claim,
+    file_exhaustion_claim,
+    list_exhaustion_claims,
+)
 from wayfinder_paths.jobs.features import append_feature, list_features
 from wayfinder_paths.jobs.forward_artifacts import load_forward_view
 from wayfinder_paths.jobs.gating import evaluate_live_gate
@@ -50,6 +56,7 @@ from wayfinder_paths.jobs.models import (
     infer_job_kind,
     normalize_agent_mode,
 )
+from wayfinder_paths.jobs.probation import open_paper_probation_leg
 from wayfinder_paths.jobs.proposals import propose_change, restage_proposal
 from wayfinder_paths.jobs.replication import replication_job
 from wayfinder_paths.jobs.research import (
@@ -1608,6 +1615,159 @@ def reject_cmd(
     )
     sync_all_jobs(store=store)
     _echo_json({"ok": True, "result": proposal})
+
+
+@job_cli.group(
+    name="exhaustion",
+    help="Owner-adjudicated exhaustion claims: agents FILE a claim that a "
+    "research lane is exhausted; only the owner may ACCEPT it. A pending or "
+    "accepted claim satisfies the progress constitution for that lane.",
+)
+def exhaustion_group() -> None:
+    pass
+
+
+@exhaustion_group.command(name="file", help="File an exhaustion claim (agent-legal).")
+@click.argument("job_id")
+@click.option("--lane", required=True, help="Lane/region claimed exhausted.")
+@click.option(
+    "--evidence", required=True, help="Evidence summary (test counts, refs)."
+)
+@click.option(
+    "--provenance",
+    type=click.Choice(sorted(CLAIM_PROVENANCES)),
+    required=True,
+    help="What closed the lane. agent-self-rejected can never settle a lane.",
+)
+@click.option(
+    "--next-region",
+    required=True,
+    help="Proposed next region to open if the claim is accepted.",
+)
+@click.option("--ref", "refs", multiple=True, help="Artifact refs (repeatable).")
+def exhaustion_file_cmd(
+    job_id: str,
+    lane: str,
+    evidence: str,
+    provenance: str,
+    next_region: str,
+    refs: tuple[str, ...],
+) -> None:
+    store = JobStore()
+    claim = file_exhaustion_claim(
+        store,
+        job_id,
+        lane=lane,
+        evidence=evidence,
+        provenance=provenance,
+        next_region=next_region,
+        refs=list(refs),
+    )
+    _echo_json({"ok": True, "result": claim})
+
+
+@exhaustion_group.command(
+    name="adjudicate", help="Accept or reject a pending claim (accept is owner-only)."
+)
+@click.argument("job_id")
+@click.argument("claim_id")
+@click.option("--status", type=click.Choice(["accepted", "rejected"]), required=True)
+@click.option(
+    "--by",
+    "adjudicated_by",
+    type=click.Choice(["owner", "agent"]),
+    default="owner",
+    show_default=True,
+    help="Who is adjudicating: accepting a claim requires by='owner'.",
+)
+@click.option("--note", default=None, help="Adjudication note.")
+def exhaustion_adjudicate_cmd(
+    job_id: str, claim_id: str, status: str, adjudicated_by: str, note: str | None
+) -> None:
+    store = JobStore()
+    try:
+        claim = adjudicate_exhaustion_claim(
+            store, job_id, claim_id, status=status, by=adjudicated_by, note=note
+        )
+    except PermissionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": claim})
+
+
+@exhaustion_group.command(name="list", help="List exhaustion claims.")
+@click.argument("job_id")
+@click.option(
+    "--status",
+    type=click.Choice(["pending", "accepted", "rejected"]),
+    default=None,
+    help="Filter by status.",
+)
+def exhaustion_list_cmd(job_id: str, status: str | None) -> None:
+    store = JobStore()
+    _echo_json(
+        {"ok": True, "result": list_exhaustion_claims(store, job_id, status=status)}
+    )
+
+
+@job_cli.command(
+    name="probation-open-paper",
+    help="Open a PAPER probation leg for a candidate that is not clearly "
+    "worse than baseline (regression budget + trade floor checked "
+    "mechanically). Paper only — never live sizing; graduation to live "
+    "keeps the full strict gate + owner approval.",
+)
+@click.argument("job_id")
+@click.option("--name", required=True, help="Leg name (unique per job).")
+@click.option("--symbol", required=True)
+@click.option(
+    "--proposal-id",
+    default=None,
+    help="Source candidate/baseline net_return from this proposal's "
+    "propose-time comparison.",
+)
+@click.option("--candidate-net", type=float, default=None)
+@click.option("--baseline-net", type=float, default=None)
+@click.option("--backtest-trades", type=int, default=None)
+@click.option(
+    "--kill-criterion",
+    default="registered kill predicates + mechanical flat-zero floor",
+    show_default=True,
+)
+@click.option(
+    "--kill-rules-json", default=None, help="Typed kill predicates as JSON."
+)
+@click.option("--notes", default=None)
+def probation_open_paper_cmd(
+    job_id: str,
+    name: str,
+    symbol: str,
+    proposal_id: str | None,
+    candidate_net: float | None,
+    baseline_net: float | None,
+    backtest_trades: int | None,
+    kill_criterion: str,
+    kill_rules_json: str | None,
+    notes: str | None,
+) -> None:
+    store = JobStore()
+    try:
+        leg = open_paper_probation_leg(
+            store,
+            job_id,
+            name=name,
+            symbol=symbol,
+            kill_criterion=kill_criterion,
+            kill_rules=json.loads(kill_rules_json) if kill_rules_json else None,
+            proposal_id=proposal_id,
+            candidate_net=candidate_net,
+            baseline_net=baseline_net,
+            backtest_trades=backtest_trades,
+            notes=notes,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    sync_all_jobs(store=store)
+    _echo_json({"ok": True, "result": leg})
 
 
 @job_cli.command(name="apply-proposal", help="Queue apply for an approved proposal.")

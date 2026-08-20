@@ -792,6 +792,12 @@ class JobStore:
             for proposal in proposals
             if proposal["application"]["status"] == "applying"
         )
+        # circular import: exhaustion annotates via JobStore
+        from wayfinder_paths.jobs.exhaustion import list_exhaustion_claims
+
+        scorecard["pending_exhaustion_claims"] = len(
+            list_exhaustion_claims(self, job_id, status="pending")
+        )
         self.write_json(job_id, "scorecard.json", scorecard)
         return scorecard
 
