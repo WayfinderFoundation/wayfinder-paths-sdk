@@ -82,6 +82,14 @@ async def main():
         default="session",
         help="Remote wallet type: session (default, 1h TTL), strategy (7d TTL), or policy (custom)",
     )
+    parser.add_argument(
+        "--instance-id",
+        default=None,
+        help=(
+            "OpenCode instance to bind a remote wallet to. Inferred from "
+            "OPENCODE_INSTANCE_ID when run on a Shell."
+        ),
+    )
     args = parser.parse_args()
 
     # --default means "ensure main wallet exists" (and do nothing otherwise).
@@ -168,7 +176,10 @@ async def main():
         for label in labels_to_create:
             policies = json.loads(args.policies)
             result = await create_remote_wallet(
-                label=label, wallet_type=args.wallet_type, policies=policies
+                label=label,
+                wallet_type=args.wallet_type,
+                policies=policies,
+                instance_id=args.instance_id,
             )
             evm, svm = result["evm"], result["svm"]
             print(
