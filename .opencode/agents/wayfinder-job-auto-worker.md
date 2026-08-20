@@ -31,15 +31,23 @@ permission:
   # exports) — NEVER a broad /wf/user_vault/** — and keep the governance
   # plane fail-closed with an explicit deny.
   external_directory:
+    # ORDER IS LOAD-BEARING. opencode's evaluator is last-match-wins over
+    # YAML insertion order (permission/index.ts evaluate() uses findLast;
+    # fromConfig() emits rules in Object.entries order) — NOT specificity
+    # based, and "*"/"**" both compile to ".*" and cross slashes
+    # (util/wildcard.ts). The catch-all deny must come FIRST so the vault
+    # allows below override it; appended last it matched every request and
+    # silently denied all vault writes (observed under opencode 1.18.18).
+    # Catch-all: any other external path (e.g. a depth mistake like
+    # ../../workspace resolving to /workspace) fails fast with a legible
+    # error instead of hanging on the default "ask".
+    "*": deny
     "/wf/user_vault/wayfinder/**": allow
     "/wf/user_vault/scripts/**": allow
     "/wf/user_vault/exports/**": allow
+    # Governance stays LAST so it wins over any overlapping allow ever
+    # added above — fail-closed under last-match-wins.
     "/wf/user_vault/governance/**": deny
-    # Catch-all deny: any other external path (e.g. a depth mistake like
-    # ../../workspace resolving to /workspace) fails fast with a legible
-    # error instead of hanging on the default "ask". The matcher is
-    # specificity-based, so the enumerated allows above still win.
-    "*": deny
 
   bash:
     "*": ask
