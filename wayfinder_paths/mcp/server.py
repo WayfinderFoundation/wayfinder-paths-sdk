@@ -138,6 +138,7 @@ from wayfinder_paths.mcp.tools.tokens import (
     onchain_get_settlement_assets,
     onchain_list_tokens,
     onchain_resolve_token,
+    onchain_token_holder_intel,
 )
 from wayfinder_paths.mcp.tools.wallets import (
     core_get_wallets,
@@ -203,6 +204,7 @@ def build_mcp(
     mcp.tool()(onchain_get_settlement_assets)
     mcp.tool()(onchain_fuzzy_search_tokens)
     mcp.tool()(onchain_list_tokens)
+    mcp.tool()(onchain_token_holder_intel)
     mcp.tool()(onchain_quote_swap)
     mcp.tool()(onchain_swap)
     mcp.tool()(onchain_send)
