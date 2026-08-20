@@ -30,11 +30,14 @@ DEFAULT_DEBOUNCE_SECONDS = 600
 # runner_loop_gap fires when the watchdog sees a LIVE job's script loop gone
 # dark past 3x its interval — a live book nobody is managing must never wait
 # for the next timer poll.
+# disk_pressure fires when the watchdog sees the jobs volume past its alert
+# threshold — a full disk kills trading exactly like a stalled loop.
 ALWAYS_WAKE_EVENTS = {
     "proposal_restage_requested",
     "verdict_matured",
     "successor_overdue",
     "runner_loop_gap",
+    "disk_pressure",
 }
 
 

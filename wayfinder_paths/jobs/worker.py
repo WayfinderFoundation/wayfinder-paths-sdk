@@ -11,7 +11,7 @@ from loguru import logger
 
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.jobs.derived_features import refresh_derived_features_if_stale
-from wayfinder_paths.jobs.failures import cpu_steal_pct
+from wayfinder_paths.jobs.failures import cpu_steal_pct, disk_used_pct
 from wayfinder_paths.jobs.forward import is_forward_empty
 from wayfinder_paths.jobs.ledger import tail_ledger
 from wayfinder_paths.jobs.memory_hygiene import sanitize_job_memory
@@ -546,6 +546,7 @@ def _compute_status_block(root: Path) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         last_backtest_ok_at = None
     steal = cpu_steal_pct()
+    disk = disk_used_pct(root)
     try:
         loadavg: list[float] | None = [round(v, 2) for v in os.getloadavg()]
     except OSError:
@@ -553,6 +554,7 @@ def _compute_status_block(root: Path) -> dict[str, Any]:
     return {
         "mem_available_mb": mem_available_mb,
         "cpu_steal_pct": None if steal is None else round(steal, 1),
+        "disk_used_pct": None if disk is None else round(disk, 1),
         "loadavg": loadavg,
         "last_experiment_at": last_experiment_at,
         "last_backtest_ok_at": last_backtest_ok_at,
@@ -568,7 +570,10 @@ def _compute_status_block(root: Path) -> dict[str, Any]:
             "hypervisor is taking most of this box's CPU and local "
             "subprocesses crawl — prefer resident MCP tools for reads, "
             "defer optional heavy compute, and NEVER interpret local "
-            "timeouts (exit 124) as remote outages."
+            "timeouts (exit 124) as remote outages. disk_used_pct above "
+            "~85 means the jobs volume is filling toward the full-disk "
+            "failure mode (dead rsync, crash-looping services) — prune "
+            "stale artifacts before writing anything large."
         ),
     }
 

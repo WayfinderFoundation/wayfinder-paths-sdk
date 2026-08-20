@@ -1,4 +1,6 @@
+import shutil
 import sys
+from collections import namedtuple
 from pathlib import Path
 
 import pytest
@@ -8,6 +10,22 @@ pytest_plugins = ["wayfinder_paths.testing.gorlami"]
 # Add repo root to path so tests.test_utils can be imported
 _repo_root = Path(__file__).parent.parent
 _repo_root_str = str(_repo_root)
+
+_DiskUsage = namedtuple("_DiskUsage", "total used free")
+_GB = 1024**3
+
+
+@pytest.fixture(autouse=True)
+def _healthy_disk_usage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin shutil.disk_usage to a healthy 50% volume for every test.
+
+    The watchdog's disk-pressure standing check reads the HOST filesystem —
+    on an actually-full dev box it would leak `disk_pressure` journal events
+    into every unrelated watchdog-pass test. Disk-pressure tests re-patch
+    explicitly and override this pin."""
+    monkeypatch.setattr(
+        shutil, "disk_usage", lambda path: _DiskUsage(100 * _GB, 50 * _GB, 50 * _GB)
+    )
 
 
 def pytest_configure(config):
