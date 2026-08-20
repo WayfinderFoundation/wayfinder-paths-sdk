@@ -24,7 +24,24 @@ AERODROME_BY_CHAIN: dict[int, dict[str, str]] = {
         "rewards_distributor": to_checksum_address(
             "0x227f65131A261548b057215bB1D5Ab2997964C7d"
         ),
-        "sugar": to_checksum_address("0x68c19e13618C41158fE4bAba1B8fb3A9c74bDb0A"),
+        "sugar": to_checksum_address("0x69dD9db6d8f8E7d83887A704f447b1a584b599A1"),
+        "lp_sugar": to_checksum_address("0x69dD9db6d8f8E7d83887A704f447b1a584b599A1"),
+        "rewards_sugar": to_checksum_address(
+            "0x1b121EfDaF4ABb8785a315C51D29BCE0552A7678"
+        ),
+        "token_sugar": to_checksum_address(
+            "0x910CD56277994B4970F49AEDA52c96aD620aE81D"
+        ),
+        "ve_sugar": to_checksum_address("0x4d6A741cEE6A8cC5632B2d948C050303F6246D24"),
+        "relay_sugar": to_checksum_address(
+            "0x3dd0849D66DBd63D06f11442502e200601c50790"
+        ),
+        "lp_helper": to_checksum_address("0x1a130fB30CEFc7465f796C9bc959E8402Ae46E8E"),
+        "swapper": to_checksum_address("0x91616a7B9CF6D23f8C17845581051EBdC4BcB916"),
+        "universal_router": to_checksum_address(
+            "0xC5b6786D7B64767D775877b0B6A319AD946B11B5"
+        ),
+        "permit2": to_checksum_address("0x494bbD8A3302AcA833D307D11838f18DbAdA9C25"),
         "minter": to_checksum_address("0xeB018363F0a9Af8f91F06FEe6613a751b2A33FE5"),
         "gauge_factory": to_checksum_address(
             "0x35f35cA5B132CaDf2916BaB57639128eAC5bbcb5"
