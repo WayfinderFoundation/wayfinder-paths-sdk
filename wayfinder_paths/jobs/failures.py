@@ -16,6 +16,7 @@ gates, refuted hypotheses) still stop the line — that is the system working.
 
 from __future__ import annotations
 
+import shutil
 import time
 from pathlib import Path
 
@@ -54,6 +55,24 @@ def classify_failure(error: str) -> str:
     if any(pattern in text for pattern in INFRASTRUCTURE_PATTERNS):
         return "infrastructure"
     return "evidence"
+
+
+def disk_used_pct(path: str | Path) -> float | None:
+    """Percent of the filesystem holding `path` in use; None on failure.
+
+    The jobs box's 2GB /wf volume silently filled to 100%: boot rsync died
+    half-way, opencode serve crash-looped, runnerd could not start, and live
+    trading loops went dark ~25 minutes with zero alerting. Fill level is
+    the box truth that predicts that failure mode before it lands. Never
+    raises.
+    """
+    try:
+        usage = shutil.disk_usage(path)
+        if usage.total <= 0:
+            return None
+        return 100.0 * usage.used / usage.total
+    except OSError:  # missing path / unmounted volume
+        return None
 
 
 def cpu_steal_pct(sample_seconds: float = 0.2) -> float | None:

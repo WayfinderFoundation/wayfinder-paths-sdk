@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import signal
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -664,6 +665,86 @@ def _check_loop_gap(store: JobStore, job: Any, now: datetime) -> dict[str, Any] 
     return None
 
 
+# Disk-pressure alerting: the production box's 2GB /wf volume silently filled
+# to 100% — boot rsync died half-way, opencode serve crash-looped, runnerd
+# could not start, and live trading loops went dark ~25 minutes with ZERO
+# alerting at 90/95/100%. The watchdog samples the filesystem holding the
+# jobs repo root every pass and journals (and, for live jobs, wakes the
+# agent) on breach — a full disk kills trading exactly like a stalled loop.
+_DISK_ALERT_PATH = "state/disk_pressure_alert.json"
+DISK_ALERT_PCT_ENV = "WAYFINDER_DISK_ALERT_PCT"
+DEFAULT_DISK_ALERT_PCT = 85
+# One journal entry per pressure episode: re-alert only after this window,
+# or immediately when usage has climbed this much further.
+DISK_REALERT_WINDOW = timedelta(hours=6)
+DISK_REALERT_RISE_PCT = 5.0
+
+
+def _check_disk_usage(
+    store: JobStore, job: Any, now: datetime
+) -> dict[str, Any] | None:
+    usage = shutil.disk_usage(store.repo_root)
+    if usage.total <= 0:
+        return None
+    pct_used = 100.0 * usage.used / usage.total
+    threshold = int(os.environ.get(DISK_ALERT_PCT_ENV) or DEFAULT_DISK_ALERT_PCT)
+    loop = getattr(job, "script_loop", None)
+    mode = (
+        str(getattr(loop, "mode", "") or "")
+        if loop is not None and getattr(loop, "enabled", False)
+        else ""
+    )
+    marker = store.read_json(job.id, _DISK_ALERT_PATH) or {}
+    if pct_used >= threshold:
+        alerted_pct = float(marker.get("pct_used") or 0.0)
+        if (
+            marker
+            and _age(now, marker.get("alerted_at")) < DISK_REALERT_WINDOW
+            and pct_used < alerted_pct + DISK_REALERT_RISE_PCT
+        ):
+            return None  # already alerted for this pressure episode
+        store.write_json(
+            job.id,
+            _DISK_ALERT_PATH,
+            {"pct_used": round(pct_used, 1), "alerted_at": now.isoformat()},
+        )
+        store.append_journal(
+            job.id,
+            {
+                "type": "disk_pressure",
+                "pct_used": round(pct_used, 1),
+                "free_mb": usage.free // (1024 * 1024),
+                "total_mb": usage.total // (1024 * 1024),
+                "threshold_pct": threshold,
+                "mode": mode,
+            },
+        )
+        if mode == "live":
+            # circular import: worker → application → … → triggers
+            from wayfinder_paths.jobs.triggers import fire_triggers
+
+            fire_triggers(store, job, ["disk_pressure"], source="watchdog")
+        return {
+            "action": "disk_pressure",
+            "pct_used": round(pct_used, 1),
+            "threshold_pct": threshold,
+            "mode": mode,
+        }
+    if marker:
+        store.write_json(job.id, _DISK_ALERT_PATH, {})
+        store.append_journal(
+            job.id,
+            {
+                "type": "disk_pressure_recovered",
+                "pct_used": round(pct_used, 1),
+                "threshold_pct": threshold,
+                "mode": mode,
+            },
+        )
+        return {"action": "disk_pressure_recovered", "mode": mode}
+    return None
+
+
 # Lifecycle evaluation is cheap (json reads + arithmetic) but its decisions
 # are consequential — a 6h cadence matches the counterfactual cycle and keeps
 # kill/graduate flips out of the 5-minute noise floor.
@@ -843,6 +924,13 @@ def recover_stalled_applications(
             loop_gap_event = None
         if loop_gap_event is not None:
             recovered.append({"job_id": job.id, **loop_gap_event})
+        try:
+            disk_event = _check_disk_usage(store, job, now)
+        except Exception as exc:
+            errors.append({"job_id": job.id, "error": f"disk: {exc}"})
+            disk_event = None
+        if disk_event is not None:
+            recovered.append({"job_id": job.id, **disk_event})
         try:
             for lifecycle_event in _run_lifecycle_pass(store, job.id, now):
                 recovered.append({"job_id": job.id, **lifecycle_event})
