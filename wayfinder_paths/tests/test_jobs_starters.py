@@ -132,9 +132,7 @@ def test_hype_passive_rsi_honors_engine_stop_cooldown() -> None:
         {"HYPE": [100.0 - index for index in range(24)]},
         interval="5min",
     )
-    ctx.strategy_state["protection_cooldowns"] = {
-        "HYPE": "2026-01-02T00:00:00+00:00"
-    }
+    ctx.strategy_state["protection_cooldowns"] = {"HYPE": "2026-01-02T00:00:00+00:00"}
 
     assert strategy.decide(ctx) == []
 
@@ -310,7 +308,9 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
         "hype-passive-rsi-staged-5m",
     }
     assert all(item["risk_limits"]["max_drawdown"] == -0.08 for item in makers)
-    assert all(item["risk_controls"]["per_position_stop"]["take_profit"] for item in makers)
+    assert all(
+        item["risk_controls"]["per_position_stop"]["take_profit"] for item in makers
+    )
     assert all(
         item["research_evidence"]["recent_120_day_replay"][
             "return_after_fees_and_slippage"

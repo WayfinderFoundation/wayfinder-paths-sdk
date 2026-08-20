@@ -66,9 +66,7 @@ class MixedVolumeCapitulationStrategy:
             names = ", ".join(sorted(str(symbol) for symbol in unknown_symbols))
             raise ValueError(f"symbol_weights contains unknown symbols: {names}")
         self.symbol_weights = {
-            symbol: float(
-                configured_weights.get(symbol, self.params["weight_per_leg"])
-            )
+            symbol: float(configured_weights.get(symbol, self.params["weight_per_leg"]))
             for symbol in self.params["symbols"]
         }
         if any(
@@ -79,8 +77,7 @@ class MixedVolumeCapitulationStrategy:
         gross = sum(self.symbol_weights.values())
         if gross > 1.0:
             self.symbol_weights = {
-                symbol: weight / gross
-                for symbol, weight in self.symbol_weights.items()
+                symbol: weight / gross for symbol, weight in self.symbol_weights.items()
             }
 
     def precompute(self, frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
@@ -150,10 +147,7 @@ class MixedVolumeCapitulationStrategy:
                 if should_exit
                 else self.symbol_weights[symbol]
                 if position is not None
-                or (
-                    should_enter
-                    and str(self.params["entry_order_type"]) == "market"
-                )
+                or (should_enter and str(self.params["entry_order_type"]) == "market")
                 else 0.0
             )
 

@@ -286,10 +286,14 @@ def main() -> None:
     parser.add_argument("--symbol", default="HYPE")
     parser.add_argument("--deep", action="store_true")
     args = parser.parse_args()
-    frame = duckdb.connect().execute(
-        "SELECT * FROM read_parquet(?) WHERE symbol=? ORDER BY timestamp",
-        [args.dataset, args.symbol],
-    ).df()
+    frame = (
+        duckdb.connect()
+        .execute(
+            "SELECT * FROM read_parquet(?) WHERE symbol=? ORDER BY timestamp",
+            [args.dataset, args.symbol],
+        )
+        .df()
+    )
     arrays = _features(frame)
     train_end = int(len(frame) * 0.70)
     validation_end = int(len(frame) * 0.85)
@@ -298,9 +302,7 @@ def main() -> None:
         params = np.array(list(_grid_rows(staged, args.deep)), dtype=np.float64)
         training = _run_grid(*arrays, 220, train_end, params, staged)
         viable = np.where(
-            (training[:, 1] > 0)
-            & (training[:, 3] >= 50)
-            & (training[:, 2] > -0.25)
+            (training[:, 1] > 0) & (training[:, 3] >= 50) & (training[:, 2] > -0.25)
         )[0]
         top = viable[np.argsort(training[viable, 1])[-50:][::-1]]
         scored = []
@@ -309,7 +311,9 @@ def main() -> None:
                 *arrays, train_end, validation_end, params[index], staged
             )
             full = _simulate(*arrays, 220, len(frame), params[index], staged)
-            scored.append((min(training[index, 1], validation[1]), index, validation, full))
+            scored.append(
+                (min(training[index, 1], validation[1]), index, validation, full)
+            )
         print(name, "grid", len(params), "viable", len(viable))
         for _, index, validation, full in sorted(scored, reverse=True)[:15]:
             print(

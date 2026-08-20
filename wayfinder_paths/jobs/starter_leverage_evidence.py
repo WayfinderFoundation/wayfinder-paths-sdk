@@ -54,21 +54,11 @@ STARTER_LEVERAGE_RESULTS: dict[str, tuple[dict[str, Any], ...]] = {
         _result(5, 0.7519, 3.1396, -0.1338, 104, 782.27, MEAN_REVERSION_HALT),
     ),
     "balanced-passive-capitulation-1h": (
-        _result(
-            1, 0.1995, 3.666, -0.0149, 78, 77.31, MAKER_MEAN_REVERSION_HALT
-        ),
-        _result(
-            2, 0.4326, 3.673, -0.0297, 78, 171.22, MAKER_MEAN_REVERSION_HALT
-        ),
-        _result(
-            3, 0.7039, 3.680, -0.0445, 78, 284.54, MAKER_MEAN_REVERSION_HALT
-        ),
-        _result(
-            4, 1.0187, 3.686, -0.0593, 78, 420.41, MAKER_MEAN_REVERSION_HALT
-        ),
-        _result(
-            5, 1.3828, 3.692, -0.0740, 78, 582.43, MAKER_MEAN_REVERSION_HALT
-        ),
+        _result(1, 0.1995, 3.666, -0.0149, 78, 77.31, MAKER_MEAN_REVERSION_HALT),
+        _result(2, 0.4326, 3.673, -0.0297, 78, 171.22, MAKER_MEAN_REVERSION_HALT),
+        _result(3, 0.7039, 3.680, -0.0445, 78, 284.54, MAKER_MEAN_REVERSION_HALT),
+        _result(4, 1.0187, 3.686, -0.0593, 78, 420.41, MAKER_MEAN_REVERSION_HALT),
+        _result(5, 1.3828, 3.692, -0.0740, 78, 582.43, MAKER_MEAN_REVERSION_HALT),
     ),
     "mixed-momentum-rank-1h": (
         _result(1, 0.2310, 1.5585, -0.1096, 261, 325.04, OTHER_STARTER_HALT),
@@ -92,38 +82,18 @@ STARTER_LEVERAGE_RESULTS: dict[str, tuple[dict[str, Any], ...]] = {
         _result(5, 0.7307, 1.2168, -0.4753, 151, 1129.24, OTHER_STARTER_HALT),
     ),
     "hype-passive-rsi-full-5m": (
-        _result(
-            1, 0.2566, 1.6639, -0.0627, 244, 613.80, MAKER_MEAN_REVERSION_HALT
-        ),
-        _result(
-            2, 0.5666, 1.7103, -0.1179, 244, 1413.20, MAKER_MEAN_REVERSION_HALT
-        ),
-        _result(
-            3, 0.9378, 1.7520, -0.1670, 244, 2441.78, MAKER_MEAN_REVERSION_HALT
-        ),
-        _result(
-            4, 1.3782, 1.7897, -0.2111, 244, 3750.16, MAKER_MEAN_REVERSION_HALT
-        ),
-        _result(
-            5, 1.8962, 1.8240, -0.2508, 244, 5396.30, MAKER_MEAN_REVERSION_HALT
-        ),
+        _result(1, 0.2566, 1.6639, -0.0627, 244, 613.80, MAKER_MEAN_REVERSION_HALT),
+        _result(2, 0.5666, 1.7103, -0.1179, 244, 1413.20, MAKER_MEAN_REVERSION_HALT),
+        _result(3, 0.9378, 1.7520, -0.1670, 244, 2441.78, MAKER_MEAN_REVERSION_HALT),
+        _result(4, 1.3782, 1.7897, -0.2111, 244, 3750.16, MAKER_MEAN_REVERSION_HALT),
+        _result(5, 1.8962, 1.8240, -0.2508, 244, 5396.30, MAKER_MEAN_REVERSION_HALT),
     ),
     "hype-passive-rsi-staged-5m": (
-        _result(
-            1, 0.2299, 1.5785, -0.0653, 334, 561.83, MAKER_MEAN_REVERSION_HALT
-        ),
-        _result(
-            2, 0.5035, 1.6300, -0.1228, 334, 1269.53, MAKER_MEAN_REVERSION_HALT
-        ),
-        _result(
-            3, 0.8267, 1.6764, -0.1739, 334, 2152.94, MAKER_MEAN_REVERSION_HALT
-        ),
-        _result(
-            4, 1.2060, 1.7184, -0.2196, 334, 3246.21, MAKER_MEAN_REVERSION_HALT
-        ),
-        _result(
-            5, 1.6477, 1.7568, -0.2608, 334, 4587.94, MAKER_MEAN_REVERSION_HALT
-        ),
+        _result(1, 0.2299, 1.5785, -0.0653, 334, 561.83, MAKER_MEAN_REVERSION_HALT),
+        _result(2, 0.5035, 1.6300, -0.1228, 334, 1269.53, MAKER_MEAN_REVERSION_HALT),
+        _result(3, 0.8267, 1.6764, -0.1739, 334, 2152.94, MAKER_MEAN_REVERSION_HALT),
+        _result(4, 1.2060, 1.7184, -0.2196, 334, 3246.21, MAKER_MEAN_REVERSION_HALT),
+        _result(5, 1.6477, 1.7568, -0.2608, 334, 4587.94, MAKER_MEAN_REVERSION_HALT),
     ),
     "btc-eth-relative-strength-1d": (
         _result(1, 0.2090, 0.9930, -0.1102, 182, 56.43, OTHER_STARTER_HALT),

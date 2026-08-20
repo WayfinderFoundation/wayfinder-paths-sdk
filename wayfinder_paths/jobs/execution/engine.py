@@ -1260,6 +1260,7 @@ async def _check_liquidation(
     state.brackets = {}
     state.native_protections = {}
     state.pending_intents = []
+    state.resting_orders = {}
     result.guard_events.append(
         {
             "kind": "liquidation",
@@ -1280,8 +1281,9 @@ async def flatten_positions(
     trace: ExecutionTrace,
     result: TickResult,
 ) -> None:
-    """Reduce-only CLOSE for every open position at the latest close. Used by
-    the stale-data "flat" policy and by the manual kill switch (--flatten)."""
+    """Reduce-only CLOSE for every open position at the latest close, plus a
+    cancel of every resting order. Used by the stale-data "flat" policy and by
+    the manual kill switch (--flatten)."""
     for symbol, position in list(state.ledger.positions.items()):
         bracket = state.brackets.get(symbol) or {}
         # Venue resolution: bracket venue if routable; else the single
@@ -1319,6 +1321,37 @@ async def flatten_positions(
                 timestamp=timestamp,
             )
         state.brackets.pop(symbol, None)
+    # A flatten means "no exposure, no pending exposure": drop EVERY resting
+    # order, not just reduce-only ones tied to the closed positions. The CLOSE
+    # fills above already drop reduce-only TPs as a side effect, but
+    # non-reduce-only entry limits (including for symbols with no open
+    # position) would otherwise survive and fill after the halt. State-level
+    # removal is authoritative; the broker cancel mirrors the best-effort
+    # expiry cancel in _settle_resting_orders.
+    for client_order_id, order in list(state.resting_orders.items()):
+        state.resting_orders.pop(client_order_id, None)
+        broker = brokers.get(order.intent.venue) or brokers.get("*")
+        if broker is not None:
+            try:
+                await broker.cancel(client_order_id)
+            except Exception as exc:  # noqa: BLE001 - cancel is best effort
+                result.guard_events.append(
+                    {
+                        "kind": "limit_cancel_failed",
+                        "client_order_id": client_order_id,
+                        "reason": str(exc),
+                        "timestamp": timestamp,
+                    }
+                )
+        result.guard_events.append(
+            {
+                "kind": "limit_cancelled",
+                "client_order_id": client_order_id,
+                "symbol": order.intent.symbol,
+                "reason": "flatten",
+                "timestamp": timestamp,
+            }
+        )
 
 
 def _validate_intent(

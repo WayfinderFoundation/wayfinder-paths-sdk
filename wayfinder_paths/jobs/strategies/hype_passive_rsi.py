@@ -55,9 +55,9 @@ class HypePassiveRsiStrategy:
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         self.params = merge_params(self.default_params, params)
         self.symbol = str(self.params["symbols"][0])
-        self.warmup_bars = max(
-            int(self.params["rsi_period"]), int(self.params["stop_atr_period"])
-        ) + 4
+        self.warmup_bars = (
+            max(int(self.params["rsi_period"]), int(self.params["stop_atr_period"])) + 4
+        )
         exit_mode = str(self.params["exit_mode"])
         if exit_mode not in {"full", "staged"}:
             raise ValueError("exit_mode must be 'full' or 'staged'")
@@ -160,7 +160,9 @@ class HypePassiveRsiStrategy:
                 return float(value)
         return fallback
 
-    def _take_profit_orders(self, position: Any, entry_atr: float) -> list[dict[str, Any]]:
+    def _take_profit_orders(
+        self, position: Any, entry_atr: float
+    ) -> list[dict[str, Any]]:
         if str(self.params["exit_mode"]) == "full":
             return [
                 self._take_profit(
@@ -181,9 +183,7 @@ class HypePassiveRsiStrategy:
                 target_atr=float(self.params["take_profit_one_atr"]),
                 entry_atr=entry_atr,
                 stage="one",
-                move_stop_to_break_even=bool(
-                    self.params["move_stop_to_break_even"]
-                ),
+                move_stop_to_break_even=bool(self.params["move_stop_to_break_even"]),
             ),
             self._take_profit(
                 position,

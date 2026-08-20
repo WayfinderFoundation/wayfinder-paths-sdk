@@ -776,6 +776,126 @@ async def test_stale_flat_policy_closes_positions() -> None:
     assert any(fill.reduce_only for fill in result.fills)
 
 
+async def test_flatten_cancels_resting_entry_alongside_position() -> None:
+    state = EngineState()
+    broker = BacktestBroker(maker_fee_bps=1.5)
+    opener = await _tick(
+        _strategy(
+            [
+                OrderIntent(
+                    action="OPEN",
+                    venue="hyperliquid",
+                    symbol="SNX",
+                    side="long",
+                    size=2,
+                ),
+                OrderIntent(
+                    action="OPEN",
+                    venue="hyperliquid",
+                    symbol="SNX",
+                    side="long",
+                    notional=95.0,
+                    limit_price=9.5,
+                    time_in_force="ALO",
+                    expires_after_bars=5,
+                ),
+            ]
+        ),
+        _view([10.0, 10.0]),
+        state=state,
+        brokers={"hyperliquid": broker},
+    )
+    assert opener.skipped is False
+    assert "SNX" in state.ledger.positions
+    assert len(state.resting_orders) == 1
+
+    stale_view = _view([10.0, 10.0, 10.0])
+    result = await _tick(
+        _strategy([]),
+        stale_view,
+        state=state,
+        brokers={"hyperliquid": broker},
+        spec=_spec(bar_interval="5m", max_bar_age_intervals=2, stale_policy="flat"),
+        timestamp=stale_view.timestamps[-1] + pd.Timedelta(minutes=30),
+    )
+
+    assert state.ledger.positions == {}
+    assert any(fill.reduce_only for fill in result.fills)
+    assert state.resting_orders == {}
+    assert state.to_dict()["resting_orders"] == {}
+    assert any(
+        event["kind"] == "limit_cancelled" and event["reason"] == "flatten"
+        for event in result.guard_events
+    )
+
+
+async def test_flatten_cancels_resting_entry_without_position() -> None:
+    state = EngineState()
+    broker = BacktestBroker(maker_fee_bps=1.5)
+    await _tick(
+        _strategy(
+            [
+                OrderIntent(
+                    action="OPEN",
+                    venue="hyperliquid",
+                    symbol="SNX",
+                    side="long",
+                    notional=95.0,
+                    limit_price=9.5,
+                    time_in_force="ALO",
+                    expires_after_bars=5,
+                )
+            ]
+        ),
+        _view([10.0, 10.0]),
+        state=state,
+        brokers={"hyperliquid": broker},
+    )
+    assert state.ledger.positions == {}
+    assert len(state.resting_orders) == 1
+
+    stale_view = _view([10.0, 10.0, 10.0])
+    flattened = await _tick(
+        _strategy([]),
+        stale_view,
+        state=state,
+        brokers={"hyperliquid": broker},
+        spec=_spec(bar_interval="5m", max_bar_age_intervals=2, stale_policy="flat"),
+        timestamp=stale_view.timestamps[-1] + pd.Timedelta(minutes=30),
+    )
+
+    assert flattened.fills == []
+    assert state.resting_orders == {}
+    assert state.to_dict()["resting_orders"] == {}
+    assert any(
+        event["kind"] == "limit_cancelled" and event["reason"] == "flatten"
+        for event in flattened.guard_events
+    )
+
+    # This bar trades through the cancelled limit; it must not fill.
+    third = await _tick(
+        _strategy([]),
+        CompletedBarsView.from_rows(
+            [
+                *stale_view.to_rows(),
+                {
+                    "timestamp": "2026-01-01T00:15:00Z",
+                    "symbol": "SNX",
+                    "open": 10.0,
+                    "high": 10.1,
+                    "low": 9.4,
+                    "close": 9.8,
+                    "volume": 10,
+                },
+            ]
+        ),
+        state=state,
+        brokers={"hyperliquid": broker},
+    )
+    assert third.fills == []
+    assert state.ledger.positions == {}
+
+
 async def test_resolution_event_settles_outcome_token_position() -> None:
     broker = FakeBroker(capabilities=PREDICTION_CAPS)
     state = EngineState()
