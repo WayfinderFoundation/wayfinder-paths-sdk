@@ -8,6 +8,7 @@ forward-result machinery owns the user's results.
 from __future__ import annotations
 
 import copy
+import importlib
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -23,7 +24,7 @@ from wayfinder_paths.jobs.strategies._starter_utils import (
     RANKING_STOP_DEFAULTS,
 )
 
-STARTER_CATALOG_VERSION = "1.6.0"
+STARTER_CATALOG_VERSION = "1.7.0"
 STARTER_STRATEGY_INCEPTION_AT = "2026-08-18T00:00:00+00:00"
 STARTER_EVIDENCE_REVISION = "1.6.0"
 STARTER_LEVERAGE_DEFAULT = 1
@@ -32,6 +33,9 @@ STARTER_LEVERAGE_MAXIMUM = 5
 STARTER_LEVERAGE_STEP = 1
 # Evidence-window owner policy: starter backtests/validation replay 120 days.
 STARTER_DATASET_DAYS = 120
+# Slack on top of the strategy's warmup gate so the live driver's sliding
+# window always clears warmup even when the feed drops a few leading bars.
+STARTER_LOOKBACK_MARGIN_BARS = 20
 
 
 def validate_starter_leverage(value: Any) -> int:
@@ -177,7 +181,10 @@ class StarterDefinition:
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
-        payload["params"] = self.configured_params()
+        payload["params"] = {
+            **self.configured_params(),
+            "lookback_bars": starter_lookback_bars(self),
+        }
         payload["risk_limits"] = self.risk_limits()
         payload["risk_controls"] = self.risk_controls()
         payload["leverage_control"] = {
@@ -247,6 +254,35 @@ class StarterDefinition:
             }
         )
         return payload
+
+
+def starter_warmup_bars(definition: StarterDefinition) -> int:
+    """The strategy's own warmup gate, computed from the exact params the
+    launched job will run with. Every starter strategy declares
+    ``warmup_bars`` in ``__init__``; a module that doesn't fails loudly here
+    (and in the catalog test) instead of shipping a starter that never trades.
+    """
+    module = importlib.import_module(definition.module)
+    strategy = module.build_strategy(
+        {**definition.configured_params(), "symbols": list(definition.symbols)}
+    )
+    warmup = int(strategy.warmup_bars)
+    if warmup <= 0:
+        raise ValueError(f"starter {definition.id}: warmup_bars must be positive")
+    return warmup
+
+
+def starter_lookback_bars(definition: StarterDefinition) -> int:
+    """Live-driver window for this starter: strategy warmup plus margin.
+
+    The live/paper driver hands strategies a sliding window of
+    ``lookback_bars`` completed bars (default 200), so ``ctx.bar_index`` is
+    capped at the window length. A window smaller than the strategy's warmup
+    gate means the starter NEVER trades. Deriving the window from the
+    strategy's declared warmup keeps catalog edits from reintroducing the
+    mismatch.
+    """
+    return starter_warmup_bars(definition) + STARTER_LOOKBACK_MARGIN_BARS
 
 
 _RESEARCH_METHOD = {
@@ -1271,6 +1307,9 @@ def create_starter_job(
         "slippage_bps": 3.5,
         "min_trade_notional": 25.0,
         "leverage": selected_leverage,
+        # Without this the driver's default 200-bar window caps ctx.bar_index
+        # below warmup for most starters and they never trade.
+        "lookback_bars": starter_lookback_bars(definition),
     }
     job.controller["starter"] = {
         "id": definition.id,

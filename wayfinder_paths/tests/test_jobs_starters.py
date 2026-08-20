@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 from pathlib import Path
@@ -24,9 +25,12 @@ from wayfinder_paths.jobs.execution.primitives import (
 )
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.starters import (
+    STARTER_DEFINITIONS,
     coerce_starter_leverage,
     create_starter_job,
     starter_catalog,
+    starter_lookback_bars,
+    starter_warmup_bars,
     validate_starter_leverage,
 )
 from wayfinder_paths.jobs.store import JobStore
@@ -320,6 +324,63 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
     )
 
 
+# Live-driver window per starter (strategy warmup_bars + 20-bar margin).
+# The driver windows the handed view to lookback_bars, capping ctx.bar_index;
+# any starter whose warmup gate exceeds the window silently never trades —
+# 7 of 11 entries did exactly that under the old 200-bar driver default.
+# A new/edited starter MUST update this table consciously.
+EXPECTED_STARTER_LOOKBACK_BARS = {
+    "mixed-rsi-snapback-1h": 224,
+    "mixed-bollinger-pullback-1h": 224,
+    "mixed-volume-capitulation-1h": 224,
+    "balanced-passive-capitulation-1h": 224,
+    "mixed-momentum-rank-1h": 360,
+    "mixed-sleeve-momentum-15m": 2904,
+    "mixed-low-vol-rank-15m": 504,
+    "hype-passive-rsi-full-5m": 38,
+    "hype-passive-rsi-staged-5m": 38,
+    "btc-eth-relative-strength-1d": 114,
+    "bch-ltc-relative-strength-1d": 114,
+}
+
+
+def test_every_starter_lookback_clears_its_warmup_gate() -> None:
+    assert set(EXPECTED_STARTER_LOOKBACK_BARS) == {
+        definition.id for definition in STARTER_DEFINITIONS
+    }
+    for definition in STARTER_DEFINITIONS:
+        # Independently rebuild the strategy the way the driver does and read
+        # its warmup gate — the helpers must agree with the real strategy.
+        module = importlib.import_module(definition.module)
+        strategy = module.build_strategy(
+            {**definition.configured_params(), "symbols": list(definition.symbols)}
+        )
+        warmup = int(strategy.warmup_bars)
+        lookback = starter_lookback_bars(definition)
+        assert warmup > 0, definition.id
+        assert lookback > warmup, definition.id
+        assert starter_warmup_bars(definition) == warmup, definition.id
+        assert lookback == EXPECTED_STARTER_LOOKBACK_BARS[definition.id], definition.id
+
+
+def test_starter_catalog_params_expose_lookback_bars() -> None:
+    for item in starter_catalog():
+        assert (
+            item["params"]["lookback_bars"]
+            == EXPECTED_STARTER_LOOKBACK_BARS[item["id"]]
+        )
+
+
+def test_create_starter_sets_driver_lookback_above_warmup(tmp_path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    create_starter_job("mixed-sleeve-momentum-15m", store=store, compile_job=False)
+    job = store.load("mixed-sleeve-momentum-15m")
+    lookback = job.execution_params["lookback_bars"]
+    assert lookback == 2904
+    strategy = MixedSleeveMomentumStrategy(dict(job.execution_params))
+    assert lookback > strategy.warmup_bars  # 2884: momentum_bars 2880 + 4
+
+
 def test_momentum_rank_longs_leaders_and_shorts_laggards() -> None:
     symbols = ["A", "B", "C", "D"]
     strategy = MixedMomentumRankStrategy(
@@ -568,6 +629,7 @@ def test_create_starter_materializes_job_and_forward_inception(tmp_path) -> None
     assert job.controller["initializer_session_id"] == "ses_strategy-labbad"
     assert job.controller["starter"]["selected_leverage"] == 3
     assert job.execution_params["leverage"] == 3
+    assert job.execution_params["lookback_bars"] == 360  # momentum_bars 336 + 4 + 20
     assert result["selected_leverage"] == 3
     assert result["created"] is True
     assert job.execution_spec["data_contract"]["bar_interval"] == "1h"
