@@ -23,6 +23,7 @@ from wayfinder_paths.jobs.execution.validation import (
     FORBIDDEN_ORDER_PATTERNS,
     entrypoint_inside_workspace_check,
 )
+from wayfinder_paths.jobs.failures import classify_failure
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
@@ -635,9 +636,28 @@ def _extract_action(actual: Any) -> Any:
             return None
 
 
+def validation_failure_text(validation: Mapping[str, Any]) -> str:
+    """Aggregate text of every failed check (names + errors + details), for
+    the infrastructure-vs-evidence classification of a failed validation."""
+    parts: list[Any] = [validation.get("error")]
+    for check in validation.get("checks") or []:
+        match check:
+            case Mapping() if not check.get("passed"):
+                parts.extend(
+                    [check.get("name"), check.get("error"), check.get("detail")]
+                )
+    return " | ".join(str(part) for part in parts if part)
+
+
 def validation_summary(validation: Mapping[str, Any]) -> dict[str, Any]:
     checks = validation["checks"]
-    return {
+    summary: dict[str, Any] = {
         "status": validation["status"],
         "failed_checks": [check["name"] for check in checks if not check["passed"]],
     }
+    if summary["status"] == "failed":
+        # infrastructure|evidence: lets the approve gate, the revalidate
+        # flow, and any reader of a residual frozen report distinguish a
+        # transient box condition from a real verdict on the candidate.
+        summary["failure_kind"] = classify_failure(validation_failure_text(validation))
+    return summary

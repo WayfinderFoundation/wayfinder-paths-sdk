@@ -57,7 +57,11 @@ from wayfinder_paths.jobs.models import (
     normalize_agent_mode,
 )
 from wayfinder_paths.jobs.probation import open_paper_probation_leg
-from wayfinder_paths.jobs.proposals import propose_change, restage_proposal
+from wayfinder_paths.jobs.proposals import (
+    propose_change,
+    restage_proposal,
+    revalidate_proposal,
+)
 from wayfinder_paths.jobs.replication import replication_job
 from wayfinder_paths.jobs.research import (
     holdout_check_job,
@@ -1583,6 +1587,21 @@ def restage_cmd(job_id: str, proposal_id: str, candidate_dir: str | None) -> Non
     _echo_json({"ok": True, "result": proposal})
 
 
+@job_cli.command(
+    name="revalidate",
+    help="Re-run validation/comparison for a PENDING proposal against its "
+    "same staged candidate and base revision, replacing the embedded "
+    "candidate_report (recovery for reports frozen by a transient "
+    "infrastructure failure).",
+)
+@click.argument("job_id")
+@click.argument("proposal_id")
+def revalidate_cmd(job_id: str, proposal_id: str) -> None:
+    store = JobStore()
+    proposal = revalidate_proposal(store, job_id, proposal_id)
+    _echo_json({"ok": True, "result": proposal})
+
+
 @job_cli.command(name="reject", help="Reject a pending proposal.")
 @click.argument("job_id")
 @click.argument("proposal_id")
@@ -1630,9 +1649,7 @@ def exhaustion_group() -> None:
 @exhaustion_group.command(name="file", help="File an exhaustion claim (agent-legal).")
 @click.argument("job_id")
 @click.option("--lane", required=True, help="Lane/region claimed exhausted.")
-@click.option(
-    "--evidence", required=True, help="Evidence summary (test counts, refs)."
-)
+@click.option("--evidence", required=True, help="Evidence summary (test counts, refs).")
 @click.option(
     "--provenance",
     type=click.Choice(sorted(CLAIM_PROVENANCES)),
@@ -1733,9 +1750,7 @@ def exhaustion_list_cmd(job_id: str, status: str | None) -> None:
     default="registered kill predicates + mechanical flat-zero floor",
     show_default=True,
 )
-@click.option(
-    "--kill-rules-json", default=None, help="Typed kill predicates as JSON."
-)
+@click.option("--kill-rules-json", default=None, help="Typed kill predicates as JSON.")
 @click.option("--notes", default=None)
 def probation_open_paper_cmd(
     job_id: str,

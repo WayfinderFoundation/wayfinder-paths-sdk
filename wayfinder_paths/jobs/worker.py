@@ -1096,6 +1096,11 @@ def _build_worker_prompt_sections(
             "names and fix them in ONE follow-up propose; after 2 failed propose "
             "attempts in a wake, stop and report the blocker instead of "
             "retrying.\n"
+            "- A pending proposal whose candidate_report failed with "
+            "failure_kind 'infrastructure' is a box condition, not evidence: "
+            "run `wayfinder job revalidate <job_id> <proposal_id>` to re-run "
+            "validation on the same candidate instead of rejecting or "
+            "re-proposing.\n"
         )
     )
     # Re-stage tasks are rendered as prompt text, never only inside the JSON

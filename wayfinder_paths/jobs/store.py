@@ -385,9 +385,23 @@ class JobStore:
             )
         if not report.get("revision"):
             raise ValueError("candidate_report is missing its candidate revision")
-        validation_status = (report.get("validation_summary") or {}).get("status")
+        validation_summary = report.get("validation_summary") or {}
+        validation_status = validation_summary.get("status")
         if validation_status != "passed":
-            raise ValueError(f"candidate validation is not passed: {validation_status}")
+            failure_kind = validation_summary.get("failure_kind")
+            kind_note = f" (failure_kind: {failure_kind})" if failure_kind else ""
+            # Wording deliberately avoids INFRASTRUCTURE_PATTERNS terms: this
+            # message rides along in rejection reasons, which classify_failure
+            # re-reads — a pattern word here would flip evidence rejections
+            # into refused-rejection loops.
+            raise ValueError(
+                f"candidate validation is not passed: {validation_status}"
+                f"{kind_note} — if the failure_kind is infrastructure (a "
+                "transient box condition, not a verdict on the change), run: "
+                f"wayfinder job revalidate {safe_job_id(job_id)} "
+                f"{proposal.get('proposal_id')} to re-run validation against "
+                "the same staged candidate"
+            )
         if report.get("mode") == "validation_only":
             self._ensure_candidate_matches_report(job_id, proposal, report)
             return
