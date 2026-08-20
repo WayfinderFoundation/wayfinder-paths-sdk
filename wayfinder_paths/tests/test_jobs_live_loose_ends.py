@@ -9,6 +9,7 @@ import asyncio
 import json
 
 import httpx
+import yaml
 
 from wayfinder_paths.core.clients.WayfinderClient import WayfinderClient
 from wayfinder_paths.jobs.models import WayfinderJob
@@ -172,16 +173,27 @@ def test_owner_stamp_launder_trap_and_guards(tmp_path) -> None:
     assert "OWNER PROVENANCE IS NEVER YOURS TO CLAIM" in source
 
 
-def test_external_directory_grants_cover_vault_but_exclude_governance() -> None:
+def test_external_directory_grants_cover_vault_deny_governance_and_catch_all() -> None:
     """opencode 1.18+ resolves the .wayfinder / .wayfinder_runs symlinks to
     /wf/user_vault/** and gates writes behind the external_directory
     permission (default "ask" — an unanswerable prompt on headless wakes).
     The job agents must carry narrow allows for exactly the vault trees their
-    edit grants already imply, and the governance plane must stay fail-closed:
-    an explicit external_directory deny, never absorbed by a broad
-    /wf/user_vault/** allow that would undermine the edit-layer deny."""
+    edit grants already imply, keep the governance plane fail-closed with an
+    explicit deny (never absorbed by a broad /wf/user_vault/** allow), and end
+    with a "*" catch-all deny: on a headless worker ask == hang, so a path
+    mistake outside the vault (observed: ../../workspace from the repo root
+    resolving to /workspace) must fail fast with a legible error the agent can
+    self-correct in the same wake. opencode's matcher is specificity-based, so
+    the enumerated allows still win over the catch-all."""
     from pathlib import Path
 
+    expected = {
+        "/wf/user_vault/wayfinder/**": "allow",
+        "/wf/user_vault/scripts/**": "allow",
+        "/wf/user_vault/exports/**": "allow",
+        "/wf/user_vault/governance/**": "deny",
+        "*": "deny",
+    }
     manifests = [
         ".opencode/agents/wayfinder-job-worker.md",
         ".opencode/agents/wayfinder-job-auto-worker.md",
@@ -189,11 +201,8 @@ def test_external_directory_grants_cover_vault_but_exclude_governance() -> None:
     ]
     for path in manifests:
         manifest = Path(path).read_text()
-        assert "external_directory:" in manifest, path
-        assert '"/wf/user_vault/wayfinder/**": allow' in manifest, path
-        assert '"/wf/user_vault/scripts/**": allow' in manifest, path
-        assert '"/wf/user_vault/exports/**": allow' in manifest, path
-        assert '"/wf/user_vault/governance/**": deny' in manifest, path
+        frontmatter = yaml.safe_load(manifest.split("---\n")[1])
+        assert frontmatter["permission"]["external_directory"] == expected, path
         # A wholesale vault grant would cover governance/ and gut the
         # capability boundary — the allows must stay enumerated.
         assert '"/wf/user_vault/**"' not in manifest, path

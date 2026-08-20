@@ -40,6 +40,11 @@ permission:
     "/wf/user_vault/scripts/**": allow
     "/wf/user_vault/exports/**": allow
     "/wf/user_vault/governance/**": deny
+    # Catch-all deny: any other external path (e.g. a depth mistake like
+    # ../../workspace resolving to /workspace) fails fast with a legible
+    # error instead of hanging on the default "ask". The matcher is
+    # specificity-based, so the enumerated allows above still win.
+    "*": deny
 
   bash:
     # Provenance guard: the worker cleared a live-mode audit flag by running
