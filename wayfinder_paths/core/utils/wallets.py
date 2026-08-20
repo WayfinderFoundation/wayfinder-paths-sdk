@@ -437,19 +437,15 @@ async def create_remote_wallet(
             policies = [build_session_policy()]
         else:
             raise ValueError("policies is required when wallet_type=policy")
-    result = await WALLET_CLIENT.create_wallet(
+    # A create provisions an EVM + SVM wallet pair ({"evm": ..., "svm": ...})
+    # and binds the EVM leg to the instance in one atomic call.
+    return await WALLET_CLIENT.create_wallet(
         chain_type=chain_type,
         policies=policies,
         label=label,
         wallet_type=wallet_type,
+        instance_id=get_opencode_instance_id(),
     )
-    # A create provisions an EVM + SVM wallet pair ({"evm": ..., "svm": ...});
-    # the instance binds to the EVM wallet.
-    if is_opencode_instance():
-        await WALLET_CLIENT.bind_to_instance(
-            result["evm"]["wallet_address"], get_opencode_instance_id()
-        )
-    return result
 
 
 def make_random_wallet() -> dict[str, str]:
