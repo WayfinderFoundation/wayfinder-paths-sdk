@@ -101,6 +101,9 @@ def test_compute_status_block_in_wake_prompt(tmp_path: Path) -> None:
     # rejections are invitations, not vetoes.
     assert "compute_status" in sections["stable_prefix"]
     assert "INVITATIONS" in sections["stable_prefix"]
+    # Task guidance: infra-failed pending proposals name revalidate as the
+    # remedy (box condition, not evidence).
+    assert "wayfinder job revalidate" in sections["dynamic_context"]
 
 
 def _approved_proposal(error: str | None) -> dict[str, Any]:

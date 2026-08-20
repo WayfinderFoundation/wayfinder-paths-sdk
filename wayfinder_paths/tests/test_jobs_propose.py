@@ -7,8 +7,11 @@ the approval gate demands the candidate_report evidence.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import shutil
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -19,10 +22,16 @@ from wayfinder_paths.jobs.application import (
     validate_application_candidate,
 )
 from wayfinder_paths.jobs.backtest_artifacts import load_backtest_view
+from wayfinder_paths.jobs.failures import TransientInfrastructureError
 from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.models import WayfinderJob
-from wayfinder_paths.jobs.proposals import propose_change, restage_proposal
+from wayfinder_paths.jobs.proposals import (
+    propose_change,
+    restage_proposal,
+    revalidate_proposal,
+)
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.validation import validation_summary
 from wayfinder_paths.tests.test_jobs_application_gate import _patch_runner
 from wayfinder_paths.tests.test_jobs_gating import _make_job
 from wayfinder_paths.tests.test_wayfinder_jobs import _intent_contract
@@ -314,6 +323,10 @@ def test_propose_fails_named_check_when_entrypoint_outside_workspace(
     summary = proposal["candidate_report"]["validation_summary"]
     assert summary["status"] == "failed"
     assert "entrypoint_inside_workspace" in summary["failed_checks"]
+    # Evidence-class failure: staged as a real verdict, machine-tagged.
+    assert summary["failure_kind"] == "evidence"
+    pid = proposal["proposal_id"]
+    assert (root / "proposals" / f"{pid}.json").exists()
 
 
 def test_stale_baseline_apply_restages_with_approval_carryover(
@@ -413,3 +426,218 @@ def test_restage_gate_failure_auto_rejects(
     assert rejected["status"] == "rejected"
     assert rejected["rejection"]["by"] == "agent"
     assert "re-stage gate failed" in str(rejected["rejection"]["reason"])
+
+
+# ── infra-vs-evidence at propose time + revalidation ─────────────────────────
+# Production bug (verified twice): a ComputeLockBusy during the propose-time
+# candidate backtest froze a FAILED validation_summary into the immutable
+# candidate_report; the approve gate then refused forever even though a
+# re-run passed clean. Infra failures must abort propose (retry when quiet),
+# evidence failures must still stage, and pending proposals get a
+# revalidation path that replaces the snapshot in place.
+
+
+def _infra_failed_validation(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+    return {
+        "status": "failed",
+        "checks": [
+            {
+                "name": "candidate_backtest_valid",
+                "passed": False,
+                "error": (
+                    "heavy-compute lock busy after 600s (held by pid=1 "
+                    "label=scan) — another heavy computation is running"
+                ),
+            }
+        ],
+    }
+
+
+def test_validation_summary_tags_failure_kind() -> None:
+    infra = validation_summary(_infra_failed_validation())
+    assert infra["failure_kind"] == "infrastructure"
+
+    evidence = validation_summary(
+        {
+            "status": "failed",
+            "checks": [
+                {
+                    "name": "scenario_entry",
+                    "passed": False,
+                    "error": "expected >= 1 trades, got 0",
+                }
+            ],
+        }
+    )
+    assert evidence["failure_kind"] == "evidence"
+
+    passed = validation_summary(
+        {"status": "passed", "checks": [{"name": "py_compile", "passed": True}]}
+    )
+    assert "failure_kind" not in passed
+
+
+def test_infra_failure_aborts_propose_after_bounded_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, job_id, root = _make_job(tmp_path)
+    monkeypatch.setenv("WAYFINDER_PROPOSE_LOCK_WAIT_SECONDS", "0.1")
+    calls: list[int] = []
+
+    def busy_validation(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(1)
+        return _infra_failed_validation()
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.proposals.validate_candidate_bundle", busy_validation
+    )
+
+    with pytest.raises(
+        TransientInfrastructureError, match="retry when the box is quiet"
+    ):
+        _propose_params(store, job_id)
+
+    assert len(calls) == 2, "exactly one bounded retry"
+    assert list((root / "proposals").glob("*.json")) == [], "no proposal staged"
+    assert not list((root / "applications").glob("*/candidate")), "candidate cleaned"
+    journal = (root / "journal.jsonl").read_text(encoding="utf-8")
+    assert "proposal_propose_aborted" in journal
+    assert "proposal_created" not in journal
+
+
+def test_infra_failure_skips_retry_while_lock_still_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the box is still busy after the bounded wait, the retry is
+    pointless — abort with one validation attempt, not two."""
+    store, job_id, root = _make_job(tmp_path)
+    monkeypatch.setenv("WAYFINDER_PROPOSE_LOCK_WAIT_SECONDS", "0.1")
+    calls: list[int] = []
+
+    def busy_validation(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(1)
+        return _infra_failed_validation()
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.proposals.validate_candidate_bundle", busy_validation
+    )
+    holder = (tmp_path / ".wayfinder" / "compute.lock").open("a+")
+    fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(TransientInfrastructureError):
+            _propose_params(store, job_id)
+    finally:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+        holder.close()
+
+    assert len(calls) == 1
+    assert list((root / "proposals").glob("*.json")) == []
+
+
+def test_evidence_failure_still_stages_failed_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real verdict on the candidate stages exactly as before — the
+    infra-abort path must never swallow evidence."""
+    store, job_id, root = _make_job(tmp_path)
+
+    def refuted_validation(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "status": "failed",
+            "checks": [
+                {
+                    "name": "candidate_backtest_valid",
+                    "passed": False,
+                    "error": "execution_valid is False: net_return regressed",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.proposals.validate_candidate_bundle",
+        refuted_validation,
+    )
+
+    proposal = _propose_params(store, job_id)
+
+    summary = proposal["candidate_report"]["validation_summary"]
+    assert summary["status"] == "failed"
+    assert summary["failure_kind"] == "evidence"
+    pid = proposal["proposal_id"]
+    assert (root / "proposals" / f"{pid}.json").exists()
+    with pytest.raises(ValueError, match="wayfinder job revalidate"):
+        store.approve_proposal(job_id, pid)
+
+
+def test_revalidate_replaces_frozen_report_and_passes_gate(tmp_path: Path) -> None:
+    """The full production recovery: a frozen infra-failed snapshot blocks
+    approval (with the recovery named in the refusal), revalidate re-runs the
+    same candidate at the same base revision and replaces the snapshot, and
+    the gate passes afterward."""
+    store, job_id, root = _make_job(tmp_path)
+    proposal = _propose_params(store, job_id)
+    pid = proposal["proposal_id"]
+
+    # Freeze a pre-fix infra failure into the immutable snapshot.
+    proposal["candidate_report"]["validation_summary"] = {
+        "status": "failed",
+        "failed_checks": ["candidate_backtest_valid"],
+        "failure_kind": "infrastructure",
+    }
+    proposal["candidate_report"]["mode"] = "validation_only"
+    proposal["candidate_report"]["comparison"] = None
+    store.write_proposal(job_id, proposal)
+
+    with pytest.raises(ValueError, match="wayfinder job revalidate"):
+        store.approve_proposal(job_id, pid)
+
+    revalidated = revalidate_proposal(store, job_id, pid)
+
+    report = revalidated["candidate_report"]
+    assert report["validation_summary"]["status"] == "passed"
+    assert "failure_kind" not in report["validation_summary"]
+    assert report["mode"] == "full"
+    assert report["gate"]["live_ready"] is True, report["gate"]["reasons"]
+    assert report["comparison"]["candidate"]["stats"]
+    assert report["base_revision"] == proposal["base_revision"]
+    journal = (root / "journal.jsonl").read_text(encoding="utf-8")
+    assert "proposal_revalidated" in journal
+
+    approved = store.approve_proposal(job_id, pid)
+    assert approved["status"] == "approved"
+
+
+def test_revalidate_refuses_non_pending(tmp_path: Path) -> None:
+    store, job_id, _ = _make_job(tmp_path)
+    proposal = _propose_params(store, job_id)
+    pid = proposal["proposal_id"]
+    store.approve_proposal(job_id, pid)
+
+    with pytest.raises(ValueError, match="Only pending"):
+        revalidate_proposal(store, job_id, pid)
+
+
+def test_revalidate_refuses_drifted_baseline(tmp_path: Path) -> None:
+    """No baseline drift: once the active revision moves past base_revision,
+    the comparison would be against a world the proposal never saw."""
+    store, job_id, root = _make_job(tmp_path)
+    proposal = _propose_params(store, job_id)
+    pid = proposal["proposal_id"]
+
+    script = root / "workspace" / "src" / "strategy.py"
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\n# drift\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="moved past"):
+        revalidate_proposal(store, job_id, pid)
+
+
+def test_revalidate_refuses_missing_candidate(tmp_path: Path) -> None:
+    store, job_id, root = _make_job(tmp_path)
+    proposal = _propose_params(store, job_id)
+    pid = proposal["proposal_id"]
+    shutil.rmtree(root / "applications" / pid / "candidate")
+
+    with pytest.raises(FileNotFoundError, match="no longer exists"):
+        revalidate_proposal(store, job_id, pid)

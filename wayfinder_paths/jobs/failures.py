@@ -20,6 +20,17 @@ import shutil
 import time
 from pathlib import Path
 
+
+class TransientInfrastructureError(RuntimeError):
+    """A box condition (OOM/lock/timeout) interrupted a pipeline step.
+
+    Raised instead of recording a failed artifact so transient box state
+    never freezes into durable evidence: callers abort and retry when the
+    box is quiet rather than staging a "failed" report the approve gate
+    reads forever.
+    """
+
+
 # Deliberately dumb and greppable: case-insensitive substring match against a
 # flat list. No regex cleverness — anyone auditing a recovery decision should
 # be able to grep the error text against this list by eye.

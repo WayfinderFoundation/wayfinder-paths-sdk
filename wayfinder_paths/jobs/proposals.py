@@ -16,6 +16,7 @@ change that gets promoted.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import uuid
 from pathlib import Path
@@ -24,15 +25,18 @@ from typing import Any
 import yaml
 
 from wayfinder_paths.jobs.application import (
+    _candidate_dir_from_proposal,
     _prepare_candidate_workspace,
     ensure_jobs_v1_contract,
     validate_candidate_bundle,
 )
+from wayfinder_paths.jobs.compute_lock import ComputeLockBusy, heavy_compute_lock
 from wayfinder_paths.jobs.execution.job import (
     backtest_execution_job,
     synthesize_scenario_plan,
 )
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+from wayfinder_paths.jobs.failures import TransientInfrastructureError, classify_failure
 from wayfinder_paths.jobs.gating import (
     compute_workspace_revision,
     evaluate_economic_gate,
@@ -47,10 +51,14 @@ from wayfinder_paths.jobs.improver.spec import (
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import sync_all_jobs
-from wayfinder_paths.jobs.validation import validation_summary
+from wayfinder_paths.jobs.validation import validation_failure_text, validation_summary
 from wayfinder_paths.jobs.worker import JOB_RESULT_MARKER
 
 PROPOSAL_KINDS = {"code_change", "params_update", "model_update", "improver_change"}
+# Bounded wait for the machine-wide heavy-compute lock before the single
+# propose-time retry of an infrastructure-failed candidate validation.
+PROPOSE_LOCK_WAIT_ENV = "WAYFINDER_PROPOSE_LOCK_WAIT_SECONDS"
+_PROPOSE_LOCK_WAIT_DEFAULT_S = 120.0
 
 
 def propose_change(
@@ -153,9 +161,28 @@ def propose_change(
         memo_path.parent.mkdir(parents=True, exist_ok=True)
         memo_path.write_text(memo.rstrip() + "\n", encoding="utf-8")
 
-    validation, candidate_report = _generate_candidate_report(
-        store, job_id, proposal, candidate_dir, base_revision=base_revision, pid=pid
-    )
+    try:
+        validation, candidate_report = _generate_candidate_report(
+            store, job_id, proposal, candidate_dir, base_revision=base_revision, pid=pid
+        )
+    except TransientInfrastructureError as exc:
+        # Abort BEFORE any proposal file exists: a transient box condition
+        # (OOM/lock/timeout) must never freeze into an immutable
+        # candidate_report that the approve gate then refuses forever.
+        shutil.rmtree(candidate_dir.parent, ignore_errors=True)
+        if memo:
+            memo_path = store.job_dir(job_id) / "proposals" / f"{pid}.md"
+            memo_path.unlink(missing_ok=True)
+        store.append_journal(
+            job_id,
+            {
+                "type": "proposal_propose_aborted",
+                "proposal_id": pid,
+                "failure_kind": "infrastructure",
+                "error": str(exc)[:300],
+            },
+        )
+        raise
     proposal["candidate_report"] = candidate_report
 
     store.write_proposal(job_id, proposal)
@@ -304,6 +331,9 @@ def _generate_candidate_report(
     pid: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     validation = validate_candidate_bundle(store, job_id, proposal, candidate_dir)
+    validation = _retry_infrastructure_failure(
+        store, job_id, proposal, candidate_dir, validation
+    )
     candidate_revision = compute_workspace_revision(candidate_dir)
     comparison = _build_comparison(
         store, job_id, candidate_dir, base_revision=base_revision, pid=pid
@@ -370,6 +400,131 @@ def _generate_candidate_report(
         "generated_at": utc_now_iso(),
     }
     return validation, candidate_report
+
+
+def _retry_infrastructure_failure(
+    store: JobStore,
+    job_id: str,
+    proposal: dict[str, Any],
+    candidate_dir: Path,
+    validation: dict[str, Any],
+) -> dict[str, Any]:
+    """Infrastructure failures (ComputeLockBusy, OOM, timeouts) are box
+    conditions, not evidence about the candidate — freezing one into an
+    immutable candidate_report leaves a pending proposal the approve gate
+    refuses forever (verified production dead end). Retry ONCE after a
+    bounded wait for the heavy-compute lock; if the box is still unhealthy,
+    raise so the caller aborts instead of staging a failed report.
+    Evidence-class failures pass through untouched — a real verdict must
+    still stage."""
+    if validation["status"] != "failed":
+        return validation
+    failure_text = validation_failure_text(validation)
+    if classify_failure(failure_text) != "infrastructure":
+        return validation
+    wait_s = float(
+        os.environ.get(PROPOSE_LOCK_WAIT_ENV, "") or _PROPOSE_LOCK_WAIT_DEFAULT_S
+    )
+    if _compute_lock_freed(store, job_id, wait_s):
+        validation = validate_candidate_bundle(store, job_id, proposal, candidate_dir)
+        if validation["status"] != "failed":
+            return validation
+        failure_text = validation_failure_text(validation)
+        if classify_failure(failure_text) != "infrastructure":
+            return validation
+    raise TransientInfrastructureError(
+        "transient infrastructure failure — retry when the box is quiet: "
+        f"{failure_text[:300] or 'unknown'}"
+    )
+
+
+def _compute_lock_freed(store: JobStore, job_id: str, wait_s: float) -> bool:
+    """Bounded wait for the machine-wide heavy-compute lock to come free.
+    Acquire-and-release only — the retry's own backtest re-acquires it.
+    False means the box is still busy after the wait."""
+    try:
+        with heavy_compute_lock(
+            repo_root=store.repo_root,
+            label=f"propose-retry-wait:{job_id}",
+            timeout_s=wait_s,
+        ):
+            return True
+    except ComputeLockBusy:
+        return False
+
+
+def revalidate_proposal(
+    store: JobStore, job_id: str, proposal_id: str
+) -> dict[str, Any]:
+    """Re-run the full validation/comparison for a PENDING proposal against
+    the SAME staged candidate and base revision, replacing the embedded
+    candidate_report.
+
+    Recovery path for reports frozen by a transient infrastructure failure
+    (validation_summary.failure_kind == "infrastructure"): the propose-time
+    snapshot is immutable, so without this the only exit from an
+    infra-failed pending proposal is reject-and-repropose. The candidate and
+    base revision are NOT rebuilt — the same evidence question, asked again
+    on a quiet box. If the job's active revision moved past base_revision
+    the comparison baseline would drift, so refuse: the owner should reject
+    and re-propose against the current workspace instead.
+    """
+    proposal = store.load_proposal(job_id, proposal_id)
+    if proposal["status"] != "pending":
+        raise ValueError(
+            f"Only pending proposals can be revalidated: {proposal_id} is "
+            f"{proposal['status']} (stale approved candidates use "
+            "`wayfinder job restage`)"
+        )
+    candidate_dir = _candidate_dir_from_proposal(store, job_id, proposal)
+    if not candidate_dir.exists():
+        raise FileNotFoundError(
+            f"candidate bundle for {proposal_id} no longer exists at "
+            f"{candidate_dir} — reject the proposal and propose fresh"
+        )
+    root = store.job_dir(job_id)
+    base_revision = str(proposal.get("base_revision") or "")
+    current_revision = compute_workspace_revision(root)
+    if current_revision != base_revision:
+        raise ValueError(
+            f"cannot revalidate {proposal_id}: the job's active revision "
+            f"({current_revision[:12]}) moved past the proposal's base "
+            f"revision ({base_revision[:12]}) — the baseline comparison "
+            "would drift. Reject the proposal and propose fresh against the "
+            "current workspace."
+        )
+    old_summary = (proposal.get("candidate_report") or {}).get(
+        "validation_summary"
+    ) or {}
+    validation, candidate_report = _generate_candidate_report(
+        store,
+        job_id,
+        proposal,
+        candidate_dir,
+        base_revision=base_revision,
+        pid=proposal_id,
+    )
+    proposal["candidate_report"] = candidate_report
+    # Recomputed against the same base: unchanged for an intact candidate,
+    # honest for one that was edited since propose (the regenerated report's
+    # revision covers the current bytes either way).
+    proposal["changed_files"] = _diff_workspaces(root, candidate_dir)
+    proposal["updated_at"] = utc_now_iso()
+    store.write_proposal(job_id, proposal)
+    store.append_journal(
+        job_id,
+        {
+            "type": "proposal_revalidated",
+            "proposal_id": proposal_id,
+            "old_validation_status": old_summary.get("status"),
+            "old_failure_kind": old_summary.get("failure_kind"),
+            "new_validation_status": validation.get("status"),
+            "candidate_revision": candidate_report["revision"],
+        },
+    )
+    store.refresh_scorecard(job_id)
+    sync_all_jobs(store=store)
+    return store.load_proposal(job_id, proposal_id)
 
 
 def restage_proposal(
