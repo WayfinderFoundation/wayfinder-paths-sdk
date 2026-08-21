@@ -48,6 +48,8 @@ def build_world_bundle(
     sandbox: Path,
     repo_root: Path,
     initial_genome: Genome,
+    agent_mode: str = "auto",
+    agent_wake_seconds: int = 300,
 ) -> str:
     """Sandbox job bundle: SDK-visible workspace + the world's dev data as
     the job dataset + the interpreter as the strategy. Hidden rows and the
@@ -94,16 +96,35 @@ def build_world_bundle(
         (sandbox / ".venv").symlink_to(venv_source)
 
     store = JobStore(repo_root=sandbox)
+    # A NORMAL job with a normal goal — the harness under test must see the
+    # same kind of job it sees in production, not benchmark-flavored prompt
+    # text. The agent discovers its situation with its own tools.
     job = WayfinderJob.new(
         f"wob-{world.world_id}",
         goal=(
-            "Maximize risk-adjusted return of this strategy by improving its "
-            "genome parameters (signal/filter/exit/sizing in "
-            "execution_params.genome_spec). The dataset is fixed; there is "
-            "no live venue."
+            "Maximize risk-adjusted return of this strategy. Improve it "
+            "through the standard evidence loop: backtests, grids, "
+            "walk-forward, and gated proposals."
         ),
         script="workspace/src/strategy.py",
-        agent_mode="intervene",
+        # The script lane needs a schedule to compile; it gets paused
+        # immediately in campaigns (no live venue), but registration must
+        # succeed for the agent lane to register after it.
+        interval_seconds=3600,
+        agent_mode=agent_mode,
+        agent_wake_seconds=agent_wake_seconds,
+        # Auto mode refuses to run with empty limits (production guard).
+        # Benchmark worlds have no live venue: the backtest venue with
+        # bounded paper limits satisfies the guard without enabling any
+        # real execution surface.
+        auto_limits={
+            "enabled_venues": ["backtest"],
+            "allowed_symbols": ["SYN"],
+            "max_notional_per_decision": 1000,
+            "max_daily_notional": 10000,
+            "max_open_positions": 1,
+            "max_open_orders": 2,
+        },
         execution_contract="jobs_v1",
     )
     store.save(job)
@@ -121,12 +142,58 @@ def build_world_bundle(
         "genome_spec": initial_genome.to_dict(),
         "fee_bps": world.mechanism.fee_bps,
     }
-    job_yaml["script_loop"] = {"enabled": True, "entrypoint": "workspace/src/strategy.py"}
+    # NEVER touch script_loop: WayfinderJob.new already configured it fully;
+    # a hand-replacement dropped interval_seconds and crashed `job compile`
+    # before the agent lane could register (found live).
     job_yaml_path.write_text(yaml.safe_dump(job_yaml, sort_keys=False))
+
+    # Benchmark jobs must not burn wakes on production side-quests: a fresh
+    # ideation artifact parks the forced-expedition contract (external
+    # research tools are absent in sandboxes — found on pilot wake 0).
+    ideation_dir = root / "research" / "ideation"
+    ideation_dir.mkdir(parents=True, exist_ok=True)
+    from wayfinder_paths.jobs.models import utc_now_iso
+
+    (ideation_dir / "latest.json").write_text(
+        json.dumps(
+            {
+                "generated_at": utc_now_iso(),
+                "sources_consulted": [
+                    {
+                        "tool": "benchmark_bundle",
+                        "query": "n/a",
+                        "takeaway": "Benchmark world: no external research "
+                        "surface exists; optimize the genome on the fixed "
+                        "dataset instead.",
+                    }
+                ],
+                "hypotheses": [
+                    {
+                        "title": "Genome search on the fixed dataset",
+                        "thesis": "The only improvable surface is "
+                        "execution_params.genome_spec.",
+                        "bucket": "testable",
+                        "next_step": "wayfinder job backtest/grid, then "
+                        "propose better genome params",
+                    }
+                ],
+            }
+        )
+    )
+
+    # The backtest CLI needs an execution spec at the job root — without it
+    # the agent cannot evaluate anything (found on the first e2b run).
+    from wayfinder_paths.jobs.execution import ExecutionSpec
+
+    spec = ExecutionSpec()
+    spec.data_contract["bar_interval"] = "1h"
+    (root / "execution_spec.json").write_text(json.dumps(spec.to_dict(), indent=2))
 
     dataset_dir = root / "results" / "backtest"
     dataset_dir.mkdir(parents=True, exist_ok=True)
-    rows = [row for path_rows in world.dev_rows for row in path_rows]
+    # ONE dev path only: the paths share a timeline, so concatenating them
+    # creates duplicate timestamps (pandas reindex failures downstream).
+    rows = list(world.dev_rows[0])
     (dataset_dir / "input_bars.json").write_text(
         json.dumps(
             {
