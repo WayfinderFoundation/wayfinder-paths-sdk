@@ -116,10 +116,12 @@ class BacktestBroker:
         fee_bps: float = 0.0,
         maker_fee_bps: float = 0.0,
         slippage_bps: float = 0.0,
+        stop_market_slippage_bps: float = 0.0,
     ) -> None:
         self.fee_bps = fee_bps
         self.maker_fee_bps = maker_fee_bps
         self.slippage_bps = slippage_bps
+        self.stop_market_slippage_bps = stop_market_slippage_bps
 
     async def place(
         self,
@@ -188,10 +190,15 @@ class BacktestBroker:
             intent.limit_price is not None and intent.metadata.get("_resting_fill")
         )
         side_multiplier = 1 if str(intent.side).lower() in {"buy", "long"} else -1
+        applied_slippage_bps = (
+            self.stop_market_slippage_bps
+            if str(intent.action).upper() == "STOP_LOSS"
+            else self.slippage_bps
+        )
         fill_price = (
             price
             if maker_fill
-            else price * (1 + side_multiplier * self.slippage_bps / 10_000)
+            else price * (1 + side_multiplier * applied_slippage_bps / 10_000)
         )
         fee_bps = self.maker_fee_bps if maker_fill else self.fee_bps
         fee = abs(size * fill_price) * fee_bps / 10_000
@@ -210,6 +217,8 @@ class BacktestBroker:
                 "intent_metadata": intent.metadata,
                 "bracket": intent.bracket,
                 "liquidity": "maker" if maker_fill else "taker",
+                "reference_price": price,
+                "slippage_bps_applied": 0.0 if maker_fill else applied_slippage_bps,
             },
             timestamp=timestamp,
         )
@@ -413,6 +422,9 @@ def simulate_execution(
         fee_bps=_resolve_fee_bps(params_data, strategy),
         maker_fee_bps=_resolve_maker_fee_bps(params_data, strategy),
         slippage_bps=float(params_data.get("slippage_bps") or 0.0),
+        stop_market_slippage_bps=float(
+            params_data.get("stop_market_slippage_bps") or 0.0
+        ),
     )
     state = EngineState()
     trace = ExecutionTrace(execution_spec=spec.to_dict())

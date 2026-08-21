@@ -156,6 +156,11 @@ def propose_change(
         "change_summary": memo or summary,
         "application": {"status": "not_requested", **candidate_descriptor},
     }
+    from wayfinder_paths.jobs.remediation import proposal_remediation_stamp
+
+    remediation = proposal_remediation_stamp(store, job_id)
+    if remediation:
+        proposal["remediation"] = remediation
     if memo:
         memo_path = store.job_dir(job_id) / "proposals" / f"{pid}.md"
         memo_path.parent.mkdir(parents=True, exist_ok=True)
@@ -186,6 +191,9 @@ def propose_change(
     proposal["candidate_report"] = candidate_report
 
     store.write_proposal(job_id, proposal)
+    from wayfinder_paths.jobs.remediation import link_remediation_proposal
+
+    link_remediation_proposal(store, job_id, proposal)
     store.append_journal(
         job_id,
         {
@@ -511,6 +519,9 @@ def revalidate_proposal(
     proposal["changed_files"] = _diff_workspaces(root, candidate_dir)
     proposal["updated_at"] = utc_now_iso()
     store.write_proposal(job_id, proposal)
+    from wayfinder_paths.jobs.remediation import link_remediation_proposal
+
+    link_remediation_proposal(store, job_id, proposal)
     store.append_journal(
         job_id,
         {
@@ -597,6 +608,9 @@ def restage_proposal(
     proposal["candidate_report"] = candidate_report
     proposal["updated_at"] = utc_now_iso()
     store.write_proposal(job_id, proposal)
+    from wayfinder_paths.jobs.remediation import link_remediation_proposal
+
+    link_remediation_proposal(store, job_id, proposal)
     store.append_journal(
         job_id,
         {

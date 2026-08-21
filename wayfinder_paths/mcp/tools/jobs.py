@@ -43,6 +43,7 @@ JobAction = Literal[
     "status",
     "report",
     "regime_health",
+    "remediation_progress",
     "set_agent_mode",
     "set_script_mode",
     "review_now",
@@ -303,6 +304,9 @@ async def core_jobs(
     validation: dict[str, Any] | None = None,
     error: str | None = None,
     reason: str | None = None,
+    remediation_state: Literal["evaluating", "blocked"] | None = None,
+    remediation_note: str | None = None,
+    artifact_path: str | None = None,
     flatten: bool = False,
     kind: str | None = None,
     summary: str | None = None,
@@ -389,6 +393,8 @@ async def core_jobs(
       - `regime_health` returns the deterministic 7/14/30-day incumbent and
         market-state drift report. warning/critical refreshes attribution first;
         any automatic response comes only from protected owner governance.
+      - `remediation_progress` records a bounded evaluation or blocker for an
+        open regime-health case; it never closes the case or changes trading.
       - `review_now` to queue an immediate worker wakeup.
       - `approve_proposal` / `reject_proposal` after the worker creates proposals.
       - `claim_application` / `validate_application` / `complete_application`
@@ -521,6 +527,24 @@ async def core_jobs(
 
     if action == "regime_health":
         return ok(regime_health_job(job_id, store=store, force=force))
+
+    if action == "remediation_progress":
+        if not remediation_state or not remediation_note:
+            return err(
+                "invalid_request",
+                "remediation_progress requires remediation_state and remediation_note",
+            )
+        from wayfinder_paths.jobs.remediation import update_remediation_progress
+
+        return ok(
+            update_remediation_progress(
+                store,
+                job_id,
+                state=remediation_state,
+                note=remediation_note,
+                artifact_path=artifact_path,
+            )
+        )
 
     if action == "set_agent_mode":
         mode = normalize_agent_mode(agent_mode or "monitor")

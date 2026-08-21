@@ -685,6 +685,9 @@ class JobStore:
             self._set_application_status(proposal, "canceled")
         proposal["updated_at"] = utc_now_iso()
         self.write_proposal(job_id, proposal)
+        from wayfinder_paths.jobs.remediation import handle_remediation_rejection
+
+        handle_remediation_rejection(self, job_id, proposal)
         try:
             from wayfinder_paths.jobs.archive import set_candidate_status
 
@@ -775,6 +778,9 @@ class JobStore:
         application["rollback"] = rollback
         proposal["updated_at"] = utc_now_iso()
         self.write_proposal(job_id, proposal)
+        from wayfinder_paths.jobs.remediation import handle_remediation_application
+
+        handle_remediation_application(self, job_id, proposal, status=status)
         self.append_journal(
             job_id,
             {

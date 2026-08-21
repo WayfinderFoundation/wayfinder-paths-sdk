@@ -30,6 +30,10 @@ from wayfinder_paths.jobs.proposals import (
     restage_proposal,
     revalidate_proposal,
 )
+from wayfinder_paths.jobs.remediation import (
+    load_remediation,
+    sync_remediation_with_health,
+)
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.validation import validation_summary
 from wayfinder_paths.tests.test_jobs_application_gate import _patch_runner
@@ -73,6 +77,41 @@ def test_propose_builds_full_candidate_report(tmp_path: Path) -> None:
         (root / "applications" / pid / "candidate" / "job.yaml").read_text()
     )
     assert candidate_yaml["execution_params"]["threshold"] == 10.7
+
+
+def test_proposal_is_automatically_linked_to_open_remediation_case(
+    tmp_path: Path,
+) -> None:
+    store, job_id, _ = _make_job(tmp_path)
+    sync_remediation_with_health(
+        store,
+        job_id,
+        {
+            "status": "critical",
+            "score": 6,
+            "evidence_fingerprint": "evidence-a",
+            "incumbent": {"workspace_revision": "rev-a"},
+            "signals": [
+                {"kind": "drawdown", "severity": 2, "value": 0.12, "window_days": 7}
+            ],
+        },
+    )
+
+    proposal = _propose_params(store, job_id)
+
+    assert proposal["remediation"]["evidence_fingerprint"] == "evidence-a"
+    case = load_remediation(store, job_id)
+    assert case and case["state"] == "proposal_pending"
+    assert case["proposal_id"] == proposal["proposal_id"]
+
+    store.reject_proposal(
+        job_id,
+        proposal["proposal_id"],
+        reason="owner accepts current risk",
+        rejected_by="owner",
+        kind="substantive",
+    )
+    assert load_remediation(store, job_id)["state"] == "owner_accepted_risk"  # type: ignore[index]
 
 
 def test_claim_reuses_propose_time_candidate(
