@@ -245,6 +245,7 @@ class WayfinderJob:
                 "proposal_created",
                 "reconcile_mismatch",
                 "risk_halt",
+                "regime_shift",
             ],
             auto_limits=auto_limits_payload if normalized_mode == "auto" else {},
         )
@@ -312,6 +313,7 @@ class WayfinderJob:
                     "proposal_created",
                     "health_red",
                     "script_failure",
+                    "regime_shift",
                 ],
                 "quiet_on": ["no_change", "normal_success"],
             },

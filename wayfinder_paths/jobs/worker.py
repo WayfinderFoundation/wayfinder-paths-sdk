@@ -491,6 +491,18 @@ def _standing_checks_block(root: Path) -> dict[str, Any]:
             }
     if replication:
         block["backtest_replication"] = replication
+    from wayfinder_paths.jobs.regime_contract import REGIME_HEALTH_PATH
+
+    regime_path = root / REGIME_HEALTH_PATH
+    if regime_path.exists():
+        try:
+            regime = json.loads(regime_path.read_text(encoding="utf-8"))
+        except ValueError:
+            regime = None
+        if isinstance(regime, dict):
+            from wayfinder_paths.jobs.regime_health import compact_regime_health
+
+            block["portfolio_regime_health"] = compact_regime_health(regime)
     if block:
         block["_basis"] = (
             "Routine numbers computed mechanically THIS wake — never re-fetch "
@@ -503,7 +515,10 @@ def _standing_checks_block(root: Path) -> dict[str, Any]:
             "backtest_replication.decayed=true means the ACTIVE revision's "
             "deploy-time in-sample edge is not reproducing on refreshed data "
             "— mechanical evidence of selection on window-local noise; treat "
-            "it as grounds for a revert/kill or re-validation proposal."
+            "it as grounds for a revert/kill or re-validation proposal. "
+            "portfolio_regime_health warning/critical is an incumbent-health "
+            "alarm, not a request to mine a replacement signal: cite the "
+            "fresh attribution artifact before designing treatment."
         )
     return block
 
@@ -1030,6 +1045,13 @@ def _build_worker_prompt_sections(
             "every wake via update_probation_leg; set status "
             "graduated/killed when a criterion trips. A leg missing from "
             "the registry is a protocol violation.\n"
+            "- Regime alarm triage: a standing_checks."
+            "portfolio_regime_health warning/critical "
+            "OVERRIDES the ordinary search assignment: stop signal mining, "
+            "read the detector's named signals, then cite the automatically "
+            "refreshed `attribution` block before choosing whether to revert, "
+            "de-risk, gate a regime, or re-validate. Never explain away a "
+            "critical drawdown because one entry signal still backtests.\n"
             "- Quant loop (diagnose -> design -> ablate -> propose): start "
             "from the `attribution` block — archetype counts name the "
             "dominant failure mode; expectation_deltas name where forward "
@@ -1315,6 +1337,18 @@ def prepare_job_worker_prompt(
     # merging cleanly into every scan frame). Stamp-gated hourly; never
     # raises.
     refresh_derived_features_if_stale(job.id, store=store)
+
+    # Portfolio regime/incumbent health consumes the fresh compact market
+    # artifact above plus forward PnL. On alert it refreshes attribution before
+    # this wake is prompted, and applies only an owner-governed response.
+    try:
+        from wayfinder_paths.jobs.regime_health import regime_health_job
+
+        regime_health_job(job.id, store=store)
+    except Exception as exc:  # noqa: BLE001 — monitor cannot kill a wake
+        store.append_journal(
+            job.id, {"type": "regime_health_failed", "error": str(exc)[:300]}
+        )
 
     # Ideation accountability: journal freshly produced expedition artifacts
     # (owner-visible bucket counts) and escalate once when the daily research

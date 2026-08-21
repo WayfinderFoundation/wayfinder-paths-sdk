@@ -136,6 +136,12 @@ def test_tick_trigger_event_derivation() -> None:
     assert _tick_trigger_events(
         {"ok": True, "guard_events": [{"kind": "native_protection_failed"}]}
     ) == ["risk_halt"]
+    assert _tick_trigger_events(
+        {
+            "ok": True,
+            "regime_health": {"transition": {"alert": True}},
+        }
+    ) == ["regime_shift"]
     assert _tick_trigger_events({"ok": True, "snapshot": {"status": "valid"}}) == []
 
 

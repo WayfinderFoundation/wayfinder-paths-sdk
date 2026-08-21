@@ -65,6 +65,7 @@ from wayfinder_paths.jobs.proposals import (
     restage_proposal,
     revalidate_proposal,
 )
+from wayfinder_paths.jobs.regime_health import regime_health_job
 from wayfinder_paths.jobs.replication import replication_job
 from wayfinder_paths.jobs.research import (
     holdout_check_job,
@@ -1226,6 +1227,21 @@ def decision_log_cmd(job_id: str, limit: int) -> None:
 def replication_cmd(job_id: str, force: bool) -> None:
     _echo_json(
         {"ok": True, "result": replication_job(job_id, store=JobStore(), force=force)}
+    )
+
+
+@job_cli.command(
+    name="regime-health",
+    help="Portfolio-level 7/14/30d incumbent-health monitor: recent drawdown/"
+    "edge shape plus volatility, correlation, liquidity, regime-mix and "
+    "funding drift. Alerts refresh attribution before treatment design; "
+    "automatic responses are owner-governed and default to alert-only.",
+)
+@click.argument("job_id")
+@click.option("--force", is_flag=True, default=False)
+def regime_health_cmd(job_id: str, force: bool) -> None:
+    _echo_json(
+        {"ok": True, "result": regime_health_job(job_id, store=JobStore(), force=force)}
     )
 
 

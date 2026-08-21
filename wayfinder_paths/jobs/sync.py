@@ -212,6 +212,13 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
     latest_intervene = _report_with_session(store, job_id, "intervene", "improve")
     latest_auto = _report_with_session(store, job_id, "auto", "decide")
     latest_apply = _report_with_session(store, job_id, "apply")
+    from wayfinder_paths.jobs.regime_contract import REGIME_HEALTH_PATH
+
+    regime_health = store.read_json(job_id, REGIME_HEALTH_PATH, default=None)
+    if isinstance(regime_health, dict):
+        from wayfinder_paths.jobs.regime_health import compact_regime_health
+
+        regime_health = compact_regime_health(regime_health)
     validation = (
         store.read_json(job_id, "reports/validation/latest.json", default={}) or {}
     )
@@ -231,6 +238,7 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         "proposals": store.proposals(job_id),
         "probation": store.read_json(job_id, "probation.json", default={"legs": []}),
         "post_apply_shadow": _shadow_topline(store, job_id),
+        "regime_health": regime_health,
         "decision_log": _decision_log(store, job_id),
         "proposal_queue": store.proposal_queue(job_id),
         "reports": {

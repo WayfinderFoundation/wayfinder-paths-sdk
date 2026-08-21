@@ -74,6 +74,11 @@ def check_risk_halt(
         json.dumps(
             {
                 "peak_equity": snapshot["peak_equity"],
+                # Current marked state lets the portfolio-regime monitor use
+                # venue truth instead of approximating live drawdown from the
+                # configured paper capital and closed trades.
+                "equity": snapshot["equity"],
+                "drawdown": snapshot["drawdown"],
                 # The source the PEAK belongs to (not this tick's source):
                 # without it, the next tick's source check discards the peak
                 # and live drawdown resets to 0 every tick — a dead halt.

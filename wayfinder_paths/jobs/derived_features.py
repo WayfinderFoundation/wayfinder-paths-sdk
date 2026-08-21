@@ -158,6 +158,9 @@ def derive_features_job(
     features_path = root / "state" / "features.jsonl"
     features_path.parent.mkdir(parents=True, exist_ok=True)
     newest_by_series: dict[tuple[str, str], str] = {}
+    funding_rows: list[dict[str, Any]] = []
+    market_first_ts = pd.Timestamp(frame["timestamp"].min())
+    market_last_ts = pd.Timestamp(frame["timestamp"].max())
     if features_path.exists():
         with features_path.open(encoding="utf-8") as handle:
             for line in handle:
@@ -171,6 +174,18 @@ def derive_features_job(
                 ts = str(row.get("timestamp"))
                 if ts > newest_by_series.get(series, ""):
                     newest_by_series[series] = ts
+                if series[0] == "funding":
+                    try:
+                        funding_ts = pd.Timestamp(ts)
+                    except (TypeError, ValueError):
+                        continue
+                    funding_ts = (
+                        funding_ts.tz_localize("UTC")
+                        if funding_ts.tzinfo is None
+                        else funding_ts.tz_convert("UTC")
+                    )
+                    if market_first_ts <= funding_ts <= market_last_ts:
+                        funding_rows.append(row)
     newest_existing = max(newest_by_series.values(), default="")
 
     if "exog" in sets or "venue" in sets:
@@ -241,6 +256,14 @@ def derive_features_job(
                     )
                     appended[name] = appended.get(name, 0) + 1
                     total += 1
+
+    # Reuse the dataset already resident in memory. Loading the 120-day bars
+    # a second time in the regime monitor doubled an hourly wake's peak memory
+    # on the small runner boxes. The monitor consumes this compact artifact.
+    from wayfinder_paths.jobs.regime_contract import MARKET_STATE_PATH
+    from wayfinder_paths.jobs.regime_market import write_market_state
+
+    market_state = write_market_state(root, frame, funding_rows=funding_rows)
     return {
         "sets": list(sets),
         "every_bars": every_bars,
@@ -250,6 +273,11 @@ def derive_features_job(
         # Newest stamp in the store after this run — rows_appended == 0 is
         # NORMAL between hourly stamps; THIS is the staleness signal.
         "newest_feature_ts": max(newest_by_series.values(), default=""),
+        "market_state": {
+            "available": market_state.get("available"),
+            "as_of": market_state.get("as_of"),
+            "path": str(root / MARKET_STATE_PATH),
+        },
         "generated_at": str(dt.datetime.now(dt.UTC)),
         "read": (
             "Research-side derived features appended to the feature store — "
