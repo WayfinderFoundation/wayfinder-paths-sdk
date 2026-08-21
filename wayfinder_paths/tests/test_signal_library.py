@@ -143,6 +143,28 @@ class TestScanSignals:
         assert result["holdout"]["holdout_bars"] > 0
         assert "fingerprint" in result
 
+    def test_cost_metrics_are_directional_and_advisory(self):
+        result = scan_signals(
+            _bars(_wavy_closes(900)),
+            horizons=[4],
+            holdout_fraction=0.0,
+            fee_bps=5.0,
+            slippage_bps=3.5,
+            min_family_size=1,
+        )
+        row = next(r for r in result["_all_rows"] if r["t_stat_vs_drift"] != 0)
+        side = 1.0 if row["t_stat_vs_drift"] > 0 else -1.0
+        round_trip = 2 * (5.0 + 3.5) / 1e4
+        sem = (row["mean_fwd_return"] - row["drift_baseline"]) / row["t_stat_vs_drift"]
+
+        assert row["round_trip_cost_bps"] == pytest.approx(17.0)
+        assert row["edge_net_bps"] == pytest.approx(
+            (side * row["mean_fwd_return"] - round_trip) * 1e4
+        )
+        assert row["t_net"] == pytest.approx(
+            (side * (row["mean_fwd_return"] - row["drift_baseline"]) - round_trip) / sem
+        )
+
 
 class TestScanDiscipline:
     def test_bh_null_on_random_walk_multi_timeframe(self):
@@ -222,7 +244,12 @@ class TestScanDiscipline:
             boost[i + 1 : i + 25] += sign * 0.004
         closes = list(100.0 * np.exp(np.cumsum(drift + jump + boost)))
         frame = _bars(closes)
-        result = scan_signals(frame, horizons=[24], holdout_fraction=0.15)
+        result = scan_signals(
+            frame,
+            horizons=[24],
+            holdout_fraction=0.15,
+            min_family_size=1,  # isolate holdout behavior from the family floor
+        )
         promoted_long = {
             row["signal"] for row in result["promoted"] if row["direction"] == "long"
         }
@@ -361,6 +388,44 @@ class TestScanJobLedger:
         )
         assert respent["already_spent"] is True
         assert "data snooping" in respent["read"]
+
+    def test_incumbent_control_is_auto_included_and_shown_beside_bar(self, tmp_path):
+        closes = _wavy_closes(1800)
+        store = _scan_job_store(tmp_path, closes)
+        (store.job_dir("scan-job") / "job.yaml").write_text(
+            "id: scan-job\n"
+            "controller:\n"
+            "  incumbent_signal_controls:\n"
+            "    - symbol: IMX\n"
+            "      signal: mom_dn_20\n"
+            "      timeframe: 4h\n"
+            "      horizon: 1\n",
+            encoding="utf-8",
+        )
+
+        result = signal_scan_job(
+            "scan-job",
+            symbols=["IMX"],
+            timeframes=["1h"],
+            horizons=[4],
+            store=store,
+        )
+
+        controls = result["incumbent_controls"]
+        assert controls["bar"]["q_threshold"] == 0.10
+        assert controls["declared"] == 1
+        cell = controls["cells"][0]
+        assert cell["status"] in {"pass", "fail"}
+        assert cell["result"]["t_net"] is not None
+        assert "4h" in result["per_symbol"]["IMX"]["timeframes"]
+        ledger = (
+            store.job_dir("scan-job")
+            / "results"
+            / "research"
+            / "signal_scan"
+            / "ledger.jsonl"
+        ).read_text(encoding="utf-8")
+        assert '"incumbent_control": true' in ledger
 
 
 class TestSessionAndIndicatorAdditions:

@@ -274,6 +274,27 @@ class TestWorkspaceScanEndToEnd:
         assert any(row.get("library") == "workspace" for row in tests)
         assert any(row.get("library") == "canonical" for row in tests)
 
+    def test_sub_floor_campaign_is_pooled_with_canonical_family(self, tmp_path):
+        store = _scan_job_store(tmp_path, self._closes())
+
+        result = signal_scan_job(
+            "scan-job", campaign="small_workspace_probe", store=store
+        )
+
+        assert result["bh_family"]["declared_campaign_size"] < 50
+        assert result["bh_family"]["mode"] == "canonical_pool"
+        assert result["per_symbol"]["IMX"]["signals_tested"] == (
+            len(SIGNAL_LIBRARY) + 2
+        )
+        ledger = (
+            store.job_dir("scan-job")
+            / "results"
+            / "research"
+            / "signal_scan"
+            / "ledger.jsonl"
+        ).read_text(encoding="utf-8")
+        assert '"bh_family_mode": "canonical_pool"' in ledger
+
     def test_no_workspace_flag_excludes(self, tmp_path):
         store = _scan_job_store(tmp_path, self._closes())
         result = signal_scan_job("scan-job", store=store, include_workspace=False)

@@ -146,7 +146,7 @@ def test_probation_verdict_paths_and_tier1_unchanged() -> None:
         ),
         _verdict_row(t_stat_vs_drift=1.0, p_value=_p(1.0), t_recent=None),
     ]
-    apply_bh_verdicts(rows)
+    apply_bh_verdicts(rows, min_family_size=1)
     verdicts = [r["verdict"] for r in rows]
     assert verdicts[0] == "promote"  # Tier-1 untouched
     assert verdicts[1] == "probation"  # alive near-miss
@@ -350,13 +350,43 @@ def test_regime_aware_aliveness_and_cell_promotion() -> None:
         ),
         _verdict_row(t_stat_vs_drift=0.5, p_value=_p(0.5), t_recent=None),
     ]
-    apply_bh_verdicts(rows)
+    apply_bh_verdicts(rows, min_family_size=1)
     assert rows[0]["verdict"] == "promote"
     assert rows[1]["verdict"] != "promote"  # dead average blocked
     assert rows[2]["verdict"] == "promote"  # thin halves do not block
     assert rows[3]["verdict"] == "promote"
     assert rows[3]["promote_scope"] == "regime"  # deployment must carry the gate
     assert "promote_scope" not in rows[0]
+
+
+def test_sub_floor_family_cannot_mint_promote() -> None:
+    strong = _verdict_row(
+        t_stat_vs_drift=5.0,
+        p_value=_p(5.0),
+        fold_stable=True,
+        folds_agreeing=4,
+    )
+    rows = [strong, *[_verdict_row(t_stat_vs_drift=0.0, p_value=1.0) for _ in range(4)]]
+
+    apply_bh_verdicts(rows)
+
+    assert strong["bh_family_size"] == 5
+    assert strong["bh_min_family_size"] == 50
+    assert strong["bh_family_eligible"] is False
+    assert strong["verdict"] == "candidate"
+
+    full_family = [
+        _verdict_row(
+            t_stat_vs_drift=5.0,
+            p_value=_p(5.0),
+            fold_stable=True,
+            folds_agreeing=4,
+        ),
+        *[_verdict_row(t_stat_vs_drift=0.0, p_value=1.0) for _ in range(49)],
+    ]
+    apply_bh_verdicts(full_family)
+    assert full_family[0]["bh_family_eligible"] is True
+    assert full_family[0]["verdict"] == "promote"
 
 
 def test_walk_forward_recency_weighting() -> None:

@@ -773,8 +773,9 @@ def signal_check_cmd(
 @click.option(
     "--campaign",
     default=None,
-    help="Declared campaign name: scan ONLY workspace defs as their own BH "
-    "family (canonical library untaxed). Recorded in the trial ledger.",
+    help="Declared campaign name. Families below 50 cells are pooled with "
+    "the canonical library; larger families scan workspace defs plus the "
+    "incumbent controls. Recorded in the trial ledger.",
 )
 @click.option(
     "--condition-regime",
