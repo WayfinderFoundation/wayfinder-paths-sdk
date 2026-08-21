@@ -10,10 +10,10 @@ verdict for an authorized reviewer, not a self-grant: agents FILE claims
 ACCEPT one — the same owner-provenance pattern as proposal rejection, script
 mode stamps, and risk-latched halt clears.
 
-A pending or accepted claim satisfies the progress constitution for its lane
-(the escalation is on the record and the decision is with the owner). A claim
-whose provenance is `agent-self-rejected` can never settle a lane, whatever
-its status: self-rejections are development evidence, not verdicts.
+Only an owner-accepted claim settles its audited lane. Filing is activity — it
+puts an escalation in flight — but is not evidence that the lane is exhausted.
+A claim whose provenance is `agent-self-rejected` can never settle a lane,
+whatever its status: self-rejections are development evidence, not verdicts.
 """
 
 from __future__ import annotations
@@ -160,9 +160,10 @@ def list_exhaustion_claims(
 def claim_settles_lane(claim: dict[str, Any]) -> bool:
     """Whether this claim satisfies the progress constitution for its lane.
 
-    Pending and accepted claims settle (the escalation is filed / decided);
+    Filing is an escalation, not a verdict. Only owner acceptance settles;
     `agent-self-rejected` provenance NEVER settles — nothing in the loop may
     control the only evidence used for its own acceptance."""
     if claim.get("provenance") == "agent-self-rejected":
         return False
-    return claim.get("status") in {"pending", "accepted"}
+    adjudication = claim.get("adjudication") or {}
+    return claim.get("status") == "accepted" and adjudication.get("by") == "owner"

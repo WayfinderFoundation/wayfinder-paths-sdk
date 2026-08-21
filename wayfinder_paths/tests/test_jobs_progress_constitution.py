@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from wayfinder_paths.jobs.execution.experiments import experiment_semantic_hash
 from wayfinder_paths.jobs.exhaustion import (
     adjudicate_exhaustion_claim,
     claim_settles_lane,
@@ -77,11 +78,22 @@ def _append_wakes(store: JobStore, job_id: str, count: int) -> None:
         store.append_journal(job_id, {"type": "agent_wakeup"})
 
 
-def _write_experiment_row(store: JobStore, job_id: str, ts: str) -> None:
+def _write_experiment_row(
+    store: JobStore,
+    job_id: str,
+    ts: str,
+    *,
+    semantic_hash: str = "experiment-a",
+) -> None:
     path = store.job_dir(job_id) / "results" / "backtest" / "experiments.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps({"ts": ts, "run_id": "exp-1"}) + "\n")
+        handle.write(
+            json.dumps(
+                {"ts": ts, "run_id": "exp-1", "semantic_hash": semantic_hash}
+            )
+            + "\n"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -147,8 +159,18 @@ def test_research_impasse_resolves_on_progress(
     recover_stalled_applications(store=store)
     assert store.read_json(job_id, "state/research_impasse.json")["alerted_at"]
 
-    # A real progress artifact appears (probation leg opened after the wakes).
+    # Opening a leg is activity, not learning; it must not clear the marker.
     store.append_journal(job_id, {"type": "probation_leg_opened", "leg": "x"})
+    result = recover_stalled_applications(store=store)
+    assert not [
+        e
+        for e in result["recovered"]
+        if e.get("action") == "research_impasse_resolved"
+    ]
+    assert store.read_json(job_id, "state/research_impasse.json")["alerted_at"]
+
+    # A matured probation outcome is valid learning and resolves the impasse.
+    store.append_journal(job_id, {"type": "probation_leg_killed", "leg": "x"})
     result = recover_stalled_applications(store=store)
     resolved = [
         e
@@ -158,6 +180,67 @@ def test_research_impasse_resolves_on_progress(
     assert len(resolved) == 1
     assert not store.read_json(job_id, "state/research_impasse.json")
     assert _journal_events(store, job_id, "research_impasse_resolved")
+
+
+def test_all_new_experiment_rows_checked_not_only_last(
+    tmp_path: Path, wakes: list[dict[str, Any]]
+) -> None:
+    store, job_id = _make_store(tmp_path, "impasse-all-experiments")
+    _append_wakes(store, job_id, 3)
+    recover_stalled_applications(store=store)
+
+    # The unique experiment is followed by a duplicate. Inspecting only the
+    # tail would miss the valid learning that occurred earlier in the batch.
+    _write_experiment_row(
+        store, job_id, utc_now_iso(), semantic_hash="new-semantic-question"
+    )
+    _write_experiment_row(
+        store, job_id, utc_now_iso(), semantic_hash="new-semantic-question"
+    )
+    result = recover_stalled_applications(store=store)
+    resolved = [
+        event
+        for event in result["recovered"]
+        if event.get("action") == "research_impasse_resolved"
+    ]
+    assert len(resolved) == 1
+    assert resolved[0]["learning_signals"] == ["experiment_run"]
+
+
+def test_duplicate_experiment_is_activity_not_learning(
+    tmp_path: Path, wakes: list[dict[str, Any]]
+) -> None:
+    store, job_id = _make_store(tmp_path, "impasse-duplicate")
+    old = (datetime.now(UTC) - timedelta(days=10)).isoformat()
+    _write_experiment_row(store, job_id, old, semantic_hash="same-question")
+    _append_wakes(store, job_id, 3)
+    recover_stalled_applications(store=store)
+    _write_experiment_row(
+        store, job_id, utc_now_iso(), semantic_hash="same-question"
+    )
+
+    result = recover_stalled_applications(store=store)
+    assert not [
+        event
+        for event in result["recovered"]
+        if event.get("action") == "research_impasse_resolved"
+    ]
+    assert store.read_json(job_id, "state/research_impasse.json")["alerted_at"]
+
+
+def test_experiment_semantic_hash_ignores_generated_ids() -> None:
+    definition = {
+        "revision": "rev-a",
+        "dataset": {"path": "candles.parquet"},
+        "rank_by": "sharpe",
+        "parameters": [{"lookback": 20}, {"lookback": 40}],
+    }
+    first = {**definition, "grid_id": "generated-a", "ts": "2026-08-20T00:00:00Z"}
+    second = {**definition, "grid_id": "generated-b", "ts": "2026-08-21T00:00:00Z"}
+    assert experiment_semantic_hash(first) == experiment_semantic_hash(second)
+    assert experiment_semantic_hash(first) != experiment_semantic_hash(
+        {**second, "parameters": [{"lookback": 80}]}
+    )
 
 
 def test_impasse_wake_carries_hatch_stripped_mandate(tmp_path: Path) -> None:
@@ -325,6 +408,7 @@ def test_exhaustion_claim_lifecycle_and_owner_only_accept(tmp_path: Path) -> Non
         refs=["results/backtest/experiments.jsonl"],
     )
     assert claim["status"] == "pending"
+    assert not claim_settles_lane(claim)
     assert _journal_events(store, job_id, "exhaustion_claim_filed")
     scorecard = store.read_json(job_id, "scorecard.json")
     assert scorecard["pending_exhaustion_claims"] == 1
@@ -385,7 +469,11 @@ def test_agent_self_rejected_provenance_never_settles(tmp_path: Path) -> None:
         provenance="holdout-refuted",
         next_region="lane-b",
     )
-    assert claim_settles_lane(settled)  # pending settles
+    assert not claim_settles_lane(settled)  # filing is activity, not a verdict
+    settled = adjudicate_exhaustion_claim(
+        store, job_id, settled["claim_id"], status="accepted", by="owner"
+    )
+    assert claim_settles_lane(settled)
     self_rej = file_exhaustion_claim(
         store,
         job_id,
@@ -400,6 +488,91 @@ def test_agent_self_rejected_provenance_never_settles(tmp_path: Path) -> None:
     )
     # Even owner-accepted, self-rejection provenance cannot settle a lane.
     assert not claim_settles_lane(accepted)
+
+
+def test_filed_claim_awaits_without_resolving_then_owner_adjudication_resolves(
+    tmp_path: Path, wakes: list[dict[str, Any]]
+) -> None:
+    store, job_id = _make_store(tmp_path, "claim-awaiting")
+    _append_wakes(store, job_id, 3)
+    recover_stalled_applications(store=store)
+    claim = file_exhaustion_claim(
+        store,
+        job_id,
+        lane="HYPE 5m",
+        evidence="completed 5m cells",
+        provenance="data-wall",
+        next_region="HYPE multi-timeframe",
+    )
+
+    result = recover_stalled_applications(store=store)
+    awaiting = [
+        event
+        for event in result["recovered"]
+        if event.get("action") == "research_impasse_awaiting_adjudication"
+    ]
+    assert len(awaiting) == 1
+    marker = store.read_json(job_id, "state/research_impasse.json")
+    assert marker["status"] == "awaiting_adjudication"
+    assert marker["claim_ids"] == [claim["claim_id"]]
+    assert not _journal_events(store, job_id, "research_impasse_resolved")
+
+    # The in-flight escalation is quiet for the adjudication window.
+    result = recover_stalled_applications(store=store)
+    assert not [
+        event
+        for event in result["recovered"]
+        if event.get("action") in {
+            "research_impasse",
+            "research_impasse_awaiting_adjudication",
+            "research_impasse_resolved",
+        }
+    ]
+
+    adjudicate_exhaustion_claim(
+        store, job_id, claim["claim_id"], status="rejected", by="owner"
+    )
+    result = recover_stalled_applications(store=store)
+    resolved = [
+        event
+        for event in result["recovered"]
+        if event.get("action") == "research_impasse_resolved"
+    ]
+    assert len(resolved) == 1
+    assert resolved[0]["adjudication_signals"] == ["exhaustion_claim_rejected"]
+    assert not store.read_json(job_id, "state/research_impasse.json")
+
+
+def test_awaiting_claim_refires_after_48_hours(
+    tmp_path: Path, wakes: list[dict[str, Any]]
+) -> None:
+    store, job_id = _make_store(tmp_path, "claim-awaiting-expired")
+    _append_wakes(store, job_id, 3)
+    recover_stalled_applications(store=store)
+    file_exhaustion_claim(
+        store,
+        job_id,
+        lane="rank lane",
+        evidence="caller timed out",
+        provenance="data-wall",
+        next_region="instrument caller timeout",
+    )
+    recover_stalled_applications(store=store)
+    marker = store.read_json(job_id, "state/research_impasse.json")
+    expired = (datetime.now(UTC) - timedelta(hours=49)).isoformat()
+    marker["awaiting_since"] = expired
+    marker["alerted_at"] = expired
+    store.write_json(job_id, "state/research_impasse.json", marker)
+
+    result = recover_stalled_applications(store=store)
+    refired = [
+        event
+        for event in result["recovered"]
+        if event.get("action") == "research_impasse"
+    ]
+    assert len(refired) == 1
+    refreshed = store.read_json(job_id, "state/research_impasse.json")
+    assert refreshed.get("status") is None
 
 
 def test_watchdog_surfaces_pending_claims_once(

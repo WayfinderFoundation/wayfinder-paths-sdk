@@ -24,7 +24,7 @@ import signal
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from textwrap import dedent
-from typing import Any
+from typing import Any, TypedDict
 
 from wayfinder_paths.jobs.application import complete_application
 from wayfinder_paths.jobs.failures import cpu_steal_pct
@@ -379,7 +379,13 @@ def _check_successor_overdue(
         audit_progress = _research_progress_since(
             store.job_dir(job_id), entry_ts
         )
-        if alive or owner_closed or audit_progress["advanced"]:
+        if (
+            alive
+            or owner_closed
+            or audit_progress["valid_learning"]
+            or audit_progress["activity"]
+            or audit_progress["adjudicated"]
+        ):
             entry["delivered"] = True
             entry["notified"] = True
             changed = True
@@ -852,23 +858,40 @@ def _check_disk_usage(
 # verbatim across wakes) while staging nothing. Staleness was never a
 # watchdog trigger, so nothing escalated. This check is the escalation: when
 # a research job is stale AND the last K wakes produced zero progress
-# artifacts (experiments, probation legs, staged proposals, exhaustion
+# artifacts (experiments, probation outcomes, staged proposals, exhaustion
 # claims), journal `research_impasse`, write the marker the worker prompt
 # renders as a HATCH-STRIPPED mandate, and fire a trigger wake. Debounced by
 # a re-alert window (mirrors disk_pressure); the marker clears — and journals
-# `research_impasse_resolved` — only when a progress artifact appears.
+# `research_impasse_resolved` — only when valid learning or owner adjudication
+# appears. Activity remains visible without laundering it into learning.
 _IMPASSE_PATH = "state/research_impasse.json"
 IMPASSE_WAKES_ENV = "WAYFINDER_IMPASSE_WAKES"
 DEFAULT_IMPASSE_WAKES = 3
 IMPASSE_REALERT_WINDOW = timedelta(hours=24)
-# Journal event types that count as research progress: the three legal
-# outcomes of a stale wake plus a staged proposal (which carries its own
-# propose-time backtest audit; self-rejected stagings are filtered out).
-_PROGRESS_JOURNAL_TYPES = {
+IMPASSE_ADJUDICATION_WINDOW = timedelta(hours=48)
+_LEARNING_JOURNAL_TYPES = {
+    "probation_leg_graduated",
+    "probation_leg_killed",
+}
+_ACTIVITY_JOURNAL_TYPES = {
     "probation_leg_opened",
     "paper_probation_opened",
     "exhaustion_claim_filed",
 }
+_OWNER_ADJUDICATION_TYPES = {
+    "exhaustion_claim_accepted",
+    "exhaustion_claim_rejected",
+}
+
+
+class ResearchProgressClassification(TypedDict):
+    advanced: bool
+    valid_learning: bool
+    learning_signals: list[str]
+    activity: bool
+    activity_signals: list[str]
+    adjudicated: bool
+    adjudication_signals: list[str]
 
 
 def _journal_rows(root: Path, *, max_lines: int = 20_000) -> list[dict[str, Any]]:
@@ -892,23 +915,54 @@ def _research_progress_since(
     *,
     rows: list[dict[str, Any]] | None = None,
     proposals: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    """Progress artifacts after `since_ts`: executed experiments, opened
-    probation legs, filed exhaustion claims and (when `proposals` is given)
-    staged proposals that were not agent-self-rejected. Prose does not count."""
-    signals: set[str] = set()
+) -> ResearchProgressClassification:
+    """Classify post-boundary research artifacts as learning or activity.
+
+    Valid learning is a previously unseen semantic experiment or a matured
+    probation outcome. Opening work, staging a proposal, filing a claim, and
+    repeating an experiment are activity only. Owner claim adjudication is a
+    separate resolution path. Prose never counts.
+    """
+    learning: set[str] = set()
+    activity: set[str] = set()
+    adjudications: set[str] = set()
     for row in rows if rows is not None else _journal_rows(root):
-        if row.get("type") in _PROGRESS_JOURNAL_TYPES and (
-            str(row.get("ts") or "") > since_ts
-        ):
-            signals.add(str(row["type"]))
-    line = _tail_line(root / "results" / "backtest" / "experiments.jsonl")
-    if line:
-        try:
-            if str(json.loads(line).get("ts") or "") > since_ts:
-                signals.add("experiment_run")
-        except ValueError:
-            pass
+        if str(row.get("ts") or "") <= since_ts:
+            continue
+        event_type = str(row.get("type") or "")
+        if event_type in _LEARNING_JOURNAL_TYPES:
+            learning.add(event_type)
+        elif event_type in _ACTIVITY_JOURNAL_TYPES:
+            activity.add(event_type)
+        elif event_type in _OWNER_ADJUDICATION_TYPES and str(
+            row.get("by") or ""
+        ) in {"owner", "user", "human"}:
+            adjudications.add(event_type)
+
+    from wayfinder_paths.jobs.execution.experiments import experiment_semantic_hash
+
+    seen_hashes: set[str] = set()
+    experiments_path = root / "results" / "backtest" / "experiments.jsonl"
+    if experiments_path.exists():
+        for line in experiments_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                experiment = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(experiment, dict):
+                continue
+            semantic_hash = experiment_semantic_hash(experiment)
+            if str(experiment.get("ts") or "") <= since_ts:
+                seen_hashes.add(semantic_hash)
+                continue
+            if semantic_hash in seen_hashes:
+                activity.add("duplicate_experiment")
+            else:
+                learning.add("experiment_run")
+                seen_hashes.add(semantic_hash)
+
     for proposal in proposals or []:
         if not _staged_after(proposal, since_ts):
             continue
@@ -917,8 +971,18 @@ def _research_progress_since(
             and str((proposal.get("rejection") or {}).get("by") or "") == "agent"
         ):
             continue  # a self-rejected staging delivered nothing
-        signals.add("staged_proposal")
-    return {"advanced": bool(signals), "signals": sorted(signals)}
+        activity.add("staged_proposal")
+    return {
+        # Compatibility for existing mechanical consumers: "advanced" now
+        # has the strict meaning the name promised.
+        "advanced": bool(learning),
+        "valid_learning": bool(learning),
+        "learning_signals": sorted(learning),
+        "activity": bool(activity),
+        "activity_signals": sorted(activity),
+        "adjudicated": bool(adjudications),
+        "adjudication_signals": sorted(adjudications),
+    }
 
 
 def _check_research_impasse(
@@ -947,21 +1011,63 @@ def _check_research_impasse(
     progress = _research_progress_since(
         root, basis_ts, rows=rows, proposals=proposals
     )
-    if progress["advanced"]:
+    if progress["valid_learning"] or progress["adjudicated"]:
         if marker.get("alerted_at"):
             store.write_json(job.id, _IMPASSE_PATH, {})
             store.append_journal(
                 job.id,
                 {
                     "type": "research_impasse_resolved",
-                    "signals": progress["signals"],
+                    "learning_signals": progress["learning_signals"],
+                    "adjudication_signals": progress["adjudication_signals"],
                 },
             )
             return {
                 "action": "research_impasse_resolved",
-                "signals": progress["signals"],
+                "learning_signals": progress["learning_signals"],
+                "adjudication_signals": progress["adjudication_signals"],
             }
         return None
+    if marker.get("status") == "awaiting_adjudication":
+        if _age(now, marker.get("awaiting_since")) < IMPASSE_ADJUDICATION_WINDOW:
+            return None
+        # The 48-hour adjudication window expired. Do not re-consume the old
+        # filing as fresh activity; fall through to the normal impasse re-fire.
+    elif "exhaustion_claim_filed" in progress["activity_signals"]:
+        filed = [
+            row
+            for row in rows
+            if row.get("type") == "exhaustion_claim_filed"
+            and str(row.get("ts") or "") > basis_ts
+        ]
+        filed_at = max(str(row.get("ts") or "") for row in filed)
+        awaiting = {
+            **marker,
+            "status": "awaiting_adjudication",
+            "awaiting_since": filed_at,
+            "claim_ids": sorted(
+                {
+                    str(row.get("claim_id"))
+                    for row in filed
+                    if row.get("claim_id")
+                }
+            ),
+        }
+        if not marker.get("alerted_at"):
+            awaiting["alerted_at"] = now.isoformat()
+        store.write_json(job.id, _IMPASSE_PATH, awaiting)
+        if marker.get("status") != "awaiting_adjudication":
+            store.append_journal(
+                job.id,
+                {
+                    "type": "research_impasse_awaiting_adjudication",
+                    "claim_ids": awaiting["claim_ids"],
+                },
+            )
+        return {
+            "action": "research_impasse_awaiting_adjudication",
+            "claim_ids": awaiting["claim_ids"],
+        }
     from wayfinder_paths.jobs.evolution_ledger import research_staleness_report
 
     staleness = research_staleness_report(store, job.id)

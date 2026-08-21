@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 from collections.abc import Mapping
@@ -15,6 +16,54 @@ from wayfinder_paths.jobs.store import JobStore
 
 EXPERIMENTS_FILE = "results/backtest/experiments.jsonl"
 TRIALS_FILE = "results/backtest/trials.jsonl"
+
+
+def experiment_semantic_hash(row: Mapping[str, Any]) -> str:
+    """Stable identity for the question an experiment asks, not its run id.
+
+    New experiment rows carry this hash directly. The fallback keeps legacy
+    ledgers classifiable using the definition fields they retained; timestamps,
+    generated ids and observed statistics deliberately do not participate.
+    """
+    recorded = str(row.get("semantic_hash") or "").strip()
+    if recorded:
+        return recorded
+    raw_best = row.get("best")
+    best: Mapping[str, Any] = raw_best if isinstance(raw_best, Mapping) else {}
+    definition = {
+        "revision": row.get("revision"),
+        "dataset": row.get("dataset"),
+        "rank_by": row.get("rank_by"),
+        "optimizer": row.get("optimizer") or "grid",
+        "search": row.get("search"),
+        "parameters": (
+            row.get("parameters")
+            if row.get("parameters") is not None
+            else ([best.get("params")] if best.get("params") is not None else [])
+        ),
+        "walk_forward": row.get("walk_forward_definition"),
+    }
+    encoded = json.dumps(definition, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _experiment_definition(grid_payload: Mapping[str, Any]) -> dict[str, Any]:
+    result = grid_payload["result"]
+    parameters = [run.get("params") for run in result.get("runs") or []]
+    parameters.sort(
+        key=lambda value: json.dumps(value, sort_keys=True, default=str)
+    )
+    return {
+        "revision": grid_payload.get("revision"),
+        "dataset": grid_payload.get("dataset"),
+        "rank_by": result.get("rank_by"),
+        "optimizer": result.get("optimizer") or "grid",
+        "search": result.get("search"),
+        # Grid ids and run ids are regenerated on every invocation. The tested
+        # coordinates are the semantic family and preserve duplicate identity.
+        "parameters": parameters,
+        "walk_forward_definition": grid_payload.get("walk_forward_definition"),
+    }
 
 
 def _behavior_descriptor(stats: Mapping[str, Any]) -> dict[str, Any]:
@@ -88,6 +137,7 @@ def record_experiment(
     result = grid_payload["result"]
     ranked = result["ranked"]
     best = ranked[0] if ranked else None
+    definition = _experiment_definition(grid_payload)
     row = {
         "ts": utc_now_iso(),
         **revision_stamp(store.job_dir(job_id)),
@@ -97,6 +147,7 @@ def record_experiment(
         "rank_by": result["rank_by"],
         "run_count": len(result["runs"]),
         "invalid_count": len(result["invalid"]),
+        "semantic_hash": experiment_semantic_hash(definition),
         "best": (
             {
                 "run_id": best["run_id"],

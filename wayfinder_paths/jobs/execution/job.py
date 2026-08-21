@@ -215,6 +215,9 @@ def _backtest_execution_job_locked(
             **stamp,
         }
         if walk_forward is not None:
+            # Preserve the question asked separately from its observed folds;
+            # experiment identity must not change merely because results do.
+            payload["walk_forward_definition"] = dict(walk_forward)
             payload["walk_forward"] = run_walk_forward(
                 script,
                 dataset,
