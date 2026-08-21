@@ -192,6 +192,8 @@ def test_venue_peak_persists_across_ticks_and_drawdown_fires(tmp_path: Path) -> 
     saved = json.loads((root / "state" / "risk_state.json").read_text())
     assert saved["peak_equity"] == 10_000.0
     assert saved["equity_source"] == "venue"
+    assert saved["equity"] == 10_000.0
+    assert saved["drawdown"] == 0.0
 
     second_reason, second = check_risk_halt(
         root,
@@ -453,3 +455,40 @@ async def test_leverage_within_governance_ceiling_untouched(tmp_path: Path) -> N
 
     assert not any(e["kind"] == "leverage_clamped" for e in result["guard_events"])
     assert result["intents"][0]["size"] == 2.0
+
+
+async def test_regime_health_runtime_cap_clamps_without_rewriting_dial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, job, root = _make_job(tmp_path, params={"leverage": 4.0})
+    _write_governance(
+        tmp_path,
+        job.id,
+        {
+            "regime_response": {
+                "warning": "clamp_leverage",
+                "critical": "clamp_leverage",
+                "max_leverage": 1.0,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.regime_health.regime_health_job",
+        lambda *args, **kwargs: {
+            "status": "critical",
+            "governance": {"trusted": True},
+            "policy": {"action": "clamp_leverage", "max_leverage": 1.0},
+        },
+    )
+
+    result = await _tick(job, root, store, view_count=1)
+
+    clamps = [
+        event
+        for event in result["guard_events"]
+        if event["kind"] == "regime_leverage_clamped"
+    ]
+    assert clamps[0]["effective"] == 1.0
+    assert result["intents"][0]["size"] == 1.0
+    assert store.load(job.id).execution_params["leverage"] == 4.0

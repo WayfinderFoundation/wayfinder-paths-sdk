@@ -75,6 +75,10 @@ def test_derive_features_appends_and_dedupes(tmp_path: Path) -> None:
     )
 
     assert result["rows_appended"] > 0
+    assert result["market_state"]["path"].endswith("market_state.json")
+    assert (
+        store.job_dir(job_id) / "results" / "research" / "market_state.json"
+    ).exists()
     names = set(result["per_feature"])
     assert {"breadth_sma50", "panelret_lag1", "btc_ret12", "btc_trend"} <= names
     assert any(n.startswith("corr_sol") for n in names)  # LIT gets corr to SOL

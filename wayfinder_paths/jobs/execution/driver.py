@@ -83,6 +83,24 @@ def run_scheduled_tick(job_dir: str | Path | None = None) -> dict[str, Any]:
         payload = asyncio.run(tick_job(job, root, mode, store=store))
     except Exception as exc:
         payload = {"ok": False, "error": str(exc)}
+    # Deterministic incumbent/regime health runs after recording this tick so
+    # a just-closed loss participates immediately. It is raise-free here: an
+    # observability failure must never turn a successful trading tick into a
+    # failed one. Owner-governed pause/flatten responses latch for next tick.
+    if store is not None and job is not None and payload.get("ok") is True:
+        try:
+            from wayfinder_paths.jobs.regime_health import (
+                compact_regime_health,
+                regime_health_job,
+            )
+
+            health = regime_health_job(job.id, store=store)
+            payload["regime_health"] = compact_regime_health(health)
+        except Exception as exc:  # noqa: BLE001
+            store.append_journal(
+                job.id,
+                {"type": "regime_health_failed", "error": str(exc)[:300]},
+            )
     if divergence is not None:
         payload.setdefault("guard_events", []).append(divergence)
     # Event-driven agent wakes fire ONLY from the scheduled entrypoint —
@@ -118,6 +136,9 @@ def _tick_trigger_events(payload: dict[str, Any]) -> list[str]:
         # Declared vs executed mode disagree — wake the advisor to reconcile
         # job.yaml (reuses the reconcile_mismatch trigger).
         events.append("reconcile_mismatch")
+    health_transition = (payload.get("regime_health") or {}).get("transition") or {}
+    if health_transition.get("alert"):
+        events.append("regime_shift")
     return events
 
 
@@ -169,8 +190,9 @@ async def tick_job(
     # the governed value. No governance ceiling -> params untouched.
     leverage_notes: list[dict[str, Any]] = []
     requested_leverage = params.get("leverage")
+    hard_constraints = governance_hard_constraints(root)
     effective_leverage, leverage_ceiling = clamp_leverage(
-        requested_leverage, governance_hard_constraints(root)
+        requested_leverage, hard_constraints
     )
     if leverage_ceiling is not None:
         params["leverage"] = effective_leverage
@@ -182,6 +204,38 @@ async def tick_job(
         leverage_notes.append({"kind": "leverage_clamped", **clamp_payload})
         store.append_journal(
             job.id, {"type": "leverage_clamped", "mode": mode, **clamp_payload}
+        )
+
+    # Optional owner-governed response to a warning/critical portfolio regime
+    # report. This is a runtime cap only: it does not edit the user's leverage
+    # dial or invalidate the strategy revision, and releases when health clears.
+    from wayfinder_paths.jobs.regime_health import (
+        active_regime_leverage_cap,
+        regime_health_job,
+    )
+
+    try:
+        # Recompute before consulting a mutating policy. regime_health.json is
+        # agent-visible state and therefore cannot itself authorize a clamp.
+        pre_tick_health = regime_health_job(job.id, store=store, force=True)
+        regime_cap = active_regime_leverage_cap(pre_tick_health)
+    except Exception as exc:  # noqa: BLE001 — monitor failures do not stop trading
+        regime_cap = None
+        store.append_journal(
+            job.id, {"type": "regime_health_failed", "error": str(exc)[:300]}
+        )
+    if regime_cap is not None and effective_leverage > regime_cap:
+        params["leverage"] = regime_cap
+        regime_payload = {
+            "requested": requested_leverage,
+            "max_leverage": regime_cap,
+            "effective": regime_cap,
+            "source": "regime_health",
+        }
+        leverage_notes.append({"kind": "regime_leverage_clamped", **regime_payload})
+        store.append_journal(
+            job.id,
+            {"type": "regime_leverage_clamped", "mode": mode, **regime_payload},
         )
 
     strategy = _load_strategy(entrypoint, params)

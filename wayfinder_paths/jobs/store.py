@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections import deque
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -281,9 +282,16 @@ class JobStore:
         path = self.job_dir(job_id) / relative
         if not path.exists():
             return []
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        if limit is not None:
-            lines = lines[-max(int(limit), 0) :]
+        if limit is None:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        else:
+            bounded = max(int(limit), 0)
+            if bounded == 0:
+                return []
+            # Stream append-only ledgers so a bounded consumer does not first
+            # materialize the entire (potentially multi-MB) file in memory.
+            with path.open(encoding="utf-8", errors="replace") as handle:
+                lines = list(deque(handle, maxlen=bounded))
         rows: list[dict[str, Any]] = []
         for line in lines:
             if not line.strip():

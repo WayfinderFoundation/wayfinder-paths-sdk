@@ -26,7 +26,7 @@ HALTED_EXECUTION_STATUS = "halted"
 
 # Halts latched by the risk/protection layer: owner-clearable only. The loop
 # that tripped a circuit breaker must not be able to reset it.
-RISK_LATCH_SOURCES = frozenset({"risk_limits", "native_protection"})
+RISK_LATCH_SOURCES = frozenset({"risk_limits", "native_protection", "regime_health"})
 
 
 def read_halt(root: Path) -> dict[str, Any] | None:

@@ -26,6 +26,7 @@ from wayfinder_paths.jobs.models import (
     utc_now_iso,
 )
 from wayfinder_paths.jobs.proposals import propose_change
+from wayfinder_paths.jobs.regime_health import regime_health_job
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.starters import create_starter_job, starter_catalog
 from wayfinder_paths.jobs.store import JobStore
@@ -41,6 +42,7 @@ JobAction = Literal[
     "create",
     "status",
     "report",
+    "regime_health",
     "set_agent_mode",
     "set_script_mode",
     "review_now",
@@ -317,6 +319,7 @@ async def core_jobs(
     parallel: Literal["serial", "thread", "process"] = "process",
     compile: bool = True,  # noqa: A002
     full: bool = False,
+    force: bool = False,
     quick_bars: int | None = None,
     background: bool | None = None,
     op: str | None = None,
@@ -383,6 +386,9 @@ async def core_jobs(
         gate (fresh validation/backtest/preflight) and declare a
         `wallet_label`, else the call returns an error naming the blocker.
       - `set_agent_mode` to change the agent watch level (monitor/intervene/…).
+      - `regime_health` returns the deterministic 7/14/30-day incumbent and
+        market-state drift report. warning/critical refreshes attribution first;
+        any automatic response comes only from protected owner governance.
       - `review_now` to queue an immediate worker wakeup.
       - `approve_proposal` / `reject_proposal` after the worker creates proposals.
       - `claim_application` / `validate_application` / `complete_application`
@@ -512,6 +518,9 @@ async def core_jobs(
 
     if action in {"status", "report"}:
         return ok(snapshot_job(job_id, store=store))
+
+    if action == "regime_health":
+        return ok(regime_health_job(job_id, store=store, force=force))
 
     if action == "set_agent_mode":
         mode = normalize_agent_mode(agent_mode or "monitor")

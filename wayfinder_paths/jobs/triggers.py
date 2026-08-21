@@ -35,6 +35,8 @@ DEFAULT_DEBOUNCE_SECONDS = 600
 # research_impasse fires when a research-stale job's last K wakes produced
 # zero progress artifacts — the wake it triggers carries the hatch-stripped
 # progress mandate (worker renders it from state/research_impasse.json).
+# regime_shift is a deterministic incumbent-health warning/critical transition;
+# legacy jobs predate the configurable trigger name, so it always wakes.
 ALWAYS_WAKE_EVENTS = {
     "proposal_restage_requested",
     "verdict_matured",
@@ -42,6 +44,7 @@ ALWAYS_WAKE_EVENTS = {
     "runner_loop_gap",
     "disk_pressure",
     "research_impasse",
+    "regime_shift",
 }
 
 
