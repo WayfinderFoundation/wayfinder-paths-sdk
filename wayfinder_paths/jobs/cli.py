@@ -41,9 +41,12 @@ from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.execution.walk_forward import format_fold_table
 from wayfinder_paths.jobs.exhaustion import (
     CLAIM_PROVENANCES,
+    CLAIM_STATUSES,
     adjudicate_exhaustion_claim,
+    audit_and_adjudicate_exhaustion_claim,
     file_exhaustion_claim,
     list_exhaustion_claims,
+    reopen_exhaustion_claim,
 )
 from wayfinder_paths.jobs.features import append_feature, list_features
 from wayfinder_paths.jobs.forward_artifacts import load_forward_view
@@ -1294,6 +1297,16 @@ def report_cmd(job_id: str) -> None:
     click.echo(
         f"Pending proposals: {sum(1 for p in proposals if p['status'] == 'pending')}"
     )
+    efficiency = scorecard.get("process_efficiency") or {}
+    if efficiency:
+        ratio = efficiency.get("wakes_per_valid_learning")
+        click.echo(
+            "Research efficiency: "
+            f"{efficiency.get('wakes_with_valid_learning', 0)}/"
+            f"{efficiency.get('wakes_total', 0)} learning wakes; "
+            f"{efficiency.get('activity_only_wakes', 0)} activity-only; "
+            f"{ratio if ratio is not None else 'n/a'} wakes/valid-learning"
+        )
     latest_summary = scorecard.get("last_agent_summary")
     if latest_summary:
         click.echo("")
@@ -1639,9 +1652,9 @@ def reject_cmd(
 
 @job_cli.group(
     name="exhaustion",
-    help="Owner-adjudicated exhaustion claims: agents FILE a claim that a "
-    "research lane is exhausted; only the owner may ACCEPT it. A pending or "
-    "accepted claim satisfies the progress constitution for that lane.",
+    help="Evidence-adjudicated exhaustion claims: agents FILE; the watchdog "
+    "audits structured coverage and applies pass/narrow/reject. Manual "
+    "acceptance and audit reopen remain owner-only.",
 )
 def exhaustion_group() -> None:
     pass
@@ -1712,11 +1725,48 @@ def exhaustion_adjudicate_cmd(
     _echo_json({"ok": True, "result": claim})
 
 
+@exhaustion_group.command(
+    name="audit", help="Run and apply the mechanical coverage audit immediately."
+)
+@click.argument("job_id")
+@click.argument("claim_id")
+def exhaustion_audit_cmd(job_id: str, claim_id: str) -> None:
+    store = JobStore()
+    claim = audit_and_adjudicate_exhaustion_claim(store, job_id, claim_id)
+    _echo_json({"ok": True, "result": claim})
+
+
+@exhaustion_group.command(
+    name="reopen", help="Owner override of an audit-settled claim within 48 hours."
+)
+@click.argument("job_id")
+@click.argument("claim_id")
+@click.option(
+    "--by",
+    "reopened_by",
+    type=click.Choice(["owner", "agent"]),
+    default="owner",
+    show_default=True,
+)
+@click.option("--reason", required=True, help="Why the audited closure is reversed.")
+def exhaustion_reopen_cmd(
+    job_id: str, claim_id: str, reopened_by: str, reason: str
+) -> None:
+    store = JobStore()
+    try:
+        claim = reopen_exhaustion_claim(
+            store, job_id, claim_id, by=reopened_by, reason=reason
+        )
+    except PermissionError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": claim})
+
+
 @exhaustion_group.command(name="list", help="List exhaustion claims.")
 @click.argument("job_id")
 @click.option(
     "--status",
-    type=click.Choice(["pending", "accepted", "rejected"]),
+    type=click.Choice(sorted(CLAIM_STATUSES)),
     default=None,
     help="Filter by status.",
 )

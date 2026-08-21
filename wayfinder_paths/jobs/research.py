@@ -962,8 +962,10 @@ def scan_signals(
     selected_canonical = (
         SIGNAL_LIBRARY if include_canonical else tuple(canonical_signals)
     )
+    signal_specs = (*selected_canonical, *extra_signals)
     round_trip_cost = 2 * (fee_bps + slippage_bps) / 1e4
     rows: list[dict[str, Any]] = []
+    unmeasured_rows: list[dict[str, Any]] = []
     tests_run = 0
     tests_skipped = 0
     horizons_used: dict[str, list[int]] = {}
@@ -971,14 +973,49 @@ def scan_signals(
     events_cache: dict[tuple[str, str, int], np.ndarray] = {}
     regime_arrays: dict[str, Any] = {}
     regime_now: str | None = None
+    regime_labels: tuple[str, ...] = ()
+    if condition_regime:
+        from wayfinder_paths.jobs.indicators import REGIME_LABELS
+
+        regime_labels = tuple(REGIME_LABELS)
+
+    def _record_unmeasured(
+        spec: SignalDef,
+        *,
+        timeframe: str,
+        horizon: int,
+        status: str,
+        reason: str,
+        regime: str | None = None,
+    ) -> None:
+        unmeasured_rows.append(
+            {
+                "signal": spec.name,
+                "family": spec.family,
+                "library": ("workspace" if spec.name in extra_names else "canonical"),
+                "timeframe": timeframe,
+                "horizon": horizon,
+                "regime": regime,
+                "status": status,
+                "reason": reason,
+            }
+        )
+
+    for skipped in timeframes_skipped:
+        for spec in signal_specs:
+            for horizon in horizons or [0]:
+                _record_unmeasured(
+                    spec,
+                    timeframe=skipped["timeframe"],
+                    horizon=int(horizon),
+                    status="invalid_harness",
+                    reason=skipped["reason"],
+                )
     for tf_name, tf_seconds in tf_specs:
         bars = resample_ohlcv(base, tf_seconds, bar_seconds=bar_seconds)
         frames_by_tf[tf_name] = bars
         if condition_regime:
-            from wayfinder_paths.jobs.indicators import (
-                REGIME_LABELS,
-                classify_regimes,
-            )
+            from wayfinder_paths.jobs.indicators import classify_regimes
 
             labels = classify_regimes(bars)
             regime_arrays[tf_name] = labels.to_numpy()
@@ -1006,10 +1043,44 @@ def scan_signals(
         for h in tf_horizons:
             if h <= 0 or h >= n:
                 tests_skipped += 1
+                for spec in signal_specs:
+                    _record_unmeasured(
+                        spec,
+                        timeframe=tf_name,
+                        horizon=h,
+                        status="underpowered",
+                        reason="horizon_out_of_range",
+                    )
+                    for label in regime_labels:
+                        _record_unmeasured(
+                            spec,
+                            timeframe=tf_name,
+                            horizon=h,
+                            status="underpowered",
+                            reason="horizon_out_of_range",
+                            regime=label,
+                        )
                 continue
             if n // h < min_events:
                 # Decimated-event ceiling can't reach the sample gate.
                 tests_skipped += 1
+                for spec in signal_specs:
+                    _record_unmeasured(
+                        spec,
+                        timeframe=tf_name,
+                        horizon=h,
+                        status="underpowered",
+                        reason="insufficient_bars_for_event_floor",
+                    )
+                    for label in regime_labels:
+                        _record_unmeasured(
+                            spec,
+                            timeframe=tf_name,
+                            horizon=h,
+                            status="underpowered",
+                            reason="insufficient_bars_for_event_floor",
+                            regime=label,
+                        )
                 continue
             fwd = np.log(close[h:] / close[:-h])
             drift = float(fwd.mean())
@@ -1097,6 +1168,7 @@ def scan_signals(
                     "drift_baseline": drift,
                     "t_stat_vs_drift": float(t),
                     "round_trip_cost_bps": round_trip_cost * 1e4,
+                    "min_detectable_edge_bps": 2.0 * sem * 1e4,
                     "edge_net_bps": float(edge_net_bps),
                     "t_net": float(t_net),
                     "p_value": _t_to_pvalue(float(t)),
@@ -1113,14 +1185,23 @@ def scan_signals(
             # Iterate the SAME def set the frame was built from: a campaign
             # frame has only workspace columns, so scoring the canonical
             # library against it would KeyError (hit live 2026-07-26).
-            for spec in (*selected_canonical, *extra_signals):
+            for spec in signal_specs:
                 sig = signals[spec.name].to_numpy()
                 events = _decimate_events(sig[: n - h], h)
                 n_raw = int(sig[: n - h].sum())
                 row = _stats_row(events, spec)
                 if row is None:
-                    if int(events.sum()) >= min_events:
-                        continue  # zero-variance cell
+                    _record_unmeasured(
+                        spec,
+                        timeframe=tf_name,
+                        horizon=h,
+                        status="underpowered",
+                        reason=(
+                            "zero_variance_returns"
+                            if int(events.sum()) >= min_events
+                            else "insufficient_events"
+                        ),
+                    )
                     continue
                 tests_run += 1
                 row["n_raw"] = n_raw
@@ -1128,7 +1209,7 @@ def scan_signals(
                 rows.append(row)
                 if condition_regime and regime_arrays.get(tf_name) is not None:
                     labels_arr = regime_arrays[tf_name]
-                    for label in REGIME_LABELS:
+                    for label in regime_labels:
                         mask = labels_arr[: n - h] == label
                         r_events = _decimate_events(sig[: n - h] & mask, h)
                         r_row = _stats_row(
@@ -1141,6 +1222,18 @@ def scan_signals(
                             },
                         )
                         if r_row is None:
+                            _record_unmeasured(
+                                spec,
+                                timeframe=tf_name,
+                                horizon=h,
+                                status="underpowered",
+                                reason=(
+                                    "zero_variance_returns"
+                                    if int(r_events.sum()) >= max(15, min_events // 2)
+                                    else "insufficient_events"
+                                ),
+                                regime=label,
+                            )
                             continue
                         tests_run += 1
                         rows.append(r_row)
@@ -1208,6 +1301,9 @@ def scan_signals(
         # q-values are only meaningful over the COMPLETE test family.
         # Stripped from the persisted artifact.
         "_all_rows": rows,
+        # Declared cells which could not produce a valid statistic. Coverage
+        # audits keep these distinct from negative evidence.
+        "_unmeasured_rows": unmeasured_rows,
         "read": (
             f"{len(promoted)} of {tests_run} tests PROMOTED "
             f"(q<={q_threshold} + >={min_folds_agree}/{folds} fold sign "
@@ -1783,7 +1879,8 @@ def _scan_dir(root: Any) -> Any:
     return root / "results" / "research" / "signal_scan"
 
 
-def _read_scan_ledger(root: Any) -> list[dict[str, Any]]:
+def read_scan_ledger(root: Any) -> list[dict[str, Any]]:
+    """Return every valid row in the append-only signal-scan ledger."""
     target = _scan_dir(root) / _SCAN_LEDGER
     if not target.exists():
         return []
@@ -1812,15 +1909,16 @@ def _append_scan_ledger(root: Any, rows: list[dict[str, Any]]) -> None:
                 json.dumps({"ts": utc_now_iso(), **row}, sort_keys=True, default=str)
                 + "\n"
             )
-    existing = _read_scan_ledger(root)
+    existing = read_scan_ledger(root)
     if len(existing) <= _SCAN_LEDGER_COMPACT_ROWS:
         return
-    # Compact: latest scan_test per hash; scan_meta and holdout_check rows
-    # are NEVER dropped — holdout spends are the honesty backbone.
+    # Compact: latest measured/unmeasured cell per hash; scan_meta and
+    # holdout_check rows are NEVER dropped — declarations and holdout spends
+    # are the honesty backbone.
     kept: list[dict[str, Any]] = []
     latest_by_hash: dict[str, dict[str, Any]] = {}
     for row in existing:
-        if row.get("kind") == "scan_test" and row.get("hash"):
+        if row.get("kind") in {"scan_test", "scan_cell"} and row.get("hash"):
             latest_by_hash[str(row["hash"])] = row
         else:
             kept.append(row)
@@ -2133,6 +2231,9 @@ def signal_scan_job(
     all_rows_by_symbol = {
         symbol: scan.pop("_all_rows") for symbol, scan in per_symbol.items()
     }
+    unmeasured_by_symbol = {
+        symbol: scan.pop("_unmeasured_rows") for symbol, scan in per_symbol.items()
+    }
     if window_days is not None:
         for rows_ in all_rows_by_symbol.values():
             for row in rows_:
@@ -2215,16 +2316,27 @@ def signal_scan_job(
         "passing": sum(cell["status"] == "pass" for cell in incumbent_cells),
         "declared": len(incumbent_cells),
     }
-    prior = _read_scan_ledger(root)
+    prior = read_scan_ledger(root)
     prior_scans = sum(1 for row in prior if row.get("kind") == "scan_meta")
     prior_tests = sum(1 for row in prior if row.get("kind") == "scan_test")
     prior_unique = len(
         {row.get("hash") for row in prior if row.get("kind") == "scan_test"}
     )
+    scan_id = utc_now_iso()
+    effective_canonical = SIGNAL_LIBRARY if include_canonical else selected_canonical
+    declared_defs = {
+        spec_.name: spec_ for spec_ in (*effective_canonical, *extra_signals)
+    }
+    if condition_regime:
+        from wayfinder_paths.jobs.indicators import REGIME_LABELS
+
+        declared_regimes = ["base", *REGIME_LABELS]
+    else:
+        declared_regimes = ["base"]
     ledger_rows: list[dict[str, Any]] = [
         {
             "kind": "scan_meta",
-            "scan_id": utc_now_iso(),
+            "scan_id": scan_id,
             "symbols": targets,
             "timeframes": scan_timeframes,
             "horizons": {
@@ -2236,6 +2348,10 @@ def signal_scan_job(
                 sym: scan["holdout"]["cutoff_ts"] for sym, scan in per_symbol.items()
             },
             "workspace_signals": [spec.name for spec in extra_signals],
+            "declared_signals": list(declared_defs),
+            "signal_families": {
+                name: spec_.family for name, spec_ in declared_defs.items()
+            },
             "workspace_signals_sha": (
                 workspace.sha if workspace is not None and extra_signals else None
             ),
@@ -2245,9 +2361,18 @@ def signal_scan_job(
             "bh_family_size": len(pooled_rows),
             "bh_min_family_size": MIN_BH_FAMILY_SIZE,
             "multiplicity_method": "benjamini_hochberg",
-            "incumbent_controls": incumbent_controls,
+            "incumbent_controls": incumbent_cells,
             "condition_regime": condition_regime,
+            "declared_regimes": declared_regimes,
             "window_days": window_days,
+            "data_revision": {
+                symbol: scan["fingerprint"] for symbol, scan in per_symbol.items()
+            },
+            "cost_revision": {
+                "fee_bps": fee_bps,
+                "slippage_bps": slippage_bps,
+                "round_trip_cost_bps": 2 * (fee_bps + slippage_bps),
+            },
         }
     ]
     # EVERY executed test is a recorded trial — not just the survivors.
@@ -2256,6 +2381,7 @@ def signal_scan_job(
             ledger_rows.append(
                 {
                     "kind": "scan_test",
+                    "scan_id": scan_id,
                     # Regime-conditional and windowed cells are DISTINCT
                     # trials — they must not collide with the base row's hash.
                     "hash": _trial_hash(
@@ -2268,6 +2394,7 @@ def signal_scan_job(
                     ),
                     "symbol": symbol,
                     "signal": row["signal"],
+                    "family": row.get("family"),
                     "timeframe": row["timeframe"],
                     "horizon": row["horizon"],
                     "direction": row["direction"],
@@ -2275,6 +2402,7 @@ def signal_scan_job(
                     "t": round(row["t_stat_vs_drift"], 3),
                     "t_net": round(row["t_net"], 3),
                     "edge_net_bps": round(row["edge_net_bps"], 3),
+                    "min_detectable_edge_bps": round(row["min_detectable_edge_bps"], 3),
                     "round_trip_cost_bps": round(row["round_trip_cost_bps"], 3),
                     "q": row.get("q_value"),
                     "bh_family_size": row.get("bh_family_size"),
@@ -2292,6 +2420,25 @@ def signal_scan_job(
                         )
                         for control in incumbent_controls
                     ),
+                }
+            )
+    for symbol, rows in unmeasured_by_symbol.items():
+        for row in rows:
+            signal_key = (
+                row["signal"]
+                + (f"|{row['regime']}" if row.get("regime") else "")
+                + (f"|w{window_days}" if window_days else "")
+            )
+            ledger_rows.append(
+                {
+                    "kind": "scan_cell",
+                    "scan_id": scan_id,
+                    "hash": _trial_hash(
+                        symbol, signal_key, row["timeframe"], row["horizon"]
+                    ),
+                    "symbol": symbol,
+                    **row,
+                    "campaign": campaign,
                 }
             )
     _append_scan_ledger(root, ledger_rows)
@@ -2397,7 +2544,7 @@ def holdout_check_job(
         extra_defs = {spec_.name: spec_ for spec_ in workspace.defs}
         scanned_shas = [
             row.get("workspace_signals_sha")
-            for row in _read_scan_ledger(root)
+            for row in read_scan_ledger(root)
             if row.get("kind") == "scan_meta" and row.get("workspace_signals_sha")
         ]
         if scanned_shas and scanned_shas[-1] != workspace.sha:
@@ -2413,7 +2560,7 @@ def holdout_check_job(
             )
         except ValueError:
             recorded_cutoffs = {}
-    ledger = _read_scan_ledger(root)
+    ledger = read_scan_ledger(root)
     per_symbol: dict[str, Any] = {}
     ledger_rows: list[dict[str, Any]] = []
     already_spent = False
@@ -2541,4 +2688,27 @@ def rank_check_job(
         )
     result = rank_ic(frames, column, horizons=horizons)
     result["symbols"] = symbols
+    from wayfinder_paths.jobs.models import utc_now_iso
+
+    generated_at = utc_now_iso()
+    result["column"] = column
+    result["horizons_requested"] = list(horizons or [])
+    result["generated_at"] = generated_at
+    relative_artifact = "results/research/rank_check.json"
+    artifact = root / relative_artifact
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text(
+        json.dumps(result, indent=2, sort_keys=True, default=str) + "\n",
+        encoding="utf-8",
+    )
+    store.append_journal(
+        job_id,
+        {
+            "type": "rank_check_completed",
+            "column": column,
+            "horizons": list(horizons or []),
+            "artifact": relative_artifact,
+        },
+    )
+    result["artifact"] = str(artifact)
     return result

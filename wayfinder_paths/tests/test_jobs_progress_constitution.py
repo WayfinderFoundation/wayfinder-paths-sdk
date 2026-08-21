@@ -1,5 +1,5 @@
 """Progress constitution: escalating staleness, successor re-arm,
-owner-adjudicated exhaustion, and the paper probation entry tier.
+evidence-adjudicated exhaustion, and the paper probation entry tier.
 
 Motivating incident: all three production research jobs' lanes ended in agent
 SELF-rejections, then froze. Staleness computed correctly every wake, but the
@@ -89,9 +89,7 @@ def _write_experiment_row(
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(
-            json.dumps(
-                {"ts": ts, "run_id": "exp-1", "semantic_hash": semantic_hash}
-            )
+            json.dumps({"ts": ts, "run_id": "exp-1", "semantic_hash": semantic_hash})
             + "\n"
         )
 
@@ -117,9 +115,7 @@ def test_research_impasse_fires_once_and_wakes_agent(
 
     # Second pass inside the re-alert window: debounced, no duplicate.
     result = recover_stalled_applications(store=store)
-    assert not [
-        e for e in result["recovered"] if e.get("action") == "research_impasse"
-    ]
+    assert not [e for e in result["recovered"] if e.get("action") == "research_impasse"]
     assert len(_journal_events(store, job_id, "research_impasse")) == 1
 
 
@@ -129,9 +125,7 @@ def test_research_impasse_needs_k_stale_wakes(
     store, job_id = _make_store(tmp_path, "impasse-few")
     _append_wakes(store, job_id, 2)  # below the K=3 default
     result = recover_stalled_applications(store=store)
-    assert not [
-        e for e in result["recovered"] if e.get("action") == "research_impasse"
-    ]
+    assert not [e for e in result["recovered"] if e.get("action") == "research_impasse"]
     assert not wakes
 
 
@@ -146,9 +140,7 @@ def test_research_impasse_respects_staleness_thresholds(
     )
     _append_wakes(store, job_id, 3)
     result = recover_stalled_applications(store=store)
-    assert not [
-        e for e in result["recovered"] if e.get("action") == "research_impasse"
-    ]
+    assert not [e for e in result["recovered"] if e.get("action") == "research_impasse"]
 
 
 def test_research_impasse_resolves_on_progress(
@@ -163,9 +155,7 @@ def test_research_impasse_resolves_on_progress(
     store.append_journal(job_id, {"type": "probation_leg_opened", "leg": "x"})
     result = recover_stalled_applications(store=store)
     assert not [
-        e
-        for e in result["recovered"]
-        if e.get("action") == "research_impasse_resolved"
+        e for e in result["recovered"] if e.get("action") == "research_impasse_resolved"
     ]
     assert store.read_json(job_id, "state/research_impasse.json")["alerted_at"]
 
@@ -173,9 +163,7 @@ def test_research_impasse_resolves_on_progress(
     store.append_journal(job_id, {"type": "probation_leg_killed", "leg": "x"})
     result = recover_stalled_applications(store=store)
     resolved = [
-        e
-        for e in result["recovered"]
-        if e.get("action") == "research_impasse_resolved"
+        e for e in result["recovered"] if e.get("action") == "research_impasse_resolved"
     ]
     assert len(resolved) == 1
     assert not store.read_json(job_id, "state/research_impasse.json")
@@ -215,9 +203,7 @@ def test_duplicate_experiment_is_activity_not_learning(
     _write_experiment_row(store, job_id, old, semantic_hash="same-question")
     _append_wakes(store, job_id, 3)
     recover_stalled_applications(store=store)
-    _write_experiment_row(
-        store, job_id, utc_now_iso(), semantic_hash="same-question"
-    )
+    _write_experiment_row(store, job_id, utc_now_iso(), semantic_hash="same-question")
 
     result = recover_stalled_applications(store=store)
     assert not [
@@ -312,9 +298,7 @@ def test_self_rejected_successor_rearms_then_overdue_fires_again(
     # Pass 2: the re-armed window (restarted at the 13h-old rejection) is
     # already overdue → the invitation wakes the agent again.
     result = recover_stalled_applications(store=store)
-    overdue = [
-        e for e in result["recovered"] if e.get("action") == "successor_overdue"
-    ]
+    overdue = [e for e in result["recovered"] if e.get("action") == "successor_overdue"]
     assert len(overdue) == 1
     assert wakes and wakes[-1]["job_id"] == job_id
 
@@ -372,7 +356,9 @@ def test_alive_successor_marks_delivered(
     )
     result = recover_stalled_applications(store=store)
     assert not [
-        e for e in result["recovered"] if str(e.get("action", "")).startswith("successor")
+        e
+        for e in result["recovered"]
+        if str(e.get("action", "")).startswith("successor")
     ]
     assert store.read_json(job_id, "state/successor_expected.json")[0]["delivered"]
     assert not wakes
@@ -386,14 +372,16 @@ def test_audit_progress_counts_as_successor_delivery(
     _write_experiment_row(store, job_id, datetime.now(UTC).isoformat())
     result = recover_stalled_applications(store=store)
     assert not [
-        e for e in result["recovered"] if str(e.get("action", "")).startswith("successor")
+        e
+        for e in result["recovered"]
+        if str(e.get("action", "")).startswith("successor")
     ]
     assert store.read_json(job_id, "state/successor_expected.json")[0]["delivered"]
     assert not wakes
 
 
 # ---------------------------------------------------------------------------
-# Piece 3: owner-adjudicated exhaustion claims
+# Piece 3: evidence-adjudicated exhaustion claims
 
 
 def test_exhaustion_claim_lifecycle_and_owner_only_accept(tmp_path: Path) -> None:
@@ -455,7 +443,12 @@ def test_exhaustion_claim_requires_full_shape(tmp_path: Path) -> None:
         )
     with pytest.raises(ValueError, match="evidence"):
         file_exhaustion_claim(
-            store, job_id, lane="x", evidence=" ", provenance="data-wall", next_region="y"
+            store,
+            job_id,
+            lane="x",
+            evidence=" ",
+            provenance="data-wall",
+            next_region="y",
         )
 
 
@@ -490,7 +483,7 @@ def test_agent_self_rejected_provenance_never_settles(tmp_path: Path) -> None:
     assert not claim_settles_lane(accepted)
 
 
-def test_filed_claim_awaits_without_resolving_then_owner_adjudication_resolves(
+def test_filed_claim_is_mechanically_rejected_without_resolving_impasse(
     tmp_path: Path, wakes: list[dict[str, Any]]
 ) -> None:
     store, job_id = _make_store(tmp_path, "claim-awaiting")
@@ -512,38 +505,31 @@ def test_filed_claim_awaits_without_resolving_then_owner_adjudication_resolves(
         if event.get("action") == "research_impasse_awaiting_adjudication"
     ]
     assert len(awaiting) == 1
+    audited = [
+        event
+        for event in result["recovered"]
+        if event.get("action") == "exhaustion_claims_audited"
+    ]
+    assert len(audited) == 1
+    assert audited[0]["verdicts"][0]["audit_verdict"] == "reject"
     marker = store.read_json(job_id, "state/research_impasse.json")
-    assert marker["status"] == "awaiting_adjudication"
+    assert marker["status"] == "mandated_work"
     assert marker["claim_ids"] == [claim["claim_id"]]
     assert not _journal_events(store, job_id, "research_impasse_resolved")
+    persisted = list_exhaustion_claims(store, job_id)[0]
+    assert persisted["status"] == "rejected"
+    assert persisted["adjudication"]["by"] == "coverage-audit"
 
-    # The in-flight escalation is quiet for the adjudication window.
+    # The rejected claim is terminal and cannot be re-consumed as progress.
     result = recover_stalled_applications(store=store)
     assert not [
         event
         for event in result["recovered"]
-        if event.get("action") in {
-            "research_impasse",
-            "research_impasse_awaiting_adjudication",
-            "research_impasse_resolved",
-        }
+        if event.get("action") == "exhaustion_claims_audited"
     ]
 
-    adjudicate_exhaustion_claim(
-        store, job_id, claim["claim_id"], status="rejected", by="owner"
-    )
-    result = recover_stalled_applications(store=store)
-    resolved = [
-        event
-        for event in result["recovered"]
-        if event.get("action") == "research_impasse_resolved"
-    ]
-    assert len(resolved) == 1
-    assert resolved[0]["adjudication_signals"] == ["exhaustion_claim_rejected"]
-    assert not store.read_json(job_id, "state/research_impasse.json")
 
-
-def test_awaiting_claim_refires_after_48_hours(
+def test_rejected_claim_mandate_refires_without_losing_named_work(
     tmp_path: Path, wakes: list[dict[str, Any]]
 ) -> None:
     store, job_id = _make_store(tmp_path, "claim-awaiting-expired")
@@ -559,8 +545,8 @@ def test_awaiting_claim_refires_after_48_hours(
     )
     recover_stalled_applications(store=store)
     marker = store.read_json(job_id, "state/research_impasse.json")
-    expired = (datetime.now(UTC) - timedelta(hours=49)).isoformat()
-    marker["awaiting_since"] = expired
+    required = marker["mandate"]["required_next_experiments"]
+    expired = (datetime.now(UTC) - timedelta(hours=25)).isoformat()
     marker["alerted_at"] = expired
     store.write_json(job_id, "state/research_impasse.json", marker)
 
@@ -572,10 +558,11 @@ def test_awaiting_claim_refires_after_48_hours(
     ]
     assert len(refired) == 1
     refreshed = store.read_json(job_id, "state/research_impasse.json")
-    assert refreshed.get("status") is None
+    assert refreshed["status"] == "mandated_work"
+    assert refreshed["mandate"]["required_next_experiments"] == required
 
 
-def test_watchdog_surfaces_pending_claims_once(
+def test_watchdog_audits_pending_claims_once(
     tmp_path: Path, wakes: list[dict[str, Any]]
 ) -> None:
     store, job_id = _make_store(tmp_path, "claims-surface")
@@ -588,15 +575,15 @@ def test_watchdog_surfaces_pending_claims_once(
         next_region="lane-b",
     )
     result = recover_stalled_applications(store=store)
-    surfaced = [
-        e for e in result["recovered"] if e.get("action") == "exhaustion_claims_pending"
+    audited = [
+        e for e in result["recovered"] if e.get("action") == "exhaustion_claims_audited"
     ]
-    assert len(surfaced) == 1 and surfaced[0]["count"] == 1
-    assert len(_journal_events(store, job_id, "exhaustion_claims_pending")) == 1
-    # Unchanged queue → silent next pass.
+    assert len(audited) == 1 and audited[0]["count"] == 1
+    assert len(_journal_events(store, job_id, "exhaustion_claim_rejected")) == 1
+    # Terminal queue → silent next pass.
     result = recover_stalled_applications(store=store)
     assert not [
-        e for e in result["recovered"] if e.get("action") == "exhaustion_claims_pending"
+        e for e in result["recovered"] if e.get("action") == "exhaustion_claims_audited"
     ]
 
 
@@ -761,7 +748,7 @@ def test_wake_mandate_hatch_stripped_and_pinned(tmp_path: Path) -> None:
     prompt = sections["stable_prefix"]
     assert "PROGRESS CONSTITUTION" in prompt
     assert "exactly ONE of" in prompt
-    assert "exhaustion claim FILED for owner adjudication" in prompt
+    assert "exhaustion claim FILED for mechanical coverage audit" in prompt
     assert "Self-rejections are development evidence" in prompt
     assert "agent-self-" in prompt
     assert "NOT a legal outcome" in prompt
