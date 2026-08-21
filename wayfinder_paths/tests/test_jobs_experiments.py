@@ -29,9 +29,18 @@ def test_run_experiment_records_and_ranks(tmp_path: Path) -> None:
     assert experiment["rank_by"] == "sharpe"
     assert experiment["run_count"] == 2
     assert experiment["best"]["params"]
+    assert len(experiment["semantic_hash"]) == 64
     rows = list_experiments(job_id, store=store)
     assert len(rows) == 1
     assert (root / "results" / "backtest" / "experiments.jsonl").exists()
+
+    repeated = run_experiment(
+        job_id,
+        {"threshold": [100.0, 10.0]},  # coordinate order is not semantic
+        rank_by="sharpe",
+        store=store,
+    )["experiment"]
+    assert repeated["semantic_hash"] == experiment["semantic_hash"]
 
 
 def test_promote_params_direct_updates_job_and_revision(tmp_path: Path) -> None:
