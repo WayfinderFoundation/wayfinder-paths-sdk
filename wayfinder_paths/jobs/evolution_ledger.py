@@ -8,6 +8,8 @@ changes actually beat the incumbent forward (promotion reliability)."""
 from __future__ import annotations
 
 import json
+from bisect import bisect_left
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,123 @@ from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
 _VERDICTS_PATH = "state/promotion_verdicts.json"
+_LEARNING_EVENTS = {"probation_leg_graduated", "probation_leg_killed"}
+_ACTIVITY_EVENTS = {
+    "probation_leg_opened",
+    "paper_probation_opened",
+    "exhaustion_claim_filed",
+}
+_OWNER_ACTORS = {"owner", "user", "human"}
+_MANUAL_EVENT_TYPES = {
+    "operator_note",
+    "operator_leverage_set",
+}
+
+
+def _timestamp(value: Any) -> datetime | None:
+    try:
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    return stamp.astimezone(UTC)
+
+
+def build_process_efficiency(store: JobStore, job_id: str) -> dict[str, Any]:
+    """Measure how many completed agent wakes produced valid new learning."""
+    root = store.job_dir(job_id)
+    journal = store.read_jsonl(job_id, "journal.jsonl")
+    experiments = store.read_jsonl(job_id, "results/backtest/experiments.jsonl")
+    wakes = sorted(
+        stamp
+        for row in journal
+        if row.get("type") == "agent_wakeup"
+        and (stamp := _timestamp(row.get("ts"))) is not None
+    )
+    learning_wakes: set[int] = set()
+    activity_wakes: set[int] = set()
+
+    def assign(stamp: datetime | None, target: set[int]) -> None:
+        if stamp is None:
+            return
+        index = bisect_left(wakes, stamp)
+        if index < len(wakes):
+            target.add(index)
+
+    manual_interventions = 0
+    false_closure_reversals = 0
+    for row in journal:
+        event_type = str(row.get("type") or "")
+        stamp = _timestamp(row.get("ts"))
+        if event_type in _LEARNING_EVENTS:
+            assign(stamp, learning_wakes)
+        if event_type in _ACTIVITY_EVENTS:
+            assign(stamp, activity_wakes)
+        actor = str(row.get("by") or row.get("set_by") or "").casefold()
+        source = str(row.get("source") or "").casefold()
+        if (
+            actor in _OWNER_ACTORS
+            or source in _OWNER_ACTORS
+            or event_type in _MANUAL_EVENT_TYPES
+            or event_type.startswith("owner_")
+            or (event_type == "halt_requested" and source == "manual")
+        ):
+            manual_interventions += 1
+        if event_type == "exhaustion_claim_reopened":
+            false_closure_reversals += 1
+
+    from wayfinder_paths.jobs.execution.experiments import experiment_semantic_hash
+
+    semantic_hashes: set[str] = set()
+    duplicate_experiments = 0
+    infra_invalid_experiments = 0
+    for row in experiments:
+        semantic_hash = experiment_semantic_hash(row)
+        if semantic_hash in semantic_hashes:
+            duplicate_experiments += 1
+            assign(_timestamp(row.get("ts")), activity_wakes)
+        else:
+            semantic_hashes.add(semantic_hash)
+            assign(_timestamp(row.get("ts")), learning_wakes)
+        if int(row.get("invalid_count") or 0) > 0:
+            infra_invalid_experiments += 1
+
+    for proposal in _load_proposals(root):
+        stamp = _timestamp(
+            (proposal.get("candidate_report") or {}).get("generated_at")
+            or proposal.get("created_at")
+            or proposal.get("updated_at")
+        )
+        assign(stamp, activity_wakes)
+
+    stalled_background_ops = 0
+    ops_dir = root / "state" / "background_ops"
+    if ops_dir.is_dir():
+        from wayfinder_paths.jobs.background import op_status_summary
+
+        for path in ops_dir.glob("*.json"):
+            if path.name.endswith(".result.json"):
+                continue
+            summary = op_status_summary(root, path.stem)
+            if summary and summary.get("status") == "failed":
+                stalled_background_ops += 1
+
+    wakes_with_learning = len(learning_wakes)
+    activity_only = len(activity_wakes - learning_wakes)
+    return {
+        "wakes_total": len(wakes),
+        "wakes_with_valid_learning": wakes_with_learning,
+        "activity_only_wakes": activity_only,
+        "duplicate_experiments": duplicate_experiments,
+        "infra_invalid_experiments": infra_invalid_experiments,
+        "manual_interventions": manual_interventions,
+        "false_closure_reversals": false_closure_reversals,
+        "stalled_background_ops": stalled_background_ops,
+        "wakes_per_valid_learning": (
+            round(len(wakes) / wakes_with_learning, 3) if wakes_with_learning else None
+        ),
+    }
 
 
 def build_evolution_report(store: JobStore, job_id: str) -> dict[str, Any]:
@@ -121,6 +240,7 @@ def build_evolution_report(store: JobStore, job_id: str) -> dict[str, Any]:
         },
         "opportunity_recall": _opportunity_recall(store, job_id),
         "research_staleness": _research_staleness(root, proposals),
+        "process_efficiency": build_process_efficiency(store, job_id),
         "replication": replication,
         "proposals": rows[-50:],
         "generated_at": utc_now_iso(),
@@ -295,6 +415,7 @@ def evolution_snapshot_block(store: JobStore, job_id: str) -> dict[str, Any]:
         "by_family": report["by_family"],
         "promotion_reliability": report["promotion_reliability"],
         "research_staleness": report["research_staleness"],
+        "process_efficiency": report["process_efficiency"],
         # A LIVE archived candidate outscoring the incumbent is a measured
         # missed opportunity — the branch-revival lane reads this.
         "opportunity_recall": report["opportunity_recall"],

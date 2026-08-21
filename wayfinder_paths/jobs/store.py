@@ -273,6 +273,29 @@ class JobStore:
         )
         return path
 
+    def read_jsonl(
+        self, job_id: str, relative: str, *, limit: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Read a job-owned JSONL artifact without letting one bad row hide
+        the rest of an append-only ledger."""
+        path = self.job_dir(job_id) / relative
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if limit is not None:
+            lines = lines[-max(int(limit), 0) :]
+        rows: list[dict[str, Any]] = []
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+        return rows
+
     def append_journal(self, job_id: str, event: dict[str, Any]) -> None:
         path = self.job_dir(job_id) / "journal.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -812,6 +835,10 @@ class JobStore:
         scorecard["pending_exhaustion_claims"] = len(
             list_exhaustion_claims(self, job_id, status="pending")
         )
+        # circular import: evolution reporting reads through JobStore
+        from wayfinder_paths.jobs.evolution_ledger import build_process_efficiency
+
+        scorecard["process_efficiency"] = build_process_efficiency(self, job_id)
         self.write_json(job_id, "scorecard.json", scorecard)
         return scorecard
 

@@ -356,8 +356,10 @@ def _check_successor_overdue(
     events: list[dict[str, Any]] = []
     changed = False
     for entry in expected:
-        if not isinstance(entry, dict) or entry.get("delivered") or entry.get(
-            "abandoned"
+        if (
+            not isinstance(entry, dict)
+            or entry.get("delivered")
+            or entry.get("abandoned")
         ):
             continue
         entry_ts = str(entry.get("ts") or "")
@@ -365,8 +367,7 @@ def _check_successor_overdue(
         successors = [
             p
             for p in proposals
-            if str(p.get("proposal_id")) != rejected_id
-            and _staged_after(p, entry_ts)
+            if str(p.get("proposal_id")) != rejected_id and _staged_after(p, entry_ts)
         ]
         alive = [p for p in successors if p.get("status") != "rejected"]
         owner_closed = [
@@ -376,9 +377,7 @@ def _check_successor_overdue(
             and str((p.get("rejection") or {}).get("by") or "")
             in {"owner", "user", "human"}
         ]
-        audit_progress = _research_progress_since(
-            store.job_dir(job_id), entry_ts
-        )
+        audit_progress = _research_progress_since(store.job_dir(job_id), entry_ts)
         if (
             alive
             or owner_closed
@@ -412,8 +411,8 @@ def _check_successor_overdue(
                             f"the successor invited by the process rejection of "
                             f"{rejected_id} was agent-self-rejected "
                             f"{rearms + 1} times — the agent cannot close this "
-                            "thread itself; owner must adjudicate (accept an "
-                            "exhaustion claim or reject the ask)"
+                            "thread itself; file a mechanically auditable "
+                            "exhaustion claim or ask the owner to reject the ask)"
                         ),
                     },
                 )
@@ -429,9 +428,7 @@ def _check_successor_overdue(
                 self_rejected,
                 key=lambda p: str((p.get("rejection") or {}).get("ts") or ""),
             )
-            rearm_ts = str(
-                (newest.get("rejection") or {}).get("ts") or now.isoformat()
-            )
+            rearm_ts = str((newest.get("rejection") or {}).get("ts") or now.isoformat())
             entry["ts"] = rearm_ts
             entry["notified"] = False
             entry["rearms"] = rearms + 1
@@ -862,8 +859,9 @@ def _check_disk_usage(
 # claims), journal `research_impasse`, write the marker the worker prompt
 # renders as a HATCH-STRIPPED mandate, and fire a trigger wake. Debounced by
 # a re-alert window (mirrors disk_pressure); the marker clears — and journals
-# `research_impasse_resolved` — only when valid learning or owner adjudication
-# appears. Activity remains visible without laundering it into learning.
+# `research_impasse_resolved` — only when valid learning or a trusted
+# owner/coverage adjudication appears. Activity remains visible without
+# laundering it into learning.
 _IMPASSE_PATH = "state/research_impasse.json"
 IMPASSE_WAKES_ENV = "WAYFINDER_IMPASSE_WAKES"
 DEFAULT_IMPASSE_WAKES = 3
@@ -882,6 +880,7 @@ _OWNER_ADJUDICATION_TYPES = {
     "exhaustion_claim_accepted",
     "exhaustion_claim_rejected",
 }
+_AUDIT_ADJUDICATION_TYPES = {"exhaustion_claim_audit_passed"}
 
 
 class ResearchProgressClassification(TypedDict):
@@ -934,9 +933,16 @@ def _research_progress_since(
             learning.add(event_type)
         elif event_type in _ACTIVITY_JOURNAL_TYPES:
             activity.add(event_type)
-        elif event_type in _OWNER_ADJUDICATION_TYPES and str(
-            row.get("by") or ""
-        ) in {"owner", "user", "human"}:
+        elif event_type in _OWNER_ADJUDICATION_TYPES and str(row.get("by") or "") in {
+            "owner",
+            "user",
+            "human",
+        }:
+            adjudications.add(event_type)
+        elif (
+            event_type in _AUDIT_ADJUDICATION_TYPES
+            and str(row.get("by") or "") == "coverage-audit"
+        ):
             adjudications.add(event_type)
 
     from wayfinder_paths.jobs.execution.experiments import experiment_semantic_hash
@@ -1008,10 +1014,12 @@ def _check_research_impasse(
     if len(wake_ts) < stale_wakes:
         return None  # startup — not enough wakes to judge
     basis_ts = sorted(wake_ts)[-stale_wakes]
-    progress = _research_progress_since(
-        root, basis_ts, rows=rows, proposals=proposals
-    )
-    if progress["valid_learning"] or progress["adjudicated"]:
+    progress = _research_progress_since(root, basis_ts, rows=rows, proposals=proposals)
+    mandated_work = marker.get("status") == "mandated_work"
+    # An adjudication created a carryover mandate; that same event cannot
+    # erase the named work on the next pass. Only learning may resolve it.
+    if progress["valid_learning"] or (progress["adjudicated"] and not mandated_work):
+        adjudication_signals = [] if mandated_work else progress["adjudication_signals"]
         if marker.get("alerted_at"):
             store.write_json(job.id, _IMPASSE_PATH, {})
             store.append_journal(
@@ -1019,15 +1027,40 @@ def _check_research_impasse(
                 {
                     "type": "research_impasse_resolved",
                     "learning_signals": progress["learning_signals"],
-                    "adjudication_signals": progress["adjudication_signals"],
+                    "adjudication_signals": adjudication_signals,
                 },
             )
             return {
                 "action": "research_impasse_resolved",
                 "learning_signals": progress["learning_signals"],
-                "adjudication_signals": progress["adjudication_signals"],
+                "adjudication_signals": adjudication_signals,
             }
         return None
+    if mandated_work:
+        if _age(now, marker.get("alerted_at")) < IMPASSE_REALERT_WINDOW:
+            return None
+        marker["alerted_at"] = now.isoformat()
+        store.write_json(job.id, _IMPASSE_PATH, marker)
+        mandate = marker.get("mandate") or {}
+        store.append_journal(
+            job.id,
+            {
+                "type": "research_impasse",
+                "status": "mandated_work",
+                "claim_id": mandate.get("claim_id"),
+                "required_next_experiments": mandate.get("required_next_experiments")
+                or [],
+            },
+        )
+        from wayfinder_paths.jobs.triggers import fire_triggers
+
+        fire_triggers(store, job, ["research_impasse"], source="watchdog")
+        return {
+            "action": "research_impasse",
+            "status": "mandated_work",
+            "claim_id": mandate.get("claim_id"),
+            "outcome": "agent_woken",
+        }
     if marker.get("status") == "awaiting_adjudication":
         if _age(now, marker.get("awaiting_since")) < IMPASSE_ADJUDICATION_WINDOW:
             return None
@@ -1046,11 +1079,7 @@ def _check_research_impasse(
             "status": "awaiting_adjudication",
             "awaiting_since": filed_at,
             "claim_ids": sorted(
-                {
-                    str(row.get("claim_id"))
-                    for row in filed
-                    if row.get("claim_id")
-                }
+                {str(row.get("claim_id")) for row in filed if row.get("claim_id")}
             ),
         }
         if not marker.get("alerted_at"):
@@ -1092,9 +1121,7 @@ def _check_research_impasse(
             "type": "research_impasse",
             "stale_wakes": stale_wakes,
             "basis_wake_ts": basis_ts,
-            "days_since_last_experiment": staleness.get(
-                "days_since_last_experiment"
-            ),
+            "days_since_last_experiment": staleness.get("days_since_last_experiment"),
             "wakes_since_last_proposal": staleness.get("wakes_since_last_proposal"),
         },
     )
@@ -1109,39 +1136,40 @@ def _check_research_impasse(
     }
 
 
-# Pending exhaustion claims are owner work: surface them on the watchdog
-# cadence (journal on change; the scorecard count refreshes with every
-# scorecard write) so a filed claim cannot silently rot un-adjudicated.
-_CLAIMS_SEEN_PATH = "state/exhaustion_claims_seen.json"
-
-
-def _surface_pending_claims(store: JobStore, job_id: str) -> dict[str, Any] | None:
-    from wayfinder_paths.jobs.exhaustion import list_exhaustion_claims
+# Pending claims are controller work: every watchdog pass runs the structured
+# coverage audit and applies pass/narrow/reject without waiting on an owner.
+def _audit_pending_claims(store: JobStore, job_id: str) -> dict[str, Any] | None:
+    from wayfinder_paths.jobs.exhaustion import (
+        audit_and_adjudicate_exhaustion_claim,
+        list_exhaustion_claims,
+    )
 
     pending = list_exhaustion_claims(store, job_id, status="pending")
-    ids = sorted(str(claim.get("claim_id")) for claim in pending)
-    seen = store.read_json(job_id, _CLAIMS_SEEN_PATH) or {}
-    if list(seen.get("pending") or []) == ids:
+    if not pending:
         return None
-    store.write_json(
-        job_id, _CLAIMS_SEEN_PATH, {"pending": ids, "checked_at": utc_now_iso()}
-    )
-    if not ids:
-        return None  # a cleared queue needs no alert
-    store.append_journal(
-        job_id,
-        {
-            "type": "exhaustion_claims_pending",
-            "count": len(ids),
-            "claim_ids": ids,
-            "owner_review_required": (
-                "pending exhaustion claims await owner adjudication — accept "
-                "or reject via `wayfinder job exhaustion adjudicate`"
-            ),
-        },
-    )
-    store.refresh_scorecard(job_id)
-    return {"action": "exhaustion_claims_pending", "count": len(ids)}
+    results: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
+    for claim in pending:
+        claim_id = str(claim["claim_id"])
+        try:
+            results.append(
+                audit_and_adjudicate_exhaustion_claim(store, job_id, claim_id)
+            )
+        except Exception as exc:  # noqa: BLE001 — other claims must still audit
+            failures.append({"claim_id": claim_id, "error": str(exc)})
+    return {
+        "action": "exhaustion_claims_audited",
+        "count": len(results),
+        "failures": failures,
+        "verdicts": [
+            {
+                "claim_id": claim["claim_id"],
+                "status": claim["status"],
+                "audit_verdict": (claim.get("audit") or {}).get("verdict"),
+            }
+            for claim in results
+        ],
+    }
 
 
 # Lifecycle evaluation is cheap (json reads + arithmetic) but its decisions
@@ -1360,7 +1388,7 @@ def recover_stalled_applications(
         if impasse_event is not None:
             recovered.append({"job_id": job.id, **impasse_event})
         try:
-            claims_event = _surface_pending_claims(store, job.id)
+            claims_event = _audit_pending_claims(store, job.id)
         except Exception as exc:
             errors.append({"job_id": job.id, "error": f"claims: {exc}"})
             claims_event = None

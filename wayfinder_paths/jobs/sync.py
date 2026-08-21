@@ -190,6 +190,12 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
     store = store or JobStore()
     job = store.load(job_id)
     scorecard = store.read_json(job_id, "scorecard.json", default={}) or {}
+    from wayfinder_paths.jobs.evolution_ledger import build_process_efficiency
+
+    scorecard = {
+        **scorecard,
+        "process_efficiency": build_process_efficiency(store, job_id),
+    }
     # Reflect the live runner/engine state, not the declared job.yaml: mode
     # (paper/live), agent_mode, active_revision, paused, and scheduling/health
     # metrics all come from the runner where it is the source of truth. See
