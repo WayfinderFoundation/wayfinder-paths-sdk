@@ -31,7 +31,9 @@ from wayfinder_paths.paths.manifest import (
 )
 from wayfinder_paths.paths.preview import (
     PathPreviewError,
+    inspect_panel_preview,
     inspect_preview_path,
+    preview_panel,
     preview_path,
 )
 from wayfinder_paths.paths.renderer import (
@@ -1212,6 +1214,13 @@ def path_cli() -> None:
 )
 @click.option("--archetype", default=None, help="Pipeline archetype id.")
 @click.option(
+    "--with-panel",
+    "with_panels",
+    multiple=True,
+    metavar="ID",
+    help="Scaffold a workspace panel with this id (repeatable).",
+)
+@click.option(
     "--overwrite", is_flag=True, help="Overwrite scaffolded files if they exist."
 )
 def init_cmd(
@@ -1226,6 +1235,7 @@ def init_cmd(
     skill: bool,
     template: str,
     archetype: str | None,
+    with_panels: tuple[str, ...],
     overwrite: bool,
 ) -> None:
     safe_slug = slugify(slug)
@@ -1243,6 +1253,7 @@ def init_cmd(
             with_skill=skill,
             template=template.lower(),
             archetype=archetype,
+            panels=list(with_panels) if with_panels else None,
             overwrite=overwrite,
         )
     except PathScaffoldError as exc:
@@ -1660,13 +1671,75 @@ def activate_cmd(
 )
 @click.option("--parent-port", default=3333, show_default=True, type=int)
 @click.option("--applet-port", default=3334, show_default=True, type=int)
+@click.option(
+    "--panel",
+    "panel_id",
+    default=None,
+    metavar="ID",
+    help="Preview a workspace panel (by id) in a panel-shaped dev sandbox.",
+)
+@click.option(
+    "--dev-server",
+    "dev_server",
+    default=None,
+    metavar="URL",
+    help="Point the panel iframe at your own dev server for HMR (relaxes the "
+    "sandbox; dev-only).",
+)
+@click.option(
+    "--live",
+    is_flag=True,
+    help="Serve wf:fetch with REAL read-only data proxied through your own "
+    "API key (attached server-side; never enters the panel frame). "
+    "Requires WAYFINDER_API_KEY or a configured api_key.",
+)
+@click.option("--panel-port", default=3334, show_default=True, type=int)
 def preview_cmd(
     path_dir: str,
     check: bool,
     parent_port: int,
     applet_port: int,
+    panel_id: str | None,
+    dev_server: str | None,
+    live: bool,
+    panel_port: int,
 ) -> None:
     try:
+        if live and not panel_id:
+            raise click.UsageError("--live requires --panel <id>")
+        if panel_id:
+            if check:
+                inspection = inspect_panel_preview(
+                    path_dir=Path(path_dir),
+                    panel_id=panel_id,
+                    dev_server=dev_server,
+                )
+                _echo_json(
+                    {
+                        "ok": True,
+                        "result": {
+                            "slug": inspection.slug,
+                            "version": inspection.version,
+                            "panel_id": inspection.panel.panel_id,
+                            "panel_root": str(inspection.panel_root)
+                            if inspection.panel_root
+                            else None,
+                            "entry": inspection.entry,
+                            "dev_server": dev_server,
+                        },
+                    }
+                )
+                return
+            preview_panel(
+                path_dir=Path(path_dir),
+                panel_id=panel_id,
+                dev_server=dev_server,
+                live=live,
+                parent_port=parent_port,
+                panel_port=panel_port,
+            )
+            return
+
         if check:
             inspection = inspect_preview_path(path_dir=Path(path_dir))
             _echo_json(

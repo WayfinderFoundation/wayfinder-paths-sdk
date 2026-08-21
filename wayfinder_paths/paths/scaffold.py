@@ -87,6 +87,7 @@ def _build_wfpath_yaml(
     with_skill: bool,
     template: str,
     archetype: str | None,
+    panels: list[str] | None = None,
 ) -> str:
     tags_unique: list[str] = []
     for tag in tags:
@@ -123,6 +124,26 @@ def _build_wfpath_yaml(
         lines.append("applet:")
         lines.append('  build_dir: "applet/dist"')
         lines.append('  manifest: "applet/applet.manifest.json"')
+
+    panel_ids = [p for p in (panels or []) if p]
+    if panel_ids:
+        # Workspace panels declare their data capabilities; the top-level
+        # `capabilities` list is the authoritative superset (a panel can only
+        # request what the path declares). Seed a read-only market capability.
+        lines.append("")
+        lines.append("capabilities:")
+        lines.append("  - market.read")
+        lines.append("")
+        lines.append("panels:")
+        for panel_id in panel_ids:
+            title = panel_id.replace("-", " ").title()
+            lines.append(f"  - id: {panel_id}")
+            lines.append(f"    name: {_yaml_quote(title)}")
+            lines.append(f'    build_dir: "panels/{panel_id}/dist"')
+            lines.append("    category: markets")
+            lines.append("    size: { min_width: 320, min_height: 240 }")
+            lines.append("    capabilities:")
+            lines.append("      - market.read")
 
     if with_skill:
         lines.append("")
@@ -2057,6 +2078,7 @@ def init_path(
     with_skill: bool = True,
     template: str = "basic",
     archetype: str | None = None,
+    panels: list[str] | None = None,
     overwrite: bool = False,
 ) -> PathInitResult:
     slug = slugify(slug)
@@ -2082,6 +2104,14 @@ def init_path(
     if template == "pipeline" and archetype and archetype not in tag_list:
         tag_list = [archetype, *tag_list]
 
+    panel_ids: list[str] = []
+    for raw_panel in panels or []:
+        panel_id = slugify(raw_panel)
+        if not panel_id or not _SLUG_RE.fullmatch(panel_id):
+            raise PathScaffoldError(f"Invalid panel id: {raw_panel!r}")
+        if panel_id not in panel_ids:
+            panel_ids.append(panel_id)
+
     if primary_kind == "strategy":
         component_kind = "strategy"
         component_path = "strategy.py"
@@ -2104,6 +2134,7 @@ def init_path(
         with_skill=with_skill,
         template=template,
         archetype=archetype,
+        panels=panel_ids,
     )
 
     ctx: dict[str, Any] = {
@@ -2173,6 +2204,31 @@ def init_path(
         write(
             "applet/dist/assets/app.js",
             _render_template(_read_template("applet/dist/assets/app.js.tmpl"), ctx),
+        )
+
+    for panel_id in panel_ids:
+        panel_ctx = {
+            **ctx,
+            "panel_id": panel_id,
+            "panel_name": panel_id.replace("-", " ").title(),
+        }
+        write(
+            f"panels/{panel_id}/dist/index.html",
+            _render_template(_read_template("panel/dist/index.html.tmpl"), panel_ctx),
+        )
+        write(
+            f"panels/{panel_id}/dist/assets/panel.js",
+            _render_template(
+                _read_template("panel/dist/assets/panel.js.tmpl"), panel_ctx
+            ),
+        )
+        write(
+            f"panels/{panel_id}/src/bridge.ts",
+            _render_template(_read_template("panel/src/bridge.ts.tmpl"), panel_ctx),
+        )
+        write(
+            f"panels/{panel_id}/README.md",
+            _render_template(_read_template("panel/README.md.tmpl"), panel_ctx),
         )
 
     if template == "pipeline" and archetype:

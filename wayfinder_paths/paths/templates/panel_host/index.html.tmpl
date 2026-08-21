@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Panel preview: {{slug}}/{{panel_id}}</title>
+    <link rel="stylesheet" href="./host.css" />
+  </head>
+  <body>
+    <script>
+      window.WF_CONFIG = {
+        slug: "{{slug}}",
+        panelId: "{{panel_id}}",
+        panelName: "{{panel_name}}",
+        version: "{{version}}",
+        capabilities: {{capabilities_json}},
+        devMode: {{dev_mode}},
+        liveMode: {{live_mode}},
+        minWidth: {{min_width}},
+        minHeight: {{min_height}},
+      };
+    </script>
+    <div class="wrap">
+      <div>
+        <div class="presets">
+          <button data-w="320" data-h="360">S</button>
+          <button data-w="420" data-h="520">M</button>
+          <button data-w="640" data-h="640">L</button>
+          <span id="size-readout" class="sizechip" title="Drag the corner to resize. Amber = at the manifest minimum, what the workspace enforces."></span>
+          <span class="chip">{{slug}}@{{version}}</span>
+          {{dev_chip}}
+          {{live_chip}}
+        </div>
+        <!-- Mirrors the workspace PanelChrome: 32px strip, grid
+             [1fr auto 1fr] — uppercase label left, grip center, close
+             right. Resize is CSS drag on the bottom-right corner; min
+             size comes from the panel manifest, like the real grid. -->
+        <div
+          class="panel"
+          style="min-width: {{min_width}}px; min-height: {{min_height}}px"
+        >
+          <div class="chrome" title="In the workspace this strip is the drag handle">
+            <span class="c-left">
+              <span class="label">{{panel_name}}</span>
+              <span class="dot" title="Bridge connected"></span>
+            </span>
+            <svg class="grip" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" aria-hidden="true">
+              <circle cx="7" cy="9.5" r="0.75" /><circle cx="12" cy="9.5" r="0.75" /><circle cx="17" cy="9.5" r="0.75" />
+              <circle cx="7" cy="14.5" r="0.75" /><circle cx="12" cy="14.5" r="0.75" /><circle cx="17" cy="14.5" r="0.75" />
+            </svg>
+            <span class="c-right">
+              <button class="close" type="button" title="Close is host-managed in the workspace" aria-label="Close (host-managed in the workspace)">×</button>
+            </span>
+          </div>
+          <div class="frame">
+            <iframe
+              id="panel-frame"
+              title="{{panel_name}}"
+              sandbox="{{sandbox}}"
+              allow=""
+              referrerpolicy="no-referrer"
+              src="{{panel_src}}"
+            ></iframe>
+          </div>
+        </div>
+      </div>
+
+      <div class="inspector">
+        <div class="tabs">
+          <button class="active" data-tab="context">Context</button>
+          <button data-tab="state">State</button>
+          <button data-tab="data">Data</button>
+          <button data-tab="messages">Messages</button>
+        </div>
+
+        <div id="tab-context" class="tabpage active">
+          <div class="bar">
+            <label>Market</label>
+            <select id="market-switch"></select>
+            <button id="tick-toggle">Pause ticker</button>
+          </div>
+          <pre id="context-json">waiting for handshake…</pre>
+        </div>
+
+        <div id="tab-state" class="tabpage">
+          <div class="bar">
+            <span id="state-bytes">0 B / 32768 B</span>
+            <button id="state-reset">Reset state</button>
+          </div>
+          <pre id="state-json">null</pre>
+        </div>
+
+        <div id="tab-data" class="tabpage">
+          <div class="bar">
+            <span class="dir">Every bridge.fetch — capability + allow/deny + fixture</span>
+          </div>
+          <div id="data-log"></div>
+        </div>
+
+        <div id="tab-messages" class="tabpage">
+          <div id="messages"></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="ask-modal" class="modal-backdrop">
+      <div class="modal">
+        <div style="font-weight: 600; margin-bottom: 8px">
+          {{panel_name}} wants to ask your agent
+        </div>
+        <pre id="ask-prompt"></pre>
+        <div class="dir" style="margin-top: 8px">Runs in a new chat session.</div>
+        <div class="actions">
+          <button id="ask-deny">Cancel</button>
+          <button id="ask-approve" class="approve">Send to agent</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./host.js"></script>
+  </body>
+</html>

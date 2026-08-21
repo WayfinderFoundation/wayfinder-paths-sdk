@@ -696,6 +696,127 @@ def _validate_applet(
             created_files.append(f"{manifest.applet.build_dir}/assets/app.js")
 
 
+_PANEL_DIST_WARN_BYTES = 5 * 1024 * 1024
+_PANEL_DIST_ERROR_BYTES = 20 * 1024 * 1024
+
+
+def _dir_size_bytes(directory: Path) -> int:
+    total = 0
+    for entry in directory.rglob("*"):
+        if entry.is_file():
+            try:
+                total += entry.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _validate_panels(
+    *,
+    path_dir: Path,
+    manifest: PathManifest,
+    ctx: dict[str, Any],
+    fix: bool,
+    overwrite: bool,
+    errors: list[DoctorIssue],
+    warnings: list[DoctorIssue],
+    created_files: list[str],
+) -> None:
+    if not manifest.panels:
+        return
+
+    applet_build_dir = manifest.applet.build_dir if manifest.applet else None
+    for panel in manifest.panels:
+        prefix = f"Panel '{panel.panel_id}'"
+        if applet_build_dir and panel.build_dir == applet_build_dir:
+            _record_issue(
+                warnings,
+                level="warning",
+                message=f"{prefix} build_dir collides with the applet build_dir",
+                path=path_dir / panel.build_dir,
+            )
+
+        build_dir = path_dir / panel.build_dir
+        if not build_dir.exists():
+            if fix:
+                build_dir.mkdir(parents=True, exist_ok=True)
+            if not build_dir.exists():
+                _record_issue(
+                    errors,
+                    level="error",
+                    message=(
+                        f"{prefix} build_dir does not exist (build the panel or "
+                        "scaffold it with --fix)"
+                    ),
+                    path=build_dir,
+                )
+
+        entry_path = build_dir / panel.entry
+        if not entry_path.exists():
+            resolved = False
+            if fix and panel.entry == "index.html":
+                rendered = _render_template(
+                    _read_template("panel/dist/index.html.tmpl"),
+                    {**ctx, "panel_name": panel.name, "panel_id": panel.panel_id},
+                )
+                if _write_if_missing(entry_path, rendered, overwrite=overwrite):
+                    created_files.append(f"{panel.build_dir}/{panel.entry}")
+                    resolved = True
+                else:
+                    resolved = entry_path.exists()
+            if not resolved:
+                _record_issue(
+                    errors,
+                    level="error",
+                    message=f"{prefix} entry not found: {panel.build_dir}/{panel.entry}",
+                    path=entry_path,
+                )
+
+        if entry_path.exists():
+            entry_text = entry_path.read_text(encoding="utf-8", errors="ignore")
+            if _ROOT_ASSET_RE.search(entry_text):
+                _record_issue(
+                    errors,
+                    level="error",
+                    message=(
+                        f"{prefix} entry uses root-absolute asset URLs (/assets or "
+                        "/_next). Set your bundler base to './' so assets resolve "
+                        "under the panel path."
+                    ),
+                    path=entry_path,
+                )
+            if _SERVICE_WORKER_RE.search(entry_text):
+                _record_issue(
+                    warnings,
+                    level="warning",
+                    message=f"{prefix} entry references service workers; avoid them.",
+                    path=entry_path,
+                )
+
+        if build_dir.exists():
+            size = _dir_size_bytes(build_dir)
+            if size > _PANEL_DIST_ERROR_BYTES:
+                _record_issue(
+                    errors,
+                    level="error",
+                    message=(
+                        f"{prefix} build is {size // (1024 * 1024)}MB — exceeds the "
+                        f"{_PANEL_DIST_ERROR_BYTES // (1024 * 1024)}MB panel limit."
+                    ),
+                    path=build_dir,
+                )
+            elif size > _PANEL_DIST_WARN_BYTES:
+                _record_issue(
+                    warnings,
+                    level="warning",
+                    message=(
+                        f"{prefix} build is {size // (1024 * 1024)}MB — large panels "
+                        "load slowly; consider trimming assets."
+                    ),
+                    path=build_dir,
+                )
+
+
 def _parse_markdown_frontmatter(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8", errors="ignore")
     match = _MARKDOWN_FRONTMATTER_RE.match(text)
@@ -1158,6 +1279,16 @@ def run_doctor(
             )
 
             _validate_applet(
+                path_dir=path_dir,
+                manifest=manifest,
+                ctx=ctx,
+                fix=fix,
+                overwrite=overwrite,
+                errors=errors,
+                warnings=warnings,
+                created_files=created_files,
+            )
+            _validate_panels(
                 path_dir=path_dir,
                 manifest=manifest,
                 ctx=ctx,
