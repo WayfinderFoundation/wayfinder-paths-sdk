@@ -50,9 +50,7 @@ def experiment_semantic_hash(row: Mapping[str, Any]) -> str:
 def _experiment_definition(grid_payload: Mapping[str, Any]) -> dict[str, Any]:
     result = grid_payload["result"]
     parameters = [run.get("params") for run in result.get("runs") or []]
-    parameters.sort(
-        key=lambda value: json.dumps(value, sort_keys=True, default=str)
-    )
+    parameters.sort(key=lambda value: json.dumps(value, sort_keys=True, default=str))
     return {
         "revision": grid_payload.get("revision"),
         "dataset": grid_payload.get("dataset"),
