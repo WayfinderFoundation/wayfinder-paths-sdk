@@ -54,6 +54,7 @@ async def test_remote_wallet_create_uses_atomic_backend_binding(monkeypatch) -> 
     result = await wallets_mod.create_remote_wallet("strategy", "strategy")
 
     assert result["evm"]["wallet_address"] == "0xabc"
+    assert create.await_args is not None
     assert create.await_args.kwargs["instance_id"] == "oc-test"
     assert create.await_args.kwargs["wallet_type"] == "strategy"
     bind.assert_not_awaited()
@@ -67,3 +68,6 @@ async def test_remote_wallet_create_requires_instance_outside_shell(
 
     with pytest.raises(ValueError, match="instance_id is required"):
         await wallets_mod.create_remote_wallet("strategy", "strategy")
+
+    with pytest.raises(ValueError, match="instance_id must be non-empty"):
+        await wallets_mod.create_remote_wallet("strategy", "strategy", instance_id="  ")

@@ -430,6 +430,9 @@ async def create_remote_wallet(
                 "an OpenCode instance"
             )
         instance_id = get_opencode_instance_id()
+    instance_id = str(instance_id).strip()
+    if not instance_id:
+        raise ValueError("instance_id must be non-empty")
     result = await WALLET_CLIENT.create_wallet(
         chain_type=chain_type,
         policies=policies,
