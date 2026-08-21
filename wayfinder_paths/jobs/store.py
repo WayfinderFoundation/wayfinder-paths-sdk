@@ -932,6 +932,7 @@ def _validate_applicable_proposal(
         # permanently unapprovable.
         return
     scenario_plan = proposal["scenario_plan"]
+    scenarios: Any
     match scenario_plan:
         case list():
             scenarios = scenario_plan
