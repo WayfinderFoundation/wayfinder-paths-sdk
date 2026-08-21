@@ -112,7 +112,7 @@ Newly generated mnemonics are 12 words by default.
 | `address` | Ethereum address |
 | `private_key_hex` | Private key (hex format with `0x` prefix) |
 
-**Remote wallets** (Privy server wallets) are fetched automatically from the vault backend when `system.api_key` is configured. They don't require `private_key_hex` — signing happens via API. Create them with `create_remote_wallet(label="my_agent")` or `make_wallets.py --remote`.
+**Remote wallets** (Privy server wallets) are fetched automatically from the vault backend when `system.api_key` is configured. They don't require `private_key_hex` — signing happens via API. On a Wayfinder Shell, create them with `create_remote_wallet(label="my_agent", wallet_type="session")` or `make_wallets.py --remote`; the instance binding is inferred from `OPENCODE_INSTANCE_ID`. Outside a Shell, pass `instance_id=` or `--instance-id` explicitly.
 
 Both wallet types work transparently with `get_wallet_signing_callback(label)` and `get_adapter()`.
 

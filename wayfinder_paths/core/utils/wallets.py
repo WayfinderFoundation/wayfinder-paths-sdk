@@ -408,6 +408,7 @@ async def create_remote_wallet(
     wallet_type: str,
     chain_type: str = "ethereum",
     policies: list[dict] = [],  # noqa: B006
+    instance_id: str | None = None,
 ) -> dict[str, Any]:
     if not label.strip():
         raise ValueError("label is required")
@@ -422,18 +423,24 @@ async def create_remote_wallet(
             policies = [build_session_policy()]
         else:
             raise ValueError("policies is required when wallet_type=policy")
+    if instance_id is None:
+        if not is_opencode_instance():
+            raise ValueError(
+                "instance_id is required when creating a remote wallet outside "
+                "an OpenCode instance"
+            )
+        instance_id = get_opencode_instance_id()
+    instance_id = str(instance_id).strip()
+    if not instance_id:
+        raise ValueError("instance_id must be non-empty")
     result = await WALLET_CLIENT.create_wallet(
         chain_type=chain_type,
         policies=policies,
-        label=label,
         wallet_type=wallet_type,
+        instance_id=instance_id,
     )
-    # A create provisions an EVM + SVM wallet pair ({"evm": ..., "svm": ...});
-    # the instance binds to the EVM wallet.
-    if is_opencode_instance():
-        await WALLET_CLIENT.bind_to_instance(
-            result["evm"]["wallet_address"], get_opencode_instance_id()
-        )
+    # The backend creates the EVM + SVM pair and binds it atomically; no
+    # follow-up bind is needed.
     return result
 
 
