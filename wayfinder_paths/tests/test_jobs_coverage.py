@@ -346,6 +346,88 @@ def test_probation_followup_is_not_parked_and_kill_is_negative_evidence(
     assert killed_audit["verdict"] == "pass"
 
 
+def test_paper_entry_refusal_completes_requirement_and_refutes_candidate(
+    tmp_path: Path,
+) -> None:
+    store, job_id = _store(tmp_path, "coverage-paper-refusal")
+    _write_scan(store, job_id, [_scan_meta(), _scan_test(verdict="probation")])
+    store.append_journal(
+        job_id,
+        {
+            "ts": "2026-08-20T00:02:00+00:00",
+            "type": "operator_note",
+            "required_experiments": [
+                {
+                    "id": "btc-paper-probation",
+                    "kind": "paper_probation",
+                    "symbol": "BTC",
+                }
+            ],
+        },
+    )
+    before = build_coverage_certificate(job_id, "majors", store=store)
+    assert not before["required_experiments"][0]["satisfied"]
+    assert before["candidate_followups"][0]["state"] == "parked"
+
+    store.append_journal(
+        job_id,
+        {
+            "ts": "2026-08-20T00:03:00+00:00",
+            "type": "paper_probation_entry_refused",
+            "leg": "sig-a-paper",
+            "symbol": "BTC",
+            "signal": "sig_a",
+            "timeframe": "1h",
+            "horizon": 1,
+            "artifact": "results/research/sig-a-refusal.json",
+            "entry": {"eligible": False, "reasons": ["clearly worse"]},
+        },
+    )
+    after = build_coverage_certificate(job_id, "majors", store=store)
+    assert after["required_experiments"][0]["satisfied"]
+    assert after["required_experiments"][0]["status"] == "completed"
+    assert after["candidate_followups"][0]["state"] == "refuted"
+    assert after["unresolved_candidates"] == []
+
+
+def test_killed_probation_outweighs_its_admission_holdout(tmp_path: Path) -> None:
+    store, job_id = _store(tmp_path, "coverage-kill-after-holdout")
+    _write_scan(
+        store,
+        job_id,
+        [
+            _scan_meta(),
+            _scan_test(verdict="probation"),
+            {
+                **_scan_test(verdict="probation"),
+                "kind": "holdout_check",
+                "ts": "2026-08-20T00:02:00+00:00",
+                "verdict": "confirmed",
+            },
+        ],
+    )
+    store.append_journal(
+        job_id,
+        {
+            "ts": "2026-08-20T00:03:00+00:00",
+            "type": "paper_probation_opened",
+            "leg": "sig-a-paper",
+            "symbol": "BTC",
+        },
+    )
+    store.append_journal(
+        job_id,
+        {
+            "ts": "2026-08-20T00:04:00+00:00",
+            "type": "probation_leg_killed",
+            "leg": "sig-a-paper",
+        },
+    )
+    certificate = build_coverage_certificate(job_id, "majors", store=store)
+    assert certificate["candidate_followups"][0]["state"] == "refuted"
+    assert certificate["unresolved_candidates"] == []
+
+
 def test_structured_operator_requirement_is_a_named_gap(tmp_path: Path) -> None:
     store, job_id = _store(tmp_path, "coverage-requirement")
     _write_scan(store, job_id, [_scan_meta(), _scan_test()])

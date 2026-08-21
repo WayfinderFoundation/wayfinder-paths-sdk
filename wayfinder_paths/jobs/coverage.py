@@ -36,6 +36,11 @@ CELL_COUNT_KEYS = (
     "not_run",
 )
 _CANDIDATE_VERDICTS = {"probation", "promote"}
+_PROBATION_ENTRY_EVENTS = {
+    "paper_probation_opened",
+    "probation_leg_opened",
+    "paper_probation_entry_refused",
+}
 _SCAN_LEDGER_PATH = "results/research/signal_scan/ledger.jsonl"
 _EXPERIMENTS_PATH = "results/backtest/experiments.jsonl"
 _LEGACY_SCAN_WRITE_WINDOW_SECONDS = 600
@@ -324,7 +329,7 @@ def _requirement_satisfied(
         )
     if kind == "paper_probation":
         return any(
-            row.get("type") in {"paper_probation_opened", "probation_leg_opened"}
+            row.get("type") in _PROBATION_ENTRY_EVENTS
             and _at_or_after(row.get("ts"), note_ts)
             and (
                 not requirement.get("symbol")
@@ -412,13 +417,12 @@ def _candidate_followups(
         ]
         latest = matches[-1] if matches else None
         holdout_verdict = str((latest or {}).get("verdict") or "")
-        probation = None
+        entry_event = None
         symbol = str(cell.get("symbol") or "")
         for event in journal:
-            if event.get("type") not in {
-                "paper_probation_opened",
-                "probation_leg_opened",
-            } or not _at_or_after(event.get("ts"), cell.get("ts")):
+            if event.get("type") not in _PROBATION_ENTRY_EVENTS or not _at_or_after(
+                event.get("ts"), cell.get("ts")
+            ):
                 continue
             exact = all(
                 not event.get(key) or event.get(key) == cell.get(key)
@@ -434,28 +438,47 @@ def _candidate_followups(
                 )
                 and candidate_symbols.count(symbol) == 1
             )
-            if exact and (event.get("signal") or symbol_only):
-                probation = event
-        probation_outcome = None
-        if probation is not None:
+            if event.get("type") == "paper_probation_entry_refused":
+                # A refusal may refute a scan candidate only when it names the
+                # exact coordinate and carries a durable evidence reference.
+                # The entry API also accepts explicit comparison numbers, so
+                # treating a legacy symbol-only refusal as candidate evidence
+                # would let one arbitrary call erase every lead for a symbol.
+                refusal_matches = all(
+                    event.get(key) == cell.get(key)
+                    for key in ("symbol", "signal", "timeframe", "horizon")
+                ) and bool(event.get("proposal_id") or event.get("artifact"))
+                if refusal_matches:
+                    entry_event = event
+            elif exact and (event.get("signal") or symbol_only):
+                entry_event = event
+        lifecycle_outcome = None
+        if entry_event is not None:
             outcomes = [
                 event
                 for event in journal
                 if event.get("type")
                 in {"probation_leg_graduated", "probation_leg_killed"}
-                and event.get("leg") == probation.get("leg")
-                and _at_or_after(event.get("ts"), probation.get("ts"))
+                and event.get("leg") == entry_event.get("leg")
+                and _at_or_after(event.get("ts"), entry_event.get("ts"))
             ]
-            probation_outcome = outcomes[-1].get("type") if outcomes else None
+            lifecycle_outcome = outcomes[-1].get("type") if outcomes else None
 
-        if (
-            holdout_verdict == "confirmed"
-            or probation_outcome == "probation_leg_graduated"
-        ):
+        refused = (entry_event or {}).get("type") == "paper_probation_entry_refused"
+        # A matured probation verdict is newer deployment evidence and
+        # outranks the holdout that admitted the candidate. Otherwise a
+        # holdout-confirmed leg that is later killed remains unresolved
+        # forever. A mechanical entry refusal is likewise completed negative
+        # evidence: no leg was deployed, but the candidate was not parked.
+        if lifecycle_outcome == "probation_leg_graduated":
             state = "confirmed_open"
-        elif holdout_verdict == "failed" or probation_outcome == "probation_leg_killed":
+        elif lifecycle_outcome == "probation_leg_killed" or refused:
             state = "refuted"
-        elif probation is not None:
+        elif holdout_verdict == "confirmed":
+            state = "confirmed_open"
+        elif holdout_verdict == "failed":
+            state = "refuted"
+        elif entry_event is not None:
             state = "probation_active"
         elif latest is None:
             state = "parked"
@@ -470,7 +493,7 @@ def _candidate_followups(
                 "scan_verdict": cell.get("verdict"),
                 "state": state,
                 "holdout_verdict": holdout_verdict or None,
-                "probation_leg": (probation or {}).get("leg"),
+                "probation_leg": (entry_event or {}).get("leg"),
             }
         )
     return followups
