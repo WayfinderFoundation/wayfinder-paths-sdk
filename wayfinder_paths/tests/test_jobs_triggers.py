@@ -53,10 +53,23 @@ def test_matching_trigger_fires_once_and_debounces(
     journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
     assert "agent_triggered_wake" in journal
 
-    # Second event inside the debounce window: suppressed.
-    second = fire_triggers(store, job, ["drift_warning"], source="test")
+    # The same event inside the debounce window is suppressed.
+    second = fire_triggers(store, job, ["risk_halt"], source="test")
     assert second is None
     assert len(wakes) == 1
+
+
+def test_unrelated_event_is_not_suppressed_by_global_debounce(
+    tmp_path: Path, wakes: list[dict[str, Any]]
+) -> None:
+    store, job = _make_job(tmp_path)
+    assert fire_triggers(store, job, ["risk_halt"], source="test") is not None
+
+    second = fire_triggers(store, job, ["regime_shift"], source="test")
+
+    assert second is not None
+    assert second["triggers"] == ["regime_shift"]
+    assert len(wakes) == 2
 
 
 def test_debounce_window_expiry_allows_next_wake(
@@ -142,6 +155,12 @@ def test_tick_trigger_event_derivation() -> None:
             "regime_health": {"transition": {"alert": True}},
         }
     ) == ["regime_shift"]
+    assert _tick_trigger_events(
+        {
+            "ok": True,
+            "regime_health": {"remediation_event": {"event": "regime_remediation_due"}},
+        }
+    ) == ["regime_remediation_due"]
     assert _tick_trigger_events({"ok": True, "snapshot": {"status": "valid"}}) == []
 
 

@@ -95,7 +95,21 @@ def run_scheduled_tick(job_dir: str | Path | None = None) -> dict[str, Any]:
             )
 
             health = regime_health_job(job.id, store=store)
-            payload["regime_health"] = compact_regime_health(health)
+            compact_health = compact_regime_health(health)
+            payload["regime_health"] = compact_health
+            try:
+                from wayfinder_paths.jobs.remediation import (
+                    sync_remediation_with_health,
+                )
+
+                remediation_event = sync_remediation_with_health(store, job.id, health)
+                if remediation_event:
+                    compact_health["remediation_event"] = remediation_event
+            except Exception as exc:  # noqa: BLE001
+                store.append_journal(
+                    job.id,
+                    {"type": "regime_remediation_failed", "error": str(exc)[:300]},
+                )
         except Exception as exc:  # noqa: BLE001
             store.append_journal(
                 job.id,
@@ -136,8 +150,12 @@ def _tick_trigger_events(payload: dict[str, Any]) -> list[str]:
         # Declared vs executed mode disagree — wake the advisor to reconcile
         # job.yaml (reuses the reconcile_mismatch trigger).
         events.append("reconcile_mismatch")
-    health_transition = (payload.get("regime_health") or {}).get("transition") or {}
-    if health_transition.get("alert"):
+    health = payload.get("regime_health") or {}
+    remediation_event = (health.get("remediation_event") or {}).get("event")
+    if remediation_event in {"regime_shift", "regime_remediation_due"}:
+        events.append(str(remediation_event))
+    elif (health.get("transition") or {}).get("alert"):
+        # Compatibility with reports produced before durable remediation cases.
         events.append("regime_shift")
     return events
 
@@ -849,14 +867,7 @@ def _record(
     # trade_rows are FillEvent.to_dict() + realized_pnl_delta: fixed shape.
     for row in tick.trade_rows:
         if row["reduce_only"]:
-            recorder.record_trade_close(
-                symbol=row["symbol"],
-                side=row["side"],
-                size=row["filled_size"],
-                price=row["avg_price"],
-                net_pnl=row["realized_pnl_delta"],
-                closed_at=row["timestamp"],
-            )
+            recorder.record_trade_close(_trade_close_payload(row, params=params))
     for row in funding_rows or []:
         recorder.record_funding(row)
     # Reconciliation runs AFTER the rows above so summary totals include
@@ -895,6 +906,63 @@ def _record(
         reason=tick.skip_reason,
         metrics={"fill_count": len(fills), "guard_event_count": len(tick.guard_events)},
     )
+
+
+def _trade_close_payload(
+    row: Mapping[str, Any], *, params: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Preserve the execution facts needed to diagnose a live stop-out."""
+    raw = dict(row.get("raw") or {})
+    metadata = dict(raw.get("intent_metadata") or {})
+    action = str(raw.get("intent_action") or "").upper()
+    bracket = dict(metadata.get("bracket") or {})
+    exit_reason = metadata.get("exit_reason")
+    if not exit_reason and action == "STOP_LOSS":
+        exit_reason = "bracket_stop"
+    elif not exit_reason and action == "TAKE_PROFIT":
+        exit_reason = "bracket_take_profit"
+    trigger_price = bracket.get("trigger_price")
+    fill_price = row.get("avg_price")
+    stop_slippage_bps = None
+    if action == "STOP_LOSS" and trigger_price and fill_price:
+        exit_side = str(row.get("side") or "").lower()
+        adverse_move = (
+            float(fill_price) - float(trigger_price)
+            if exit_side in {"buy", "long"}
+            else float(trigger_price) - float(fill_price)
+        )
+        stop_slippage_bps = round(adverse_move / float(trigger_price) * 10_000, 1)
+    venue = str(row.get("venue") or "")
+    payload = {
+        "symbol": row.get("symbol"),
+        "side": row.get("side"),
+        "size": row.get("filled_size"),
+        "price": fill_price,
+        "net_pnl": row.get("realized_pnl_delta"),
+        "closed_at": row.get("timestamp"),
+        "venue": venue,
+        "fee": row.get("fee"),
+        "order_id": row.get("order_id"),
+        "client_order_id": row.get("client_order_id"),
+        "exit_reason": exit_reason,
+        "effective_leverage": params.get("leverage") or 1.0,
+    }
+    if action == "STOP_LOSS":
+        payload.update(
+            {
+                "stop_trigger_price": trigger_price,
+                "stop_reference_price": bracket.get("price")
+                or raw.get("reference_price"),
+                "stop_gap_at_open": bracket.get("gap_at_open"),
+                "stop_slippage_bps": stop_slippage_bps,
+                "stop_slippage_bps_applied": raw.get("slippage_bps_applied"),
+                "protection_type": "trigger_market",
+                "venue_stop_slippage_tolerance_bps": (
+                    1_000 if venue == "hyperliquid" else None
+                ),
+            }
+        )
+    return payload
 
 
 def view_hash(view: CompletedBarsView) -> str:

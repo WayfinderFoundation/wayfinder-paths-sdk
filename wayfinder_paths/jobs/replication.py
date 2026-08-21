@@ -22,6 +22,7 @@ from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
 REPLICATION_PATH = "results/backtest/replication.json"
+REPLICATION_SCHEMA_VERSION = "1.1"
 _RECOMPUTE_AFTER_S = 24 * 3600
 # Worker-safety: give up on the compute lock quickly (see _compute).
 _LOCK_TIMEOUT_S = 60.0
@@ -40,7 +41,12 @@ def replication_job(
 ) -> dict[str, Any]:
     store = store or JobStore()
     cached = load_replication(store, job_id)
-    if not force and cached and cached.get("available"):
+    if (
+        not force
+        and cached
+        and cached.get("available")
+        and cached.get("schema_version") == REPLICATION_SCHEMA_VERSION
+    ):
         age = _age_seconds(str(cached.get("computed_at")))
         if age < _RECOMPUTE_AFTER_S:
             return cached
@@ -77,6 +83,9 @@ def _compute(
     dataset_meta = (payload.get("dataset") or {}) if isinstance(payload, dict) else {}
     current = {
         "net_return": stats.get("net_return"),
+        "sharpe": stats.get("sharpe"),
+        "max_drawdown": stats.get("max_drawdown"),
+        "profit_factor": stats.get("profit_factor"),
         "avg_trade_pnl": stats.get("avg_trade_pnl"),
         "total_trades": stats.get("total_trades") or stats.get("trade_count"),
         "win_rate": stats.get("win_rate"),
@@ -103,10 +112,18 @@ def _compute(
         # own candidate report was its deploy evidence).
         baseline = dict(current)
 
-    decayed = _decayed(baseline, current)
+    declared_revision = store.load(job_id).versioning.get("active_revision")
+    status = _replication_status(
+        baseline,
+        current,
+        revision=revision,
+        declared_revision=str(declared_revision or ""),
+    )
     return {
+        "schema_version": REPLICATION_SCHEMA_VERSION,
         "available": True,
         "revision": revision,
+        "declared_revision": declared_revision,
         "baseline": baseline,
         "current": current,
         "dataset": {
@@ -114,14 +131,16 @@ def _compute(
             for key in ("days", "days_received", "source", "fetched_at")
             if isinstance(dataset_meta, dict)
         },
-        "decayed": decayed,
+        "status": status,
+        "decayed": status == "decayed",
         "_basis": (
             "Same ACTIVE strategy, re-backtested on the refreshed dataset and "
-            "compared to this revision's first replication run. decayed=true "
-            "means the in-sample edge that justified this revision is not "
-            "reproducing on newer data — mechanical evidence of selection on "
-            "window-local noise; treat it as grounds for a revert/kill or "
-            "re-validation proposal, not something to explain away."
+            "compared to this revision's first replication run. status=valid "
+            "means a positive edge still reproduces; decayed means a positive "
+            "edge lost more than half its return; invalid means either baseline "
+            "or current evidence is non-positive; stale means the computed and "
+            "declared active revisions disagree. decayed/invalid/stale require "
+            "revert, kill, or re-validation treatment — never explain them away."
         ),
         "computed_at": utc_now_iso(),
     }
@@ -149,6 +168,25 @@ def _decayed(baseline: dict[str, Any], current: dict[str, Any]) -> bool:
     if now <= 0:
         return True  # sign flip
     return (base - now) / base > _DECAY_RELATIVE
+
+
+def _replication_status(
+    baseline: dict[str, Any],
+    current: dict[str, Any],
+    *,
+    revision: str,
+    declared_revision: str,
+) -> str:
+    if declared_revision and revision != declared_revision:
+        return "stale"
+    try:
+        base = float(baseline.get("net_return") or 0.0)
+        now = float(current.get("net_return") or 0.0)
+    except (TypeError, ValueError):
+        return "invalid"
+    if base <= 0 or now <= 0:
+        return "invalid"
+    return "decayed" if _decayed(baseline, current) else "valid"
 
 
 def _age_seconds(computed_at: str) -> float:

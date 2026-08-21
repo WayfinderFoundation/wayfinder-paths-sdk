@@ -177,15 +177,17 @@ def test_replication_pins_baseline_and_flags_decay(tmp_path, monkeypatch) -> Non
 
     first = replication_job(job.id, store=store)
     assert first["available"] and first["decayed"] is False
+    assert first["status"] == "valid"
     assert first["baseline"]["net_return"] == 0.21
 
     # Fresh cache -> no rerun without force.
     cached = replication_job(job.id, store=store)
     assert calls["n"] == 1 and cached["computed_at"] == first["computed_at"]
 
-    # Forced rerun on the refreshed window: edge collapsed -> decayed.
+    # Forced rerun on the refreshed window: non-positive evidence is invalid.
     second = replication_job(job.id, store=store, force=True)
-    assert second["decayed"] is True
+    assert second["status"] == "invalid"
+    assert second["decayed"] is False
     assert second["baseline"]["net_return"] == 0.21  # baseline pinned
     assert second["current"]["net_return"] == -0.004
 
@@ -194,6 +196,7 @@ def test_replication_pins_baseline_and_flags_decay(tmp_path, monkeypatch) -> Non
     assert third["revision"] == "rev-b"
     assert third["baseline"]["net_return"] == 0.05
     assert third["decayed"] is False
+    assert third["status"] == "valid"
 
 
 def test_replication_failure_degrades_and_journals(tmp_path, monkeypatch) -> None:
@@ -211,6 +214,29 @@ def test_replication_failure_degrades_and_journals(tmp_path, monkeypatch) -> Non
     assert doc["available"] is False
     journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
     assert "replication_failed" in journal
+
+
+def test_replication_distinguishes_decay_from_stale_revision() -> None:
+    from wayfinder_paths.jobs.replication import _replication_status
+
+    assert (
+        _replication_status(
+            {"net_return": 0.20},
+            {"net_return": 0.08},
+            revision="rev-a",
+            declared_revision="rev-a",
+        )
+        == "decayed"
+    )
+    assert (
+        _replication_status(
+            {"net_return": 0.20},
+            {"net_return": 0.18},
+            revision="rev-a",
+            declared_revision="rev-b",
+        )
+        == "stale"
+    )
 
 
 def _mk_dataset_job(tmp_path, symbols=("SNX",)):

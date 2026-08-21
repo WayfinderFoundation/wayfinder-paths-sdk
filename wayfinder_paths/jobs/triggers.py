@@ -37,6 +37,8 @@ DEFAULT_DEBOUNCE_SECONDS = 600
 # progress mandate (worker renders it from state/research_impasse.json).
 # regime_shift is a deterministic incumbent-health warning/critical transition;
 # legacy jobs predate the configurable trigger name, so it always wakes.
+# regime_remediation_due retries an open remediation case until it produces a
+# proposal, bounded evaluation artifact, or structured blocker.
 ALWAYS_WAKE_EVENTS = {
     "proposal_restage_requested",
     "verdict_matured",
@@ -45,6 +47,7 @@ ALWAYS_WAKE_EVENTS = {
     "disk_pressure",
     "research_impasse",
     "regime_shift",
+    "regime_remediation_due",
 }
 
 
@@ -95,22 +98,45 @@ def _fire_triggers(
     wake_path = root / WAKE_STATE_PATH
     debounce = _debounce_seconds(loop)
     now = datetime.now(UTC)
+    wake_state: dict[str, Any] = {}
     if wake_path.exists():
         try:
-            last = json.loads(wake_path.read_text(encoding="utf-8"))
-            last_ts = datetime.fromisoformat(str(last.get("last_triggered_wake_ts")))
-            if (now - last_ts).total_seconds() < debounce:
-                return None
+            loaded = json.loads(wake_path.read_text(encoding="utf-8"))
+            wake_state = loaded if isinstance(loaded, dict) else {}
         except (ValueError, TypeError):
             pass  # unreadable state never blocks a wake
+
+    event_times = wake_state.get("events")
+    event_times = dict(event_times) if isinstance(event_times, dict) else {}
+    legacy_triggers = set(wake_state.get("triggers") or [])
+    due: list[str] = []
+    for event in matched:
+        timestamp = event_times.get(event)
+        if timestamp is None and event in legacy_triggers:
+            timestamp = wake_state.get("last_triggered_wake_ts")
+        try:
+            last_ts = datetime.fromisoformat(str(timestamp))
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.replace(tzinfo=UTC)
+        except (ValueError, TypeError):
+            due.append(event)
+            continue
+        if (now - last_ts).total_seconds() >= debounce:
+            due.append(event)
+    if not due:
+        return None
+
+    for event in due:
+        event_times[event] = now.isoformat()
 
     wake_path.parent.mkdir(parents=True, exist_ok=True)
     wake_path.write_text(
         json.dumps(
             {
                 "last_triggered_wake_ts": now.isoformat(),
-                "triggers": matched,
+                "triggers": due,
                 "source": source,
+                "events": event_times,
             },
             indent=2,
         )
@@ -121,7 +147,7 @@ def _fire_triggers(
         job.id,
         {
             "type": "agent_triggered_wake",
-            "triggers": matched,
+            "triggers": due,
             "source": source,
             "mode": loop.mode,
         },
@@ -131,7 +157,7 @@ def _fire_triggers(
     from wayfinder_paths.jobs.worker import run_job_worker
 
     wakeup = run_job_worker(job.id, mode=loop.mode)
-    return {"triggers": matched, "source": source, "ts": utc_now_iso(), **wakeup}
+    return {"triggers": due, "source": source, "ts": utc_now_iso(), **wakeup}
 
 
 def _debounce_seconds(loop: Any) -> int:

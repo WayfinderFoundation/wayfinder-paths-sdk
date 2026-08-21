@@ -117,6 +117,28 @@ def test_bracket_engine_uses_high_low_for_long_and_short() -> None:
     )
 
 
+def test_stop_market_uses_open_when_bar_gaps_through_trigger() -> None:
+    long_gap = BracketEngine.resolve_intrabar(
+        {"open": 85, "high": 90, "low": 80, "close": 88},
+        "long",
+        stop_loss=90,
+        take_profit=None,
+    )
+    assert long_gap["trigger_price"] == 90
+    assert long_gap["price"] == 85
+    assert long_gap["gap_at_open"] is True
+
+    short_gap = BracketEngine.resolve_intrabar(
+        {"open": 115, "high": 120, "low": 110, "close": 112},
+        "short",
+        stop_loss=110,
+        take_profit=None,
+    )
+    assert short_gap["trigger_price"] == 110
+    assert short_gap["price"] == 115
+    assert short_gap["gap_at_open"] is True
+
+
 def test_ledger_updates_only_from_fills_and_ticks_once() -> None:
     ledger = PositionLedger()
     ledger.on_bar_tick("t1")

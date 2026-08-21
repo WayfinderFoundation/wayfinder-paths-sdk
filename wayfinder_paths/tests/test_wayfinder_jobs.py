@@ -963,6 +963,46 @@ def test_mcp_create_defaults_to_jobs_v1(tmp_path: Path, monkeypatch) -> None:
     assert "workspace/src/" in result["result"]["hint"]
 
 
+def test_mcp_records_bounded_remediation_progress(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+
+    from wayfinder_paths.jobs.remediation import (
+        load_remediation,
+        sync_remediation_with_health,
+    )
+    from wayfinder_paths.mcp.tools import jobs as jobs_tools
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("remediation-mcp", agent_mode="intervene")
+    store.save(job)
+    sync_remediation_with_health(
+        store,
+        job.id,
+        {
+            "status": "critical",
+            "score": 5,
+            "evidence_fingerprint": "health-a",
+            "signals": [{"kind": "drawdown", "severity": 2, "value": 0.1}],
+        },
+    )
+    monkeypatch.setattr(jobs_tools, "JobStore", lambda: store)
+
+    result = asyncio.run(
+        jobs_tools.core_jobs(
+            action="remediation_progress",
+            job_id=job.id,
+            remediation_state="evaluating",
+            remediation_note="Running the HYPE ablation across frozen folds",
+            artifact_path="results/backtest/hype_ablation.json",
+        )
+    )
+
+    assert result["ok"], result
+    case = load_remediation(store, job.id)
+    assert case and case["state"] == "evaluating"
+    assert case["progress"]["artifact_path"].endswith("hype_ablation.json")
+
+
 def test_mcp_sync_heals_stale_wrapper_after_contract_flip(
     tmp_path: Path, monkeypatch
 ) -> None:

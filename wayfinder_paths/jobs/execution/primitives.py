@@ -653,6 +653,8 @@ class BracketEngine:
         take_profit: float | None,
         policy: str = "conservative",
     ) -> dict[str, Any]:
+        normalized_side = _normalize_side(side)
+        open_price = _bar_value(bar, "open")
         stop_hit = stop_loss is not None and BracketEngine.ohlc_stop_hit(
             bar, side, stop_loss
         )
@@ -669,10 +671,26 @@ class BracketEngine:
             exit_type, price, hit, ambiguous = "TAKE_PROFIT", take_profit, True, False
         else:
             exit_type, price, hit, ambiguous = None, None, False, False
+        trigger_price = price
+        gap_at_open = False
+        if exit_type == "STOP_LOSS" and stop_loss is not None:
+            gap_at_open = (
+                open_price < stop_loss
+                if normalized_side == "long"
+                else open_price > stop_loss
+            )
+            if gap_at_open:
+                # A stop-market order cannot fill at a price the market gapped
+                # through. Use the first observable price, then let the broker's
+                # stop-specific slippage model apply on top.
+                price = open_price
         return {
             "hit": hit,
             "exit_type": exit_type,
             "price": price,
+            "trigger_price": trigger_price,
+            "open_price": open_price,
+            "gap_at_open": gap_at_open,
             "ambiguous": ambiguous,
             "policy": policy,
             "used_ohlc": True,

@@ -8,7 +8,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from wayfinder_paths.jobs.execution.driver import _record_pending_trade_forensics
+from wayfinder_paths.jobs.execution.driver import (
+    _record_pending_trade_forensics,
+    _trade_close_payload,
+)
 from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
 from wayfinder_paths.jobs.trade_forensics import (
     aggregate_trade_forensics,
@@ -405,3 +408,36 @@ def test_worker_forensics_block_reads_both_sources(tmp_path: Path) -> None:
     assert "coverage" not in block["recent_forward_trades"][0]
     assert block["backtest_aggregate"] == {"trades": 332}
     assert "hypothesis fuel" in block["_basis"]
+
+
+def test_stop_close_payload_preserves_trigger_and_slippage_evidence() -> None:
+    payload = _trade_close_payload(
+        {
+            "venue": "hyperliquid",
+            "symbol": "HYPE",
+            "side": "buy",
+            "filled_size": 2.0,
+            "avg_price": 110.0,
+            "fee": 0.25,
+            "reduce_only": True,
+            "realized_pnl_delta": -10.0,
+            "timestamp": _ts(3).isoformat(),
+            "raw": {
+                "intent_action": "STOP_LOSS",
+                "intent_metadata": {
+                    "bracket": {
+                        "trigger_price": 100.0,
+                        "price": 105.0,
+                        "gap_at_open": True,
+                    }
+                },
+            },
+        },
+        params={"leverage": 3},
+    )
+
+    assert payload["exit_reason"] == "bracket_stop"
+    assert payload["stop_trigger_price"] == 100.0
+    assert payload["stop_slippage_bps"] == 1_000.0
+    assert payload["effective_leverage"] == 3
+    assert payload["venue_stop_slippage_tolerance_bps"] == 1_000

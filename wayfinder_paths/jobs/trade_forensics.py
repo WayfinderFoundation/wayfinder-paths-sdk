@@ -248,6 +248,18 @@ def forensics_for_closed_trades(
         row["symbol"] = symbol
         row["entry_reason"] = entry_meta.get("entry_reason")
         row["net_pnl"] = trade.get("net_pnl") or trade.get("realized_pnl_delta")
+        for key in (
+            "effective_leverage",
+            "stop_trigger_price",
+            "stop_reference_price",
+            "stop_gap_at_open",
+            "stop_slippage_bps",
+            "stop_slippage_bps_applied",
+            "protection_type",
+            "venue_stop_slippage_tolerance_bps",
+        ):
+            if trade.get(key) is not None:
+                row[key] = trade.get(key)
         # Market-state tags at entry (trend vs SMA50, vol percentile, session)
         # so regime patterns across winners/losers are visible at a glance.
         from wayfinder_paths.jobs.indicators import regime_snapshot

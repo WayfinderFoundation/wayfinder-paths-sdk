@@ -391,7 +391,12 @@ def _evolution_block(store: JobStore, job_id: str) -> dict[str, Any]:
         return {}
 
 
-def _standing_checks_block(root: Path) -> dict[str, Any]:
+def _standing_checks_block(
+    root: Path,
+    *,
+    store: JobStore | None = None,
+    job_id: str | None = None,
+) -> dict[str, Any]:
     """Mechanical routine numbers, computed by the harness each wake.
 
     The audit found ~30 ledger entries re-deriving `funding_mean > 0` in LLM
@@ -483,9 +488,13 @@ def _standing_checks_block(root: Path) -> dict[str, Any]:
         if isinstance(rep, dict) and rep.get("available"):
             replication = {
                 "revision": rep.get("revision"),
+                "declared_revision": rep.get("declared_revision"),
+                "status": rep.get("status"),
                 "decayed": rep.get("decayed"),
                 "baseline_net_return": (rep.get("baseline") or {}).get("net_return"),
                 "current_net_return": (rep.get("current") or {}).get("net_return"),
+                "current_sharpe": (rep.get("current") or {}).get("sharpe"),
+                "current_max_drawdown": (rep.get("current") or {}).get("max_drawdown"),
                 "dataset_days": (rep.get("dataset") or {}).get("days_received")
                 or (rep.get("dataset") or {}).get("days"),
             }
@@ -503,6 +512,15 @@ def _standing_checks_block(root: Path) -> dict[str, Any]:
             from wayfinder_paths.jobs.regime_health import compact_regime_health
 
             block["portfolio_regime_health"] = compact_regime_health(regime)
+    from wayfinder_paths.jobs.remediation import compact_remediation, load_remediation
+
+    remediation = (
+        compact_remediation(load_remediation(store, job_id))
+        if store is not None and job_id is not None
+        else None
+    )
+    if remediation:
+        block["regime_remediation"] = remediation
     if block:
         block["_basis"] = (
             "Routine numbers computed mechanically THIS wake — never re-fetch "
@@ -512,10 +530,9 @@ def _standing_checks_block(root: Path) -> dict[str, Any]:
             "write it with family operations/monitoring/no_change and it "
             "lands in the ops ledger automatically. The candidates ledger "
             "is for research verdicts only. "
-            "backtest_replication.decayed=true means the ACTIVE revision's "
-            "deploy-time in-sample edge is not reproducing on refreshed data "
-            "— mechanical evidence of selection on window-local noise; treat "
-            "it as grounds for a revert/kill or re-validation proposal. "
+            "backtest_replication status decayed/invalid/stale means the ACTIVE "
+            "revision's deploy evidence is not currently trustworthy; treat it "
+            "as grounds for a revert/kill or re-validation proposal. "
             "portfolio_regime_health warning/critical is an incumbent-health "
             "alarm, not a request to mine a replacement signal: cite the "
             "fresh attribution artifact before designing treatment."
@@ -708,8 +725,20 @@ def _build_worker_prompt_sections(
     # Island rotation: routine research wakes get a deterministic search
     # assignment; apply/restage wakes and trigger wakes (bypass inside)
     # handle their event instead. Never blocks the wake.
+    standing_checks = _standing_checks_block(root, store=store, job_id=job_id)
+    remediation_case = standing_checks.get("regime_remediation") or {}
+    remediation_actionable = remediation_case.get("state") in {
+        "open",
+        "evaluating",
+        "blocked",
+    }
     search_assignment = None
-    if mode == "intervene" and apply_proposal_id is None and not restage_tasks:
+    if (
+        mode == "intervene"
+        and apply_proposal_id is None
+        and not restage_tasks
+        and not remediation_actionable
+    ):
         try:
             from wayfinder_paths.jobs.improver.scheduler import assign_island
 
@@ -737,7 +766,7 @@ def _build_worker_prompt_sections(
         "attribution": _attribution_block(root),
         "post_apply_shadow": _counterfactual_block(store, job_id),
         "research_substrate": _research_substrate_block(root),
-        "standing_checks": _standing_checks_block(root),
+        "standing_checks": standing_checks,
         "compute_status": _compute_status_block(root),
         "evolution": _evolution_block(store, job_id),
         "archive": _archive_block(store, job_id),
@@ -997,6 +1026,10 @@ def _build_worker_prompt_sections(
             "the improvement to hold in OOS folds and across neighbor cells "
             "(plateau), and only then propose. A handful of forward "
             "anecdotes NEVER justifies a retune directly — but a "
+            "stop-loss treatment must also include a stress cell with "
+            "execution_params.stop_market_slippage_bps=1000 (Hyperliquid's "
+            "native trigger-market tolerance envelope); the simulator applies "
+            "that haircut only to stop fills and already prices bar gaps at open. "
             "grid+WF-validated exit change motivated by them is a legitimate "
             "proposal even below the forward-sample floor, because its "
             "evidence is the backtest population, not the forward sample.\n"
@@ -1149,6 +1182,25 @@ def _build_worker_prompt_sections(
             "it as a strategy failure, but DO NOT report the gate as green. "
             "For any other reason, fixing the gate is a priority this wake.\n\n"
         )
+    remediation_directive = ""
+    if remediation_actionable and apply_proposal_id is None:
+        remediation_directive = (
+            "REGIME REMEDIATION REQUIRED — this durable case remains open:\n"
+            f"{_canonical_json(remediation_case, max_chars=3000)}\n"
+            "It OVERRIDES routine search and cannot end with no_change, "
+            "owner_terminal_decision, or an explanation that the technical "
+            "gate is green. The owner policy is continue-trading while review "
+            "is pending: do not pause, flatten, or silently clamp leverage. "
+            "Start with attribution and the cheapest causal treatment: ablate "
+            "or disable the largest losing symbol/leg before mining a replacement.\n"
+            "This wake must produce exactly one accountable outcome: (1) a "
+            "candidate-backed green proposal linked to this case; (2) a bounded "
+            "evaluation artifact plus core_jobs(action='remediation_progress', "
+            "remediation_state='evaluating', remediation_note=..., "
+            "artifact_path=...); or (3) a structured blocker recorded with "
+            "remediation_state='blocked'. Failed/red candidate attempts do not "
+            "close the case; record the blocker and the scheduler will retry.\n\n"
+        )
     # Impasse directive: written by the watchdog when a research-stale job's
     # last K wakes produced zero progress artifacts, cleared only when one
     # appears. Rendered as prompt text (never only snapshot JSON) with the
@@ -1270,6 +1322,7 @@ def _build_worker_prompt_sections(
     dynamic_context = (
         f"{DYNAMIC_CONTEXT_MARKER}\n"
         f"{gate_alert}"
+        f"{remediation_directive}"
         f"{restage_priority}"
         f"{impasse_directive}"
         f"{ideation_directive}"

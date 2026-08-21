@@ -40,6 +40,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
+from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.regime_contract import (
     MARKET_STATE_PATH,
@@ -87,6 +88,8 @@ def regime_health_job(
         now = now.replace(tzinfo=dt.UTC)
     previous = _read_json(root / REGIME_HEALTH_PATH) or {}
     fingerprint = _input_fingerprint(root)
+    workspace_revision = compute_workspace_revision(root)
+    fingerprint["workspace_revision"] = workspace_revision
     fingerprint["evaluation_hour"] = now.replace(
         minute=0, second=0, microsecond=0
     ).isoformat()
@@ -166,6 +169,20 @@ def regime_health_job(
         status=status,
         forward_count=len(forward_forensics),
     )
+    declared_revision = job.versioning.get("active_revision")
+    incumbent = {
+        "declared_revision": declared_revision,
+        "workspace_revision": workspace_revision,
+        "revision_aligned": (
+            declared_revision == workspace_revision if declared_revision else None
+        ),
+    }
+    evidence_fingerprint = _evidence_fingerprint(
+        status=status,
+        score=score,
+        signals=signals,
+        incumbent_revision=workspace_revision,
+    )
     report: dict[str, Any] = {
         "schema_version": REGIME_HEALTH_SCHEMA_VERSION,
         "job_id": job_id,
@@ -174,6 +191,8 @@ def regime_health_job(
         "status": status,
         "score": score,
         "signals": signals,
+        "evidence_fingerprint": evidence_fingerprint,
+        "incumbent": incumbent,
         "thresholds": config,
         "windows": windows,
         "market": market,
@@ -327,6 +346,8 @@ def compact_regime_health(report: Mapping[str, Any]) -> dict[str, Any]:
         "score": report.get("score"),
         "computed_at": report.get("computed_at"),
         "signals": signals[:8],
+        "evidence_fingerprint": report.get("evidence_fingerprint"),
+        "incumbent": report.get("incumbent"),
         "policy": report.get("policy"),
         "transition": report.get("transition"),
         "attribution": report.get("attribution"),
@@ -788,6 +809,36 @@ def _input_fingerprint(root: Path) -> dict[str, Any]:
         for path in paths
         if path.exists()
     }
+
+
+def _evidence_fingerprint(
+    *,
+    status: str,
+    score: int,
+    signals: Sequence[Mapping[str, Any]],
+    incumbent_revision: str,
+) -> str:
+    """Stable identity for the evidence that requires owner remediation."""
+    bounded_signals = [
+        {
+            key: signal.get(key)
+            for key in ("kind", "severity", "value", "symbol", "window_days")
+            if signal.get(key) is not None
+        }
+        for signal in signals
+    ]
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "status": status,
+                "score": score,
+                "signals": bounded_signals,
+                "incumbent_revision": incumbent_revision,
+            },
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()[:16]
 
 
 def _governance_context(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:

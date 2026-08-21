@@ -203,6 +203,37 @@ async def test_daily_notional_cap_accumulates_across_ticks() -> None:
     assert any("daily notional cap" in event["reason"] for event in second.guard_events)
 
 
+def test_backtest_broker_can_stress_stop_market_slippage_separately() -> None:
+    broker = BacktestBroker(slippage_bps=10, stop_market_slippage_bps=1_000)
+    ordinary = broker.execute(
+        OrderIntent(
+            action="OPEN",
+            venue="hyperliquid",
+            symbol="HYPE",
+            side="buy",
+            size=1,
+        ),
+        price=100,
+        timestamp="2026-08-21T00:00:00+00:00",
+    )
+    stopped = broker.execute(
+        OrderIntent(
+            action="STOP_LOSS",
+            venue="hyperliquid",
+            symbol="HYPE",
+            side="buy",
+            size=1,
+            reduce_only=True,
+        ),
+        price=100,
+        timestamp="2026-08-21T00:05:00+00:00",
+    )
+
+    assert ordinary.avg_price == pytest.approx(100.1)
+    assert stopped.avg_price == pytest.approx(110.0)
+    assert stopped.raw["slippage_bps_applied"] == 1_000
+
+
 async def test_passive_limit_rests_then_fills_on_next_bar_trade_through() -> None:
     state = EngineState()
     broker = BacktestBroker(fee_bps=4.5, maker_fee_bps=1.5, slippage_bps=3.5)
