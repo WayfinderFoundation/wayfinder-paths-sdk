@@ -62,6 +62,7 @@ EG_CRITICAL = {"1%": -3.90, "5%": -3.34, "10%": -3.04}
 ADF_CRITICAL_5PCT = -2.86
 
 BAR_90D_SECONDS = 90 * 86_400
+MIN_BH_FAMILY_SIZE = 50
 
 
 # ── pure statistics ──────────────────────────────────────────────────────────
@@ -74,7 +75,7 @@ def ou_half_life(spread: np.ndarray) -> float:
     if len(x) < 20:
         return float("inf")
     xm = x.mean()
-    denom = np.sum((x - xm) ** 2)
+    denom: float = float(np.sum((x - xm) ** 2))
     if denom == 0:
         return float("inf")
     b = np.sum((x - xm) * (y - xm)) / denom
@@ -111,7 +112,7 @@ def _residual_adf_t(resid: np.ndarray) -> float:
     """Engle-Granger step 2: ADF t-stat on regression residuals (no constant —
     residuals are mean-zero by construction)."""
     dy, yl = np.diff(resid), resid[:-1]
-    denom = np.sum(yl**2)
+    denom: float = float(np.sum(yl**2))
     if denom == 0 or len(dy) < 2:
         return 0.0
     rho = np.sum(yl * dy) / denom
@@ -681,16 +682,29 @@ def apply_bh_verdicts(
     *,
     q_threshold: float = 0.10,
     min_folds_agree: int = 3,
+    min_family_size: int = MIN_BH_FAMILY_SIZE,
 ) -> None:
     """Annotate scan rows in place with BH q-values and verdicts over ONE
-    test family (all rows passed in). promote = q <= threshold AND fold
-    stability; candidate = |t| >= 2 (report continuity)."""
+    test family (all rows passed in). Families below ``min_family_size`` may
+    report raw candidates but cannot mint q-driven promote/probation verdicts;
+    campaign orchestration pools declared sub-floor campaigns with the
+    canonical family before calling this function."""
+    if min_family_size < 1:
+        raise ValueError("min_family_size must be >= 1")
+    family_size = len(rows)
+    family_eligible = family_size >= min_family_size
     qvals = bh_qvalues([row["p_value"] for row in rows])
     for row, q in zip(rows, qvals, strict=True):
+        row.pop("promote_scope", None)
         row["q_value"] = round(float(q), 4)
+        row["bh_family_size"] = family_size
+        row["bh_min_family_size"] = min_family_size
+        row["bh_family_eligible"] = family_eligible
+        row["multiplicity_method"] = "benjamini_hochberg"
         t = row["t_stat_vs_drift"]
         promote = (
-            q <= q_threshold
+            family_eligible
+            and q <= q_threshold
             and bool(row.get("fold_stable"))
             and int(row.get("folds_agreeing") or 0) >= min_folds_agree
         )
@@ -724,14 +738,18 @@ def apply_bh_verdicts(
         # in the CURRENT regime; (c) declared recent-window survivor.
         t_recent = row.get("t_recent")
         alive_now = t_recent is not None and abs(t_recent) >= 2 and t_recent * t > 0
-        probation = not promote and (
-            (q <= 0.20 and int(row.get("folds_agreeing") or 0) >= 2 and alive_now)
-            or (
-                bool(row.get("in_current_regime"))
-                and q <= 0.15
-                and int(row.get("n") or 0) >= 20
+        probation = (
+            family_eligible
+            and not promote
+            and (
+                (q <= 0.20 and int(row.get("folds_agreeing") or 0) >= 2 and alive_now)
+                or (
+                    bool(row.get("in_current_regime"))
+                    and q <= 0.15
+                    and int(row.get("n") or 0) >= 20
+                )
+                or (bool(row.get("window_days")) and q <= q_threshold)
             )
-            or (bool(row.get("window_days")) and q <= q_threshold)
         )
         row["verdict"] = (
             "promote"
@@ -892,7 +910,10 @@ def scan_signals(
     slippage_bps: float = 3.5,
     extra_signals: Sequence[SignalDef] = (),
     include_canonical: bool = True,
+    canonical_signals: Sequence[SignalDef] = (),
+    required_horizons: Mapping[str, Sequence[int]] | None = None,
     condition_regime: bool = False,
+    min_family_size: int = MIN_BH_FAMILY_SIZE,
 ) -> dict[str, Any]:
     """Event-study EVERY canonical library trigger against one symbol's bars
     — across timeframes, in a single pass — the breadth tool that replaces
@@ -938,6 +959,10 @@ def scan_signals(
             continue
         tf_specs.append((str(tf), seconds))
     extra_names = {spec.name for spec in extra_signals}
+    selected_canonical = (
+        SIGNAL_LIBRARY if include_canonical else tuple(canonical_signals)
+    )
+    round_trip_cost = 2 * (fee_bps + slippage_bps) / 1e4
     rows: list[dict[str, Any]] = []
     tests_run = 0
     tests_skipped = 0
@@ -963,13 +988,20 @@ def scan_signals(
         close = bars["close"].astype(float).to_numpy()
         n = len(close)
         signals = build_signal_frame(
-            bars, extra_signals, include_canonical=include_canonical
+            bars,
+            extra_signals,
+            include_canonical=include_canonical,
+            canonical_signals=selected_canonical,
         )
-        tf_horizons = sorted(
+        tf_horizon_set = (
             {int(h) for h in horizons}
             if horizons
             else set(_DEFAULT_SCAN_HORIZONS.get(tf_seconds, _GENERIC_SCAN_HORIZONS))
         )
+        for required_timeframe, required in (required_horizons or {}).items():
+            if _same_timeframe(tf_name, required_timeframe):
+                tf_horizon_set.update(int(h) for h in required)
+        tf_horizons = sorted(tf_horizon_set)
         horizons_used[tf_name] = tf_horizons
         for h in tf_horizons:
             if h <= 0 or h >= n:
@@ -1002,7 +1034,17 @@ def scan_signals(
                 std_r = float(event_returns.std(ddof=1))
                 if std_r <= 0:
                     return None
-                t = (mean_r - drift) / (std_r / math.sqrt(n_events))
+                sem = std_r / math.sqrt(n_events)
+                excess = mean_r - drift
+                t = excess / sem
+                direction_sign = float(np.sign(t)) or 1.0
+                # Cost metrics are expressed in the inferred trade direction:
+                # a short's negative forward return is positive gross edge.
+                # t_net is the directional, cost-adjusted t-stat: positive
+                # means the inferred trade direction survives one round trip;
+                # negative means costs overwhelm it. Promotion remains gross.
+                edge_net_bps = (direction_sign * mean_r - round_trip_cost) * 1e4
+                t_net = (direction_sign * excess - round_trip_cost) / sem
                 fold_deltas, agreeing, measurable = _fold_stability(
                     events,
                     fwd,
@@ -1054,6 +1096,9 @@ def scan_signals(
                     "mean_fwd_return": mean_r,
                     "drift_baseline": drift,
                     "t_stat_vs_drift": float(t),
+                    "round_trip_cost_bps": round_trip_cost * 1e4,
+                    "edge_net_bps": float(edge_net_bps),
+                    "t_net": float(t_net),
                     "p_value": _t_to_pvalue(float(t)),
                     "direction": ("short" if t <= -2 else "long" if t >= 2 else None),
                     "fold_deltas": fold_deltas,
@@ -1068,8 +1113,7 @@ def scan_signals(
             # Iterate the SAME def set the frame was built from: a campaign
             # frame has only workspace columns, so scoring the canonical
             # library against it would KeyError (hit live 2026-07-26).
-            library = SIGNAL_LIBRARY if include_canonical else ()
-            for spec in (*library, *extra_signals):
+            for spec in (*selected_canonical, *extra_signals):
                 sig = signals[spec.name].to_numpy()
                 events = _decimate_events(sig[: n - h], h)
                 n_raw = int(sig[: n - h].sum())
@@ -1100,7 +1144,12 @@ def scan_signals(
                             continue
                         tests_run += 1
                         rows.append(r_row)
-    apply_bh_verdicts(rows, q_threshold=q_threshold, min_folds_agree=min_folds_agree)
+    apply_bh_verdicts(
+        rows,
+        q_threshold=q_threshold,
+        min_folds_agree=min_folds_agree,
+        min_family_size=min_family_size,
+    )
     # Path stats for every |t|>=2 candidate (not just promoted): pooled
     # multi-symbol BH in signal_scan_job can shift verdicts after this
     # returns, and the set is small enough to be cheap.
@@ -1130,7 +1179,7 @@ def scan_signals(
     promoted = [r for r in rows if r["verdict"] == "promote"]
     expected_lucky = round(tests_run * 0.05, 1)
     return {
-        "signals_tested": len(SIGNAL_LIBRARY) + len(extra_signals),
+        "signals_tested": len(selected_canonical) + len(extra_signals),
         "workspace_signals": sorted(extra_names),
         "timeframes": [name for name, _ in tf_specs],
         "timeframes_skipped": timeframes_skipped,
@@ -1139,6 +1188,12 @@ def scan_signals(
         "tests_skipped_insufficient_data": tests_skipped,
         "current_regime": regime_now,
         "expected_lucky_passes": expected_lucky,
+        "bh_family": {
+            "size": len(rows),
+            "minimum_size": min_family_size,
+            "eligible": len(rows) >= min_family_size,
+            "method": "benjamini_hochberg",
+        },
         "candidates": candidates,
         "promoted": promoted,
         "top_by_abs_t": rows[:5],
@@ -1782,6 +1837,122 @@ def _trial_hash(symbol: str, signal: str, timeframe: str, horizon: int) -> str:
     return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 
+def _incumbent_signal_controls(job_data: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Validate the live strategy's declared scan coordinates.
+
+    Strategies are intentionally not imported here: arbitrary workspace code
+    is not a safe source of research metadata. The controller declaration is
+    the deterministic contract an evolving strategy updates alongside its
+    live rules.
+    """
+    controller = job_data.get("controller")
+    raw = (
+        controller.get("incumbent_signal_controls")
+        if isinstance(controller, Mapping)
+        else None
+    )
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("controller.incumbent_signal_controls must be a list")
+    controls: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, int]] = set()
+    for index, item in enumerate(raw):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"incumbent signal control {index} must be an object")
+        values = {
+            key: str(item.get(key) or "").strip()
+            for key in ("symbol", "signal", "timeframe")
+        }
+        if not all(values.values()):
+            raise ValueError(
+                f"incumbent signal control {index} needs symbol, signal, and timeframe"
+            )
+        horizon_raw = item.get("horizon")
+        if (
+            isinstance(horizon_raw, bool)
+            or not isinstance(horizon_raw, (int, float))
+            or not math.isfinite(float(horizon_raw))
+        ):
+            raise ValueError(
+                f"incumbent signal control {index} horizon must be positive"
+            )
+        horizon = int(horizon_raw)
+        if horizon <= 0 or horizon != horizon_raw:
+            raise ValueError(
+                f"incumbent signal control {index} horizon must be positive"
+            )
+        coordinate = (
+            values["symbol"],
+            values["signal"],
+            values["timeframe"],
+            horizon,
+        )
+        if coordinate in seen:
+            continue
+        seen.add(coordinate)
+        controls.append(
+            {
+                "symbol": coordinate[0],
+                "signal": coordinate[1],
+                "timeframe": coordinate[2],
+                "horizon": coordinate[3],
+            }
+        )
+    return controls
+
+
+def _declared_scan_cells(
+    *,
+    signal_count: int,
+    symbol_count: int,
+    timeframes: Sequence[str],
+    horizons: Sequence[int] | None,
+    required_horizons: Mapping[str, Sequence[int]],
+    condition_regime: bool,
+) -> int:
+    from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
+
+    per_signal_symbol = 0
+    for timeframe in timeframes:
+        seconds = bar_interval_seconds(timeframe)
+        if not seconds:
+            continue
+        tf_horizons = set(
+            horizons or _DEFAULT_SCAN_HORIZONS.get(seconds, _GENERIC_SCAN_HORIZONS)
+        )
+        for required_timeframe, required in required_horizons.items():
+            if _same_timeframe(timeframe, required_timeframe):
+                tf_horizons.update(required)
+        per_signal_symbol += len(tf_horizons)
+    regime_multiplier = 5 if condition_regime else 1  # base + four regime cells
+    return signal_count * symbol_count * per_signal_symbol * regime_multiplier
+
+
+def _same_timeframe(left: str, right: str) -> bool:
+    from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
+
+    return bool(
+        left == right
+        or (
+            bar_interval_seconds(left)
+            and bar_interval_seconds(left) == bar_interval_seconds(right)
+        )
+    )
+
+
+def _matches_incumbent_control(
+    *, symbol: str, row: Mapping[str, Any], control: Mapping[str, Any]
+) -> bool:
+    return bool(
+        symbol == control["symbol"]
+        and row.get("signal") == control["signal"]
+        and int(row.get("horizon") or 0) == control["horizon"]
+        and _same_timeframe(str(row.get("timeframe") or ""), control["timeframe"])
+        and not row.get("regime")
+    )
+
+
 def signal_scan_job(
     job_id: str,
     *,
@@ -1830,26 +2001,67 @@ def signal_scan_job(
     dataset = _load_dataset(root, spec, job_data, include_store_features=True)
     frame = dataset.bars.to_frame()
     available = sorted(frame["symbol"].astype(str).unique())
-    targets = [str(s) for s in symbols] if symbols else available
-    missing = [s for s in targets if s not in available]
+    requested_targets = [str(s) for s in symbols] if symbols else available
+    missing = [s for s in requested_targets if s not in available]
     if missing:
         raise ValueError(
             f"symbols {missing} not in the job dataset; available: {available}"
         )
-    workspace = load_workspace_signals(root) if include_workspace else None
-    if workspace is not None:
+    incumbent_controls = _incumbent_signal_controls(job_data)
+    # Controls expand a targeted scan rather than silently disappearing from
+    # it. A live symbol absent from the dataset remains an explicit not_run
+    # control below; it does not make an otherwise useful scan fail.
+    targets = list(
+        dict.fromkeys(
+            [
+                *requested_targets,
+                *[
+                    control["symbol"]
+                    for control in incumbent_controls
+                    if control["symbol"] in available
+                ],
+            ]
+        )
+    )
+    base_timeframe = str(spec.data_contract.get("bar_interval") or f"{bar_seconds}s")
+    scan_timeframes = list(
+        dict.fromkeys(
+            [
+                *(timeframes or [base_timeframe]),
+                *[control["timeframe"] for control in incumbent_controls],
+            ]
+        )
+    )
+    incumbent_horizons: dict[str, list[int]] = {}
+    for control in incumbent_controls:
+        incumbent_horizons.setdefault(control["timeframe"], []).append(
+            control["horizon"]
+        )
+    for required in incumbent_horizons.values():
+        required[:] = list(dict.fromkeys(required))
+    workspace = load_workspace_signals(root)
+    control_signal_names = {control["signal"] for control in incumbent_controls}
+    extra_signals = (
+        workspace.defs
+        if workspace is not None and include_workspace
+        else tuple(
+            signal
+            for signal in (workspace.defs if workspace is not None else ())
+            if signal.name in control_signal_names
+        )
+    )
+    if extra_signals:
         # Validation reads only pass/fail causality on the full frame — no
         # statistic escapes, so touching the tail here is not snooping.
         for symbol in targets:
             validate_workspace_signals(
-                workspace.defs,
+                extra_signals,
                 frame[frame["symbol"] == symbol].reset_index(drop=True),
             )
-    extra_signals = workspace.defs if workspace is not None else ()
-    # A campaign is its own declared BH family: workspace defs only, pooled
-    # only with each other — the canonical library neither taxes nor is taxed
-    # by the campaign. Provenance (name + defs sha) lands in the ledger so a
-    # renamed re-run is visible snooping, exactly like workspace sha tracking.
+    # A campaign may form its own declared BH family only at or above the
+    # canonical floor. Smaller declarations are pooled with the canonical
+    # library so renaming a five-test rerun can never shrink q into promote.
+    declared_campaign_size: int | None = None
     if campaign is not None:
         if not extra_signals:
             raise ValueError(
@@ -1858,7 +2070,38 @@ def signal_scan_job(
             )
         if not str(campaign).strip():
             raise ValueError("campaign name must be non-empty")
-    include_canonical = campaign is None
+        declared_campaign_size = _declared_scan_cells(
+            signal_count=len(extra_signals),
+            symbol_count=len(targets),
+            timeframes=scan_timeframes,
+            horizons=horizons,
+            required_horizons=incumbent_horizons,
+            condition_regime=condition_regime,
+        )
+    pool_with_canonical = bool(
+        campaign is not None and (declared_campaign_size or 0) < MIN_BH_FAMILY_SIZE
+    )
+    include_canonical = campaign is None or pool_with_canonical
+    family_mode = (
+        "canonical"
+        if campaign is None
+        else "canonical_pool"
+        if pool_with_canonical
+        else "campaign_plus_incumbent_controls"
+    )
+    available_signal_defs = signal_defs()
+    workspace_names = {item.name for item in extra_signals}
+    required_canonical = tuple(
+        {
+            control["signal"]: available_signal_defs[control["signal"]]
+            for control in incumbent_controls
+            if control["signal"] in available_signal_defs
+            and control["signal"] not in workspace_names
+        }.values()
+    )
+    # A large campaign stays isolated except for the incumbent yardstick. The
+    # required controls pay the same BH bill as every campaign hypothesis.
+    selected_canonical = () if include_canonical else required_canonical
     if window_days is not None:
         if window_days < 7:
             raise ValueError("window_days must be >= 7")
@@ -1873,12 +2116,14 @@ def signal_scan_job(
             frame[frame["symbol"] == symbol].reset_index(drop=True),
             horizons=horizons,
             bar_seconds=bar_seconds,
-            timeframes=timeframes,
+            timeframes=scan_timeframes,
             holdout_fraction=holdout_fraction,
             fee_bps=fee_bps,
             slippage_bps=slippage_bps,
             extra_signals=extra_signals,
             include_canonical=include_canonical,
+            canonical_signals=selected_canonical,
+            required_horizons=incumbent_horizons,
             condition_regime=condition_regime,
         )
         for symbol in targets
@@ -1892,15 +2137,84 @@ def signal_scan_job(
         for rows_ in all_rows_by_symbol.values():
             for row in rows_:
                 row["window_days"] = window_days
-    apply_bh_verdicts([row for rows in all_rows_by_symbol.values() for row in rows])
+    pooled_rows = [row for rows in all_rows_by_symbol.values() for row in rows]
+    apply_bh_verdicts(pooled_rows)
     for symbol, scan in per_symbol.items():
-        pooled_rows = all_rows_by_symbol[symbol]
+        symbol_rows = all_rows_by_symbol[symbol]
         scan["promoted"] = [
-            row for row in pooled_rows if row.get("verdict") == "promote"
+            row for row in symbol_rows if row.get("verdict") == "promote"
         ]
         scan["probation"] = [
-            row for row in pooled_rows if row.get("verdict") == "probation"
+            row for row in symbol_rows if row.get("verdict") == "probation"
         ]
+        scan["bh_family"] = {
+            "size": len(pooled_rows),
+            "minimum_size": MIN_BH_FAMILY_SIZE,
+            "eligible": len(pooled_rows) >= MIN_BH_FAMILY_SIZE,
+            "method": "benjamini_hochberg",
+        }
+        scan["read"] = (
+            f"{len(scan['promoted'])} of {len(symbol_rows)} measured cells "
+            "promoted after pooled BH correction; edge_net_bps and t_net are "
+            "advisory cost diagnostics and do not change the gross promotion bar"
+        )
+    incumbent_cells: list[dict[str, Any]] = []
+    for control in incumbent_controls:
+        rows = all_rows_by_symbol.get(control["symbol"], [])
+        measured = next(
+            (
+                row
+                for row in rows
+                if _matches_incumbent_control(
+                    symbol=control["symbol"], row=row, control=control
+                )
+            ),
+            None,
+        )
+        if measured is None:
+            if control["symbol"] not in available:
+                reason = "symbol_absent_from_dataset"
+            elif (
+                control["signal"] not in available_signal_defs
+                and control["signal"] not in workspace_names
+            ):
+                reason = "signal_definition_unavailable"
+            else:
+                reason = "cell_not_measured"
+            incumbent_cells.append({**control, "status": "not_run", "reason": reason})
+            continue
+        incumbent_cells.append(
+            {
+                **control,
+                "status": ("pass" if measured.get("verdict") == "promote" else "fail"),
+                "result": {
+                    key: measured.get(key)
+                    for key in (
+                        "direction",
+                        "n",
+                        "t_stat_vs_drift",
+                        "t_net",
+                        "edge_net_bps",
+                        "q_value",
+                        "folds_agreeing",
+                        "fold_stable",
+                        "verdict",
+                    )
+                },
+            }
+        )
+    incumbent_summary = {
+        "bar": {
+            "gross_t": "|t_stat_vs_drift| >= 2",
+            "q_threshold": 0.10,
+            "min_folds_agreeing": 3,
+            "min_bh_family_size": MIN_BH_FAMILY_SIZE,
+            "cost_metrics_advisory": True,
+        },
+        "cells": incumbent_cells,
+        "passing": sum(cell["status"] == "pass" for cell in incumbent_cells),
+        "declared": len(incumbent_cells),
+    }
     prior = _read_scan_ledger(root)
     prior_scans = sum(1 for row in prior if row.get("kind") == "scan_meta")
     prior_tests = sum(1 for row in prior if row.get("kind") == "scan_test")
@@ -1912,15 +2226,26 @@ def signal_scan_job(
             "kind": "scan_meta",
             "scan_id": utc_now_iso(),
             "symbols": targets,
-            "timeframes": timeframes or ["base"],
+            "timeframes": scan_timeframes,
+            "horizons": {
+                symbol: scan["horizons"] for symbol, scan in per_symbol.items()
+            },
             "tests_run": sum(s["tests_run"] for s in per_symbol.values()),
             "holdout_fraction": holdout_fraction,
             "cutoff_ts": {
                 sym: scan["holdout"]["cutoff_ts"] for sym, scan in per_symbol.items()
             },
             "workspace_signals": [spec.name for spec in extra_signals],
-            "workspace_signals_sha": workspace.sha if workspace else None,
+            "workspace_signals_sha": (
+                workspace.sha if workspace is not None and extra_signals else None
+            ),
             "campaign": campaign,
+            "declared_campaign_size": declared_campaign_size,
+            "bh_family_mode": family_mode,
+            "bh_family_size": len(pooled_rows),
+            "bh_min_family_size": MIN_BH_FAMILY_SIZE,
+            "multiplicity_method": "benjamini_hochberg",
+            "incumbent_controls": incumbent_controls,
             "condition_regime": condition_regime,
             "window_days": window_days,
         }
@@ -1948,13 +2273,25 @@ def signal_scan_job(
                     "direction": row["direction"],
                     "n": row["n"],
                     "t": round(row["t_stat_vs_drift"], 3),
+                    "t_net": round(row["t_net"], 3),
+                    "edge_net_bps": round(row["edge_net_bps"], 3),
+                    "round_trip_cost_bps": round(row["round_trip_cost_bps"], 3),
                     "q": row.get("q_value"),
+                    "bh_family_size": row.get("bh_family_size"),
+                    "bh_min_family_size": row.get("bh_min_family_size"),
+                    "multiplicity_method": row.get("multiplicity_method"),
                     "folds_agreeing": row.get("folds_agreeing"),
                     "verdict": row.get("verdict"),
                     "library": row.get("library"),
                     "campaign": campaign,
                     "regime": row.get("regime"),
                     "recency_trend": row.get("recency_trend"),
+                    "incumbent_control": any(
+                        _matches_incumbent_control(
+                            symbol=symbol, row=row, control=control
+                        )
+                        for control in incumbent_controls
+                    ),
                 }
             )
     _append_scan_ledger(root, ledger_rows)
@@ -1962,6 +2299,15 @@ def signal_scan_job(
     result: dict[str, Any] = {
         "per_symbol": per_symbol,
         "campaign": campaign,
+        "bh_family": {
+            "mode": family_mode,
+            "declared_campaign_size": declared_campaign_size,
+            "size": len(pooled_rows),
+            "minimum_size": MIN_BH_FAMILY_SIZE,
+            "eligible": len(pooled_rows) >= MIN_BH_FAMILY_SIZE,
+            "method": "benjamini_hochberg",
+        },
+        "incumbent_controls": incumbent_summary,
         "workspace_signals": [spec.name for spec in extra_signals],
         "holdout": {
             "fraction": holdout_fraction,
@@ -1983,7 +2329,8 @@ def signal_scan_job(
             f"the spec is frozen. This workspace has now run "
             f"{cumulative_tests} tests across {prior_scans + 1} scans — "
             "q-values control this scan only; the ledger keeps repeat scans "
-            "honest"
+            f"honest. Incumbent controls passing their own bar: "
+            f"{incumbent_summary['passing']}/{incumbent_summary['declared']}"
         ),
     }
     out_dir = _scan_dir(root)
