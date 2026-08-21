@@ -188,6 +188,24 @@ def open_paper_probation_leg(
         spec=spec,
     )
     if not check["eligible"]:
+        # A mechanical refusal is a completed candidate evaluation, not an
+        # unattempted paper deployment. Keep it durable so coverage audits do
+        # not repeatedly mandate a candidate the entry gate already rejected.
+        store.append_journal(
+            job_id,
+            {
+                "type": "paper_probation_entry_refused",
+                "leg": name,
+                "symbol": symbol,
+                "proposal_id": proposal_id,
+                "entry": {
+                    "candidate_net_return": float(candidate_net),
+                    "baseline_net_return": float(baseline_net),
+                    "backtest_trades": int(backtest_trades or 0),
+                    **check,
+                },
+            },
+        )
         raise ValueError(
             "paper probation entry refused: " + "; ".join(check["reasons"])
         )

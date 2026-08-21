@@ -637,6 +637,21 @@ def test_paper_leg_opens_within_budget_and_caps(tmp_path: Path) -> None:
         _open_paper(store, job_id, "leg-worse", candidate_net=0.05)
     with pytest.raises(ValueError, match="trade count"):
         _open_paper(store, job_id, "leg-thin", backtest_trades=2)
+    refusals = _journal_events(store, job_id, "paper_probation_entry_refused")
+    assert [row["leg"] for row in refusals] == ["leg-worse", "leg-thin"]
+    assert refusals[0]["entry"] == {
+        "candidate_net_return": 0.05,
+        "baseline_net_return": 0.10,
+        "backtest_trades": 25,
+        "eligible": False,
+        "budget": 0.025,
+        "floor": 0.075,
+        "reasons": [
+            "candidate net_return 0.05 clearly worse than baseline 0.1 "
+            "(allowed floor 0.075)"
+        ],
+    }
+    assert load_probation(store, job_id)["legs"] == [leg]
 
     _open_paper(store, job_id, "leg-b")
     _open_paper(store, job_id, "leg-c")
