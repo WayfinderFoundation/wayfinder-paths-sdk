@@ -228,6 +228,8 @@ If a user is on a legacy split account, migration may require closing positions,
 
 #### Notes
 
+For completed Hyperliquid trades, realized outcomes, or historical PnL, call `hyperliquid_get_trade_results(label="...", period="day")` first. Select `day`, `week`, `month`, or `allTime`; use the `perp*` variants when the answer should exclude spot and outcome fills. The returned portfolio PnL is authoritative, while each compact trade keeps its closed PnL and fee separate. Use `hyperliquid_get_state` for current balances, open positions, unrealized PnL, and open orders instead of reconstructing them from trade history.
+
 Leveraged perp execution: before placing, call `hyperliquid_get_state(label=...)` for account state and `hyperliquid_get_trade_asset(label=..., asset_name=...)` for the selected perp/HIP-3 market. `label` is the configured wallet label; `asset_name` is the market path such as `ETH-USDC`, `HYPE-USDC`, or `xyz:NVDA`. For UnifiedAccount margin, size from the selected side in `hyperliquid_get_trade_asset` (`long.available_margin_usd`, `short.available_margin_usd`, `max_order_notional_usd`, `max_base_size`, current `leverage`, `max_leverage`, and `compatible_margin_modes`); do not use wallet USDC balance, spot balance, withdrawable, account value, or `crossMarginSummary` as "available to trade". Show wallet/address label, asset, current position, margin mode, leverage, selected side, order type, requested notional/size, required initial margin (`notional / leverage`), available-to-trade margin, utilization, reduce/open/flip effect, and exact tool inputs before requesting approval. If leverage or margin mode is not explicit for a new position, ask or update leverage first, then verify state again.
 
 For live strategy/perp execution driven by bars, confirm the signal came from a completed bar before placing orders. If the latest fetched candle is still forming, use the latest completed signal bar or skip the trigger; never trade from the current in-progress candle. When creating executable `ActivePerpsStrategy` scripts, use the canonical `signal.py`/`decide.py` pattern: `signal.py` emits decision targets after completed bar `t`, `decide.py` reads `ctx.signal_at_now()`, and the framework owns the execution lag. Do not hand-roll exposure timing or pre-shift/pre-lag the signal.
@@ -241,6 +243,8 @@ Polymarket is a CLOB for prediction markets. The primary collateral is pUSD (whi
 #### Depositing, Withdrawing & Collateral
 
 Polymarket balances are separate from a user's EVM balances. To place transactions on the Polymarket CLOB, users must first fund their pUSD using `polymarket_deposit_pusd`, and similarly `polymarket_withdraw_pusd` to recover their funds. Note: Polymarket balances are held by a smart contract wallet on Polygon.
+
+For Polymarket trade outcomes and PnL, call `polymarket_get_state(wallet_label="...", include_orders=false, include_trades=true)`. Read `state.pnl` and `state.recentTrades`; do not rebuild PnL from individual fills.
 
 #### Cross-venue prediction markets
 
