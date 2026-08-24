@@ -278,6 +278,8 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
     by_id = {item["id"]: item for item in catalog}
     crypto_momentum = by_id["crypto-momentum-persistence-4h"]
     assert crypto_momentum["params"]["score_volatility_bars"] == 168
+    assert crypto_momentum["params"]["broad_bull_momentum_threshold"] == 0.10
+    assert crypto_momentum["params"]["broad_bull_weight_shift"] == 0.175
     assert crypto_momentum["research_evidence"]["sharpe"] > 1.0
     assert all(
         sharpe > 1.0
@@ -461,6 +463,35 @@ def test_crypto_momentum_concentrates_in_risk_adjusted_extremes() -> None:
     assert hype["starter_momentum"].iloc[-1] == pytest.approx(expected_score)
     assert _sides(intents) == {"BTC": "sell", "ETH": "buy"}
     assert {intent["notional"] for intent in intents} == {3500.0}
+
+
+def test_crypto_momentum_leans_long_without_raising_gross_in_broad_rally() -> None:
+    strategy = CryptoMomentumPersistenceStrategy(
+        {
+            "symbols": ["BTC", "ETH", "SOL", "HYPE"],
+            "fast_momentum_bars": 2,
+            "slow_momentum_bars": 4,
+            "score_volatility_bars": 4,
+            "rebalance_bars": 1,
+            "min_trade_notional": 0.0,
+        }
+    )
+    ctx = _context(
+        strategy,
+        {
+            "BTC": [1.00, 1.02, 1.04, 1.07, 1.10, 1.14, 1.18, 1.23],
+            "ETH": [1.00, 1.03, 1.06, 1.10, 1.15, 1.21, 1.28, 1.36],
+            "SOL": [1.00, 1.04, 1.08, 1.13, 1.19, 1.26, 1.34, 1.43],
+            "HYPE": [1.00, 1.05, 1.11, 1.18, 1.26, 1.35, 1.45, 1.56],
+        },
+        interval="4h",
+    )
+
+    intents = strategy.decide(ctx)
+
+    notionals = {intent["side"]: intent["notional"] for intent in intents}
+    assert notionals == pytest.approx({"sell": 1750.0, "buy": 5250.0})
+    assert sum(notionals.values()) == pytest.approx(7000.0)
 
 
 def test_sleeve_momentum_keeps_crypto_and_equity_sleeves_separate() -> None:

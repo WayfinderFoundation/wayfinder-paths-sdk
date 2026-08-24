@@ -308,7 +308,8 @@ _CRYPTO_MOMENTUM_RESEARCH_METHOD = {
     "funding": "not included; long and short carry can change live returns",
     "validation": (
         "training-only rank admission, four rolling 240-day train / 60-day "
-        "test folds, and all six daily 4h rebalance phases"
+        "test folds, neighboring broad-bull thresholds, and all six daily "
+        "4h rebalance phases"
     ),
 }
 
@@ -714,8 +715,8 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         name="Crypto Momentum Persistence · 4h",
         family="cross_sectional_momentum",
         summary=(
-            "A concentrated, market-neutral crypto basket that owns the "
-            "strongest risk-adjusted persistent trend and shorts the weakest."
+            "A concentrated crypto basket that owns the strongest risk-adjusted "
+            "persistent trend, shorts the weakest, and leans long in broad rallies."
         ),
         timeframe="4h",
         module="wayfinder_paths.jobs.strategies.crypto_momentum_persistence",
@@ -725,6 +726,7 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         rules=(
             "Blend trailing 7-day and 28-day returns equally, then divide by trailing 28-day volatility.",
             "Long the strongest and short the weakest at 35% each; gross 70%, net 0%.",
+            "When all four raw momentum blends reach 10%, shift 17.5% from the short leg to the long; gross stays 70% and net becomes +35%.",
             "Re-rank daily on the 12:00 UTC completed bar.",
         ),
         params={
@@ -735,14 +737,16 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
             "rebalance_bars": 6,
             "rebalance_offset": 3,
             "weight_per_leg": 0.35,
+            "broad_bull_momentum_threshold": 0.10,
+            "broad_bull_weight_shift": 0.175,
             "stop_atr_period": 12,
         },
         research_evidence={
             **_CRYPTO_MOMENTUM_RESEARCH_METHOD,
-            "return_after_fees_and_slippage": 0.8887,
-            "return_after_costs_and_funding": 0.8887,
+            "return_after_fees_and_slippage": 1.0390,
+            "return_after_costs_and_funding": 1.0390,
             "funding_return_contribution": 0.0,
-            "sharpe": 1.4087,
+            "sharpe": 1.5407,
             "max_drawdown": -0.1590,
             "chronological_fold_returns": [0.1004, 0.0772, 0.1534, 0.0400],
             "rank_admission": {
@@ -754,6 +758,18 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 "second_half_information_coefficient": 0.0396,
                 "passed": True,
             },
+            "broad_bull_overlay": {
+                "activation": "all four raw momentum blends >= 0.10",
+                "normal_weights": {"long": 0.35, "short": -0.35, "net": 0.0},
+                "active_weights": {"long": 0.525, "short": -0.175, "net": 0.35},
+                "gross_exposure": 0.70,
+                "threshold_sharpe_sensitivity": {
+                    "0.05": 1.3316,
+                    "0.10": 1.5407,
+                    "0.15": 1.4348,
+                },
+                "older_walk_forward_activation_count": 0,
+            },
             "walk_forward": {
                 "fold_count": 4,
                 "positive_folds": 4,
@@ -762,39 +778,39 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 "worst_max_drawdown": -0.0939,
             },
             "rebalance_phase_returns": {
-                "00:00_utc": 0.6873,
-                "04:00_utc": 0.7447,
-                "08:00_utc": 0.7653,
-                "12:00_utc": 0.8887,
-                "16:00_utc": 0.5910,
-                "20:00_utc": 0.6285,
+                "00:00_utc": 0.6834,
+                "04:00_utc": 0.9323,
+                "08:00_utc": 0.9043,
+                "12:00_utc": 1.0390,
+                "16:00_utc": 0.6709,
+                "20:00_utc": 0.7512,
             },
             "rebalance_phase_sharpes": {
-                "00:00_utc": 1.1476,
-                "04:00_utc": 1.2071,
-                "08:00_utc": 1.2436,
-                "12:00_utc": 1.4087,
-                "16:00_utc": 1.0592,
-                "20:00_utc": 1.0816,
+                "00:00_utc": 1.1362,
+                "04:00_utc": 1.3922,
+                "08:00_utc": 1.3795,
+                "12:00_utc": 1.5407,
+                "16:00_utc": 1.1407,
+                "20:00_utc": 1.2191,
             },
             "recent_7_day_scenario": {
                 "window_start": "2026-08-17T20:00:00+00:00",
                 "window_end": "2026-08-24T16:00:00+00:00",
-                "return_after_fees_and_slippage": 0.0169,
-                "sharpe": 1.9805,
-                "max_drawdown": -0.0475,
+                "return_after_fees_and_slippage": 0.0447,
+                "sharpe": 5.5413,
+                "max_drawdown": -0.0235,
                 "trade_count": 8,
-                "total_fees_usd": 13.34,
+                "total_fees_usd": 15.01,
                 "initial_pair": {"long": "HYPE", "short": "BTC"},
                 "trace_valid": True,
                 "selection_role": "goal-directed development scenario, not holdout",
             },
             "jobs_v1_engine": {
-                "return_after_fees_and_slippage": 0.8887,
-                "sharpe": 1.4087,
+                "return_after_fees_and_slippage": 1.0390,
+                "sharpe": 1.5407,
                 "max_drawdown": -0.1590,
-                "trade_count": 408,
-                "total_fees_usd": 832.07,
+                "trade_count": 436,
+                "total_fees_usd": 900.88,
                 "stop_count": 0,
                 "full_period_vs_no_stop": "unchanged",
                 "chronological_folds_non_regressing": 4,
@@ -804,7 +820,8 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         },
         cautions=(
             "Funding is not included in the replay and can reduce live returns.",
-            "The recent seven-day scenario guided concentration and is not out-of-sample; the four older walk-forward folds are out-of-sample.",
+            "Broad-bull mode temporarily carries +35% net long exposure; the four older out-of-sample folds did not activate it.",
+            "The recent seven-day scenario guided the overlay and is not out-of-sample.",
             "Only 1x stayed within the -20% account-halt threshold in the leverage sweep.",
         ),
     ),

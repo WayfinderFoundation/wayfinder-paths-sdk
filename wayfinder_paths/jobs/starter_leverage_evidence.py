@@ -68,11 +68,11 @@ STARTER_LEVERAGE_RESULTS: dict[str, tuple[dict[str, Any], ...]] = {
         _result(5, 1.4595, 1.7349, -0.4691, 267, 2481.69, OTHER_STARTER_HALT),
     ),
     "crypto-momentum-persistence-4h": (
-        _result(1, 0.8887, 1.4087, -0.1590, 408, 832.07, OTHER_STARTER_HALT),
-        _result(2, 1.7866, 1.2852, -0.2826, 411, 1932.90, OTHER_STARTER_HALT),
-        _result(3, 2.9024, 1.3000, -0.4385, 413, 3182.70, OTHER_STARTER_HALT),
-        _result(4, 4.4373, 1.3649, -0.5146, 419, 5279.70, OTHER_STARTER_HALT),
-        _result(5, 6.5530, 1.4534, -0.6563, 429, 7546.14, OTHER_STARTER_HALT),
+        _result(1, 1.0390, 1.5407, -0.1590, 436, 900.88, OTHER_STARTER_HALT),
+        _result(2, 2.5656, 1.5236, -0.2826, 439, 2404.53, OTHER_STARTER_HALT),
+        _result(3, 4.6651, 1.5437, -0.4385, 441, 4426.94, OTHER_STARTER_HALT),
+        _result(4, 6.9181, 1.5495, -0.5146, 448, 7417.53, OTHER_STARTER_HALT),
+        _result(5, 10.8986, 1.6338, -0.6563, 456, 11320.56, OTHER_STARTER_HALT),
     ),
     "mixed-sleeve-momentum-15m": (
         _result(1, 0.2587, 1.4915, -0.1146, 120, 141.12, OTHER_STARTER_HALT),
