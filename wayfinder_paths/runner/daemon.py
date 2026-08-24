@@ -39,6 +39,11 @@ from wayfinder_paths.runner.schedule import (
 from wayfinder_paths.runner.script_resolver import resolve_script_path
 
 JOB_RESULT_MARKER = "WAYFINDER_JOB_RESULT "
+# Scheduled jobs are background work; run them at the lowest CPU priority so
+# foreground/interactive processes preempt them under contention. Jobs still run
+# full-speed on an idle machine — they only yield when something else needs the
+# CPU. Inherited by any subprocess the job spawns.
+JOB_NICE = 19
 JOB_LOCK_TIMEOUT_SECONDS = 3
 JOB_LOCK_BUSY_MSG = (
     "Runner Daemon lock is busy, no operations were completed, please try again later"
@@ -47,6 +52,15 @@ SESSION_ENV_KEYS = (
     "OPENCODE_SESSION_ID",
     "OPENCODE_SESSIONID",
 )
+
+
+def _deprioritize() -> None:
+    """preexec_fn: drop the child to the lowest CPU priority (see JOB_NICE).
+    Best-effort — a nice() failure must not stop the job from launching."""
+    try:
+        os.nice(JOB_NICE)
+    except OSError:
+        pass
 
 
 def _safe_job_dirname(name: str) -> str:
@@ -594,6 +608,7 @@ class RunnerDaemon:
                     stdout=log_f,
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
+                    preexec_fn=_deprioritize,  # noqa: PLW1509
                 )
         except Exception as exc:  # noqa: BLE001
             err_text = f"spawn failed: {exc}"
