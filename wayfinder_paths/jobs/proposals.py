@@ -355,17 +355,22 @@ def _generate_candidate_report(
         mode = "full"
         probation = bool((proposal.get("proposed_change") or {}).get("probation"))
         try:
-            economic = evaluate_economic_gate(
-                job_id,
-                candidate_dir=candidate_dir,
-                store=store,
-                probation=probation,
+            economic = _economic_gate_with_infra_retry(
+                store, job_id, candidate_dir, probation=probation
             )
-        except Exception as exc:  # noqa: BLE001 — a crashed economic eval must
-            # not break propose; the record carries the REAL enforcement so
-            # the approval gate can fail closed on live-capable jobs
-            # (previously the crash forced "advisory" — the review's central
-            # fail-open finding).
+        except TransientInfrastructureError:
+            # Box condition, not an economic verdict — propagate so the
+            # caller aborts instead of freezing ready=None + a bars/lock
+            # error into the immutable report that the fail-closed approve
+            # gate then ESCALATEs forever (2026-08-24 production incident:
+            # a transiently unlinked .wayfinder symlink made the bars file
+            # unreadable for exactly the economic step).
+            raise
+        except Exception as exc:  # noqa: BLE001 — an evidence-class crashed
+            # economic eval must not break propose; the record carries the
+            # REAL enforcement so the approval gate can fail closed on
+            # live-capable jobs (previously the crash forced "advisory" —
+            # the review's central fail-open finding).
             from wayfinder_paths.jobs.constitution import load_constitution
 
             constitution = load_constitution(store.job_dir(job_id))
@@ -461,17 +466,61 @@ def _compute_lock_freed(store: JobStore, job_id: str, wait_s: float) -> bool:
         return False
 
 
+def _economic_gate_with_infra_retry(
+    store: JobStore,
+    job_id: str,
+    candidate_dir: Path,
+    *,
+    probation: bool,
+) -> dict[str, Any]:
+    """Economic evaluation with the same infra-vs-evidence asymmetry as
+    candidate validation (`_retry_infrastructure_failure`): an
+    infrastructure-class crash (missing bars dataset, lock, OOM, timeout)
+    says nothing about the candidate's economics. Retry ONCE after a bounded
+    wait for the heavy-compute lock; if the box is still unhealthy, raise
+    TransientInfrastructureError so the propose aborts instead of staging an
+    un-approvable report. Evidence-class crashes propagate untouched — the
+    caller stages them with ready=None so the real enforcement rides in the
+    record."""
+    try:
+        return evaluate_economic_gate(
+            job_id, candidate_dir=candidate_dir, store=store, probation=probation
+        )
+    except Exception as exc:  # noqa: BLE001 — classify before deciding
+        if classify_failure(str(exc)) != "infrastructure":
+            raise
+        failure_text = str(exc)
+    wait_s = float(
+        os.environ.get(PROPOSE_LOCK_WAIT_ENV, "") or _PROPOSE_LOCK_WAIT_DEFAULT_S
+    )
+    if _compute_lock_freed(store, job_id, wait_s):
+        try:
+            return evaluate_economic_gate(
+                job_id, candidate_dir=candidate_dir, store=store, probation=probation
+            )
+        except Exception as exc:  # noqa: BLE001 — classify before deciding
+            if classify_failure(str(exc)) != "infrastructure":
+                raise
+            failure_text = str(exc)
+    raise TransientInfrastructureError(
+        "transient infrastructure failure — retry when the box is quiet: "
+        f"economic evaluation failed: {failure_text[:300] or 'unknown'}"
+    )
+
+
 def revalidate_proposal(
     store: JobStore, job_id: str, proposal_id: str
 ) -> dict[str, Any]:
-    """Re-run the full validation/comparison for a PENDING proposal against
-    the SAME staged candidate and base revision, replacing the embedded
-    candidate_report.
+    """Re-run the full validation/comparison/economic evaluation for a
+    PENDING proposal against the SAME staged candidate and base revision,
+    replacing the embedded candidate_report — including its `economic` block.
 
-    Recovery path for reports frozen by a transient infrastructure failure
-    (validation_summary.failure_kind == "infrastructure"): the propose-time
-    snapshot is immutable, so without this the only exit from an
-    infra-failed pending proposal is reject-and-repropose. The candidate and
+    Recovery path for reports frozen by a transient infrastructure failure —
+    either validation (validation_summary.failure_kind == "infrastructure")
+    or an economic evaluation that crashed on a box condition and froze
+    ready=None + the error into the snapshot: the propose-time snapshot is
+    immutable, so without this the only exit from an infra-poisoned pending
+    proposal is reject-and-repropose. The candidate and
     base revision are NOT rebuilt — the same evidence question, asked again
     on a quiet box. If the job's active revision moved past base_revision
     the comparison baseline would drift, so refuse: the owner should reject
