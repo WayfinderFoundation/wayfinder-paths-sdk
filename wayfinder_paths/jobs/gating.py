@@ -88,6 +88,17 @@ def compute_workspace_revision(root: Path) -> str:
             case dict() as data:
                 data.pop("versioning", None)
                 data.pop("updated_at", None)
+                # Operational knobs — wallet routing, capital accounting, and
+                # the paper/live flag — don't change strategy logic, so
+                # editing them at go-live must not orphan the
+                # validation/backtest/preflight stamps.
+                match data.get("script_loop"):
+                    case dict() as script_loop:
+                        script_loop.pop("mode", None)
+                match data.get("execution_params"):
+                    case dict() as execution_params:
+                        execution_params.pop("wallet_label", None)
+                        execution_params.pop("initial_capital", None)
                 digest.update(
                     json.dumps(data, sort_keys=True, default=str).encode("utf-8")
                 )

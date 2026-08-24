@@ -1132,6 +1132,28 @@ def test_create_job_copies_external_script_into_workspace_src(
     assert compute_workspace_revision(store.job_dir(job.id)) != before
 
 
+def test_revision_ignores_operational_knobs(tmp_path: Path) -> None:
+    """wallet_label, initial_capital and script_loop.mode are routing/
+    accounting knobs, not strategy logic — setting them at go-live must not
+    orphan the validation/backtest/preflight stamps."""
+    from wayfinder_paths.jobs.gating import compute_workspace_revision
+
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("go-live-knobs", interval_seconds=3600)
+    store.create_job(job)
+    before = compute_workspace_revision(store.job_dir(job.id))
+
+    job.script_loop.mode = "live"
+    job.execution_params["wallet_label"] = job.id
+    job.execution_params["initial_capital"] = 500.0
+    store.save(job)
+    assert compute_workspace_revision(store.job_dir(job.id)) == before
+
+    job.execution_params["leverage"] = 3
+    store.save(job)
+    assert compute_workspace_revision(store.job_dir(job.id)) != before
+
+
 def test_create_job_defaults_missing_script_to_workspace_src(
     tmp_path: Path,
 ) -> None:
@@ -1388,14 +1410,41 @@ def _write_ideation_artifact(store: JobStore, job_id: str, *, age_hours: float) 
             {
                 "generated_at": stamp.isoformat(),
                 "sources_consulted": [
-                    {"tool": "research_search_alpha", "query": "sol unlocks", "takeaway": "none"},
-                    {"tool": "research_crypto_sentiment", "query": "SOL", "takeaway": "neutral"},
-                    {"tool": "research_social_x_search", "query": "solana catalyst", "takeaway": "fee vote"},
+                    {
+                        "tool": "research_search_alpha",
+                        "query": "sol unlocks",
+                        "takeaway": "none",
+                    },
+                    {
+                        "tool": "research_crypto_sentiment",
+                        "query": "SOL",
+                        "takeaway": "neutral",
+                    },
+                    {
+                        "tool": "research_social_x_search",
+                        "query": "solana catalyst",
+                        "takeaway": "fee vote",
+                    },
                 ],
                 "hypotheses": [
-                    {"title": "A", "thesis": "t", "bucket": "testable", "next_step": "scan"},
-                    {"title": "B", "thesis": "t", "bucket": "starved", "next_step": "needs events feed"},
-                    {"title": "C", "thesis": "t", "bucket": "refuted", "next_step": "no edge in 2024-2026"},
+                    {
+                        "title": "A",
+                        "thesis": "t",
+                        "bucket": "testable",
+                        "next_step": "scan",
+                    },
+                    {
+                        "title": "B",
+                        "thesis": "t",
+                        "bucket": "starved",
+                        "next_step": "needs events feed",
+                    },
+                    {
+                        "title": "C",
+                        "thesis": "t",
+                        "bucket": "refuted",
+                        "next_step": "no edge in 2024-2026",
+                    },
                 ],
             }
         ),
@@ -1438,7 +1487,10 @@ def test_worker_prompt_forces_ideation_when_artifact_stale(tmp_path: Path) -> No
         mode="intervene",
         snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
     )
-    assert "IDEATION SESSION — this wake is a research EXPEDITION" not in routine["dynamic_context"]
+    assert (
+        "IDEATION SESSION — this wake is a research EXPEDITION"
+        not in routine["dynamic_context"]
+    )
 
     # Stale again after ~a day.
     _write_ideation_artifact(store, job.id, age_hours=26)
@@ -1448,7 +1500,10 @@ def test_worker_prompt_forces_ideation_when_artifact_stale(tmp_path: Path) -> No
         mode="intervene",
         snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
     )
-    assert "IDEATION SESSION — this wake is a research EXPEDITION" in stale["dynamic_context"]
+    assert (
+        "IDEATION SESSION — this wake is a research EXPEDITION"
+        in stale["dynamic_context"]
+    )
     assert "26h old" in stale["dynamic_context"]
 
 
@@ -1474,7 +1529,10 @@ def test_ideation_defers_to_ops_priorities(tmp_path: Path) -> None:
             gate={"live_ready": False, "reasons": ["backtest is stale"]},
         ),
     )
-    assert "IDEATION SESSION — this wake is a research EXPEDITION" not in red_gate["dynamic_context"]
+    assert (
+        "IDEATION SESSION — this wake is a research EXPEDITION"
+        not in red_gate["dynamic_context"]
+    )
 
     monitor = _build_worker_prompt_sections(
         store=store,
@@ -1482,7 +1540,10 @@ def test_ideation_defers_to_ops_priorities(tmp_path: Path) -> None:
         mode="monitor",
         snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
     )
-    assert "IDEATION SESSION — this wake is a research EXPEDITION" not in monitor["dynamic_context"]
+    assert (
+        "IDEATION SESSION — this wake is a research EXPEDITION"
+        not in monitor["dynamic_context"]
+    )
 
     apply_wake = _build_worker_prompt_sections(
         store=store,
@@ -1491,7 +1552,10 @@ def test_ideation_defers_to_ops_priorities(tmp_path: Path) -> None:
         snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
         apply_proposal_id="prop-params-update-aaaa1111",
     )
-    assert "IDEATION SESSION — this wake is a research EXPEDITION" not in apply_wake["dynamic_context"]
+    assert (
+        "IDEATION SESSION — this wake is a research EXPEDITION"
+        not in apply_wake["dynamic_context"]
+    )
 
     proposals_dir = store.job_dir(job.id) / "proposals"
     proposals_dir.mkdir(parents=True, exist_ok=True)
@@ -1512,7 +1576,10 @@ def test_ideation_defers_to_ops_priorities(tmp_path: Path) -> None:
         mode="intervene",
         snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
     )
-    assert "IDEATION SESSION — this wake is a research EXPEDITION" not in restage_wake["dynamic_context"]
+    assert (
+        "IDEATION SESSION — this wake is a research EXPEDITION"
+        not in restage_wake["dynamic_context"]
+    )
 
 
 def test_ideation_bookkeeping_journals_artifacts_and_overdue(tmp_path: Path) -> None:
