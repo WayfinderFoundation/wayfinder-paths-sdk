@@ -105,9 +105,10 @@ from wayfinder_paths.mcp.tools.instance_state import (
     visual_set_chart_indicators,
 )
 
-# NOTE: jobs + pattern_match tools are imported lazily inside build_mcp() so a
-# chat box with WAYFINDER_JOBS_ENABLED off never pulls in the heavy jobs/quant
-# packages (pandas + ~71 modules) via this path. See jobs_tools_enabled().
+# NOTE: jobs tools are imported lazily inside build_mcp() so a chat box with
+# WAYFINDER_JOBS_ENABLED off never pulls in the heavy jobs package (pandas +
+# ~71 modules) via this path. See jobs_tools_enabled(). pattern_match tools
+# are prod-live and unconditional (lazy only for CLI-path lightness).
 from wayfinder_paths.mcp.tools.notify import notification_send
 from wayfinder_paths.mcp.tools.polymarket import (
     polymarket_cancel_order,
@@ -182,16 +183,21 @@ def build_mcp(
     # the runner child, OUTSIDE the safety-review hooks — with no approval
     # prompt. On chat-only prod boxes that must stay absent. Import lazily so
     # the heavy jobs/quant packages (pandas + ~71 modules) never load when off.
+    # quant_pattern_match* are prod-live on main (chat users rely on them) —
+    # they import from the quant package, not jobs, and stay UNGATED. Lazy
+    # import only to keep non-MCP CLI paths light.
+    from wayfinder_paths.mcp.tools.pattern_match import (
+        quant_pattern_match,
+        quant_pattern_match_ccxt_proxy,
+    )
+
+    mcp.tool()(quant_pattern_match)
+    mcp.tool()(quant_pattern_match_ccxt_proxy)
+
     if jobs_tools_enabled():
         from wayfinder_paths.mcp.tools.jobs import core_jobs
-        from wayfinder_paths.mcp.tools.pattern_match import (
-            quant_pattern_match,
-            quant_pattern_match_ccxt_proxy,
-        )
 
         mcp.tool()(core_jobs)
-        mcp.tool()(quant_pattern_match)
-        mcp.tool()(quant_pattern_match_ccxt_proxy)
 
     # ─── hyperliquid_* ─────────────────────────────────────────────────
     # Coin naming reference: /using-hyperliquid-adapter/rules/coin-naming.md.

@@ -7,11 +7,13 @@ import time
 
 import pytest
 
-# jobs_v1 tools (core_jobs + quant_pattern_match*) are gated behind
-# WAYFINDER_JOBS_ENABLED (default OFF). Enable it for the registration assertions
-# below that expect the quant tools to be present.
+# core_jobs is gated behind WAYFINDER_JOBS_ENABLED (default OFF). The
+# quant_pattern_match* tools are prod-live on main and deliberately UNGATED —
+# they import from the quant package, not jobs.
 JOBS_GATED_TOOLS = {
     "core_jobs",
+}
+UNGATED_QUANT_TOOLS = {
     "quant_pattern_match",
     "quant_pattern_match_ccxt_proxy",
 }
@@ -81,9 +83,9 @@ def test_mcp_server_starts_and_stays_alive() -> None:
 
 def test_jobs_tools_absent_when_flag_off(monkeypatch: pytest.MonkeyPatch) -> None:
     # Default posture on chat-only prod boxes: WAYFINDER_JOBS_ENABLED unset →
-    # core_jobs + quant_pattern_match* MUST NOT be registered. This is the
-    # permission-inversion guard (core_run_script/core_runner are ask-gated,
-    # core_jobs was not) and the pandas cold-start guard.
+    # core_jobs MUST NOT be registered. This is the permission-inversion guard
+    # (core_run_script/core_runner are ask-gated, core_jobs was not) and the
+    # pandas cold-start guard. pattern_match tools stay — prod-live on main.
     monkeypatch.delenv("WAYFINDER_JOBS_ENABLED", raising=False)
 
     from wayfinder_paths.mcp.server import build_mcp
@@ -95,22 +97,25 @@ def test_jobs_tools_absent_when_flag_off(monkeypatch: pytest.MonkeyPatch) -> Non
     # Non-jobs tools are still present — gating is scoped, not a full shutoff.
     assert "core_run_script" in names
     assert "onchain_swap" in names
+    assert UNGATED_QUANT_TOOLS <= names, (
+        f"prod-live pattern_match tools must stay registered with the flag off: {sorted(UNGATED_QUANT_TOOLS - names)}"
+    )
 
 
 def test_jobs_tool_module_not_imported_when_flag_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Stronger than absence-of-registration: assert the jobs tool module (and its
-    # heavy pandas/quant import chain) is never even imported when the flag is off.
-    # Run in a clean subprocess so a prior test that enabled jobs can't pollute
-    # sys.modules.
+    # heavy pandas import chain via the jobs package) is never even imported when
+    # the flag is off. pattern_match (quant package) is exempt — it registers
+    # unconditionally, matching prod main. Run in a clean subprocess so a prior
+    # test that enabled jobs can't pollute sys.modules.
     monkeypatch.delenv("WAYFINDER_JOBS_ENABLED", raising=False)
     code = (
         "import sys\n"
         "from wayfinder_paths.mcp.server import build_mcp\n"
         "build_mcp()\n"
-        "leaked = [m for m in ('wayfinder_paths.mcp.tools.jobs',\n"
-        "                       'wayfinder_paths.mcp.tools.pattern_match')\n"
+        "leaked = [m for m in ('wayfinder_paths.mcp.tools.jobs', 'wayfinder_paths.jobs.store')\n"
         "          if m in sys.modules]\n"
         "assert not leaked, f'jobs tool modules imported with flag off: {leaked}'\n"
         "print('OK')\n"
