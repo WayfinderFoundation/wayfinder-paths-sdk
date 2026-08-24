@@ -80,7 +80,9 @@ from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.strategies import library_catalog
 from wayfinder_paths.jobs.sync import (
     apply_execution_leverage,
+    apply_initial_capital,
     apply_script_mode,
+    apply_wallet_label,
     snapshot_job,
     sync_all_jobs,
 )
@@ -1412,6 +1414,36 @@ def set_script_mode_cmd(job_id: str, mode: str, set_by: str, force: bool) -> Non
 def set_leverage_cmd(job_id: str, leverage: float) -> None:
     try:
         result = apply_execution_leverage(job_id, leverage)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="set-wallet-label",
+    help="Bind the funded wallet a live job trades from "
+    "(execution_params.wallet_label). Takes effect next tick, no recompile.",
+)
+@click.argument("job_id")
+@click.argument("label")
+def set_wallet_label_cmd(job_id: str, label: str) -> None:
+    try:
+        result = apply_wallet_label(job_id, label)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="set-initial-capital",
+    help="Operator accounting knob: set execution_params.initial_capital to "
+    "what the strategy wallet actually holds (USD). Takes effect next tick.",
+)
+@click.argument("job_id")
+@click.argument("amount", type=float)
+def set_initial_capital_cmd(job_id: str, amount: float) -> None:
+    try:
+        result = apply_initial_capital(job_id, amount)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     _echo_json({"ok": True, "result": result})
