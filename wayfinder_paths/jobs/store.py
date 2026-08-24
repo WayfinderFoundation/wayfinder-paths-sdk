@@ -441,10 +441,14 @@ class JobStore:
             reasons = "; ".join(gate.get("reasons") or ["unknown"])
             raise ValueError(f"candidate gate is not live-ready: {reasons}")
         economic = report.get("economic") or {}
-        self._ensure_governance_gate(job_id, economic)
+        self._ensure_governance_gate(
+            job_id, economic, proposal_id=str(proposal.get("proposal_id") or "")
+        )
         self._ensure_candidate_matches_report(job_id, proposal, report)
 
-    def _ensure_governance_gate(self, job_id: str, economic: dict[str, Any]) -> None:
+    def _ensure_governance_gate(
+        self, job_id: str, economic: dict[str, Any], *, proposal_id: str = ""
+    ) -> None:
         """Fail-closed economic gating for live-capable jobs.
 
         The old semantics blocked only on an explicit ready=False under a
@@ -495,10 +499,25 @@ class JobStore:
                 economic.get("reasons")
                 or ["economic evidence unavailable (ready is not True)"]
             )
+            # Recovery affordance: a frozen economic block whose failure text
+            # is infrastructure-class (missing bars, lock, OOM) is a box
+            # condition frozen at propose time, not economic evidence — name
+            # the in-place fix instead of leaving an un-approvable pending
+            # proposal with no exit (2026-08-24 production incident). The
+            # reasons text already classifies as infrastructure, so the added
+            # wording cannot flip an evidence rejection's classification.
+            recovery = ""
+            if proposal_id and classify_failure(reasons) == "infrastructure":
+                recovery = (
+                    " — the economic evaluation failed on a transient box "
+                    "condition, not real evidence; run: wayfinder job "
+                    f"revalidate {safe_job_id(job_id)} {proposal_id} to "
+                    "re-run it against the same staged candidate"
+                )
             raise ValueError(
                 "ESCALATE: blocking governance requires economic_ready=True "
                 f"for a live-capable job; got {economic.get('ready')!r}: "
-                f"{reasons}"
+                f"{reasons}{recovery}"
             )
 
     def _job_is_live_capable(self, job_id: str) -> bool:

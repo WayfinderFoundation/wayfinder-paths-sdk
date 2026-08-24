@@ -261,7 +261,18 @@ def evaluate_economic_gate(
     )
     if baseline_script is None or candidate_script is None:
         return _economic_unavailable(constitution, "no script entrypoint", probation)
-    dataset = _load_dataset(candidate_root, spec, candidate_yaml)
+    try:
+        dataset = _load_dataset(candidate_root, spec, candidate_yaml)
+    except FileNotFoundError:
+        # Candidate bundles carry workspace/ + job.yaml only. Jobs that keep
+        # their dataset at the JOB root (results/backtest/input_bars.json —
+        # the standard fetch-dataset location) would otherwise never resolve
+        # bars here and every propose would die on "No backtest bars found".
+        # Same fallback candidate validation applies; if the job root ALSO
+        # has no bars the error propagates — with the propose-time
+        # infra-abort, a dataset that validated moments ago but vanished for
+        # the economic step is a box condition, not evidence.
+        dataset = _load_dataset(root, spec, candidate_yaml)
 
     evaluation = paired_fold_evaluation(
         baseline_script=baseline_script,

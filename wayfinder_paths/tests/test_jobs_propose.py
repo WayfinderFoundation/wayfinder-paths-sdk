@@ -22,8 +22,10 @@ from wayfinder_paths.jobs.application import (
     validate_application_candidate,
 )
 from wayfinder_paths.jobs.backtest_artifacts import load_backtest_view
+from wayfinder_paths.jobs.constitution import load_constitution
 from wayfinder_paths.jobs.failures import TransientInfrastructureError
 from wayfinder_paths.jobs.gating import evaluate_live_gate
+from wayfinder_paths.jobs.governance import migrate_from_constitution
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.proposals import (
     propose_change,
@@ -80,9 +82,24 @@ def test_propose_builds_full_candidate_report(tmp_path: Path) -> None:
 
 
 def test_proposal_is_automatically_linked_to_open_remediation_case(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, job_id, _ = _make_job(tmp_path)
+    # This test pins the LINK, not economic readiness: the 8-bar fixture's
+    # real economic verdict is ready=False (insufficient history), which
+    # correctly marks the case "blocked" — neutralize it so the linked case
+    # lands in proposal_pending.
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.proposals.evaluate_economic_gate",
+        lambda *a, **k: {
+            "ready": None,
+            "reasons": ["economic evaluation unavailable: neutralized in test"],
+            "enforcement": "advisory",
+            "constitution_revision": None,
+            "status": "unavailable",
+            "escalate": True,
+        },
+    )
     sync_remediation_with_health(
         store,
         job_id,
@@ -501,7 +518,7 @@ def test_restage_gate_escalate_keeps_proposal_approved(
         "or execution_spec.validation.fixture_bars."
     )
 
-    def raising_governance_gate(self, job_id, economic):  # noqa: ANN001
+    def raising_governance_gate(self, job_id, economic, **_kwargs):  # noqa: ANN001
         raise escalate
 
     monkeypatch.setattr(JobStore, "_ensure_governance_gate", raising_governance_gate)
@@ -729,3 +746,195 @@ def test_revalidate_refuses_missing_candidate(tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError, match="no longer exists"):
         revalidate_proposal(store, job_id, pid)
+
+
+# ── economic evaluation: infra-vs-evidence at propose time ───────────────────
+# Production incident (2026-08-24, majors-5m-lab, prop-params-update-7bfa8f3f):
+# a ~35-minute candidate backtest PASSED, then the ECONOMIC evaluation crashed
+# on a transiently unreadable bars dataset (.wayfinder symlink briefly
+# unlinked by an image roll). The pre-fix propose staged the proposal anyway
+# with validation "passed" but economic.ready=None + the bars error frozen
+# into the immutable snapshot — the fail-closed approve gate then ESCALATEd
+# forever. Economic infra crashes must abort propose exactly like
+# infra-failed validation; evidence crashes still stage; revalidate replaces
+# the poisoned block in place; the gate names the recovery.
+
+_BARS_ERROR = (
+    "No backtest bars found. Provide results/backtest/input_bars.json, "
+    "workspace/config/backtest_bars.json, execution_scenario_plan bars, or "
+    "execution_spec.validation.fixture_bars."
+)
+
+
+def _make_live_blocking(
+    store: JobStore, job_id: str, root: Path, tmp_path: Path
+) -> str:
+    """Blocking constitution + recorded forward runs: the fail-closed
+    governance gate branch. Returns the committed constitution revision."""
+    (root / "constitution.yaml").write_text("enforcement: blocking\n")
+    migrate_from_constitution(tmp_path, job_id, root)
+    summary = root / "results" / "forward" / "summary.json"
+    summary.parent.mkdir(parents=True, exist_ok=True)
+    summary.write_text(json.dumps({"runs": {"count": 3}}), encoding="utf-8")
+    return str(load_constitution(root)["revision"])
+
+
+def test_economic_infra_crash_aborts_propose_after_bounded_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, job_id, root = _make_job(tmp_path)
+    monkeypatch.setenv("WAYFINDER_PROPOSE_LOCK_WAIT_SECONDS", "0.1")
+    calls: list[int] = []
+
+    def missing_bars(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(1)
+        raise RuntimeError(_BARS_ERROR)
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.proposals.evaluate_economic_gate", missing_bars
+    )
+
+    with pytest.raises(
+        TransientInfrastructureError, match="retry when the box is quiet"
+    ):
+        _propose_params(store, job_id)
+
+    assert len(calls) == 2, "exactly one bounded retry"
+    assert list((root / "proposals").glob("*.json")) == [], "no proposal staged"
+    assert not list((root / "applications").glob("*/candidate")), "candidate cleaned"
+    journal = (root / "journal.jsonl").read_text(encoding="utf-8")
+    assert "proposal_propose_aborted" in journal
+    assert "proposal_created" not in journal
+
+
+def test_economic_infra_crash_skips_retry_while_lock_still_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Box still busy after the bounded wait: the retry is pointless — abort
+    with one economic evaluation attempt, not two. The lock is grabbed
+    INSIDE the failing evaluation (after validation's own backtests released
+    it) so only the economic retry wait sees a busy box."""
+    store, job_id, root = _make_job(tmp_path)
+    monkeypatch.setenv("WAYFINDER_PROPOSE_LOCK_WAIT_SECONDS", "0.1")
+    calls: list[int] = []
+    holder = (tmp_path / ".wayfinder" / "compute.lock").open("a+")
+
+    def missing_bars_while_busy(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(1)
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        raise RuntimeError(_BARS_ERROR)
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.proposals.evaluate_economic_gate",
+        missing_bars_while_busy,
+    )
+    try:
+        with pytest.raises(TransientInfrastructureError):
+            _propose_params(store, job_id)
+    finally:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+        holder.close()
+
+    assert len(calls) == 1
+    assert list((root / "proposals").glob("*.json")) == []
+
+
+def test_economic_evidence_crash_still_stages_error_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An evidence-class economic crash keeps today's behavior: stage with
+    ready=None and the error in reasons — a real economic verdict (or its
+    absence) belongs in the report for the gate to fail closed on."""
+    store, job_id, root = _make_job(tmp_path)
+
+    def boom(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("paired fold evaluation crashed: bad candidate params")
+
+    monkeypatch.setattr("wayfinder_paths.jobs.proposals.evaluate_economic_gate", boom)
+
+    proposal = _propose_params(store, job_id)
+
+    economic = proposal["candidate_report"]["economic"]
+    assert economic["ready"] is None
+    assert economic["status"] == "error"
+    assert economic["escalate"] is True
+    assert "economic evaluation failed" in economic["reasons"][0]
+    pid = proposal["proposal_id"]
+    assert (root / "proposals" / f"{pid}.json").exists()
+    journal = (root / "journal.jsonl").read_text(encoding="utf-8")
+    assert "proposal_created" in journal
+    assert "proposal_propose_aborted" not in journal
+
+
+def test_revalidate_refreshes_poisoned_economic_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 2026-08-24 incident regression-pinned end to end at unit level:
+    validation passed but a pre-fix propose froze economic.ready=None + the
+    bars error into the snapshot of a live-capable blocking job. The approve
+    gate ESCALATEs naming the recovery; revalidate re-runs the economic
+    evaluation and replaces the block; approval then passes."""
+    store, job_id, root = _make_job(tmp_path)
+    proposal = _propose_params(store, job_id)
+    pid = proposal["proposal_id"]
+
+    revision = _make_live_blocking(store, job_id, root, tmp_path)
+    proposal["candidate_report"]["economic"] = {
+        "ready": None,
+        "reasons": [f"economic evaluation failed: {_BARS_ERROR}"[:300]],
+        "enforcement": "blocking",
+        "constitution_revision": revision,
+        "status": "error",
+        "escalate": True,
+    }
+    store.write_proposal(job_id, proposal)
+
+    with pytest.raises(ValueError, match="wayfinder job revalidate") as excinfo:
+        store.approve_proposal(job_id, pid)
+    assert "transient box condition" in str(excinfo.value)
+    assert pid in str(excinfo.value)
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.proposals.evaluate_economic_gate",
+        lambda *a, **k: {
+            "ready": True,
+            "reasons": [],
+            "enforcement": "blocking",
+            "constitution_revision": revision,
+            "status": "ok",
+        },
+    )
+
+    revalidated = revalidate_proposal(store, job_id, pid)
+
+    economic = revalidated["candidate_report"]["economic"]
+    assert economic["ready"] is True
+    assert economic["reasons"] == []
+    assert "No backtest bars" not in json.dumps(revalidated["candidate_report"])
+
+    approved = store.approve_proposal(job_id, pid)
+    assert approved["status"] == "approved"
+
+
+def test_gate_escalate_names_revalidate_only_for_infra_failures(
+    tmp_path: Path,
+) -> None:
+    """An evidence-class frozen economic verdict must NOT be advertised as
+    recoverable-by-revalidate — that message is reserved for box conditions."""
+    store, job_id, root = _make_job(tmp_path)
+    proposal = _propose_params(store, job_id)
+    pid = proposal["proposal_id"]
+
+    revision = _make_live_blocking(store, job_id, root, tmp_path)
+    proposal["candidate_report"]["economic"] = {
+        "ready": False,
+        "reasons": ["median paired delta below constitution floor"],
+        "enforcement": "blocking",
+        "constitution_revision": revision,
+        "status": "ok",
+    }
+    store.write_proposal(job_id, proposal)
+
+    with pytest.raises(ValueError, match="ESCALATE") as excinfo:
+        store.approve_proposal(job_id, pid)
+    assert "revalidate" not in str(excinfo.value)
