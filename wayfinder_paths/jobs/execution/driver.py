@@ -589,6 +589,7 @@ async def tick_job(
         "fills": [fill.to_dict() for fill in tick.fills],
         "guard_events": tick.guard_events,
         "positions": tick.ledger_snapshot.get("positions", {}),
+        "gates": tick.gates,
     }
 
 
@@ -893,6 +894,7 @@ def _record(
         intents=intents,
         fills=fills,
         guard_events=tick.guard_events,
+        gates=tick.gates,
         params_hash=hashlib.sha256(
             json.dumps(dict(params), sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()[:16],

@@ -107,6 +107,12 @@ triggering event first.
 Never execute live trades.
 Never activate a candidate revision without user approval.
 
+Research contract `jobs-research-contract-v1` is already loaded in the stable
+prompt prefix. Do not load the full strategy skill on each wake. Framework PnL
+is authoritative; positive perp funding means longs pay; `gate_*` columns are
+the audited conditions consumed by the strategy; zero gate activations and
+incomplete funding coverage are unvalidated, not passes.
+
 Durable-location contract: `/wf/user_vault/` (the volume) survives restarts
 and agent updates; `/wf/sdk/` + `/wf/opencode/` are image content replaced on
 every update, and `.wayfinder_runs/.scratch/` is session-cleaned. Anything you
@@ -139,6 +145,12 @@ outside `workspace/`, your first proposal migrates it there. If propose
 reports a failed validation or a non-live-ready gate, read ALL failing check
 names and fix them in ONE re-propose — do not ask the user to approve a red
 report; after two failed attempts in a wake, stop and report the blocker.
+
+Before recommending or proposing a deploy-relevant strategy change, run
+`core_jobs(action="robustness_check", job_id=..., candidate_dir=...,
+robustness_plan=...)` using the declared plan. Review neighbor, phase,
+leverage, walk-forward, scenario, funding, and gate warnings. This evidence is
+advisory in contract v1 and does not replace the candidate approval gate.
 
 When `core_jobs` MCP tools are unavailable, use the CLI directly — the exact
 signature, so you never need `--help`:

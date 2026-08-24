@@ -14,6 +14,7 @@ from typing import Any
 
 import pandas as pd
 
+from wayfinder_paths.jobs.execution.gates import summarize_gate_diagnostics
 from wayfinder_paths.jobs.execution.optimize import run_optuna_search
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
@@ -183,6 +184,11 @@ def _slice(
             **dataset.metadata,
             "wf_window": [str(timestamps[start]), str(timestamps[end - 1])],
         },
+        [
+            event
+            for event in dataset.market_events
+            if timestamps[start] <= pd.Timestamp(event.timestamp) <= timestamps[end - 1]
+        ],
     )
 
 
@@ -208,7 +214,7 @@ def _test_window_stats(
         for series in result.visualization["series"]
         if series["kind"] == "market_price"
     }
-    return _stats(
+    stats = _stats(
         equity,
         trades,
         positions,
@@ -217,6 +223,9 @@ def _test_window_stats(
         guard_events=guard_events,
         price_series=price_series,
     )
+    runs = [row for row in result.trace["runs"] if in_window(row)]
+    stats["gate_diagnostics"] = summarize_gate_diagnostics(runs, equity, positions)
+    return stats
 
 
 def _summary(fold_rows: list[dict[str, Any]], rank_by: str) -> dict[str, Any]:

@@ -834,7 +834,7 @@ def fetch_funding_features(
 
     declared = False
     target = spec_path if spec_path is not None else root / "execution_spec.json"
-    if target.exists():
+    if rows and target.exists():
         spec_doc = json.loads(target.read_text(encoding="utf-8"))
         contract = spec_doc.setdefault("data_contract", {})
         features = contract.setdefault("features", [])
@@ -854,6 +854,18 @@ def fetch_funding_features(
         "feature_declared_now": declared,
         "metadata": metadata,
     }
+    missing_symbols = sorted(
+        symbol
+        for symbol in symbols
+        if int((metadata.get("per_symbol") or {}).get(symbol) or 0) == 0
+    )
+    result["missing_symbols"] = missing_symbols
+    result["symbol_coverage_fraction"] = round(
+        (len(symbols) - len(missing_symbols)) / len(symbols), 3
+    )
+    warnings: list[str] = []
+    if missing_symbols:
+        warnings.append("no funding history for symbols: " + ", ".join(missing_symbols))
     stamps = sorted(str(row.get("timestamp")) for row in rows)
     if stamps:
         first = pd.Timestamp(stamps[0])
@@ -864,10 +876,12 @@ def fetch_funding_features(
         result["days_requested"] = days
         result["days_received"] = days_received
         if days_received < 0.9 * float(days):
-            result["warning"] = (
+            warnings.append(
                 f"funding history covers {days_received} days of {days} "
                 "requested — bars outside this span carry NaN funding, which "
                 "biases any funding-vs-price-signal comparison. Match the "
                 "candle window or note the shortfall in your analysis."
             )
+    if warnings:
+        result["warning"] = " ".join(warnings)
     return result

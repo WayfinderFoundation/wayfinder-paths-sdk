@@ -23,6 +23,7 @@ from wayfinder_paths.jobs.execution.engine import (
     run_tick,
 )
 from wayfinder_paths.jobs.execution.features import apply_precompute
+from wayfinder_paths.jobs.execution.gates import summarize_gate_diagnostics
 from wayfinder_paths.jobs.execution.primitives import (
     DEFAULT_INITIAL_CAPITAL,
     REDUCE_ONLY_ACTIONS,
@@ -38,24 +39,48 @@ from wayfinder_paths.jobs.execution.primitives import (
     bar_interval_seconds,
 )
 from wayfinder_paths.jobs.execution.validation import validate_execution_trace
-from wayfinder_paths.jobs.execution.venues import VenueCapabilities, VenueState
+from wayfinder_paths.jobs.execution.venues import (
+    MarketEvent,
+    VenueCapabilities,
+    VenueState,
+)
 
 
 @dataclass
 class PreparedExecutionDataset:
     bars: CompletedBarsView
     metadata: dict[str, Any] = field(default_factory=dict)
+    market_events: list[MarketEvent] = field(default_factory=list)
 
     @classmethod
     def from_rows(
-        cls, rows: list[Mapping[str, Any]], metadata: Mapping[str, Any] | None = None
+        cls,
+        rows: list[Mapping[str, Any]],
+        metadata: Mapping[str, Any] | None = None,
+        market_events: list[MarketEvent | Mapping[str, Any]] | None = None,
     ) -> PreparedExecutionDataset:
         return cls(
-            CompletedBarsView.from_rows(rows), dict(metadata) if metadata else {}
+            CompletedBarsView.from_rows(rows),
+            dict(metadata) if metadata else {},
+            [
+                event
+                if isinstance(event, MarketEvent)
+                else MarketEvent(
+                    kind=str(event["kind"]),
+                    symbol=str(event["symbol"]),
+                    timestamp=str(event["timestamp"]),
+                    payload=dict(event.get("payload") or {}),
+                )
+                for event in (market_events or [])
+            ],
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {"bars": self.bars.to_rows(), "metadata": self.metadata}
+        return {
+            "bars": self.bars.to_rows(),
+            "metadata": self.metadata,
+            "market_events": [event.to_dict() for event in self.market_events],
+        }
 
 
 @dataclass
@@ -416,7 +441,9 @@ def simulate_execution(
     # quick_bars-truncated, feature-merged) dataset, so the replay's per-bar
     # decide() just reads columns instead of re-deriving indicators.
     dataset = PreparedExecutionDataset(
-        apply_precompute(strategy, dataset.bars), dict(dataset.metadata)
+        apply_precompute(strategy, dataset.bars),
+        dict(dataset.metadata),
+        list(dataset.market_events),
     )
     broker = BacktestBroker(
         fee_bps=_resolve_fee_bps(params_data, strategy),
@@ -466,6 +493,9 @@ def simulate_execution(
     # mark_to_market_equity() (what decide() sees), which already uses the view's
     # latest close.
     last_close_by_symbol: dict[str, float] = {}
+    events_by_timestamp: dict[str, list[MarketEvent]] = defaultdict(list)
+    for event in dataset.market_events:
+        events_by_timestamp[pd.Timestamp(event.timestamp).isoformat()].append(event)
 
     async def _run_simulation() -> None:
         for index, timestamp in enumerate(dataset.bars.timestamps):
@@ -505,6 +535,7 @@ def simulate_execution(
                 capacity=capacity,
                 trace=trace,
                 liquidation=liquidation,
+                events=events_by_timestamp.get(timestamp_iso, []),
             )
             tick_ms.append((time.perf_counter() - tick_start) * 1000.0)
             if total_bars and (index + 1) % progress_every == 0:
@@ -547,6 +578,9 @@ def simulate_execution(
         params=params_data,
         guard_events=trace.guard_events,
         price_series=price_series,
+    )
+    stats["gate_diagnostics"] = summarize_gate_diagnostics(
+        trace.runs, equity_curve, positions
     )
     drawdown_curve = _drawdown_curve(equity_curve)
     visualization = {
@@ -959,7 +993,9 @@ def _process_run(
 ) -> ExecutionBacktestResult:
     script_entrypoint, dataset_payload, spec, params = payload
     dataset = PreparedExecutionDataset.from_rows(
-        dataset_payload["bars"], dataset_payload["metadata"]
+        dataset_payload["bars"],
+        dataset_payload["metadata"],
+        dataset_payload.get("market_events"),
     )
     return simulate_execution(script_entrypoint, dataset, spec, params)
 

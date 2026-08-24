@@ -1,198 +1,89 @@
 ---
 name: developing-jobs-v1-strategies
-description: Build, backtest, diagnose, and iterate a jobs_v1 execution strategy end to end (decide(ctx) contract, windowed indicators to keep backtests fast, --quick sweeps, backtest-diagnose). Load this before creating a trading job/strategy.
-metadata:
-  tags: jobs, jobs_v1, strategy, backtest, execution, decide, hyperliquid
+description: Build, backtest, diagnose, validate, and prepare jobs_v1 trading strategies for deployment. Use for recurring strategies, starter-strategy evaluation, robustness checks, funding-aware perp research, or jobs_v1 strategy PRs.
 ---
 
-## When to use
+# Developing jobs_v1 strategies
 
-Load this when the user wants a **recurring, backtestable trading strategy** (e.g. "create a strategy that shorts X on a breakout"). This is the jobs_v1 execution framework — one `decide()` runs in backtest, paper, and live.
+Contract: `jobs-research-contract-v1`.
 
-Do NOT hand-write the strategy into `.wayfinder_runs/` (that's one-off scratch scripts, `core_run_script`). Do NOT copy `wayfinder_paths/strategies/apex_gmx_velocity/` — that's the **old `Strategy` base class**, not jobs_v1.
+Load this skill once per session. If the session or compaction summary already
+records the contract above, keep using it and open only the rule page needed for
+the current step; do not reload this file on every iteration.
 
-## The loop (use exactly these commands)
+## Core loop
 
-```
+Use the framework's `core_jobs` actions when available. The CLI equivalents are
+shown for local development:
+
+```text
 wayfinder job create <id> --script <strategy.py> --execution-contract jobs_v1 --interval 3600 --initial-capital 1000
-# create echoes script_entrypoint (.wayfinder/jobs/<id>/workspace/src/<file>.py) — write the strategy THERE;
-# only workspace/ + job.yaml are versioned and proposable, so code anywhere else can't be promoted
-# COLD START RULE: warmup gates on ctx.bar_index (data in the view), cadence on ctx.every_n_bars(n)
-# (epoch-aligned) — NEVER tick counters in strategy_state and never bar_index % n: counters re-warm on
-# every state reset (job goes dark for a full warmup period) and bar_index is constant in live's window
-# edit execution_spec.json (data_contract.symbols + bar_interval) and the strategy
-wayfinder job fetch-dataset <id> --days 720 --source ccxt --exchange binance
-# STEP 0 — validate the IDEA before building on it (see rules/strategy-search.md):
-wayfinder job signal-scan <id> --timeframes 1h,4h,1d         # the WHOLE canonical trigger library, both directions, BH q-gate + folds, reserves a 15% holdout — run FIRST
-wayfinder job strategy-library                               # shipped reference strategies (ports of live bots) — check before re-implementing one
-wayfinder job pair-check <id> --symbols ETH,SOL --days 720    # any pair/long-short idea: the admission gate
-wayfinder job signal-check <id> --column entry_signal --direction short  # ONE custom entry — DECLARE the side; for MULTIPLE composed ideas use workspace signals + signal-scan instead (pooled BH; serial one-off checks are p-hacking)
-wayfinder job rank-check <id> --column mom_score             # any basket ranking: does it order forward returns?
-wayfinder job holdout-check <id> --signal new_low_5 --horizon 24 --direction short  # ONE confirmation of a FROZEN candidate on the reserved tail
-wayfinder job backtest <id> --quick 1000      # fast iteration: last 1000 bars, ~2 KB summary
-wayfinder job backtest-diagnose <id>          # READ next_step + recommendations — the framework tells you what to try
-# apply the ONE change next_step names, repeat backtest --quick / diagnose (see "the improve loop" below)
-# THE decision step — tune AND validate out-of-sample in one shot (never trust an in-sample grid):
+wayfinder job fetch-dataset <id> --days 720 --source ccxt --exchange hyperliquid --include-funding
+wayfinder job signal-scan <id> --timeframes 1h,4h,1d
+wayfinder job backtest <id> --quick 1000
+wayfinder job backtest-diagnose <id>
 wayfinder job experiments <id> --grid grid.json --wf-test-bars 240 --wf-folds 4
-wayfinder job backtest <id>                   # full-history confirmation of the promoted params
+wayfinder job robustness-check <id> --plan robustness.json
+wayfinder job backtest <id>
 ```
 
-**Step 0 verdicts:** `pair-check` REJECT means the pair does not form a
-tradeable spread — no parameter rescues it; offer a structurally different
-idea instead (that is a success outcome). PASS hands you `suggested`
-(hedge_ratio — never size 1:1 — lookback and time-stop from the half-life).
-`signal-scan` event-studies every canonical trigger (both directions, across
-timeframes) with BH q-values, 4-fold stability, and a reserved holdout tail —
-PROMOTE means q ≤ 0.10 + ≥3/4 folds, not raw t ≥ 2; read `direction` from the
-t-stat sign: a "failed short" trigger with t ≥ +2 is a LONG candidate. Take
-at most 3 promoted cards forward (CORE/ADJACENT/DIVERGENT), build the minimal
-fixed-time-exit version at the measured horizon first (path_stats then picks
-the exit family), and spend `holdout-check` exactly once per frozen candidate.
-`signal-check` reports forward returns after signal fires vs the series'
-unconditional drift (events decimated to horizon spacing): no horizon with
-|t| ≥ 2 in the declared direction and n ≥ 30 means the entry has no
-predictive power — change the idea, not the parameters. **Signal vs system:**
-these checks test the TRIGGER; a complete trade system (gates + holds +
-asymmetric exits + re-arm + stop) can still earn its keep when the raw
-trigger fails — judge a fully-specified system by full backtest +
-walk-forward, never by the trigger alone. **Replicating a known/live
-strategy:** `strategy-library` first (one-line re-export beats prose
-transcription); ambiguous specs get BOTH readings tested; a 0-for-N result on
-a system the user says works live means your implementation is wrong
-(`rules/strategy-search.md` §0b). Full search
-methodology (breadth-before-depth, depth budget, validation ladder, honest
-stops): `rules/strategy-search.md`. Multi-leg / pair / basket patterns
-(simultaneous legs, hedge-ratio sizing, `target_weights_to_intents`, the four
-documented-edge families): `rules/pairs-and-baskets.md`.
+For every iteration:
 
-The `backtest` output is a compact stats summary (`stats` + `profile` + artifact paths). Add `--full` only if you truly need the raw curves; they're always on disk (`job backtest-view`).
+1. Validate the idea before tuning it. Use `strategy-library` before
+   reimplementing a shipped strategy, `pair-check` for pairs/baskets,
+   `signal-scan` for trigger discovery, `signal-check` for one declared custom
+   trigger, and `rank-check` for cross-sectional ranking.
+2. Put causal, vectorized indicator work in `precompute(frames)`. Keep
+   `decide(ctx)` limited to reading the current bounded view and emitting
+   intents. Use shared helpers in `wayfinder_paths.jobs.indicators` and
+   `signal_library` before creating another implementation.
+3. Iterate with quick backtests. Apply one diagnosed change at a time and keep
+   it only when the framework stats improve.
+4. Tune and validate with experiments plus walk-forward. A single backtest is
+   development evidence, not proof of an edge.
+5. Run the declared robustness plan before recommending deployment. Treat
+   zero-activation gates and incomplete funding history as unvalidated, not as
+   passes.
+6. Only promote parameters and offer deployment after out-of-sample and
+   robustness evidence are acceptable. Never move funds or enable live mode
+   without explicit user approval.
 
-## The improve loop — read the recommendations, change ONE thing (don't thrash)
+## Strategy invariants
 
-`backtest-diagnose` returns a **`next_step`** (the single most important action) and a ranked **`recommendations`** list, each with the `evidence` (the actual stats/buckets) that triggered it — computed by the framework, so you never hand-roll `json.load(latest.json)` one-liners again. The loop that keeps churn low:
+- The strategy lives in `workspace/src/`; only `workspace/` and `job.yaml` are
+  versioned and proposable.
+- Use `ctx.bar_index` for warmup and `ctx.every_n_bars(n)` for cadence. Do not
+  keep tick counters in strategy state or use `bar_index % n`.
+- `precompute` must be causal: rolling, lagged, expanding, or EWM transforms
+  only. No future shifts, centered windows, or full-sample normalization.
+- Name observable gates `gate_*` and attach the exact gate column consumed by
+  `decide()`. A separately reconstructed audit proxy is not acceptable.
+- Positive perp funding means longs pay shorts. Fetch funding with the candle
+  dataset when possible and disclose missing symbols or history.
+- Framework stats, fills, fees, funding, and drawdowns are the source of truth.
+  Do not hand-recompute strategy PnL in a scratch script.
+- Put `metadata={"exit_reason": "..."}` on close intents so diagnosis can
+  attribute outcomes.
+- Model fees and slippage. Use realistic leverage and sweep it against
+  drawdown/liquidation risk rather than selecting it from return alone.
+- Recent-run scenarios used to design or select a candidate are development
+  evidence. They cannot also be its audit holdout.
+- Robustness results are advisory in contract v1 and do not bypass the existing
+  candidate approval gate.
 
-1. Run `backtest --quick`, then `backtest-diagnose`.
-2. Read `next_step`. Apply **exactly one** change it names (widen the stop, add an entry filter, cut leverage, loosen entry…). Changing three things at once means you can't tell which one helped.
-3. Re-run `backtest --quick` and compare the headline. Kept the gain? Keep the change. Otherwise revert it.
-4. Repeat until `recommendations[0].severity == "validate"` (a promising in-sample result) — then go to the decision step.
+## Load details only when needed
 
-Severity ladder: `blocking` (too few trades / liquidated — fix first, nothing downstream matters) → `high` (no edge / poor payoff) → `medium` (trend-riding / costs / stop bleed) → `low` (side or session skew) → `validate` (good enough to prove out-of-sample). A `blocking` rec means **stop tuning params** and fix that first.
+- Designing or evolving an idea: `rules/strategy-search.md`
+- Pairs, baskets, breadth, or multi-leg sizing:
+  `rules/pairs-and-baskets.md`
+- Gates, funding coverage, scenario roles, or robustness interpretation:
+  `rules/robustness-and-gates.md`
+- Candidate proposals, agent modes, and post-apply monitoring:
+  `rules/deploy-and-agent-loop.md`
+- Actual live activation, funding, halt, or withdrawal:
+  `rules/going-live.md`
 
-**Limited churn:** iterate on `--quick`, one change per loop, and let `job experiments` do parameter sweeps in one CPU-safe pass. A full-history `backtest` is only for confirming a promoted candidate — re-running it after every tweak is the churn that pegs the box. If `--quick 1000` takes more than ~1–2 minutes, lower `warmup_bars` or the quick window; that's a signal, not something to wait out.
-
-## Judge a strategy out-of-sample, or you're just curve-fitting
-
-A single backtest tunes and scores on the **same** data — its Sharpe / profit factor are **not evidence of an edge**. A "great" in-sample result (Sharpe 6+, PF 10+) almost always means you overfit. The only number that means anything is **out-of-sample**:
-
-- Run `job experiments <id> --grid grid.json --wf-test-bars 240 --wf-folds 4`. This picks params on each fold's train window and scores them on the **held-out** window it never saw. It defaults to a **bounded rolling** train window, so it stays fast (seconds–low minutes) even on a full dataset — don't pass `--wf-anchored` (expanding window, ~4x slower) unless you specifically want anchored folds, and don't hand-shrink the dataset to make it finish.
-- Read the walk-forward report and judge on: **`decay_ratio`** (OOS mean ÷ IS mean — want it near 1; ≪ 1 = overfit), **`oos_positive_folds`** (want most folds profitable OOS), and OOS mean return vs IS mean. If OOS collapses vs IS, the strategy is fit to noise — go back to the idea, don't tune harder.
-- Also sanity-check the *regime*: if you're shorting an asset that fell 50% over the window, most of the "edge" is the trend, not the strategy — confirm it holds on a flat/up stretch too.
-- **Model costs.** Set `fee_bps` / `slippage_bps` in `execution_params`; a strategy with hundreds of trades and `total_fees: 0` is fiction.
-
-## Ship it — offer to deploy once (and only once) it validates
-
-When a candidate clears walk-forward (`decay_ratio` near 1, most `oos_positive_folds`), it's earned a deploy. Do this, don't skip to it:
-
-1. `wayfinder job promote-params <id> --grid <grid_id>` — writes the winning params into the job's `execution_params`.
-2. `wayfinder job backtest <id>` — one full-history confirmation on the promoted params.
-3. **Offer the deploy to the user** — summarize the OOS numbers (net, decay_ratio, oos_positive_folds, max drawdown) and *ask two things*: go-live yes/no, AND the watch level (agent mode) in plain English — just run it (`off`) / watch and report (`monitor`, recommended) / watch and suggest changes for approval (`intervene`) / automatic within limits (`auto`). Mode semantics + the proposal lifecycle: `rules/deploy-and-agent-loop.md`. Going live is fund-moving; never enable it unprompted.
-4. On a yes: follow `rules/going-live.md` — the gasless funding path (BRAP `to_wallet` → strategy wallet → Hyperliquid deposit), sizing minimums, the mode flip via `core_jobs(action="set_script_mode", job_id=…, script_mode="live")` (edits `job.yaml` + recompiles the runner env + runs the live gate — the ONLY correct switch; never patch the `WAYFINDER_JOB_MODE` runner env by hand, a hand-patch is silently reverted on the next recompile), runner resume, agent mode, and the first-tick check. Reverting to paper, pausing, halting, and withdrawing funds are in `rules/going-live.md` §4. **Non-negotiable before the mode flip: set `execution_params.wallet_label` in job.yaml** (a label from `core_get_wallets()`) — the engine default is `main`, which does not exist here; it is not a job-root key, an env var, or an adapter config file, and `set_script_mode` refuses live without it.
-
-Do NOT offer to deploy a strategy that only looks good in-sample — that's the curve-fit trap the whole loop exists to avoid.
-
-## The strategy contract (copy this skeleton)
-
-```python
-from wayfinder_paths.jobs.execution import ExecutionContext, OrderIntent
-
-# Longest indicator lookback + a small buffer. Handed to the sim as the per-bar
-# compute window so `decide()` NEVER sees the whole growing history — that is
-# what turns a "simple" backtest into a multi-minute CPU peg.
-warmup_bars = 60
-
-def decide(ctx: ExecutionContext) -> list[OrderIntent]:
-    frame = ctx.view.symbol_frame("IMX")   # already bounded to ~warmup_bars rows
-    if len(frame) < 25:
-        return []
-    close = frame["close"].astype(float)
-    ema = close.ewm(span=9, adjust=False).mean().iloc[-1]
-    last = float(close.iloc[-1])
-    low5 = float(close.iloc[-6:-1].min())
-    pos = ctx.ledger.positions.get("IMX")
-    if pos is None and last < low5:
-        return [OrderIntent(action="open", venue="hyperliquid", symbol="IMX",
-                            side="short", notional=100.0, reduce_only=False,
-                            bracket={"stop_loss": last * 1.07, "take_profit": last * 0.9,
-                                     "policy": "conservative"},
-                            metadata={"entry_price": last})]
-    if pos is not None and last > ema:
-        return [OrderIntent(action="close", venue="hyperliquid", symbol="IMX",
-                            side="buy", size=pos.size, reduce_only=True,
-                            metadata={"exit_reason": "ema_reclaim"})]
-    return []
-
-def build_strategy(params: dict | None = None):
-    import types
-    ns = types.SimpleNamespace(); ns.decide = decide; ns.warmup_bars = warmup_bars
-    return ns
-```
-
-Put `metadata={"exit_reason": "..."}` on close intents — `backtest-diagnose` buckets PnL by it.
-
-## Make it fast: `precompute` (one vectorized pass, not per-bar pandas)
-
-Per-bar pandas inside `decide()` costs ~5ms of fixed overhead per rolling/ewm/concat call — a 15-op `decide()` runs at ~30 bars/s and turns every grid into a crawl. Move ALL indicator math into the optional `precompute` hook: one vectorized pass, columns merged onto the bars, `decide()` just reads them.
-
-```python
-def precompute(frames: dict) -> dict:
-    """frames: per-symbol raw bars (full history in backtest, bounded window
-    live). Return per-symbol frames of derived columns, row-aligned with the
-    input. CAUSAL transforms only (rolling / shift / ewm) — never anything
-    that reads future rows."""
-    close = frames["IMX"]["close"].astype(float)
-    feats = frames["IMX"][[]].copy()
-    feats["z"] = (close - close.rolling(20).mean()) / close.rolling(20).std()
-    return {"IMX": feats}
-
-def decide(ctx: ExecutionContext) -> list[OrderIntent]:
-    frame = ctx.view.symbol_frame("IMX")     # includes the "z" column
-    z = float(frame["z"].iloc[-1])
-    ...
-
-def build_strategy(params: dict | None = None):
-    import types
-    ns = types.SimpleNamespace()
-    ns.decide = decide; ns.precompute = precompute; ns.warmup_bars = 60
-    return ns
-```
-
-Cross-symbol features (pair z-scores, spreads) read several input frames and attach to the traded symbol's rows. FUNDING RATES are first-class: `wayfinder job fetch-funding <id> --days 60 --exchange binance` (or `hyperliquid`) pulls history into the feature store and declares the feature — bars then carry a `funding` column in backtest AND live. Long-history candles: `wayfinder job fetch-dataset <id> --days 365 --source ccxt --exchange binance`. Other exogenous series follow the same shape: declare under `execution_spec.data_contract.features`, append rows to `state/features.jsonl` (`{timestamp, name, value, symbol}`).
-
-## Compose your own triggers: workspace signals (swept by signal-scan)
-
-When the canonical library exhausts on a series, the next move is COMPOSITION, not resignation — but composed trials must ride the same multiple-testing discipline. Declare up to 12 `SignalDef`s in `workspace/src/signals.py` and rerun `signal-scan`: they sweep alongside the canonical library under ONE pooled BH family, the same decimation/fold-stability, the same reserved holdout, and `holdout-check` confirms them by name like any canonical trigger.
-
-```python
-from wayfinder_paths.jobs.signal_library import SignalDef
-
-WORKSPACE_SIGNALS = (
-    SignalDef(
-        "funding_neg_new_high_5",
-        "workspace",
-        "fresh 5-bar high while funding is negative",
-        9,
-        lambda f: (f["close"] > f["close"].shift(1).rolling(5).max())
-        & (f["funding"] < 0),
-    ),
-)
-```
-
-Builders see the bars WITH merged feature columns (funding etc.) at every scanned timeframe. Validation is fail-loud and automated: boolean output, name disjoint from the canonical library, and a causality gate (prefix truncation + tail perturbation) that rejects `shift(-1)` lookaheads and full-frame statistics before any statistic is computed. Rules that keep it honest: every def must cite a HYPOTHESIS (a fingerprint quadrant, path_stats shape, or a failure-table row — never blind permutation); more defs raise the promote bar for the whole scan (breadth costs power); the scan ledger records the file sha, so renaming a def to relaunch it is visible snooping.
-
-## Rules (these are the mistakes to avoid)
-
-1. **Keep `decide()` cheap.** Compute indicators on the handed frame only (it's bounded to `warmup_bars`). Never re-slice the full history or `copy()` a growing frame every bar. If a backtest is slow, the `profile.hint` tells you why — set/lower `warmup_bars`.
-2. **Never recompute PnL/stats by hand.** Ad-hoc pandas drifts from the framework and confuses everyone ("why is your PnL different than the framework?"). Read `job backtest` `stats` and `job backtest-diagnose`. They are the source of truth.
-3. **Tune AND validate with `job experiments --grid … --wf-test-bars N --wf-folds K`, not manual edit-and-rerun.** It's CPU-safe (bounded to the box's cores), sweeps several params at once, and — crucially — scores them **out-of-sample**. A plain grid or a hand-tuned single backtest is in-sample only; its metrics are not an edge. Decide with `decay_ratio` and `oos_positive_folds`, not in-sample Sharpe.
-4. **The dev box is small (2 vCPU).** Iterate on `--quick 1000`; only do the full-history run to confirm a candidate. Don't wrap backtests in `timeout` — read the ETA on the progress line.
-5. **The strategy lives in the job's script**, not `.wayfinder_runs/`. Edit that file, then `wayfinder job backtest` — don't maintain a scratch copy.
+The parent strategy agent owns orchestration and final interpretation. Delegate
+only bounded numeric work to the quant agent, passing exact artifacts, ranges,
+assumptions, and the required output. Do not ask the quant agent to recreate
+the execution engine or promotion gate.

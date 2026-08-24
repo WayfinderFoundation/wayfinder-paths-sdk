@@ -40,7 +40,7 @@ STARTER_STRATEGY_INCEPTION_AT = "2026-08-24T00:00:00+00:00"
 # deliberately, but the default is intervene.
 STARTER_AGENT_MODE_DEFAULT: AgentMode = "intervene"
 STARTER_AGENT_WAKE_SECONDS = 3600
-STARTER_EVIDENCE_REVISION = "1.7.0"
+STARTER_EVIDENCE_REVISION = "1.8.0"
 STARTER_LEVERAGE_DEFAULT = 1
 STARTER_LEVERAGE_MINIMUM = 1
 STARTER_LEVERAGE_MAXIMUM = 5
@@ -50,6 +50,15 @@ STARTER_DATASET_DAYS = 120
 # Slack on top of the strategy's warmup gate so the live driver's sliding
 # window always clears warmup even when the feed drops a few leading bars.
 STARTER_LOOKBACK_MARGIN_BARS = 20
+STARTER_ROBUSTNESS_PLANS: dict[str, dict[str, Any]] = {
+    "crypto-momentum-persistence-4h": {
+        "neighbors": {"broad_bull_momentum_threshold": [0.05, 0.10, 0.15]},
+        "phase": {"param": "rebalance_offset", "values": [0, 1, 2, 3, 4, 5]},
+        "leverage": [1, 2, 3, 4, 5],
+        "walk_forward": {"train_bars": 1440, "test_bars": 360, "folds": 4},
+        "scenarios": [{"name": "recent_7d", "lookback_days": 7, "role": "development"}],
+    }
+}
 
 
 def validate_starter_leverage(value: Any) -> int:
@@ -235,6 +244,10 @@ class StarterDefinition:
                 "results": copy.deepcopy(STARTER_LEVERAGE_RESULTS[self.id]),
             },
         }
+        if self.id in STARTER_ROBUSTNESS_PLANS:
+            payload["robustness_plan"] = copy.deepcopy(
+                STARTER_ROBUSTNESS_PLANS[self.id]
+            )
         for key in (
             "symbols",
             "crypto_assets",
@@ -605,8 +618,6 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 "tail through 2026-08-18"
             ),
             "strategy_family": "passive diversified mean reversion",
-            "return_after_costs_and_funding": 0.1995,
-            "funding_return_contribution": 0.0,
             "sharpe": 3.67,
             "max_drawdown": -0.0149,
             "chronological_fold_returns": [0.0962, 0.0134, 0.0231, 0.0290],
@@ -758,8 +769,6 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         research_evidence={
             **_CRYPTO_MOMENTUM_RESEARCH_METHOD,
             "return_after_fees_and_slippage": 1.0390,
-            "return_after_costs_and_funding": 1.0390,
-            "funding_return_contribution": 0.0,
             "sharpe": 1.5407,
             "max_drawdown": -0.1590,
             "chronological_fold_returns": [0.1004, 0.0772, 0.1534, 0.0400],
@@ -979,8 +988,6 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         research_evidence={
             **_MAKER_RESEARCH_METHOD,
             "strategy_family": "passive directional mean reversion",
-            "return_after_costs_and_funding": 0.2566,
-            "funding_return_contribution": 0.0,
             "sharpe": 1.66,
             "max_drawdown": -0.0627,
             "chronological_fold_returns": [0.0112, 0.0133, 0.0243, -0.0072],
@@ -1080,8 +1087,6 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
         research_evidence={
             **_MAKER_RESEARCH_METHOD,
             "strategy_family": "passive directional mean reversion",
-            "return_after_costs_and_funding": 0.2299,
-            "funding_return_contribution": 0.0,
             "sharpe": 1.58,
             "max_drawdown": -0.0653,
             "chronological_fold_returns": [0.0162, 0.0118, 0.0361, -0.0106],
@@ -1331,7 +1336,13 @@ def _spawn_starter_dataset_fetch(store: JobStore, job_id: str) -> dict[str, Any]
             store,
             job_id,
             "fetch_dataset",
-            {"job_id": job_id, "days": STARTER_DATASET_DAYS},
+            {
+                "job_id": job_id,
+                "days": STARTER_DATASET_DAYS,
+                "exchange": "hyperliquid",
+                "quote": "USDC",
+                "include_funding": True,
+            },
         )
         if status.get("already_running"):
             store.append_journal(
@@ -1448,7 +1459,19 @@ def create_starter_job(
             "max_bar_age_intervals": 2,
             "stale_policy": "skip",
         },
-        "validation": {"mode": "strict", "require_scenarios": False},
+        "validation": {
+            "mode": "strict",
+            "require_scenarios": False,
+            **(
+                {
+                    "robustness_plan": copy.deepcopy(
+                        STARTER_ROBUSTNESS_PLANS[definition.id]
+                    )
+                }
+                if definition.id in STARTER_ROBUSTNESS_PLANS
+                else {}
+            ),
+        },
         "venues": ["hyperliquid"],
     }
     job.execution_params = {

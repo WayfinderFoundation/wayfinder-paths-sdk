@@ -64,6 +64,7 @@ JobAction = Literal[
     "op_status",
     "backtest_diagnose",
     "experiments",
+    "robustness_check",
     "promote_params",
     "proposals",
     "propose",
@@ -319,6 +320,7 @@ async def core_jobs(
     strict: bool = False,
     grid_path: str | None = None,
     grid: dict[str, Any] | list[dict[str, Any]] | None = None,
+    robustness_plan: dict[str, Any] | None = None,
     workers: int = 0,
     parallel: Literal["serial", "thread", "process"] = "process",
     compile: bool = True,  # noqa: A002
@@ -328,6 +330,7 @@ async def core_jobs(
     background: bool | None = None,
     op: str | None = None,
     days: int = 14,
+    include_funding: bool = False,
     dataset_source: Literal["venues", "ccxt"] = "venues",
     exchange: str = "binance",
     market_type: Literal["swap", "spot"] = "swap",
@@ -424,7 +427,8 @@ async def core_jobs(
         basket on that ranking) and `pair_check` (the
         statistical admission gate for any pair/spread idea — run it FIRST; a
         REJECT saves days of tuning), `fetch_dataset` (real candles into the
-        job; `dataset_source="ccxt"` + `exchange="binance"` for long history),
+        job; `dataset_source="ccxt"` + `exchange="binance"` for long history;
+        use `include_funding=True` for same-window perp carry),
         `fetch_funding` (historical funding rates into the job's feature
         store — first-class carry data, as-of merged onto the bars as a
         `funding` column), `backtest_job` (runs DETACHED by
@@ -432,7 +436,8 @@ async def core_jobs(
         pass `background=False` only for quick_bars-sized runs),
         `backtest_diagnose` (ranked next steps), `experiments` (param grid via
         `grid` inline or `grid_path`; pass `wf_test_bars`/`wf_folds` for
-        walk-forward out-of-sample validation), then `promote_params`
+        walk-forward out-of-sample validation), `robustness_check` (detached
+        advisory neighbor/phase/leverage/walk-forward/scenario evidence), then `promote_params`
         (`grid_id`/`run_id`) once it survives OOS.
     """
 
@@ -611,6 +616,7 @@ async def core_jobs(
                 "exchange": exchange,
                 "market_type": market_type,
                 "quote": quote,
+                "include_funding": include_funding,
             },
         )
 
@@ -760,6 +766,18 @@ async def core_jobs(
                 store, job_id, "experiments", experiments_kwargs
             )
         return await _run_job_op("experiments", experiments_kwargs)
+
+    if action == "robustness_check":
+        if not job_id:
+            return err("invalid_request", "robustness_check requires job_id")
+        kwargs = {
+            "job_id": job_id,
+            "candidate_dir": candidate_dir,
+            "robustness_plan": robustness_plan,
+        }
+        if background is not False:
+            return await _start_background_op(store, job_id, "robustness_check", kwargs)
+        return await _run_job_op("robustness_check", kwargs)
 
     if action == "promote_params":
         return await _run_job_op(
