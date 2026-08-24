@@ -25,8 +25,15 @@ from wayfinder_paths.jobs.execution.validation import (
     resolve_execution_spec,
     validate_execution_job,
 )
-from wayfinder_paths.jobs.execution.walk_forward import run_walk_forward
-from wayfinder_paths.jobs.gating import compute_workspace_revision
+from wayfinder_paths.jobs.execution.walk_forward import (
+    load_walk_forward_folds,
+    persist_walk_forward_folds,
+    run_walk_forward,
+)
+from wayfinder_paths.jobs.gating import (
+    compute_workspace_revision,
+    dataset_content_fingerprint,
+)
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
@@ -45,7 +52,14 @@ def summarize_backtest_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """
     summary: dict[str, Any] = {
         k: payload[k]
-        for k in ("type", "artifacts", "stamp", "walk_forward", "validation")
+        for k in (
+            "type",
+            "artifacts",
+            "stamp",
+            "walk_forward",
+            "validation",
+            "reused_from_grid_id",
+        )
         if k in payload
     }
     coverage = ((payload.get("dataset") or {}).get("feature_coverage")) or {}
@@ -218,18 +232,59 @@ def _backtest_execution_job_locked(
             # Preserve the question asked separately from its observed folds;
             # experiment identity must not change merely because results do.
             payload["walk_forward_definition"] = dict(walk_forward)
-            payload["walk_forward"] = run_walk_forward(
-                script,
-                dataset,
-                spec,
-                param_grid,
-                rank_by=rank_by,
-                workers=workers,
-                parallel=parallel,
-                optimizer=optimizer,
-                optuna_options=optuna_options,
-                **dict(walk_forward),
-            )
+            # Evidence reuse: each fold is deterministic in {grid + WF layout
+            # + ranking, dataset content/window, workspace revision}. A prior
+            # grid dir carrying a complete green fold set under the exact
+            # same key answers the same question — skip the re-simulation.
+            timestamps = dataset.bars.timestamps
+            wf_key = {
+                "fold_spec": {
+                    "walk_forward": dict(walk_forward),
+                    "param_grid": param_grid,
+                    "rank_by": rank_by,
+                    "optimizer": optimizer,
+                    "optuna_options": dict(optuna_options or {}),
+                },
+                "dataset_window": {
+                    "start": str(timestamps[0]) if timestamps else None,
+                    "end": str(timestamps[-1]) if timestamps else None,
+                    "bars": len(timestamps),
+                    "fingerprint": dataset_content_fingerprint(
+                        root,
+                        root,
+                        feature_paths=tuple(
+                            item.path for item in parse_feature_specs(spec)
+                        ),
+                    ),
+                    "quick_bars": quick_bars,
+                },
+                "revision": stamp["revision"],
+            }
+            wf_report = load_walk_forward_folds(output_dir / "grids", wf_key)
+            if wf_report is not None:
+                store.append_journal(
+                    job_id,
+                    {
+                        "type": "walk_forward_folds_reused",
+                        "grid_id": result.grid_id,
+                        **wf_report["reused"],
+                    },
+                )
+            else:
+                wf_report = run_walk_forward(
+                    script,
+                    dataset,
+                    spec,
+                    param_grid,
+                    rank_by=rank_by,
+                    workers=workers,
+                    parallel=parallel,
+                    optimizer=optimizer,
+                    optuna_options=optuna_options,
+                    **dict(walk_forward),
+                )
+            payload["walk_forward"] = wf_report
+            persist_walk_forward_folds(grid_dir, wf_key, wf_report)
     else:
         params = job_data.get("execution_params") or {}
         result = simulate_execution(script, dataset, spec, params)
