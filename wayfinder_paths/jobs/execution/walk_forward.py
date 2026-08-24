@@ -7,6 +7,9 @@ acts on it."""
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from statistics import fmean
@@ -32,6 +35,106 @@ from wayfinder_paths.jobs.execution.simulator import (
 # interactive validation. Anchored/expanding windows (opt-in) re-replay all prior
 # history every fold — ~4x slower on a full dataset.
 DEFAULT_WF_TRAIN_MULTIPLE = 4
+
+# Kill-switch: recompute walk-forward folds on every run, ignoring persisted
+# fold artifacts (evidence-reuse surface, #705 env pattern).
+WF_FOLDS_ALWAYS_RUN_ENV = "WAYFINDER_WF_FOLDS_ALWAYS_RUN"
+# Bounded lookback when scanning prior grid dirs for matching fold artifacts.
+_WF_FOLD_LOOKUP_GRIDS = 20
+
+
+def walk_forward_fold_key_hash(key: Mapping[str, Any]) -> str:
+    """Content hash of the walk-forward question: fold spec (grid + WF
+    layout + ranking), dataset window/content, and workspace revision."""
+    encoded = json.dumps(key, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def persist_walk_forward_folds(
+    grid_dir: Path, key: Mapping[str, Any], report: Mapping[str, Any]
+) -> None:
+    """One `fold_{i}.json` per fold under the grid dir, each carrying the
+    full key — the durable per-fold evidence a later identical walk-forward
+    can reuse instead of re-simulating every fold. Best-effort: persistence
+    is an optimization, never a walk-forward failure."""
+    key_hash = walk_forward_fold_key_hash(key)
+    folds = list(report["folds"])
+    try:
+        grid_dir.mkdir(parents=True, exist_ok=True)
+        for index, row in enumerate(folds):
+            (grid_dir / f"fold_{index}.json").write_text(
+                json.dumps(
+                    {
+                        "key": key,
+                        "key_hash": key_hash,
+                        "fold": index,
+                        "fold_count": len(folds),
+                        "spec": report["spec"],
+                        "row": row,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                    default=str,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+    except OSError:
+        pass
+
+
+def load_walk_forward_folds(
+    grids_root: Path, key: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Reconstruct a walk-forward report from persisted fold artifacts when a
+    recent grid carries a COMPLETE set of folds under the exact same key and
+    every fold is green (status "ok"). Partial sets, key mismatches, or any
+    non-ok fold → None (recompute — non-green evidence is never reused)."""
+    if os.environ.get(WF_FOLDS_ALWAYS_RUN_ENV) == "1" or not grids_root.exists():
+        return None
+    key_hash = walk_forward_fold_key_hash(key)
+    grid_dirs = sorted(
+        (path for path in grids_root.iterdir() if path.is_dir()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )[:_WF_FOLD_LOOKUP_GRIDS]
+    for grid_dir in grid_dirs:
+        report = _report_from_fold_files(grid_dir, key_hash)
+        if report is not None:
+            report["reused"] = {
+                "source_grid_id": grid_dir.name,
+                "key_hash": key_hash,
+            }
+            return report
+    return None
+
+
+def _report_from_fold_files(grid_dir: Path, key_hash: str) -> dict[str, Any] | None:
+    payloads = []
+    for path in sorted(grid_dir.glob("fold_*.json")):
+        try:
+            payloads.append(json.loads(path.read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            return None
+    if not payloads:
+        return None
+    expected = payloads[0].get("fold_count")
+    if (
+        not isinstance(expected, int)
+        or len(payloads) != expected
+        or any(item.get("key_hash") != key_hash for item in payloads)
+        or sorted(item.get("fold") for item in payloads) != list(range(expected))
+    ):
+        return None
+    rows = [item["row"] for item in sorted(payloads, key=lambda entry: entry["fold"])]
+    if any(row.get("status") != "ok" for row in rows):
+        return None
+    spec = payloads[0].get("spec") or {}
+    return {
+        "spec": spec,
+        "folds": rows,
+        "summary": _summary(rows, str(spec.get("rank_by") or "net_return")),
+    }
 
 
 def run_walk_forward(

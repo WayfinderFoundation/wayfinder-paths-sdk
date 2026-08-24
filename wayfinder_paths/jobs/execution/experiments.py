@@ -2,20 +2,29 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.jobs.execution.job import backtest_execution_job
+from wayfinder_paths.jobs.execution.optimize import is_search_space
 from wayfinder_paths.jobs.execution.preflight import run_preflight
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.improver.spec import revision_stamp
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.validation import candidate_dataset_fingerprint
 
 EXPERIMENTS_FILE = "results/backtest/experiments.jsonl"
 TRIALS_FILE = "results/backtest/trials.jsonl"
+
+# Kill-switch: run every submitted experiment regardless of a green identical
+# prior in the ledger (evidence-reuse surface, #705 env pattern).
+EXPERIMENT_ALWAYS_RUN_ENV = "WAYFINDER_EXPERIMENT_ALWAYS_RUN"
+# Bounded ledger scan when looking for a green identical prior.
+_DEDUP_LOOKBACK_ROWS = 200
 
 
 def experiment_semantic_hash(row: Mapping[str, Any]) -> str:
@@ -45,6 +54,117 @@ def experiment_semantic_hash(row: Mapping[str, Any]) -> str:
     }
     encoded = json.dumps(definition, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _normalized_search_definition(grid: Any) -> dict[str, Any]:
+    """Order-insensitive identity of the search question. Coordinate order is
+    not semantic (#692): dict-of-lists value order and explicit-combo order
+    are normalized; optuna search spaces hash as-is (typed dimensions)."""
+    match grid:
+        case Mapping() if is_search_space(grid):
+            return {"kind": "search_space", "space": dict(grid)}
+        case Mapping():
+            return {
+                "kind": "grid",
+                "grid": {
+                    str(name): sorted(
+                        (
+                            json.dumps(value, sort_keys=True, default=str)
+                            for value in values
+                        )
+                        if isinstance(values, list)
+                        else [json.dumps(values, sort_keys=True, default=str)]
+                    )
+                    for name, values in grid.items()
+                },
+            }
+        case list():
+            return {
+                "kind": "combos",
+                "combos": sorted(
+                    json.dumps(combo, sort_keys=True, default=str) for combo in grid
+                ),
+            }
+    return {"kind": "unknown", "raw": str(grid)}
+
+
+def experiment_submission_hash(
+    job_id: str,
+    grid: Any,
+    *,
+    rank_by: str,
+    optimizer: str,
+    optuna_options: Mapping[str, Any] | None,
+    walk_forward: Mapping[str, Any] | None,
+    quick_bars: int | None,
+    store: JobStore,
+) -> str:
+    """Pre-run identity of a submitted experiment: workspace revision +
+    dataset content fingerprint + the normalized search definition. Two
+    submissions with equal hashes would compute byte-identical evidence —
+    the dedup key recorded on every experiment row."""
+    root = store.job_dir(job_id)
+    definition = {
+        "revision": compute_workspace_revision(root),
+        "dataset_fingerprint": candidate_dataset_fingerprint(root, root),
+        "grid": _normalized_search_definition(grid),
+        "rank_by": rank_by,
+        "optimizer": optimizer,
+        "optuna_options": dict(optuna_options or {}),
+        "walk_forward": dict(walk_forward) if walk_forward else None,
+        "quick_bars": quick_bars,
+    }
+    encoded = json.dumps(definition, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _experiment_row_green(row: Mapping[str, Any]) -> bool:
+    """A prior row is reusable evidence only when it computed cleanly: runs
+    present, zero invalid cells, a ranked best, and (when walk-forward rode
+    along) every fold ok. Anything less re-runs — non-green evidence is
+    never reused."""
+    try:
+        if int(row.get("run_count") or 0) <= 0:
+            return False
+        if int(row.get("invalid_count") or 0) != 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if not row.get("best"):
+        return False
+    walk_forward = row.get("walk_forward")
+    if walk_forward is not None:
+        folds = (walk_forward or {}).get("folds") or []
+        if not folds or any(fold.get("status") != "ok" for fold in folds):
+            return False
+    return True
+
+
+def _reusable_prior_experiment(
+    job_id: str, submission_hash: str, *, store: JobStore
+) -> dict[str, Any] | None:
+    """Most recent ledger row with the same submission hash decides: green →
+    reuse it; non-green → None (rerun). Requires the prior grid's summary
+    artifact to still exist so the result can be surfaced."""
+    for row in reversed(
+        list_experiments(job_id, store=store, limit=_DEDUP_LOOKBACK_ROWS)
+    ):
+        if row.get("submission_hash") != submission_hash:
+            continue
+        if not _experiment_row_green(row):
+            return None
+        summary_path = (
+            store.job_dir(job_id)
+            / "results"
+            / "backtest"
+            / "grids"
+            / str(row.get("grid_id") or "")
+            / "summary.json"
+        )
+        if not summary_path.exists():
+            return None
+        return row
+    return None
 
 
 def _experiment_definition(grid_payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -128,9 +248,13 @@ def record_experiment(
     grid_payload: Mapping[str, Any],
     *,
     store: JobStore | None = None,
+    submission_hash: str | None = None,
 ) -> dict[str, Any]:
     """Append one experiment row per grid run so parameter searches leave a
-    durable, comparable trail instead of evaporating into a grids/ folder."""
+    durable, comparable trail instead of evaporating into a grids/ folder.
+    `submission_hash` (when the caller staged one) is the pre-run dedup key
+    future identical submissions match against; the post-run
+    `semantic_hash` (#692 replication tagging) is unchanged."""
     store = store or JobStore()
     result = grid_payload["result"]
     ranked = result["ranked"]
@@ -146,6 +270,7 @@ def record_experiment(
         "run_count": len(result["runs"]),
         "invalid_count": len(result["invalid"]),
         "semantic_hash": experiment_semantic_hash(definition),
+        **({"submission_hash": submission_hash} if submission_hash else {}),
         "best": (
             {
                 "run_id": best["run_id"],
@@ -389,6 +514,7 @@ def run_experiment(
     match grid:
         case str() | Path():
             grid_path = Path(grid)
+            grid_content = json.loads(grid_path.read_text(encoding="utf-8"))
         case _:
             handle = tempfile.NamedTemporaryFile(
                 "w", suffix=".json", delete=False, encoding="utf-8"
@@ -396,6 +522,52 @@ def run_experiment(
             json.dump(grid, handle)
             handle.close()
             grid_path = Path(handle.name)
+            grid_content = json.loads(json.dumps(grid, default=str))
+    # Evidence reuse (submission dedup): an identical submission — same
+    # workspace revision, same dataset content, same normalized search
+    # definition — against a GREEN prior ledger row computes nothing new.
+    # Surface the prior result instead of burning the box on a re-run (the
+    # dominant redundancy class: 71/107 grid runs in one audited burst).
+    submission_hash = experiment_submission_hash(
+        job_id,
+        grid_content,
+        rank_by=rank_by,
+        optimizer=optimizer,
+        optuna_options=optuna_options,
+        walk_forward=walk_forward,
+        quick_bars=quick_bars,
+        store=store,
+    )
+    if os.environ.get(EXPERIMENT_ALWAYS_RUN_ENV) != "1":
+        prior = _reusable_prior_experiment(job_id, submission_hash, store=store)
+        if prior is not None:
+            grid_id = str(prior["grid_id"])
+            grids_dir = store.job_dir(job_id) / "results" / "backtest" / "grids"
+            summary_path = grids_dir / grid_id / "summary.json"
+            store.append_journal(
+                job_id,
+                {
+                    "type": "experiment_reused",
+                    "grid_id": grid_id,
+                    "submission_hash": submission_hash,
+                    "prior_ts": prior.get("ts"),
+                    "revision": prior.get("revision"),
+                },
+            )
+            backtest: dict[str, Any] = {
+                "type": "grid",
+                "reused_from_grid_id": grid_id,
+                "revision": prior.get("revision"),
+                "dataset": prior.get("dataset"),
+                "result": json.loads(summary_path.read_text(encoding="utf-8")),
+                "artifacts": {"summary": str(summary_path)},
+            }
+            if prior.get("walk_forward") is not None:
+                backtest["walk_forward"] = prior["walk_forward"]
+            return {
+                "experiment": {**prior, "reused": True},
+                "backtest": backtest,
+            }
     payload = backtest_execution_job(
         job_id,
         grid_path=grid_path,
@@ -408,5 +580,7 @@ def run_experiment(
         quick_bars=quick_bars,
         store=store,
     )
-    row = record_experiment(job_id, payload, store=store)
+    row = record_experiment(
+        job_id, payload, store=store, submission_hash=submission_hash
+    )
     return {"experiment": row, "backtest": payload}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +14,14 @@ from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
 DEFAULT_MAX_BACKTEST_AGE_DAYS = 30
+
+# Kill-switch: force the paired fold evaluation to recompute on every call,
+# ignoring persisted fold results (evidence-reuse surface, #705 env pattern).
+ECONOMIC_ALWAYS_RECOMPUTE_ENV = "WAYFINDER_ECONOMIC_ALWAYS_RECOMPUTE"
+# Persisted inside the candidate bundle (outside workspace/, so the candidate
+# revision is unchanged): the expensive 2xK-fold paired replay, keyed by the
+# full content identity it was computed under.
+PAIRED_FOLDS_RELATIVE = Path("reports") / "economic" / "paired_folds.json"
 
 
 def governance_hard_constraints(root: Path) -> dict[str, Any]:
@@ -328,28 +337,78 @@ def evaluate_economic_gate(
     )
     if baseline_script is None or candidate_script is None:
         return _economic_unavailable(constitution, "no script entrypoint", probation)
-    try:
-        dataset = _load_dataset(candidate_root, spec, candidate_yaml)
-    except FileNotFoundError:
-        # Candidate bundles carry workspace/ + job.yaml only. Jobs that keep
-        # their dataset at the JOB root (results/backtest/input_bars.json —
-        # the standard fetch-dataset location) would otherwise never resolve
-        # bars here and every propose would die on "No backtest bars found".
-        # Same fallback candidate validation applies; if the job root ALSO
-        # has no bars the error propagates — with the propose-time
-        # infra-abort, a dataset that validated moments ago but vanished for
-        # the economic step is a box condition, not evidence.
-        dataset = _load_dataset(root, spec, candidate_yaml)
 
-    evaluation = paired_fold_evaluation(
-        baseline_script=baseline_script,
-        candidate_script=candidate_script,
-        dataset=dataset,
-        spec=spec,
-        baseline_params=baseline_yaml.get("execution_params") or {},
-        candidate_params=candidate_yaml.get("execution_params") or {},
-        constitution=constitution,
+    # Evidence reuse: the paired replay is deterministic in {candidate code,
+    # baseline code, constitution, dataset content, fold layout}. When a
+    # persisted evaluation carries the exact same key AND is green, replaying
+    # 2xK fold sims answers a question already answered — reuse it. The
+    # readiness verdict is always recomputed (pure policy, no simulation).
+    fold_key = {
+        "candidate_revision": compute_workspace_revision(candidate_root),
+        "baseline_revision": compute_workspace_revision(root),
+        "constitution_revision": constitution.get("revision"),
+        "dataset_fingerprint": _candidate_dataset_fingerprint(candidate_root, root),
+        "fold_spec": {**constitution["evaluation"], "warmup_bars": 60},
+    }
+    persist_path = candidate_root / PAIRED_FOLDS_RELATIVE
+    evaluation = _reusable_paired_evaluation(
+        persist_path, fold_key, constitution, probation=probation
     )
+    if evaluation is not None:
+        store.append_journal(
+            job_id,
+            {
+                "type": "economic_evaluation_reused",
+                "candidate_revision": fold_key["candidate_revision"],
+                "baseline_revision": fold_key["baseline_revision"],
+                "constitution_revision": fold_key["constitution_revision"],
+                "paired_folds_path": str(persist_path),
+            },
+        )
+        reused = True
+    else:
+        try:
+            dataset = _load_dataset(candidate_root, spec, candidate_yaml)
+        except FileNotFoundError:
+            # Candidate bundles carry workspace/ + job.yaml only. Jobs that
+            # keep their dataset at the JOB root
+            # (results/backtest/input_bars.json — the standard fetch-dataset
+            # location) would otherwise never resolve bars here and every
+            # propose would die on "No backtest bars found". Same fallback
+            # candidate validation applies; if the job root ALSO has no bars
+            # the error propagates — with the propose-time infra-abort, a
+            # dataset that validated moments ago but vanished for the
+            # economic step is a box condition, not evidence.
+            dataset = _load_dataset(root, spec, candidate_yaml)
+
+        evaluation = paired_fold_evaluation(
+            baseline_script=baseline_script,
+            candidate_script=candidate_script,
+            dataset=dataset,
+            spec=spec,
+            baseline_params=baseline_yaml.get("execution_params") or {},
+            candidate_params=candidate_yaml.get("execution_params") or {},
+            constitution=constitution,
+        )
+        reused = False
+        try:
+            persist_path.parent.mkdir(parents=True, exist_ok=True)
+            persist_path.write_text(
+                json.dumps(
+                    {
+                        "key": fold_key,
+                        "evaluation": evaluation,
+                        "generated_at": utc_now_iso(),
+                    },
+                    indent=2,
+                    sort_keys=True,
+                    default=str,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass  # persistence is an optimization, never a gate failure
     readiness = evaluate_economic_readiness(
         evaluation, constitution, probation=probation
     )
@@ -367,8 +426,53 @@ def evaluate_economic_gate(
         "fold_count": evaluation.get("fold_count"),
         "audit_slice": _audit_summary(evaluation.get("audit_slice")),
         "status": evaluation.get("status"),
+        **({"reused": True} if reused else {}),
         "checked_at": utc_now_iso(),
     }
+
+
+def _candidate_dataset_fingerprint(
+    candidate_root: Path, root: Path
+) -> dict[str, Any] | None:
+    # Lazy import: validation imports gating at module level.
+    from wayfinder_paths.jobs.validation import candidate_dataset_fingerprint
+
+    return candidate_dataset_fingerprint(candidate_root, root)
+
+
+def _reusable_paired_evaluation(
+    persist_path: Path,
+    fold_key: dict[str, Any],
+    constitution: Mapping[str, Any],
+    *,
+    probation: bool,
+) -> dict[str, Any] | None:
+    """Persisted paired-fold evaluation, ONLY when the full content key
+    matches and the persisted evidence is green (status ok + the readiness
+    it implies under the current constitution is ready=True). Non-green
+    evidence is never reused — it recomputes fresh, every time."""
+    # Lazy: economics pulls pandas; gating is imported on every cheap path.
+    from wayfinder_paths.jobs.economics import evaluate_economic_readiness
+
+    if os.environ.get(ECONOMIC_ALWAYS_RECOMPUTE_ENV) == "1":
+        return None
+    persisted = _read_json(persist_path)
+    if not persisted:
+        return None
+    # JSON round-trip normalization: the key was persisted via default=str,
+    # so compare against the same normalization of the freshly-derived key.
+    normalized_key = json.loads(json.dumps(fold_key, sort_keys=True, default=str))
+    if persisted.get("key") != normalized_key:
+        return None
+    evaluation = persisted.get("evaluation")
+    if not isinstance(evaluation, dict) or evaluation.get("status") != "ok":
+        return None
+    readiness = evaluate_economic_readiness(
+        evaluation, constitution, probation=probation
+    )
+    if readiness.get("ready") is not True:
+        return None
+    return evaluation
 
 
 def _audit_summary(audit: dict[str, Any] | None) -> dict[str, Any] | None:

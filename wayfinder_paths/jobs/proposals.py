@@ -31,6 +31,7 @@ from wayfinder_paths.jobs.application import (
     validate_candidate_bundle,
 )
 from wayfinder_paths.jobs.compute_lock import ComputeLockBusy, heavy_compute_lock
+from wayfinder_paths.jobs.evidence_reuse import assess_evidence_reuse
 from wayfinder_paths.jobs.execution.job import (
     backtest_execution_job,
     synthesize_scenario_plan,
@@ -341,8 +342,19 @@ def _generate_candidate_report(
     *,
     base_revision: str,
     pid: str,
+    skip_behavior_checks: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    validation = validate_candidate_bundle(store, job_id, proposal, candidate_dir)
+    """`skip_behavior_checks=True` keeps only the cheap validation invariants
+    — set exclusively when the prior behavioral evidence is provably
+    reusable (`assess_evidence_reuse`); the candidate backtest artifact from
+    that prior run still feeds the comparison below."""
+    validation = validate_candidate_bundle(
+        store,
+        job_id,
+        proposal,
+        candidate_dir,
+        skip_behavior_checks=skip_behavior_checks,
+    )
     validation = _retry_infrastructure_failure(
         store, job_id, proposal, candidate_dir, validation
     )
@@ -538,6 +550,12 @@ def revalidate_proposal(
     on a quiet box. If the job's active revision moved past base_revision
     the comparison baseline would drift, so refuse: the owner should reject
     and re-propose against the current workspace instead.
+
+    Evidence reuse: only GREEN, provably-unchanged pieces skip re-running
+    (`assess_evidence_reuse`, phase "revalidate") — a green validation half
+    keeps its candidate backtest; the economic block always re-evaluates
+    (with its own persisted-fold reuse inside `evaluate_economic_gate`).
+    Failed/poisoned pieces re-run in full: that is what revalidate is for.
     """
     proposal = store.load_proposal(job_id, proposal_id)
     if proposal["status"] != "pending":
@@ -566,14 +584,71 @@ def revalidate_proposal(
     old_summary = (proposal.get("candidate_report") or {}).get(
         "validation_summary"
     ) or {}
-    validation, candidate_report = _generate_candidate_report(
-        store,
-        job_id,
-        proposal,
-        candidate_dir,
-        base_revision=base_revision,
-        pid=proposal_id,
+    # Evidence reuse (validation half only): when the candidate, dataset and
+    # baseline are PROVABLY unchanged and the frozen VALIDATION evidence is
+    # green, re-running the expensive candidate backtest asks an answered
+    # question. The economic block is regenerated regardless — revalidate
+    # exists to CURE poisoned reports (the #700 incident shape), and reuse
+    # must never short-circuit the cure: a failed validation half re-runs
+    # (that is the point), and the economic evaluation below re-runs with
+    # its own persisted-fold reuse deciding whether ITS green half replays.
+    reuse = assess_evidence_reuse(
+        store, job_id, proposal, candidate_dir, phase="revalidate"
     )
+    validation: dict[str, Any] | None = None
+    candidate_report: dict[str, Any] | None = None
+    if reuse["eligible"]:
+        validation, candidate_report = _generate_candidate_report(
+            store,
+            job_id,
+            proposal,
+            candidate_dir,
+            base_revision=base_revision,
+            pid=proposal_id,
+            skip_behavior_checks=True,
+        )
+        if validation["status"] == "passed":
+            candidate_report["evidence_reuse"] = dict(reuse["proof"])
+            store.append_journal(
+                job_id,
+                {
+                    "type": "revalidate_evidence_reused",
+                    "proposal_id": proposal_id,
+                    **reuse["proof"],
+                },
+            )
+        else:
+            # Defense in depth: a failed cheap invariant with green frozen
+            # evidence means something moved outside the fingerprinted
+            # surface — fall back to the authoritative full re-validation.
+            store.append_journal(
+                job_id,
+                {
+                    "type": "revalidate_evidence_rerun",
+                    "proposal_id": proposal_id,
+                    "reason": "cheap_invariants_failed",
+                },
+            )
+            validation = candidate_report = None
+    else:
+        store.append_journal(
+            job_id,
+            {
+                "type": "revalidate_evidence_rerun",
+                "proposal_id": proposal_id,
+                "reason": reuse["reason"],
+                **({"details": reuse["proof"]} if reuse["proof"] else {}),
+            },
+        )
+    if candidate_report is None or validation is None:
+        validation, candidate_report = _generate_candidate_report(
+            store,
+            job_id,
+            proposal,
+            candidate_dir,
+            base_revision=base_revision,
+            pid=proposal_id,
+        )
     proposal["candidate_report"] = candidate_report
     # Recomputed against the same base: unchanged for an intact candidate,
     # honest for one that was edited since propose (the regenerated report's

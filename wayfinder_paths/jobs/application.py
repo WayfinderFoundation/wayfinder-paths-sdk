@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import hashlib
 import json
-import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +9,15 @@ from typing import Any
 import yaml
 
 from wayfinder_paths.jobs.compiler import JobCompiler
+
+# Redundant alias: re-exported — #705 introduced the kill-switch here and
+# callers/tests import it from this module.
+from wayfinder_paths.jobs.evidence_reuse import (
+    APPLY_ALWAYS_REVALIDATE_ENV as APPLY_ALWAYS_REVALIDATE_ENV,
+)
+from wayfinder_paths.jobs.evidence_reuse import (
+    assess_evidence_reuse,
+)
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.gating import compute_workspace_revision, evaluate_live_gate
 from wayfinder_paths.jobs.improver.spec import (
@@ -22,14 +29,9 @@ from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import sync_all_jobs
 from wayfinder_paths.jobs.validation import (
-    candidate_dataset_fingerprint,
     validate_candidate_application,
     validation_summary,
 )
-
-# Kill-switch: force the pre-reuse behavior (full re-validation backtest on
-# every apply) regardless of evidence-reuse eligibility.
-APPLY_ALWAYS_REVALIDATE_ENV = "WAYFINDER_APPLY_ALWAYS_REVALIDATE"
 
 
 @dataclass
@@ -292,76 +294,14 @@ def assess_validation_reuse(
        equivalence as `store._ensure_candidate_matches_report`)
     5. dataset fingerprint recorded at propose time matches the one
        re-derived now (input bars + declared feature stores, by content)
-    6. the frozen evidence is green: validation_summary passed AND
+    6. live-capable freshness bound (`evidence_reuse` module docstring)
+    7. the frozen evidence is green: validation_summary passed AND
        economic.ready is True — failed/poisoned evidence is never reused
+
+    Thin wrapper over the shared `evidence_reuse.assess_evidence_reuse`
+    (phase "apply") — revalidate uses the same helper with its own phase.
     """
-    if os.environ.get(APPLY_ALWAYS_REVALIDATE_ENV) == "1":
-        return {"eligible": False, "reason": "kill_switch", "proof": {}}
-    report = proposal.get("candidate_report") or {}
-    report_revision = str(report.get("revision") or "")
-    if not report or report.get("mode") != "full" or not report_revision:
-        return {"eligible": False, "reason": "report_missing_or_not_full", "proof": {}}
-    base_revision = str(proposal.get("base_revision") or "")
-    active_revision = compute_workspace_revision(store.job_dir(job_id))
-    if base_revision and active_revision not in (base_revision, report_revision):
-        return {
-            "eligible": False,
-            "reason": "baseline_drift",
-            "proof": {
-                "base_revision": base_revision,
-                "active_revision": active_revision,
-            },
-        }
-    candidate_revision = compute_workspace_revision(candidate_dir)
-    if candidate_revision != report_revision:
-        return {
-            "eligible": False,
-            "reason": "candidate_mismatch",
-            "proof": {
-                "report_revision": report_revision,
-                "candidate_revision": candidate_revision,
-            },
-        }
-    recorded_fingerprint = report.get("dataset_fingerprint")
-    current_fingerprint = candidate_dataset_fingerprint(
-        candidate_dir, store.job_dir(job_id)
-    )
-    if not recorded_fingerprint or recorded_fingerprint != current_fingerprint:
-        return {
-            "eligible": False,
-            "reason": (
-                "dataset_changed" if recorded_fingerprint else "no_dataset_fingerprint"
-            ),
-            "proof": {
-                "recorded_fingerprint": recorded_fingerprint,
-                "current_fingerprint": current_fingerprint,
-            },
-        }
-    validation_status = (report.get("validation_summary") or {}).get("status")
-    economic_ready = (report.get("economic") or {}).get("ready")
-    if validation_status != "passed" or economic_ready is not True:
-        return {
-            "eligible": False,
-            "reason": "report_not_green",
-            "proof": {
-                "validation_status": validation_status,
-                "economic_ready": economic_ready,
-            },
-        }
-    report_hash = hashlib.sha256(
-        json.dumps(report, sort_keys=True, default=str).encode("utf-8")
-    ).hexdigest()
-    return {
-        "eligible": True,
-        "reason": "",
-        "proof": {
-            "base_revision": base_revision,
-            "candidate_revision": candidate_revision,
-            "active_revision": active_revision,
-            "dataset_fingerprint": current_fingerprint,
-            "report_hash": report_hash,
-        },
-    }
+    return assess_evidence_reuse(store, job_id, proposal, candidate_dir, phase="apply")
 
 
 def _complete_applied_application(
@@ -430,6 +370,47 @@ def _complete_applied_application(
     # ~30-minute backtest with trading loops paused adds nothing — keep only
     # the cheap invariants (compile, scenario sims, config/report reads).
     reuse = assess_validation_reuse(store, job_id, proposal, candidate_dir)
+    if reuse["reason"] == "dataset_stale":
+        # Freshness bound (live-capable only): the frozen evidence and the
+        # on-disk dataset are provably identical, but the bars are older
+        # than the owner's evidence ceiling. Reusing would promote on stale
+        # evidence; blindly re-running the full validation would VALIDATE
+        # against the same stale bars — equally worthless for a job that
+        # trades live. Refuse both and route to refresh + revalidate.
+        proof = reuse["proof"]
+        final_error = (
+            "dataset stale — refresh and revalidate: the candidate's dataset "
+            f"was fetched {proof.get('age_hours')}h ago (max "
+            f"{proof.get('max_age_hours')}h for a live-capable job). Re-fetch "
+            "the dataset, revalidate the proposal, and re-apply."
+        )
+        store.append_journal(
+            job_id,
+            {
+                "type": "apply_refused_stale_dataset",
+                "proposal_id": proposal_id,
+                **proof,
+            },
+        )
+        _write_apply_report(
+            store,
+            job_id,
+            proposal_id,
+            status="red",
+            summary=f"Apply refused: {final_error}",
+            changed_files=changed_files or [],
+            validation={"status": "failed", "checks": [], "error": final_error},
+            error=final_error,
+        )
+        return _ApplicationOutcome(
+            final_status="failed",
+            final_error=final_error,
+            deterministic_validation={
+                "status": "failed",
+                "checks": [],
+                "error": final_error,
+            },
+        )
     deterministic_validation: dict[str, Any] | None = None
     if reuse["eligible"]:
         cheap_validation = validate_candidate_application(
@@ -961,10 +942,14 @@ def validate_candidate_bundle(
     *,
     require_judge: bool = False,
     allow_legacy: bool = False,
+    skip_behavior_checks: bool = False,
 ) -> dict[str, Any]:
     """The full candidate validation (deterministic checks + execution
     validation + revision-stamped artifact persistence), independent of
-    application status — shared by the apply flow and the propose flow."""
+    application status — shared by the apply flow and the propose flow.
+    `skip_behavior_checks` follows the `validate_candidate_application`
+    contract: cheap invariants only, set exclusively when the propose-time
+    behavioral evidence is provably reusable (`assess_evidence_reuse`)."""
     validation = validate_candidate_application(
         repo_root=store.repo_root,
         job_dir=store.job_dir(job_id),
@@ -972,6 +957,7 @@ def validate_candidate_bundle(
         candidate_dir=candidate_dir,
         require_judge=require_judge,
         allow_legacy=allow_legacy,
+        skip_behavior_checks=skip_behavior_checks,
     )
     return _with_execution_validation(
         store, job_id, proposal, validation, candidate_dir=candidate_dir
