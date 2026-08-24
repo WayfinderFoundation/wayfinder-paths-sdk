@@ -523,6 +523,67 @@ def apply_initial_capital(
     return {"job_id": job_id, "initial_capital": value, "previous": previous}
 
 
+def _funded_wallet_label(job) -> str:
+    label = str(job.execution_params.get("wallet_label") or "").strip()
+    if not label:
+        raise ValueError(
+            "job has no bound wallet (execution_params.wallet_label) — go "
+            "live first so the strategy wallet exists"
+        )
+    return label
+
+
+async def venue_deposit(
+    job_id: str, amount: float, *, store: JobStore | None = None
+) -> dict[str, Any]:
+    """Fund the strategy where it trades: bridge USDC from the job's bound
+    wallet into Hyperliquid, then grow ``initial_capital`` by the same
+    amount — one op keeps bankroll and accounting in lockstep. An
+    ``unconfirmed`` bridge credit still counts (the deposit is en route);
+    only a failed send aborts before the capital write."""
+    from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_deposit_usdc
+
+    store = store or JobStore()
+    job = store.load(job_id)
+    label = _funded_wallet_label(job)
+    outcome = await hyperliquid_deposit_usdc(wallet_label=label, amount_usdc=amount)
+    if outcome["status"] == "failed":
+        raise ValueError(f"venue deposit failed: {outcome}")
+    current = float(job.execution_params.get("initial_capital") or 0.0)
+    capital = apply_initial_capital(job_id, current + float(amount), store=store)
+    return {
+        "job_id": job_id,
+        "deposit_status": outcome["status"],
+        "initial_capital": capital["initial_capital"],
+    }
+
+
+async def venue_withdraw(
+    job_id: str, amount: float, *, store: JobStore | None = None
+) -> dict[str, Any]:
+    """Pull bankroll off the venue: withdraw USDC from Hyperliquid to the
+    job's bound wallet (Bridge2 nets $1 off the amount) and shrink
+    ``initial_capital`` by the gross amount, floored at zero — a full
+    withdrawal honestly reads as unfunded and turns the gate red."""
+    from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_withdraw_usdc
+
+    store = store or JobStore()
+    job = store.load(job_id)
+    label = _funded_wallet_label(job)
+    outcome = await hyperliquid_withdraw_usdc(wallet_label=label, amount_usdc=amount)
+    if outcome["status"] == "failed":
+        raise ValueError(f"venue withdraw failed: {outcome}")
+    current = float(job.execution_params.get("initial_capital") or 0.0)
+    capital = apply_initial_capital(
+        job_id, max(current - float(amount), 0.0), store=store
+    )
+    return {
+        "job_id": job_id,
+        "withdraw_status": outcome["status"],
+        "initial_capital": capital["initial_capital"],
+    }
+
+
 def _shadow_topline(store: JobStore, job_id: str) -> dict[str, Any]:
     """Read-only topline of the post-apply counterfactual for the UI — the
     artifact is computed on the wake path, never during sync."""
