@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -113,6 +113,65 @@ def compute_workspace_revision(root: Path) -> str:
             case _:
                 digest.update(job_yaml.read_bytes())
     return digest.hexdigest()[:12]
+
+
+def dataset_content_fingerprint(
+    candidate_dir: Path,
+    job_dir: Path,
+    *,
+    feature_paths: Sequence[str] = (),
+) -> dict[str, Any] | None:
+    """Content hash of the exact files a candidate backtest would consume.
+
+    The evidence-reuse identity companion to `compute_workspace_revision`:
+    revision hashes the CODE a backtest ran, this hashes the DATA it ran on.
+    Resolution mirrors the candidate behavior checks (candidate bundle first,
+    then the job root — `_resolve_dataset` order) plus the declared feature
+    stores (first-root-wins, mirroring `load_feature_rows`). Purely
+    mechanical file-byte hashing, no parsing. Returns None when no dataset
+    file exists (research-only jobs)."""
+    dataset_path = next(
+        (
+            path
+            for root in (candidate_dir, job_dir)
+            for path in (
+                root / "results" / "backtest" / "input_bars.json",
+                root / "workspace" / "config" / "backtest_bars.json",
+            )
+            if path.exists()
+        ),
+        None,
+    )
+    if dataset_path is None:
+        return None
+    fingerprint: dict[str, Any] = {
+        "path": str(dataset_path),
+        "sha256": _file_sha256(dataset_path),
+        "bytes": dataset_path.stat().st_size,
+    }
+    features: dict[str, str] = {}
+    for relative in dict.fromkeys(feature_paths):
+        chosen = next(
+            (
+                root / relative
+                for root in (candidate_dir, job_dir)
+                if (root / relative).exists()
+            ),
+            None,
+        )
+        if chosen is not None:
+            features[str(relative)] = _file_sha256(chosen)
+    if features:
+        fingerprint["features"] = features
+    return fingerprint
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def evaluate_live_gate(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,9 +22,14 @@ from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import sync_all_jobs
 from wayfinder_paths.jobs.validation import (
+    candidate_dataset_fingerprint,
     validate_candidate_application,
     validation_summary,
 )
+
+# Kill-switch: force the pre-reuse behavior (full re-validation backtest on
+# every apply) regardless of evidence-reuse eligibility.
+APPLY_ALWAYS_REVALIDATE_ENV = "WAYFINDER_APPLY_ALWAYS_REVALIDATE"
 
 
 @dataclass
@@ -262,6 +269,101 @@ def complete_application(
     }
 
 
+def assess_validation_reuse(
+    store: JobStore,
+    job_id: str,
+    proposal: dict[str, Any],
+    candidate_dir: Path,
+) -> dict[str, Any]:
+    """Mechanical eligibility check for reusing the propose-time validation
+    evidence at apply time, instead of re-running the ~30-minute candidate
+    backtest against a provably identical candidate + dataset.
+
+    Returns `{"eligible": bool, "reason": str, "proof": dict}` — `reason`
+    names the FIRST failed condition when ineligible; `proof` carries the
+    content-derived identity when eligible (revisions, dataset fingerprint,
+    frozen-report hash). Every condition is a hash comparison or a frozen
+    field read — never trust-based:
+
+    1. kill-switch off (`WAYFINDER_APPLY_ALWAYS_REVALIDATE=1` forces rerun)
+    2. frozen candidate_report present, mode "full", with a revision
+    3. active workspace revision is still base or candidate (no drift)
+    4. candidate dir still hashes to the report's revision (same content
+       equivalence as `store._ensure_candidate_matches_report`)
+    5. dataset fingerprint recorded at propose time matches the one
+       re-derived now (input bars + declared feature stores, by content)
+    6. the frozen evidence is green: validation_summary passed AND
+       economic.ready is True — failed/poisoned evidence is never reused
+    """
+    if os.environ.get(APPLY_ALWAYS_REVALIDATE_ENV) == "1":
+        return {"eligible": False, "reason": "kill_switch", "proof": {}}
+    report = proposal.get("candidate_report") or {}
+    report_revision = str(report.get("revision") or "")
+    if not report or report.get("mode") != "full" or not report_revision:
+        return {"eligible": False, "reason": "report_missing_or_not_full", "proof": {}}
+    base_revision = str(proposal.get("base_revision") or "")
+    active_revision = compute_workspace_revision(store.job_dir(job_id))
+    if base_revision and active_revision not in (base_revision, report_revision):
+        return {
+            "eligible": False,
+            "reason": "baseline_drift",
+            "proof": {
+                "base_revision": base_revision,
+                "active_revision": active_revision,
+            },
+        }
+    candidate_revision = compute_workspace_revision(candidate_dir)
+    if candidate_revision != report_revision:
+        return {
+            "eligible": False,
+            "reason": "candidate_mismatch",
+            "proof": {
+                "report_revision": report_revision,
+                "candidate_revision": candidate_revision,
+            },
+        }
+    recorded_fingerprint = report.get("dataset_fingerprint")
+    current_fingerprint = candidate_dataset_fingerprint(
+        candidate_dir, store.job_dir(job_id)
+    )
+    if not recorded_fingerprint or recorded_fingerprint != current_fingerprint:
+        return {
+            "eligible": False,
+            "reason": (
+                "dataset_changed" if recorded_fingerprint else "no_dataset_fingerprint"
+            ),
+            "proof": {
+                "recorded_fingerprint": recorded_fingerprint,
+                "current_fingerprint": current_fingerprint,
+            },
+        }
+    validation_status = (report.get("validation_summary") or {}).get("status")
+    economic_ready = (report.get("economic") or {}).get("ready")
+    if validation_status != "passed" or economic_ready is not True:
+        return {
+            "eligible": False,
+            "reason": "report_not_green",
+            "proof": {
+                "validation_status": validation_status,
+                "economic_ready": economic_ready,
+            },
+        }
+    report_hash = hashlib.sha256(
+        json.dumps(report, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    return {
+        "eligible": True,
+        "reason": "",
+        "proof": {
+            "base_revision": base_revision,
+            "candidate_revision": candidate_revision,
+            "active_revision": active_revision,
+            "dataset_fingerprint": current_fingerprint,
+            "report_hash": report_hash,
+        },
+    }
+
+
 def _complete_applied_application(
     store: JobStore,
     job_id: str,
@@ -321,26 +423,91 @@ def _complete_applied_application(
             },
             restage_requested=True,
         )
-    deterministic_validation = validate_candidate_application(
-        repo_root=store.repo_root,
-        job_dir=store.job_dir(job_id),
-        proposal=proposal,
-        candidate_dir=candidate_dir,
-        require_judge=bool(proposal.get("judge_required")),
-        allow_legacy=allow_legacy,
-    )
-    deterministic_validation = _with_execution_validation(
-        store,
-        job_id,
-        proposal,
-        deterministic_validation,
-    )
+    # Evidence reuse: the propose flow already ran the full validation
+    # (candidate backtest + preflight + execution validation) against this
+    # exact candidate content. When the candidate, dataset, and baseline are
+    # PROVABLY unchanged and the frozen evidence is green, re-running the
+    # ~30-minute backtest with trading loops paused adds nothing — keep only
+    # the cheap invariants (compile, scenario sims, config/report reads).
+    reuse = assess_validation_reuse(store, job_id, proposal, candidate_dir)
+    deterministic_validation: dict[str, Any] | None = None
+    if reuse["eligible"]:
+        cheap_validation = validate_candidate_application(
+            repo_root=store.repo_root,
+            job_dir=store.job_dir(job_id),
+            proposal=proposal,
+            candidate_dir=candidate_dir,
+            require_judge=bool(proposal.get("judge_required")),
+            allow_legacy=allow_legacy,
+            skip_behavior_checks=True,
+        )
+        cheap_validation = _with_execution_validation(
+            store,
+            job_id,
+            proposal,
+            cheap_validation,
+        )
+        if cheap_validation["status"] == "passed":
+            report = proposal.get("candidate_report") or {}
+            deterministic_validation = {
+                **cheap_validation,
+                "status": "reused",
+                "source": "propose-time report",
+                "reused_summary": dict(report.get("validation_summary") or {}),
+                "reuse_proof": reuse["proof"],
+            }
+            store.append_journal(
+                job_id,
+                {
+                    "type": "apply_validation_reused",
+                    "proposal_id": proposal_id,
+                    "source": "propose-time report",
+                    **reuse["proof"],
+                },
+            )
+        else:
+            # Defense in depth: a failed cheap invariant with green frozen
+            # evidence means something moved outside the fingerprinted
+            # surface — fall back to the authoritative full re-validation.
+            store.append_journal(
+                job_id,
+                {
+                    "type": "apply_validation_rerun",
+                    "proposal_id": proposal_id,
+                    "reason": "cheap_invariants_failed",
+                },
+            )
+    else:
+        store.append_journal(
+            job_id,
+            {
+                "type": "apply_validation_rerun",
+                "proposal_id": proposal_id,
+                "reason": reuse["reason"],
+                **({"details": reuse["proof"]} if reuse["proof"] else {}),
+            },
+        )
+    if deterministic_validation is None:
+        deterministic_validation = validate_candidate_application(
+            repo_root=store.repo_root,
+            job_dir=store.job_dir(job_id),
+            proposal=proposal,
+            candidate_dir=candidate_dir,
+            require_judge=bool(proposal.get("judge_required")),
+            allow_legacy=allow_legacy,
+        )
+        deterministic_validation = _with_execution_validation(
+            store,
+            job_id,
+            proposal,
+            deterministic_validation,
+        )
     store.record_proposal_application_validation(
         job_id,
         proposal_id,
         deterministic_validation,
     )
-    if deterministic_validation["status"] != "passed":
+    if deterministic_validation["status"] not in ("passed", "reused"):
         final_error = "Candidate validation failed: " + json.dumps(
             validation_summary(deterministic_validation), sort_keys=True, default=str
         )

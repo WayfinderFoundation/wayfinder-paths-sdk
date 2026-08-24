@@ -11,6 +11,7 @@ from typing import Any
 
 import yaml
 
+from wayfinder_paths.jobs.execution.features import parse_feature_specs
 from wayfinder_paths.jobs.execution.job import _load_dataset
 from wayfinder_paths.jobs.execution.preflight import run_preflight
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
@@ -22,9 +23,13 @@ from wayfinder_paths.jobs.execution.simulator import (
 from wayfinder_paths.jobs.execution.validation import (
     FORBIDDEN_ORDER_PATTERNS,
     entrypoint_inside_workspace_check,
+    resolve_execution_spec,
 )
 from wayfinder_paths.jobs.failures import classify_failure
-from wayfinder_paths.jobs.gating import compute_workspace_revision
+from wayfinder_paths.jobs.gating import (
+    compute_workspace_revision,
+    dataset_content_fingerprint,
+)
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
@@ -47,13 +52,19 @@ def validate_candidate_application(
     candidate_dir: Path,
     require_judge: bool = False,
     allow_legacy: bool = False,
+    skip_behavior_checks: bool = False,
 ) -> dict[str, Any]:
     """Validate an approved job application candidate before promotion.
 
     The validator intentionally checks the candidate artifacts, not the active
     job workspace. It is deterministic: no market reads, no order tools, and no
     model calls. The optional judge result can be supplied by a separate worker.
-    """
+
+    `skip_behavior_checks=True` drops ONLY the expensive behavioral half
+    (full-dataset candidate backtest + preflight, `_candidate_behavior_checks`)
+    and keeps every cheap invariant. Callers may set it exclusively when the
+    propose-time evidence is provably reusable (see
+    `application.assess_validation_reuse`)."""
 
     checks: list[dict[str, Any]] = []
     candidate_job_yaml = candidate_dir / "job.yaml"
@@ -130,15 +141,16 @@ def validate_candidate_application(
         if contract == "jobs_v1":
             checks.extend(_jobs_v1_script_checks(script_path))
             checks.extend(_engine_scenario_checks(script_path, proposal, job_data))
-            checks.extend(
-                _candidate_behavior_checks(
-                    repo_root=repo_root,
-                    job_dir=job_dir,
-                    candidate_dir=candidate_dir,
-                    job_data=job_data,
-                    script_path=script_path,
+            if not skip_behavior_checks:
+                checks.extend(
+                    _candidate_behavior_checks(
+                        repo_root=repo_root,
+                        job_dir=job_dir,
+                        candidate_dir=candidate_dir,
+                        job_data=job_data,
+                        script_path=script_path,
+                    )
                 )
-            )
         else:
             checks.extend(_script_static_checks(script_path))
             checks.extend(_scenario_checks(script_path, proposal))
@@ -368,6 +380,40 @@ def _candidate_behavior_checks(
             {"name": "candidate_preflight_passed", "passed": False, "error": str(exc)}
         )
     return checks
+
+
+def candidate_dataset_fingerprint(
+    candidate_dir: Path, job_dir: Path
+) -> dict[str, Any] | None:
+    """Fingerprint of the dataset + declared feature stores the candidate
+    backtest consumes — the evidence-reuse identity recorded in the
+    candidate_report at propose time and re-derived at apply time (see
+    `application.assess_validation_reuse`). Resolves the execution spec from
+    the candidate bundle so the declared feature paths match what
+    `_candidate_behavior_checks` would actually merge."""
+    job_yaml = candidate_dir / "job.yaml"
+    job_data: dict[str, Any] = {}
+    if job_yaml.exists():
+        try:
+            loaded = yaml.safe_load(job_yaml.read_text(encoding="utf-8")) or {}
+            match loaded:
+                case dict():
+                    job_data = loaded
+        except yaml.YAMLError:
+            job_data = {}
+    spec_data, _ = resolve_execution_spec(candidate_dir, job_data)
+    feature_paths: tuple[str, ...] = ()
+    if spec_data:
+        try:
+            specs = parse_feature_specs(ExecutionSpec.from_dict(spec_data))
+            feature_paths = tuple(item.path for item in specs)
+        except ValueError:
+            # Malformed feature schema fails its own validation check; the
+            # fingerprint stays dataset-only rather than blocking here.
+            feature_paths = ()
+    return dataset_content_fingerprint(
+        candidate_dir, job_dir, feature_paths=feature_paths
+    )
 
 
 def _intent_contract_checks(proposal: Mapping[str, Any]) -> list[dict[str, Any]]:

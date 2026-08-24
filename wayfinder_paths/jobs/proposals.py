@@ -51,7 +51,11 @@ from wayfinder_paths.jobs.improver.spec import (
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import sync_all_jobs
-from wayfinder_paths.jobs.validation import validation_failure_text, validation_summary
+from wayfinder_paths.jobs.validation import (
+    candidate_dataset_fingerprint,
+    validation_failure_text,
+    validation_summary,
+)
 from wayfinder_paths.jobs.worker import JOB_RESULT_MARKER
 
 PROPOSAL_KINDS = {"code_change", "params_update", "model_update", "improver_change"}
@@ -398,6 +402,15 @@ def _generate_candidate_report(
         "mode": mode,
         "gate": gate_payload,
         "economic": economic,
+        # Content hash of the dataset (+ declared feature stores) this
+        # report's backtest consumed. The apply pipeline re-derives it and
+        # skips the expensive re-validation when it (and the candidate
+        # revision) provably match — see application.assess_validation_reuse.
+        "dataset_fingerprint": (
+            candidate_dataset_fingerprint(candidate_dir, store.job_dir(job_id))
+            if mode == "full"
+            else None
+        ),
         "validation_summary": validation_summary(validation),
         # Stats/deltas only — never point series (sync payload discipline).
         "comparison": (
