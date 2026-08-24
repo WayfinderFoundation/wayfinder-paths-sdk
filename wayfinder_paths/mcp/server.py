@@ -35,7 +35,7 @@ from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 
-from wayfinder_paths.core.config import is_opencode_instance
+from wayfinder_paths.core.config import is_opencode_instance, jobs_tools_enabled
 from wayfinder_paths.mcp.tools.alpha_lab import (
     research_get_alpha_types,
     research_search_alpha,
@@ -104,12 +104,11 @@ from wayfinder_paths.mcp.tools.instance_state import (
     visual_set_active_market,
     visual_set_chart_indicators,
 )
-from wayfinder_paths.mcp.tools.jobs import core_jobs
+
+# NOTE: jobs + pattern_match tools are imported lazily inside build_mcp() so a
+# chat box with WAYFINDER_JOBS_ENABLED off never pulls in the heavy jobs/quant
+# packages (pandas + ~71 modules) via this path. See jobs_tools_enabled().
 from wayfinder_paths.mcp.tools.notify import notification_send
-from wayfinder_paths.mcp.tools.pattern_match import (
-    quant_pattern_match,
-    quant_pattern_match_ccxt_proxy,
-)
 from wayfinder_paths.mcp.tools.polymarket import (
     polymarket_cancel_order,
     polymarket_deposit_pusd,
@@ -175,13 +174,24 @@ def build_mcp(
     mcp.tool()(core_web_fetch)
     mcp.tool()(core_run_script)
     mcp.tool()(core_run_strategy)
-    mcp.tool()(core_jobs)
     mcp.tool()(core_runner_status)
     mcp.tool()(core_runner)
 
-    # ─── quant_* (hidden quant-worker analytics) ──────────────────────
-    mcp.tool()(quant_pattern_match)
-    mcp.tool()(quant_pattern_match_ccxt_proxy)
+    # ─── jobs_v1: core_jobs + quant_pattern_match* (gated, default OFF) ─
+    # These let an agent create/flip a job live — placing real orders inside
+    # the runner child, OUTSIDE the safety-review hooks — with no approval
+    # prompt. On chat-only prod boxes that must stay absent. Import lazily so
+    # the heavy jobs/quant packages (pandas + ~71 modules) never load when off.
+    if jobs_tools_enabled():
+        from wayfinder_paths.mcp.tools.jobs import core_jobs
+        from wayfinder_paths.mcp.tools.pattern_match import (
+            quant_pattern_match,
+            quant_pattern_match_ccxt_proxy,
+        )
+
+        mcp.tool()(core_jobs)
+        mcp.tool()(quant_pattern_match)
+        mcp.tool()(quant_pattern_match_ccxt_proxy)
 
     # ─── hyperliquid_* ─────────────────────────────────────────────────
     # Coin naming reference: /using-hyperliquid-adapter/rules/coin-naming.md.

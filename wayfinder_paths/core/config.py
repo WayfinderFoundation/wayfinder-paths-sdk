@@ -182,6 +182,21 @@ def is_opencode_instance() -> bool:
     return bool(os.environ.get("OPENCODE_INSTANCE_ID"))
 
 
+def jobs_tools_enabled() -> bool:
+    """Whether jobs_v1 MCP tools (core_jobs, quant_pattern_match*) are exposed.
+
+    Default OFF: on chat-only prod boxes these tools let an agent create/flip a
+    job live (placing real orders inside the runner child, outside the safety-review
+    hooks) with no approval prompt, and eagerly import the heavy jobs/quant packages
+    (pandas + ~71 modules). Enable explicitly on boxes that run jobs.
+    """
+    return os.environ.get("WAYFINDER_JOBS_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
 def get_opencode_instance_id() -> str:
     if not (instance_id := os.environ.get("OPENCODE_INSTANCE_ID")):
         raise RuntimeError(
