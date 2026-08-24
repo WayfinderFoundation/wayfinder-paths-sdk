@@ -7,11 +7,13 @@ from typing import Any
 import pytest
 
 from wayfinder_paths.jobs.execution import ExecutionSpec
+from wayfinder_paths.jobs.execution import job as job_module
 from wayfinder_paths.jobs.execution.experiments import (
     list_experiments,
     promote_params,
     run_experiment,
 )
+from wayfinder_paths.jobs.execution.job import backtest_execution_job
 from wayfinder_paths.jobs.execution.simulator import PreparedExecutionDataset
 from wayfinder_paths.jobs.execution.walk_forward import run_walk_forward
 from wayfinder_paths.jobs.models import WayfinderJob
@@ -243,3 +245,114 @@ def test_insufficient_bars_error_names_feasible_sizing(tmp_path: Path) -> None:
             test_bars=100,
             train_bars=80,
         )
+
+
+# ── fold artifact persistence + reuse (evidence reuse) ───────────────────────
+
+
+def _count_walk_forward_runs(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    calls: list[int] = []
+    real = job_module.run_walk_forward
+
+    def counting(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(job_module, "run_walk_forward", counting)
+    return calls
+
+
+def _grid_backtest(store: JobStore, job_id: str, tmp_path: Path, **overrides: Any):
+    grid_file = tmp_path / "grid.json"
+    grid_file.write_text(
+        json.dumps(overrides.pop("grid", {"direction": ["long"]})), encoding="utf-8"
+    )
+    return backtest_execution_job(
+        job_id,
+        grid_path=grid_file,
+        walk_forward=overrides.pop(
+            "walk_forward", {"folds": 2, "test_bars": 50, "anchored": True}
+        ),
+        store=store,
+        **overrides,
+    )
+
+
+def _journal_types(store: JobStore, job_id: str) -> list[str]:
+    path = store.job_dir(job_id) / "journal.jsonl"
+    if not path.exists():
+        return []
+    return [
+        json.loads(line)["type"]
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def test_walk_forward_folds_reused_on_identical_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Identical fold spec + dataset + revision: the second run must
+    reconstruct the report from persisted fold artifacts instead of
+    re-simulating every fold."""
+    store, job_id = _make_bundle(tmp_path)
+    calls = _count_walk_forward_runs(monkeypatch)
+
+    first = _grid_backtest(store, job_id, tmp_path)
+    assert len(calls) == 1
+    first_grid = first["result"]["grid_id"]
+    grids_root = store.job_dir(job_id) / "results" / "backtest" / "grids"
+    fold_files = sorted((grids_root / first_grid).glob("fold_*.json"))
+    assert len(fold_files) == 2, "per-fold artifacts persisted"
+    assert json.loads(fold_files[0].read_text())["key"]["revision"]
+
+    second = _grid_backtest(store, job_id, tmp_path)
+    assert len(calls) == 1, "folds must NOT re-simulate"
+    reused = second["walk_forward"]["reused"]
+    assert reused["source_grid_id"] == first_grid
+    assert second["walk_forward"]["summary"] == first["walk_forward"]["summary"]
+    assert [row["test"] for row in second["walk_forward"]["folds"]] == [
+        row["test"] for row in first["walk_forward"]["folds"]
+    ]
+    assert "walk_forward_folds_reused" in _journal_types(store, job_id)
+
+
+def test_walk_forward_folds_recompute_on_key_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, job_id = _make_bundle(tmp_path)
+    calls = _count_walk_forward_runs(monkeypatch)
+    _grid_backtest(store, job_id, tmp_path)
+
+    # Different fold layout → different key → recompute.
+    changed_layout = _grid_backtest(
+        store,
+        job_id,
+        tmp_path,
+        walk_forward={"folds": 2, "test_bars": 40, "anchored": True},
+    )
+    assert len(calls) == 2
+    assert "reused" not in changed_layout["walk_forward"]
+
+    # Workspace revision moved → recompute even for the original layout.
+    root = store.job_dir(job_id)
+    script = root / "workspace" / "src" / "strategy.py"
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\n# tweak\n", encoding="utf-8"
+    )
+    moved_revision = _grid_backtest(store, job_id, tmp_path)
+    assert len(calls) == 3
+    assert "reused" not in moved_revision["walk_forward"]
+
+
+def test_walk_forward_kill_switch_forces_recompute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, job_id = _make_bundle(tmp_path)
+    calls = _count_walk_forward_runs(monkeypatch)
+    _grid_backtest(store, job_id, tmp_path)
+    monkeypatch.setenv("WAYFINDER_WF_FOLDS_ALWAYS_RUN", "1")
+
+    second = _grid_backtest(store, job_id, tmp_path)
+    assert len(calls) == 2
+    assert "reused" not in second["walk_forward"]
