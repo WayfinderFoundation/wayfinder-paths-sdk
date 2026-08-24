@@ -24,9 +24,9 @@ from wayfinder_paths.jobs.strategies._starter_utils import (
     RANKING_STOP_DEFAULTS,
 )
 
-STARTER_CATALOG_VERSION = "1.7.0"
-STARTER_STRATEGY_INCEPTION_AT = "2026-08-18T00:00:00+00:00"
-STARTER_EVIDENCE_REVISION = "1.6.0"
+STARTER_CATALOG_VERSION = "1.8.0"
+STARTER_STRATEGY_INCEPTION_AT = "2026-08-24T00:00:00+00:00"
+STARTER_EVIDENCE_REVISION = "1.7.0"
 STARTER_LEVERAGE_DEFAULT = 1
 STARTER_LEVERAGE_MINIMUM = 1
 STARTER_LEVERAGE_MAXIMUM = 5
@@ -294,6 +294,21 @@ _RESEARCH_METHOD = {
     "validation": (
         "four chronological folds; daily rank strategies also checked at "
         "neighboring UTC rebalance phases"
+    ),
+}
+
+_CRYPTO_MOMENTUM_RESEARCH_METHOD = {
+    "source": "Hyperliquid info API 4h candles via HyperliquidDataClient",
+    "window_start": "2024-09-04T00:00:00+00:00",
+    "window_end": "2026-08-17T16:00:00+00:00",
+    "calendar_days": 712.7,
+    "fill_model": "decision on completed close; fill at next bar open",
+    "costs": {"taker_fee_bps_per_side": 4.5, "slippage_bps_per_side": 3.5},
+    "funding_included": False,
+    "funding": "not included; long and short carry can change live returns",
+    "validation": (
+        "training-only rank admission, four rolling 240-day train / 60-day "
+        "test folds, and all six daily 4h rebalance phases"
     ),
 }
 
@@ -693,6 +708,96 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
                 "current-revision figures supersede the stale snapshot."
             ),
         },
+    ),
+    StarterDefinition(
+        id="crypto-momentum-persistence-4h",
+        name="Crypto Momentum Persistence · 4h",
+        family="cross_sectional_momentum",
+        summary=(
+            "A concentrated, market-neutral crypto basket that owns the "
+            "strongest persistent trend and shorts the weakest."
+        ),
+        timeframe="4h",
+        module="wayfinder_paths.jobs.strategies.crypto_momentum_persistence",
+        symbols=("BTC", "ETH", "SOL", "HYPE"),
+        crypto_assets=("BTC", "ETH", "SOL", "HYPE"),
+        tokenized_equities=(),
+        rules=(
+            "Score each asset as 50% trailing 7-day return plus 50% trailing 28-day return.",
+            "Long the strongest and short the weakest at 35% each; gross 70%, net 0%.",
+            "Re-rank daily on the 12:00 UTC completed bar.",
+        ),
+        params={
+            "fast_momentum_bars": 42,
+            "slow_momentum_bars": 168,
+            "fast_momentum_weight": 0.5,
+            "rebalance_bars": 6,
+            "rebalance_offset": 3,
+            "weight_per_leg": 0.35,
+            "stop_atr_period": 12,
+        },
+        research_evidence={
+            **_CRYPTO_MOMENTUM_RESEARCH_METHOD,
+            "return_after_fees_and_slippage": 0.3526,
+            "return_after_costs_and_funding": 0.3526,
+            "funding_return_contribution": 0.0,
+            "sharpe": 0.7062,
+            "max_drawdown": -0.1812,
+            "chronological_fold_returns": [0.0155, 0.0588, 0.1182, 0.0301],
+            "rank_admission": {
+                "score": "50% trailing 7-day return plus 50% trailing 28-day return",
+                "forward_horizon_bars": 42,
+                "information_coefficient": 0.0482,
+                "t_stat": 4.675,
+                "first_half_information_coefficient": 0.0334,
+                "second_half_information_coefficient": 0.0630,
+                "passed": True,
+            },
+            "walk_forward": {
+                "fold_count": 4,
+                "positive_folds": 4,
+                "mean_return_after_fees_and_slippage": 0.0557,
+                "mean_sharpe": 1.3925,
+                "worst_max_drawdown": -0.1295,
+            },
+            "rebalance_phase_returns": {
+                "00:00_utc": 0.2239,
+                "04:00_utc": 0.1553,
+                "08:00_utc": 0.2541,
+                "12:00_utc": 0.3526,
+                "16:00_utc": 0.3342,
+                "20:00_utc": 0.1784,
+            },
+            "recent_7_day_scenario": {
+                "window_start": "2026-08-17T20:00:00+00:00",
+                "window_end": "2026-08-24T16:00:00+00:00",
+                "return_after_fees_and_slippage": 0.0214,
+                "sharpe": 2.4586,
+                "max_drawdown": -0.0302,
+                "trade_count": 7,
+                "total_fees_usd": 10.38,
+                "initial_pair": {"long": "HYPE", "short": "BTC"},
+                "trace_valid": True,
+                "selection_role": "goal-directed development scenario, not holdout",
+            },
+            "jobs_v1_engine": {
+                "return_after_fees_and_slippage": 0.3526,
+                "sharpe": 0.7062,
+                "max_drawdown": -0.1812,
+                "trade_count": 400,
+                "total_fees_usd": 671.26,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
+                "funding_included": False,
+                "trace_valid": True,
+            },
+        },
+        cautions=(
+            "Funding is not included in the replay and can reduce live returns.",
+            "The recent seven-day scenario guided concentration and is not out-of-sample; the four older walk-forward folds are out-of-sample.",
+            "Only 1x stayed within the -20% account-halt threshold in the leverage sweep.",
+        ),
     ),
     StarterDefinition(
         id="mixed-sleeve-momentum-15m",

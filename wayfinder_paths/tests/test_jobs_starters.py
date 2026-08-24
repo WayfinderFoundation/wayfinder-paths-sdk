@@ -34,6 +34,9 @@ from wayfinder_paths.jobs.starters import (
     validate_starter_leverage,
 )
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.strategies.crypto_momentum_persistence import (
+    CryptoMomentumPersistenceStrategy,
+)
 from wayfinder_paths.jobs.strategies.hype_passive_rsi import (
     HypePassiveRsiStrategy,
 )
@@ -207,11 +210,18 @@ def dataset_fetch_spawns(monkeypatch) -> list[dict[str, Any]]:
 
 def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
     catalog = starter_catalog()
-    assert len(catalog) == 11
-    assert {item["timeframe"] for item in catalog} == {"5m", "15m", "1h", "1d"}
+    assert len(catalog) == 12
+    assert {item["timeframe"] for item in catalog} == {
+        "5m",
+        "15m",
+        "1h",
+        "4h",
+        "1d",
+    }
     assert [item["timeframe"] for item in catalog].count("5m") == 2
     assert [item["timeframe"] for item in catalog].count("15m") == 2
     assert [item["timeframe"] for item in catalog].count("1h") == 5
+    assert [item["timeframe"] for item in catalog].count("4h") == 1
     assert [item["timeframe"] for item in catalog].count("1d") == 2
     for item in catalog:
         assert item["crypto_assets"]
@@ -269,6 +279,7 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
     expected_stops = {
         "mixed-rsi-snapback-1h": (5.0, 0.08, 0.15),
         "mixed-momentum-rank-1h": (8.0, 0.15, 0.30),
+        "crypto-momentum-persistence-4h": (12.0, 0.25, 0.50),
         "mixed-sleeve-momentum-15m": (14.0, 0.26, 0.52),
         "mixed-low-vol-rank-15m": (12.0, 0.25, 0.50),
         "balanced-passive-capitulation-1h": (5.0, 0.08, 0.15),
@@ -327,7 +338,7 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
 # Live-driver window per starter (strategy warmup_bars + 20-bar margin).
 # The driver windows the handed view to lookback_bars, capping ctx.bar_index;
 # any starter whose warmup gate exceeds the window silently never trades —
-# 7 of 11 entries did exactly that under the old 200-bar driver default.
+# 7 of 12 entries did exactly that under the old 200-bar driver default.
 # A new/edited starter MUST update this table consciously.
 EXPECTED_STARTER_LOOKBACK_BARS = {
     "mixed-rsi-snapback-1h": 224,
@@ -335,6 +346,7 @@ EXPECTED_STARTER_LOOKBACK_BARS = {
     "mixed-volume-capitulation-1h": 224,
     "balanced-passive-capitulation-1h": 224,
     "mixed-momentum-rank-1h": 360,
+    "crypto-momentum-persistence-4h": 192,
     "mixed-sleeve-momentum-15m": 2904,
     "mixed-low-vol-rank-15m": 504,
     "hype-passive-rsi-full-5m": 38,
@@ -407,6 +419,36 @@ def test_momentum_rank_longs_leaders_and_shorts_laggards() -> None:
         "C": "sell",
         "D": "sell",
     }
+
+
+def test_crypto_momentum_concentrates_in_the_strongest_and_weakest() -> None:
+    strategy = CryptoMomentumPersistenceStrategy(
+        {
+            "symbols": ["BTC", "ETH", "SOL", "HYPE"],
+            "fast_momentum_bars": 2,
+            "slow_momentum_bars": 4,
+            "rebalance_bars": 1,
+            "min_trade_notional": 0.0,
+        }
+    )
+    ctx = _context(
+        strategy,
+        {
+            "BTC": [1.0, 0.98, 0.95, 0.92, 0.88, 0.83, 0.78, 0.72],
+            "ETH": [1.0, 1.00, 1.01, 1.02, 1.03, 1.04, 1.05, 1.06],
+            "SOL": [1.0, 1.01, 1.03, 1.06, 1.10, 1.15, 1.21, 1.28],
+            "HYPE": [1.0, 1.05, 1.12, 1.22, 1.35, 1.52, 1.72, 1.95],
+        },
+        interval="4h",
+    )
+
+    intents = strategy.decide(ctx)
+
+    hype = ctx.view.symbol_frame("HYPE")
+    expected_score = 0.5 * (1.95 / 1.52 - 1.0) + 0.5 * (1.95 / 1.22 - 1.0)
+    assert hype["starter_momentum"].iloc[-1] == pytest.approx(expected_score)
+    assert _sides(intents) == {"BTC": "sell", "HYPE": "buy"}
+    assert {intent["notional"] for intent in intents} == {3500.0}
 
 
 def test_sleeve_momentum_keeps_crypto_and_equity_sleeves_separate() -> None:
