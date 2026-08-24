@@ -777,7 +777,9 @@ def test_run_experiment_threads_quick_bars_and_parallel(monkeypatch) -> None:
 
     monkeypatch.setattr(experiments_mod, "backtest_execution_job", fake_backtest)
     monkeypatch.setattr(
-        experiments_mod, "record_experiment", lambda job_id, payload, store: {}
+        experiments_mod,
+        "record_experiment",
+        lambda job_id, payload, store, submission_hash=None: {},
     )
     experiments_mod.run_experiment("j", {"a": [1, 2]}, quick_bars=2000)
     assert captured["quick_bars"] == 2000
