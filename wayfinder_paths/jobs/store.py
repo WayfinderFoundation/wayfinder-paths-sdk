@@ -623,34 +623,59 @@ class JobStore:
         by = rejected_by or "owner"
         # Durable restage: an agent cannot bury owner-approved work over a
         # transient box failure. When the latest re-stage/validation failure
-        # is infrastructure-class (OOM, lock, timeout), the proposal stays
-        # approved with restage_requested and the watchdog retries — only the
-        # owner may abandon approved work. (Live incident: one OOM during a
-        # mechanical re-stage led the agent to self-reject an owner-approved
-        # proposal, freezing the change until a human noticed.)
+        # is infrastructure-class (OOM, lock, timeout, missing dataset) OR a
+        # fail-closed gate ESCALATE (the gate REFUSED TO EVALUATE — missing
+        # evidence, governance drift — as opposed to evaluating the change
+        # red), the proposal stays approved with restage_requested and the
+        # watchdog retries — only the owner may abandon approved work. (Live
+        # incidents: one OOM during a mechanical re-stage led the agent to
+        # self-reject an owner-approved proposal; later a missing backtest
+        # dataset made the governance gate ESCALATE during a mechanical
+        # re-stage and the restage flow's own auto-reject buried the
+        # owner-approved change again.)
         if proposal["status"] == "approved" and by != "owner":
             failure_text = _latest_failure_text(proposal, reason)
-            if classify_failure(failure_text) == "infrastructure":
+            is_infrastructure = classify_failure(failure_text) == "infrastructure"
+            is_escalate = _contains_fail_closed_escalate(failure_text)
+            if is_infrastructure or is_escalate:
                 proposal["application"]["restage_requested"] = True
                 proposal["updated_at"] = utc_now_iso()
                 self.write_proposal(job_id, proposal)
-                self.append_journal(
-                    job_id,
-                    {
-                        "type": "proposal_reject_refused",
-                        "proposal_id": proposal_id,
-                        "rejected_by": by,
-                        "failure_kind": "infrastructure",
-                    },
-                )
+                refusal_event: dict[str, Any] = {
+                    "type": "proposal_reject_refused",
+                    "proposal_id": proposal_id,
+                    "rejected_by": by,
+                    "failure_kind": (
+                        "infrastructure" if is_infrastructure else "escalate"
+                    ),
+                }
+                if is_escalate:
+                    refusal_event["owner_review_required"] = (
+                        f"a fail-closed gate ESCALATED instead of evaluating "
+                        f"approved proposal {proposal_id} — the agent may not "
+                        "translate that refusal-to-evaluate into a rejection. "
+                        "The proposal stays approved with restage_requested; "
+                        "the owner reviews or the box condition clears."
+                    )
+                self.append_journal(job_id, refusal_event)
+                if is_infrastructure:
+                    raise ValueError(
+                        f"refusing agent rejection of approved proposal "
+                        f"{proposal_id}: its latest re-stage/validation failure "
+                        "is infrastructure-class (OOM/lock/timeout) — a "
+                        "transient box condition, not evidence against the "
+                        "change. The proposal stays approved with "
+                        "restage_requested and the watchdog retries the "
+                        "re-stage; only the owner may abandon approved work."
+                    )
                 raise ValueError(
                     f"refusing agent rejection of approved proposal "
-                    f"{proposal_id}: its latest re-stage/validation failure "
-                    "is infrastructure-class (OOM/lock/timeout) — a "
-                    "transient box condition, not evidence against the "
-                    "change. The proposal stays approved with "
-                    "restage_requested and the watchdog retries the "
-                    "re-stage; only the owner may abandon approved work."
+                    f"{proposal_id}: its latest failure is a fail-closed gate "
+                    "ESCALATE — the gate refused to evaluate (missing "
+                    "evidence or governance drift), it did not evaluate the "
+                    "change red. The proposal stays approved with "
+                    "restage_requested and owner review required; only the "
+                    "owner may abandon approved work."
                 )
         if kind is not None and kind not in REJECTION_KINDS:
             raise ValueError(f"rejection kind must be one of {sorted(REJECTION_KINDS)}")
@@ -909,6 +934,20 @@ def _infer_rejection_kind(reason: str | None) -> str:
     if any(marker in text for marker in _PROCESS_REJECTION_MARKERS):
         return "process"
     return "substantive"
+
+
+def _contains_fail_closed_escalate(text: str) -> bool:
+    """Whether a failure text carries a fail-closed gate ESCALATE.
+
+    Fail-closed gates that REFUSE TO EVALUATE (governance chain tampered,
+    constitution drift, economic evidence unavailable) all prefix their
+    message with "ESCALATE:" — see _ensure_governance_gate and
+    application.claim_application. A refusal to evaluate is never evidence
+    against the change; a gate that evaluated and came back red ("candidate
+    is not economic-ready: ...") carries no ESCALATE prefix and still stops
+    the line.
+    """
+    return "escalate:" in (text or "").lower()
 
 
 def _latest_failure_text(proposal: Mapping[str, Any], reason: str | None) -> str:

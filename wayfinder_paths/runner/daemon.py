@@ -44,6 +44,12 @@ from wayfinder_paths.runner.script_resolver import resolve_script_path
 JOB_RESULT_MARKER = "WAYFINDER_JOB_RESULT "
 DEFAULT_SYNC_DEBOUNCE_SECONDS = 90.0
 DEFAULT_MAX_RSS_MB = 900.0
+# While a proposal application is applying, the RSS restart exit is deferred
+# (an os._exit orphans the apply mid-flight AND leaves the job's loops
+# paused). Past cap × this multiplier the daemon exits anyway — an apply must
+# not hold a ballooning daemon hostage; the orphaned apply is journaled so
+# recovery knows why it died.
+RSS_HARD_EXIT_MULTIPLIER = 1.5
 JOB_LOCK_TIMEOUT_SECONDS = 3
 JOB_LOCK_BUSY_MSG = (
     "Runner Daemon lock is busy, no operations were completed, please try again later"
@@ -147,6 +153,69 @@ def _max_rss_mb_from_env() -> float:
             f"Invalid WAYFINDER_RUNNERD_MAX_RSS_MB={raw!r}; using {DEFAULT_MAX_RSS_MB}"
         )
         return DEFAULT_MAX_RSS_MB
+
+
+def _applying_applications(repo_root: Path) -> list[dict[str, str]]:
+    """Proposal applications currently in "applying", read straight off the
+    jobs store layout (.wayfinder/jobs/<job>/proposals/*.json) so runnerd
+    never imports the jobs package. `claim_application` pauses the job's
+    loops for the whole apply window — an RSS os._exit during that window
+    orphans the apply mid-flight and leaves the job dark (observed live
+    2026-08-24: runnerd RSS-exited 17s into an owner-approved apply). Never
+    raises; only consulted after the RSS cap is already breached."""
+    applying: list[dict[str, str]] = []
+    try:
+        paths = sorted((repo_root / ".wayfinder" / "jobs").glob("*/proposals/*.json"))
+    except OSError:
+        return applying
+    for path in paths:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        application = data.get("application")
+        if isinstance(application, dict) and application.get("status") == "applying":
+            applying.append(
+                {
+                    "job_id": path.parent.parent.name,
+                    "proposal_id": str(data.get("proposal_id") or path.stem),
+                }
+            )
+    return applying
+
+
+def _journal_rss_exit_during_apply(
+    repo_root: Path,
+    applying: list[dict[str, str]],
+    *,
+    rss_mb: float,
+    max_rss_mb: float,
+) -> None:
+    """Best-effort breadcrumb in each affected job's journal: the apply about
+    to be orphaned died to a daemon hard-exit, not to anything about the
+    change itself. Mirrors JobStore.append_journal's row shape without
+    importing the jobs package. Never raises."""
+    for entry in applying:
+        path = repo_root / ".wayfinder" / "jobs" / entry["job_id"] / "journal.jsonl"
+        try:
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(
+                        {
+                            "ts": datetime.now(UTC).isoformat(),
+                            "type": "runnerd_rss_exit_during_apply",
+                            "proposal_id": entry["proposal_id"],
+                            "rss_mb": round(rss_mb, 1),
+                            "max_rss_mb": round(max_rss_mb, 1),
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+        except OSError:
+            continue
 
 
 def _rss_mb() -> float | None:
@@ -276,6 +345,9 @@ class RunnerDaemon:
         self._daemon_log_sink_id: int | None = None
         self._warm_spawner: Any | None = None
         self._max_rss_mb = _max_rss_mb_from_env()
+        # Last time the apply-in-flight RSS deferral was logged (monotonic);
+        # seeded so the FIRST deferral always logs.
+        self._rss_defer_logged_at = -3600.0
         self._sync_debouncer = _SyncDebouncer(
             action=lambda: self._start_backend_sync(),
             delay_seconds=_sync_debounce_seconds(),
@@ -398,12 +470,54 @@ class RunnerDaemon:
         rss_mb = _rss_mb()
         if rss_mb is None or rss_mb <= self._max_rss_mb:
             return
-        logger.critical(
-            f"runnerd RSS {rss_mb:.0f}MB exceeds WAYFINDER_RUNNERD_MAX_RSS_MB="
-            f"{self._max_rss_mb:.0f}MB; exiting now so the supervisor restarts "
-            "us cleanly between ticks instead of the kernel OOM-killing us "
-            "mid-write"
-        )
+        # A live apply owns the exit decision up to the hard override: exiting
+        # mid-apply orphaned an owner-approved apply in production (claim
+        # stood, completer died, loops stayed paused until the watchdog
+        # noticed). Defer and re-check next tick instead.
+        applying = _applying_applications(self._paths.repo_root)
+        hard_exit_mb = self._max_rss_mb * RSS_HARD_EXIT_MULTIPLIER
+        if applying and rss_mb <= hard_exit_mb:
+            # Ticks run every ~1s: debounce the deferral log so a minutes-long
+            # apply does not spam CRITICAL once per tick.
+            now = time.monotonic()
+            if now - self._rss_defer_logged_at >= 60.0:
+                self._rss_defer_logged_at = now
+                in_flight = ", ".join(
+                    f"{entry['job_id']}/{entry['proposal_id']}" for entry in applying
+                )
+                logger.critical(
+                    f"runnerd RSS {rss_mb:.0f}MB exceeds "
+                    f"WAYFINDER_RUNNERD_MAX_RSS_MB={self._max_rss_mb:.0f}MB but "
+                    f"{len(applying)} proposal application(s) are applying "
+                    f"({in_flight}); deferring the restart exit until no apply "
+                    f"is in flight (hard override at {hard_exit_mb:.0f}MB); "
+                    "re-checking next tick"
+                )
+            return
+        if applying:
+            # Hard override: an apply must not hold a ballooning daemon
+            # hostage. Journal the in-flight applies so recovery knows the
+            # orphaning cause was this exit, not the apply itself.
+            _journal_rss_exit_during_apply(
+                self._paths.repo_root,
+                applying,
+                rss_mb=rss_mb,
+                max_rss_mb=self._max_rss_mb,
+            )
+            logger.critical(
+                f"runnerd RSS {rss_mb:.0f}MB exceeds the hard override "
+                f"{hard_exit_mb:.0f}MB (cap {self._max_rss_mb:.0f}MB × "
+                f"{RSS_HARD_EXIT_MULTIPLIER}) with {len(applying)} apply(ies) "
+                "in flight; exiting anyway — orphaned applies journaled as "
+                "runnerd_rss_exit_during_apply for the watchdog"
+            )
+        else:
+            logger.critical(
+                f"runnerd RSS {rss_mb:.0f}MB exceeds "
+                f"WAYFINDER_RUNNERD_MAX_RSS_MB={self._max_rss_mb:.0f}MB; "
+                "exiting now so the supervisor restarts us cleanly between "
+                "ticks instead of the kernel OOM-killing us mid-write"
+            )
         os._exit(1)
 
     def _reap(self, *, now: int) -> None:

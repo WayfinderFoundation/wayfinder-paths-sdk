@@ -89,6 +89,39 @@ def test_classify_failure_taxonomy() -> None:
         assert classify_failure(text) == "evidence", text
 
 
+def test_classify_missing_data_is_infrastructure() -> None:
+    """A data-feed incident that deletes the job's backtest dataset is a BOX
+    condition: every check that needs bars fails, which says nothing about the
+    candidate. (Live incident 2026-08-24: results/backtest/input_bars.json
+    gone → scenario replay + candidate backtest both failed → misclassified
+    as evidence → an owner-approved proposal was buried.)"""
+    infrastructure = [
+        # The _load_dataset raise from execution/job.py, verbatim.
+        "No backtest bars found. Provide results/backtest/input_bars.json, "
+        "workspace/config/backtest_bars.json, execution_scenario_plan bars, "
+        "or execution_spec.validation.fixture_bars.",
+        # How it rides through candidate validation (validation.py).
+        "no dataset for candidate backtest: No backtest bars found.",
+        # How it rides through the economic gate (proposals.py).
+        "economic evaluation failed: No backtest bars found",
+        "results/backtest/input_bars.json is missing after the data-feed reset",
+        "dataset not found for HYPE 5m",
+        "missing dataset: refetch via fetch-dataset",
+        "data_feed_degraded: newest feature bar is stale",
+        "no bars found in the requested window",
+    ]
+    for text in infrastructure:
+        assert classify_failure(text) == "infrastructure", text
+    # Tight patterns: a genuinely failing backtest is still evidence.
+    evidence = [
+        "backtest failed",
+        "candidate backtest failed: net_return regressed below baseline",
+        "dataset spans 30d but only 7d was requested",
+    ]
+    for text in evidence:
+        assert classify_failure(text) == "evidence", text
+
+
 def test_compute_status_block_in_wake_prompt(tmp_path: Path) -> None:
     from wayfinder_paths.jobs.worker import prepare_job_worker_prompt
 
@@ -137,6 +170,84 @@ def test_agent_cannot_bury_approved_work_on_infra_failure(tmp_path: Path) -> Non
     # The owner may still abandon approved work — the guard binds agents only.
     rejected = store.reject_proposal(
         job_id, "prop-heal", reason="no longer wanted", rejected_by="owner"
+    )
+    assert rejected["status"] == "rejected"
+
+
+def test_agent_cannot_bury_approved_work_on_missing_dataset(tmp_path: Path) -> None:
+    """Regression pin for the 2026-08-24 burial: a data-feed incident deleted
+    the job's backtest dataset, the mechanical re-stage hit the fail-closed
+    governance gate, and the restage flow's agent rejection buried the
+    owner-approved proposal. Missing-dataset text now classifies as
+    infrastructure and the guard refuses the rejection."""
+    store, job_id = _make_store(tmp_path)
+    store.write_proposal(job_id, _approved_proposal(None))
+    reason = (
+        "re-stage gate failed on current base abc123: ESCALATE: blocking "
+        "governance requires economic_ready=True for a live-capable job; got "
+        "None: economic evaluation failed: No backtest bars found. Provide "
+        "results/backtest/input_bars.json, workspace/config/backtest_bars.json, "
+        "execution_scenario_plan bars, or execution_spec.validation."
+        "fixture_bars.. The workspace changed materially since approval — "
+        "propose the change fresh so the owner can review it against the new "
+        "base."
+    )
+    with pytest.raises(ValueError, match="refusing agent rejection"):
+        store.reject_proposal(job_id, "prop-heal", reason=reason, rejected_by="agent")
+    kept = store.load_proposal(job_id, "prop-heal")
+    assert kept["status"] == "approved"
+    assert kept["application"]["restage_requested"] is True
+    assert _journal_events(store, job_id, "proposal_reject_refused")
+
+
+def test_agent_cannot_bury_approved_work_on_gate_escalate(tmp_path: Path) -> None:
+    """A fail-closed gate ESCALATE is a refusal to evaluate, never an
+    evaluation of the change — the agent may not translate it into a
+    rejection even when no infrastructure pattern matches. The owner still
+    can."""
+    store, job_id = _make_store(tmp_path)
+    store.write_proposal(job_id, _approved_proposal(None))
+    reason = (
+        "re-stage gate failed on current base abc123: ESCALATE: governance "
+        "changed since the candidate was evaluated (report aaa vs current "
+        "bbb) — re-run the economic report."
+    )
+    assert classify_failure(reason) == "evidence"  # no infra pattern involved
+    with pytest.raises(ValueError, match="fail-closed gate ESCALATE"):
+        store.reject_proposal(job_id, "prop-heal", reason=reason, rejected_by="agent")
+    kept = store.load_proposal(job_id, "prop-heal")
+    assert kept["status"] == "approved"
+    assert kept["application"]["restage_requested"] is True
+    refusals = _journal_events(store, job_id, "proposal_reject_refused")
+    assert refusals and refusals[-1]["failure_kind"] == "escalate"
+    assert "owner_review_required" in refusals[-1]
+
+    # Only the owner may abandon approved work — same text, owner passes.
+    rejected = store.reject_proposal(
+        job_id, "prop-heal", reason=reason, rejected_by="owner"
+    )
+    assert rejected["status"] == "rejected"
+
+
+def test_agent_reject_of_pending_evidence_red_gate_still_passes(
+    tmp_path: Path,
+) -> None:
+    """The guard binds APPROVED proposals only: an agent rejecting its own
+    pending proposal over a red evidence gate is the system working."""
+    store, job_id = _make_store(tmp_path)
+    store.write_proposal(
+        job_id,
+        {
+            "proposal_id": "prop-pending",
+            "status": "pending",
+            "application": {"status": "not_requested"},
+        },
+    )
+    rejected = store.reject_proposal(
+        job_id,
+        "prop-pending",
+        reason="candidate gate is not live-ready: net_return below baseline",
+        rejected_by="agent",
     )
     assert rejected["status"] == "rejected"
 
