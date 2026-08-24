@@ -22,6 +22,7 @@ from wayfinder_paths import __version__
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.core.clients.ScheduledJobsClient import SCHEDULED_JOBS_CLIENT
 from wayfinder_paths.core.config import is_opencode_instance
+from wayfinder_paths.runner.burst import BurstEstimator
 from wayfinder_paths.runner.constants import (
     JOB_TYPE_SCRIPT,
     JOB_TYPE_STRATEGY,
@@ -42,6 +43,13 @@ from wayfinder_paths.runner.schedule import (
 from wayfinder_paths.runner.script_resolver import resolve_script_path
 
 JOB_RESULT_MARKER = "WAYFINDER_JOB_RESULT "
+# Burst-admission tuning. cap = shared-cpu burst budget; low-water must exceed
+# the worst-case cost of a single in-flight job so one already-running job can't
+# overshoot the budget to zero (validated in the docker burst-lab); max-postpone
+# bounds starvation so a due job can't be held behind a permanent backlog.
+BURST_CAP_CPU_S = 500.0
+BURST_LOW_WATER_CPU_S = 120.0
+BURST_MAX_POSTPONE_S = 600.0
 DEFAULT_SYNC_DEBOUNCE_SECONDS = 90.0
 DEFAULT_MAX_RSS_MB = 900.0
 # While a proposal application is applying, the RSS restart exit is deferred
@@ -323,6 +331,7 @@ class RunnerDaemon:
         max_failures: int = 5,
         default_timeout_seconds: int = 20 * 60,
         log_level: str = "INFO",
+        burst_admission: bool = True,
     ) -> None:
         self._paths = paths
         self._tick_seconds = float(tick_seconds)
@@ -330,6 +339,19 @@ class RunnerDaemon:
         self._max_failures = int(max_failures)
         self._default_timeout_seconds = int(default_timeout_seconds)
         self._log_level = str(log_level).upper()
+        # Burst-credit admission control: postpone launching background jobs when
+        # the machine is close to draining its shared-cpu burst budget, so it is
+        # never pinned at baseline (which slows everything, incl. the agent).
+        self._burst = (
+            BurstEstimator(
+                cap_cpu_s=BURST_CAP_CPU_S, low_water_cpu_s=BURST_LOW_WATER_CPU_S
+            )
+            if burst_admission
+            else None
+        )
+        # job_id -> monotonic time of first postpone, so a job can't starve
+        # behind a persistent backlog (force-run past BURST_MAX_POSTPONE_S).
+        self._postponed_since: dict[int, float] = {}
 
         self._db = RunnerDB(paths.db_path)
         self._started_at = int(time.time())
@@ -458,6 +480,8 @@ class RunnerDaemon:
         try:
             now = int(time.time())
             self._last_tick_at = now
+            if self._burst is not None:
+                self._burst.update()
             self._reap(now=now)
             for job in self._db.due_jobs(now=now):
                 self._maybe_start_job(job=job, now=now, reason="schedule")
@@ -784,6 +808,19 @@ class RunnerDaemon:
             return None
         job_id = job["id"]
         job_name = job["name"]
+        # Burst admission: hold the launch while the machine is draining its
+        # shared-cpu budget, so background jobs never pin it. The job stays due
+        # and retries next tick once the budget recovers. Bounded by
+        # BURST_MAX_POSTPONE_S so a persistent backlog can't starve it.
+        if self._burst is not None and self._burst.over_quota():
+            first = self._postponed_since.setdefault(job_id, time.monotonic())
+            if time.monotonic() - first < BURST_MAX_POSTPONE_S:
+                logger.debug(
+                    f"Postponing job {job_name}: burst balance "
+                    f"{self._burst.balance:.0f} CPU-s < {BURST_LOW_WATER_CPU_S:.0f}"
+                )
+                return None
+        self._postponed_since.pop(job_id, None)
         scheduled_for = (
             int(job.get("next_run_at") or now) if reason == "schedule" else None
         )
