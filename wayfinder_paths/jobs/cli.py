@@ -83,10 +83,10 @@ from wayfinder_paths.jobs.sync import (
     apply_initial_capital,
     apply_script_mode,
     apply_wallet_label,
-    venue_deposit,
-    venue_withdraw,
     snapshot_job,
     sync_all_jobs,
+    venue_deposit,
+    venue_withdraw,
 )
 from wayfinder_paths.jobs.universe import universe_scan_job
 from wayfinder_paths.jobs.worker import run_job_worker
