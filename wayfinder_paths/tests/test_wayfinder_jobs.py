@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import yaml
 
+from wayfinder_paths.jobs import sync as sync_module
 from wayfinder_paths.jobs.application import (
     claim_application,
     complete_application,
@@ -755,6 +757,28 @@ def test_sync_all_jobs_noops_outside_opencode(tmp_path: Path, monkeypatch) -> No
     store.save(WayfinderJob.new("local-script", script="workspace/src/loop.py"))
 
     sync_all_jobs(store=store)
+
+
+def test_sync_all_jobs_pushes_versioned_starter_catalog(
+    tmp_path: Path, monkeypatch
+) -> None:
+    client = sync_module.WAYFINDER_JOBS_CLIENT
+    response = MagicMock()
+    post = MagicMock(return_value=response)
+    monkeypatch.setattr(client, "_base_url", lambda: "https://api.example/jobs")
+    monkeypatch.setattr(client._client, "post", post)
+
+    sync_all_jobs(store=JobStore(repo_root=tmp_path))
+
+    assert post.call_args.args == ("https://api.example/jobs/sync/",)
+    payload = post.call_args.kwargs["json"]
+    assert payload["jobs"] == []
+    starters = payload["starters"]
+    assert starters["catalog_version"] == "1.10.0"
+    assert str(starters["cached_at"]).endswith("+00:00")
+    items = starters["items"]
+    assert items[0]["id"] == "crypto-momentum-persistence-4h"
+    response.raise_for_status.assert_called_once_with()
 
 
 def test_worker_prompt_ledgers_and_backtest_are_dynamic_only(

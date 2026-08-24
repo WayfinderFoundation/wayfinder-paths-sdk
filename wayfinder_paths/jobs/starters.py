@@ -29,7 +29,8 @@ from wayfinder_paths.jobs.strategies._starter_utils import (
     RANKING_STOP_DEFAULTS,
 )
 
-STARTER_CATALOG_VERSION = "1.9.0"
+STARTER_CATALOG_VERSION = "1.10.0"
+_FEATURED_STARTER_ID = "crypto-momentum-persistence-4h"
 STARTER_STRATEGY_INCEPTION_AT = "2026-08-24T00:00:00+00:00"
 # Catalog launch policy: every off-the-shelf starter launches with the agent
 # loop ON in intervene mode. Fleet evidence (two launches of the identical
@@ -1300,7 +1301,11 @@ STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
 
 
 def starter_catalog() -> list[dict[str, Any]]:
-    return [definition.to_dict() for definition in STARTER_DEFINITIONS]
+    definitions = sorted(
+        STARTER_DEFINITIONS,
+        key=lambda definition: definition.id != _FEATURED_STARTER_ID,
+    )
+    return [definition.to_dict() for definition in definitions]
 
 
 def get_starter(starter_id: str) -> StarterDefinition:
