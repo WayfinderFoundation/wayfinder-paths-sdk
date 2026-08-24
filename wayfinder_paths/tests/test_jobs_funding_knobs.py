@@ -132,3 +132,85 @@ def test_funding_knob_clis_round_trip(tmp_path, monkeypatch) -> None:
     outcome = runner.invoke(cli_module.job_cli, ["set-wallet-label", job_id, " "])
     assert outcome.exit_code != 0
     assert "wallet label" in outcome.output
+
+
+def test_venue_deposit_bridges_then_grows_capital(tmp_path, monkeypatch) -> None:
+    import asyncio
+
+    from wayfinder_paths.jobs import sync as sync_module
+
+    store, job_id = _job(tmp_path)
+    job = store.load(job_id)
+    job.execution_params["wallet_label"] = job_id
+    store.save(job)
+    monkeypatch.setattr(sync_module, "sync_all_jobs", lambda **kwargs: None)
+    calls: list[dict] = []
+
+    async def fake_deposit(*, wallet_label, amount_usdc):
+        calls.append({"wallet_label": wallet_label, "amount_usdc": amount_usdc})
+        return {"status": "confirmed"}
+
+    import wayfinder_paths.mcp.tools.hyperliquid as hl
+
+    monkeypatch.setattr(hl, "hyperliquid_deposit_usdc", fake_deposit)
+
+    result = asyncio.run(sync_module.venue_deposit(job_id, 25.0, store=store))
+    assert calls == [{"wallet_label": job_id, "amount_usdc": 25.0}]
+    assert result["deposit_status"] == "confirmed"
+    assert result["initial_capital"] == 10_025.0
+    assert store.load(job_id).execution_params["initial_capital"] == 10_025.0
+
+
+def test_venue_deposit_failed_send_never_touches_capital(tmp_path, monkeypatch) -> None:
+    import asyncio
+
+    from wayfinder_paths.jobs import sync as sync_module
+
+    store, job_id = _job(tmp_path)
+    job = store.load(job_id)
+    job.execution_params["wallet_label"] = job_id
+    store.save(job)
+
+    async def fake_deposit(*, wallet_label, amount_usdc):
+        return {"status": "failed", "error": "no gas"}
+
+    import wayfinder_paths.mcp.tools.hyperliquid as hl
+
+    monkeypatch.setattr(hl, "hyperliquid_deposit_usdc", fake_deposit)
+
+    with pytest.raises(ValueError):
+        asyncio.run(sync_module.venue_deposit(job_id, 25.0, store=store))
+    assert store.load(job_id).execution_params["initial_capital"] == 10_000.0
+
+
+def test_venue_withdraw_shrinks_capital_floored_at_zero(tmp_path, monkeypatch) -> None:
+    import asyncio
+
+    from wayfinder_paths.jobs import sync as sync_module
+
+    store, job_id = _job(tmp_path)
+    job = store.load(job_id)
+    job.execution_params["wallet_label"] = job_id
+    job.execution_params["initial_capital"] = 50.0
+    store.save(job)
+    monkeypatch.setattr(sync_module, "sync_all_jobs", lambda **kwargs: None)
+
+    async def fake_withdraw(*, wallet_label, amount_usdc):
+        return {"status": "confirmed"}
+
+    import wayfinder_paths.mcp.tools.hyperliquid as hl
+
+    monkeypatch.setattr(hl, "hyperliquid_withdraw_usdc", fake_withdraw)
+
+    result = asyncio.run(sync_module.venue_withdraw(job_id, 80.0, store=store))
+    assert result["initial_capital"] == 0.0
+
+
+def test_venue_ops_require_bound_wallet(tmp_path) -> None:
+    import asyncio
+
+    from wayfinder_paths.jobs import sync as sync_module
+
+    store, job_id = _job(tmp_path)
+    with pytest.raises(ValueError, match="wallet"):
+        asyncio.run(sync_module.venue_deposit(job_id, 25.0, store=store))

@@ -85,6 +85,8 @@ from wayfinder_paths.jobs.sync import (
     apply_wallet_label,
     snapshot_job,
     sync_all_jobs,
+    venue_deposit,
+    venue_withdraw,
 )
 from wayfinder_paths.jobs.universe import universe_scan_job
 from wayfinder_paths.jobs.worker import run_job_worker
@@ -1444,6 +1446,38 @@ def set_wallet_label_cmd(job_id: str, label: str) -> None:
 def set_initial_capital_cmd(job_id: str, amount: float) -> None:
     try:
         result = apply_initial_capital(job_id, amount)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="venue-deposit",
+    help="Bridge USDC (>= 5) from the job's bound wallet into Hyperliquid "
+    "and grow initial_capital by the same amount. Waits for the credit; "
+    "an unconfirmed credit still counts (the deposit is en route).",
+)
+@click.argument("job_id")
+@click.argument("amount", type=float)
+def venue_deposit_cmd(job_id: str, amount: float) -> None:
+    try:
+        result = asyncio.run(venue_deposit(job_id, amount))
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="venue-withdraw",
+    help="Withdraw USDC (>= 2 gross; Bridge2 nets $1 off) from Hyperliquid "
+    "to the job's bound wallet and shrink initial_capital by the gross "
+    "amount, floored at zero.",
+)
+@click.argument("job_id")
+@click.argument("amount", type=float)
+def venue_withdraw_cmd(job_id: str, amount: float) -> None:
+    try:
+        result = asyncio.run(venue_withdraw(job_id, amount))
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     _echo_json({"ok": True, "result": result})
