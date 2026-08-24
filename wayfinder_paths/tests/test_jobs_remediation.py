@@ -51,18 +51,72 @@ def test_case_opens_once_and_retries_until_accountable_outcome(
 
     opened = sync_remediation_with_health(store, job_id, _health(), now=now)
     assert opened and opened["event"] == "regime_shift"
+    # Quiet retries are debounced for 6 hours: the 30-minute cadence churned
+    # (~every scheduled tick re-woke the agent over unchanged evidence).
+    for minutes in (10, 31, 5 * 60):
+        assert (
+            sync_remediation_with_health(
+                store, job_id, _health(), now=now + dt.timedelta(minutes=minutes)
+            )
+            is None
+        )
+
+    retry = sync_remediation_with_health(
+        store, job_id, _health(), now=now + dt.timedelta(hours=6, minutes=1)
+    )
+    assert retry and retry["event"] == "regime_remediation_due"
+    assert load_remediation(store, job_id)["attempts"] == 2  # type: ignore[index]
+
+
+def test_recorded_progress_defers_the_retry_wake(tmp_path: Path) -> None:
+    """A bounded progress note is the agent already working the case — the
+    next quiet retry anchors on the note, not the original wake."""
+    store, job_id = _store(tmp_path)
+    now = dt.datetime(2026, 8, 21, 12, tzinfo=dt.UTC)
+    sync_remediation_with_health(store, job_id, _health(), now=now)
+
+    # Progress recorded 5h50m in (recorded_at = real now; anchor on max()).
+    update_remediation_progress(
+        store,
+        job_id,
+        state="evaluating",
+        note="Running HYPE ablation on all OOS folds",
+    )
+
+    # 6h+ after the wake but minutes after the progress note: no re-wake.
     assert (
         sync_remediation_with_health(
-            store, job_id, _health(), now=now + dt.timedelta(minutes=10)
+            store, job_id, _health(), now=dt.datetime.now(dt.UTC)
         )
         is None
     )
 
+    # 6h+ after the progress note: the quiet retry fires again.
     retry = sync_remediation_with_health(
-        store, job_id, _health(), now=now + dt.timedelta(minutes=31)
+        store,
+        job_id,
+        _health(),
+        now=dt.datetime.now(dt.UTC) + dt.timedelta(hours=6, minutes=1),
     )
     assert retry and retry["event"] == "regime_remediation_due"
-    assert load_remediation(store, job_id)["attempts"] == 2  # type: ignore[index]
+
+
+def test_material_evidence_still_wakes_through_the_debounce(tmp_path: Path) -> None:
+    store, job_id = _store(tmp_path)
+    now = dt.datetime(2026, 8, 21, 12, tzinfo=dt.UTC)
+    sync_remediation_with_health(store, job_id, _health(), now=now)
+    update_remediation_progress(
+        store, job_id, state="evaluating", note="ablating", artifact_path=None
+    )
+
+    refreshed = sync_remediation_with_health(
+        store,
+        job_id,
+        _health(score=6, fingerprint="health-b"),
+        now=now + dt.timedelta(minutes=2),
+    )
+
+    assert refreshed and refreshed["event"] == "regime_shift"
 
 
 def test_material_evidence_bypasses_retry_debounce(tmp_path: Path) -> None:

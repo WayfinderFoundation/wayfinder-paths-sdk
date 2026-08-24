@@ -15,8 +15,10 @@ change that gets promoted.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import os
+import re
 import shutil
 import uuid
 from pathlib import Path
@@ -63,6 +65,174 @@ PROPOSAL_KINDS = {"code_change", "params_update", "model_update", "improver_chan
 # propose-time retry of an infrastructure-failed candidate validation.
 PROPOSE_LOCK_WAIT_ENV = "WAYFINDER_PROPOSE_LOCK_WAIT_SECONDS"
 _PROPOSE_LOCK_WAIT_DEFAULT_S = 120.0
+
+# ── Paper auto-apply tier ────────────────────────────────────────────────
+# Owner-approved doctrine: paper proposal approvals are mechanical — a
+# gate-green candidate on a job that cannot touch live capital auto-applies
+# with visibility (journal + owner_attention.decided_autonomously) and a
+# bounded undo, instead of waiting on an owner click. Autonomy changes WHO
+# clicks, not WHAT is checked: the auto path routes through the exact
+# `store.approve_proposal` gate (validation + live-ready + governance +
+# candidate freshness), unchanged.
+PAPER_AUTO_APPLY_ENV = "WAYFINDER_PAPER_AUTO_APPLY"  # "0" disables
+PAPER_AUTO_APPLY_DEFAULT_KINDS = frozenset({"params_update"})
+# improver_change is a criterion/search-policy change — governance-shaped,
+# owner-only regardless of any auto_limits override.
+PAPER_AUTO_APPLY_ALLOWED_KINDS = frozenset(
+    {"params_update", "code_change", "model_update"}
+)
+PAPER_AUTO_APPLY_DAILY_CAP = 3
+PAPER_AUTO_APPLY_UNDO_WINDOW_HOURS = 72
+# Owner-owned knobs may never ride the auto tier, whatever the params look
+# like: sizing (leverage), custody (wallet), execution mode, governance.
+_PAPER_AUTO_APPLY_FORBIDDEN_PARAM = re.compile(
+    r"leverage|wallet|mode|governance", re.IGNORECASE
+)
+
+
+def paper_auto_apply_enabled() -> bool:
+    return os.environ.get(PAPER_AUTO_APPLY_ENV) != "0"
+
+
+def _param_keys(value: Any, prefix: str = "") -> list[str]:
+    if not isinstance(value, dict):
+        return []
+    keys: list[str] = []
+    for key, child in value.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        keys.append(path)
+        keys.extend(_param_keys(child, path))
+    return keys
+
+
+def _auto_applies_last_day(store: JobStore, job_id: str) -> int:
+    cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(days=1)
+    count = 0
+    for event in store.read_jsonl(job_id, "journal.jsonl"):
+        if event.get("type") != "proposal_auto_applied":
+            continue
+        try:
+            ts = dt.datetime.fromisoformat(str(event.get("ts")))
+        except (TypeError, ValueError):
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=dt.UTC)
+        if ts >= cutoff:
+            count += 1
+    return count
+
+
+def paper_auto_apply_blockers(
+    store: JobStore, job_id: str, proposal: dict[str, Any]
+) -> list[str]:
+    """Why this proposal must wait for an owner click. Empty = auto-eligible."""
+    from wayfinder_paths.jobs.owner_attention import job_live_capital_risk
+
+    blockers: list[str] = []
+    job = store.load(job_id)
+    if job.execution_contract != "jobs_v1":
+        blockers.append("legacy execution contract")
+    if str(job.script_loop.mode or "paper") != "paper":
+        blockers.append("script mode is not paper")
+    if job_live_capital_risk(job):
+        blockers.append("job is live-capable (live mode or wallet bound)")
+    limits = dict(job.agent_loop.auto_limits or {})
+    allowed_kinds = (
+        set(limits.get("auto_apply_kinds") or PAPER_AUTO_APPLY_DEFAULT_KINDS)
+        & PAPER_AUTO_APPLY_ALLOWED_KINDS
+    )
+    kind = str(proposal.get("kind") or "")
+    if kind not in allowed_kinds:
+        blockers.append(f"kind {kind} not auto-appliable ({sorted(allowed_kinds)})")
+    params = (proposal.get("proposed_change") or {}).get("execution_params") or {}
+    forbidden = sorted(
+        key
+        for key in _param_keys(params)
+        if _PAPER_AUTO_APPLY_FORBIDDEN_PARAM.search(key)
+    )
+    if forbidden:
+        blockers.append(f"params touch owner-owned keys: {forbidden}")
+    report = proposal.get("candidate_report") or {}
+    if (report.get("validation_summary") or {}).get("status") != "passed":
+        blockers.append("candidate validation not passed")
+    if report.get("mode") != "validation_only":
+        if (report.get("gate") or {}).get("live_ready") is not True:
+            blockers.append("candidate gate not green")
+        # Paper tier mirrors the paper approve gate's advisory semantics: an
+        # explicit economic ready=False blocks; absent/unevaluated does not.
+        if (report.get("economic") or {}).get("ready") is False:
+            blockers.append("candidate not economic-ready")
+    cap = int(limits.get("max_auto_applies_per_day") or PAPER_AUTO_APPLY_DAILY_CAP)
+    if _auto_applies_last_day(store, job_id) >= cap:
+        blockers.append(f"daily auto-apply cap reached ({cap}/day)")
+    return blockers
+
+
+def maybe_auto_apply_paper_proposal(
+    store: JobStore, job_id: str, proposal_id: str
+) -> dict[str, Any] | None:
+    """Auto-approve and queue a gate-green paper proposal at staging time.
+
+    Returns the auto-apply record when taken, None when the proposal stays on
+    the owner-approval path. Reuses the restage approval-carryover machinery:
+    `store.approve_proposal` (full gate, unchanged) + `launch_application`
+    (detached completer, watchdog-backstopped)."""
+    if not paper_auto_apply_enabled():
+        return None
+    proposal = store.load_proposal(job_id, proposal_id)
+    if proposal.get("status") != "pending":
+        return None
+    if paper_auto_apply_blockers(store, job_id, proposal):
+        return None
+    try:
+        proposal = store.approve_proposal(job_id, proposal_id)
+    except ValueError:
+        # The real gate said no — our eligibility precheck was optimistic.
+        # The proposal stays pending on the owner path; nothing to unwind.
+        return None
+    proposal["approval"]["required"] = False
+    proposal["approval"]["by"] = "paper-auto-apply"
+    proposal["updated_at"] = utc_now_iso()
+    store.write_proposal(job_id, proposal)
+    report = proposal.get("candidate_report") or {}
+    undo = {
+        "command": f"wayfinder job rollback-apply {job_id} {proposal_id}",
+        "window_expires_ts": (
+            dt.datetime.now(dt.UTC)
+            + dt.timedelta(hours=PAPER_AUTO_APPLY_UNDO_WINDOW_HOURS)
+        ).isoformat(),
+    }
+    store.append_journal(
+        job_id,
+        {
+            "type": "proposal_auto_applied",
+            "proposal_id": proposal_id,
+            "kind": proposal.get("kind"),
+            "tier": "paper",
+            "evidence": {
+                "validation_status": "passed",
+                "gate_live_ready": (report.get("gate") or {}).get("live_ready"),
+                "economic_ready": (report.get("economic") or {}).get("ready"),
+                "candidate_revision": report.get("revision"),
+            },
+            "undo": undo,
+        },
+    )
+    from wayfinder_paths.jobs.apply_launcher import launch_application
+
+    try:
+        launch_application(store, job_id, proposal_id)
+    except Exception as exc:  # noqa: BLE001 — the proposal is approved+queued;
+        # the application watchdog backstops a failed launch (_recover_queued).
+        store.append_journal(
+            job_id,
+            {
+                "type": "proposal_auto_apply_launch_failed",
+                "proposal_id": proposal_id,
+                "error": str(exc)[:300],
+            },
+        )
+    return {"proposal_id": proposal_id, "auto_applied": True, "undo": undo}
 
 
 def propose_change(
@@ -254,6 +424,18 @@ def propose_change(
         )
     except Exception:  # noqa: BLE001 — archive bookkeeping never breaks propose
         pass
+    try:
+        maybe_auto_apply_paper_proposal(store, job_id, pid)
+    except Exception as exc:  # noqa: BLE001 — the pending proposal is intact
+        # and the owner-approval path unaffected; record the miss.
+        store.append_journal(
+            job_id,
+            {
+                "type": "proposal_auto_apply_error",
+                "proposal_id": pid,
+                "error": str(exc)[:300],
+            },
+        )
     store.refresh_scorecard(job_id)
     sync_all_jobs(store=store)
     # Surface a chat affordance (contract C5): the opencode harness turns this

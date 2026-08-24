@@ -867,6 +867,76 @@ def _promote_candidate(store: JobStore, job_id: str, candidate_dir: Path) -> Non
             shutil.copy2(source, destination)
 
 
+def rollback_application(
+    store: JobStore, job_id: str, proposal_id: str, *, by: str = "owner"
+) -> dict[str, Any]:
+    """Owner undo for an APPLIED proposal: restore the pre-apply snapshot.
+
+    Reuses the promotion backup `_complete_applied_application` writes to
+    ``applications/<pid>/backup`` (workspace + job.yaml + improver.yaml) —
+    the same restore the in-flight failure path runs. Guarded: only the
+    proposal whose promoted revision is still the ACTIVE revision can be
+    rolled back; restoring an older backup would silently clobber
+    intervening applies (the stale-candidate promotion incident class)."""
+    proposal = store.load_proposal(job_id, proposal_id)
+    application = proposal["application"]
+    if application.get("status") != "applied":
+        raise ValueError(
+            f"only applied proposals can be rolled back: {proposal_id} is "
+            f"{application.get('status')}"
+        )
+    root = store.job_dir(job_id)
+    backup_dir = root / "applications" / proposal_id / "backup"
+    if not (backup_dir / "job.yaml").exists():
+        raise ValueError(f"no promotion backup exists for {proposal_id}")
+    promoted = str(application.get("promoted_revision") or "")
+    current = compute_workspace_revision(root)
+    if promoted and current != promoted:
+        raise ValueError(
+            "workspace has moved since this apply (promoted "
+            f"{promoted[:12]}, active {current[:12]}) — rolling back would "
+            "clobber intervening work; undo the newer applies first"
+        )
+    active_workspace = root / "workspace"
+    if active_workspace.exists():
+        shutil.rmtree(active_workspace)
+    if (backup_dir / "workspace").exists():
+        shutil.copytree(backup_dir / "workspace", active_workspace)
+    shutil.copy2(backup_dir / "job.yaml", root / "job.yaml")
+    if (backup_dir / IMPROVER_FILENAME).exists():
+        shutil.copy2(backup_dir / IMPROVER_FILENAME, root / IMPROVER_FILENAME)
+    job = store.load(job_id)
+    compile_result = JobCompiler(store=store).compile(job)
+    restored_revision = compute_workspace_revision(root)
+    application["rollback"] = {
+        "restored": True,
+        "backup_dir": str(backup_dir.relative_to(store.repo_root)),
+        "by": by,
+        "ts": utc_now_iso(),
+        "restored_revision": restored_revision,
+    }
+    proposal["updated_at"] = utc_now_iso()
+    store.write_proposal(job_id, proposal)
+    store.append_journal(
+        job_id,
+        {
+            "type": "application_rolled_back",
+            "proposal_id": proposal_id,
+            "by": by,
+            "rolled_back_revision": promoted or None,
+            "restored_revision": restored_revision,
+        },
+    )
+    store.refresh_scorecard(job_id)
+    sync_all_jobs(store=store)
+    return {
+        "job_id": job_id,
+        "proposal_id": proposal_id,
+        "restored_revision": restored_revision,
+        "compile": compile_result,
+    }
+
+
 def _record_promoted_revision(
     store: JobStore,
     job_id: str,

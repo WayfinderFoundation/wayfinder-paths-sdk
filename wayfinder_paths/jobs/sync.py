@@ -289,7 +289,21 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         # live_execution_status="halted" while set; this carries reason/ts.
         "halt": read_halt(store.job_dir(job_id)),
         "features": features,
+        # Two-zone attention split (owner doctrine): needs_you = owner-blocking
+        # live-capital/governance items; decided_autonomously = the last 7d of
+        # mechanical decisions with evidence + bounded undo. Top-level (like
+        # scorecard) so backend/FE consume it without SDK round-trips.
+        "owner_attention": _owner_attention(store, job_id, job),
     }
+
+
+def _owner_attention(store: JobStore, job_id: str, job: Any) -> dict[str, Any]:
+    from wayfinder_paths.jobs.owner_attention import build_owner_attention
+
+    try:
+        return build_owner_attention(store, job_id, job=job)
+    except Exception:  # noqa: BLE001 — sync must never die on a feed
+        return {"needs_you": [], "decided_autonomously": []}
 
 
 def sync_all_jobs(*, store: JobStore | None = None) -> None:

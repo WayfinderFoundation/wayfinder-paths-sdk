@@ -11,6 +11,7 @@ from wayfinder_paths.jobs.application import (
     claim_application,
     complete_application,
     ensure_jobs_v1_contract,
+    rollback_application,
     validate_application_candidate,
 )
 from wayfinder_paths.jobs.apply_launcher import launch_application
@@ -20,6 +21,12 @@ from wayfinder_paths.jobs.backtest_artifacts import (
 )
 from wayfinder_paths.jobs.compiler import JobCompiler, compile_job
 from wayfinder_paths.jobs.counterfactual import counterfactual_job
+from wayfinder_paths.jobs.decision_gates import (
+    load_decision_gates,
+    register_decision_gate,
+    reopen_decision_gate,
+    resolve_decision_gate,
+)
 from wayfinder_paths.jobs.decision_log import build_decision_log
 from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.experiments import (
@@ -1917,6 +1924,120 @@ def apply_proposal_cmd(job_id: str, proposal_id: str) -> None:
         proposal_id,
         store.queue_proposal_application(job_id, proposal_id),
     )
+
+
+@job_cli.command(
+    name="rollback-apply",
+    help="Owner undo for an applied proposal: restore the pre-apply snapshot "
+    "from the promotion backup. Refused if the workspace has moved since.",
+)
+@click.argument("job_id")
+@click.argument("proposal_id")
+@click.option("--by", "rolled_back_by", default="owner", show_default=True)
+def rollback_apply_cmd(job_id: str, proposal_id: str, rolled_back_by: str) -> None:
+    store = JobStore()
+    try:
+        result = rollback_application(store, job_id, proposal_id, by=rolled_back_by)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.group(
+    name="decision-gate",
+    help="Pre-registered rework-vs-retire gates: register criteria + a scoped "
+    "successor up front; the watchdog auto-resolves PAPER jobs mechanically "
+    "when the criteria are met, live-capable jobs escalate to the owner. "
+    "(`gate` was taken by live-gate evaluation, hence the longer name.)",
+)
+def decision_gate_group() -> None:
+    pass
+
+
+@decision_gate_group.command(
+    name="register", help="Pre-register a decision gate (criteria + successor)."
+)
+@click.argument("job_id")
+@click.option(
+    "--criteria",
+    required=True,
+    help='JSON criteria, e.g. \'{"min_trades": 20, "max_win_rate": 0.4, '
+    '"max_net_pnl": 0}\'.',
+)
+@click.option(
+    "--successor-ref",
+    required=True,
+    help="Scoped successor the pivot opens (lane/region/proposal ref).",
+)
+@click.option("--gate-id", default=None, help="Explicit gate id (default: random).")
+@click.option("--by", "registered_by", default="improver", show_default=True)
+def decision_gate_register_cmd(
+    job_id: str,
+    criteria: str,
+    successor_ref: str,
+    gate_id: str | None,
+    registered_by: str,
+) -> None:
+    store = JobStore()
+    try:
+        gate = register_decision_gate(
+            store,
+            job_id,
+            criteria=json.loads(criteria),
+            successor_ref=successor_ref,
+            gate_id=gate_id,
+            registered_by=registered_by,
+        )
+    except (ValueError, TypeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": gate})
+
+
+@decision_gate_group.command(
+    name="resolve",
+    help="Owner resolution of a tripped/armed gate; --execute runs the same "
+    "bounded retire flow the paper auto path uses.",
+)
+@click.argument("job_id")
+@click.argument("gate_id")
+@click.option("--by", "resolved_by", default="owner", show_default=True)
+@click.option("--note", default=None)
+@click.option("--execute", is_flag=True, default=False)
+def decision_gate_resolve_cmd(
+    job_id: str, gate_id: str, resolved_by: str, note: str | None, execute: bool
+) -> None:
+    store = JobStore()
+    try:
+        gate = resolve_decision_gate(
+            store, job_id, gate_id, by=resolved_by, note=note, execute=execute
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": gate})
+
+
+@decision_gate_group.command(
+    name="reopen",
+    help="Undo an auto-resolution (re-enables the script loop) or dismiss a "
+    "trip. The gate stays reopened until explicitly re-registered.",
+)
+@click.argument("job_id")
+@click.argument("gate_id")
+@click.option("--by", "reopened_by", default="owner", show_default=True)
+def decision_gate_reopen_cmd(job_id: str, gate_id: str, reopened_by: str) -> None:
+    store = JobStore()
+    try:
+        gate = reopen_decision_gate(store, job_id, gate_id, by=reopened_by)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": gate})
+
+
+@decision_gate_group.command(name="list", help="List registered decision gates.")
+@click.argument("job_id")
+def decision_gate_list_cmd(job_id: str) -> None:
+    store = JobStore()
+    _echo_json({"ok": True, "result": load_decision_gates(store, job_id)})
 
 
 @job_cli.command(
