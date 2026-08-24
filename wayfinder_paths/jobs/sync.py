@@ -471,6 +471,58 @@ def apply_execution_leverage(
     }
 
 
+def apply_wallet_label(
+    job_id: str, label: str, *, store: JobStore | None = None
+) -> dict[str, Any]:
+    """Bind the funded wallet a live job trades from
+    (``execution_params.wallet_label``). Routing, not strategy logic — the
+    field is excluded from the workspace revision hash, so binding never
+    orphans the gate stamps. Params are re-read every tick; no recompile."""
+    cleaned = str(label).strip()
+    if not cleaned:
+        raise ValueError("wallet label cannot be empty")
+    store = store or JobStore()
+    job = store.load(job_id)
+    previous = job.execution_params.get("wallet_label")
+    job.execution_params["wallet_label"] = cleaned
+    job.touch()
+    store.save(job)
+    store.append_journal(
+        job_id,
+        {"type": "operator_wallet_label_set", "from": previous, "to": cleaned},
+    )
+    sync_all_jobs(store=store)
+    return {"job_id": job_id, "wallet_label": cleaned, "previous": previous}
+
+
+def apply_initial_capital(
+    job_id: str, amount: float, *, store: JobStore | None = None
+) -> dict[str, Any]:
+    """Operator accounting knob: ``execution_params.initial_capital`` — the
+    equity base live sizing compounds from. Set it to what the strategy
+    wallet actually holds; a mismatch makes the engine size against money
+    that isn't there. Excluded from the revision hash; applies next tick.
+
+    Zero is allowed deliberately: withdrawing the full bankroll should read
+    as "unfunded", which fails validation's initial_capital_declared check
+    and turns the live gate red — the honest state."""
+    value = float(amount)
+    if value < 0:
+        raise ValueError(f"initial capital cannot be negative, got {value:g}")
+    store = store or JobStore()
+    job = store.load(job_id)
+    previous = job.execution_params.get("initial_capital")
+    job.execution_params["initial_capital"] = value
+    job.touch()
+    store.save(job)
+    store.append_journal(
+        job_id,
+        {"type": "operator_initial_capital_set", "from": previous, "to": value},
+    )
+    sync_all_jobs(store=store)
+    return {"job_id": job_id, "initial_capital": value, "previous": previous}
+
+
 def _shadow_topline(store: JobStore, job_id: str) -> dict[str, Any]:
     """Read-only topline of the post-apply counterfactual for the UI — the
     artifact is computed on the wake path, never during sync."""
