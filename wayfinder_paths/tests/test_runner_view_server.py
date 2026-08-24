@@ -588,3 +588,73 @@ def test_memory_watchdog_disabled_by_non_positive_env(
 
     daemon.tick()
     assert exits == []
+
+
+def _write_applying_proposal(
+    repo_root: Path, job_id: str, proposal_id: str, *, status: str = "applying"
+) -> None:
+    proposals = repo_root / ".wayfinder" / "jobs" / job_id / "proposals"
+    proposals.mkdir(parents=True, exist_ok=True)
+    (proposals / f"{proposal_id}.json").write_text(
+        json.dumps({"proposal_id": proposal_id, "application": {"status": status}}),
+        encoding="utf-8",
+    )
+
+
+def test_memory_watchdog_defers_exit_while_apply_in_flight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """RSS over cap while a proposal application is applying → the restart
+    exit is deferred (an os._exit would orphan the apply mid-flight and leave
+    the job's loops paused; observed live 2026-08-24). Re-checked next tick:
+    once the apply is terminal, the deferred exit fires."""
+    import os as os_module
+
+    from wayfinder_paths.runner import daemon as daemon_module
+
+    monkeypatch.setenv("WAYFINDER_RUNNERD_MAX_RSS_MB", "900")
+    _write_applying_proposal(tmp_path, "majors-5m-lab", "prop-params-update")
+    daemon = daemon_module.RunnerDaemon(paths=_daemon_paths(tmp_path))
+    exits: list[int] = []
+    monkeypatch.setattr(daemon_module, "_rss_mb", lambda: 1200.0)
+    monkeypatch.setattr(os_module, "_exit", lambda code: exits.append(code))
+
+    daemon.tick()
+    assert exits == [], "exit deferred while the apply is in flight"
+
+    _write_applying_proposal(
+        tmp_path, "majors-5m-lab", "prop-params-update", status="applied"
+    )
+    daemon.tick()
+    assert exits == [1], "deferred exit fires once no apply is in flight"
+
+
+def test_memory_watchdog_hard_override_exits_and_journals_the_apply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past cap × 1.5 the daemon exits even mid-apply — an apply must not
+    hold a ballooning daemon hostage — and journals which apply was in
+    flight so recovery knows why it was orphaned."""
+    import os as os_module
+
+    from wayfinder_paths.runner import daemon as daemon_module
+
+    monkeypatch.setenv("WAYFINDER_RUNNERD_MAX_RSS_MB", "900")
+    _write_applying_proposal(tmp_path, "majors-5m-lab", "prop-params-update")
+    daemon = daemon_module.RunnerDaemon(paths=_daemon_paths(tmp_path))
+    exits: list[int] = []
+    monkeypatch.setattr(daemon_module, "_rss_mb", lambda: 1400.0)
+    monkeypatch.setattr(os_module, "_exit", lambda code: exits.append(code))
+
+    daemon.tick()
+
+    assert exits == [1]
+    journal = (
+        tmp_path / ".wayfinder" / "jobs" / "majors-5m-lab" / "journal.jsonl"
+    ).read_text(encoding="utf-8")
+    rows = [json.loads(line) for line in journal.splitlines() if line.strip()]
+    breadcrumbs = [r for r in rows if r["type"] == "runnerd_rss_exit_during_apply"]
+    assert len(breadcrumbs) == 1
+    assert breadcrumbs[0]["proposal_id"] == "prop-params-update"
+    assert breadcrumbs[0]["rss_mb"] == 1400.0
+    assert breadcrumbs[0]["max_rss_mb"] == 900.0

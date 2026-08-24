@@ -57,6 +57,20 @@ INFRASTRUCTURE_PATTERNS = (
     "opencode-unavailable",
     "prompt_async",
     "resource temporarily unavailable",
+    # Missing-data box conditions: a data-feed incident that leaves the job
+    # without its backtest dataset (results/backtest/input_bars.json gone) is
+    # a BOX condition, not evidence against a change — every check that needs
+    # bars fails, which says nothing about the candidate. Emitters:
+    # execution/job.py _load_dataset ("No backtest bars found. Provide
+    # results/backtest/input_bars.json, ..."), validation.py ("no dataset for
+    # candidate backtest: ..."), derived_features.py (data_feed_degraded).
+    # Patterns stay tight: plain "backtest failed" is still evidence.
+    "no backtest bars",
+    "no bars found",
+    "input_bars",
+    "dataset not found",
+    "missing dataset",
+    "data_feed",
 )
 
 

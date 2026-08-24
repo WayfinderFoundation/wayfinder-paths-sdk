@@ -467,6 +467,55 @@ def test_restage_gate_failure_auto_rejects(
     assert "re-stage gate failed" in str(rejected["rejection"]["reason"])
 
 
+def test_restage_gate_escalate_keeps_proposal_approved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 2026-08-24 burial class, end to end: a missing backtest dataset
+    makes the fail-closed governance gate ESCALATE during a mechanical
+    re-stage. The restage flow's own agent rejection routes through
+    store.reject_proposal, where the guard refuses it — the owner-approved
+    proposal stays approved with restage_requested instead of being buried."""
+    _patch_runner(monkeypatch)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.run_job_worker",
+        lambda job_id, *, mode, **k: {"status": "queued"},
+    )
+    store, job_id, root = _make_job(tmp_path)
+    proposal = _propose_params(store, job_id)
+    pid = proposal["proposal_id"]
+
+    script = root / "workspace" / "src" / "strategy.py"
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\n# drift\n", encoding="utf-8"
+    )
+    store.approve_proposal(job_id, pid)
+    claim_application(store, job_id, pid)
+    complete_application(store, job_id, pid, status="applied")
+    assert store.load_proposal(job_id, pid)["application"]["restage_requested"]
+
+    escalate = ValueError(
+        "ESCALATE: blocking governance requires economic_ready=True for a "
+        "live-capable job; got None: economic evaluation failed: No backtest "
+        "bars found. Provide results/backtest/input_bars.json, "
+        "workspace/config/backtest_bars.json, execution_scenario_plan bars, "
+        "or execution_spec.validation.fixture_bars."
+    )
+
+    def raising_governance_gate(self, job_id, economic):  # noqa: ANN001
+        raise escalate
+
+    monkeypatch.setattr(JobStore, "_ensure_governance_gate", raising_governance_gate)
+
+    with pytest.raises(ValueError, match="refusing agent rejection"):
+        restage_proposal(store, job_id, pid)
+
+    kept = store.load_proposal(job_id, pid)
+    assert kept["status"] == "approved", "approval survives the gate ESCALATE"
+    assert kept["application"]["restage_requested"] is True
+    journal = (root / "journal.jsonl").read_text(encoding="utf-8")
+    assert "proposal_reject_refused" in journal
+
+
 # ── infra-vs-evidence at propose time + revalidation ─────────────────────────
 # Production bug (verified twice): a ComputeLockBusy during the propose-time
 # candidate backtest froze a FAILED validation_summary into the immutable

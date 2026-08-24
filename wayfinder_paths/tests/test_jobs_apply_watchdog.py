@@ -263,6 +263,105 @@ def test_watchdog_fails_stalled_agent_owned_applying(
     assert completions == [("prop_agent_stale", "failed")]
 
 
+def test_watchdog_recovers_orphaned_apply_from_top(tmp_path: Path, monkeypatch) -> None:
+    """An apply orphaned by daemon death (status "applying", stale started_at,
+    dead completer pid) is recovered well before the full applying window and
+    re-entered from the TOP of the completer pipeline — complete_application
+    re-runs the drift guard + full candidate validation, never a mid-stage
+    resume. (2026-08-24: runnerd RSS-exited 17s into an owner-approved apply;
+    the old signature waited out the full window.)"""
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "wd-orphan-demo")
+    _write_proposal(
+        store,
+        job.id,
+        "prop_orphan",
+        application={
+            "status": "applying",
+            "started_at": _iso_ago(6),
+            "apply_worker": {"pid": 424242, "spawned_at": utc_now_iso()},
+        },
+        candidate_report={"gate": "green"},
+    )
+    monkeypatch.setattr("wayfinder_paths.jobs.watchdog._pid_alive", lambda pid: False)
+
+    completions: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.watchdog.complete_application",
+        lambda store, job_id, proposal_id, *, status, **kw: completions.append(
+            (proposal_id, status)
+        )
+        or {},
+    )
+
+    report = recover_stalled_applications(store=store)
+
+    assert completions == [("prop_orphan", "applied")]
+    events = [e for e in report["recovered"] if e.get("stalled_status") == "applying"]
+    assert len(events) == 1
+    assert events[0]["orphaned"] is True
+    assert events[0]["worker_pid"] == 424242
+    assert "application_watchdog_recovered" in _journal_types(store, job.id)
+
+
+def test_watchdog_gives_dead_completer_a_short_grace(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Inside the orphan grace window (claim→spawn gap, slow pid record) a
+    dead/absent completer pid is not yet a stall."""
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "wd-orphan-fresh")
+    _write_proposal(
+        store,
+        job.id,
+        "prop_fresh_orphan",
+        application={"status": "applying", "started_at": _iso_ago(2)},
+        candidate_report={"gate": "green"},
+    )
+    monkeypatch.setattr("wayfinder_paths.jobs.watchdog._pid_alive", lambda pid: False)
+
+    completions: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.watchdog.complete_application",
+        lambda *a, **kw: completions.append("called") or {},
+    )
+
+    report = recover_stalled_applications(store=store)
+
+    assert completions == []
+    assert report["recovered"] == []
+
+
+def test_watchdog_orphan_fast_path_is_deterministic_only(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Agent-owned applies record no completer pid — a dead-pid signature must
+    not cut their 60-minute window short."""
+    _patch_runner(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "wd-orphan-agent")
+    _write_proposal(
+        store,
+        job.id,
+        "prop_agent_orphan",
+        application={"status": "applying", "started_at": _iso_ago(30)},
+    )
+    monkeypatch.setattr("wayfinder_paths.jobs.watchdog._pid_alive", lambda pid: False)
+
+    completions: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.watchdog.complete_application",
+        lambda *a, **kw: completions.append("called") or {},
+    )
+
+    report = recover_stalled_applications(store=store)
+
+    assert completions == []
+    assert report["recovered"] == []
+
+
 def test_watchdog_skips_live_completer(tmp_path: Path, monkeypatch) -> None:
     _patch_runner(monkeypatch)
     store = JobStore(repo_root=tmp_path)

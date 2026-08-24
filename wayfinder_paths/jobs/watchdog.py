@@ -39,6 +39,12 @@ WATCHDOG_TIMEOUT_SECONDS = 2700
 # Deterministic applies (candidate_report staged): completer child normally
 # finishes in 1-3 minutes; a dead completer past this age is recovered.
 DETERMINISTIC_APPLYING_TIMEOUT = timedelta(minutes=15)
+# Orphaned deterministic applies (status "applying", stale started_at, no
+# live completer process — daemon RSS-exit or box reboot mid-apply): a dead
+# completer can never finish on its own, so waiting out the full applying
+# window just prolongs the loop pause. Short grace covers the claim→spawn
+# window where apply_worker.pid is not yet recorded.
+ORPHANED_APPLYING_TIMEOUT = timedelta(minutes=5)
 # Agent-owned applies (ungated, agent claims itself): sessions legitimately
 # take longer, but past this the session is presumed dead.
 AGENT_APPLYING_TIMEOUT = timedelta(minutes=60)
@@ -110,16 +116,27 @@ def _recover_applying(
 
     worker = application.get("apply_worker") or {}
     pid = int(worker.get("pid") or 0)
-    if _pid_alive(pid):
+    pid_alive = _pid_alive(pid)
+    if pid_alive:
         if age < HARD_KILL_TIMEOUT:
             return None
         _kill_process_group(pid)
 
     deterministic = bool(proposal.get("candidate_report"))
+    # Orphan signature: deterministic apply stuck "applying" with no live
+    # completer (recorded pid dead, or claim never reached spawn — e.g. the
+    # daemon RSS-exited mid-apply) past a short grace. Recovered NOW instead
+    # of waiting out the full applying window — a dead completer can never
+    # finish. Agent-owned applies record no pid, so the fast path never
+    # applies to them. Recovery re-enters the apply from the TOP of the
+    # completer pipeline: complete_application(status="applied") re-runs the
+    # baseline-drift guard and the FULL candidate validation before
+    # promoting — it never resumes a torn apply mid-stage.
+    orphaned = deterministic and not pid_alive and age >= ORPHANED_APPLYING_TIMEOUT
     timeout = (
         DETERMINISTIC_APPLYING_TIMEOUT if deterministic else AGENT_APPLYING_TIMEOUT
     )
-    if age < timeout:
+    if age < timeout and not orphaned:
         return None
 
     action = "complete_applied" if deterministic else "complete_failed"
@@ -153,6 +170,8 @@ def _recover_applying(
         "age_seconds": int(age.total_seconds()) if age != timedelta.max else None,
         "action": action,
         "outcome": outcome,
+        "orphaned": orphaned,
+        "worker_pid": pid or None,
     }
     store.append_journal(job_id, event)
     return event
