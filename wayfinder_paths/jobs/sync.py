@@ -182,7 +182,14 @@ def _runtime_reconciliation(job: Any, store: JobStore) -> dict[str, Any]:
     if agent_state:
         aenv = (agent_state.get("payload") or {}).get("env") or {}
         if aenv.get("WAYFINDER_JOB_AGENT_MODE"):
-            out["agent_mode"] = str(aenv["WAYFINDER_JOB_AGENT_MODE"])
+            runtime_agent_mode = str(aenv["WAYFINDER_JOB_AGENT_MODE"])
+            out["agent_mode"] = runtime_agent_mode
+            # Box-internal split-brain tripwire, mirroring script mode_mismatch:
+            # the runner wakes under the env baked at last compile, so a failed
+            # or skipped recompile after a job.yaml edit leaves the two
+            # disagreeing. This does NOT compare against what the DB/UI think
+            # the mode is — the box never sees that (see snapshot_job).
+            out["agent_mode_mismatch"] = runtime_agent_mode != str(agent.mode)
     return out
 
 
@@ -204,6 +211,19 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
     runtime = _runtime_reconciliation(job, store)
     if runtime:
         scorecard = {**scorecard, **runtime}
+    # The box's authoritative agent mode, shipped unconditionally: job.yaml's
+    # agent_loop block is what the compiler bakes into the runner, so it is
+    # the runner truth regardless of daemon reachability. The sync channel is
+    # push-only — the box never learns what the DB/UI believe the mode is (a
+    # UI mode selection once got dropped before reaching job.yaml, and the DB
+    # showed autonomous while the box ran monitor, silently, for days) — so
+    # the backend-declared vs actual comparison must live backend-side, keyed
+    # on this field. agent_mode_source pins provenance for that comparison.
+    scorecard = {
+        **scorecard,
+        "agent_mode_actual": str(job.agent_loop.mode),
+        "agent_mode_source": "job_yaml",
+    }
     dataset_fetch = _dataset_fetch_state(store, job_id)
     if dataset_fetch is not None:
         scorecard = {**scorecard, "dataset_fetch": dataset_fetch}

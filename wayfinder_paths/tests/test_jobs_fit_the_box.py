@@ -35,6 +35,7 @@ from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.triggers import ALWAYS_WAKE_EVENTS
 from wayfinder_paths.jobs.watchdog import (
+    _check_agent_mode_drift,
     _check_disk_usage,
     _check_loop_gap,
     _recover_stale_gate,
@@ -404,3 +405,117 @@ def test_disk_used_pct_helper_and_compute_status_field(
 
     monkeypatch.setattr("shutil.disk_usage", _boom)
     assert disk_used_pct(tmp_path) is None  # never raises
+
+
+# ── watchdog: agent-mode drift alerting ──────────────────────────────────────
+# set_agent_mode edits job.yaml and recompiles, re-baking
+# WAYFINDER_JOB_AGENT_MODE into the runner env. A failed recompile leaves the
+# runner waking under the OLD mode while job.yaml claims the new one — the
+# agent-loop twin of the paper/live split-brain. The watchdog journals
+# `agent_mode_drift` once per episode (debounce mirrors disk_pressure).
+
+
+def _agent_states(job: WayfinderJob, compiled: str) -> dict[str, Any]:
+    return {
+        job.agent_loop.runner_job_name: {
+            "status": "ACTIVE",
+            "payload": {"env": {"WAYFINDER_JOB_AGENT_MODE": compiled}},
+        }
+    }
+
+
+def test_agent_mode_drift_journals_once_then_debounces(tmp_path: Path) -> None:
+    store, job = _make_store(tmp_path, "box-drift")  # declared intervene
+    now = datetime.now(UTC)
+    states = _agent_states(job, "monitor")  # baked env lags a failed recompile
+
+    event = _check_agent_mode_drift(store, job, now, states)
+    assert event == {
+        "action": "agent_mode_drift",
+        "declared": "intervene",
+        "compiled": "monitor",
+    }
+    journaled = _journal_events(store, job.id, "agent_mode_drift")
+    assert len(journaled) == 1
+    assert journaled[0]["declared"] == "intervene"
+    assert journaled[0]["compiled"] == "monitor"
+
+    # Same drift next pass, inside the window → debounced.
+    assert (
+        _check_agent_mode_drift(store, job, now + timedelta(minutes=5), states) is None
+    )
+    assert len(_journal_events(store, job.id, "agent_mode_drift")) == 1
+    # Past the re-alert window the still-standing episode re-alerts.
+    assert _check_agent_mode_drift(store, job, now + timedelta(hours=7), states)
+    assert len(_journal_events(store, job.id, "agent_mode_drift")) == 2
+
+
+def test_agent_mode_drift_new_pair_realerts_inside_window(tmp_path: Path) -> None:
+    store, job = _make_store(tmp_path, "box-drift-pair")
+    now = datetime.now(UTC)
+    assert _check_agent_mode_drift(store, job, now, _agent_states(job, "monitor"))
+    # A DIFFERENT drift (declared flipped to auto, env still stale) is a new
+    # episode — alerts immediately, no window wait.
+    job.agent_loop.mode = "auto"
+    event = _check_agent_mode_drift(
+        store, job, now + timedelta(minutes=5), _agent_states(job, "monitor")
+    )
+    assert event is not None and event["declared"] == "auto"
+    assert len(_journal_events(store, job.id, "agent_mode_drift")) == 2
+
+
+def test_agent_mode_drift_recovers_once_and_holds_on_outage(tmp_path: Path) -> None:
+    store, job = _make_store(tmp_path, "box-drift-rec")
+    now = datetime.now(UTC)
+    assert _check_agent_mode_drift(store, job, now, _agent_states(job, "monitor"))
+    # Daemon outage mid-episode: nothing to compare — no re-alert, and no
+    # fake "recovery" either; the marker holds.
+    assert _check_agent_mode_drift(store, job, now + timedelta(hours=7), {}) is None
+    assert not _journal_events(store, job.id, "agent_mode_drift_recovered")
+    # Recompile lands: env agrees with job.yaml → recovery journaled once.
+    healed = _agent_states(job, "intervene")
+    event = _check_agent_mode_drift(store, job, now + timedelta(hours=8), healed)
+    assert event == {"action": "agent_mode_drift_recovered", "mode": "intervene"}
+    assert _check_agent_mode_drift(store, job, now + timedelta(hours=8), healed) is None
+    assert len(_journal_events(store, job.id, "agent_mode_drift_recovered")) == 1
+
+
+def test_agent_mode_drift_quiet_when_matching_or_disabled(tmp_path: Path) -> None:
+    store, job = _make_store(tmp_path, "box-drift-quiet")
+    now = datetime.now(UTC)
+    # Matching env → quiet, no marker created.
+    assert (
+        _check_agent_mode_drift(store, job, now, _agent_states(job, "intervene"))
+        is None
+    )
+    assert not (
+        store.job_dir(job.id) / "state" / "agent_mode_drift_alert.json"
+    ).exists()
+    # Disabled loop → quiet even if a stale runner entry disagrees.
+    job.agent_loop.enabled = False
+    assert _check_agent_mode_drift(store, job, now, _agent_states(job, "monitor")) is (
+        None
+    )
+    assert not _journal_events(store, job.id, "agent_mode_drift")
+
+
+def test_agent_mode_drift_wired_into_watchdog_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, job = _make_store(tmp_path, "box-drift-pass")
+
+    class _FakeBridge:
+        def __init__(self, *, repo_root: Any = None) -> None:
+            pass
+
+        def job_states(self) -> dict[str, Any]:
+            return _agent_states(job, "monitor")
+
+    monkeypatch.setattr("wayfinder_paths.jobs.watchdog.RunnerBridge", _FakeBridge)
+    result = recover_stalled_applications(store=store, now=datetime.now(UTC))
+    drift_events = [
+        e for e in result["recovered"] if e.get("action") == "agent_mode_drift"
+    ]
+    assert len(drift_events) == 1
+    assert drift_events[0]["job_id"] == job.id
+    assert not [e for e in result["errors"] if "agent_mode" in str(e.get("error"))]
