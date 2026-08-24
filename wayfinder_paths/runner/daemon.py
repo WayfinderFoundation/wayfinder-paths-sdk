@@ -342,11 +342,14 @@ class RunnerDaemon:
         # Burst-credit admission control: postpone launching background jobs when
         # the machine is close to draining its shared-cpu burst budget, so it is
         # never pinned at baseline (which slows everything, incl. the agent).
+        # Only on a hosted OpenCode instance: that's the shared-cpu machine with
+        # a real burst budget. Elsewhere (dev, local runs) the /proc estimate is
+        # meaningless, so leave jobs ungated.
         self._burst = (
             BurstEstimator(
                 cap_cpu_s=BURST_CAP_CPU_S, low_water_cpu_s=BURST_LOW_WATER_CPU_S
             )
-            if burst_admission
+            if burst_admission and is_opencode_instance()
             else None
         )
         # job_id -> monotonic time of first postpone, so a job can't starve

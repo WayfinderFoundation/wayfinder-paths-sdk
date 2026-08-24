@@ -80,6 +80,17 @@ def test_recovered_quota_launches(tmp_path: Path, monkeypatch) -> None:
     assert run_id is not None
 
 
+def test_burst_gate_only_on_opencode_instance(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "wayfinder_paths.runner.daemon.is_opencode_instance", lambda: False
+    )
+    assert _daemon(tmp_path)._burst is None  # ungated off a hosted instance
+    monkeypatch.setattr(
+        "wayfinder_paths.runner.daemon.is_opencode_instance", lambda: True
+    )
+    assert _daemon(tmp_path)._burst is not None
+
+
 def test_floor_force_runs_after_max_postpone(tmp_path: Path, monkeypatch) -> None:
     d = _daemon(tmp_path)
     d._burst = _FakeBurst(over=True)
