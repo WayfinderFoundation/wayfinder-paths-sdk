@@ -1,4 +1,4 @@
-"""Four-hour crypto momentum persistence, rebalanced daily at 12:00 UTC."""
+"""Risk-adjusted four-hour crypto momentum, rebalanced daily at 12:00 UTC."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ class CryptoMomentumPersistenceStrategy:
         "fast_momentum_bars": 42,
         "slow_momentum_bars": 168,
         "fast_momentum_weight": 0.5,
+        "score_volatility_bars": 168,
         "rebalance_bars": 6,
         "rebalance_offset": 3,
         "weight_per_leg": 0.35,
@@ -40,6 +41,7 @@ class CryptoMomentumPersistenceStrategy:
             max(
                 int(self.params["fast_momentum_bars"]),
                 int(self.params["slow_momentum_bars"]),
+                int(self.params["score_volatility_bars"]),
             )
             + 4
         )
@@ -48,17 +50,20 @@ class CryptoMomentumPersistenceStrategy:
         fast = int(self.params["fast_momentum_bars"])
         slow = int(self.params["slow_momentum_bars"])
         fast_weight = float(self.params["fast_momentum_weight"])
+        volatility_bars = int(self.params["score_volatility_bars"])
         derived: dict[str, pd.DataFrame] = {}
         for symbol, frame in frames.items():
             close = pd.to_numeric(frame["close"], errors="coerce")
-            derived[symbol] = pd.DataFrame(
-                {
-                    "starter_momentum": (
-                        fast_weight * close.pct_change(fast)
-                        + (1.0 - fast_weight) * close.pct_change(slow)
-                    )
-                }
+            momentum = fast_weight * close.pct_change(fast) + (
+                1.0 - fast_weight
+            ) * close.pct_change(slow)
+            volatility = (
+                close.pct_change()
+                .rolling(volatility_bars, min_periods=volatility_bars)
+                .std()
             )
+            momentum = momentum / volatility.where(volatility.gt(0))
+            derived[symbol] = pd.DataFrame({"starter_momentum": momentum})
         return add_stop_atr(derived, frames, period=int(self.params["stop_atr_period"]))
 
     def decide(self, ctx: ExecutionContext) -> list[dict[str, Any]]:

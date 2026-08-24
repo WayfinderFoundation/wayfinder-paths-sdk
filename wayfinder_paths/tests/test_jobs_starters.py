@@ -276,6 +276,15 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
         )
 
     by_id = {item["id"]: item for item in catalog}
+    crypto_momentum = by_id["crypto-momentum-persistence-4h"]
+    assert crypto_momentum["params"]["score_volatility_bars"] == 168
+    assert crypto_momentum["research_evidence"]["sharpe"] > 1.0
+    assert all(
+        sharpe > 1.0
+        for sharpe in crypto_momentum["research_evidence"][
+            "rebalance_phase_sharpes"
+        ].values()
+    )
     expected_stops = {
         "mixed-rsi-snapback-1h": (5.0, 0.08, 0.15),
         "mixed-momentum-rank-1h": (8.0, 0.15, 0.30),
@@ -421,12 +430,13 @@ def test_momentum_rank_longs_leaders_and_shorts_laggards() -> None:
     }
 
 
-def test_crypto_momentum_concentrates_in_the_strongest_and_weakest() -> None:
+def test_crypto_momentum_concentrates_in_risk_adjusted_extremes() -> None:
     strategy = CryptoMomentumPersistenceStrategy(
         {
             "symbols": ["BTC", "ETH", "SOL", "HYPE"],
             "fast_momentum_bars": 2,
             "slow_momentum_bars": 4,
+            "score_volatility_bars": 4,
             "rebalance_bars": 1,
             "min_trade_notional": 0.0,
         }
@@ -445,9 +455,11 @@ def test_crypto_momentum_concentrates_in_the_strongest_and_weakest() -> None:
     intents = strategy.decide(ctx)
 
     hype = ctx.view.symbol_frame("HYPE")
-    expected_score = 0.5 * (1.95 / 1.52 - 1.0) + 0.5 * (1.95 / 1.22 - 1.0)
+    hype_close = pd.Series([1.0, 1.05, 1.12, 1.22, 1.35, 1.52, 1.72, 1.95])
+    raw_score = 0.5 * (1.95 / 1.52 - 1.0) + 0.5 * (1.95 / 1.22 - 1.0)
+    expected_score = raw_score / hype_close.pct_change().rolling(4).std().iloc[-1]
     assert hype["starter_momentum"].iloc[-1] == pytest.approx(expected_score)
-    assert _sides(intents) == {"BTC": "sell", "HYPE": "buy"}
+    assert _sides(intents) == {"BTC": "sell", "ETH": "buy"}
     assert {intent["notional"] for intent in intents} == {3500.0}
 
 
