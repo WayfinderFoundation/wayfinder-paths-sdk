@@ -52,6 +52,7 @@ from wayfinder_paths.jobs.improver.spec import (
     revision_stamp,
 )
 from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.robustness import latest_robustness_summary
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import sync_all_jobs
 from wayfinder_paths.jobs.validation import (
@@ -616,6 +617,12 @@ def _generate_candidate_report(
             }
             if comparison is not None
             else None
+        ),
+        "robustness": latest_robustness_summary(
+            store,
+            job_id,
+            candidate_revision=candidate_revision,
+            candidate_dir=candidate_dir,
         ),
         "generated_at": utc_now_iso(),
     }

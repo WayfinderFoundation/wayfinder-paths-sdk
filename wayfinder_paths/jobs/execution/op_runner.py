@@ -33,6 +33,7 @@ _EVIDENCE_OPS = {
     "signal_scan",
     "holdout_check",
     "restamp",
+    "robustness_check",
 }
 
 
@@ -62,9 +63,22 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
         # Health-check / test op: round-trips kwargs through the full pipe.
         return kwargs
     if op == "fetch_dataset":
-        from wayfinder_paths.jobs.execution.preflight import build_live_dataset
+        from wayfinder_paths.jobs.execution.preflight import (
+            build_live_dataset,
+            fetch_funding_features,
+        )
 
-        return build_live_dataset(kwargs.pop("job_id"), **kwargs)
+        job_id = kwargs.pop("job_id")
+        include_funding = bool(kwargs.pop("include_funding", False))
+        result = build_live_dataset(job_id, **kwargs)
+        if include_funding:
+            result["funding"] = fetch_funding_features(
+                job_id,
+                days=int(kwargs.get("days") or 14),
+                exchange=str(kwargs.get("exchange") or "binance"),
+                quote=str(kwargs.get("quote") or "USDT"),
+            )
+        return result
     if op == "fetch_funding":
         from wayfinder_paths.jobs.execution.preflight import fetch_funding_features
 
@@ -105,6 +119,10 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
         from wayfinder_paths.jobs.research import rank_check_job
 
         return rank_check_job(kwargs.pop("job_id"), **kwargs)
+    if op == "robustness_check":
+        from wayfinder_paths.jobs.robustness import robustness_check_job
+
+        return robustness_check_job(kwargs.pop("job_id"), **kwargs)
     if op == "backtest_job":
         from wayfinder_paths.jobs.execution.job import (
             backtest_execution_job,

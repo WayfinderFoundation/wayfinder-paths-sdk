@@ -27,6 +27,9 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from wayfinder_paths.jobs.indicators import atr as wilder_atr
+from wayfinder_paths.jobs.indicators import wilder_rsi
+
 
 @dataclass(frozen=True)
 class SignalDef:
@@ -35,24 +38,6 @@ class SignalDef:
     description: str
     min_bars: int
     build: Callable[[pd.DataFrame], pd.Series]
-
-
-def _wilder_rsi(close: pd.Series, period: int = 14) -> pd.Series:
-    delta = close.diff()
-    gain = delta.clip(lower=0.0).ewm(alpha=1 / period, adjust=False).mean()
-    loss = (-delta.clip(upper=0.0)).ewm(alpha=1 / period, adjust=False).mean()
-    rs = gain / loss.replace(0.0, np.nan)
-    return 100 - 100 / (1 + rs)
-
-
-def wilder_atr(frame: pd.DataFrame, period: int = 14) -> pd.Series:
-    high = frame["high"].astype(float)
-    low = frame["low"].astype(float)
-    prev_close = frame["close"].astype(float).shift(1)
-    tr = pd.concat(
-        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
-    ).max(axis=1)
-    return tr.ewm(alpha=1 / period, adjust=False).mean()
 
 
 _atr = wilder_atr
@@ -145,7 +130,7 @@ def _spike_vs_sma(frame: pd.DataFrame, pct: float, direction: int) -> pd.Series:
 
 
 def _rsi_extreme(frame: pd.DataFrame, level: float, direction: int) -> pd.Series:
-    rsi = _wilder_rsi(_close(frame))
+    rsi = wilder_rsi(_close(frame))
     return rsi >= level if direction > 0 else rsi <= level
 
 
@@ -179,7 +164,7 @@ def _macd_cross(frame: pd.DataFrame, direction: int) -> pd.Series:
 
 
 def _rsi_cross(frame: pd.DataFrame, level: float, direction: int) -> pd.Series:
-    rsi = _wilder_rsi(_close(frame))
+    rsi = wilder_rsi(_close(frame))
     if direction > 0:
         return (rsi > level) & (rsi.shift(1) <= level)
     return (rsi < level) & (rsi.shift(1) >= level)

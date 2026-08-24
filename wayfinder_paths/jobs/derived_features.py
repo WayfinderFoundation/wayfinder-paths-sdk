@@ -31,6 +31,7 @@ import pandas as pd
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+from wayfinder_paths.jobs.indicators import panel_breadth
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
@@ -126,8 +127,10 @@ def derive_features_job(
                 columns.setdefault(
                     f"ratioz_{sibling.lower()}{RATIO_Z_BARS}", pd.DataFrame()
                 )[symbol] = z
-        above = (closes > closes.rolling(BREADTH_SMA).mean()).sum(axis=1)
-        _add(f"breadth_sma{BREADTH_SMA}", above.astype(float))
+        means = closes.rolling(BREADTH_SMA).mean()
+        above = closes.gt(means).where(closes.notna() & means.notna()).astype(float)
+        breadth = panel_breadth(above, 1.0, min_assets=len(symbols))
+        _add(f"breadth_sma{BREADTH_SMA}", breadth * len(symbols))
         _add("panelret_lag1", returns.mean(axis=1).shift(1))
 
     if "regime" in sets:

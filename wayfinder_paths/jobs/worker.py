@@ -23,6 +23,7 @@ from wayfinder_paths.jobs.models import (
     normalize_agent_mode,
     utc_now_iso,
 )
+from wayfinder_paths.jobs.research_contract import RESEARCH_CONTRACT_VERSION
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
 from wayfinder_paths.jobs.wake_economy import (
@@ -686,6 +687,9 @@ def _build_worker_prompt_sections(
         ),
         improver_spec,
     )
+    research_contract = _read_doc_head(
+        Path(__file__).parent / "prompts" / "research_contract.md", max_chars=4000
+    )
     memory_json = store.read_json(job_id, "memory.json", default={}) or {}
     recent_journal = _read_text(root / "journal.jsonl", max_chars=4000)
     # The cumulative research state — a curated map (dead hypotheses, open
@@ -700,6 +704,7 @@ def _build_worker_prompt_sections(
             "source": improver_spec.source,
             "policy": improver_spec.policy,
         },
+        "research_contract_version": RESEARCH_CONTRACT_VERSION,
     }
     # Compact each recent_* detail list to its last 6 rows (25 raw trade/run
     # rows can blow the 12k canonical-json budget and, since keys serialize
@@ -939,6 +944,9 @@ def _build_worker_prompt_sections(
         "- Always write/return a compact structured finding.\n\n"
         "Stable job spec:\n"
         f"{_canonical_json(stable_payload, max_chars=12000)}\n\n"
+        "Stable research execution contract (already loaded; do not reload the "
+        "strategy skill on each wake):\n"
+        f"{research_contract}\n\n"
         "Research prior library (idea families -> priors -> archetypes -> "
         "test paths — pick treatments from here):\n"
         f"{research_priors}\n\n"

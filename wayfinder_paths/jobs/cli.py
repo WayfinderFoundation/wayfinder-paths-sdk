@@ -15,6 +15,7 @@ from wayfinder_paths.jobs.application import (
     validate_application_candidate,
 )
 from wayfinder_paths.jobs.apply_launcher import launch_application
+from wayfinder_paths.jobs.background import spawn_detached_op
 from wayfinder_paths.jobs.backtest_artifacts import (
     diagnose_backtest,
     load_backtest_view,
@@ -82,6 +83,7 @@ from wayfinder_paths.jobs.research import (
     signal_check_job,
     signal_scan_job,
 )
+from wayfinder_paths.jobs.robustness import robustness_check_job
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.starters import create_starter_job, starter_catalog
 from wayfinder_paths.jobs.store import JobStore
@@ -669,6 +671,12 @@ def reconcile_cmd(job_id: str, limit: int) -> None:
     help="Quote currency (default: USDC on hyperliquid, USDT elsewhere).",
 )
 @click.option(
+    "--include-funding",
+    is_flag=True,
+    default=False,
+    help="Fetch same-window historical funding in the same isolated operation.",
+)
+@click.option(
     "--full",
     is_flag=True,
     default=False,
@@ -681,6 +689,7 @@ def fetch_dataset_cmd(
     exchange: str,
     market_type: str,
     quote: str | None,
+    include_funding: bool,
     full: bool,
 ) -> None:
     store = JobStore()
@@ -694,6 +703,14 @@ def fetch_dataset_cmd(
         quote=quote,
         incremental=not full,
     )
+    if include_funding:
+        result["funding"] = fetch_funding_features(
+            job_id,
+            days=days,
+            exchange=exchange,
+            quote=quote,
+            store=store,
+        )
     _echo_json({"ok": True, "result": result})
 
 
@@ -1066,6 +1083,53 @@ def fetch_funding_cmd(job_id: str, days: int, exchange: str, quote: str | None) 
     result = fetch_funding_features(
         job_id, days=days, exchange=exchange, quote=quote, store=store
     )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="robustness-check",
+    help="Run advisory neighbor/phase/leverage/walk-forward/scenario evidence.",
+)
+@click.argument("job_id")
+@click.option("--candidate-dir", type=click.Path(path_type=Path), default=None)
+@click.option(
+    "--plan",
+    "plan_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Optional plan JSON; defaults to validation.robustness_plan.",
+)
+@click.option(
+    "--foreground",
+    is_flag=True,
+    default=False,
+    help="Wait for completion instead of starting the isolated background op.",
+)
+def robustness_check_cmd(
+    job_id: str,
+    candidate_dir: Path | None,
+    plan_path: Path | None,
+    foreground: bool,
+) -> None:
+    plan = json.loads(plan_path.read_text(encoding="utf-8")) if plan_path else None
+    if foreground:
+        result = robustness_check_job(
+            job_id,
+            candidate_dir=candidate_dir,
+            robustness_plan=plan,
+            store=JobStore(),
+        )
+    else:
+        result = spawn_detached_op(
+            JobStore(),
+            job_id,
+            "robustness_check",
+            {
+                "job_id": job_id,
+                "candidate_dir": str(candidate_dir) if candidate_dir else None,
+                "robustness_plan": plan,
+            },
+        )
     _echo_json({"ok": True, "result": result})
 
 
