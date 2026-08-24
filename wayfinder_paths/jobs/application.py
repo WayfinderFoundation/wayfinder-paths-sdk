@@ -607,6 +607,65 @@ def _candidate_dir_from_proposal(
     )
 
 
+# Operator-owned execution_params preserved across candidate promotion. Only
+# keys that compute_workspace_revision also excludes belong here — restoring
+# a hashed key would make the promoted revision diverge from the candidate
+# revision and orphan the candidate's gate stamps.
+_OPERATOR_OWNED_EXECUTION_PARAMS = ("wallet_label", "initial_capital")
+
+
+def _snapshot_operator_owned(job_yaml: Path) -> dict[str, Any]:
+    """Operator dials captured from the ACTIVE job.yaml before promotion.
+
+    The candidate's job.yaml is a snapshot from propose time; copying it
+    wholesale over the root reverted any watch-mode (agent set-mode — the FE
+    "Just run it"/"Watch & suggest" selector), paper/live, or wallet change
+    the operator made between propose and apply. Every preserved field is
+    excluded from the workspace revision hash, so restoring them keeps the
+    promoted revision equal to the candidate revision and the candidate's
+    gate stamps valid."""
+    try:
+        data = yaml.safe_load(job_yaml.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    snapshot: dict[str, Any] = {}
+    if isinstance(data.get("agent_loop"), dict):
+        snapshot["agent_loop"] = data["agent_loop"]
+    if data.get("job_kind"):
+        snapshot["job_kind"] = data["job_kind"]
+    script_loop = data.get("script_loop")
+    if isinstance(script_loop, dict) and "mode" in script_loop:
+        snapshot["script_mode"] = script_loop["mode"]
+    params = data.get("execution_params")
+    if isinstance(params, dict):
+        snapshot["execution_params"] = {
+            key: params[key]
+            for key in _OPERATOR_OWNED_EXECUTION_PARAMS
+            if key in params
+        }
+    return snapshot
+
+
+def _restore_operator_owned(job_yaml: Path, snapshot: dict[str, Any]) -> None:
+    if not snapshot:
+        return
+    data = yaml.safe_load(job_yaml.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        return
+    if "agent_loop" in snapshot:
+        data["agent_loop"] = snapshot["agent_loop"]
+    if "job_kind" in snapshot:
+        data["job_kind"] = snapshot["job_kind"]
+    if "script_mode" in snapshot and isinstance(data.get("script_loop"), dict):
+        data["script_loop"]["mode"] = snapshot["script_mode"]
+    preserved_params = snapshot.get("execution_params") or {}
+    if preserved_params and isinstance(data.get("execution_params"), dict):
+        data["execution_params"].update(preserved_params)
+    job_yaml.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+
 def _promote_candidate(store: JobStore, job_id: str, candidate_dir: Path) -> None:
     root = store.job_dir(job_id)
     candidate_workspace = candidate_dir / "workspace"
@@ -615,11 +674,13 @@ def _promote_candidate(store: JobStore, job_id: str, candidate_dir: Path) -> Non
         raise FileNotFoundError(f"candidate workspace missing: {candidate_workspace}")
     if not candidate_job_yaml.exists():
         raise FileNotFoundError(f"candidate job.yaml missing: {candidate_job_yaml}")
+    operator_owned = _snapshot_operator_owned(root / "job.yaml")
     active_workspace = root / "workspace"
     if active_workspace.exists():
         shutil.rmtree(active_workspace)
     shutil.copytree(candidate_workspace, active_workspace)
     shutil.copy2(candidate_job_yaml, root / "job.yaml")
+    _restore_operator_owned(root / "job.yaml", operator_owned)
     # Carry the candidate's revision-stamped gate artifacts (written during
     # candidate validation) into the job dirs: candidate revision equals the
     # post-promotion revision, so these keep evaluate_live_gate green after

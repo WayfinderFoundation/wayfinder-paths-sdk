@@ -375,6 +375,8 @@ async def core_jobs(
       - `starter_strategies` lists the fixed, mixed crypto/equity paper
         starters. `create_starter` with `starter_id` materializes one as a
         normal jobs_v1 job; its own forward inception begins at selection.
+        Catalog launches default to `agent_mode="intervene"` (agent loop ON,
+        propose-only) — pass `agent_mode` explicitly only to deviate.
         It also spawns a detached 120-day `fetch_dataset` op — do not re-run
         `fetch_dataset` right after creating; poll `op_status` if a backtest
         reports the fetch still in progress.
@@ -453,6 +455,7 @@ async def core_jobs(
                 compile_job=compile,
                 initializer_session_id=initializer_session_id,
                 leverage=leverage,
+                agent_mode=agent_mode,
             )
         )
 
@@ -549,12 +552,25 @@ async def core_jobs(
     if action == "set_agent_mode":
         mode = normalize_agent_mode(agent_mode or "monitor")
         job = store.load(job_id)
+        previous_mode = job.agent_loop.mode
         job.agent_loop.mode = mode
         job.agent_loop.enabled = mode != "off"
         job.job_kind = infer_job_kind(job.script_loop.enabled, mode)
         if agent_wake_seconds is not None:
             job.agent_loop.wake_interval_seconds = agent_wake_seconds
         store.save(job)
+        # Journal the operator's selection so a later revert (e.g. a stale
+        # candidate promotion) is diagnosable from the job dir alone.
+        store.append_journal(
+            job_id,
+            {
+                "type": "operator_agent_mode_set",
+                "from": previous_mode,
+                "to": mode,
+                "wake_seconds": agent_wake_seconds,
+                "via": "mcp",
+            },
+        )
         result = JobCompiler(store=store).compile(job)
         sync_all_jobs(store=store)
         return ok(result)

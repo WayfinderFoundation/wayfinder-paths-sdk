@@ -110,6 +110,21 @@ def test_candidate_revision_matches_promoted_revision(tmp_path: Path) -> None:
     assert compute_workspace_revision(root) == candidate_revision
 
 
+def test_agent_mode_flip_does_not_move_the_revision(tmp_path: Path) -> None:
+    """The agent watch dial (set-mode) is operational, not strategy logic —
+    flipping it must not orphan gate stamps or drift staged candidates."""
+    store, job_id, root = _make_job(tmp_path)
+    baseline = compute_workspace_revision(root)
+
+    job = store.load(job_id)
+    job.agent_loop.mode = "intervene"
+    job.agent_loop.enabled = True
+    job.job_kind = "script_agent"
+    store.save(job)
+
+    assert compute_workspace_revision(root) == baseline
+
+
 def test_snapshot_carries_gate_and_keeps_existing_keys(tmp_path: Path) -> None:
     store, job_id, _ = _make_job(tmp_path)
     _run_full_gate_pipeline(store, job_id)

@@ -95,6 +95,14 @@ def compute_workspace_revision(root: Path) -> str:
                 match data.get("script_loop"):
                     case dict() as script_loop:
                         script_loop.pop("mode", None)
+                # The agent watch level (FE "Just run it"/"Watch & suggest")
+                # is an operator dial, not strategy logic. Hashing it turned
+                # every mode flip into a phantom strategy change: stale gate
+                # stamps, baseline drift on staged candidates, and candidate
+                # promotion reverting the operator's selection. job_kind is
+                # derived from the same dial, so it leaves the hash with it.
+                data.pop("agent_loop", None)
+                data.pop("job_kind", None)
                 match data.get("execution_params"):
                     case dict() as execution_params:
                         execution_params.pop("wallet_label", None)

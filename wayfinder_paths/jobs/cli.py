@@ -258,12 +258,20 @@ def starter_strategies_cmd() -> None:
     default=None,
     help="Initial paper leverage (1-5x; defaults to 1x).",
 )
+@click.option(
+    "--agent-mode",
+    "agent_mode",
+    type=click.Choice(["off", "monitor", "intervene", "auto", "improve", "decide"]),
+    default=None,
+    help="Override the catalog launch default (intervene).",
+)
 @click.option("--no-compile", is_flag=True, default=False)
 def create_starter_cmd(
     starter_id: str,
     job_id: str | None,
     initializer_session_id: str | None,
     leverage: int | None,
+    agent_mode: str | None,
     no_compile: bool,
 ) -> None:
     result = create_starter_job(
@@ -271,6 +279,7 @@ def create_starter_cmd(
         job_id=job_id,
         initializer_session_id=initializer_session_id,
         leverage=leverage,
+        agent_mode=agent_mode,
         compile_job=not no_compile,
     )
     _echo_json({"ok": True, "result": result})
@@ -1424,12 +1433,25 @@ def agent_set_mode_cmd(job_id: str, mode: AgentMode, wake_seconds: int | None) -
     store = JobStore()
     job = store.load(job_id)
     normalized_mode = normalize_agent_mode(mode)
+    previous_mode = job.agent_loop.mode
     job.agent_loop.mode = normalized_mode
     job.agent_loop.enabled = normalized_mode != "off"
     job.job_kind = infer_job_kind(job.script_loop.enabled, normalized_mode)
     if wake_seconds is not None:
         job.agent_loop.wake_interval_seconds = wake_seconds
     store.save(job)
+    # Journal the operator's selection so a later revert (e.g. a stale
+    # candidate promotion) is diagnosable from the job dir alone.
+    store.append_journal(
+        job_id,
+        {
+            "type": "operator_agent_mode_set",
+            "from": previous_mode,
+            "to": normalized_mode,
+            "wake_seconds": wake_seconds,
+            "via": "cli",
+        },
+    )
     result = JobCompiler(store=store).compile(job)
     sync_all_jobs(store=store)
     _echo_json({"ok": True, "result": result})

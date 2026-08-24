@@ -25,6 +25,8 @@ from wayfinder_paths.jobs.execution.primitives import (
 )
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.starters import (
+    STARTER_AGENT_WAKE_SECONDS,
+    STARTER_CATALOG_VERSION,
     STARTER_DEFINITIONS,
     coerce_starter_leverage,
     create_starter_job,
@@ -787,6 +789,63 @@ def test_create_starter_materializes_job_and_forward_inception(tmp_path) -> None
     assert "mixed_volume_capitulation" in Path(
         balanced_result["script_entrypoint"]
     ).read_text(encoding="utf-8")
+
+
+# Catalog launch policy: every off-the-shelf starter launches with the agent
+# loop ON in intervene mode. Fleet evidence: the intervene copy of a starter
+# was the fleet's only productive research job; its monitor twin burned ~49
+# wakes/48h unable to act on a holdout-confirmed hypothesis; agent-off copies
+# did zero research. A starter must never launch monitor/off by default.
+def test_every_starter_launches_with_agent_loop_intervene(tmp_path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    for definition in STARTER_DEFINITIONS:
+        create_starter_job(definition.id, store=store, compile_job=False)
+        job = store.load(definition.id)
+        assert job.agent_loop.enabled is True, definition.id
+        assert job.agent_loop.mode == "intervene", definition.id
+        assert job.agent_loop.wake_interval_seconds == STARTER_AGENT_WAKE_SECONDS, (
+            definition.id
+        )
+        assert job.job_kind == "script_agent", definition.id
+        assert (
+            job.controller["starter"]["catalog_version"] == STARTER_CATALOG_VERSION
+        ), definition.id
+
+
+def test_create_starter_honors_explicit_agent_mode_override(tmp_path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    create_starter_job(
+        "mixed-rsi-snapback-1h",
+        job_id="monitor-override",
+        store=store,
+        compile_job=False,
+        agent_mode="monitor",
+    )
+    monitor_job = store.load("monitor-override")
+    assert monitor_job.agent_loop.mode == "monitor"
+    assert monitor_job.agent_loop.enabled is True
+
+    create_starter_job(
+        "mixed-rsi-snapback-1h",
+        job_id="off-override",
+        store=store,
+        compile_job=False,
+        agent_mode="off",
+    )
+    off_job = store.load("off-override")
+    assert off_job.agent_loop.mode == "off"
+    assert off_job.agent_loop.enabled is False
+    assert off_job.job_kind == "script_only"
+
+    # Aliases normalize the same way as the generic create path.
+    create_starter_job(
+        "mixed-rsi-snapback-1h",
+        job_id="improve-alias",
+        store=store,
+        compile_job=False,
+        agent_mode="improve",
+    )
+    assert store.load("improve-alias").agent_loop.mode == "intervene"
 
 
 def test_create_starter_reuses_its_canonical_job_id(tmp_path) -> None:
