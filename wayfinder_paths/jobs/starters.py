@@ -15,7 +15,12 @@ from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.jobs.background import spawn_detached_op
-from wayfinder_paths.jobs.models import WayfinderJob, safe_job_id
+from wayfinder_paths.jobs.models import (
+    AgentMode,
+    WayfinderJob,
+    normalize_agent_mode,
+    safe_job_id,
+)
 from wayfinder_paths.jobs.starter_leverage_evidence import STARTER_LEVERAGE_RESULTS
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.strategies._starter_utils import (
@@ -24,8 +29,17 @@ from wayfinder_paths.jobs.strategies._starter_utils import (
     RANKING_STOP_DEFAULTS,
 )
 
-STARTER_CATALOG_VERSION = "1.8.0"
+STARTER_CATALOG_VERSION = "1.9.0"
 STARTER_STRATEGY_INCEPTION_AT = "2026-08-24T00:00:00+00:00"
+# Catalog launch policy: every off-the-shelf starter launches with the agent
+# loop ON in intervene mode. Fleet evidence (two launches of the identical
+# starter): the intervene copy was the only productive research job (4
+# experiments/72h); the monitor twin burned ~49 wakes/48h unable to act — it
+# holdout-CONFIRMED a hypothesis and could not open its pre-registered paper
+# probation leg; agent-off copies did zero research. Callers may override
+# deliberately, but the default is intervene.
+STARTER_AGENT_MODE_DEFAULT: AgentMode = "intervene"
+STARTER_AGENT_WAKE_SECONDS = 3600
 STARTER_EVIDENCE_REVISION = "1.7.0"
 STARTER_LEVERAGE_DEFAULT = 1
 STARTER_LEVERAGE_MINIMUM = 1
@@ -1357,6 +1371,7 @@ def create_starter_job(
     compile_job: bool = True,
     initializer_session_id: str | None = None,
     leverage: int | float | None = None,
+    agent_mode: str | None = None,
 ) -> dict[str, Any]:
     """Materialize a selectable starter as an ordinary paper jobs_v1 job."""
     definition = get_starter(starter_id)
@@ -1391,6 +1406,13 @@ def create_starter_job(
     interval_seconds = int(bar_interval_seconds(definition.timeframe) or 0)
     if interval_seconds <= 0:
         raise ValueError(f"unsupported starter timeframe: {definition.timeframe}")
+    # None → catalog default (intervene). An explicit mode is honored so
+    # operator plumbing (CLI/MCP) can launch differently on purpose.
+    launch_agent_mode = (
+        normalize_agent_mode(agent_mode)
+        if agent_mode is not None
+        else STARTER_AGENT_MODE_DEFAULT
+    )
     job = WayfinderJob.new(
         resolved_id,
         name=definition.name,
@@ -1401,8 +1423,8 @@ def create_starter_job(
         script="workspace/src/strategy.py",
         interval_seconds=interval_seconds,
         timeout_seconds=180,
-        agent_mode="monitor",
-        agent_wake_seconds=3600,
+        agent_mode=launch_agent_mode,
+        agent_wake_seconds=STARTER_AGENT_WAKE_SECONDS,
         execution_contract="jobs_v1",
         initializer_session_id=initializer_session_id,
     )

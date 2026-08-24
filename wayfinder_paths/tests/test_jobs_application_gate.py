@@ -129,6 +129,43 @@ def test_apply_keeps_live_gate_green(
     assert job.execution_params["threshold"] == 10.7
 
 
+def test_apply_preserves_operator_agent_mode_set_after_propose(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FE "Just run it"/"Watch & suggest" regression: an agent-mode change made
+    between propose and apply must survive candidate promotion. The candidate
+    job.yaml is a propose-time snapshot; promotion used to copy it wholesale,
+    silently reverting the operator's selection back to the propose-time mode."""
+    _patch_runner(monkeypatch)
+    store, job_id, _ = _make_job(tmp_path)
+    _write_bars_proposal(store, job_id, "prop_mode")
+    store.approve_proposal(job_id, "prop_mode", allow_ungated=True)
+    claim_application(store, job_id, "prop_mode")
+
+    # Operator flips the watch dial after the candidate was staged (the FE
+    # selector → `wayfinder job agent set-mode <job> off`).
+    job = store.load(job_id)
+    job.agent_loop.mode = "off"
+    job.agent_loop.enabled = False
+    job.job_kind = "script_only"
+    store.save(job)
+
+    validation = validate_application_candidate(store, job_id, "prop_mode")
+    assert validation["status"] == "passed", validation["checks"]
+    completed = complete_application(store, job_id, "prop_mode", status="applied")
+
+    job = store.load(job_id)
+    assert job.agent_loop.mode == "off"
+    assert job.agent_loop.enabled is False
+    assert job.job_kind == "script_only"
+    # The watch dial is excluded from the revision hash, so the promotion
+    # still lands on the candidate's stamped revision and the gate stays
+    # green despite the preserved operator fields.
+    gate = evaluate_live_gate(job_id, store=store)
+    assert gate["live_ready"] is True, gate["reasons"]
+    assert gate["revision"] == completed["promoted_revision"]
+
+
 def test_promote_params_via_proposal_is_approvable_without_scenario_plan(
     tmp_path: Path,
 ) -> None:
