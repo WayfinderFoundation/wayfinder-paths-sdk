@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.util
 import inspect
+import json
+import os
 import py_compile
 import sys
 from collections.abc import Mapping
@@ -42,6 +45,10 @@ REQUIRED_INTENT_FIELDS = (
     "exit_conditions",
     "known_non_goals",
 )
+
+# Kill-switch: force scenario replays to run fresh on every validation,
+# ignoring the persisted per-candidate scenario cache.
+SCENARIOS_ALWAYS_RUN_ENV = "WAYFINDER_SCENARIOS_ALWAYS_RUN"
 
 
 def validate_candidate_application(
@@ -140,7 +147,11 @@ def validate_candidate_application(
     if script_path and script_path.exists():
         if contract == "jobs_v1":
             checks.extend(_jobs_v1_script_checks(script_path))
-            checks.extend(_engine_scenario_checks(script_path, proposal, job_data))
+            checks.extend(
+                _engine_scenario_checks(
+                    script_path, proposal, job_data, candidate_dir=candidate_dir
+                )
+            )
             if not skip_behavior_checks:
                 checks.extend(
                     _candidate_behavior_checks(
@@ -196,11 +207,60 @@ def _jobs_v1_script_checks(script_path: Path) -> list[dict[str, Any]]:
     return checks
 
 
+def _scenario_set_hash(scenarios: list[Any], spec_data: Mapping[str, Any]) -> str:
+    """Content identity of the scenario replay question: the scenario set
+    (bars + params + expect) plus the execution spec the engine replays them
+    under. Changing ANY scenario definition changes the hash."""
+    encoded = json.dumps(
+        {"scenarios": scenarios, "execution_spec": dict(spec_data)},
+        sort_keys=True,
+        default=str,
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _cached_scenario_checks(
+    cache_path: Path, scenario_hash: str, candidate_revision: str
+) -> list[dict[str, Any]] | None:
+    """Green-only scenario reuse: persisted rows come back when the cache key
+    {scenario_hash, candidate_revision} matches AND every row passed — a
+    failed scenario is a verdict and always re-runs fresh."""
+    if os.environ.get(SCENARIOS_ALWAYS_RUN_ENV) == "1" or not cache_path.exists():
+        return None
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    match cached:
+        case {
+            "scenario_hash": str() as cached_hash,
+            "candidate_revision": str() as cached_revision,
+            "checks": list() as rows,
+        } if (
+            cached_hash == scenario_hash
+            and cached_revision == candidate_revision
+            and rows
+            and all(isinstance(row, dict) and row.get("passed") for row in rows)
+        ):
+            return [{**row, "reused": True} for row in rows]
+    return None
+
+
 def _engine_scenario_checks(
-    script_path: Path, proposal: Mapping[str, Any], job_data: Mapping[str, Any]
+    script_path: Path,
+    proposal: Mapping[str, Any],
+    job_data: Mapping[str, Any],
+    *,
+    candidate_dir: Path | None = None,
 ) -> list[dict[str, Any]]:
     """Run proposal scenarios through the real engine (simulate_execution)
-    instead of the legacy decide_from_snapshot fixture convention."""
+    instead of the legacy decide_from_snapshot fixture convention.
+
+    Scenario replays are deterministic in {scenario set, execution spec,
+    candidate content}: results are persisted inside the candidate bundle
+    (outside workspace/, so the candidate revision is unchanged) and reused
+    across phases (propose → revalidate → apply) when that key matches and
+    every persisted row passed."""
     scenario_plan = proposal.get("scenario_plan")
     match scenario_plan:
         case list():
@@ -218,7 +278,21 @@ def _engine_scenario_checks(
     ]
     if not scenarios:
         return checks
-    spec = ExecutionSpec.from_dict(dict(job_data.get("execution_spec") or {}))
+    spec_data = dict(job_data.get("execution_spec") or {})
+    cache_path: Path | None = None
+    scenario_hash = ""
+    candidate_revision = ""
+    if candidate_dir is not None:
+        scenario_hash = _scenario_set_hash(list(scenarios), spec_data)
+        candidate_revision = compute_workspace_revision(candidate_dir)
+        cache_path = candidate_dir / "reports" / "validation" / "scenario_cache.json"
+        cached_rows = _cached_scenario_checks(
+            cache_path, scenario_hash, candidate_revision
+        )
+        if cached_rows is not None and len(cached_rows) == len(scenarios):
+            return checks + cached_rows
+    spec = ExecutionSpec.from_dict(spec_data)
+    scenario_rows: list[dict[str, Any]] = []
     for index, scenario in enumerate(scenarios):
         match scenario:
             case Mapping():
@@ -228,7 +302,7 @@ def _engine_scenario_checks(
         name = str(scenario_data.get("name") or f"scenario_{index + 1}")
         bars = scenario_data.get("bars")
         if not bars:
-            checks.append(
+            scenario_rows.append(
                 {
                     "name": f"scenario_{name}",
                     "passed": False,
@@ -263,7 +337,7 @@ def _engine_scenario_checks(
                 failures.append(
                     f"execution_valid expected {expected['execution_valid']}"
                 )
-            checks.append(
+            scenario_rows.append(
                 {
                     "name": f"scenario_{name}",
                     "passed": not failures,
@@ -273,10 +347,30 @@ def _engine_scenario_checks(
                 }
             )
         except Exception as exc:
-            checks.append(
+            scenario_rows.append(
                 {"name": f"scenario_{name}", "passed": False, "error": str(exc)}
             )
-    return checks
+    if (
+        cache_path is not None
+        and scenario_rows
+        and all(row["passed"] for row in scenario_rows)
+    ):
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "scenario_hash": scenario_hash,
+                    "candidate_revision": candidate_revision,
+                    "checks": scenario_rows,
+                },
+                indent=2,
+                sort_keys=True,
+                default=str,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    return checks + scenario_rows
 
 
 def _candidate_behavior_checks(
