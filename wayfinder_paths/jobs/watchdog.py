@@ -867,6 +867,70 @@ def _check_disk_usage(
     return None
 
 
+# Agent-mode drift alerting: `set_agent_mode` edits job.yaml and recompiles,
+# which re-bakes WAYFINDER_JOB_AGENT_MODE into the runner env. A failed or
+# skipped recompile leaves the runner waking under the OLD mode while
+# job.yaml — and everything that reads it, including the synced
+# agent_mode_actual — claims the new one: the agent-loop twin of the
+# paper/live split-brain that once had a live-trading job reading "paper".
+# The watchdog compares the baked env against job.yaml every pass and
+# journals once per drift episode (re-alert window mirrors disk_pressure).
+_AGENT_MODE_DRIFT_PATH = "state/agent_mode_drift_alert.json"
+AGENT_MODE_DRIFT_REALERT_WINDOW = timedelta(hours=6)
+
+
+def _check_agent_mode_drift(
+    store: JobStore, job: Any, now: datetime, runner_states: dict[str, Any]
+) -> dict[str, Any] | None:
+    loop = getattr(job, "agent_loop", None)
+    name = (
+        str(getattr(loop, "runner_job_name", "") or "")
+        if loop is not None and getattr(loop, "enabled", False)
+        else ""
+    )
+    state = runner_states.get(name) if name else None
+    env = ((state or {}).get("payload") or {}).get("env") or {}
+    compiled = str(env.get("WAYFINDER_JOB_AGENT_MODE") or "")
+    if not compiled:
+        # Daemon down or loop not compiled: nothing to compare — hold the
+        # marker so a transient outage neither re-alerts nor fake-"recovers".
+        return None
+    declared = str(getattr(loop, "mode", "") or "")
+    marker = store.read_json(job.id, _AGENT_MODE_DRIFT_PATH) or {}
+    if compiled != declared:
+        if (
+            marker.get("compiled") == compiled
+            and marker.get("declared") == declared
+            and _age(now, marker.get("alerted_at")) < AGENT_MODE_DRIFT_REALERT_WINDOW
+        ):
+            return None  # already alerted for this drift episode
+        store.write_json(
+            job.id,
+            _AGENT_MODE_DRIFT_PATH,
+            {
+                "declared": declared,
+                "compiled": compiled,
+                "alerted_at": now.isoformat(),
+            },
+        )
+        store.append_journal(
+            job.id,
+            {"type": "agent_mode_drift", "declared": declared, "compiled": compiled},
+        )
+        return {
+            "action": "agent_mode_drift",
+            "declared": declared,
+            "compiled": compiled,
+        }
+    if marker:
+        store.write_json(job.id, _AGENT_MODE_DRIFT_PATH, {})
+        store.append_journal(
+            job.id, {"type": "agent_mode_drift_recovered", "mode": declared}
+        )
+        return {"action": "agent_mode_drift_recovered", "mode": declared}
+    return None
+
+
 # Research-impasse alerting: all three production research jobs froze the
 # same way — staleness computed correctly and the wake mandate fired every
 # wake, but the mandate's "state why research is not warranted" hatch let the
@@ -1321,6 +1385,15 @@ def recover_stalled_applications(
     restaged_this_pass = False
     # A gate re-stamp runs a full backtest — same one-per-pass budget rule.
     restamped_this_pass = False
+    # One daemon RPC per pass, shared by the per-job agent-mode drift check.
+    # job_states() itself returns {} on an unreachable daemon; the guard is
+    # for everything else — a broken bridge must not stop recovery of the
+    # jobs, and the drift check degrades to a no-op exactly like a down
+    # daemon (no compare, marker held).
+    try:
+        runner_states = RunnerBridge(repo_root=store.repo_root).job_states()
+    except Exception:  # noqa: BLE001
+        runner_states = {}
     for job in store.list_jobs():
         try:
             proposals = store.proposals(job.id)
@@ -1399,6 +1472,13 @@ def recover_stalled_applications(
             disk_event = None
         if disk_event is not None:
             recovered.append({"job_id": job.id, **disk_event})
+        try:
+            drift_event = _check_agent_mode_drift(store, job, now, runner_states)
+        except Exception as exc:
+            errors.append({"job_id": job.id, "error": f"agent_mode: {exc}"})
+            drift_event = None
+        if drift_event is not None:
+            recovered.append({"job_id": job.id, **drift_event})
         try:
             impasse_event = _check_research_impasse(store, job, proposals, now)
         except Exception as exc:

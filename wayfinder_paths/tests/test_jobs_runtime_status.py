@@ -111,6 +111,66 @@ def test_snapshot_reconciles_agent_mode_and_revision(tmp_path, monkeypatch):
     assert sc["active_revision"] == "rev123"
 
 
+def test_snapshot_ships_authoritative_agent_mode_even_runner_down(
+    tmp_path, monkeypatch
+):
+    # The sync channel is push-only: the box never sees the DB-declared agent
+    # mode (a UI selection once got dropped before reaching job.yaml, and the
+    # DB showed autonomous while the box ran monitor for days). The box-side
+    # contribution is to ALWAYS ship job.yaml's mode authoritative — even
+    # with the daemon down — so the backend can compare against its own
+    # stored declared value.
+    store, job = _job(tmp_path, mode="paper")
+    monkeypatch.setattr(sync_mod, "RunnerBridge", _FakeBridge({}))
+    sc = snapshot_job(job.id, store=store)["scorecard"]
+    assert sc["agent_mode_actual"] == "monitor"  # job.yaml agent_loop.mode
+    assert sc["agent_mode_source"] == "job_yaml"
+    assert "agent_mode_mismatch" not in sc  # no runner env -> no comparison
+
+
+def test_snapshot_flags_agent_mode_mismatch_against_baked_env(tmp_path, monkeypatch):
+    # job.yaml says monitor but the runner env was compiled as intervene —
+    # the internal split-brain a failed recompile after set_agent_mode leaves.
+    store, job = _job(tmp_path, mode="live")
+    monkeypatch.setattr(
+        sync_mod,
+        "RunnerBridge",
+        _FakeBridge(
+            {
+                "carry-script": _script_state(),
+                "carry-agent": {
+                    "status": "ACTIVE",
+                    "payload": {"env": {"WAYFINDER_JOB_AGENT_MODE": "intervene"}},
+                },
+            }
+        ),
+    )
+    sc = snapshot_job(job.id, store=store)["scorecard"]
+    assert sc["agent_mode"] == "intervene"  # runtime truth
+    assert sc["agent_mode_mismatch"] is True
+    assert sc["agent_mode_actual"] == "monitor"  # job.yaml stays authoritative
+
+
+def test_snapshot_agent_mode_agree_no_mismatch(tmp_path, monkeypatch):
+    store, job = _job(tmp_path, mode="live")
+    monkeypatch.setattr(
+        sync_mod,
+        "RunnerBridge",
+        _FakeBridge(
+            {
+                "carry-script": _script_state(),
+                "carry-agent": {
+                    "status": "ACTIVE",
+                    "payload": {"env": {"WAYFINDER_JOB_AGENT_MODE": "monitor"}},
+                },
+            }
+        ),
+    )
+    sc = snapshot_job(job.id, store=store)["scorecard"]
+    assert sc["agent_mode_mismatch"] is False
+    assert sc["agent_mode_actual"] == "monitor"
+
+
 def test_snapshot_falls_back_to_engine_mode(tmp_path, monkeypatch):
     # Runner env lacks WAYFINDER_JOB_MODE -> use engine_state.json (last ran as).
     store, job = _job(tmp_path, mode="paper")
