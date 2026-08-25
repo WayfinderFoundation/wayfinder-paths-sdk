@@ -44,6 +44,40 @@ CLAIM_AUDIT_GRACE_SECONDS = 60 * 60
 _JOURNAL_SCAN_LIMIT = 4000
 _MECHANICAL_AUDIT_VERDICTS = frozenset({"pass", "narrow", "reject"})
 
+# owner_review_required journal markers surface as needs_you items with
+# kind = event type — but ONLY for these event types. The FE renders each
+# kind with dedicated action buttons (vault-frontend WAYFINDER_NEEDS_YOU_KINDS);
+# an unknown kind renders as a dead generic label the owner cannot act on, so
+# marker types outside this set must never pass through. Notably the batch
+# ``exhaustion_claims_pending`` marker (written by older deployed watchdogs,
+# still present in live journals) is dropped here — pending claims surface
+# per-claim via ``_unauditable_claims`` with ref_id = claim_id instead.
+_OWNER_REVIEW_MARKER_KINDS = frozenset(
+    {
+        "successor_abandoned",
+        "proposal_reject_refused",
+        "live_mode_audit",
+    }
+)
+
+# The complete needs_you kind union the deployed FE understands. Every item
+# emitted by _needs_you MUST use one of these kinds — this constant exists so
+# tests can pin the contract and future drift fails loudly. Mirror of
+# vault-frontend's WAYFINDER_NEEDS_YOU_KINDS.
+NEEDS_YOU_KINDS = _OWNER_REVIEW_MARKER_KINDS | frozenset(
+    {
+        "live_proposal_approval",
+        "exhaustion_claim_unauditable",
+        "decision_gate_tripped",
+        "halt_awaiting_owner_clear",
+    }
+)
+
+_PROBATION_OPENED_EVENTS = frozenset({"probation_leg_opened", "paper_probation_opened"})
+_PROBATION_EVENTS = _PROBATION_OPENED_EVENTS | frozenset(
+    {"probation_leg_graduated", "probation_leg_killed"}
+)
+
 
 def job_live_capital_risk(job: WayfinderJob) -> bool:
     """Live capital at stake: running live, or wallet-bound (one flip away)."""
@@ -78,7 +112,7 @@ def _build(
     proposals = store.proposals(job_id)
     return {
         "needs_you": _needs_you(store, job_id, job, proposals, journal, now),
-        "decided_autonomously": _decided_autonomously(job_id, journal, now),
+        "decided_autonomously": _decided_autonomously(store, job_id, journal, now),
     }
 
 
@@ -163,15 +197,19 @@ def _unauditable_claims(
         ):
             continue  # audit simply hasn't run yet
         claim_id = str(claim.get("claim_id"))
+        summary = (
+            f"exhaustion claim on lane {claim.get('lane')!r} has no "
+            "mechanical audit verdict — owner adjudication required"
+        )
+        evidence = " ".join(str(claim.get("evidence") or "").split())
+        if evidence:
+            summary = f"{summary}; evidence: {evidence}"
         items.append(
             _item(
                 kind="exhaustion_claim_unauditable",
                 job_id=job_id,
                 ref_id=claim_id,
-                summary=(
-                    f"exhaustion claim on lane {claim.get('lane')!r} has no "
-                    "mechanical audit verdict — owner adjudication required"
-                ),
+                summary=summary[:300],
                 evidence_ref=f"research/exhaustion_claims/{claim_id}.json",
                 since_ts=claim.get("filed_at"),
             )
@@ -189,6 +227,11 @@ def _owner_review_markers(
     latest: dict[tuple[str, str], dict[str, Any]] = {}
     for event in journal:  # append-ordered: later events overwrite
         if not event.get("owner_review_required"):
+            continue
+        if str(event.get("type")) not in _OWNER_REVIEW_MARKER_KINDS:
+            # Unknown marker types must not leak into needs_you: the FE only
+            # wires action buttons for _OWNER_REVIEW_MARKER_KINDS, so anything
+            # else would render as an item the owner cannot act on.
             continue
         ts = _parse_time(event.get("ts"))
         if ts and ts < cutoff:
@@ -253,22 +296,63 @@ def _tripped_gates(store: JobStore, job_id: str) -> list[dict[str, Any]]:
 
 
 def _decided_autonomously(
-    job_id: str, journal: list[dict[str, Any]], now: dt.datetime
+    store: JobStore, job_id: str, journal: list[dict[str, Any]], now: dt.datetime
 ) -> list[dict[str, Any]]:
     cutoff = now - dt.timedelta(days=DECIDED_WINDOW_DAYS)
+    legs_by_name = _probation_legs(store, job_id, journal)
     items: list[dict[str, Any]] = []
     for event in journal:
         ts = _parse_time(event.get("ts"))
         if ts is None or ts < cutoff:
             continue
-        decided = _decided_item(job_id, event)
+        decided = _decided_item(job_id, event, legs_by_name)
         if decided is not None:
             items.append(decided)
     items.sort(key=lambda item: str(item.get("ts") or ""), reverse=True)
     return items[:DECIDED_CAP]
 
 
-def _decided_item(job_id: str, event: dict[str, Any]) -> dict[str, Any] | None:
+def _probation_legs(
+    store: JobStore, job_id: str, journal: list[dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    if not any(str(e.get("type")) in _PROBATION_EVENTS for e in journal):
+        return {}
+    from wayfinder_paths.jobs.probation import load_probation
+
+    return {
+        str(leg.get("name")): leg
+        for leg in load_probation(store, job_id).get("legs") or []
+        if isinstance(leg, dict)
+    }
+
+
+def _probation_evidence(
+    event: dict[str, Any],
+    decision: str,
+    legs_by_name: dict[str, dict[str, Any]],
+) -> str:
+    """Owner-readable probation evidence: ALWAYS lead with the leg name (an
+    owner read a bare 'Killed' chip as the whole JOB being killed), then the
+    registered criterion for the decision when one exists."""
+    leg_name = str(event.get("leg") or "")
+    text = f"leg {leg_name} {decision}"
+    leg = legs_by_name.get(leg_name) or {}
+    criterion_key = "kill" if decision == "killed" else "graduate"
+    criterion = str((leg.get(criterion_key) or {}).get("criterion") or "").strip()
+    if criterion:
+        prefix = "graduates when" if decision == "opened" else "criterion"
+        text = f"{text} — {prefix}: {criterion}"
+    entry = event.get("entry")
+    if decision == "opened" and entry:
+        text = f"{text} — entry: {_compact(entry)}"
+    return text[:300]
+
+
+def _decided_item(
+    job_id: str,
+    event: dict[str, Any],
+    legs_by_name: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
     event_type = str(event.get("type") or "")
     ts = event.get("ts")
     if event_type == "proposal_auto_applied":
@@ -323,32 +407,19 @@ def _decided_item(job_id: str, event: dict[str, Any]) -> dict[str, Any] | None:
             "decision": "reject",
             "evidence": _compact(event.get("reason_codes")),
         }
-    if event_type in {"probation_leg_opened", "paper_probation_opened"}:
+    if event_type in _PROBATION_EVENTS:
+        decision = (
+            "opened"
+            if event_type in _PROBATION_OPENED_EVENTS
+            else event_type.removeprefix("probation_leg_")
+        )
         return {
             "kind": "probation",
             "job_id": job_id,
             "ref_id": event.get("leg"),
             "ts": ts,
-            "decision": "opened",
-            "evidence": _compact(event.get("entry")),
-        }
-    if event_type == "probation_leg_graduated":
-        return {
-            "kind": "probation",
-            "job_id": job_id,
-            "ref_id": event.get("leg"),
-            "ts": ts,
-            "decision": "graduated",
-            "evidence": None,
-        }
-    if event_type == "probation_leg_killed":
-        return {
-            "kind": "probation",
-            "job_id": job_id,
-            "ref_id": event.get("leg"),
-            "ts": ts,
-            "decision": "killed",
-            "evidence": None,
+            "decision": decision,
+            "evidence": _probation_evidence(event, decision, legs_by_name),
         }
     return None
 

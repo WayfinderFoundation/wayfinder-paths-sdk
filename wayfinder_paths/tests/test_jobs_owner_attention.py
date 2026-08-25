@@ -10,11 +10,28 @@ from wayfinder_paths.jobs import sync as sync_mod
 from wayfinder_paths.jobs.halt import request_halt
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.owner_attention import (
+    NEEDS_YOU_KINDS,
     build_owner_attention,
     job_live_capital_risk,
 )
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job
+
+# Pinned mirror of vault-frontend's WAYFINDER_NEEDS_YOU_KINDS: the deployed FE
+# wires accept/reject/adjudicate buttons per kind and renders any OTHER kind
+# as a dead generic label. If this set and NEEDS_YOU_KINDS drift, the FE
+# contract broke — update vault-frontend first, then this pin.
+WAYFINDER_NEEDS_YOU_KINDS = frozenset(
+    {
+        "live_proposal_approval",
+        "exhaustion_claim_unauditable",
+        "successor_abandoned",
+        "proposal_reject_refused",
+        "live_mode_audit",
+        "decision_gate_tripped",
+        "halt_awaiting_owner_clear",
+    }
+)
 
 
 def _store(
@@ -155,6 +172,144 @@ def test_owner_review_markers_surface_and_resolve(tmp_path: Path) -> None:
     assert kinds == ["successor_abandoned"]
 
 
+def test_pending_claims_emit_one_item_per_claim(tmp_path: Path) -> None:
+    store, job_id = _store(tmp_path)
+    old = (dt.datetime.now(dt.UTC) - dt.timedelta(hours=3)).isoformat()
+    pending = {
+        "claim-imx": {"lane": "imx-gap", "evidence": "20 variants, all OOS-negative"},
+        "claim-sol": {"lane": "sol-momo", "evidence": "holdout refuted 3 configs"},
+        "claim-eth": {"lane": "eth-basis", "evidence": "data wall at 2024-01"},
+    }
+    for claim_id, claim in pending.items():
+        store.write_json(
+            job_id,
+            f"research/exhaustion_claims/{claim_id}.json",
+            {"claim_id": claim_id, "status": "pending", "filed_at": old, **claim},
+        )
+    # Pending but audit-decided: the mechanical path owns it, not the owner.
+    store.write_json(
+        job_id,
+        "research/exhaustion_claims/claim-audited.json",
+        {
+            "claim_id": "claim-audited",
+            "status": "pending",
+            "lane": "audited",
+            "filed_at": old,
+            "audit": {"verdict": "narrow"},
+        },
+    )
+    # The deployed watchdog's BATCH journal marker must NOT surface as an
+    # item — the FE has no buttons for it; claims surface per-claim instead.
+    _journal(
+        store,
+        job_id,
+        {
+            "type": "exhaustion_claims_pending",
+            "count": 3,
+            "owner_review_required": "3 exhaustion claims pending — use the CLI",
+        },
+    )
+
+    items = build_owner_attention(store, job_id)["needs_you"]
+
+    assert _kinds(items) == ["exhaustion_claim_unauditable"] * 3
+    by_ref = {item["ref_id"]: item for item in items}
+    assert set(by_ref) == set(pending)
+    for claim_id, claim in pending.items():
+        item = by_ref[claim_id]
+        assert claim["lane"] in item["summary"]
+        assert claim["evidence"] in item["summary"]
+        assert len(item["summary"]) <= 300
+        assert item["evidence_ref"] == f"research/exhaustion_claims/{claim_id}.json"
+        assert item["since_ts"] == old
+
+
+def test_every_emitted_needs_you_kind_is_in_the_fe_union(tmp_path: Path) -> None:
+    assert NEEDS_YOU_KINDS == WAYFINDER_NEEDS_YOU_KINDS
+
+    # Exercise every emitter at once and assert full union coverage — a new
+    # emitter with an off-union kind, or a union member no emitter can
+    # produce, both fail here.
+    store, job_id = _store(tmp_path, wallet_label="main")
+    _write_pending_proposal(store, job_id, "prop-live")
+    old = (dt.datetime.now(dt.UTC) - dt.timedelta(hours=3)).isoformat()
+    store.write_json(
+        job_id,
+        "research/exhaustion_claims/claim-stuck.json",
+        {
+            "claim_id": "claim-stuck",
+            "status": "pending",
+            "lane": "imx-gap",
+            "filed_at": old,
+        },
+    )
+    _journal(
+        store,
+        job_id,
+        {
+            "type": "successor_abandoned",
+            "proposal_id": "prop-dead",
+            "owner_review_required": "successor self-rejected 3 times",
+        },
+    )
+    store.write_proposal(
+        job_id,
+        {
+            "proposal_id": "prop-stuck",
+            "job_id": job_id,
+            "status": "approved",
+            "proposed_change": {"summary": "x"},
+            "application": {"status": "not_requested", "restage_requested": True},
+        },
+    )
+    _journal(
+        store,
+        job_id,
+        {
+            "type": "proposal_reject_refused",
+            "proposal_id": "prop-stuck",
+            "owner_review_required": "gate ESCALATED",
+        },
+    )
+    _journal(
+        store,
+        job_id,
+        {
+            "type": "live_mode_audit",
+            "flags": [],
+            "cleared": True,
+            "owner_review_required": "stamp created after the flag was raised",
+        },
+    )
+    store.write_json(
+        job_id,
+        "research/decision_gates.json",
+        {
+            "gates": [
+                {
+                    "gate_id": "gate-1",
+                    "status": "tripped_needs_owner",
+                    "on_met": "retire_and_pivot",
+                }
+            ]
+        },
+    )
+    request_halt(store, job_id, reason="dd breach", source="risk_limits")
+    # An off-union marker type must be dropped, not passed through.
+    _journal(
+        store,
+        job_id,
+        {
+            "type": "some_future_marker",
+            "owner_review_required": "unknown escalation",
+        },
+    )
+
+    kinds = set(_kinds(build_owner_attention(store, job_id)["needs_you"]))
+
+    assert kinds == WAYFINDER_NEEDS_YOU_KINDS
+
+
 def test_unauditable_pending_claim_needs_owner(tmp_path: Path) -> None:
     store, job_id = _store(tmp_path)
     old = (dt.datetime.now(dt.UTC) - dt.timedelta(hours=3)).isoformat()
@@ -275,6 +430,63 @@ def test_decided_feed_carries_undo_refs(tmp_path: Path) -> None:
     # Feed is newest-first.
     timestamps = [item["ts"] for item in decided]
     assert timestamps == sorted(timestamps, reverse=True)
+
+
+def test_probation_items_lead_with_leg_name_and_criterion(tmp_path: Path) -> None:
+    # An owner read a bare "Killed" probation chip as the whole JOB being
+    # killed — the evidence must lead with the leg name and carry the
+    # registered criterion when one exists.
+    store, job_id = _store(tmp_path)
+    store.write_json(
+        job_id,
+        "probation.json",
+        {
+            "legs": [
+                {
+                    "name": "SOL_holdout_pair_5m15m_paper",
+                    "graduate": {"criterion": "20 trades, net_pnl > 0"},
+                    "kill": {"criterion": "net_pnl < -2% over 30 trades"},
+                },
+                {
+                    "name": "HYPE_leg",
+                    "graduate": {"criterion": "sharpe > 1 over 14d"},
+                    "kill": {"criterion": None},
+                },
+            ]
+        },
+    )
+    _journal(
+        store,
+        job_id,
+        {"type": "probation_leg_opened", "leg": "SOL_holdout_pair_5m15m_paper"},
+    )
+    _journal(
+        store,
+        job_id,
+        {"type": "probation_leg_killed", "leg": "SOL_holdout_pair_5m15m_paper"},
+    )
+    _journal(store, job_id, {"type": "probation_leg_graduated", "leg": "HYPE_leg"})
+
+    decided = build_owner_attention(store, job_id)["decided_autonomously"]
+
+    by_decision = {item["decision"]: item for item in decided}
+    assert set(by_decision) == {"opened", "killed", "graduated"}
+    for item in decided:
+        assert item["kind"] == "probation"
+        assert item["evidence"].startswith(f"leg {item['ref_id']} ")
+    killed = by_decision["killed"]
+    assert killed["ref_id"] == "SOL_holdout_pair_5m15m_paper"
+    assert "net_pnl < -2% over 30 trades" in killed["evidence"]
+    opened = by_decision["opened"]
+    assert "20 trades, net_pnl > 0" in opened["evidence"]
+    graduated = by_decision["graduated"]
+    assert graduated["ref_id"] == "HYPE_leg"
+    assert "sharpe > 1 over 14d" in graduated["evidence"]
+    # A leg unknown to probation.json still renders leg-first, criterion-free.
+    _journal(store, job_id, {"type": "probation_leg_killed", "leg": "ghost-leg"})
+    decided = build_owner_attention(store, job_id)["decided_autonomously"]
+    ghost = next(item for item in decided if item["ref_id"] == "ghost-leg")
+    assert ghost["evidence"] == "leg ghost-leg killed"
 
 
 def test_decided_feed_is_windowed_and_capped(tmp_path: Path) -> None:
