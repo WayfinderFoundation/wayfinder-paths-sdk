@@ -38,7 +38,7 @@ class MixedVolumeCapitulationStrategy:
         "weight_per_leg": 0.25,
         "symbol_weights": {},
         "rebalance_threshold": 0.10,
-        "min_trade_notional": 25.0,
+        "min_trade_notional": 10.0,
         "entry_order_type": "market",
         "entry_offset_atr": 0.0,
         "entry_ttl_bars": 1,
