@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from statistics import median
 from typing import Any
 
+from wayfinder_paths.jobs.compute_lock import heavy_compute_lock
 from wayfinder_paths.jobs.store import JobStore
 
 CALIBRATION_PATH = "results/research/live_calibration.json"
@@ -25,6 +26,18 @@ CONSERVATIVE_PRIOR_BPS = 7.0
 
 
 def build_forward_experience(
+    store: JobStore,
+    target_job_id: str,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    with heavy_compute_lock(
+        repo_root=store.repo_root, label=f"forward-experience:{target_job_id}"
+    ):
+        return _build_forward_experience(store, target_job_id, now=now)
+
+
+def _build_forward_experience(
     store: JobStore,
     target_job_id: str,
     *,

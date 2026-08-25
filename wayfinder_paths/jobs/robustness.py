@@ -12,6 +12,7 @@ from typing import Any
 
 import pandas as pd
 
+from wayfinder_paths.jobs.compute_lock import heavy_compute_lock
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.execution.simulator import (
@@ -48,6 +49,30 @@ _STAT_KEYS = (
     "exposure_pct",
     "gate_diagnostics",
 )
+REQUIRED_ACK_WARNING_CODES = frozenset(
+    {
+        "funding_incomplete",
+        "gate_unobserved",
+        "phase_sensitivity",
+        "isolated_neighbor",
+        "oos_decay",
+        "leverage_risk",
+        "scenario_loss",
+        "negative_paired_delta",
+        "lane_failed",
+        "baseline_failed",
+    }
+)
+
+
+def required_robustness_acknowledgements(
+    summary: Mapping[str, Any] | None,
+) -> set[str]:
+    return {
+        str(item.get("code"))
+        for item in (summary or {}).get("warnings") or []
+        if item.get("code") in REQUIRED_ACK_WARNING_CODES
+    }
 
 
 def robustness_check_job(
@@ -57,8 +82,24 @@ def robustness_check_job(
     robustness_plan: Mapping[str, Any] | None = None,
     store: JobStore | None = None,
 ) -> dict[str, Any]:
-    """Run the requested evidence lanes and persist a compact advisory report."""
     store = store or JobStore()
+    with heavy_compute_lock(repo_root=store.repo_root, label=f"robustness:{job_id}"):
+        return _robustness_check_job(
+            job_id,
+            candidate_dir=candidate_dir,
+            robustness_plan=robustness_plan,
+            store=store,
+        )
+
+
+def _robustness_check_job(
+    job_id: str,
+    *,
+    candidate_dir: str | Path | None = None,
+    robustness_plan: Mapping[str, Any] | None = None,
+    store: JobStore,
+) -> dict[str, Any]:
+    """Run the requested evidence lanes and persist a compact advisory report."""
     job_root = store.job_dir(job_id)
     subject_root = Path(candidate_dir) if candidate_dir else job_root
     job_data = _load_job_yaml(subject_root)
@@ -93,6 +134,11 @@ def robustness_check_job(
         return {**existing, "reused": True, "artifact": artifact_path}
 
     params = dict(job_data.get("execution_params") or {})
+    for parameter, axis in (plan.get("neighbors") or {}).items():
+        if parameter not in params or params[parameter] not in axis:
+            raise ValueError(
+                f"robustness neighbor axis {parameter!r} must include its base value"
+            )
     report: dict[str, Any] = {
         "schema_version": "1.0",
         "research_contract_version": RESEARCH_CONTRACT_VERSION,
@@ -214,6 +260,8 @@ def validate_robustness_plan(plan: Mapping[str, Any] | None) -> dict[str, Any]:
     unknown = set(raw) - _PLAN_KEYS
     if unknown:
         raise ValueError(f"unknown robustness plan keys: {sorted(unknown)}")
+    if not any(raw.get(key) for key in _PLAN_KEYS):
+        raise ValueError("robustness plan must enable at least one evidence lane")
     neighbors = raw.get("neighbors") or {}
     if not isinstance(neighbors, Mapping) or any(
         not isinstance(values, list) or not values for values in neighbors.values()
@@ -635,7 +683,7 @@ def _matches(
 ) -> bool:
     return bool(
         artifact
-        and artifact.get("status") in {"complete", "partial"}
+        and artifact.get("status") == "complete"
         and artifact.get("research_contract_version") == RESEARCH_CONTRACT_VERSION
         and artifact.get("candidate_revision") == revision
         and artifact.get("dataset_hash") == dataset_hash

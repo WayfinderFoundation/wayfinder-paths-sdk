@@ -122,6 +122,13 @@ def tpe_search(
         sampler=optuna.samplers.TPESampler(seed=seed),
     )
     study.optimize(objective, n_trials=budget)
+    if len(lineage) < budget:
+        evaluated = {genome.genome_id for genome, _ in lineage}
+        remaining = [genome for genome in genomes if genome.genome_id not in evaluated]
+        rng = random.Random(seed + 1)
+        rng.shuffle(remaining)
+        for genome in remaining[: budget - len(lineage)]:
+            lineage.append((genome, dev_score(genome, dev_series, fee_bps=fee_bps)))
     if not lineage:
         return {"lineage": [], "selected": None, "optimizer": "tpe"}
     selected = max(lineage, key=lambda pair: pair[1])[0]
@@ -144,12 +151,14 @@ def funnel_search(
     if len(dev_series) < 2:
         raise ValueError("funnel_search requires train + holdout dev paths")
     train, holdout = dev_series[0], dev_series[1]
+    holdout_budget = min(holdout_top_k, max(0, budget - 1))
+    train_budget = max(1, budget - holdout_budget)
     proposal = tpe_search(
-        genomes, [train], budget=budget, fee_bps=fee_bps, seed=seed
+        genomes, [train], budget=train_budget, fee_bps=fee_bps, seed=seed
     )
     lineage = proposal["lineage"]
     ranked = sorted(lineage, key=lambda pair: pair[1], reverse=True)
-    top = [genome for genome, score in ranked[:holdout_top_k] if score > 0]
+    top = [genome for genome, score in ranked[:holdout_budget] if score > 0]
     best_genome, best_holdout = None, 0.0
     holdout_scores: list[tuple[str, float]] = []
     for genome in top:
@@ -162,6 +171,9 @@ def funnel_search(
         "selected": best_genome,  # None = abstain
         "optimizer": "funnel",
         "holdout_scores": holdout_scores,
+        "train_evaluations": len(lineage),
+        "holdout_evaluations": len(holdout_scores),
+        "evaluation_count": len(lineage) + len(holdout_scores),
     }
 
 
@@ -189,7 +201,8 @@ def quality_diversity_funnel(
         buckets.setdefault(_genome_cell(genome), []).append(genome)
     for values in buckets.values():
         rng.shuffle(values)
-    target = min(budget, len(genomes))
+    holdout_budget = min(holdout_top_k, max(0, budget - 1))
+    target = min(max(1, budget - holdout_budget), len(genomes))
     coverage_budget = min(len(buckets), max(1, target // 4))
     proposal = tpe_search(
         genomes,
@@ -235,7 +248,7 @@ def quality_diversity_funnel(
     )
     selected, selected_score = None, 0.0
     holdout_scores: list[tuple[str, float]] = []
-    for genome, train_score in finalists[:holdout_top_k]:
+    for genome, train_score in finalists[:holdout_budget]:
         if train_score <= 0:
             continue
         score = dev_score(genome, [dev_series[1]], fee_bps=fee_bps)
@@ -248,6 +261,9 @@ def quality_diversity_funnel(
         "optimizer": "qd_funnel",
         "occupied_cells": len(archives),
         "holdout_scores": holdout_scores,
+        "train_evaluations": len(lineage),
+        "holdout_evaluations": len(holdout_scores),
+        "evaluation_count": len(lineage) + len(holdout_scores),
     }
 
 

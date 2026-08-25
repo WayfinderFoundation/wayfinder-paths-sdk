@@ -125,6 +125,16 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
         from wayfinder_paths.jobs.robustness import robustness_check_job
 
         return robustness_check_job(kwargs.pop("job_id"), **kwargs)
+    if op == "evolution_start":
+        from wayfinder_paths.jobs.evolution_campaign import start_campaign
+        from wayfinder_paths.jobs.store import JobStore
+
+        return start_campaign(JobStore(), kwargs.pop("job_id"), **kwargs)
+    if op == "evolution_prepare":
+        from wayfinder_paths.jobs.evolution_campaign import prepare_candidate
+        from wayfinder_paths.jobs.store import JobStore
+
+        return prepare_candidate(JobStore(), kwargs.pop("job_id"), **kwargs)
     if op == "evolution_evaluate":
         from wayfinder_paths.jobs.evolution_campaign import evaluate_candidate
         from wayfinder_paths.jobs.store import JobStore
@@ -145,22 +155,12 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
     if op == "candidate_shadows":
         import asyncio
 
-        import pandas as pd
-
         from wayfinder_paths.jobs.candidate_shadow import run_candidate_shadows
-        from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
         from wayfinder_paths.jobs.store import JobStore
 
         store = JobStore()
         job_id = kwargs.pop("job_id")
-        result = asyncio.run(
-            run_candidate_shadows(
-                store,
-                job_id,
-                view=CompletedBarsView.from_rows(kwargs.pop("rows")),
-                now=pd.Timestamp(kwargs.pop("now")),
-            )
-        )
+        result = asyncio.run(run_candidate_shadows(store, job_id))
         errors = [row for row in result if row.get("error") and row.get("notify")]
         if errors:
             store.append_journal(

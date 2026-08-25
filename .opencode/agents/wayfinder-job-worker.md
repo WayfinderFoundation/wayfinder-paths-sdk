@@ -23,6 +23,7 @@ permission:
     # The governance plane (owner targets, hard constraints, audit policy)
     # is capability-protected: outside the job tree AND explicitly denied.
     "governance/**": deny
+    "audit/**": deny
     ".wayfinder/jobs/**": allow
     ".wayfinder_runs/**": ask
     "*": deny
@@ -53,6 +54,7 @@ permission:
     # Governance stays LAST so it wins over any overlapping allow ever
     # added above — fail-closed under last-match-wins.
     "/wf/user_vault/governance/**": deny
+    "/wf/user_vault/audit/**": deny
 
   bash:
     # Provenance guard: the worker cleared a live-mode audit flag by running

@@ -40,6 +40,7 @@ from wayfinder_paths.jobs.sync import (
 )
 from wayfinder_paths.jobs.worker import run_job_worker
 from wayfinder_paths.mcp.utils import catch_errors, err, ok
+from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 JobAction = Literal[
     "list",
@@ -228,7 +229,7 @@ async def _start_background_op(
         "started_at": utc_now_iso(),
         **({"island": island} if island else {}),
     }
-    status_path.write_text(json.dumps(status), encoding="utf-8")
+    atomic_write_json(status_path, status)
     task = asyncio.get_running_loop().create_task(
         _reap_background_op(proc, status_path)
     )
@@ -258,7 +259,7 @@ async def _reap_background_op(proc: Any, status_path: Path) -> None:
             "finished_at": utc_now_iso(),
         }
     )
-    status_path.write_text(json.dumps(status), encoding="utf-8")
+    atomic_write_json(status_path, status)
 
 
 def _background_op_status(store: JobStore, job_id: str, op: str) -> dict[str, Any]:
@@ -272,7 +273,7 @@ def _background_op_status(store: JobStore, job_id: str, op: str) -> dict[str, An
         # finished anyway; otherwise the run is lost.
         result = _load_json_file(ops_dir / f"{op}.result.json")
         status["state"] = "done" if result is not None else "lost"
-        (ops_dir / f"{op}.json").write_text(json.dumps(status), encoding="utf-8")
+        atomic_write_json(ops_dir / f"{op}.json", status)
     payload = dict(status)
     log_path = ops_dir / f"{op}.log"
     if log_path.exists():
@@ -340,6 +341,7 @@ async def core_jobs(
     grid_path: str | None = None,
     grid: dict[str, Any] | list[dict[str, Any]] | None = None,
     robustness_plan: dict[str, Any] | None = None,
+    robustness_warnings_acknowledged: list[str] | None = None,
     workers: int = 0,
     parallel: Literal["serial", "thread", "process"] = "process",
     compile: bool = True,  # noqa: A002
@@ -841,9 +843,7 @@ async def core_jobs(
     if action == "evolution_start":
         if not job_id:
             return err("invalid_request", "evolution_start requires job_id")
-        from wayfinder_paths.jobs.evolution_campaign import start_campaign
-
-        return ok(start_campaign(store, job_id, force=force))
+        return await _run_job_op("evolution_start", {"job_id": job_id, "force": force})
 
     if action == "evolution_status":
         if not job_id:
@@ -858,16 +858,14 @@ async def core_jobs(
                 "invalid_request",
                 "evolution_prepare requires job_id, family, and summary",
             )
-        from wayfinder_paths.jobs.evolution_campaign import prepare_candidate
-
-        return ok(
-            prepare_candidate(
-                store,
-                job_id,
-                family=family,
-                summary=summary,
-                mutation_kind=mutation_kind,
-            )
+        return await _run_job_op(
+            "evolution_prepare",
+            {
+                "job_id": job_id,
+                "family": family,
+                "summary": summary,
+                "mutation_kind": mutation_kind,
+            },
         )
 
     if action == "evolution_evaluate":
@@ -964,6 +962,7 @@ async def core_jobs(
                 scenario_plan=scenario_plan,
                 proposal_id=proposal_id,
                 memo=memo,
+                robustness_warnings_acknowledged=robustness_warnings_acknowledged,
             )
         )
 

@@ -14,8 +14,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from wayfinder_paths.jobs.compute_lock import job_state_lock
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 
 def _pid_alive(pid: Any) -> bool:
@@ -80,6 +82,13 @@ def op_status_summary(job_dir: Path, op: str) -> dict[str, Any] | None:
 def spawn_detached_op(
     store: JobStore, job_id: str, op: str, kwargs: dict[str, Any]
 ) -> dict[str, Any]:
+    with job_state_lock(store.repo_root, job_id, name=f"background_{op}"):
+        return _spawn_detached_op(store, job_id, op, kwargs)
+
+
+def _spawn_detached_op(
+    store: JobStore, job_id: str, op: str, kwargs: dict[str, Any]
+) -> dict[str, Any]:
     ops_dir = store.job_dir(job_id) / "state" / "background_ops"
     ops_dir.mkdir(parents=True, exist_ok=True)
     status_path = ops_dir / f"{op}.json"
@@ -115,5 +124,5 @@ def spawn_detached_op(
         "pid": proc.pid,
         "started_at": utc_now_iso(),
     }
-    status_path.write_text(json.dumps(status), encoding="utf-8")
+    atomic_write_json(status_path, status)
     return {"started": True, **status}

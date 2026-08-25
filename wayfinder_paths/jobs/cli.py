@@ -1837,6 +1837,12 @@ def approve_cmd(
     help="Full proposed improver spec JSON (kind=improver_change only).",
 )
 @click.option("--proposal-id", default=None)
+@click.option(
+    "--ack-robustness-warning",
+    "robustness_warnings_acknowledged",
+    multiple=True,
+    help="Acknowledge an exact robustness warning code (repeatable).",
+)
 @click.option("--memo", default=None, help="Markdown proposal memo (inline).")
 @click.option(
     "--memo-file",
@@ -1854,6 +1860,7 @@ def propose_cmd(
     scenario_json: str | None,
     improver_json: str | None,
     proposal_id: str | None,
+    robustness_warnings_acknowledged: tuple[str, ...],
     memo: str | None,
     memo_file: str | None,
 ) -> None:
@@ -1872,6 +1879,7 @@ def propose_cmd(
         improver=json.loads(improver_json) if improver_json else None,
         proposal_id=proposal_id,
         memo=memo,
+        robustness_warnings_acknowledged=list(robustness_warnings_acknowledged),
     )
     _echo_json({"ok": True, "result": proposal})
 

@@ -233,9 +233,10 @@ def _continuation_ops(root: Path, *, now: datetime | None) -> list[str]:
     campaign_active = False
     try:
         campaign = json.loads(campaign_path.read_text(encoding="utf-8"))
-        campaign_active = (
-            isinstance(campaign, dict) and campaign.get("status") == "active"
-        )
+        campaign_active = isinstance(campaign, dict) and campaign.get("status") in {
+            "active",
+            "finalizing",
+        }
     except (OSError, ValueError):
         pass
     if not ops_dir.exists():

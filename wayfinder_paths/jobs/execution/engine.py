@@ -167,11 +167,9 @@ class EngineState:
 
     def save(self, path: str | Path) -> None:
         location = Path(path)
-        location.parent.mkdir(parents=True, exist_ok=True)
-        location.write_text(
-            json.dumps(self.to_dict(), indent=2, default=str) + "\n",
-            encoding="utf-8",
-        )
+        from wayfinder_paths.runner.monitor_state import atomic_write_json
+
+        atomic_write_json(location, self.to_dict(), default=str)
 
 
 @dataclass

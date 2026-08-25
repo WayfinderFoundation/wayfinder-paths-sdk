@@ -90,7 +90,10 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "enabled": True,
         "allowed_job_ids": ["majors-5m-lab"],
         "campaign_hours": 4,
-        "cooldown_hours": 24,
+        "start_interval_hours": 12,
+        # Backward-compatible fallback for job-local policies written before
+        # start_interval_hours was introduced.
+        "cooldown_hours": 12,
         "generated_programs": 12,
         "full_dev_survivors": 4,
         "inner_optuna_finalists": 2,
@@ -105,6 +108,14 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         },
         "min_structural_fraction": 0.50,
         "max_parameter_fraction": 0.25,
+        "paper_experiment": {
+            "enabled": True,
+            "duration_days": 14,
+            "bar_interval": "5m",
+            "max_audits_per_arm_per_window": 2,
+            "compute_duty_fraction": 0.20,
+            "confidence": 0.90,
+        },
     },
 }
 

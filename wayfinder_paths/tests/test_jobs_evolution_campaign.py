@@ -11,13 +11,17 @@ from wayfinder_paths.jobs.archive import (
     record_candidate,
 )
 from wayfinder_paths.jobs.evolution_campaign import (
+    _allocate_audit_block,
     _parent_source,
+    _process_queued_audits,
+    _queue_audit,
     _same_family_nonwins,
     campaign_prompt_block,
     campaign_status,
     finalize_campaign,
     maybe_start_campaign,
     prepare_candidate,
+    resolve_candidate_bundle,
     start_campaign,
 )
 from wayfinder_paths.jobs.models import WayfinderJob
@@ -141,7 +145,7 @@ def test_campaign_cooldown_is_enforced(tmp_path) -> None:
     state = start_campaign(store, job_id, now=now)
     state["status"] = "complete"
     store.write_json(job_id, "state/evolution_campaign.json", state)
-    with pytest.raises(ValueError, match="cooldown"):
+    with pytest.raises(ValueError, match="start interval"):
         start_campaign(store, job_id, now=now)
 
 
@@ -185,9 +189,12 @@ def test_finalize_enforces_stage_budgets_and_isolates_candidate_failure(
             raise RuntimeError("bad candidate")
         return {"status": "dev_frontier", "evidence": "passed"}
 
-    def fake_audit(store, job_id, state, candidate):
+    def fake_audit(store, job_id, state, candidate, *, activate):
         calls["audit"] += 1
-        return {"status": "paper_probation", "evidence": "passed audit"}
+        return {
+            "status": "paper_experiment" if activate else "audit_passed",
+            "evidence": "passed audit",
+        }
 
     monkeypatch.setattr("wayfinder_paths.jobs.evolution_campaign._full_dev", fake_dev)
     monkeypatch.setattr(
@@ -233,3 +240,128 @@ def test_quality_diversity_keeps_two_non_dominated_per_cell(tmp_path) -> None:
     assert [row["candidate_id"] for row in snapshot["long/fast/regular"]] == [
         "candidate-2"
     ]
+
+
+def test_candidate_bundle_is_confined_to_its_exact_campaign_slot(tmp_path) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    state = start_campaign(store, job_id, now=datetime(2026, 8, 25, tzinfo=UTC))
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="containment fixture",
+        now=datetime(2026, 8, 25, 1, tzinfo=UTC),
+    )
+    expected = (store.job_dir(job_id) / candidate["bundle"]).resolve()
+    assert resolve_candidate_bundle(store, job_id, candidate) == expected
+
+    invalid = [
+        {**candidate, "bundle": ""},
+        {**candidate, "bundle": str(expected)},
+        {**candidate, "bundle": "../job.yaml"},
+        {
+            **candidate,
+            "bundle": (
+                "research/evolution/campaigns/sibling/candidates/"
+                f"{candidate['candidate_id']}"
+            ),
+        },
+        {**candidate, "candidate_id": "different-name"},
+        {**candidate, "campaign_id": "sibling"},
+    ]
+    for row in invalid:
+        with pytest.raises(ValueError):
+            resolve_candidate_bundle(store, job_id, row)
+
+    link_id = "symlink-candidate"
+    link = expected.parent / link_id
+    link.symlink_to(store.job_dir(job_id), target_is_directory=True)
+    with pytest.raises(ValueError, match="escapes"):
+        resolve_candidate_bundle(
+            store,
+            job_id,
+            {
+                **candidate,
+                "candidate_id": link_id,
+                "bundle": str(link.relative_to(store.job_dir(job_id))),
+            },
+        )
+
+    manifest = json.loads(
+        (store.job_dir(job_id) / state["manifest"]).read_text(encoding="utf-8")
+    )
+    serialized = json.dumps(manifest)
+    assert str(tmp_path / "audit") not in serialized
+    assert "allocation.json" not in serialized
+    assert (
+        tmp_path
+        / "audit"
+        / job_id
+        / "evolution"
+        / state["campaign_id"]
+        / "allocation.json"
+    ).exists()
+
+
+def test_protected_audit_blocks_rotate_without_overlap(tmp_path) -> None:
+    source = tmp_path / "input_bars.json"
+    bars = [
+        {
+            "timestamp": f"2026-07-{day:02d}T00:00:00Z",
+            "symbol": "BTC",
+            "open": 100,
+            "high": 101,
+            "low": 99,
+            "close": 100,
+            "volume": 1,
+        }
+        for day in range(1, 31)
+    ]
+    source.write_text(json.dumps({"bars": bars}), encoding="utf-8")
+    allocations = []
+    for campaign in ("one", "two", "three"):
+        root = tmp_path / "audit" / campaign
+        destination = root / "dataset" / "results" / "backtest" / "input_bars.json"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        allocations.append(
+            _allocate_audit_block(
+                source,
+                destination,
+                audit_root=root,
+                development_fraction=0.5,
+            )
+        )
+    assert allocations[0]["available"] is True
+    assert allocations[1]["available"] is True
+    assert allocations[0]["start"] > allocations[1]["end"]
+    assert allocations[2] == {"available": False}
+
+
+def test_queued_finalist_is_mechanically_retried_on_fresh_campaign(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    state = start_campaign(store, job_id, now=datetime(2026, 8, 25, tzinfo=UTC))
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="queued audit",
+        now=datetime(2026, 8, 25, 1, tzinfo=UTC),
+    )
+    candidate.update({"revision": "candidate-revision", "status": "audit_queued"})
+    _queue_audit(store, job_id, candidate)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign._sealed_audit",
+        lambda store, job_id, state, candidate, *, activate: {
+            "status": "paper_experiment",
+            "evidence": "fresh block passed",
+        },
+    )
+
+    result = _process_queued_audits(store, job_id, state, limit=1)
+
+    assert result["consumed"] == 1
+    assert result["winner_admitted"] is True
+    queue = store.read_json(job_id, "state/evolution_audit_queue.json")
+    assert queue["items"][0]["status"] == "paper_experiment"

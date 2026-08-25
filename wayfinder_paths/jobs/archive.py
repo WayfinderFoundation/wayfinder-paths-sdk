@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from wayfinder_paths.jobs.compute_lock import job_state_lock
 from wayfinder_paths.jobs.improver.spec import revision_stamp
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
@@ -51,6 +52,42 @@ def load_archive(store: JobStore, job_id: str) -> dict[str, Any]:
 
 
 def record_candidate(
+    store: JobStore,
+    job_id: str,
+    *,
+    candidate_id: str,
+    family: str,
+    summary: str,
+    status: str,
+    objective: dict[str, Any] | None,
+    revision: str | None = None,
+    parent_id: str | None = None,
+    parent_candidate_ids: list[str] | None = None,
+    proposal_id: str | None = None,
+    behavior: dict[str, Any] | None = None,
+    evidence: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    with job_state_lock(store.repo_root, job_id, name="archive"):
+        return _record_candidate(
+            store,
+            job_id,
+            candidate_id=candidate_id,
+            family=family,
+            summary=summary,
+            status=status,
+            objective=objective,
+            revision=revision,
+            parent_id=parent_id,
+            parent_candidate_ids=parent_candidate_ids,
+            proposal_id=proposal_id,
+            behavior=behavior,
+            evidence=evidence,
+            metadata=metadata,
+        )
+
+
+def _record_candidate(
     store: JobStore,
     job_id: str,
     *,
@@ -186,6 +223,20 @@ def set_candidate_status(
     *,
     evidence: str | None = None,
 ) -> dict[str, Any]:
+    with job_state_lock(store.repo_root, job_id, name="archive"):
+        return _set_candidate_status(
+            store, job_id, candidate_id, status, evidence=evidence
+        )
+
+
+def _set_candidate_status(
+    store: JobStore,
+    job_id: str,
+    candidate_id: str,
+    status: str,
+    *,
+    evidence: str | None = None,
+) -> dict[str, Any]:
     if status not in ARCHIVE_STATUSES:
         raise ValueError(f"status must be one of {sorted(ARCHIVE_STATUSES)}")
     doc = load_archive(store, job_id)
@@ -206,18 +257,19 @@ def set_incumbent(store: JobStore, job_id: str, candidate_id: str) -> None:
     branches (still ranked on the frontier — that is the point). The id
     resolves as content id first, then proposal UUID, then raw revision —
     promotion callers hold different handles across archive generations."""
-    doc = load_archive(store, job_id)
-    promoted = _resolve(doc, candidate_id)
-    if promoted is None:
-        return
-    for entry in doc.get("candidates") or []:
-        if entry.get("status") == "incumbent":
-            entry["status"] = "archived"
-            entry["updated_at"] = utc_now_iso()
-    promoted["status"] = "incumbent"
-    promoted["updated_at"] = utc_now_iso()
-    _refresh_frontier(doc)
-    store.write_json(job_id, ARCHIVE_PATH, doc)
+    with job_state_lock(store.repo_root, job_id, name="archive"):
+        doc = load_archive(store, job_id)
+        promoted = _resolve(doc, candidate_id)
+        if promoted is None:
+            return
+        for entry in doc.get("candidates") or []:
+            if entry.get("status") == "incumbent":
+                entry["status"] = "archived"
+                entry["updated_at"] = utc_now_iso()
+        promoted["status"] = "incumbent"
+        promoted["updated_at"] = utc_now_iso()
+        _refresh_frontier(doc)
+        store.write_json(job_id, ARCHIVE_PATH, doc)
 
 
 def archive_snapshot_block(store: JobStore, job_id: str) -> dict[str, Any]:

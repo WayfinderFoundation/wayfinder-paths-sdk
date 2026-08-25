@@ -8,18 +8,18 @@ import yaml
 from wayfinder_paths.jobs.candidate_shadow import run_candidate_shadows
 from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
 from wayfinder_paths.jobs.models import WayfinderJob
+from wayfinder_paths.jobs.paper_experiment import ensure_paper_experiment
 from wayfinder_paths.jobs.store import JobStore
 
 
 def test_candidate_shadow_uses_separate_paper_state_and_stream(tmp_path) -> None:
     store = JobStore(repo_root=tmp_path)
-    job = WayfinderJob.new("shadow-job", script="workspace/src/strategy.py")
+    job = WayfinderJob.new("majors-5m-lab", script="workspace/src/strategy.py")
     store.save(job)
     root = store.job_dir(job.id)
-    relative = "research/evolution/campaigns/camp/candidates/candidate-1"
-    candidate = root / relative
-    (candidate / "workspace" / "src").mkdir(parents=True)
-    (candidate / "workspace" / "src" / "strategy.py").write_text(
+    script = root / "workspace" / "src" / "strategy.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
         "class Strategy:\n"
         "    def decide(self, ctx):\n"
         "        return []\n\n"
@@ -27,7 +27,7 @@ def test_candidate_shadow_uses_separate_paper_state_and_stream(tmp_path) -> None
         "    return Strategy()\n",
         encoding="utf-8",
     )
-    (candidate / "job.yaml").write_text(
+    (root / "job.yaml").write_text(
         yaml.safe_dump(
             {
                 "id": job.id,
@@ -49,23 +49,9 @@ def test_candidate_shadow_uses_separate_paper_state_and_stream(tmp_path) -> None
         ),
         encoding="utf-8",
     )
-    store.write_json(
-        job.id,
-        "probation.json",
-        {
-            "legs": [
-                {
-                    "name": "candidate-1",
-                    "tier": "paper",
-                    "status": "active",
-                    "candidate_bundle_id": "candidate-1",
-                    "candidate_bundle": relative,
-                    "candidate_revision": "rev-candidate",
-                    "shadow_stream": "results/forward/shadows/candidate-1",
-                }
-            ]
-        },
-    )
+    experiment = ensure_paper_experiment(store, job.id)
+    assert experiment is not None
+    revision = experiment["initial_revision"]
     view = CompletedBarsView.from_rows(
         [
             {
@@ -79,7 +65,7 @@ def test_candidate_shadow_uses_separate_paper_state_and_stream(tmp_path) -> None
             }
         ]
     )
-    result = asyncio.run(
+    first = asyncio.run(
         run_candidate_shadows(
             store,
             job.id,
@@ -87,13 +73,13 @@ def test_candidate_shadow_uses_separate_paper_state_and_stream(tmp_path) -> None
             now=pd.Timestamp("2026-08-25T12:00:00Z"),
         )
     )
-    assert result == [
-        {"candidate_id": "candidate-1", "skipped": False, "intents": 0, "fills": 0}
-    ]
-    assert (
-        root / "state" / "evolution_shadows" / "candidate-1" / "engine_state.json"
-    ).exists()
-    assert (
-        root / "results" / "forward" / "shadows" / "candidate-1" / "ticks.jsonl"
-    ).exists()
-    assert not (root / "results" / "forward" / "orders.jsonl").read_text()
+    assert [row["arm"] for row in first] == ["control", "evolution"]
+    assert all(row["intents"] == row["fills"] == 0 for row in first)
+    for arm in ("control", "evolution"):
+        assert (
+            root / "state" / "evolution_shadows" / arm / revision / "engine_state.json"
+        ).exists()
+        assert (
+            root / "results" / "forward" / "experiment" / arm / revision / "ticks.jsonl"
+        ).exists()
+    assert asyncio.run(run_candidate_shadows(store, job.id)) == []

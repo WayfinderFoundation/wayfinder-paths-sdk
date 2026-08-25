@@ -61,7 +61,10 @@ def test_quality_diversity_lane_spends_matched_budget_across_cells() -> None:
         for seed in (31, 32)
     ]
     run = quality_diversity_funnel(genomes, dev, budget=24, fee_bps=4.5, seed=7)
-    assert len(run["lineage"]) == 24
+    control = funnel_search(genomes, dev, budget=24, fee_bps=4.5, seed=7)
+    assert run["train_evaluations"] == control["train_evaluations"] == 19
+    assert run["evaluation_count"] <= 24
+    assert control["evaluation_count"] <= 24
     assert run["occupied_cells"] >= 6
     assert run["optimizer"] == "qd_funnel"
 

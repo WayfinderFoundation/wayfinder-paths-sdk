@@ -841,7 +841,7 @@ def _build_worker_prompt_sections(
         "`open_evolution_campaign` block is present, follow its `next_action`; "
         "edit ONLY the named candidate bundle, never the active workspace. "
         "Candidate audit data is reserved for evolution-finalize, and a "
-        "paper_probation result cannot authorize or place a live order. "
+        "paper-experiment admission cannot authorize or place a live order. "
         "Your own reasoned self-rejections (superseded/stale drafts) do not "
         "bind — iterate freely. Before proposing ANYTHING, scan the rejected "
         "proposals for an equivalent prior ask.\n"

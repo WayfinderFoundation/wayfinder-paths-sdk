@@ -57,20 +57,25 @@ Use the smallest plan that tests the actual risks:
 ```json
 {
   "neighbors": {"entry_threshold": [0.05, 0.10, 0.15]},
-  "phase_offsets": [0, 1, 2, 3, 4, 5],
+  "phase": {"param": "rebalance_phase", "values": [0, 1, 2, 3, 4, 5]},
   "leverage": [1, 2, 3, 4, 5],
   "walk_forward": {"train_bars": 1440, "test_bars": 360, "folds": 4},
   "scenarios": [
-    {"name": "recent_7d", "days": 7, "role": "development"}
+    {"name": "recent_7d", "lookback_days": 7, "role": "development"}
   ]
 }
 ```
 
 The check reuses existing execution-grid and walk-forward helpers. It stamps
 the candidate revision, dataset hash, plan hash, and research-contract version;
-only an exact completed/partial match is reusable. Results live under
+only an exact completed match is reusable; partial lanes are retried. Results live under
 `results/research/robustness/` and the candidate report links the latest valid
 summary.
+
+Before proposing deployment, read that summary and explicitly acknowledge each
+material red warning by its exact code (`--ack-robustness-warning <code>` or
+`robustness_warnings_acknowledged` in `core_jobs`). The approval gate rejects a
+recommendation that carries an unacknowledged material warning.
 
 Interpret warning codes as follows:
 

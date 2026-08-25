@@ -560,20 +560,19 @@ async def tick_job(
     try:
         from wayfinder_paths.jobs.background import spawn_detached_op
         from wayfinder_paths.jobs.candidate_shadow import active_candidate_shadows
+        from wayfinder_paths.jobs.paper_experiment import enqueue_experiment_view
 
         if active_candidate_shadows(store, job.id):
+            rows = [
+                {**row, "timestamp": row["timestamp"].isoformat()}
+                for row in shadow_view.to_rows()
+            ]
+            enqueue_experiment_view(store, job.id, rows=rows, now=now)
             spawn_detached_op(
                 store,
                 job.id,
                 "candidate_shadows",
-                {
-                    "job_id": job.id,
-                    "rows": [
-                        {**row, "timestamp": row["timestamp"].isoformat()}
-                        for row in shadow_view.to_rows()
-                    ],
-                    "now": now.isoformat(),
-                },
+                {"job_id": job.id},
             )
     except Exception as exc:  # noqa: BLE001 - never blocks incumbent execution
         logger.debug(f"candidate shadows skipped: {exc}")

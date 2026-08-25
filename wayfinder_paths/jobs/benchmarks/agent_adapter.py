@@ -198,6 +198,7 @@ def meter_sessions(
         return {**totals, "note": "session db not found"}
     connection = sqlite3.connect(str(session_db))
     try:
+        session_ids: list[str] = []
         for session in sessions:
             row = connection.execute(
                 "SELECT id FROM session WHERE title=? "
@@ -206,18 +207,46 @@ def meter_sessions(
             ).fetchone()
             if not row:
                 continue
+            session_ids.append(str(row[0]))
+        return meter_session_ids(
+            session_ids, session_db=session_db, connection=connection
+        )
+    finally:
+        connection.close()
+
+
+def meter_session_ids(
+    session_ids: list[str],
+    *,
+    since_ms: int | None = None,
+    session_db: Path = DEFAULT_SESSION_DB,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """Meter known OpenCode sessions, optionally from a fixed start time."""
+    totals = {"sessions": 0, "messages": 0, "tokens_in": 0, "tokens_out": 0}
+    if not session_ids or (connection is None and not session_db.exists()):
+        return totals
+    owned = connection is None
+    db = connection or sqlite3.connect(str(session_db))
+    try:
+        for session_id in dict.fromkeys(session_ids):
             totals["sessions"] += 1
-            for tokens_in, tokens_out in connection.execute(
+            query = (
                 "SELECT json_extract(data,'$.tokens.input'), "
                 "json_extract(data,'$.tokens.output') FROM message "
-                "WHERE session_id=?",
-                (row[0],),
-            ):
+                "WHERE session_id=?"
+            )
+            params: tuple[Any, ...] = (session_id,)
+            if since_ms is not None:
+                query += " AND time_created>=?"
+                params = (session_id, int(since_ms))
+            for tokens_in, tokens_out in db.execute(query, params):
                 totals["messages"] += 1
                 totals["tokens_in"] += int(tokens_in or 0)
                 totals["tokens_out"] += int(tokens_out or 0)
     finally:
-        connection.close()
+        if owned:
+            db.close()
     return totals
 
 

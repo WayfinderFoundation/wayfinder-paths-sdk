@@ -52,7 +52,10 @@ from wayfinder_paths.jobs.improver.spec import (
     revision_stamp,
 )
 from wayfinder_paths.jobs.models import utc_now_iso
-from wayfinder_paths.jobs.robustness import latest_robustness_summary
+from wayfinder_paths.jobs.robustness import (
+    latest_robustness_summary,
+    required_robustness_acknowledgements,
+)
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import sync_all_jobs
 from wayfinder_paths.jobs.validation import (
@@ -250,6 +253,7 @@ def propose_change(
     scenario_plan: dict[str, Any] | None = None,
     proposal_id: str | None = None,
     memo: str | None = None,
+    robustness_warnings_acknowledged: list[str] | None = None,
 ) -> dict[str, Any]:
     """Create a pending proposal backed by a validated pre-approval candidate.
 
@@ -331,6 +335,9 @@ def propose_change(
         "changed_files": changed_files,
         "change_summary": memo or summary,
         "application": {"status": "not_requested", **candidate_descriptor},
+        "robustness_warnings_acknowledged": sorted(
+            set(robustness_warnings_acknowledged or [])
+        ),
     }
     from wayfinder_paths.jobs.remediation import proposal_remediation_stamp
 
@@ -365,6 +372,20 @@ def propose_change(
         )
         raise
     proposal["candidate_report"] = candidate_report
+    required_acknowledgements = required_robustness_acknowledgements(
+        candidate_report.get("robustness")
+    )
+    missing_acknowledgements = required_acknowledgements - set(
+        proposal["robustness_warnings_acknowledged"]
+    )
+    if missing_acknowledgements:
+        shutil.rmtree(candidate_dir.parent, ignore_errors=True)
+        if memo:
+            memo_path.unlink(missing_ok=True)
+        raise ValueError(
+            "deployment recommendation must acknowledge robustness warnings: "
+            f"{sorted(missing_acknowledgements)}"
+        )
 
     store.write_proposal(job_id, proposal)
     from wayfinder_paths.jobs.remediation import link_remediation_proposal

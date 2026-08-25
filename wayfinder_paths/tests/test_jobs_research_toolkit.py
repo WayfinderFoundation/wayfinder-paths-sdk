@@ -231,6 +231,8 @@ def test_robustness_contract_validates_and_reuses_exact_artifacts() -> None:
         "scenarios": [{"name": "recent", "lookback_days": 7, "role": "development"}],
     }
     assert validate_robustness_plan(plan) == plan
+    with pytest.raises(ValueError, match="at least one evidence lane"):
+        validate_robustness_plan({})
     with pytest.raises(ValueError, match="unknown robustness plan keys"):
         validate_robustness_plan({"mystery": True})
     artifact = {
@@ -242,23 +244,25 @@ def test_robustness_contract_validates_and_reuses_exact_artifacts() -> None:
     }
     assert _matches(artifact, "rev", "data", "plan") is True
     assert _matches(artifact, "rev", "changed", "plan") is False
+    assert _matches({**artifact, "status": "partial"}, "rev", "data", "plan") is False
 
 
-def test_robustness_job_persists_and_reuses_revision_bound_report(
+def test_robustness_job_persists_but_reruns_partial_revision_bound_report(
     tmp_path: Path,
 ) -> None:
     from wayfinder_paths.tests.test_jobs_gating import _make_job
 
     store, job_id, root = _make_job(tmp_path)
-    first = robustness_check_job(job_id, robustness_plan={}, store=store)
+    plan = {"leverage": [1.0]}
+    first = robustness_check_job(job_id, robustness_plan=plan, store=store)
     assert first["status"] == "partial"
     assert first["advisory"] is True
     assert {row["code"] for row in first["warnings"]} == {"funding_incomplete"}
     assert (root / first["artifact"]).exists()
     assert (root / "results/research/robustness/latest.json").exists()
 
-    second = robustness_check_job(job_id, robustness_plan={}, store=store)
-    assert second["reused"] is True
+    second = robustness_check_job(job_id, robustness_plan=plan, store=store)
+    assert "reused" not in second
     assert second["candidate_revision"] == first["candidate_revision"]
     assert second["dataset_hash"] == first["dataset_hash"]
 

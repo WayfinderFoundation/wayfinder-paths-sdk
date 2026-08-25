@@ -93,6 +93,11 @@ def research_saturation_posture(
         blockers.append("remediation_case_active")
     if _closed_trades(store, job_id) >= _forward_gate_minimum(job):
         blockers.append("forward_sample_adequate")
+    campaign = (
+        store.read_json(job_id, "state/evolution_campaign.json", default={}) or {}
+    )
+    if campaign.get("status") in {"active", "finalizing"}:
+        blockers.append("evolution_campaign_open")
     return {"posture": "in_flight" if blockers else "saturated", "blockers": blockers}
 
 
@@ -107,6 +112,9 @@ def saturation_watermark(
     trades = summary.get("trades") or {}
     impasse = store.read_json(job_id, RESEARCH_IMPASSE_PATH, default={}) or {}
     halt = read_halt(store.job_dir(job_id)) or {}
+    campaign = (
+        store.read_json(job_id, "state/evolution_campaign.json", default={}) or {}
+    )
     return {
         "claims": {
             str(claim.get("claim_id")): str(claim.get("status") or "")
@@ -130,6 +138,18 @@ def saturation_watermark(
             if proposal.get("status") == "pending"
         ),
         "incumbent_revision": job.versioning.get("active_revision"),
+        "evolution_campaign": {
+            key: campaign.get(key)
+            for key in (
+                "campaign_id",
+                "status",
+                "stage",
+                "deadline_at",
+                "finalize_attempts",
+            )
+        }
+        if campaign
+        else None,
         "halt": {"source": halt.get("source"), "ts": halt.get("ts")}
         if halt
         else None,

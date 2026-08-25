@@ -67,7 +67,9 @@ class FakeOpenCodeClient:
         return True
 
 
-def _saturated_job(tmp_path: Path, job_id: str = "quiet-demo") -> tuple[JobStore, WayfinderJob]:
+def _saturated_job(
+    tmp_path: Path, job_id: str = "quiet-demo"
+) -> tuple[JobStore, WayfinderJob]:
     store = JobStore(repo_root=tmp_path)
     job = WayfinderJob.new(
         job_id,
@@ -246,9 +248,7 @@ def test_quiet_max_floor_forces_full_wake(
     store, job = _saturated_job(tmp_path)
     record_full_wake(store, job, now=datetime.now(UTC) - timedelta(hours=25))
 
-    assert (
-        maybe_skip_wake(store, job, mode="intervene", apply_proposal_id=None) is None
-    )
+    assert maybe_skip_wake(store, job, mode="intervene", apply_proposal_id=None) is None
 
 
 def test_live_apply_and_auto_wakes_never_skip(tmp_path: Path) -> None:
@@ -263,9 +263,7 @@ def test_live_apply_and_auto_wakes_never_skip(tmp_path: Path) -> None:
 
     job.script_loop.mode = "live"
     store.save(job)
-    assert (
-        maybe_skip_wake(store, job, mode="intervene", apply_proposal_id=None) is None
-    )
+    assert maybe_skip_wake(store, job, mode="intervene", apply_proposal_id=None) is None
 
 
 def test_kill_switch_disables_the_skip_path(
@@ -275,9 +273,7 @@ def test_kill_switch_disables_the_skip_path(
     store, job = _saturated_job(tmp_path)
     record_full_wake(store, job)
 
-    assert (
-        maybe_skip_wake(store, job, mode="intervene", apply_proposal_id=None) is None
-    )
+    assert maybe_skip_wake(store, job, mode="intervene", apply_proposal_id=None) is None
 
 
 def test_prompt_quiet_line_present_exactly_when_remediation_quiet(
@@ -326,9 +322,7 @@ def test_standing_checks_carry_remediation_recheck_block(tmp_path: Path) -> None
         store, job.id, state="blocked", note="Waiting for forward evidence"
     )
 
-    block = _standing_checks_block(
-        store.job_dir(job.id), store=store, job_id=job.id
-    )
+    block = _standing_checks_block(store.job_dir(job.id), store=store, job_id=job.id)
 
     remediation = block["remediation"]
     assert remediation["state"] == "blocked"
@@ -351,3 +345,15 @@ def test_saturation_watermark_components_move_independently(tmp_path: Path) -> N
         {"legs": [{"name": "leg-a", "status": "active"}]},
     )
     assert saturation_watermark(store2, job2.id) != base2
+
+    store3, job3 = _saturated_job(tmp_path / "campaign", "campaign-demo")
+    base3 = saturation_watermark(store3, job3.id)
+    store3.write_json(
+        job3.id,
+        "state/evolution_campaign.json",
+        {"campaign_id": "campaign-1", "status": "active", "stage": "generate"},
+    )
+    assert saturation_watermark(store3, job3.id) != base3
+    posture = research_saturation_posture(store3, job3.id)
+    assert posture["posture"] == "in_flight"
+    assert "evolution_campaign_open" in posture["blockers"]

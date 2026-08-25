@@ -32,8 +32,8 @@ def monitor_state_path(name: str | None = None) -> Path:
     return runner_dir / "job_state" / namespace / state_name
 
 
-def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    """Atomically write JSON to a durable state file."""
+def atomic_write_text(path: Path, content: str) -> None:
+    """Atomically replace a UTF-8 text file in its destination directory."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(
         dir=str(path.parent),
@@ -42,8 +42,7 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, indent=2, sort_keys=True)
-            fh.write("\n")
+            fh.write(content)
         os.replace(tmp, path)
     except Exception:
         try:
@@ -51,6 +50,14 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         except FileNotFoundError:
             pass
         raise
+
+
+def atomic_write_json(
+    path: Path, payload: Any, *, default: Any | None = None
+) -> None:
+    """Atomically write JSON to a durable state file."""
+    options = {"default": default} if default is not None else {}
+    atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True, **options) + "\n")
 
 
 def read_monitor_state(
