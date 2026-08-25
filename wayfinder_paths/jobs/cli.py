@@ -1061,9 +1061,7 @@ def rank_check_cmd(job_id: str, column: str, horizons: str | None) -> None:
     default=None,
     help="Quote currency (default: USDC on hyperliquid, USDT elsewhere).",
 )
-def fetch_funding_cmd(
-    job_id: str, days: int, exchange: str, quote: str | None
-) -> None:
+def fetch_funding_cmd(job_id: str, days: int, exchange: str, quote: str | None) -> None:
     store = JobStore()
     result = fetch_funding_features(
         job_id, days=days, exchange=exchange, quote=quote, store=store
@@ -1493,9 +1491,14 @@ def venue_deposit_cmd(job_id: str, amount: float) -> None:
 )
 @click.argument("job_id")
 @click.argument("amount", type=float)
-def venue_withdraw_cmd(job_id: str, amount: float) -> None:
+@click.option(
+    "--destination",
+    default=None,
+    help="Arbitrum address receiving the USDC (defaults to the job's wallet).",
+)
+def venue_withdraw_cmd(job_id: str, amount: float, destination: str | None) -> None:
     try:
-        result = asyncio.run(venue_withdraw(job_id, amount))
+        result = asyncio.run(venue_withdraw(job_id, amount, destination=destination))
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     _echo_json({"ok": True, "result": result})
@@ -2189,9 +2192,7 @@ def resume_cmd(job_id: str) -> None:
     "never-operational jobs plus monitor-decay park. The watchdog runs this "
     "daily; --force bypasses the throttle.",
 )
-@click.option(
-    "--force", is_flag=True, default=False, help="Bypass the daily throttle."
-)
+@click.option("--force", is_flag=True, default=False, help="Bypass the daily throttle.")
 def lifecycle_sweep_cmd(force: bool) -> None:
     _echo_json({"ok": True, "result": lifecycle_sweep(JobStore(), force=force)})
 

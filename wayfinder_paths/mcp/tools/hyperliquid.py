@@ -1236,6 +1236,7 @@ async def hyperliquid_withdraw_usdc(
     *,
     wallet_label: str,
     amount_usdc: float,
+    destination: str | None = None,
 ) -> dict[str, Any]:
     """Withdraw USDC from Hyperliquid back to Arbitrum.
 
@@ -1267,7 +1268,9 @@ async def hyperliquid_withdraw_usdc(
     # one withdrawable balance.
     effects.append(await _unify_split_account_effect(adapter, sender))
 
-    ok_wd, res = await adapter.withdraw(amount=amt, address=sender)
+    # withdraw3 supports an explicit destination — default to the account's
+    # own address (self-withdrawal) when none is given.
+    ok_wd, res = await adapter.withdraw(amount=amt, address=destination or sender)
     effects.append({"type": "hl", "label": "withdraw", "ok": ok_wd, "result": res})
 
     if ok_wd:

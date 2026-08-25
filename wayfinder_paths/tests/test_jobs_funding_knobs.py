@@ -199,7 +199,7 @@ def test_venue_withdraw_shrinks_capital_floored_at_zero(tmp_path, monkeypatch) -
     store.save(job)
     monkeypatch.setattr(sync_module, "sync_all_jobs", lambda **kwargs: None)
 
-    async def fake_withdraw(*, wallet_label, amount_usdc):
+    async def fake_withdraw(*, wallet_label, amount_usdc, destination=None):
         return {"ok": True, "result": {"status": "confirmed"}}
 
     import wayfinder_paths.mcp.tools.hyperliquid as hl

@@ -585,18 +585,25 @@ async def venue_deposit(
 
 
 async def venue_withdraw(
-    job_id: str, amount: float, *, store: JobStore | None = None
+    job_id: str,
+    amount: float,
+    *,
+    destination: str | None = None,
+    store: JobStore | None = None,
 ) -> dict[str, Any]:
-    """Pull bankroll off the venue: withdraw USDC from Hyperliquid to the
-    job's bound wallet (Bridge2 nets $1 off the amount) and shrink
-    ``initial_capital`` by the gross amount, floored at zero — a full
-    withdrawal honestly reads as unfunded and turns the gate red."""
+    """Pull bankroll off the venue: withdraw USDC from Hyperliquid (Bridge2
+    nets $1 off the amount) to ``destination`` — the job's bound wallet when
+    omitted — and shrink ``initial_capital`` by the gross amount, floored at
+    zero; a full withdrawal honestly reads as unfunded and turns the gate
+    red."""
     from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_withdraw_usdc
 
     store = store or JobStore()
     job = store.load(job_id)
     label = _funded_wallet_label(job)
-    envelope = await hyperliquid_withdraw_usdc(wallet_label=label, amount_usdc=amount)
+    envelope = await hyperliquid_withdraw_usdc(
+        wallet_label=label, amount_usdc=amount, destination=destination
+    )
     if not envelope["ok"]:
         raise ValueError(f"venue withdraw failed: {envelope}")
     outcome = envelope["result"]
