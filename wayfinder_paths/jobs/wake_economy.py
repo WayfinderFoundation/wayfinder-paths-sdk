@@ -1,0 +1,311 @@
+"""Wake economy: saturated paper jobs skip LLM wakes until evidence moves.
+
+Generalizes the remediation module's evidence-anchored watermark doctrine to
+the wake loop itself: when every research obligation is settled and the
+forward book is still below its evidence gate, a full LLM wake re-verifies
+identical facts. Those wakes are skipped mechanically — a quiet report plus
+a deduped heartbeat — until the saturation watermark moves or the max-quiet
+window expires. Anything mid-flight (an active lane, an outstanding impasse
+mandate, a pending exhaustion claim or proposal, a non-quiet remediation
+case) defeats saturation: the claim machinery always plays first. Live jobs
+never skip, and a quiet remediation case never satisfies a wake — the prompt
+says so explicitly and routes the session to research obligations.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+import os
+from collections.abc import Mapping
+from typing import Any
+
+from wayfinder_paths.jobs.exhaustion import (
+    RESEARCH_IMPASSE_PATH,
+    RESEARCH_LANE_PATH,
+    list_exhaustion_claims,
+)
+from wayfinder_paths.jobs.halt import read_halt
+from wayfinder_paths.jobs.lifecycle import is_operational
+from wayfinder_paths.jobs.models import WayfinderJob
+from wayfinder_paths.jobs.probation import load_probation
+from wayfinder_paths.jobs.remediation import (
+    REMEDIATION_MAX_QUIET_SECONDS,
+    _evidence_watermark,
+    _watermark_reasons,
+    compact_remediation,
+    load_remediation,
+)
+from wayfinder_paths.jobs.store import JobStore
+
+WAKE_ECONOMY_PATH = "state/wake_economy.json"
+# Kill-switch: "0" disables the skip path entirely.
+WAKE_ECONOMY_ENV = "WAYFINDER_WAKE_ECONOMY"
+WAKE_QUIET_MAX_HOURS_ENV = "WAYFINDER_WAKE_QUIET_MAX_HOURS"
+DEFAULT_WAKE_QUIET_MAX_HOURS = 24.0
+SKIP_REASON = "saturation_watermark_unchanged"
+_DEFAULT_FORWARD_GATE_MIN_TRADES = 20
+
+REMEDIATION_QUIET_LINE = (
+    "Remediation is evidence-blocked and backed off — it does NOT satisfy "
+    "this wake. Proceed to research obligations: experiment | probation leg "
+    "| exhaustion claim.\n\n"
+)
+
+
+def wake_economy_enabled() -> bool:
+    return os.environ.get(WAKE_ECONOMY_ENV) != "0"
+
+
+def research_saturation_posture(
+    store: JobStore, job_id: str, *, job: WayfinderJob | None = None
+) -> dict[str, Any]:
+    """"saturated" ONLY when every research obligation is settled AND the
+    forward book is still below its evidence gate. Anything mid-flight
+    defeats saturation — let the claim machinery play first."""
+    job = job or store.load(job_id)
+    blockers: list[str] = []
+    if not is_operational(store, job_id):
+        # Bootstrap owns a never-operational job; the economy never starves it.
+        blockers.append("not_operational")
+    lane = store.read_json(job_id, RESEARCH_LANE_PATH, default={}) or {}
+    if str(lane.get("active_lane") or "").strip():
+        blockers.append("research_lane_active")
+    impasse = store.read_json(job_id, RESEARCH_IMPASSE_PATH, default={}) or {}
+    if impasse.get("alerted_at") or impasse.get("status"):
+        blockers.append("impasse_mandate_outstanding")
+    if list_exhaustion_claims(store, job_id, status="pending"):
+        blockers.append("exhaustion_claim_pending")
+    scorecard = store.read_json(job_id, "scorecard.json", default={}) or {}
+    if (
+        int(scorecard.get("pending_proposals") or 0) > 0
+        or int(scorecard.get("queued_proposal_applications") or 0) > 0
+        or int(scorecard.get("applying_proposal_applications") or 0) > 0
+    ):
+        blockers.append("proposals_in_flight")
+    case = load_remediation(store, job_id)
+    if (
+        case
+        and str(case.get("state"))
+        in {"open", "evaluating", "blocked", "proposal_pending"}
+        and not remediation_backed_off(store, job_id, case)
+    ):
+        blockers.append("remediation_case_active")
+    if _closed_trades(store, job_id) >= _forward_gate_minimum(job):
+        blockers.append("forward_sample_adequate")
+    return {"posture": "in_flight" if blockers else "saturated", "blockers": blockers}
+
+
+def saturation_watermark(
+    store: JobStore, job_id: str, *, job: WayfinderJob | None = None
+) -> dict[str, Any]:
+    """Deterministic snapshot of everything a full wake adjudicates — same
+    construction as remediation's evidence watermark. A change in ANY
+    component means the next wake runs in full. Cheap file reads only."""
+    job = job or store.load(job_id)
+    summary = store.read_json(job_id, "results/forward/summary.json", default={}) or {}
+    trades = summary.get("trades") or {}
+    impasse = store.read_json(job_id, RESEARCH_IMPASSE_PATH, default={}) or {}
+    halt = read_halt(store.job_dir(job_id)) or {}
+    return {
+        "claims": {
+            str(claim.get("claim_id")): str(claim.get("status") or "")
+            for claim in list_exhaustion_claims(store, job_id)
+        },
+        "lane": store.read_json(job_id, RESEARCH_LANE_PATH, default={}) or {},
+        "mandate": {
+            "status": impasse.get("status"),
+            "alerted_at": impasse.get("alerted_at"),
+        },
+        "closed_trades": int(trades.get("closed_count") or 0),
+        "last_trade_at": trades.get("last_trade_at"),
+        "probation_legs": {
+            str(leg.get("name")): str(leg.get("status") or "")
+            for leg in load_probation(store, job_id).get("legs") or []
+            if isinstance(leg, Mapping)
+        },
+        "pending_proposals": sorted(
+            str(proposal.get("proposal_id"))
+            for proposal in store.proposals(job_id)
+            if proposal.get("status") == "pending"
+        ),
+        "incumbent_revision": job.versioning.get("active_revision"),
+        "halt": {"source": halt.get("source"), "ts": halt.get("ts")}
+        if halt
+        else None,
+    }
+
+
+def remediation_backed_off(
+    store: JobStore, job_id: str, case: Mapping[str, Any] | None
+) -> bool:
+    """Quiet = the agent already recorded its bounded evaluation/blocker and
+    no forward evidence has moved since the note — the exact evidence-blocked
+    state the remediation backoff was built for. Open and proposal_pending
+    cases (and any evidence movement) are mid-flight, never quiet."""
+    if not case or str(case.get("state")) not in {"evaluating", "blocked"}:
+        return False
+    progress = case.get("progress") or {}
+    prior = progress.get("watermark")
+    if not isinstance(prior, Mapping):
+        return False  # no accountable outcome recorded yet
+    current = _evidence_watermark(
+        store,
+        job_id,
+        incumbent_revision=(case.get("health") or {}).get("incumbent_revision"),
+    )
+    return not _watermark_reasons(prior, current)
+
+
+def remediation_wake_block(case: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Compact remediation view for the standing-checks block: current state,
+    the recheck ladder, and when the next evidence recheck is due."""
+    compact = compact_remediation(case)
+    if not compact or case is None:
+        return None
+    recheck_raw = compact.get("recheck")
+    recheck: Mapping[str, Any] = (
+        recheck_raw if isinstance(recheck_raw, Mapping) else {}
+    )
+    next_recheck_at = None
+    anchors = [
+        _parse_time(case.get("last_wake_requested_at")),
+        _parse_time((case.get("progress") or {}).get("recorded_at")),
+    ]
+    anchored = [anchor for anchor in anchors if anchor is not None]
+    if anchored and recheck:
+        wait = min(
+            int(recheck.get("next_retry_seconds") or 0),
+            REMEDIATION_MAX_QUIET_SECONDS,
+        )
+        next_recheck_at = (max(anchored) + dt.timedelta(seconds=wait)).isoformat()
+    return {
+        "state": compact.get("state"),
+        "recheck": dict(recheck) if recheck else None,
+        "next_recheck_at": next_recheck_at,
+    }
+
+
+def maybe_skip_wake(
+    store: JobStore,
+    job: WayfinderJob,
+    *,
+    mode: str,
+    apply_proposal_id: str | None,
+    now: dt.datetime | None = None,
+) -> dict[str, Any] | None:
+    """Pre-spawn skip decision, called BEFORE any OpenCode session work.
+
+    Returns the quiet report (already written to reports/{mode}/latest.json)
+    when this wake should be skipped, else None for a normal full wake.
+    """
+    if not wake_economy_enabled():
+        return None
+    if apply_proposal_id is not None or mode == "auto":
+        # Apply wakes always run; auto wakes can act on markets — the
+        # economy meters research wakes only.
+        return None
+    if str(job.script_loop.mode or "paper") == "live":
+        return None  # live jobs NEVER skip
+    now = now or dt.datetime.now(dt.UTC)
+    state = store.read_json(job.id, WAKE_ECONOMY_PATH, default={}) or {}
+    last_full = _parse_time(state.get("last_full_wake_at"))
+    if (
+        last_full is None
+        or (now - last_full).total_seconds() >= _quiet_max_seconds()
+    ):
+        return None  # max-quiet floor: a full wake is due regardless
+    if research_saturation_posture(store, job.id, job=job)["posture"] != "saturated":
+        return None
+    watermark = saturation_watermark(store, job.id, job=job)
+    if watermark != state.get("watermark"):
+        return None  # evidence moved — the full wake adjudicates it
+    next_full_wake_by = (
+        last_full + dt.timedelta(seconds=_quiet_max_seconds())
+    ).isoformat()
+    prior_skips = dict(state.get("skips") or {})
+    skips = {
+        "count": int(prior_skips.get("count") or 0) + 1,
+        "first_skipped_at": prior_skips.get("first_skipped_at") or now.isoformat(),
+        "last_skipped_at": now.isoformat(),
+    }
+    store.write_json(job.id, WAKE_ECONOMY_PATH, {**state, "skips": skips})
+    report = {
+        "job_id": job.id,
+        "mode": mode,
+        "status": "quiet",
+        "skip_reason": SKIP_REASON,
+        "summary": (
+            "wake skipped: research saturated and the evidence watermark is "
+            f"unchanged since the last full wake; next full wake by "
+            f"{next_full_wake_by}"
+        ),
+        "watermark": watermark,
+        "next_full_wake_by": next_full_wake_by,
+        "skips": skips,
+        "queued": False,
+        "session_id": None,
+        "created_at": now.isoformat(),
+    }
+    report_dir = store.job_dir(job.id) / "reports" / mode
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / "latest.json").write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    # Deduped heartbeat (the remediation note-dedupe pattern): one journal
+    # entry per saturation episode; repeat skips roll into the state counter.
+    if not prior_skips:
+        store.append_journal(
+            job.id,
+            {
+                "type": "wake_skipped_saturated",
+                "mode": mode,
+                "next_full_wake_by": next_full_wake_by,
+            },
+        )
+    return report
+
+
+def record_full_wake(
+    store: JobStore, job: WayfinderJob, *, now: dt.datetime | None = None
+) -> None:
+    """Stamp the wake-economy state after a full wake is queued: the next
+    skip window anchors here and the skip episode counter resets."""
+    now = now or dt.datetime.now(dt.UTC)
+    store.write_json(
+        job.id,
+        WAKE_ECONOMY_PATH,
+        {
+            "last_full_wake_at": now.isoformat(),
+            "watermark": saturation_watermark(store, job.id, job=job),
+        },
+    )
+
+
+def _closed_trades(store: JobStore, job_id: str) -> int:
+    summary = store.read_json(job_id, "results/forward/summary.json", default={}) or {}
+    return int(((summary.get("trades") or {}).get("closed_count")) or 0)
+
+
+def _forward_gate_minimum(job: WayfinderJob) -> int:
+    drift_policy = (job.performance or {}).get("drift_policy") or {}
+    return int(
+        drift_policy.get("min_forward_trades") or _DEFAULT_FORWARD_GATE_MIN_TRADES
+    )
+
+
+def _quiet_max_seconds() -> float:
+    return (
+        float(
+            os.environ.get(WAKE_QUIET_MAX_HOURS_ENV) or DEFAULT_WAKE_QUIET_MAX_HOURS
+        )
+        * 3600
+    )
+
+
+def _parse_time(value: Any) -> dt.datetime | None:
+    try:
+        parsed = dt.datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed.replace(tzinfo=dt.UTC) if parsed.tzinfo is None else parsed

@@ -25,6 +25,13 @@ from wayfinder_paths.jobs.models import (
 )
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
+from wayfinder_paths.jobs.wake_economy import (
+    REMEDIATION_QUIET_LINE,
+    maybe_skip_wake,
+    record_full_wake,
+    remediation_backed_off,
+    remediation_wake_block,
+)
 
 JOB_RESULT_MARKER = "WAYFINDER_JOB_RESULT "
 STABLE_PREFIX_END_MARKER = "## End Stable Cache Prefix"
@@ -515,13 +522,15 @@ def _standing_checks_block(
             block["portfolio_regime_health"] = compact_regime_health(regime)
     from wayfinder_paths.jobs.remediation import compact_remediation, load_remediation
 
-    remediation = (
-        compact_remediation(load_remediation(store, job_id))
+    case = (
+        load_remediation(store, job_id)
         if store is not None and job_id is not None
         else None
     )
+    remediation = compact_remediation(case)
     if remediation:
         block["regime_remediation"] = remediation
+        block["remediation"] = remediation_wake_block(case)
     if block:
         block["_basis"] = (
             "Routine numbers computed mechanically THIS wake — never re-fetch "
@@ -733,12 +742,19 @@ def _build_worker_prompt_sections(
         "evaluating",
         "blocked",
     }
+    # A backed-off case (bounded blocker recorded, no forward evidence moved
+    # since) never satisfies a wake: it must not consume the search
+    # assignment or override research obligations.
+    remediation_quiet = remediation_actionable and remediation_backed_off(
+        store, job_id, remediation_case
+    )
+    remediation_overrides = remediation_actionable and not remediation_quiet
     search_assignment = None
     if (
         mode == "intervene"
         and apply_proposal_id is None
         and not restage_tasks
-        and not remediation_actionable
+        and not remediation_overrides
     ):
         try:
             from wayfinder_paths.jobs.improver.scheduler import assign_island
@@ -1190,7 +1206,9 @@ def _build_worker_prompt_sections(
         bootstrap_directive(store, job_id) if apply_proposal_id is None else ""
     )
     remediation_directive = ""
-    if remediation_actionable and apply_proposal_id is None:
+    if remediation_quiet and apply_proposal_id is None:
+        remediation_directive = REMEDIATION_QUIET_LINE
+    elif remediation_overrides and apply_proposal_id is None:
         remediation_directive = (
             "REGIME REMEDIATION REQUIRED — this durable case remains open:\n"
             f"{_canonical_json(remediation_case, max_chars=3000)}\n"
@@ -1477,6 +1495,15 @@ def run_job_worker(
         _emit_job_result(report["summary"], job.id)
         return report
 
+    # Wake economy cheap-skip (same tier as the auto-limits guard above): a
+    # saturated paper job whose evidence watermark has not moved since the
+    # last full wake skips the LLM session entirely.
+    quiet_report = maybe_skip_wake(
+        store, job, mode=mode_typed, apply_proposal_id=apply_proposal_id
+    )
+    if quiet_report is not None:
+        return quiet_report
+
     session_id = _ensure_worker_session(job.id, mode_typed)
     queued = False
     error: str | None = None
@@ -1502,6 +1529,11 @@ def run_job_worker(
             error = "OpenCode prompt_async failed"
     else:
         error = "OpenCode server unavailable"
+
+    if queued:
+        # Anchor the wake-economy skip window on delivered wakes only: a
+        # failed queue leaves the state untouched so the retry runs in full.
+        record_full_wake(store, job)
 
     report = _write_report(
         store=store,
