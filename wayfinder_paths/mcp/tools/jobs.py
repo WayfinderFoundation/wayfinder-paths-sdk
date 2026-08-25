@@ -31,7 +31,13 @@ from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.starters import create_starter_job, starter_catalog
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.strategies import library_catalog
-from wayfinder_paths.jobs.sync import apply_script_mode, snapshot_job, sync_all_jobs
+from wayfinder_paths.jobs.sync import (
+    apply_script_mode,
+    snapshot_job,
+    sync_all_jobs,
+    venue_deposit,
+    venue_withdraw,
+)
 from wayfinder_paths.jobs.worker import run_job_worker
 from wayfinder_paths.mcp.utils import catch_errors, err, ok
 
@@ -46,6 +52,8 @@ JobAction = Literal[
     "remediation_progress",
     "set_agent_mode",
     "set_script_mode",
+    "venue_deposit",
+    "venue_withdraw",
     "review_now",
     "validate_job",
     "fetch_dataset",
@@ -295,6 +303,8 @@ async def core_jobs(
     agent_mode: Literal["off", "monitor", "intervene", "auto", "improve", "decide"]
     | None = None,
     script_mode: Literal["live", "paper"] | None = None,
+    amount: float | None = None,
+    destination: str | None = None,
     agent_wake_seconds: int | None = None,
     auto_limits: dict[str, Any] | None = None,
     execution_contract: Literal["jobs_v1", "legacy"] = "jobs_v1",
@@ -434,6 +444,14 @@ async def core_jobs(
         `grid` inline or `grid_path`; pass `wf_test_bars`/`wf_folds` for
         walk-forward out-of-sample validation), then `promote_params`
         (`grid_id`/`run_id`) once it survives OOS.
+
+        Funding: `venue_deposit` / `venue_withdraw` (amount, and destination
+        for withdraw) are the ONLY sanctioned way to move a live job's
+        bankroll — they bridge USDC via the job's bound wallet AND keep
+        `execution_params.initial_capital` in lockstep, exactly like the
+        owner's Fund/Withdraw buttons. Raw hyperliquid_deposit_usdc /
+        hyperliquid_withdraw_usdc against a job-bound wallet moves money
+        without the capital bookkeeping and de-syncs live sizing.
     """
 
     store = JobStore()
@@ -591,6 +609,38 @@ async def core_jobs(
             # Live-gate / wallet blockers name the missing precondition; surface
             # them as an actionable error rather than a generic failure.
             return err("script_mode_blocked", str(exc))
+
+    if action in {"venue_deposit", "venue_withdraw"} and not job_id:
+        return err("invalid_request", f"{action} requires job_id")
+
+    if action == "venue_deposit":
+        # THE canonical way to fund a live job — the same code path the
+        # owner's Fund button runs: bridges USDC from the job's bound wallet
+        # into the venue AND records initial_capital in lockstep (first fund
+        # replaces the paper default, later funds add). Never fund a
+        # job-bound wallet with raw hyperliquid_deposit_usdc: money would
+        # move without the capital/marker writes and sizing drifts.
+        if amount is None or amount <= 0:
+            return err("invalid_argument", "venue_deposit requires amount > 0")
+        try:
+            return ok(await venue_deposit(job_id, float(amount), store=store))
+        except ValueError as exc:
+            return err("venue_deposit_failed", str(exc))
+
+    if action == "venue_withdraw":
+        # Counterpart of venue_deposit: withdraws from the venue (to
+        # `destination`, default the bound wallet) and shrinks
+        # initial_capital by the gross amount, floored at zero.
+        if amount is None or amount <= 0:
+            return err("invalid_argument", "venue_withdraw requires amount > 0")
+        try:
+            return ok(
+                await venue_withdraw(
+                    job_id, float(amount), destination=destination, store=store
+                )
+            )
+        except ValueError as exc:
+            return err("venue_withdraw_failed", str(exc))
 
     if action == "review_now":
         mode = normalize_agent_mode(agent_mode or "monitor")
