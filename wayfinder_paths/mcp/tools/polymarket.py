@@ -44,6 +44,7 @@ from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
+    expand_all_wallets,
     normalize_address,
     ok,
     resolve_wallet_address,
@@ -447,7 +448,29 @@ async def polymarket_get_state(
     `wallet_label`, pass `account` or `wallet_address` directly.
     `include_orders` defaults to true; `include_activity` / `include_trades` default false
     to keep payloads tight. Each `*_limit` caps its respective list.
+
+    `wallet_label="all"` fans out across every wallet and returns `wallets`,
+    a map of wallet label to that wallet's state envelope — use it whenever
+    the question spans wallets (e.g. total balance), so no wallet is missed.
     """
+    all_labels = await expand_all_wallets(wallet_label)
+    if all_labels is not None:
+        states = await asyncio.gather(
+            *(
+                polymarket_get_state(
+                    wallet_label=wallet,
+                    include_orders=include_orders,
+                    include_activity=include_activity,
+                    activity_limit=activity_limit,
+                    include_trades=include_trades,
+                    trades_limit=trades_limit,
+                    positions_limit=positions_limit,
+                    max_positions_pages=max_positions_pages,
+                )
+                for wallet in all_labels
+            )
+        )
+        return ok({"wallets": dict(zip(all_labels, states, strict=True))})
     waddr, want = await resolve_wallet_address(wallet_label=wallet_label)
     if want and not waddr:
         return err("not_found", f"Unknown wallet_label: {want}")

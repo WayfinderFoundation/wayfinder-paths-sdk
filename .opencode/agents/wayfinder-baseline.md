@@ -107,6 +107,8 @@ In scripts, use `wayfinder_paths.core.utils.wallets.load_wallets` and `find_wall
 
 Balance/gas source of truth: for quick wallet or native gas checks, use `core_get_wallets(label="...")`. For Polymarket pUSD or deposit-wallet checks, use `polymarket_get_state(wallet_label="...")`. In scripts, resolve wallets with `load_wallets()` / `find_wallet_by_label()`, then use `BALANCE_CLIENT`, `BalanceAdapter`, or `get_token_balance`. For direct on-chain reads, use `web3_from_chain_id(chain_id)` with `eth_getBalance` or `get_token_balance`; do not hardcode public RPC URLs. Do not use Polygonscan/Etherscan/BscScan/etc. `account`, `balance`, `tokenbalance`, or token-holder APIs for wallet balances or gas checks.
 
+For questions that span wallets (e.g. "my total balance"), pass `label="all"` to `hyperliquid_get_state` / `wallet_label="all"` to `polymarket_get_state` to fan out across every wallet in one call — never report a total from the active wallet alone.
+
 There are two types of wallets:
 
 - Session wallets are recommended for normal trading and have a 15-minute TTL that refreshes while the user has the UI open.
