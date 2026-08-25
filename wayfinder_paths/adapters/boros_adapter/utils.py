@@ -115,3 +115,74 @@ def market_id_from_market_acc(market_acc: str) -> int | None:
     if market_id == 0xFFFFFF:
         return None
     return market_id
+
+
+def account_id_from_market_acc(market_acc: str) -> int | None:
+    """Parse a Boros `marketAcc` into an account id."""
+    raw = _market_acc_hex(market_acc)
+    if raw is None:
+        return None
+    try:
+        return int(raw[40:42], 16)
+    except ValueError:
+        return None
+
+
+def token_id_from_market_acc(market_acc: str) -> int | None:
+    """Parse a Boros `marketAcc` into a token id."""
+    raw = _market_acc_hex(market_acc)
+    if raw is None:
+        return None
+    try:
+        return int(raw[42:46], 16)
+    except ValueError:
+        return None
+
+
+def is_cross_market_acc(market_acc: str) -> bool:
+    """Return True when `marketAcc` points at Boros cross margin."""
+    raw = _market_acc_hex(market_acc)
+    if raw is None:
+        return False
+    try:
+        return int(raw[-6:], 16) == 0xFFFFFF
+    except ValueError:
+        return False
+
+
+def build_market_acc_hex(
+    *,
+    address: str,
+    account_id: int,
+    token_id: int,
+    market_id: int,
+) -> str:
+    """Build a packed Boros `marketAcc` hex string."""
+    addr = str(address).lower()
+    if addr.startswith("0x"):
+        addr = addr[2:]
+    if len(addr) != 40:
+        raise ValueError("address must be a 20-byte hex address")
+    try:
+        int(addr, 16)
+    except ValueError as exc:
+        raise ValueError("address must be hex encoded") from exc
+    return (
+        "0x"
+        + addr
+        + int(account_id).to_bytes(1, "big").hex()
+        + int(token_id).to_bytes(2, "big").hex()
+        + int(market_id).to_bytes(3, "big").hex()
+    )
+
+
+def _market_acc_hex(market_acc: str) -> str | None:
+    if not market_acc:
+        return None
+    raw = str(market_acc).lower()
+    if raw.startswith("0x"):
+        raw = raw[2:]
+    # root(20 bytes) + accountId(1) + tokenId(2) + marketId(3)
+    if len(raw) != 52:
+        return None
+    return raw
