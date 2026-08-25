@@ -75,3 +75,4 @@ examples/paths/
 
 # Ledger
 .ledger/
+audit/
