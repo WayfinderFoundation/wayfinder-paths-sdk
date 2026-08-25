@@ -25,6 +25,7 @@ from wayfinder_paths.jobs.execution.simulator import (
 )
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.forward import ForwardRecorder
+from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.paper_experiment import (
     EXPERIMENT_ARMS,
@@ -33,6 +34,7 @@ from wayfinder_paths.jobs.paper_experiment import (
     EXPERIMENT_VIEW_PATH,
     enqueue_experiment_view,
     experiment_status,
+    maybe_adjudicate_proposals,
     maybe_finalize_experiment,
     resolve_experiment_bundle,
 )
@@ -41,7 +43,13 @@ from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 
 def active_candidate_shadows(store: JobStore, job_id: str) -> bool:
-    return experiment_status(store, job_id).get("status") == "active"
+    state = experiment_status(store, job_id)
+    if state.get("status") == "active":
+        return True
+    return state.get("status") == "qualifying" and any(
+        (((state.get("proposals") or {}).get(arm) or {}).get("active"))
+        for arm in EXPERIMENT_ARMS
+    )
 
 
 async def run_candidate_shadows(
@@ -83,35 +91,30 @@ async def _run_candidate_shadows(
         return []
     full_view = CompletedBarsView.from_rows(rows)
     state = experiment_status(store, job_id)
-    if state.get("status") != "active":
+    if state.get("status") not in {"qualifying", "active"}:
         return []
-    last_by_arm = {
-        arm: (state["arms"][arm].get("last_processed_bar")) for arm in EXPERIMENT_ARMS
-    }
-    unseen = [
-        stamp
-        for stamp in full_view.timestamps
-        if any(
-            not last_by_arm[arm] or stamp > pd.Timestamp(last_by_arm[arm])
-            for arm in EXPERIMENT_ARMS
-        )
-    ]
     results: list[dict[str, Any]] = []
-    for stamp in unseen:
+    for stamp in full_view.timestamps:
+        loop_state = experiment_status(store, job_id)
+        if loop_state.get("status") == "active" and stamp >= pd.Timestamp(
+            loop_state["ends_at"]
+        ):
+            maybe_finalize_experiment(
+                store, job_id, now=pd.Timestamp(loop_state["ends_at"]).to_pydatetime()
+            )
+            break
         replay_view = full_view.through(stamp)
-        for arm in EXPERIMENT_ARMS:
+        for target in _paper_targets(experiment_status(store, job_id)):
             state = experiment_status(store, job_id)
-            champion = dict(state["arms"][arm]["champion"])
-            last = state["arms"][arm].get("last_processed_bar")
+            last = target.get("last_processed_bar")
             if last and stamp <= pd.Timestamp(last):
                 continue
             try:
-                row = await _run_arm(
+                row = await _run_target(
                     store,
                     job_id,
                     state=state,
-                    arm=arm,
-                    champion=champion,
+                    target=target,
                     view=replay_view,
                     timestamp=stamp,
                 )
@@ -119,36 +122,67 @@ async def _run_candidate_shadows(
                 row = _record_error(
                     store,
                     job_id,
-                    arm=arm,
-                    champion=champion,
+                    target=target,
                     timestamp=stamp,
                     error=str(exc)[:300],
                 )
             results.append(row)
+        maybe_adjudicate_proposals(store, job_id, now=stamp.to_pydatetime())
     maybe_finalize_experiment(store, job_id)
     return results
 
 
-async def _run_arm(
+def _paper_targets(state: dict[str, Any]) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
+    if state.get("status") == "active":
+        for arm in EXPERIMENT_ARMS:
+            champion = dict(state["arms"][arm]["champion"])
+            champion.update(
+                {
+                    "arm": arm,
+                    "role": "champion",
+                    "last_processed_bar": state["arms"][arm].get("last_processed_bar"),
+                }
+            )
+            targets.append(champion)
+    if state.get("status") in {"qualifying", "active"}:
+        for arm in EXPERIMENT_ARMS:
+            proposal = ((state.get("proposals") or {}).get(arm) or {}).get("active")
+            if not isinstance(proposal, dict):
+                continue
+            for key in ("candidate", "reference"):
+                target = dict(proposal[key])
+                target["arm"] = arm
+                targets.append(target)
+    return targets
+
+
+async def _run_target(
     store: JobStore,
     job_id: str,
     *,
     state: dict[str, Any],
-    arm: str,
-    champion: dict[str, Any],
+    target: dict[str, Any],
     view: CompletedBarsView,
     timestamp: pd.Timestamp,
 ) -> dict[str, Any]:
     root = store.job_dir(job_id).resolve()
-    candidate_root = resolve_experiment_bundle(store, job_id, state, champion)
-    stream_root = (root / str(champion["stream"])).resolve()
+    candidate_root = resolve_experiment_bundle(store, job_id, state, target)
+    if compute_workspace_revision(candidate_root) != str(target["revision"]):
+        raise ValueError("paper candidate revision changed after freeze")
+    stream_root = (root / str(target["stream"])).resolve()
     allowed_streams = (root / EXPERIMENT_FORWARD_ROOT).resolve()
     if not stream_root.is_relative_to(allowed_streams):
         raise ValueError("experiment stream escapes its paper root")
     bar_iso = timestamp.isoformat()
     if _stream_has_bar(stream_root / "ticks.jsonl", bar_iso):
-        _advance_cursor(store, job_id, arm, bar_iso)
-        return {"arm": arm, "bar_timestamp": bar_iso, "reused": True}
+        _advance_cursor(store, job_id, target, bar_iso)
+        return {
+            "arm": target["arm"],
+            "role": target["role"],
+            "bar_timestamp": bar_iso,
+            "reused": True,
+        }
 
     job_data = _load_job_yaml(candidate_root)
     spec_data, _ = resolve_execution_spec(candidate_root, job_data)
@@ -163,10 +197,15 @@ async def _run_arm(
     params = dict(job_data.get("execution_params") or {})
     strategy = _load_strategy(script, params)
     candidate_view = apply_precompute(strategy, view)
-    shadow_root = _shadow_state_root(root, arm=arm, revision=str(champion["revision"]))
+    shadow_root = _shadow_state_root(
+        root,
+        arm=str(target["arm"]),
+        role=str(target["role"]),
+        revision=str(target["revision"]),
+    )
     engine_state = EngineState.load(shadow_root / "engine_state.json")
     engine_state.mode = "paper"
-    engine_state.revision = str(champion["revision"])
+    engine_state.revision = str(target["revision"])
     broker = PaperBroker(
         fee_bps=_resolve_fee_bps(params, strategy),
         maker_fee_bps=_resolve_maker_fee_bps(params, strategy),
@@ -182,7 +221,9 @@ async def _run_arm(
         params=params,
         timestamp=timestamp,
         snapshot=StateSnapshot(status="valid"),
-        client_order_prefix=f"paper-ab-{arm}-{champion['revision'][:8]}",
+        client_order_prefix=(
+            f"paper-ab-{target['arm']}-{target['role']}-{target['revision'][:8]}"
+        ),
     )
     engine_state.save(shadow_root / "engine_state.json")
     recorder = ForwardRecorder(
@@ -201,11 +242,12 @@ async def _run_arm(
         now=timestamp,
         engine_state_pre=engine_state_pre,
     )
-    _advance_cursor(store, job_id, arm, bar_iso)
+    _advance_cursor(store, job_id, target, bar_iso)
     (shadow_root / "last_error.json").unlink(missing_ok=True)
     return {
-        "arm": arm,
-        "candidate_id": champion["candidate_id"],
+        "arm": target["arm"],
+        "role": target["role"],
+        "candidate_id": target["candidate_id"],
         "bar_timestamp": bar_iso,
         "skipped": tick.skipped,
         "intents": len(tick.intents),
@@ -213,15 +255,23 @@ async def _run_arm(
     }
 
 
-def _advance_cursor(store: JobStore, job_id: str, arm: str, bar_iso: str) -> None:
+def _advance_cursor(
+    store: JobStore, job_id: str, target: dict[str, Any], bar_iso: str
+) -> None:
     with job_state_lock(store.repo_root, job_id, name="evolution_experiment"):
         state = experiment_status(store, job_id)
-        state["arms"][arm]["last_processed_bar"] = bar_iso
-        cursors = [
-            state["arms"][name].get("last_processed_bar") for name in EXPERIMENT_ARMS
-        ]
-        if all(cursors):
-            state["last_processed_bar"] = min(cursors)
+        arm = str(target["arm"])
+        if target["role"] == "champion":
+            champion = state["arms"][arm]["champion"]
+            if champion.get("revision") == target.get("revision"):
+                state["arms"][arm]["last_processed_bar"] = bar_iso
+        else:
+            active = state["proposals"][arm].get("active")
+            key = "candidate" if target["role"] == "proposal_candidate" else "reference"
+            if isinstance(active, dict) and (active.get(key) or {}).get(
+                "revision"
+            ) == target.get("revision"):
+                active[key]["last_processed_bar"] = bar_iso
         store.write_json(job_id, EXPERIMENT_STATE_PATH, state)
 
 
@@ -243,14 +293,16 @@ def _record_error(
     store: JobStore,
     job_id: str,
     *,
-    arm: str,
-    champion: dict[str, Any],
+    target: dict[str, Any],
     timestamp: pd.Timestamp,
     error: str,
 ) -> dict[str, Any]:
     root = store.job_dir(job_id).resolve()
     error_root = _shadow_state_root(
-        root, arm=arm, revision=str(champion.get("revision") or "invalid")
+        root,
+        arm=str(target["arm"]),
+        role=str(target["role"]),
+        revision=str(target.get("revision") or "invalid"),
     )
     error_path = error_root / "last_error.json"
     try:
@@ -261,20 +313,46 @@ def _record_error(
     atomic_write_json(
         error_path,
         {
-            "arm": arm,
-            "candidate_id": champion.get("candidate_id"),
+            "arm": target["arm"],
+            "role": target["role"],
+            "candidate_id": target.get("candidate_id"),
             "error": error,
             "bar_timestamp": timestamp.isoformat(),
             "last_seen_at": utc_now_iso(),
         },
     )
-    _advance_cursor(store, job_id, arm, timestamp.isoformat())
-    return {"arm": arm, "error": error, "notify": notify}
+    _increment_error(store, job_id, target, timestamp.isoformat())
+    return {
+        "arm": target["arm"],
+        "role": target["role"],
+        "error": error,
+        "notify": notify,
+    }
 
 
-def _shadow_state_root(root: Path, *, arm: str, revision: str) -> Path:
+def _increment_error(
+    store: JobStore, job_id: str, target: dict[str, Any], bar_iso: str
+) -> None:
+    with job_state_lock(store.repo_root, job_id, name="evolution_experiment"):
+        state = experiment_status(store, job_id)
+        arm = str(target["arm"])
+        if target["role"] == "champion":
+            if state["arms"][arm]["champion"].get("revision") == target.get("revision"):
+                state["arms"][arm]["last_processed_bar"] = bar_iso
+        else:
+            active = state["proposals"][arm].get("active")
+            key = "candidate" if target["role"] == "proposal_candidate" else "reference"
+            if isinstance(active, dict):
+                selected = active.get(key) or {}
+                if selected.get("revision") == target.get("revision"):
+                    selected["last_processed_bar"] = bar_iso
+                    selected["error_count"] = int(selected.get("error_count") or 0) + 1
+        store.write_json(job_id, EXPERIMENT_STATE_PATH, state)
+
+
+def _shadow_state_root(root: Path, *, arm: str, role: str, revision: str) -> Path:
     base = (root / "state" / "evolution_shadows").resolve()
-    candidate = (base / arm / revision).resolve()
+    candidate = (base / arm / role / revision).resolve()
     if not candidate.is_relative_to(base):
         raise ValueError("paper arm state escapes the shadow state root")
     return candidate

@@ -26,10 +26,11 @@ EXPERIMENT_STATE_PATH = "state/evolution_experiment.json"
 EXPERIMENT_VIEW_PATH = "state/evolution_experiment_view.json"
 EXPERIMENT_ROOT = "research/evolution/experiment"
 EXPERIMENT_FORWARD_ROOT = "results/forward/experiment"
-EXPERIMENT_AUDIT_LEDGER = "audits.jsonl"
-EXPERIMENT_AUDIT_SUMMARY = "audits.json"
+EXPERIMENT_EVIDENCE_LEDGER = "evidence.jsonl"
+EXPERIMENT_EVIDENCE_SUMMARY = "evidence.json"
 EXPERIMENT_ARMS = ("control", "evolution")
 Arm = Literal["control", "evolution"]
+PROPOSAL_GRACE = timedelta(hours=12)
 
 
 def experiment_status(store: JobStore, job_id: str) -> dict[str, Any]:
@@ -51,6 +52,7 @@ def ensure_paper_experiment(
         if existing:
             return existing
         current = _aware(now or datetime.now(UTC))
+        qualification = timedelta(days=float(policy.get("qualification_days") or 7))
         root = store.job_dir(job_id)
         revision = compute_workspace_revision(root)
         experiment_id = f"paper-ab-{current.strftime('%Y%m%dT%H%M%SZ')}"
@@ -73,20 +75,14 @@ def ensure_paper_experiment(
             admitted_at=current.isoformat(),
             source="incumbent",
         )
-        compute_budget = (
-            store.read_json(
-                job_id, "state/evolution_compute_budget.json", default={}
-            )
-            or {}
-        )
         state = {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "experiment_id": experiment_id,
-            "status": "active",
-            "started_at": current.isoformat(),
-            "ends_at": (
-                current + timedelta(days=float(policy.get("duration_days") or 14))
-            ).isoformat(),
+            "status": "qualifying",
+            "qualification_started_at": current.isoformat(),
+            "qualification_ends_at": (current + qualification).isoformat(),
+            "started_at": None,
+            "ends_at": None,
             "bar_interval": str(policy.get("bar_interval") or "5m"),
             "confidence": float(policy.get("confidence") or 0.90),
             "protocol": {
@@ -107,20 +103,18 @@ def ensure_paper_experiment(
                     "kill": "paired_ucb_lt_zero_or_hard_constraint_breach",
                     "otherwise": "inconclusive",
                 },
-                "multiplicity": "shared_benjamini_hochberg_audit_ledger",
+                "candidate_entry": (
+                    "immutable_24h_forward_paper_proposal_against_current_arm_champion"
+                ),
+                "proposal_clock": "first_common_completed_5m_bar_through_24h",
+                "proposal_pnl_in_primary_endpoint": False,
+                "multiplicity": "shared_benjamini_hochberg_evidence_ledger",
                 "evolution_compute_duty_cap": float(
                     policy.get("compute_duty_fraction") or 0.20
                 ),
-                "max_audits_per_arm_per_12h": int(
-                    policy.get("max_audits_per_arm_per_window") or 2
-                ),
+                "max_concurrent_proposals_per_arm": 1,
                 "resource_budget_tolerance": 0.20,
                 "paper_only": True,
-            },
-            "resource_baseline": {
-                "evolution_compute_wall_seconds": float(
-                    compute_budget.get("total_wall_seconds") or 0.0
-                )
             },
             "initial_revision": revision,
             "last_processed_bar": None,
@@ -130,7 +124,9 @@ def ensure_paper_experiment(
                 "evolution": {"champion": evolution_champion, "history": []},
             },
             "admissions": {"control": 0, "evolution": 0},
-            "windows": {},
+            "proposals": {
+                arm: {"active": None, "history": []} for arm in EXPERIMENT_ARMS
+            },
         }
         store.write_json(job_id, EXPERIMENT_STATE_PATH, state)
         store.append_journal(
@@ -138,36 +134,13 @@ def ensure_paper_experiment(
             {
                 "type": "evolution_experiment_started",
                 "experiment_id": experiment_id,
-                "ends_at": state["ends_at"],
+                "qualification_ends_at": state["qualification_ends_at"],
             },
         )
         return state
 
 
-def enqueue_experiment_view(
-    store: JobStore,
-    job_id: str,
-    *,
-    rows: list[dict[str, Any]],
-    now: pd.Timestamp,
-) -> bool:
-    """Persist the latest complete rolling view; the worker replays its gaps."""
-    state = experiment_status(store, job_id)
-    if state.get("status") != "active" or not rows:
-        return False
-    timestamps = [pd.Timestamp(row["timestamp"]) for row in rows]
-    latest = max(timestamps)
-    payload = {
-        "schema_version": "1.0",
-        "captured_at": now.isoformat(),
-        "latest_bar": latest.isoformat(),
-        "rows": rows,
-    }
-    atomic_write_json(store.job_dir(job_id) / EXPERIMENT_VIEW_PATH, payload)
-    return True
-
-
-def admit_paper_candidate(
+def stage_paper_proposal(
     store: JobStore,
     job_id: str,
     *,
@@ -179,19 +152,142 @@ def admit_paper_candidate(
     evidence: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Auto-accept one screened candidate inside its paper arm only."""
-    with job_state_lock(store.repo_root, job_id, name="evolution_shadow_runner"):
-        return _admit_paper_candidate(
-            store,
-            job_id,
-            arm=arm,
-            candidate_id=candidate_id,
-            candidate_root=candidate_root,
-            revision=revision,
-            source=source,
-            evidence=evidence,
-            now=now,
+    """Freeze one candidate for a genuinely forward, one-day paper proposal.
+
+    A proposal never replaces the arm champion directly. The candidate and the
+    current champion first receive independent state and streams on identical
+    completed bars; only the mechanical adjudicator may promote it.
+    """
+    if arm not in EXPERIMENT_ARMS:
+        raise ValueError(f"unknown experiment arm {arm!r}")
+    current = _aware(now or datetime.now(UTC))
+    ensure_paper_experiment(store, job_id, now=current)
+    with job_state_lock(store.repo_root, job_id, name="evolution_experiment"):
+        state = experiment_status(store, job_id)
+        if state.get("status") not in {"qualifying", "active"}:
+            raise ValueError("paper experiment is not accepting proposals")
+        slot = state.setdefault("proposals", {}).setdefault(
+            arm, {"active": None, "history": []}
         )
+        safe_id = _safe_candidate_id(candidate_id)
+        safe_revision = _safe_revision(revision)
+        seen_key = f"{arm}:{safe_id}:{safe_revision}"
+        if seen_key in state.get("seen_candidates", []):
+            return {"status": "duplicate", "candidate_id": safe_id}
+        if slot.get("active"):
+            return {
+                "status": "deferred",
+                "reason": f"{arm} already has an active paper proposal",
+                "candidate_id": safe_id,
+            }
+        policy = (
+            ImproverSpec.load(store.job_dir(job_id)).evolution.get("paper_experiment")
+            or {}
+        )
+        duration = timedelta(hours=float(policy.get("proposal_hours") or 24))
+        proposal_deadline = (
+            state.get("qualification_ends_at")
+            if state.get("status") == "qualifying"
+            else state.get("ends_at")
+        )
+        if proposal_deadline and current + duration > _parse(proposal_deadline):
+            return {
+                "status": "deferred",
+                "reason": "insufficient experiment time for a full paper proposal",
+                "candidate_id": safe_id,
+            }
+        root = store.job_dir(job_id).resolve()
+        source_root = candidate_root.resolve()
+        if not source_root.is_relative_to(root):
+            raise ValueError("experiment candidate must be inside its job root")
+        if compute_workspace_revision(source_root) != safe_revision:
+            raise ValueError("candidate revision does not match immutable bundle")
+        relative = (
+            f"{EXPERIMENT_ROOT}/{state['experiment_id']}/candidates/"
+            f"{arm}-{safe_id}-{safe_revision}"
+        )
+        destination = (root / relative).resolve()
+        allowed = (
+            root / EXPERIMENT_ROOT / state["experiment_id"] / "candidates"
+        ).resolve()
+        if not destination.is_relative_to(allowed) or destination.parent != allowed:
+            raise ValueError("experiment bundle escapes its candidate root")
+        _copy_bundle(source_root, destination)
+        if compute_workspace_revision(destination) != safe_revision:
+            raise ValueError("frozen candidate revision changed during copy")
+        reference = dict(state["arms"][arm]["champion"])
+        proposal_key = f"{safe_id}-{safe_revision}"
+        stream_base = f"{EXPERIMENT_FORWARD_ROOT}/proposals/{arm}/{proposal_key}"
+        proposal = {
+            "status": "queued",
+            "arm": arm,
+            "candidate_id": safe_id,
+            "source_candidate_id": str(candidate_id),
+            "revision": safe_revision,
+            "bundle": relative,
+            "source": source,
+            "queued_at": current.isoformat(),
+            "duration_seconds": int(duration.total_seconds()),
+            "expires_at": (current + duration + PROPOSAL_GRACE).isoformat(),
+            "first_common_bar": None,
+            "last_common_bar": None,
+            "candidate": {
+                "role": "proposal_candidate",
+                "candidate_id": safe_id,
+                "revision": safe_revision,
+                "bundle": relative,
+                "stream": f"{stream_base}/candidate",
+                "last_processed_bar": None,
+                "error_count": 0,
+            },
+            "reference": {
+                "role": "proposal_reference",
+                "candidate_id": reference["candidate_id"],
+                "revision": reference["revision"],
+                "bundle": reference["bundle"],
+                "stream": f"{stream_base}/reference",
+                "last_processed_bar": None,
+                "error_count": 0,
+            },
+            "evidence": dict(evidence or {}),
+        }
+        slot["active"] = proposal
+        state.setdefault("seen_candidates", []).append(seen_key)
+        store.write_json(job_id, EXPERIMENT_STATE_PATH, state)
+        store.append_journal(
+            job_id,
+            {
+                "type": "evolution_experiment_proposal_staged",
+                "arm": arm,
+                "candidate_id": safe_id,
+                "revision": safe_revision,
+                "paper_only": True,
+            },
+        )
+        return proposal
+
+
+def enqueue_experiment_view(
+    store: JobStore,
+    job_id: str,
+    *,
+    rows: list[dict[str, Any]],
+    now: pd.Timestamp,
+) -> bool:
+    """Persist the latest complete rolling view; the worker replays its gaps."""
+    state = experiment_status(store, job_id)
+    if state.get("status") not in {"qualifying", "active"} or not rows:
+        return False
+    timestamps = [pd.Timestamp(row["timestamp"]) for row in rows]
+    latest = max(timestamps)
+    payload = {
+        "schema_version": "1.0",
+        "captured_at": now.isoformat(),
+        "latest_bar": latest.isoformat(),
+        "rows": rows,
+    }
+    atomic_write_json(store.job_dir(job_id) / EXPERIMENT_VIEW_PATH, payload)
+    return True
 
 
 def _admit_paper_candidate(
@@ -212,26 +308,11 @@ def _admit_paper_candidate(
     ensure_paper_experiment(store, job_id, now=current)
     with job_state_lock(store.repo_root, job_id, name="evolution_experiment"):
         state = experiment_status(store, job_id)
-        if state.get("status") != "active":
+        if state.get("status") not in {"qualifying", "active"}:
             raise ValueError("paper experiment is not active")
-        policy = (
-            ImproverSpec.load(store.job_dir(job_id)).evolution.get("paper_experiment")
-            or {}
-        )
-        window = _window_key(state, current)
-        window_state = state.setdefault("windows", {}).setdefault(
-            window, {"control": [], "evolution": []}
-        )
-        limit = int(policy.get("max_audits_per_arm_per_window") or 2)
-        if len(window_state[arm]) >= limit:
-            raise ValueError(
-                f"paper experiment {arm} window admission cap reached ({limit})"
-            )
         safe_id = _safe_candidate_id(candidate_id)
         safe_revision = _safe_revision(revision)
         seen_key = f"{arm}:{safe_id}:{safe_revision}"
-        if seen_key in state.get("seen_candidates", []):
-            return dict(state["arms"][arm]["champion"])
         root = store.job_dir(job_id).resolve()
         source_root = candidate_root.resolve()
         if not source_root.is_relative_to(root):
@@ -259,11 +340,32 @@ def _admit_paper_candidate(
             source=source,
         )
         state["arms"][arm]["champion"] = champion
-        state.setdefault("seen_candidates", []).append(seen_key)
-        state["admissions"][arm] = int(state["admissions"].get(arm) or 0) + 1
-        window_state[arm].append(seen_key)
+        admission_number = int(state["admissions"].get(arm) or 0) + 1
+        champion["stream"] = (
+            f"{EXPERIMENT_FORWARD_ROOT}/{arm}/{safe_revision}-a{admission_number}"
+        )
+        state["arms"][arm]["last_processed_bar"] = current.isoformat()
+        if seen_key not in state.setdefault("seen_candidates", []):
+            state["seen_candidates"].append(seen_key)
+        state["admissions"][arm] = admission_number
+        if arm == "evolution" and state.get("status") == "qualifying":
+            policy = (
+                ImproverSpec.load(store.job_dir(job_id)).evolution.get(
+                    "paper_experiment"
+                )
+                or {}
+            )
+            state["status"] = "active"
+            state["started_at"] = current.isoformat()
+            state["ends_at"] = (
+                current + timedelta(days=float(policy.get("duration_days") or 14))
+            ).isoformat()
+            for experiment_arm in EXPERIMENT_ARMS:
+                state["arms"][experiment_arm]["last_processed_bar"] = (
+                    current.isoformat()
+                )
         store.write_json(job_id, EXPERIMENT_STATE_PATH, state)
-        record_audit(
+        record_evidence(
             store,
             job_id,
             arm=arm,
@@ -273,7 +375,7 @@ def _admit_paper_candidate(
             evidence={
                 **(evidence or {}),
                 "token_usage": (evidence or {}).get("token_usage")
-                or current_job_token_usage(store, job_id, state=state),
+                or current_job_token_usage(store, job_id, arm=arm, state=state),
             },
         )
         store.append_journal(
@@ -289,7 +391,7 @@ def _admit_paper_candidate(
         return champion
 
 
-def record_audit(
+def record_evidence(
     store: JobStore,
     job_id: str,
     *,
@@ -299,8 +401,8 @@ def record_audit(
     admitted: bool,
     evidence: dict[str, Any],
 ) -> None:
-    with job_state_lock(store.repo_root, job_id, name="evolution_audit_ledger"):
-        _record_audit(
+    with job_state_lock(store.repo_root, job_id, name="evolution_evidence_ledger"):
+        _record_evidence(
             store,
             job_id,
             arm=arm,
@@ -311,7 +413,7 @@ def record_audit(
         )
 
 
-def _record_audit(
+def _record_evidence(
     store: JobStore,
     job_id: str,
     *,
@@ -321,14 +423,20 @@ def _record_audit(
     admitted: bool,
     evidence: dict[str, Any],
 ) -> None:
-    """Append one bounded candidate audit row for cross-arm accounting."""
+    """Append one finalist-stage evidence row for cross-arm accounting."""
     delta = evidence.get("paired_incumbent_delta") or {}
-    token_usage = evidence.get("token_usage") or current_job_token_usage(store, job_id)
+    token_usage = evidence.get("token_usage") or current_job_token_usage(
+        store, job_id, arm=arm
+    )
     token_total = int(token_usage.get("tokens_in") or 0) + int(
         token_usage.get("tokens_out") or 0
     )
     prior_token_total = max(
-        (int(item.get("token_total") or 0) for item in _audit_rows(store, job_id)),
+        (
+            int(item.get("token_total") or 0)
+            for item in _evidence_rows(store, job_id)
+            if item.get("arm") == arm
+        ),
         default=0,
     )
     row = {
@@ -346,13 +454,13 @@ def _record_audit(
         "token_delta": max(0, token_total - prior_token_total),
         "sim_wall_seconds": evidence.get("sim_wall_seconds"),
     }
-    path = _audit_ledger_dir(store, job_id) / EXPERIMENT_AUDIT_LEDGER
+    path = _evidence_ledger_dir(store, job_id) / EXPERIMENT_EVIDENCE_LEDGER
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, sort_keys=True) + "\n")
     from wayfinder_paths.jobs.research import bh_qvalues
 
-    rows = _audit_rows(store, job_id)
+    rows = _evidence_rows(store, job_id)
     indexed = [
         (index, float(item["p_value"]))
         for index, item in enumerate(rows)
@@ -367,7 +475,7 @@ def _record_audit(
         )
     }
     atomic_write_json(
-        _audit_ledger_dir(store, job_id) / EXPERIMENT_AUDIT_SUMMARY,
+        _evidence_ledger_dir(store, job_id) / EXPERIMENT_EVIDENCE_SUMMARY,
         {
             "schema_version": "1.0",
             "method": "benjamini_hochberg",
@@ -381,7 +489,11 @@ def _record_audit(
 
 
 def current_job_token_usage(
-    store: JobStore, job_id: str, *, state: dict[str, Any] | None = None
+    store: JobStore,
+    job_id: str,
+    *,
+    arm: Arm | None = None,
+    state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Meter stable worker sessions from the experiment's fixed start."""
     from wayfinder_paths.jobs.benchmarks.agent_adapter import meter_session_ids
@@ -389,6 +501,10 @@ def current_job_token_usage(
     session_ids: list[str] = []
     reports = store.job_dir(job_id) / "reports"
     for path in reports.glob("*/session.json"):
+        if arm == "evolution" and path.parent.name != "evolution":
+            continue
+        if arm == "control" and path.parent.name == "evolution":
+            continue
         try:
             session = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -396,8 +512,269 @@ def current_job_token_usage(
         if session.get("session_id"):
             session_ids.append(str(session["session_id"]))
     experiment = state or experiment_status(store, job_id)
-    started = _parse(experiment["started_at"])
+    started = _parse(
+        experiment.get("started_at") or experiment["qualification_started_at"]
+    )
     return meter_session_ids(session_ids, since_ms=int(started.timestamp() * 1000))
+
+
+def maybe_adjudicate_proposals(
+    store: JobStore, job_id: str, *, now: datetime | None = None
+) -> list[dict[str, Any]]:
+    """Adjudicate mature proposal pairs; never use historical audit tails."""
+    with job_state_lock(store.repo_root, job_id, name="evolution_shadow_runner"):
+        return _maybe_adjudicate_proposals(store, job_id, now=now)
+
+
+def _maybe_adjudicate_proposals(
+    store: JobStore, job_id: str, *, now: datetime | None = None
+) -> list[dict[str, Any]]:
+    current = _aware(now or datetime.now(UTC))
+    outcomes: list[dict[str, Any]] = []
+    for arm in EXPERIMENT_ARMS:
+        state = experiment_status(store, job_id)
+        proposal = ((state.get("proposals") or {}).get(arm) or {}).get("active")
+        if not isinstance(proposal, dict):
+            continue
+        common = _common_proposal_bars(store, job_id, proposal)
+        if common:
+            proposal["first_common_bar"] = common[0].isoformat()
+            proposal["last_common_bar"] = common[-1].isoformat()
+        span = common[-1] - common[0] if len(common) >= 2 else timedelta(0)
+        bar_seconds = max(
+            1, int(pd.Timedelta(str(state.get("bar_interval") or "5m")).total_seconds())
+        )
+        expected = int(span.total_seconds() // bar_seconds) + 1
+        coverage = len(common) / expected if expected else 0.0
+        duration = timedelta(seconds=int(proposal.get("duration_seconds") or 24 * 3600))
+        mature = span >= duration and coverage >= 0.95
+        expired = current >= _parse(proposal["expires_at"])
+        if not mature and not expired:
+            _save_proposal_progress(store, job_id, arm, proposal)
+            continue
+        candidate_stats = _proposal_stats(
+            store.job_dir(job_id) / str(proposal["candidate"]["stream"])
+        )
+        reference_stats = _proposal_stats(
+            store.job_dir(job_id) / str(proposal["reference"]["stream"])
+        )
+        verdict = _proposal_verdict(
+            store,
+            job_id,
+            proposal,
+            candidate_stats=candidate_stats,
+            reference_stats=reference_stats,
+            mature=mature,
+            coverage=coverage,
+        )
+        if verdict["status"] == "qualified":
+            frozen = resolve_experiment_bundle(
+                store, job_id, state, proposal["candidate"]
+            )
+            champion = _admit_paper_candidate(
+                store,
+                job_id,
+                arm=arm,
+                candidate_id=str(
+                    proposal.get("source_candidate_id") or proposal["candidate_id"]
+                ),
+                candidate_root=frozen,
+                revision=str(proposal["revision"]),
+                source=str(proposal["source"]),
+                evidence={
+                    **dict(proposal.get("evidence") or {}),
+                    "proposal": verdict,
+                },
+                now=common[-1].to_pydatetime(),
+            )
+            verdict["champion"] = champion
+        else:
+            record_evidence(
+                store,
+                job_id,
+                arm=arm,
+                candidate_id=str(proposal["candidate_id"]),
+                revision=str(proposal["revision"]),
+                admitted=False,
+                evidence={
+                    **dict(proposal.get("evidence") or {}),
+                    "proposal": verdict,
+                },
+            )
+        _close_proposal(store, job_id, arm, proposal, verdict, current=current)
+        outcomes.append(verdict)
+    return outcomes
+
+
+def _proposal_verdict(
+    store: JobStore,
+    job_id: str,
+    proposal: dict[str, Any],
+    *,
+    candidate_stats: dict[str, Any],
+    reference_stats: dict[str, Any],
+    mature: bool,
+    coverage: float,
+) -> dict[str, Any]:
+    from wayfinder_paths.jobs.constitution import load_constitution
+    from wayfinder_paths.jobs.probation import paper_entry_check
+
+    evidence = dict(proposal.get("evidence") or {})
+    objective = evidence.get("objective") or {}
+    candidate_objective = objective.get("candidate") or {}
+    backtest_trades = int(
+        evidence.get("backtest_trades") or candidate_objective.get("trade_count") or 0
+    )
+    entry = paper_entry_check(
+        candidate_net=float(candidate_stats["net_return"]),
+        baseline_net=float(reference_stats["net_return"]),
+        backtest_trades=backtest_trades,
+        spec=ImproverSpec.load(store.job_dir(job_id)),
+    )
+    hard = load_constitution(store.job_dir(job_id))["hard_constraints"]
+    max_drawdown = float(hard.get("max_drawdown_pct") or 0.25)
+    reasons: list[str] = []
+    if not mature:
+        reasons.append(f"insufficient common-bar coverage ({coverage:.1%})")
+    if int(proposal["candidate"].get("error_count") or 0) > 0:
+        reasons.append("candidate raised during paper proposal")
+    if int(proposal["reference"].get("error_count") or 0) > 0:
+        reasons.append("reference raised during paper proposal")
+    if int(candidate_stats["closed_trades"]) < 1:
+        reasons.append("candidate produced no closed forward trade")
+    if float(candidate_stats["max_drawdown_pct"]) > max_drawdown:
+        reasons.append("candidate breached the owner drawdown ceiling")
+    reasons.extend(str(item) for item in entry["reasons"])
+    return {
+        "status": "qualified" if not reasons else "rejected",
+        "arm": proposal["arm"],
+        "candidate_id": proposal["candidate_id"],
+        "revision": proposal["revision"],
+        "coverage": round(coverage, 4),
+        "candidate": candidate_stats,
+        "reference": reference_stats,
+        "paper_entry": entry,
+        "reasons": reasons,
+        "paper_only": True,
+    }
+
+
+def _common_proposal_bars(
+    store: JobStore, job_id: str, proposal: dict[str, Any]
+) -> list[pd.Timestamp]:
+    streams = []
+    for role in ("candidate", "reference"):
+        path = store.job_dir(job_id) / str(proposal[role]["stream"]) / "ticks.jsonl"
+        stamps: set[pd.Timestamp] = set()
+        if path.exists():
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                try:
+                    row = json.loads(line)
+                    stamps.add(pd.Timestamp(row.get("bar_ts") or row.get("ts")))
+                except (TypeError, ValueError):
+                    continue
+        streams.append(stamps)
+    return sorted(streams[0] & streams[1])
+
+
+def _proposal_stats(stream: Path) -> dict[str, Any]:
+    pnls: list[float] = []
+    path = stream / "trades.jsonl"
+    if path.exists():
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                row = json.loads(line)
+                pnls.append(
+                    float(
+                        row.get("net_pnl")
+                        or row.get("realized_pnl_delta")
+                        or row.get("pnl")
+                        or 0.0
+                    )
+                )
+            except (TypeError, ValueError):
+                continue
+    capital = 10_000.0
+    equity = peak = capital
+    drawdown = 0.0
+    for pnl in pnls:
+        equity += pnl
+        peak = max(peak, equity)
+        if peak > 0:
+            drawdown = max(drawdown, (peak - equity) / peak)
+    return {
+        "closed_trades": len(pnls),
+        "net_pnl": round(sum(pnls), 6),
+        "net_return": round(sum(pnls) / capital, 8),
+        "max_drawdown_pct": round(drawdown, 8),
+    }
+
+
+def _save_proposal_progress(
+    store: JobStore, job_id: str, arm: str, proposal: dict[str, Any]
+) -> None:
+    with job_state_lock(store.repo_root, job_id, name="evolution_experiment"):
+        state = experiment_status(store, job_id)
+        active = ((state.get("proposals") or {}).get(arm) or {}).get("active")
+        if isinstance(active, dict) and active.get("revision") == proposal.get(
+            "revision"
+        ):
+            state["proposals"][arm]["active"] = proposal
+            store.write_json(job_id, EXPERIMENT_STATE_PATH, state)
+
+
+def _close_proposal(
+    store: JobStore,
+    job_id: str,
+    arm: str,
+    proposal: dict[str, Any],
+    verdict: dict[str, Any],
+    *,
+    current: datetime,
+) -> None:
+    with job_state_lock(store.repo_root, job_id, name="evolution_experiment"):
+        state = experiment_status(store, job_id)
+        slot = state["proposals"][arm]
+        active = slot.get("active")
+        if not isinstance(active, dict) or active.get("revision") != proposal.get(
+            "revision"
+        ):
+            return
+        slot["history"].append(
+            {
+                **proposal,
+                "status": verdict["status"],
+                "completed_at": current.isoformat(),
+                "verdict": verdict,
+            }
+        )
+        slot["active"] = None
+        store.write_json(job_id, EXPERIMENT_STATE_PATH, state)
+        store.append_journal(
+            job_id,
+            {
+                "type": "evolution_experiment_proposal_adjudicated",
+                "arm": arm,
+                "candidate_id": proposal["candidate_id"],
+                "status": verdict["status"],
+                "paper_only": True,
+            },
+        )
+    if proposal.get("source") == "evolution_campaign":
+        from wayfinder_paths.jobs.archive import set_candidate_status
+
+        try:
+            set_candidate_status(
+                store,
+                job_id,
+                str(proposal.get("source_candidate_id") or proposal["candidate_id"]),
+                "paper_experiment"
+                if verdict["status"] == "qualified"
+                else "proposal_rejected",
+                evidence="24-hour forward paper proposal " + verdict["status"],
+            )
+        except ValueError:
+            pass
 
 
 def harvest_hourly_control_candidates(
@@ -405,11 +782,13 @@ def harvest_hourly_control_candidates(
 ) -> dict[str, Any] | None:
     """Mirror green hourly-funnel outputs without changing their lifecycle."""
     state = ensure_paper_experiment(store, job_id, now=now)
-    if not state or state.get("status") != "active":
+    if not state or state.get("status") not in {"qualifying", "active"}:
         return None
     from wayfinder_paths.jobs.application import _candidate_dir_from_proposal
 
-    candidates: list[tuple[str, dict[str, Any]]] = []
+    if ((state.get("proposals") or {}).get("control") or {}).get("active"):
+        return None
+    candidates: list[tuple[tuple[float, float, str], dict[str, Any]]] = []
     seen = set(state.get("seen_candidates") or [])
     for proposal in store.proposals(job_id):
         report = proposal.get("candidate_report") or {}
@@ -425,7 +804,17 @@ def harvest_hourly_control_candidates(
             or (report.get("economic") or {}).get("ready") is not True
         ):
             continue
-        candidates.append((str(proposal.get("created_at") or ""), proposal))
+        delta = (report.get("economic") or {}).get("paired_incumbent_delta") or {}
+        candidates.append(
+            (
+                (
+                    float(delta.get("lcb") or float("-inf")),
+                    float(delta.get("estimate") or float("-inf")),
+                    str(proposal.get("created_at") or ""),
+                ),
+                proposal,
+            )
+        )
     if not candidates:
         return None
     _, proposal = max(candidates, key=lambda item: item[0])
@@ -433,7 +822,7 @@ def harvest_hourly_control_candidates(
     candidate_root = _candidate_dir_from_proposal(store, job_id, proposal)
     if not candidate_root.exists():
         return None
-    return admit_paper_candidate(
+    return stage_paper_proposal(
         store,
         job_id,
         arm="control",
@@ -460,7 +849,40 @@ def _maybe_finalize_experiment(
     current = _aware(now or datetime.now(UTC))
     with job_state_lock(store.repo_root, job_id, name="evolution_experiment"):
         state = experiment_status(store, job_id)
-        if state.get("status") != "active" or current < _parse(state.get("ends_at")):
+        status = state.get("status")
+        if status == "qualifying":
+            if current < _parse(state.get("qualification_ends_at")):
+                return None
+            report = {
+                "schema_version": "2.0",
+                "experiment_id": state["experiment_id"],
+                "verdict": "kill",
+                "reason": "no_qualifier",
+                "paper_only": True,
+                "generated_at": utc_now_iso(),
+            }
+            state.update(
+                {
+                    "status": "complete",
+                    "completed_at": current.isoformat(),
+                    "verdict": report,
+                }
+            )
+            store.write_json(job_id, EXPERIMENT_STATE_PATH, state)
+            store.write_json(
+                job_id, "results/research/evolution_experiment.json", report
+            )
+            store.append_journal(
+                job_id,
+                {
+                    "type": "evolution_experiment_completed",
+                    "verdict": "kill",
+                    "reason": "no_qualifier",
+                    "paper_only": True,
+                },
+            )
+            return report
+        if status != "active" or current < _parse(state.get("ends_at")):
             return None
         report = _verdict_report(store, job_id, state)
         state.update(
@@ -539,7 +961,9 @@ def _retire_legacy_evolution_legs(store: JobStore, job_id: str) -> None:
 
 def _copy_bundle(source: Path, destination: Path) -> None:
     if destination.exists():
-        if (destination / "workspace").is_dir() and (destination / "job.yaml").is_file():
+        if (destination / "workspace").is_dir() and (
+            destination / "job.yaml"
+        ).is_file():
             return
         raise FileExistsError(f"incomplete paper bundle exists at {destination}")
     workspace = source / "workspace"
@@ -603,8 +1027,6 @@ def _verdict_report(
         confidence=confidence,
     )
     ucb = -negative_lcb if negative_lcb is not None else None
-    control_admissions = int((state.get("admissions") or {}).get("control") or 0)
-    evolution_admissions = int((state.get("admissions") or {}).get("evolution") or 0)
     from wayfinder_paths.jobs.constitution import load_constitution
 
     max_drawdown = float(
@@ -629,7 +1051,6 @@ def _verdict_report(
         and lcb > 0
         and not hard_breach
         and false_promotion_safe
-        and evolution_admissions >= control_admissions
         and budget_balance["matched"]
     ):
         verdict = "accrete"
@@ -664,9 +1085,11 @@ def _daily_pnl(
         state["arms"][arm]["champion"],
     ]
     totals: dict[str, float] = {}
+    since = _parse(state["started_at"])
+    until = _parse(state["ends_at"])
     for champion in champions:
         stream = store.job_dir(job_id) / str(champion["stream"])
-        for day, pnl in _daily_pnl_for_stream(stream).items():
+        for day, pnl in _daily_pnl_for_stream(stream, since=since, until=until).items():
             totals[day] = totals.get(day, 0.0) + pnl
     return totals
 
@@ -715,14 +1138,24 @@ def _false_promotion_rate(
     }
 
 
-def _daily_pnl_for_stream(stream: Path) -> dict[str, float]:
+def _daily_pnl_for_stream(
+    stream: Path,
+    *,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> dict[str, float]:
     totals: dict[str, float] = {}
     ticks = stream / "ticks.jsonl"
     if ticks.exists():
         for line in ticks.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
                 row = json.loads(line)
-                day = str(pd.Timestamp(row.get("bar_ts") or row.get("ts")).date())
+                stamp = pd.Timestamp(row.get("bar_ts") or row.get("ts"))
+                if since is not None and stamp < pd.Timestamp(since):
+                    continue
+                if until is not None and stamp >= pd.Timestamp(until):
+                    continue
+                day = str(stamp.date())
             except (TypeError, ValueError):
                 continue
             totals.setdefault(day, 0.0)
@@ -732,7 +1165,12 @@ def _daily_pnl_for_stream(stream: Path) -> dict[str, float]:
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             row = json.loads(line)
-            day = str(pd.Timestamp(row.get("ts") or row.get("timestamp")).date())
+            stamp = pd.Timestamp(row.get("ts") or row.get("timestamp"))
+            if since is not None and stamp < pd.Timestamp(since):
+                continue
+            if until is not None and stamp >= pd.Timestamp(until):
+                continue
+            day = str(stamp.date())
             pnl = float(row.get("net_pnl") or row.get("realized_pnl_delta") or 0.0)
         except (TypeError, ValueError):
             continue
@@ -743,29 +1181,12 @@ def _daily_pnl_for_stream(stream: Path) -> dict[str, float]:
 def _resource_cost(
     store: JobStore, job_id: str, state: dict[str, Any]
 ) -> dict[str, Any]:
-    rows = _audit_rows(store, job_id)
+    rows = _evidence_rows(store, job_id)
     output: dict[str, Any] = {}
     for arm in EXPERIMENT_ARMS:
         selected = [row for row in rows if row.get("arm") == arm]
         tokens = sum(int(row.get("token_delta") or 0) for row in selected)
         sim_seconds = sum(float(row.get("sim_wall_seconds") or 0.0) for row in selected)
-        if arm == "evolution":
-            compute = (
-                store.read_json(
-                    job_id, "state/evolution_compute_budget.json", default={}
-                )
-                or {}
-            )
-            baseline = float(
-                (state.get("resource_baseline") or {}).get(
-                    "evolution_compute_wall_seconds"
-                )
-                or 0.0
-            )
-            sim_seconds = max(
-                sim_seconds,
-                float(compute.get("total_wall_seconds") or 0.0) - baseline,
-            )
         admissions = int((state.get("admissions") or {}).get(arm) or 0)
         candidates = [
             *(state["arms"][arm].get("history") or []),
@@ -796,9 +1217,7 @@ def _resource_cost(
     return output
 
 
-def _budget_balance(
-    costs: dict[str, Any], *, tolerance: float
-) -> dict[str, Any]:
+def _budget_balance(costs: dict[str, Any], *, tolerance: float) -> dict[str, Any]:
     ratios: dict[str, float | None] = {}
     matched = True
     for metric in ("tokens", "sim_wall_seconds"):
@@ -826,17 +1245,12 @@ def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
-def _window_key(state: dict[str, Any], now: datetime) -> str:
-    elapsed = max(0.0, (now - _parse(state["started_at"])).total_seconds())
-    return str(int(elapsed // (12 * 3600)))
-
-
-def _audit_ledger_dir(store: JobStore, job_id: str) -> Path:
+def _evidence_ledger_dir(store: JobStore, job_id: str) -> Path:
     return store.repo_root / "audit" / job_id / "evolution_experiment"
 
 
-def _audit_rows(store: JobStore, job_id: str) -> list[dict[str, Any]]:
-    path = _audit_ledger_dir(store, job_id) / EXPERIMENT_AUDIT_LEDGER
+def _evidence_rows(store: JobStore, job_id: str) -> list[dict[str, Any]]:
+    path = _evidence_ledger_dir(store, job_id) / EXPERIMENT_EVIDENCE_LEDGER
     if not path.exists():
         return []
     rows: list[dict[str, Any]] = []

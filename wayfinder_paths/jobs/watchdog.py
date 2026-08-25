@@ -1357,18 +1357,25 @@ def _run_paper_experiment_pass(
 ) -> dict[str, Any] | None:
     from wayfinder_paths.jobs.paper_experiment import (
         harvest_hourly_control_candidates,
+        maybe_adjudicate_proposals,
         maybe_finalize_experiment,
     )
 
+    adjudicated = maybe_adjudicate_proposals(store, job_id, now=now)
+    if adjudicated:
+        return {
+            "action": "evolution_proposal_adjudicated",
+            "outcomes": adjudicated,
+        }
     verdict = maybe_finalize_experiment(store, job_id, now=now)
     if verdict is not None:
         return {"action": "evolution_experiment_completed", **verdict}
-    admitted = harvest_hourly_control_candidates(store, job_id, now=now)
-    if admitted is not None:
+    staged = harvest_hourly_control_candidates(store, job_id, now=now)
+    if staged is not None:
         return {
-            "action": "evolution_control_candidate_admitted",
-            "candidate_id": admitted.get("candidate_id"),
-            "revision": admitted.get("revision"),
+            "action": "evolution_control_proposal_staged",
+            "candidate_id": staged.get("candidate_id"),
+            "revision": staged.get("revision"),
         }
     return None
 

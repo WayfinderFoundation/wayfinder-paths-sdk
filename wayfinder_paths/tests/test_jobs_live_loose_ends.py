@@ -222,7 +222,10 @@ def test_external_directory_grants_cover_vault_deny_governance_and_catch_all() -
     preserves key order into the dict, mirroring opencode's parse."""
     for path in AGENT_MANIFESTS:
         mapping = _external_directory_map(path)
-        assert list(mapping.items()) == EXPECTED_EXTERNAL_DIRECTORY, path
+        expected = list(EXPECTED_EXTERNAL_DIRECTORY)
+        if path.endswith("wayfinder-job-worker.md"):
+            expected.append(("/wf/user_vault/audit/**", "deny"))
+        assert list(mapping.items()) == expected, path
         # A wholesale vault grant would cover governance/ and gut the
         # capability boundary — the allows must stay enumerated.
         assert '"/wf/user_vault/**"' not in Path(path).read_text(), path

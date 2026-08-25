@@ -755,7 +755,6 @@ def _build_worker_prompt_sections(
     )
     remediation_overrides = remediation_actionable and not remediation_quiet
     search_assignment = None
-    evolution_campaign = None
     if (
         mode == "intervene"
         and apply_proposal_id is None
@@ -768,12 +767,6 @@ def _build_worker_prompt_sections(
             search_assignment = assign_island(store, job_id)
         except Exception:  # noqa: BLE001
             search_assignment = None
-        try:
-            from wayfinder_paths.jobs.evolution_campaign import campaign_prompt_block
-
-            evolution_campaign = campaign_prompt_block(store, job_id)
-        except Exception:  # noqa: BLE001 - optional rollout cannot block a wake
-            evolution_campaign = None
     dynamic_payload = {
         "scorecard": snapshot.get("scorecard") or {},
         "forward": forward_block,
@@ -801,7 +794,6 @@ def _build_worker_prompt_sections(
         "archive": _archive_block(store, job_id),
         "restage_tasks": restage_tasks,
         "search_assignment": search_assignment,
-        "open_evolution_campaign": evolution_campaign,
         "portfolio": _portfolio_context(store, job_id),
     }
 
@@ -837,14 +829,6 @@ def _build_worker_prompt_sections(
         "have NAMED new "
         "evidence that did not exist at rejection time, and the new proposal "
         "summary must cite both the rejected proposal id and that evidence. "
-        "- OPEN EVOLUTION is a parallel paper-research lane. When the dynamic "
-        "`open_evolution_campaign` block is present, follow its `next_action`; "
-        "edit ONLY the named candidate bundle, never the active workspace. "
-        "Candidate audit data is reserved for evolution-finalize, and a "
-        "paper-experiment admission cannot authorize or place a live order. "
-        "Your own reasoned self-rejections (superseded/stale drafts) do not "
-        "bind — iterate freely. Before proposing ANYTHING, scan the rejected "
-        "proposals for an equivalent prior ask.\n"
         "- Applying an approved proposal is a separate lifecycle: pending proposals do not pause jobs, "
         "approval only queues application, and runner loops pause only after the apply worker claims the proposal.\n"
         "- Auto mode may execute live trades only inside the configured auto_limits.\n"
@@ -1525,6 +1509,12 @@ def run_job_worker(
         _emit_job_result(report["summary"], job.id)
         return report
 
+    # Open-ended evolution has its own long-lived session. It is intentionally
+    # queued independently from the hourly funnel so a four-hour campaign can
+    # keep coherent context without pinning the normal island rotation.
+    if mode_typed == "intervene" and apply_proposal_id is None:
+        _queue_evolution_worker(store, job.id)
+
     # Wake economy cheap-skip (same tier as the auto-limits guard above): a
     # saturated paper job whose evidence watermark has not moved since the
     # last full wake skips the LLM session entirely.
@@ -1596,7 +1586,6 @@ def run_job_worker(
 def _ensure_worker_session(job_id: str, mode: str) -> str | None:
     if not OPENCODE_CLIENT.healthy():
         return None
-
     controller_session_id = os.environ.get("OPENCODE_SESSION_ID") or os.environ.get(
         "OPENCODE_SESSIONID"
     )
@@ -1619,6 +1608,97 @@ def _ensure_worker_session(job_id: str, mode: str) -> str | None:
             "Failed to create/find OpenCode job worker session"
         )
         return None
+
+
+def _queue_evolution_worker(store: JobStore, job_id: str) -> dict[str, Any] | None:
+    from wayfinder_paths.jobs.improver.spec import ImproverSpec
+
+    if not ImproverSpec.load(store.job_dir(job_id)).evolution_enabled_for(job_id):
+        return None
+    if not OPENCODE_CLIENT.healthy():
+        return None
+    try:
+        from wayfinder_paths.jobs.background import spawn_detached_op
+        from wayfinder_paths.jobs.evolution_campaign import (
+            campaign_due,
+            campaign_prompt_block,
+            campaign_status,
+        )
+
+        if campaign_due(store, job_id):
+            started = spawn_detached_op(
+                store, job_id, "evolution_start", {"job_id": job_id}
+            )
+            return {"queued": False, "starting": True, **started}
+        if campaign_status(store, job_id).get("status") != "active":
+            return None
+        campaign = campaign_prompt_block(store, job_id)
+    except Exception as exc:  # noqa: BLE001 - the hourly funnel remains independent
+        return {"queued": False, "error": str(exc)[:300]}
+    if not campaign or campaign.get("status") == "blocked":
+        return None
+    controller_session_id = os.environ.get("OPENCODE_SESSION_ID") or os.environ.get(
+        "OPENCODE_SESSIONID"
+    )
+    title = f"job/{job_id}/evolution"
+    try:
+        session_id = OPENCODE_CLIENT.find_child_session(
+            parent_id=controller_session_id, title=title
+        ) or OPENCODE_CLIENT.create_session(
+            parent_id=controller_session_id,
+            title=title,
+            agent=JOB_WORKER_AGENT_NAME,
+        )
+    except Exception as exc:  # noqa: BLE001 - optional lane cannot block the funnel
+        return {"queued": False, "error": str(exc)[:300]}
+    if not session_id:
+        return {"queued": False, "error": "OpenCode server unavailable"}
+    prompt = (
+        "Run the dedicated open-ended evolution campaign for this Wayfinder job.\n\n"
+        "This is a parallel PAPER-ONLY research lane. Follow `next_action` in the "
+        "campaign block below. Edit only its named candidate bundle; never edit the "
+        "active workspace. Candidate inputs are frozen at campaign start. A finalist "
+        "is only staged for an immutable 24-hour forward paper proposal; it cannot "
+        "authorize live trading or bypass owner promotion. Reuse the repository's "
+        "research toolkit and starter casebook instead of recreating indicators.\n\n"
+        "Campaign:\n" + _canonical_json(campaign, max_chars=12_000)
+    )
+    queued = OPENCODE_CLIENT.prompt_async(
+        session_id=session_id,
+        text=prompt,
+        agent=JOB_WORKER_AGENT_NAME,
+    )
+    created_at = utc_now_iso()
+    store.write_json(
+        job_id,
+        "reports/evolution/session.json",
+        {"session_id": session_id, "created_at": created_at},
+    )
+    store.write_json(
+        job_id,
+        "reports/evolution/latest.json",
+        {
+            "job_id": job_id,
+            "mode": "evolution",
+            "status": "green" if queued else "yellow",
+            "summary": "Dedicated evolution wake queued"
+            if queued
+            else "Dedicated evolution wake could not be queued",
+            "session_id": session_id,
+            "queued": queued,
+            "created_at": created_at,
+        },
+    )
+    store.append_journal(
+        job_id,
+        {
+            "type": "evolution_worker_wakeup",
+            "campaign_id": campaign.get("campaign_id"),
+            "session_id": session_id,
+            "queued": queued,
+        },
+    )
+    return {"queued": queued, "session_id": session_id}
 
 
 def _write_report(

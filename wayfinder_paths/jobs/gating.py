@@ -307,6 +307,7 @@ def evaluate_economic_gate(
     job_id: str,
     *,
     candidate_dir: str | Path,
+    baseline_dir: str | Path | None = None,
     store: JobStore | None = None,
     probation: bool = False,
     dataset_root: str | Path | None = None,
@@ -326,16 +327,21 @@ def evaluate_economic_gate(
     store = store or JobStore()
     root = store.job_dir(job_id)
     candidate_root = Path(candidate_dir)
+    baseline_root = Path(baseline_dir) if baseline_dir is not None else root
     protected_dataset_root = Path(dataset_root) if dataset_root is not None else None
     constitution = load_constitution(root)
 
-    baseline_yaml = _load_job_yaml(root)
+    baseline_yaml = _load_job_yaml(baseline_root)
     candidate_yaml = _load_job_yaml(candidate_root)
     spec_data, _ = resolve_execution_spec(candidate_root, candidate_yaml)
     if not spec_data:
         return _economic_unavailable(constitution, "no execution spec", probation)
     spec = ExecutionSpec.from_dict(spec_data)
-    baseline_script = store.resolve_script_entrypoint(job_id, baseline_yaml)
+    baseline_script = store.resolve_script_entrypoint(
+        job_id,
+        baseline_yaml,
+        candidate_dir=baseline_root if baseline_root != root else None,
+    )
     candidate_script = store.resolve_script_entrypoint(
         job_id, candidate_yaml, candidate_dir=candidate_root
     )
@@ -349,7 +355,7 @@ def evaluate_economic_gate(
     # readiness verdict is always recomputed (pure policy, no simulation).
     fold_key = {
         "candidate_revision": compute_workspace_revision(candidate_root),
-        "baseline_revision": compute_workspace_revision(root),
+        "baseline_revision": compute_workspace_revision(baseline_root),
         "constitution_revision": constitution.get("revision"),
         "dataset_fingerprint": _candidate_dataset_fingerprint(
             candidate_root, protected_dataset_root or root
@@ -385,7 +391,7 @@ def evaluate_economic_gate(
                 protected_dataset_root or candidate_root,
                 spec,
                 candidate_yaml,
-                feature_roots=(candidate_root, protected_dataset_root)
+                feature_roots=(protected_dataset_root,)
                 if protected_dataset_root is not None
                 else None,
             )

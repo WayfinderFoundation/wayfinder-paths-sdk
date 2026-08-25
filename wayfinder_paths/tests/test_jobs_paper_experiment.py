@@ -6,12 +6,15 @@ from pathlib import Path
 
 import pytest
 
+from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.paper_experiment import (
-    admit_paper_candidate,
+    _resource_cost,
     ensure_paper_experiment,
     experiment_status,
     maybe_finalize_experiment,
+    record_evidence,
+    stage_paper_proposal,
 )
 from wayfinder_paths.jobs.probation import load_probation
 from wayfinder_paths.jobs.store import JobStore
@@ -67,6 +70,10 @@ def test_fixed_horizon_paper_verdict_is_pre_registered_and_paper_only(
 ) -> None:
     started = datetime(2026, 8, 1, tzinfo=UTC)
     store, job_id, state = _job(tmp_path, now=started)
+    state["status"] = "active"
+    state["started_at"] = started.isoformat()
+    state["ends_at"] = (started + timedelta(days=14)).isoformat()
+    store.write_json(job_id, "state/evolution_experiment.json", state)
     original_job = (store.job_dir(job_id) / "job.yaml").read_bytes()
     assert state["protocol"]["primary_endpoint"] == (
         "paired_daily_forward_log_utility_delta_lcb"
@@ -88,7 +95,7 @@ def test_fixed_horizon_paper_verdict_is_pre_registered_and_paper_only(
     assert (store.job_dir(job_id) / "job.yaml").read_bytes() == original_job
 
 
-def test_candidate_admission_replaces_only_one_isolated_paper_champion(
+def test_candidate_is_frozen_but_does_not_replace_champion_before_forward_day(
     tmp_path: Path,
 ) -> None:
     started = datetime(2026, 8, 1, tzinfo=UTC)
@@ -101,8 +108,9 @@ def test_candidate_admission_replaces_only_one_isolated_paper_champion(
     )
     (source / "job.yaml").write_bytes((root / "job.yaml").read_bytes())
     control_before = dict(state["arms"]["control"]["champion"])
+    revision = compute_workspace_revision(source)
     with pytest.raises(ValueError, match="path-safe"):
-        admit_paper_candidate(
+        stage_paper_proposal(
             store,
             job_id,
             arm="evolution",
@@ -113,23 +121,28 @@ def test_candidate_admission_replaces_only_one_isolated_paper_champion(
             now=started + timedelta(minutes=30),
         )
 
-    admitted = admit_paper_candidate(
+    staged = stage_paper_proposal(
         store,
         job_id,
         arm="evolution",
         candidate_id="candidate-1",
         candidate_root=source,
-        revision="candidate-revision",
+        revision=revision,
         source="evolution_campaign",
         now=started + timedelta(hours=1),
     )
 
     updated = experiment_status(store, job_id)
     assert updated["arms"]["control"]["champion"] == control_before
-    assert updated["arms"]["evolution"]["champion"] == admitted
-    assert admitted["stream"].startswith("results/forward/experiment/evolution/")
+    assert (
+        updated["arms"]["evolution"]["champion"]
+        == state["arms"]["evolution"]["champion"]
+    )
+    assert staged["candidate"]["stream"].startswith(
+        "results/forward/experiment/proposals/evolution/"
+    )
     assert load_probation(store, job_id).get("legs") == []
-    copied = root / admitted["bundle"] / "workspace" / "src" / "strategy.py"
+    copied = root / staged["bundle"] / "workspace" / "src" / "strategy.py"
     source.joinpath("workspace/src/strategy.py").write_text(
         "raise RuntimeError('changed source')\n", encoding="utf-8"
     )
@@ -173,12 +186,48 @@ def test_experiment_retires_only_legacy_evolution_probation(tmp_path: Path) -> N
 
     assert ensure_paper_experiment(store, job.id, now=started) is not None
 
-    legs = {
-        leg["name"]: leg for leg in load_probation(store, job.id).get("legs") or []
-    }
+    legs = {leg["name"]: leg for leg in load_probation(store, job.id).get("legs") or []}
     assert legs["ordinary-funnel-probation"]["status"] == "active"
     assert legs["legacy-evolution-probation"]["status"] == "killed"
     assert (
         legs["legacy-evolution-probation"]["graduate"]["progress"]
         == "migrated to the isolated paper A/B rail"
     )
+
+
+def test_qualification_deadline_closes_without_an_evolution_survivor(
+    tmp_path: Path,
+) -> None:
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    store, job_id, _ = _job(tmp_path, now=started)
+
+    report = maybe_finalize_experiment(store, job_id, now=started + timedelta(days=7))
+
+    assert report is not None
+    assert report["verdict"] == "kill"
+    assert report["reason"] == "no_qualifier"
+    assert experiment_status(store, job_id)["status"] == "complete"
+
+
+def test_resource_meter_uses_arm_local_finalist_costs(tmp_path: Path) -> None:
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    store, job_id, state = _job(tmp_path, now=started)
+    for arm in ("control", "evolution"):
+        record_evidence(
+            store,
+            job_id,
+            arm=arm,
+            candidate_id=f"{arm}-candidate",
+            revision=f"{arm}-revision",
+            admitted=False,
+            evidence={
+                "token_usage": {"tokens_in": 80, "tokens_out": 20},
+                "sim_wall_seconds": 60,
+            },
+        )
+
+    costs = _resource_cost(store, job_id, state)
+    assert costs["control"]["tokens"] == 100
+    assert costs["evolution"]["tokens"] == 100
+    assert costs["control"]["sim_wall_seconds"] == 60
+    assert costs["evolution"]["sim_wall_seconds"] == 60

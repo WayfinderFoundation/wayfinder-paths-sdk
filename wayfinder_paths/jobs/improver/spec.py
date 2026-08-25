@@ -90,7 +90,7 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "enabled": True,
         "allowed_job_ids": ["majors-5m-lab"],
         "campaign_hours": 4,
-        "start_interval_hours": 12,
+        "start_interval_hours": 24,
         # Backward-compatible fallback for job-local policies written before
         # start_interval_hours was introduced.
         "cooldown_hours": 12,
@@ -98,8 +98,8 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "full_dev_survivors": 4,
         "inner_optuna_finalists": 2,
         "inner_optuna_trials": 20,
-        "sealed_audits": 2,
-        "split": {"train": 0.70, "validation": 0.15, "audit": 0.15},
+        "proposal_finalists": 1,
+        "split": {"train": 0.80, "validation": 0.20},
         "parent_mix": {
             "incumbent": 0.30,
             "qd_elite": 0.30,
@@ -112,7 +112,8 @@ DEFAULT_IMPROVER: dict[str, Any] = {
             "enabled": True,
             "duration_days": 14,
             "bar_interval": "5m",
-            "max_audits_per_arm_per_window": 2,
+            "qualification_days": 7,
+            "proposal_hours": 24,
             "compute_duty_fraction": 0.20,
             "confidence": 0.90,
         },

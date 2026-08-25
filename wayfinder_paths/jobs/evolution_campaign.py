@@ -2,7 +2,7 @@
 
 The model remains the code mutation operator; this module owns everything
 that must not be left to model discretion: cadence, immutable context,
-lineage, stage budgets, sealed-tail access, archive accounting, and the
+lineage, stage budgets, causal paper proposals, archive accounting, and the
 paper-only terminal state.  Candidate bundles never replace the active
 workspace and no function in this module can authorize live trading.
 """
@@ -62,7 +62,6 @@ from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.runner.monitor_state import atomic_write_json, atomic_write_text
 
 CAMPAIGN_STATE_PATH = "state/evolution_campaign.json"
-AUDIT_QUEUE_PATH = "state/evolution_audit_queue.json"
 CAMPAIGN_ROOT = "research/evolution/campaigns"
 CAMPAIGN_DATA_ROOT = "dataset"
 FORWARD_SNAPSHOT = "forward_experience.json"
@@ -72,6 +71,30 @@ _PARENT_SOURCES = ("incumbent", "qd_elite", "crossover", "de_novo")
 
 def campaign_status(store: JobStore, job_id: str) -> dict[str, Any]:
     return store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
+
+
+def campaign_due(store: JobStore, job_id: str, *, now: datetime | None = None) -> bool:
+    """Cheap, read-only cadence check used before spawning campaign setup."""
+    spec = ImproverSpec.load(store.job_dir(job_id))
+    if not spec.evolution_enabled_for(job_id):
+        return False
+    existing = campaign_status(store, job_id)
+    if existing.get("status") in {"active", "finalizing"}:
+        return False
+    from wayfinder_paths.jobs.paper_experiment import experiment_status
+
+    if experiment_status(store, job_id).get("status") == "complete":
+        return False
+    anchor = existing.get("started_at")
+    if not anchor:
+        return True
+    cadence = timedelta(
+        hours=float(
+            spec.evolution.get("start_interval_hours")
+            or spec.evolution["cooldown_hours"]
+        )
+    )
+    return _aware(now or datetime.now(UTC)) - _parse(anchor) >= cadence
 
 
 def maybe_start_campaign(
@@ -150,8 +173,11 @@ def _start_campaign(
 
     experiment = ensure_paper_experiment(store, job_id, now=current)
     if experiment and (
-        experiment.get("status") != "active"
-        or current >= _parse(experiment.get("ends_at"))
+        experiment.get("status") not in {"qualifying", "active"}
+        or (
+            experiment.get("status") == "active"
+            and current >= _parse(experiment.get("ends_at"))
+        )
     ):
         raise ValueError("the fixed-horizon paper experiment has ended")
     campaign_stem = f"{current.strftime('%Y%m%dT%H%M%SZ')}-{source_revision[:8]}"
@@ -170,15 +196,9 @@ def _start_campaign(
         snapshots = _snapshot_campaign_inputs(
             root,
             campaign_root,
-            audit_root=store.repo_root
-            / "audit"
-            / job_id
-            / "evolution"
-            / campaign_id,
             dataset_path=dataset_path,
             experience=experience,
-            development_fraction=float(spec.evolution["split"]["train"])
-            + float(spec.evolution["split"]["validation"]),
+            development_fraction=1.0,
         )
     campaign_policy = {
         **spec.evolution,
@@ -191,6 +211,7 @@ def _start_campaign(
         "started_at": current.isoformat(),
         "deadline_at": deadline.isoformat(),
         "source_revision": source_revision,
+        "source_bundle": snapshots["source_bundle"],
         "dataset": snapshots["dataset"],
         "features": snapshots["features"],
         "forward_experience": snapshots["forward_experience"],
@@ -212,7 +233,12 @@ def _start_campaign(
         "manifest": f"{relative_root}/manifest.json",
         "forward_context_cutoff": manifest["forward_context_cutoff"],
         "candidates": [],
-        "counts": {"generated": 0, "quick_evaluated": 0, "full_dev": 0, "audited": 0},
+        "counts": {
+            "generated": 0,
+            "quick_evaluated": 0,
+            "full_dev": 0,
+            "proposed": 0,
+        },
     }
     store.write_json(job_id, CAMPAIGN_STATE_PATH, state)
     store.append_journal(
@@ -295,7 +321,10 @@ def _prepare_candidate(
     candidate_id = f"{state['campaign_id']}-c{slot:02d}"
     relative = f"{CAMPAIGN_ROOT}/{state['campaign_id']}/candidates/{candidate_id}"
     candidate_root = store.job_dir(job_id) / relative
-    _copy_active_bundle(store.job_dir(job_id), candidate_root)
+    frozen_source = (
+        store.job_dir(job_id) / CAMPAIGN_ROOT / str(state["campaign_id"]) / "source"
+    )
+    _copy_active_bundle(frozen_source, candidate_root)
     candidate = {
         "candidate_id": candidate_id,
         "campaign_id": state["campaign_id"],
@@ -428,7 +457,7 @@ def _evaluate_candidate(
 
 
 def finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
-    """Spend bounded full-dev and sealed-audit budgets, then close campaign."""
+    """Spend bounded full-dev, stage one causal proposal, then close."""
     with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
         return _finalize_campaign(store, job_id)
 
@@ -507,63 +536,88 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
         _save_campaign(store, job_id, state)
 
     dev_passed.sort(key=_candidate_score, reverse=True)
-    remaining_audits = max(
-        0, int(policy["sealed_audits"]) - int(state["counts"]["audited"])
+    remaining_proposals = max(
+        0,
+        int(policy.get("proposal_finalists") or 1)
+        - int(state["counts"].get("proposed") or 0),
     )
-    state["stage"] = "sealed_audit"
-    state["audit_opened_at"] = utc_now_iso()
+    state["stage"] = "paper_proposal"
     _save_campaign(store, job_id, state)
-    queued = _process_queued_audits(
-        store,
-        job_id,
-        state,
-        limit=remaining_audits,
-    )
-    state["counts"]["audited"] += queued["consumed"]
-    state["queued_audits_processed"] = queued["results"]
-    remaining_audits = max(0, remaining_audits - queued["consumed"])
-    audits = dev_passed[:remaining_audits]
-    winner_admitted = bool(queued["winner_admitted"])
-    _save_campaign(store, job_id, state)
-    for candidate in audits:
+    for candidate in dev_passed[:remaining_proposals]:
         try:
             with experiment_compute_lock(
                 store,
                 job_id,
-                label=f"evolution-audit:{job_id}:{candidate['candidate_id']}",
+                label=f"evolution-proposal-gate:{job_id}:{candidate['candidate_id']}",
             ):
-                outcome = _sealed_audit(
-                    store,
+                candidate_root = resolve_candidate_bundle(store, job_id, candidate)
+                economic = evaluate_economic_gate(
                     job_id,
-                    state,
-                    candidate,
-                    activate=not winner_admitted,
+                    candidate_dir=candidate_root,
+                    baseline_dir=(
+                        store.job_dir(job_id)
+                        / CAMPAIGN_ROOT
+                        / str(state["campaign_id"])
+                        / "source"
+                    ),
+                    probation=True,
+                    store=store,
+                    dataset_root=(
+                        store.job_dir(job_id)
+                        / CAMPAIGN_ROOT
+                        / str(state["campaign_id"])
+                        / CAMPAIGN_DATA_ROOT
+                    ),
                 )
+                if economic.get("status") != "ok":
+                    outcome = {
+                        "status": "proposal_rejected",
+                        "evidence": "paired development evidence unavailable",
+                        "economic": economic,
+                    }
+                else:
+                    from wayfinder_paths.jobs.paper_experiment import (
+                        stage_paper_proposal,
+                    )
+
+                    staged = stage_paper_proposal(
+                        store,
+                        job_id,
+                        arm="evolution",
+                        candidate_id=str(candidate["candidate_id"]),
+                        candidate_root=candidate_root,
+                        revision=str(candidate.get("revision") or ""),
+                        source="evolution_campaign",
+                        evidence=economic,
+                    )
+                    status = str(staged.get("status") or "queued")
+                    outcome = {
+                        "status": (
+                            "proposal_deferred"
+                            if status == "deferred"
+                            else "paper_proposal"
+                        ),
+                        "proposal": staged,
+                        "economic": economic,
+                        "evidence": (
+                            staged.get("reason")
+                            or "staged for one immutable forward paper day"
+                        ),
+                    }
         except Exception as exc:  # noqa: BLE001 - isolate candidate failures
             outcome = {
-                "status": "audit_rejected",
-                "evidence": f"reserved audit failed: {str(exc)[:300]}",
+                "status": "proposal_rejected",
+                "evidence": f"paper proposal staging failed: {str(exc)[:300]}",
             }
-            from wayfinder_paths.jobs.paper_experiment import record_audit
-
-            record_audit(
-                store,
-                job_id,
-                arm="evolution",
-                candidate_id=str(candidate["candidate_id"]),
-                revision=str(candidate.get("revision") or ""),
-                admitted=False,
-                evidence={},
-            )
         candidate.update(outcome)
-        winner_admitted = winner_admitted or outcome.get("status") == "paper_experiment"
-        if outcome.get("status") == "audit_queued":
-            _queue_audit(store, job_id, candidate)
-        else:
-            state["counts"]["audited"] += 1
-        # Historical audit outcomes stay out of the search archive. The paper
-        # controller owns admission; future parents see development evidence
-        # and causal forward experience, never the reserved-tail verdict.
+        state["counts"]["proposed"] = int(state["counts"].get("proposed") or 0) + 1
+        set_candidate_status(
+            store,
+            job_id,
+            str(candidate["candidate_id"]),
+            str(candidate["status"]),
+            evidence=str(candidate.get("evidence") or "paper proposal")[:300],
+        )
         _save_campaign(store, job_id, state)
 
     state["status"] = "complete"
@@ -579,118 +633,6 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
         },
     )
     return state
-
-
-def _queue_audit(store: JobStore, job_id: str, candidate: dict[str, Any]) -> None:
-    """Persist a finalist until a fresh, non-overlapping audit block exists."""
-    queue = store.read_json(job_id, AUDIT_QUEUE_PATH, default={}) or {}
-    items = list(queue.get("items") or [])
-    key = (candidate.get("campaign_id"), candidate.get("candidate_id"))
-    if any(
-        (item.get("campaign_id"), item.get("candidate_id")) == key
-        and item.get("status") == "pending"
-        for item in items
-    ):
-        return
-    items.append(
-        {
-            key: candidate.get(key)
-            for key in (
-                "candidate_id",
-                "campaign_id",
-                "bundle",
-                "revision",
-                "params",
-                "objective",
-                "family",
-                "summary",
-            )
-        }
-        | {"status": "pending", "queued_at": utc_now_iso()}
-    )
-    store.write_json(
-        job_id,
-        AUDIT_QUEUE_PATH,
-        {"schema_version": SCHEMA_VERSION, "items": items[-50:]},
-    )
-
-
-def _process_queued_audits(
-    store: JobStore,
-    job_id: str,
-    state: dict[str, Any],
-    *,
-    limit: int,
-) -> dict[str, Any]:
-    """Spend the current campaign's fresh audit block on oldest finalists."""
-    queue = store.read_json(job_id, AUDIT_QUEUE_PATH, default={}) or {}
-    items = list(queue.get("items") or [])
-    pending = [item for item in items if item.get("status") == "pending"]
-    pending.sort(key=lambda item: str(item.get("queued_at") or ""))
-    consumed = 0
-    winner_admitted = False
-    results: list[dict[str, Any]] = []
-    for candidate in pending[: max(0, limit)]:
-        try:
-            with experiment_compute_lock(
-                store,
-                job_id,
-                label=f"evolution-queued-audit:{job_id}:{candidate['candidate_id']}",
-            ):
-                outcome = _sealed_audit(
-                    store,
-                    job_id,
-                    state,
-                    candidate,
-                    activate=not winner_admitted,
-                )
-        except Exception as exc:  # noqa: BLE001 - isolate stale finalist failures
-            outcome = {
-                "status": "audit_rejected",
-                "evidence": f"queued audit failed: {str(exc)[:300]}",
-            }
-            from wayfinder_paths.jobs.paper_experiment import record_audit
-
-            record_audit(
-                store,
-                job_id,
-                arm="evolution",
-                candidate_id=str(candidate["candidate_id"]),
-                revision=str(candidate.get("revision") or ""),
-                admitted=False,
-                evidence={},
-            )
-        if outcome.get("status") == "audit_queued":
-            break
-        candidate.update(
-            {
-                "status": outcome["status"],
-                "processed_at": utc_now_iso(),
-                "evidence": outcome.get("evidence"),
-            }
-        )
-        consumed += 1
-        winner_admitted = winner_admitted or outcome.get("status") == (
-            "paper_experiment"
-        )
-        results.append(
-            {
-                "candidate_id": candidate.get("candidate_id"),
-                "campaign_id": candidate.get("campaign_id"),
-                "status": outcome.get("status"),
-            }
-        )
-    if items:
-        store.write_json(
-            job_id,
-            AUDIT_QUEUE_PATH,
-            {"schema_version": SCHEMA_VERSION, "items": items[-50:]},
-        )
-    return {
-        "consumed": consumed,
-        "winner_admitted": winner_admitted,
-        "results": results,
-    }
 
 
 def campaign_prompt_block(store: JobStore, job_id: str) -> dict[str, Any] | None:
@@ -732,7 +674,8 @@ def campaign_prompt_block(store: JobStore, job_id: str) -> dict[str, Any] | None
         "constraints": {
             "paper_only": True,
             "live_requires_owner": True,
-            "no_audit_access_before_finalists": True,
+            "candidate_inputs_frozen_at_campaign_start": True,
+            "finalist_requires_24h_forward_proposal": True,
         },
         "deadline_elapsed": deadline_elapsed,
     }
@@ -841,144 +784,6 @@ def _full_dev(
     }
 
 
-def _sealed_audit(
-    store: JobStore,
-    job_id: str,
-    state: dict[str, Any],
-    candidate: dict[str, Any],
-    *,
-    activate: bool = True,
-) -> dict[str, Any]:
-    campaign_id = str(state["campaign_id"])
-    candidate_root = resolve_candidate_bundle(store, job_id, candidate)
-    audit_root = _audit_dataset_root(store, job_id, campaign_id)
-    allocation_path = audit_root.parent / "allocation.json"
-    try:
-        allocation = json.loads(allocation_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        allocation = {}
-    if not allocation.get("available"):
-        return {
-            "status": "audit_queued",
-            "evidence": "protected non-overlapping audit inventory exhausted",
-        }
-    subject = _load_subject(
-        store,
-        job_id,
-        candidate_root,
-        campaign_id=campaign_id,
-        dataset_root=audit_root,
-    )
-    candidate_params, candidate_stress_params, calibration = _calibrated_params(
-        store, job_id, subject, base=candidate.get("params")
-    )
-    from wayfinder_paths.jobs.governance import record_evidence_access
-    from wayfinder_paths.jobs.paper_experiment import (
-        admit_paper_candidate,
-        record_audit,
-    )
-
-    record_evidence_access(
-        store.repo_root,
-        job_id,
-        "evolution_sealed_audit",
-        {
-            "campaign_id": state["campaign_id"],
-            "candidate_id": candidate["candidate_id"],
-        },
-    )
-    result, result_stats = _window_result(subject, 0.0, 1.0, candidate_params)
-    stress, stress_stats = _window_result(subject, 0.0, 1.0, candidate_stress_params)
-    economic = evaluate_economic_gate(
-        job_id,
-        candidate_dir=candidate_root,
-        probation=False,
-        store=store,
-        dataset_root=audit_root,
-    )
-    economic["sim_wall_seconds"] = float(economic.get("sim_wall_seconds") or 0.0) + sum(
-        float((item.profile or {}).get("wall_seconds") or 0.0)
-        for item in (result, stress)
-    )
-    audit_ref = _write_protected_audit_result(
-        audit_root.parent,
-        candidate,
-        {
-            "candidate": _compact_result(result, stats=result_stats),
-            "candidate_stress": _compact_result(stress, stats=stress_stats),
-            "economic": economic,
-        },
-    )
-    if (
-        economic.get("ready") is not True
-        or not calibration["audit_passed"]
-        or not result.validation.get("execution_valid")
-        or not stress.validation.get("execution_valid")
-        or float(stress_stats.get("net_return") or 0.0) <= 0.0
-    ):
-        record_audit(
-            store,
-            job_id,
-            arm="evolution",
-            candidate_id=str(candidate["candidate_id"]),
-            revision=str(candidate.get("revision") or ""),
-            admitted=False,
-            evidence=economic,
-        )
-        return {
-            "status": "audit_rejected",
-            "audit_ref": audit_ref,
-            "evidence": "failed strict economic gate or live-cost stress",
-        }
-    if not activate:
-        record_audit(
-            store,
-            job_id,
-            arm="evolution",
-            candidate_id=str(candidate["candidate_id"]),
-            revision=str(candidate.get("revision") or ""),
-            admitted=False,
-            evidence=economic,
-        )
-        return {
-            "status": "audit_passed",
-            "audit_ref": audit_ref,
-            "evidence": "strict gate passed; higher-ranked finalist owns this window",
-        }
-    champion = admit_paper_candidate(
-        store,
-        job_id,
-        arm="evolution",
-        candidate_id=str(candidate["candidate_id"]),
-        candidate_root=candidate_root,
-        revision=str(candidate.get("revision") or ""),
-        source="evolution_campaign",
-        evidence=economic,
-    )
-    return {
-        "status": "paper_experiment",
-        "audit_ref": audit_ref,
-        "shadow_stream": champion["stream"],
-        "evidence": "strict gate admitted candidate to isolated paper experiment",
-    }
-
-
-def _write_protected_audit_result(
-    campaign_audit_root: Path,
-    candidate: dict[str, Any],
-    payload: dict[str, Any],
-) -> str:
-    candidate_id = str(candidate.get("candidate_id") or "candidate")
-    safe = "".join(char if char.isalnum() or char in "-_" else "-" for char in candidate_id)
-    audit_ref = f"{safe[:64]}-{hashlib.sha256(candidate_id.encode()).hexdigest()[:8]}"
-    atomic_write_json(
-        campaign_audit_root / "results" / f"{audit_ref}.json",
-        {"audit_ref": audit_ref, "generated_at": utc_now_iso(), **payload},
-        default=str,
-    )
-    return audit_ref
-
-
 def _load_subject(
     store: JobStore,
     job_id: str,
@@ -1008,7 +813,7 @@ def _load_subject(
         resolved_dataset_root,
         spec,
         job_data,
-        feature_roots=(root, resolved_dataset_root),
+        feature_roots=(resolved_dataset_root,),
     )
     return {
         "root": root,
@@ -1267,25 +1072,17 @@ def _snapshot_campaign_inputs(
     active_root: Path,
     campaign_root: Path,
     *,
-    audit_root: Path,
     dataset_path: Path,
     experience: dict[str, Any],
     development_fraction: float,
 ) -> dict[str, Any]:
-    """Freeze a dev-only agent snapshot and a protected finalize-only record."""
+    """Freeze every input known when candidate generation begins."""
     campaign_root.mkdir(parents=True, exist_ok=False)
+    source_bundle = campaign_root / "source"
+    _copy_active_bundle(active_root, source_bundle)
     data_root = campaign_root / CAMPAIGN_DATA_ROOT
     bars_path = data_root / "results" / "backtest" / "input_bars.json"
     bars_path.parent.mkdir(parents=True, exist_ok=True)
-    audit_data_root = audit_root / CAMPAIGN_DATA_ROOT
-    audit_bars_path = audit_data_root / "results" / "backtest" / "input_bars.json"
-    audit_bars_path.parent.mkdir(parents=True, exist_ok=True)
-    audit_allocation = _allocate_audit_block(
-        dataset_path,
-        audit_bars_path,
-        audit_root=audit_root,
-        development_fraction=development_fraction,
-    )
     cutoff = _write_development_prefix(
         dataset_path,
         bars_path,
@@ -1303,12 +1100,9 @@ def _snapshot_campaign_inputs(
                 raise ValueError("evolution features must live inside the job bundle")
             source = (active_root / relative).resolve()
             destination = (data_root / relative).resolve()
-            audit_destination = (audit_data_root / relative).resolve()
-            if (
-                not source.is_relative_to(active_root.resolve())
-                or not destination.is_relative_to(data_root.resolve())
-                or not audit_destination.is_relative_to(audit_data_root.resolve())
-            ):
+            if not source.is_relative_to(
+                active_root.resolve()
+            ) or not destination.is_relative_to(data_root.resolve()):
                 raise ValueError("evolution feature path escapes the job bundle")
             if not source.exists():
                 features.append(
@@ -1321,8 +1115,6 @@ def _snapshot_campaign_inputs(
             if source in copied:
                 continue
             destination.parent.mkdir(parents=True, exist_ok=True)
-            audit_destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source, audit_destination)
             if not _write_timeseries_prefix(source, destination, cutoff=cutoff):
                 shutil.copy2(source, destination)
             copied.add(source)
@@ -1349,7 +1141,10 @@ def _snapshot_campaign_inputs(
             "sha256": _file_hash(forward_path),
             "bytes": forward_path.stat().st_size,
         },
-        "audit_available": bool(audit_allocation.get("available")),
+        "source_bundle": {
+            "path": "source",
+            "revision": compute_workspace_revision(source_bundle),
+        },
     }
 
 
@@ -1361,9 +1156,7 @@ def _write_development_prefix(
     if not isinstance(bars, list) or not bars:
         atomic_write_json(destination, payload)
         return None
-    timestamp_values = {
-        _row_timestamp(row) for row in bars if isinstance(row, dict)
-    }
+    timestamp_values = {_row_timestamp(row) for row in bars if isinstance(row, dict)}
     timestamps = sorted(stamp for stamp in timestamp_values if stamp is not None)
     if not timestamps:
         atomic_write_json(destination, payload)
@@ -1387,106 +1180,32 @@ def _write_development_prefix(
     return cutoff
 
 
-def _allocate_audit_block(
-    source: Path,
-    destination: Path,
-    *,
-    audit_root: Path,
-    development_fraction: float,
-) -> dict[str, Any]:
-    """Reserve one non-overlapping seven-day tail block for this campaign."""
-    payload = json.loads(source.read_text(encoding="utf-8"))
-    bars = payload.get("bars") if isinstance(payload, dict) else None
-    allocation: dict[str, Any] = {"available": False}
-    if not isinstance(bars, list) or not bars:
-        atomic_write_json(destination, payload)
-        atomic_write_json(audit_root / "allocation.json", allocation)
-        return allocation
-    timestamp_values = {
-        _row_timestamp(row) for row in bars if isinstance(row, dict)
-    }
-    timestamps = sorted(stamp for stamp in timestamp_values if stamp is not None)
-    development_count = max(
-        1, min(len(timestamps), int(len(timestamps) * development_fraction))
-    )
-    hidden = timestamps[development_count:]
-    blocks: list[tuple[pd.Timestamp, pd.Timestamp]] = []
-    while hidden:
-        end = hidden[-1]
-        start_boundary = end - pd.Timedelta(days=7)
-        selected = [stamp for stamp in hidden if stamp > start_boundary]
-        if len(selected) < 2:
-            break
-        blocks.append((selected[0], selected[-1]))
-        hidden = [stamp for stamp in hidden if stamp < selected[0]]
-    ledger_path = audit_root.parent / "audit_blocks.json"
-    ledger = (
-        json.loads(ledger_path.read_text(encoding="utf-8"))
-        if ledger_path.exists()
-        else {"used": []}
-    )
-    used = set(ledger.get("used") or [])
-    allocations = [
-        item for item in ledger.get("allocations") or [] if isinstance(item, dict)
-    ]
-
-    def available(start: pd.Timestamp, end: pd.Timestamp) -> bool:
-        block_id = f"{start.isoformat()}..{end.isoformat()}"
-        if block_id in used:
-            return False
-        for prior in allocations:
-            prior_start = pd.Timestamp(prior.get("start"))
-            prior_end = pd.Timestamp(prior.get("end"))
-            if start <= prior_end and end >= prior_start:
-                return False
-        return True
-
-    selected_block = next(
-        (
-            (start, end, f"{start.isoformat()}..{end.isoformat()}")
-            for start, end in blocks
-            if available(start, end)
-        ),
-        None,
-    )
-    if selected_block is None:
-        atomic_write_json(destination, {**payload, "bars": []})
-        atomic_write_json(audit_root / "allocation.json", allocation)
-        return allocation
-    start, end, block_id = selected_block
-    selected_bars = [
-        row
-        for row in bars
-        if isinstance(row, dict)
-        and (stamp := _row_timestamp(row)) is not None
-        and start <= stamp <= end
-    ]
-    atomic_write_json(destination, {**payload, "bars": selected_bars})
-    ledger["used"] = [*sorted(used), block_id]
-    ledger["allocations"] = [
-        *allocations,
-        {
-            "campaign_id": audit_root.name,
-            "start": start.isoformat(),
-            "end": end.isoformat(),
-        },
-    ]
-    atomic_write_json(ledger_path, ledger)
-    allocation = {
-        "available": True,
-        "block_id": block_id,
-        "start": start.isoformat(),
-        "end": end.isoformat(),
-    }
-    atomic_write_json(audit_root / "allocation.json", allocation)
-    return allocation
-
-
 def _write_timeseries_prefix(
     source: Path, destination: Path, *, cutoff: pd.Timestamp | None
 ) -> bool:
-    if cutoff is None or source.suffix.lower() != ".json":
+    if cutoff is None or source.suffix.lower() not in {".json", ".jsonl"}:
         return False
+    if source.suffix.lower() == ".jsonl":
+        rows: list[dict[str, Any]] = []
+        try:
+            for line in source.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines():
+                row = json.loads(line)
+                if (
+                    isinstance(row, dict)
+                    and (stamp := _row_timestamp(row)) is not None
+                    and stamp <= cutoff
+                ):
+                    rows.append(row)
+        except (OSError, ValueError):
+            return False
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(
+            destination,
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        )
+        return True
     try:
         payload = json.loads(source.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -1549,31 +1268,16 @@ def _split_bounds(
     job_id: str,
     *,
     campaign_id: str,
-    include_audit: bool = False,
 ) -> tuple[float, float]:
     split = _campaign_policy(store, job_id, campaign_id).get("split") or {}
     train = float(split.get("train") or 0.0)
     validation = float(split.get("validation") or 0.0)
-    audit = float(split.get("audit") or 0.0)
-    if min(train, validation, audit) <= 0 or not math.isclose(
-        train + validation + audit, 1.0, abs_tol=1e-9
-    ):
-        raise ValueError("evolution split must be positive and sum to 1")
-    if include_audit:
-        return train, train + validation
-    development = train + validation
-    return train / development, 1.0
-
-
-def _audit_dataset_root(store: JobStore, job_id: str, campaign_id: str) -> Path:
-    return (
-        store.repo_root
-        / "audit"
-        / job_id
-        / "evolution"
-        / campaign_id
-        / CAMPAIGN_DATA_ROOT
-    )
+    total = train + validation
+    if min(train, validation) <= 0 or not math.isclose(total, 1.0, abs_tol=1e-9):
+        raise ValueError(
+            "evolution train/validation split must be positive and sum to 1"
+        )
+    return train, 1.0
 
 
 def _same_family_nonwins(state: dict[str, Any], family: str, streak: int) -> bool:
@@ -1585,12 +1289,19 @@ def _same_family_nonwins(state: dict[str, Any], family: str, streak: int) -> boo
         in {
             "invalid",
             "low_fidelity_rejected",
-            "audit_rejected",
+            "proposal_rejected",
+            "proposal_deferred",
             "dev_frontier",
-            "paper_probation",
+            "paper_proposal",
+            "paper_experiment",
         }
     ]
-    failures = {"invalid", "low_fidelity_rejected", "audit_rejected"}
+    failures = {
+        "invalid",
+        "low_fidelity_rejected",
+        "proposal_rejected",
+        "proposal_deferred",
+    }
     return len(outcomes) >= streak and all(
         item.get("status") in failures for item in outcomes[:streak]
     )

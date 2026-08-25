@@ -1208,7 +1208,7 @@ def evolution_evaluate_cmd(job_id: str, candidate_id: str, foreground: bool) -> 
 
 @job_cli.command(
     name="evolution-finalize",
-    help="Run bounded full-dev and sealed-audit stages in isolation.",
+    help="Run bounded full-dev and stage one causal paper proposal.",
 )
 @click.argument("job_id")
 @click.option("--foreground", is_flag=True)

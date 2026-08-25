@@ -11,11 +11,9 @@ from wayfinder_paths.jobs.archive import (
     record_candidate,
 )
 from wayfinder_paths.jobs.evolution_campaign import (
-    _allocate_audit_block,
     _parent_source,
-    _process_queued_audits,
-    _queue_audit,
     _same_family_nonwins,
+    _write_timeseries_prefix,
     campaign_prompt_block,
     campaign_status,
     finalize_campaign,
@@ -30,6 +28,7 @@ from wayfinder_paths.jobs.starter_casebook import (
     load_starter_casebook,
 )
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.worker import _queue_evolution_worker
 
 
 def _job(tmp_path, job_id: str) -> tuple[JobStore, str]:
@@ -79,7 +78,8 @@ def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
     assert block["constraints"] == {
         "paper_only": True,
         "live_requires_owner": True,
-        "no_audit_access_before_finalists": True,
+        "candidate_inputs_frozen_at_campaign_start": True,
+        "finalist_requires_24h_forward_proposal": True,
     }
     assert len(load_starter_casebook()) > len(block["cases"])
 
@@ -87,6 +87,8 @@ def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
 def test_prepare_candidate_isolated_lineage_and_mutation_budget(tmp_path) -> None:
     store, job_id = _job(tmp_path, "majors-5m-lab")
     start_campaign(store, job_id, now=datetime(2026, 8, 25, tzinfo=UTC))
+    active_script = store.job_dir(job_id) / "workspace/src/strategy.py"
+    active_script.write_text("raise RuntimeError('post-freeze change')\n")
     first = prepare_candidate(
         store,
         job_id,
@@ -100,6 +102,10 @@ def test_prepare_candidate_isolated_lineage_and_mutation_budget(tmp_path) -> Non
     bundle = root / first["bundle"]
     assert bundle != root
     assert (bundle / "workspace" / "src" / "strategy.py").exists()
+    assert (
+        "post-freeze change"
+        not in (bundle / "workspace" / "src" / "strategy.py").read_text()
+    )
     assert (bundle / "job.yaml").exists()
     archive = quality_diversity_snapshot(store, job_id)
     assert archive == {}  # generated candidate has no behavior until evaluated
@@ -174,14 +180,14 @@ def test_finalize_enforces_stage_budgets_and_isolates_candidate_failure(
             "tail_loss": 0.01,
             "max_drawdown_pct": 0.05,
         }
-    # Resume after one full-dev result was durably written: it remains audit
-    # eligible and does not consume another dev evaluation.
+    # Resume after one full-dev result was durably written: it remains proposal
+    # eligible and does not consume another development evaluation.
     state["candidates"][0]["status"] = "dev_frontier"
     state["counts"]["quick_evaluated"] = 6
     state["counts"]["full_dev"] = 1
     store.write_json(job_id, "state/evolution_campaign.json", state)
 
-    calls = {"dev": 0, "audit": 0}
+    calls = {"dev": 0, "gate": 0, "proposal": 0}
 
     def fake_dev(store, job_id, candidate, *, tune):
         calls["dev"] += 1
@@ -189,16 +195,28 @@ def test_finalize_enforces_stage_budgets_and_isolates_candidate_failure(
             raise RuntimeError("bad candidate")
         return {"status": "dev_frontier", "evidence": "passed"}
 
-    def fake_audit(store, job_id, state, candidate, *, activate):
-        calls["audit"] += 1
+    def fake_gate(*args, **kwargs):
+        calls["gate"] += 1
         return {
-            "status": "paper_experiment" if activate else "audit_passed",
-            "evidence": "passed audit",
+            "status": "ok",
+            "objective": {"candidate": {"trade_count": 12}},
+            "sim_wall_seconds": 1.0,
+        }
+
+    def fake_stage(*args, **kwargs):
+        calls["proposal"] += 1
+        return {
+            "status": "queued",
+            "candidate_id": kwargs["candidate_id"],
+            "revision": kwargs["revision"],
         }
 
     monkeypatch.setattr("wayfinder_paths.jobs.evolution_campaign._full_dev", fake_dev)
     monkeypatch.setattr(
-        "wayfinder_paths.jobs.evolution_campaign._sealed_audit", fake_audit
+        "wayfinder_paths.jobs.evolution_campaign.evaluate_economic_gate", fake_gate
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.paper_experiment.stage_paper_proposal", fake_stage
     )
     result = finalize_campaign(store, job_id)
     assert result["status"] == "complete"
@@ -206,9 +224,9 @@ def test_finalize_enforces_stage_budgets_and_isolates_candidate_failure(
         "generated": 6,
         "quick_evaluated": 6,
         "full_dev": 4,
-        "audited": 2,
+        "proposed": 1,
     }
-    assert calls == {"dev": 3, "audit": 2}
+    assert calls == {"dev": 3, "gate": 1, "proposal": 1}
     assert any(item["status"] == "invalid" for item in result["candidates"])
 
 
@@ -293,75 +311,70 @@ def test_candidate_bundle_is_confined_to_its_exact_campaign_slot(tmp_path) -> No
     serialized = json.dumps(manifest)
     assert str(tmp_path / "audit") not in serialized
     assert "allocation.json" not in serialized
-    assert (
-        tmp_path
-        / "audit"
-        / job_id
-        / "evolution"
-        / state["campaign_id"]
-        / "allocation.json"
-    ).exists()
+    assert not (tmp_path / "audit" / job_id / "evolution").exists()
 
 
-def test_protected_audit_blocks_rotate_without_overlap(tmp_path) -> None:
-    source = tmp_path / "input_bars.json"
-    bars = [
-        {
-            "timestamp": f"2026-07-{day:02d}T00:00:00Z",
-            "symbol": "BTC",
-            "open": 100,
-            "high": 101,
-            "low": 99,
-            "close": 100,
-            "volume": 1,
-        }
-        for day in range(1, 31)
-    ]
-    source.write_text(json.dumps({"bars": bars}), encoding="utf-8")
-    allocations = []
-    for campaign in ("one", "two", "three"):
-        root = tmp_path / "audit" / campaign
-        destination = root / "dataset" / "results" / "backtest" / "input_bars.json"
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        allocations.append(
-            _allocate_audit_block(
-                source,
-                destination,
-                audit_root=root,
-                development_fraction=0.5,
-            )
+def test_jsonl_features_are_frozen_at_the_campaign_cutoff(tmp_path) -> None:
+    source = tmp_path / "features.jsonl"
+    destination = tmp_path / "snapshot" / "features.jsonl"
+    source.write_text(
+        "\n".join(
+            json.dumps({"timestamp": f"2026-08-25T0{hour}:00:00Z", "value": hour})
+            for hour in range(3)
         )
-    assert allocations[0]["available"] is True
-    assert allocations[1]["available"] is True
-    assert allocations[0]["start"] > allocations[1]["end"]
-    assert allocations[2] == {"available": False}
-
-
-def test_queued_finalist_is_mechanically_retried_on_fresh_campaign(
-    tmp_path, monkeypatch
-) -> None:
-    store, job_id = _job(tmp_path, "majors-5m-lab")
-    state = start_campaign(store, job_id, now=datetime(2026, 8, 25, tzinfo=UTC))
-    candidate = prepare_candidate(
-        store,
-        job_id,
-        family="breakout",
-        summary="queued audit",
-        now=datetime(2026, 8, 25, 1, tzinfo=UTC),
+        + "\n",
+        encoding="utf-8",
     )
-    candidate.update({"revision": "candidate-revision", "status": "audit_queued"})
-    _queue_audit(store, job_id, candidate)
+
+    assert _write_timeseries_prefix(
+        source,
+        destination,
+        cutoff=datetime(2026, 8, 25, 1, tzinfo=UTC),
+    )
+    rows = [json.loads(line) for line in destination.read_text().splitlines()]
+    assert [row["value"] for row in rows] == [0, 1]
+
+
+def test_evolution_uses_a_dedicated_long_lived_session(tmp_path, monkeypatch) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    store.write_json(
+        job_id,
+        "state/evolution_campaign.json",
+        {"campaign_id": "campaign-1", "status": "active"},
+    )
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.prompts = []
+
+        def healthy(self):
+            return True
+
+        def find_child_session(self, *, parent_id, title):
+            assert title == f"job/{job_id}/evolution"
+            return "evolution-session"
+
+        def create_session(self, **kwargs):
+            raise AssertionError("the stable evolution session should be reused")
+
+        def prompt_async(self, *, session_id, text, agent):
+            self.prompts.append((session_id, text, agent))
+            return True
+
+    client = FakeClient()
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.OPENCODE_CLIENT", client)
     monkeypatch.setattr(
-        "wayfinder_paths.jobs.evolution_campaign._sealed_audit",
-        lambda store, job_id, state, candidate, *, activate: {
-            "status": "paper_experiment",
-            "evidence": "fresh block passed",
+        "wayfinder_paths.jobs.evolution_campaign.campaign_prompt_block",
+        lambda store, job_id: {
+            "campaign_id": "campaign-1",
+            "next_action": "prepare the next candidate",
         },
     )
 
-    result = _process_queued_audits(store, job_id, state, limit=1)
+    result = _queue_evolution_worker(store, job_id)
 
-    assert result["consumed"] == 1
-    assert result["winner_admitted"] is True
-    queue = store.read_json(job_id, "state/evolution_audit_queue.json")
-    assert queue["items"][0]["status"] == "paper_experiment"
+    assert result == {"queued": True, "session_id": "evolution-session"}
+    assert len(client.prompts) == 1
+    assert "immutable 24-hour forward paper proposal" in client.prompts[0][1]
+    session = store.read_json(job_id, "reports/evolution/session.json")
+    assert session["session_id"] == "evolution-session"

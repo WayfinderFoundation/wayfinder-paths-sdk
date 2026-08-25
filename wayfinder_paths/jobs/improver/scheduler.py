@@ -229,18 +229,8 @@ def _continuation_ops(root: Path, *, now: datetime | None) -> list[str]:
     detached-op launcher). A running op with a dead pid is a stale marker
     from a killed run — it must not pin the rotation forever."""
     ops_dir = root / "state" / "background_ops"
-    campaign_path = root / "state" / "evolution_campaign.json"
-    campaign_active = False
-    try:
-        campaign = json.loads(campaign_path.read_text(encoding="utf-8"))
-        campaign_active = isinstance(campaign, dict) and campaign.get("status") in {
-            "active",
-            "finalizing",
-        }
-    except (OSError, ValueError):
-        pass
     if not ops_dir.exists():
-        return ["evolution_campaign"] if campaign_active else []
+        return []
     current = now or datetime.now(UTC)
     ops: list[str] = []
     for path in sorted(ops_dir.glob("*.json")):
@@ -271,8 +261,6 @@ def _continuation_ops(root: Path, *, now: datetime | None) -> list[str]:
             finished = finished.replace(tzinfo=UTC)
         if (current - finished).total_seconds() <= _CONTINUATION_WINDOW_S:
             ops.append(str(doc.get("op") or path.stem))
-    if campaign_active:
-        ops.append("evolution_campaign")
     return ops
 
 
