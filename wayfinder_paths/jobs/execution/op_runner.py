@@ -32,6 +32,8 @@ _EVIDENCE_OPS = {
     "experiments",
     "signal_scan",
     "holdout_check",
+    "factor_scan",
+    "factor_holdout",
     "restamp",
     "robustness_check",
 }
@@ -119,6 +121,14 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
         from wayfinder_paths.jobs.research import rank_check_job
 
         return rank_check_job(kwargs.pop("job_id"), **kwargs)
+    if op == "factor_scan":
+        from wayfinder_paths.jobs.research import factor_scan_job
+
+        return factor_scan_job(kwargs.pop("job_id"), **kwargs)
+    if op == "factor_holdout":
+        from wayfinder_paths.jobs.research import factor_holdout_check_job
+
+        return factor_holdout_check_job(kwargs.pop("job_id"), **kwargs)
     if op == "robustness_check":
         from wayfinder_paths.jobs.robustness import robustness_check_job
 

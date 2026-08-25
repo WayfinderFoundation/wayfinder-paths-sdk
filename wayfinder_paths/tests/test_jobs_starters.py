@@ -36,6 +36,7 @@ from wayfinder_paths.jobs.starters import (
     validate_starter_leverage,
 )
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.strategies._starter_utils import buffered_rank_weights
 from wayfinder_paths.jobs.strategies.crypto_momentum_persistence import (
     CryptoMomentumPersistenceStrategy,
 )
@@ -44,6 +45,9 @@ from wayfinder_paths.jobs.strategies.hype_passive_rsi import (
 )
 from wayfinder_paths.jobs.strategies.mixed_bollinger_pullback import (
     MixedBollingerPullbackStrategy,
+)
+from wayfinder_paths.jobs.strategies.mixed_factor_balance import (
+    MixedFactorBalanceStrategy,
 )
 from wayfinder_paths.jobs.strategies.mixed_low_vol_rank import (
     MixedLowVolRankStrategy,
@@ -212,7 +216,8 @@ def dataset_fetch_spawns(monkeypatch) -> list[dict[str, Any]]:
 
 def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
     catalog = starter_catalog()
-    assert len(catalog) == 12
+    assert len(catalog) == 13
+    assert catalog[0]["id"] == "mixed-factor-balance-4h"
     assert {item["timeframe"] for item in catalog} == {
         "5m",
         "15m",
@@ -223,7 +228,7 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
     assert [item["timeframe"] for item in catalog].count("5m") == 2
     assert [item["timeframe"] for item in catalog].count("15m") == 2
     assert [item["timeframe"] for item in catalog].count("1h") == 5
-    assert [item["timeframe"] for item in catalog].count("4h") == 1
+    assert [item["timeframe"] for item in catalog].count("4h") == 2
     assert [item["timeframe"] for item in catalog].count("1d") == 2
     for item in catalog:
         assert item["crypto_assets"]
@@ -237,6 +242,7 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
             "maker_mean_reversion",
             "mean_reversion",
             "low_volatility_ranking",
+            "multi_factor",
             "relative_value_pair",
         }
         assert isinstance(item["cautions"], list)
@@ -264,17 +270,20 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
             assert funded_return is not None and funded_return > 0
         engine = item["research_evidence"]["jobs_v1_engine"]
         assert engine["return_after_fees_and_slippage"] > 0
-        assert engine["funding_included"] is False
+        assert isinstance(engine["funding_included"], bool)
         assert engine["trace_valid"] is True
         assert engine["full_period_vs_no_stop"] in {"unchanged", "improved"}
         if item["family"] == "maker_mean_reversion":
             assert 0 <= engine["chronological_folds_non_regressing"] <= 4
+        elif item["family"] == "multi_factor":
+            assert engine["chronological_folds_non_regressing"] == 3
         else:
             assert engine["chronological_folds_non_regressing"] == 4
         assert engine["stop_count"] >= 0
         sweep = item["research_evidence"]["jobs_v1_leverage_sweep"]
         assert sweep["leverage_semantics"] == "target_exposure"
         assert sweep["account_halt_simulated"] is False
+        assert sweep["funding_included"] is engine["funding_included"]
         assert [row["leverage"] for row in sweep["results"]] == [1, 2, 3, 4, 5]
         assert all(row["liquidation_count"] == 0 for row in sweep["results"])
         assert sweep["results"][0]["return_after_fees_and_slippage"] == pytest.approx(
@@ -299,6 +308,7 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
         ].values()
     )
     expected_stops = {
+        "mixed-factor-balance-4h": (12.0, 0.25, 0.50),
         "mixed-rsi-snapback-1h": (5.0, 0.08, 0.15),
         "mixed-momentum-rank-1h": (8.0, 0.15, 0.30),
         "crypto-momentum-persistence-4h": (12.0, 0.25, 0.50),
@@ -363,6 +373,7 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
 # 7 of 12 entries did exactly that under the old 200-bar driver default.
 # A new/edited starter MUST update this table consciously.
 EXPECTED_STARTER_LOOKBACK_BARS = {
+    "mixed-factor-balance-4h": 66,
     "mixed-rsi-snapback-1h": 224,
     "mixed-bollinger-pullback-1h": 224,
     "mixed-volume-capitulation-1h": 224,
@@ -413,6 +424,120 @@ def test_create_starter_sets_driver_lookback_above_warmup(tmp_path) -> None:
     assert lookback == 2904
     strategy = MixedSleeveMomentumStrategy(dict(job.execution_params))
     assert lookback > strategy.warmup_bars  # 2884: momentum_bars 2880 + 4
+
+
+def test_buffered_rank_weights_keep_exact_basket_size() -> None:
+    scores = {"A": 6.0, "B": 5.0, "C": 4.0, "D": 3.0, "E": 2.0, "F": 1.0}
+
+    long_only = buffered_rank_weights(
+        scores,
+        {"C": 1.0},
+        side_count=2,
+        gross=0.60,
+        long_only=True,
+    )
+    long_short = buffered_rank_weights(
+        scores,
+        {"C": 1.0, "D": -1.0},
+        side_count=2,
+        gross=0.80,
+    )
+
+    assert {symbol for symbol, weight in long_only.items() if weight > 0} == {"A", "C"}
+    assert sum(weight > 0 for weight in long_short.values()) == 2
+    assert sum(weight < 0 for weight in long_short.values()) == 2
+    assert sum(abs(weight) for weight in long_short.values()) == pytest.approx(0.80)
+
+
+def test_factor_balance_emits_only_scoped_long_sleeves() -> None:
+    crypto = ["A", "B", "C", "D"]
+    onchain = ["E", "F", "G", "H"]
+    strategy = MixedFactorBalanceStrategy(
+        {
+            "symbols": [*crypto, *onchain],
+            "sleeves": {"crypto": crypto, "onchain": onchain},
+            "rebalance_bars": {"crypto": 1, "onchain": 1},
+            "min_trade_notional": 0.0,
+        }
+    )
+    strategy.warmup_bars = 1
+    timestamp = pd.Timestamp("2026-01-01T00:00:00Z")
+    rows = [
+        {
+            "timestamp": timestamp,
+            "symbol": symbol,
+            "open": 10.0,
+            "high": 10.1,
+            "low": 9.9,
+            "close": 10.0,
+            "volume": 1_000_000.0,
+            "starter_factor_score": float(index),
+            "starter_factor_scale": 1.0,
+            "starter_stop_atr": 0.1,
+        }
+        for index, symbol in enumerate([*crypto, *onchain])
+    ]
+    spec = ExecutionSpec()
+    spec.data_contract["bar_interval"] = "4h"
+    ctx = ExecutionContext(
+        view=CompletedBarsView.from_rows(rows),
+        ledger=PositionLedger(),
+        state_snapshot=StateSnapshot(status="valid"),
+        capacity=None,
+        params={"initial_capital": 10_000.0},
+        timestamp=timestamp.isoformat(),
+        execution_spec=spec,
+    )
+
+    intents = strategy.decide(ctx)
+
+    assert {intent["symbol"] for intent in intents} == {"C", "D", "G", "H"}
+    assert {intent["side"] for intent in intents} == {"buy"}
+    notionals = {intent["symbol"]: intent["notional"] for intent in intents}
+    assert notionals == pytest.approx(
+        {"C": 2_000.0, "D": 2_000.0, "G": 2_500.0, "H": 2_500.0}
+    )
+
+
+def test_factor_balance_precompute_is_causal() -> None:
+    symbols = ["BTC", "ETH", "SOL", "HYPE", "DOGE", "AAVE", "NEAR", "ENA"]
+    timestamps = pd.date_range("2026-01-01", periods=70, freq="4h", tz="UTC")
+    frames: dict[str, pd.DataFrame] = {}
+    for symbol_index, symbol in enumerate(symbols):
+        closes = [100.0 + symbol_index]
+        for bar in range(1, len(timestamps)):
+            change = 0.001 + 0.0002 * ((bar + symbol_index) % 5 - 2)
+            closes.append(closes[-1] * (1.0 + change))
+        frames[symbol] = pd.DataFrame(
+            {
+                "timestamp": timestamps,
+                "symbol": symbol,
+                "open": closes,
+                "high": [value * 1.001 for value in closes],
+                "low": [value * 0.999 for value in closes],
+                "close": closes,
+                "volume": 1_000_000.0,
+                "funding": 0.00001 * (symbol_index + 1),
+            }
+        )
+    strategy = MixedFactorBalanceStrategy(
+        {
+            "symbols": symbols,
+            "sleeves": {"crypto": symbols},
+            "min_assets": len(symbols),
+        }
+    )
+    baseline = strategy.precompute(frames)
+    changed = {symbol: frame.copy() for symbol, frame in frames.items()}
+    changed["HYPE"].loc[changed["HYPE"].index[-1], "close"] *= 10.0
+
+    mutated = strategy.precompute(changed)
+
+    for symbol in symbols:
+        pd.testing.assert_series_equal(
+            baseline[symbol]["starter_factor_score"].iloc[:-1],
+            mutated[symbol]["starter_factor_score"].iloc[:-1],
+        )
 
 
 def test_momentum_rank_longs_leaders_and_shorts_laggards() -> None:

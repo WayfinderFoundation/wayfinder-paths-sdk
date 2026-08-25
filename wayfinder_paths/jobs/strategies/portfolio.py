@@ -16,7 +16,7 @@ the same leverage a second time.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from wayfinder_paths.jobs.execution.primitives import (
@@ -38,6 +38,7 @@ def target_weights_to_intents(
     normalize_gross: bool = True,
     min_trade_notional: float = 0.0,
     brackets: Mapping[str, Mapping[str, Any]] | None = None,
+    scope: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Diff target weights against the current ledger and emit intents.
 
@@ -51,7 +52,8 @@ def target_weights_to_intents(
     Gross normalization (legacy convention, backtester.py): when the summed
     |weights| exceed 1 and normalize_gross is True, weights are divided by
     gross so the portfolio never implicitly levers. Pass False when leverage
-    via weights is intentional.
+    via weights is intentional. ``scope`` limits position diffing to one
+    independently rebalanced sleeve; targets outside that sleeve are rejected.
     """
     leverage = 1.0
     try:
@@ -69,6 +71,9 @@ def target_weights_to_intents(
         return []
 
     targets = {str(symbol): float(weight) for symbol, weight in weights.items()}
+    scoped_symbols = {str(symbol) for symbol in scope} if scope is not None else None
+    if scoped_symbols is not None and not set(targets).issubset(scoped_symbols):
+        raise ValueError("target weights contain a symbol outside the requested scope")
     gross = sum(abs(weight) for weight in targets.values())
     if normalize_gross and gross > 1.0:
         targets = {symbol: weight / gross for symbol, weight in targets.items()}
@@ -76,6 +81,8 @@ def target_weights_to_intents(
     current: dict[str, float] = {}
     closes: dict[str, float] = {}
     for symbol, position in ctx.ledger.positions.items():
+        if scoped_symbols is not None and symbol not in scoped_symbols:
+            continue
         frame = ctx.view.symbol_frame(symbol)
         # avg_price fallback when the view has no bars — same as the equity mark
         close = (

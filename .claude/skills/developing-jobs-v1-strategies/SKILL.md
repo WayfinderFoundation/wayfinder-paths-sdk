@@ -76,6 +76,8 @@ For every iteration:
 - Designing or evolving an idea: `rules/strategy-search.md`
 - Pairs, baskets, breadth, or multi-leg sizing:
   `rules/pairs-and-baskets.md`
+- Cross-sectional factors, residualization, pooled IC screens, and factor
+  regimes: `rules/factor-research.md`
 - Gates, funding coverage, scenario roles, or robustness interpretation:
   `rules/robustness-and-gates.md`
 - Candidate proposals, agent modes, and post-apply monitoring:

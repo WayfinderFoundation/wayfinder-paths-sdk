@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -194,6 +195,70 @@ def ranked_weights(
     midpoint = len(ranked) // 2
     weights = dict.fromkeys(ranked[:midpoint], -weight_per_leg)
     weights.update(dict.fromkeys(ranked[midpoint:], weight_per_leg))
+    return weights
+
+
+def buffered_rank_weights(
+    scores: Mapping[str, float],
+    previous: Mapping[str, float],
+    *,
+    side_count: int,
+    gross: float,
+    long_only: bool = False,
+) -> dict[str, float]:
+    """Build a buffered rank basket with deterministic tie breaks.
+
+    By default, half of ``gross`` is assigned to each side. ``long_only``
+    assigns the full budget to the top-ranked names and does not require a
+    short cross-section.
+    """
+    if side_count <= 0 or not math.isfinite(gross) or gross < 0:
+        raise ValueError("rank side_count must be positive and gross non-negative")
+    finite: dict[str, float] = {}
+    for symbol, value in scores.items():
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(numeric):
+            finite[str(symbol)] = numeric
+    required = side_count if long_only else 2 * side_count
+    if len(finite) < required:
+        return {}
+    ranks = pd.Series(finite, dtype=float).rank(method="average", pct=True)
+    longs = [
+        symbol
+        for symbol, weight in previous.items()
+        if weight > 0 and symbol in ranks and ranks[symbol] >= 0.55
+    ][:side_count]
+    for symbol in sorted(ranks.index, key=lambda item: (-ranks[item], item)):
+        if len(longs) >= side_count:
+            break
+        if symbol not in longs:
+            longs.append(symbol)
+    weights = dict.fromkeys(finite, 0.0)
+    if long_only:
+        weights.update(dict.fromkeys(longs, gross / side_count))
+        return weights
+
+    shorts = [
+        symbol
+        for symbol, weight in previous.items()
+        if weight < 0
+        and symbol in ranks
+        and ranks[symbol] <= 0.45
+        and symbol not in longs
+    ][:side_count]
+    for symbol in sorted(ranks.index, key=lambda item: (ranks[item], item)):
+        if len(shorts) >= side_count:
+            break
+        if symbol not in shorts and symbol not in longs:
+            shorts.append(symbol)
+    if len(longs) < side_count or len(shorts) < side_count:
+        return {}
+    weight_per_leg = gross / (2.0 * side_count)
+    weights.update(dict.fromkeys(longs, weight_per_leg))
+    weights.update(dict.fromkeys(shorts, -weight_per_leg))
     return weights
 
 

@@ -233,7 +233,9 @@ every wake.
      family — never a serial one-off `signal-check` mining loop. Sanctioned
      external axes: funding (`job fetch-funding`), session/time-of-day
      (canonical session triggers), cross-asset via the multi-symbol view and
-     `rank-check`. Open interest is DEFERRED — no history source exists yet;
+     `rank-check`, or a declared continuous-score family via pooled
+     `factor_scan` followed by one frozen `factor_holdout`. Open interest is
+     DEFERRED — no history source exists yet;
      do not improvise one.
 
 2b. CONSULT the research agenda (`research/agenda.md`) before generating

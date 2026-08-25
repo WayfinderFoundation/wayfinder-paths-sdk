@@ -116,6 +116,19 @@ def test_same_sign_shrink_uses_the_matching_position_side() -> None:
     assert intents[0]["size"] == pytest.approx(25.0)
 
 
+def test_scope_preserves_positions_owned_by_another_sleeve() -> None:
+    ctx = _ctx(
+        {"AAA": 10.0, "BBB": 20.0},
+        _ledger(("AAA", "long", 50.0, 10.0), ("BBB", "long", 25.0, 20.0)),
+    )
+
+    intents = target_weights_to_intents(ctx, {"AAA": 0.5}, scope=["AAA"])
+
+    assert intents == []
+    with pytest.raises(ValueError, match="outside the requested scope"):
+        target_weights_to_intents(ctx, {"BBB": 0.5}, scope=["AAA"])
+
+
 def test_same_sign_grow_opens_the_delta() -> None:
     ctx = _ctx({"AAA": 10.0}, _ledger(("AAA", "long", 50.0, 10.0)))
     intents = target_weights_to_intents(ctx, {"AAA": 0.75})

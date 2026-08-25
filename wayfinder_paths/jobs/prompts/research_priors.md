@@ -14,6 +14,7 @@ the framework path in the last column.
 | Volatility term structure / event clocks | MODERATE | noise stopout, regime anomaly | campaign def + scenario |
 | Correlation state / beta residual | MODERATE | trend fight | cross features + rank check |
 | Cross-symbol structure (ratio z, lead-lag, breadth) | MODERATE | portfolio anomaly | pair/rank check + gate diagnostics |
+| Cross-sectional factors (residual trend/reversal, carry, participation, low vol) | MODERATE | relative ordering, regime anomaly | pooled factor scan + one-shot factor holdout |
 | Exogenous market regime | STRONG for alts | regime anomaly | exogenous features + gate |
 | Cross-venue basis / funding divergence | SPECULATIVE | execution anomaly | venue features + scenario |
 | Exit structure (MFE target, trail, breakeven, scale-out) | STRONG when forensics support it | early exit | factorial grid + walk-forward |

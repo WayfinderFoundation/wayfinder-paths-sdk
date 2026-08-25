@@ -32,6 +32,13 @@ MAKER_MEAN_REVERSION_HALT = -0.08
 OTHER_STARTER_HALT = -0.20
 
 STARTER_LEVERAGE_RESULTS: dict[str, tuple[dict[str, Any], ...]] = {
+    "mixed-factor-balance-4h": (
+        _result(1, 0.3245, 2.0015, -0.1380, 192, 201.83, OTHER_STARTER_HALT),
+        _result(2, 0.6849, 2.0226, -0.2692, 189, 446.87, OTHER_STARTER_HALT),
+        _result(3, 1.0564, 2.0498, -0.3822, 193, 734.12, OTHER_STARTER_HALT),
+        _result(4, 1.3445, 2.0269, -0.4950, 205, 1054.75, OTHER_STARTER_HALT),
+        _result(5, 1.6097, 2.0424, -0.5895, 219, 1373.12, OTHER_STARTER_HALT),
+    ),
     "mixed-rsi-snapback-1h": (
         _result(1, 0.0815, 1.6318, -0.0279, 182, 213.81, MEAN_REVERSION_HALT),
         _result(2, 0.1670, 1.6406, -0.0554, 182, 445.13, MEAN_REVERSION_HALT),
