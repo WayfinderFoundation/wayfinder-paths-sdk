@@ -551,10 +551,13 @@ async def venue_deposit(
     job_id: str, amount: float, *, store: JobStore | None = None
 ) -> dict[str, Any]:
     """Fund the strategy where it trades: bridge USDC from the job's bound
-    wallet into Hyperliquid, then grow ``initial_capital`` by the same
-    amount — one op keeps bankroll and accounting in lockstep. An
-    ``unconfirmed`` bridge credit still counts (the deposit is en route);
-    only a failed send aborts before the capital write."""
+    wallet into Hyperliquid, then record ``initial_capital`` in lockstep. The
+    FIRST venue deposit REPLACES the declared capital — the paper-mode
+    default (e.g. $10k) must not leak into live sizing over a $50 bankroll —
+    and later deposits add. The marker lives in state/ (not hashed, wiped
+    with engine state, survives capital edits). An ``unconfirmed`` bridge
+    credit still counts (the deposit is en route); only a failed send aborts
+    before the capital write."""
     from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_deposit_usdc
 
     store = store or JobStore()
@@ -563,8 +566,14 @@ async def venue_deposit(
     outcome = await hyperliquid_deposit_usdc(wallet_label=label, amount_usdc=amount)
     if outcome["status"] == "failed":
         raise ValueError(f"venue deposit failed: {outcome}")
-    current = float(job.execution_params.get("initial_capital") or 0.0)
-    capital = apply_initial_capital(job_id, current + float(amount), store=store)
+    funding = store.read_json(job_id, "state/funding.json", default=None) or {}
+    base = (
+        float(job.execution_params.get("initial_capital") or 0.0)
+        if funding.get("venue_funded")
+        else 0.0
+    )
+    capital = apply_initial_capital(job_id, base + float(amount), store=store)
+    store.write_json(job_id, "state/funding.json", {"venue_funded": True})
     return {
         "job_id": job_id,
         "deposit_status": outcome["status"],

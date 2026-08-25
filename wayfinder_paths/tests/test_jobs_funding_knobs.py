@@ -157,8 +157,12 @@ def test_venue_deposit_bridges_then_grows_capital(tmp_path, monkeypatch) -> None
     result = asyncio.run(sync_module.venue_deposit(job_id, 25.0, store=store))
     assert calls == [{"wallet_label": job_id, "amount_usdc": 25.0}]
     assert result["deposit_status"] == "confirmed"
-    assert result["initial_capital"] == 10_025.0
-    assert store.load(job_id).execution_params["initial_capital"] == 10_025.0
+    # First venue deposit REPLACES the paper-default capital...
+    assert result["initial_capital"] == 25.0
+    assert store.load(job_id).execution_params["initial_capital"] == 25.0
+    # ...and later deposits add.
+    again = asyncio.run(sync_module.venue_deposit(job_id, 10.0, store=store))
+    assert again["initial_capital"] == 35.0
 
 
 def test_venue_deposit_failed_send_never_touches_capital(tmp_path, monkeypatch) -> None:
