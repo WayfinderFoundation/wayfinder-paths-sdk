@@ -28,6 +28,7 @@ from typing import Any, TypedDict
 
 from wayfinder_paths.jobs.application import complete_application
 from wayfinder_paths.jobs.failures import cpu_steal_pct
+from wayfinder_paths.jobs.lifecycle import lifecycle_sweep
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
@@ -1520,6 +1521,15 @@ def recover_stalled_applications(
             audit_event = None
         if audit_event is not None:
             recovered.append({"job_id": job.id, **audit_event})
+    # Fleet lifecycle sweep rides the watchdog tick so bootstrap/park policy
+    # fires even when a rotting job's own loops never run. Internally daily-
+    # throttled; the 5-minute cadence just keeps the clock honest.
+    try:
+        sweep = lifecycle_sweep(store, now=now)
+        recovered.extend(dict(action) for action in sweep.get("actions") or [])
+        errors.extend(sweep.get("errors") or [])
+    except Exception as exc:  # noqa: BLE001 — lifecycle never blocks recovery
+        errors.append({"job_id": "_lifecycle", "error": str(exc)})
     try:
         _refresh_portfolio_report(store, now)
     except Exception as exc:  # noqa: BLE001 — fleet telemetry never blocks recovery

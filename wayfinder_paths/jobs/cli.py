@@ -60,6 +60,7 @@ from wayfinder_paths.jobs.forward_artifacts import load_forward_view
 from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
 from wayfinder_paths.jobs.ledger import append_ledger_row, tail_ledger
+from wayfinder_paths.jobs.lifecycle import lifecycle_sweep
 from wayfinder_paths.jobs.models import (
     AgentMode,
     WayfinderJob,
@@ -2180,6 +2181,19 @@ def pause_cmd(job_id: str) -> None:
 @click.argument("job_id")
 def resume_cmd(job_id: str) -> None:
     _pause_resume_loops(job_id, "resume")
+
+
+@job_cli.command(
+    name="lifecycle-sweep",
+    help="Run the fleet lifecycle sweep now: bootstrap nudge/park for "
+    "never-operational jobs plus monitor-decay park. The watchdog runs this "
+    "daily; --force bypasses the throttle.",
+)
+@click.option(
+    "--force", is_flag=True, default=False, help="Bypass the daily throttle."
+)
+def lifecycle_sweep_cmd(force: bool) -> None:
+    _echo_json({"ok": True, "result": lifecycle_sweep(JobStore(), force=force)})
 
 
 @job_cli.group(

@@ -77,6 +77,12 @@ _PROBATION_OPENED_EVENTS = frozenset({"probation_leg_opened", "paper_probation_o
 _PROBATION_EVENTS = _PROBATION_OPENED_EVENTS | frozenset(
     {"probation_leg_graduated", "probation_leg_killed"}
 )
+# Lifecycle parks are mechanical-with-visibility: the sweep already paused
+# the loops; the owner sees the decision plus the bounded undo here, never
+# an approval queue item.
+_LIFECYCLE_PARK_EVENTS = frozenset(
+    {"job_parked_unbootstrapped", "job_parked_monitor_decay"}
+)
 
 
 def job_live_capital_risk(job: WayfinderJob) -> bool:
@@ -406,6 +412,21 @@ def _decided_item(
             "ts": ts,
             "decision": "reject",
             "evidence": _compact(event.get("reason_codes")),
+        }
+    if event_type in _LIFECYCLE_PARK_EVENTS:
+        return {
+            "kind": "lifecycle_park",
+            "job_id": job_id,
+            "ref_id": job_id,
+            "ts": ts,
+            "decision": event_type.removeprefix("job_parked_"),
+            "evidence": _compact(
+                {
+                    "reason": event.get("reason"),
+                    "predicates_failed": event.get("predicates_failed"),
+                }
+            ),
+            "undo": event.get("undo"),
         }
     if event_type in _PROBATION_EVENTS:
         decision = (

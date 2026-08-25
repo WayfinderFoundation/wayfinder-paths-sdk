@@ -14,6 +14,7 @@ from wayfinder_paths.jobs.derived_features import refresh_derived_features_if_st
 from wayfinder_paths.jobs.failures import cpu_steal_pct, disk_used_pct
 from wayfinder_paths.jobs.forward import is_forward_empty
 from wayfinder_paths.jobs.ledger import tail_ledger
+from wayfinder_paths.jobs.lifecycle import bootstrap_directive
 from wayfinder_paths.jobs.memory_hygiene import sanitize_job_memory
 from wayfinder_paths.jobs.models import (
     JOB_AUTO_WORKER_AGENT_NAME,
@@ -1182,6 +1183,12 @@ def _build_worker_prompt_sections(
             "it as a strategy failure, but DO NOT report the gate as green. "
             "For any other reason, fixing the gate is a priority this wake.\n\n"
         )
+    # Bootstrap contract: a never-operational job past half its deadline gets
+    # the bootstrap-first directive on every wake until it bootstraps or is
+    # parked. Rendered as prompt text — never only snapshot JSON.
+    bootstrap_alert = (
+        bootstrap_directive(store, job_id) if apply_proposal_id is None else ""
+    )
     remediation_directive = ""
     if remediation_actionable and apply_proposal_id is None:
         remediation_directive = (
@@ -1322,6 +1329,7 @@ def _build_worker_prompt_sections(
     dynamic_context = (
         f"{DYNAMIC_CONTEXT_MARKER}\n"
         f"{gate_alert}"
+        f"{bootstrap_alert}"
         f"{remediation_directive}"
         f"{restage_priority}"
         f"{impasse_directive}"
