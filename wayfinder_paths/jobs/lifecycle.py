@@ -51,6 +51,38 @@ BOOTSTRAP_DIRECTIVE = (
     "baseline backtest, first tick) or journal a concrete blocker.\n\n"
 )
 
+# Journal types the harness emits on a timer with no decision content. The
+# monitor-decay "no journal activity" predicate means "no meaningful owner/
+# agent decisions" — an hourly agent loop journals agent_wakeup on EVERY
+# delivered wake (plus per-wake monitor-failure heartbeats), which made the
+# park unreachable for exactly the jobs it targets. Script ticks never
+# journal (they record to results/forward/*), so no tick type appears here.
+# Unknown types still COUNT as activity — conservative, blocks the park.
+_MECHANICAL_JOURNAL_TYPES = frozenset(
+    {
+        "agent_wakeup",
+        "agent_mode_drift",
+        "agent_mode_drift_recovered",
+        "bootstrap_lagging",
+        "claim_sync_failed",
+        "counterfactual_failed",
+        "data_feed_degraded",
+        "data_feed_recovered",
+        "derived_features_refresh_failed",
+        "disk_pressure",
+        "disk_pressure_recovered",
+        "ideation_incomplete",
+        "memory_quarantined",
+        "regime_health_failed",
+        "remediation_recheck_quiet",
+        "replication_failed",
+        "restamp_deferred_load",
+        "runner_loop_gap",
+        "runner_loop_recovered",
+        "wake_skipped_saturated",
+    }
+)
+
 
 def is_operational(store: JobStore, job_id: str) -> bool:
     """Has this job EVER produced a sign of life? Any completed script run or
@@ -295,10 +327,13 @@ def _operational_predicates_failed(store: JobStore, job_id: str) -> list[str]:
 
 
 def _journal_activity_since(store: JobStore, job_id: str, since_ts: str) -> bool:
-    # Rows are append-ordered, so the tail bounds the newest timestamps.
+    # Rows are append-ordered, so the tail bounds the newest timestamps. The
+    # tail must be deep enough that a week of hourly mechanical heartbeats
+    # (~a few hundred rows) cannot bury a real decision row inside the window.
     return any(
         str(row.get("ts") or "") > since_ts
-        for row in store.read_jsonl(job_id, "journal.jsonl", limit=200)
+        and str(row.get("type") or "") not in _MECHANICAL_JOURNAL_TYPES
+        for row in store.read_jsonl(job_id, "journal.jsonl", limit=2000)
     )
 
 

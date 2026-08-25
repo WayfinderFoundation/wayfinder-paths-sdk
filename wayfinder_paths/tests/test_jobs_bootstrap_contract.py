@@ -234,6 +234,41 @@ def test_monitor_decay_parks_after_window(
     assert events[0]["undo"] == {"command": f"wayfinder job resume {job.id}"}
 
 
+def test_monitor_decay_parks_through_mechanical_heartbeats(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An hourly agent loop journals agent_wakeup on EVERY delivered wake —
+    mechanical heartbeats must not read as activity, or the park is
+    unreachable for exactly the jobs it targets."""
+    calls = _patch_bridge(monkeypatch)
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "decay-heartbeat-demo", agent_mode="monitor")
+    store.refresh_scorecard(job.id, {"last_script_run_at": utc_now_iso()})
+    store.write_json(
+        job.id,
+        "results/backtest/replication.json",
+        {"available": True, "status": "decayed"},
+    )
+    now = dt.datetime.now(dt.UTC)
+    lifecycle_sweep(store, now=now, force=True)
+
+    # Periodic mechanical rows throughout the window: wake heartbeats plus
+    # the per-wake monitor-failure types.
+    for _ in range(30):
+        store.append_journal(job.id, {"type": "agent_wakeup", "mode": "monitor"})
+        store.append_journal(
+            job.id, {"type": "replication_failed", "error": "compute failed"}
+        )
+        store.append_journal(
+            job.id, {"type": "regime_health_failed", "error": "no dataset"}
+        )
+
+    result = lifecycle_sweep(store, now=now + dt.timedelta(days=8), force=True)
+
+    assert any(a["action"] == "job_parked_monitor_decay" for a in result["actions"])
+    assert ("pause", job.agent_loop.runner_job_name) in calls
+
+
 def test_monitor_decay_deferred_by_activity_and_cleared_on_recovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -249,8 +284,9 @@ def test_monitor_decay_deferred_by_activity_and_cleared_on_recovery(
     now = dt.datetime.now(dt.UTC)
     lifecycle_sweep(store, now=now, force=True)
 
-    # Journal activity inside the window defers the park.
-    store.append_journal(job.id, {"type": "agent_wakeup", "mode": "monitor"})
+    # A meaningful (non-mechanical) journal row inside the window defers the
+    # park — the agent/owner is actually doing something with this job.
+    store.append_journal(job.id, {"type": "proposal_created", "proposal_id": "p-1"})
     deferred = lifecycle_sweep(store, now=now + dt.timedelta(days=8), force=True)
     assert not any(a["action"].startswith("job_parked") for a in deferred["actions"])
 
