@@ -547,6 +547,20 @@ def _funded_wallet_label(job) -> str:
     return label
 
 
+def _shift_equity_recon_baseline(
+    store: JobStore, job_id: str, delta: float
+) -> None:
+    """Fold an operator deposit/withdrawal into the drift baseline. The
+    equity reconciler treats venue-vs-expected drift as its signal; without
+    this, every funding action reads as permanent drift the agent has to
+    re-explain each wake. Missing seed = pre-first-tick, nothing to shift."""
+    recon = store.read_json(job_id, "state/equity_recon.json", default=None)
+    if not recon or "venue_equity_start" not in recon:
+        return
+    recon["venue_equity_start"] = float(recon["venue_equity_start"]) + delta
+    store.write_json(job_id, "state/equity_recon.json", recon)
+
+
 async def venue_deposit(
     job_id: str, amount: float, *, store: JobStore | None = None
 ) -> dict[str, Any]:
@@ -577,6 +591,7 @@ async def venue_deposit(
     )
     capital = apply_initial_capital(job_id, base + float(amount), store=store)
     store.write_json(job_id, "state/funding.json", {"venue_funded": True})
+    _shift_equity_recon_baseline(store, job_id, float(amount))
     return {
         "job_id": job_id,
         "deposit_status": outcome["status"],
@@ -613,6 +628,7 @@ async def venue_withdraw(
     capital = apply_initial_capital(
         job_id, max(current - float(amount), 0.0), store=store
     )
+    _shift_equity_recon_baseline(store, job_id, -float(amount))
     return {
         "job_id": job_id,
         "withdraw_status": outcome["status"],

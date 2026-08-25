@@ -218,3 +218,71 @@ def test_venue_ops_require_bound_wallet(tmp_path) -> None:
     store, job_id = _job(tmp_path)
     with pytest.raises(ValueError, match="wallet"):
         asyncio.run(sync_module.venue_deposit(job_id, 25.0, store=store))
+
+
+def test_venue_ops_shift_equity_recon_baseline(tmp_path, monkeypatch) -> None:
+    import asyncio
+
+    from wayfinder_paths.jobs import sync as sync_module
+
+    store, job_id = _job(tmp_path)
+    job = store.load(job_id)
+    job.execution_params["wallet_label"] = job_id
+    store.save(job)
+    monkeypatch.setattr(sync_module, "sync_all_jobs", lambda **kwargs: None)
+    store.write_json(
+        job_id,
+        "state/equity_recon.json",
+        {"venue_equity_start": 100.0, "ledger_realized_at_seed": 0.0},
+    )
+
+    async def fake_deposit(*, wallet_label, amount_usdc):
+        return {"ok": True, "result": {"status": "confirmed"}}
+
+    async def fake_withdraw(*, wallet_label, amount_usdc, destination=None):
+        return {"ok": True, "result": {"status": "confirmed"}}
+
+    import wayfinder_paths.mcp.tools.hyperliquid as hl
+
+    monkeypatch.setattr(hl, "hyperliquid_deposit_usdc", fake_deposit)
+    monkeypatch.setattr(hl, "hyperliquid_withdraw_usdc", fake_withdraw)
+
+    asyncio.run(sync_module.venue_deposit(job_id, 25.0, store=store))
+    recon = store.read_json(job_id, "state/equity_recon.json")
+    assert recon["venue_equity_start"] == 125.0
+
+    asyncio.run(sync_module.venue_withdraw(job_id, 10.0, store=store))
+    recon = store.read_json(job_id, "state/equity_recon.json")
+    assert recon["venue_equity_start"] == 115.0
+
+
+def test_mcp_venue_actions_share_button_code_path(tmp_path, monkeypatch) -> None:
+    import asyncio
+
+    from wayfinder_paths.jobs import sync as sync_module
+    from wayfinder_paths.mcp.tools import jobs as jobs_tool
+
+    store, job_id = _job(tmp_path)
+    job = store.load(job_id)
+    job.execution_params["wallet_label"] = job_id
+    store.save(job)
+    monkeypatch.setattr(sync_module, "sync_all_jobs", lambda **kwargs: None)
+    monkeypatch.setattr(jobs_tool, "JobStore", lambda: store)
+
+    async def fake_deposit(*, wallet_label, amount_usdc):
+        return {"ok": True, "result": {"status": "confirmed"}}
+
+    import wayfinder_paths.mcp.tools.hyperliquid as hl
+
+    monkeypatch.setattr(hl, "hyperliquid_deposit_usdc", fake_deposit)
+
+    envelope = asyncio.run(
+        jobs_tool.core_jobs("venue_deposit", job_id=job_id, amount=12.0)
+    )
+    assert envelope["ok"], envelope
+    assert envelope["result"]["initial_capital"] == 12.0
+    funding = store.read_json(job_id, "state/funding.json")
+    assert funding == {"venue_funded": True}
+
+    missing = asyncio.run(jobs_tool.core_jobs("venue_deposit", job_id=job_id))
+    assert not missing["ok"]
