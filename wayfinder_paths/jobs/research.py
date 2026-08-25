@@ -47,6 +47,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from wayfinder_paths.jobs.factors import panel_from_frames
 from wayfinder_paths.jobs.signal_library import (
     SIGNAL_LIBRARY,
     SignalDef,
@@ -1334,26 +1335,10 @@ def _hac_t_stat(values: np.ndarray, lag: int) -> float:
     long_run_variance = float(np.dot(centered, centered) / size)
     for offset in range(1, min(max(lag, 0), size - 1) + 1):
         weight = 1.0 - offset / (lag + 1.0)
-        covariance = float(
-            np.dot(centered[offset:], centered[:-offset]) / size
-        )
+        covariance = float(np.dot(centered[offset:], centered[:-offset]) / size)
         long_run_variance += 2.0 * weight * covariance
     standard_error = math.sqrt(max(long_run_variance, 0.0) / size)
     return float(finite.mean() / standard_error) if standard_error > 0 else 0.0
-
-
-def _factor_panel(
-    frames: Mapping[str, pd.DataFrame], column: str
-) -> pd.DataFrame:
-    return pd.concat(
-        {
-            symbol: frame.assign(
-                timestamp=pd.to_datetime(frame["timestamp"], utc=True)
-            ).set_index("timestamp")[column]
-            for symbol, frame in frames.items()
-        },
-        axis=1,
-    ).sort_index()
 
 
 def _factor_ic_values(
@@ -1415,7 +1400,7 @@ def factor_rank_scan(
     missing = {column: symbols for column, symbols in missing.items() if symbols}
     if missing:
         raise KeyError(f"factor columns missing after precompute: {missing}")
-    open_prices = _factor_panel(frames, "open").apply(
+    open_prices = panel_from_frames(frames, "open").apply(
         pd.to_numeric, errors="coerce"
     )
     index = open_prices.index
@@ -1424,15 +1409,15 @@ def factor_rank_scan(
     cutoff_position = int(len(index) * (1.0 - holdout_fraction))
     train_index = index[:cutoff_position]
     forward_returns = {
-        horizon: (
-            open_prices.shift(-(horizon + 1)) / open_prices.shift(-1) - 1.0
-        )
+        horizon: (open_prices.shift(-(horizon + 1)) / open_prices.shift(-1) - 1.0)
         for horizon in tested_horizons
     }
     rows: list[dict[str, Any]] = []
     for column in requested:
-        scores = _factor_panel(frames, column).reindex(index).apply(
-            pd.to_numeric, errors="coerce"
+        scores = (
+            panel_from_frames(frames, column)
+            .reindex(index)
+            .apply(pd.to_numeric, errors="coerce")
         )
         for horizon in tested_horizons:
             values = _factor_ic_values(
@@ -1477,9 +1462,7 @@ def factor_rank_scan(
     ):
         row["q_value"] = float(q_value)
         row["passed"] = bool(
-            int(row["n"]) >= 30
-            and q_value <= q_threshold
-            and row["fold_stable"]
+            int(row["n"]) >= 30 and q_value <= q_threshold and row["fold_stable"]
         )
     rows.sort(key=lambda row: (float(row["q_value"]), -abs(float(row["t_stat_hac"]))))
     passed = [row for row in rows if row["passed"]]
@@ -1542,13 +1525,15 @@ def factor_rank_holdout(
     )
     if missing:
         raise KeyError(f"factor column {column!r} missing after precompute: {missing}")
-    open_prices = _factor_panel(frames, "open").apply(
+    open_prices = panel_from_frames(frames, "open").apply(
         pd.to_numeric, errors="coerce"
     )
     if len(open_prices.index) < 40:
         raise ValueError("factor holdout needs at least 40 synchronized timestamps")
-    scores = _factor_panel(frames, column).reindex(open_prices.index).apply(
-        pd.to_numeric, errors="coerce"
+    scores = (
+        panel_from_frames(frames, column)
+        .reindex(open_prices.index)
+        .apply(pd.to_numeric, errors="coerce")
     )
     if cutoff_ts is None:
         cutoff_position = int(len(open_prices.index) * (1.0 - holdout_fraction))
@@ -1560,9 +1545,7 @@ def factor_rank_holdout(
                 "factor holdout cutoff must fall inside the synchronized panel"
             )
     holdout_index = open_prices.index[cutoff_position:]
-    forward_returns = (
-        open_prices.shift(-(horizon + 1)) / open_prices.shift(-1) - 1.0
-    )
+    forward_returns = open_prices.shift(-(horizon + 1)) / open_prices.shift(-1) - 1.0
     values = _factor_ic_values(
         scores,
         forward_returns,
@@ -2918,6 +2901,7 @@ def _precomputed_job_frames(
     from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
     from wayfinder_paths.jobs.execution.simulator import _load_strategy
     from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+
     root = store.job_dir(job_id)
     job_data = _load_job_yaml(root)
     spec_data, _ = resolve_execution_spec(root, job_data)

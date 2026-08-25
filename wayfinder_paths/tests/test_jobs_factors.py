@@ -10,16 +10,29 @@ from wayfinder_paths.jobs.factors import (
     blend_factor_scores,
     cross_sectional_rank,
     cross_sectional_robust_zscore,
+    panel_from_frames,
     residual_return,
     rolling_beta,
 )
 from wayfinder_paths.jobs.research import factor_rank_holdout, factor_rank_scan
 
 
+def test_panel_from_frames_aligns_requested_numeric_columns() -> None:
+    frames = {
+        "B": pd.DataFrame({"timestamp": ["2026-01-01T04:00:00Z"], "close": ["2.0"]}),
+        "A": pd.DataFrame({"timestamp": ["2026-01-01T00:00:00Z"], "close": [1.0]}),
+    }
+
+    panel = panel_from_frames(frames, "close", symbols=("A", "B", "missing"))
+
+    assert list(panel.columns) == ["A", "B"]
+    assert str(panel.index.tz) == "UTC"
+    assert panel.loc[pd.Timestamp("2026-01-01T00:00:00Z"), "A"] == 1.0
+    assert panel.loc[pd.Timestamp("2026-01-01T04:00:00Z"), "B"] == 2.0
+
+
 def test_cross_sectional_rank_is_symmetric_and_respects_eligibility() -> None:
-    values = pd.DataFrame(
-        [[1.0, 2.0, 3.0], [5.0, 5.0, 9.0]], columns=["A", "B", "C"]
-    )
+    values = pd.DataFrame([[1.0, 2.0, 3.0], [5.0, 5.0, 9.0]], columns=["A", "B", "C"])
     eligible = pd.DataFrame(
         [[True, True, True], [True, True, False]], columns=values.columns
     )
@@ -97,14 +110,14 @@ def test_blend_factor_scores_validates_and_reranks() -> None:
 
 
 def _predictive_factor_frames() -> dict[str, pd.DataFrame]:
-    rng = np.random.default_rng(17)
     symbols = [f"S{index}" for index in range(8)]
     timestamps = pd.date_range("2025-01-01", periods=260, freq="4h", tz="UTC")
-    alpha = rng.normal(size=(len(timestamps), len(symbols)))
-    noise = rng.normal(size=alpha.shape)
+    alpha = np.random.default_rng(17).normal(size=(len(timestamps), len(symbols)))
+    noise = np.random.default_rng(4).normal(size=alpha.shape)
+    outcome_rng = np.random.default_rng(31)
     opens = np.full(alpha.shape, 100.0)
     for row in range(len(timestamps) - 2):
-        outcome = 0.004 * alpha[row] + rng.normal(0.0, 0.003, len(symbols))
+        outcome = 0.004 * alpha[row] + outcome_rng.normal(0.0, 0.003, len(symbols))
         opens[row + 2] = opens[row + 1] * (1.0 + outcome)
     return {
         symbol: pd.DataFrame(
@@ -286,9 +299,7 @@ async def test_core_jobs_routes_factor_scan(monkeypatch: pytest.MonkeyPatch) -> 
 
     captured: dict[str, object] = {}
 
-    async def fake_run(
-        op: str, kwargs: dict[str, object]
-    ) -> dict[str, object]:
+    async def fake_run(op: str, kwargs: dict[str, object]) -> dict[str, object]:
         captured.update({"op": op, "kwargs": kwargs})
         return {"ok": True, "result": {"passed": []}}
 

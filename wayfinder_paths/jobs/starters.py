@@ -29,7 +29,7 @@ from wayfinder_paths.jobs.strategies._starter_utils import (
     RANKING_STOP_DEFAULTS,
 )
 
-STARTER_CATALOG_VERSION = "1.9.0"
+STARTER_CATALOG_VERSION = "2.0.0"
 STARTER_STRATEGY_INCEPTION_AT = "2026-08-24T00:00:00+00:00"
 # Catalog launch policy: every off-the-shelf starter launches with the agent
 # loop ON in intervene mode. Fleet evidence (two launches of the identical
@@ -40,7 +40,7 @@ STARTER_STRATEGY_INCEPTION_AT = "2026-08-24T00:00:00+00:00"
 # deliberately, but the default is intervene.
 STARTER_AGENT_MODE_DEFAULT: AgentMode = "intervene"
 STARTER_AGENT_WAKE_SECONDS = 3600
-STARTER_EVIDENCE_REVISION = "1.8.0"
+STARTER_EVIDENCE_REVISION = "2.0.0"
 STARTER_LEVERAGE_DEFAULT = 1
 STARTER_LEVERAGE_MINIMUM = 1
 STARTER_LEVERAGE_MAXIMUM = 5
@@ -51,13 +51,19 @@ STARTER_DATASET_DAYS = 120
 # window always clears warmup even when the feed drops a few leading bars.
 STARTER_LOOKBACK_MARGIN_BARS = 20
 STARTER_ROBUSTNESS_PLANS: dict[str, dict[str, Any]] = {
+    "mixed-factor-balance-4h": {
+        "phase": {"param": "rebalance_offset", "values": [0, 1, 2, 3, 4, 5]},
+        "leverage": [1, 2, 3, 4, 5],
+        "walk_forward": {"train_bars": 540, "test_bars": 270, "folds": 3},
+        "scenarios": [{"name": "recent_7d", "lookback_days": 7, "role": "development"}],
+    },
     "crypto-momentum-persistence-4h": {
         "neighbors": {"broad_bull_momentum_threshold": [0.05, 0.10, 0.15]},
         "phase": {"param": "rebalance_offset", "values": [0, 1, 2, 3, 4, 5]},
         "leverage": [1, 2, 3, 4, 5],
         "walk_forward": {"train_bars": 1440, "test_bars": 360, "folds": 4},
         "scenarios": [{"name": "recent_7d", "lookback_days": 7, "role": "development"}],
-    }
+    },
 }
 
 
@@ -241,6 +247,9 @@ class StarterDefinition:
                     "close-of-bar cross margin using venue maintenance defaults"
                 ),
                 "account_halt_simulated": False,
+                "funding_included": bool(
+                    payload["research_evidence"]["jobs_v1_engine"]["funding_included"]
+                ),
                 "results": copy.deepcopy(STARTER_LEVERAGE_RESULTS[self.id]),
             },
         }
@@ -324,6 +333,47 @@ _RESEARCH_METHOD = {
     ),
 }
 
+_FACTOR_RESEARCH_METHOD = {
+    "source": "Hyperliquid info API 4h candles and hourly funding",
+    "window_start": "2026-02-26T00:00:00+00:00",
+    "window_end": "2026-08-25T00:00:00+00:00",
+    "calendar_days": 180.0,
+    "fill_model": "decision on completed close; fill at next 4h bar open",
+    "costs": {"taker_fee_bps_per_side": 4.5, "slippage_bps_per_side": 3.5},
+    "funding_included": True,
+    "funding": "hourly Hyperliquid rates causally aggregated into completed 4h buckets",
+    "validation": (
+        "70% selection / 15% validation / 15% frozen tail by sleeve, followed by "
+        "an exact jobs_v1 replay, four chronological segments, all six 4h phases, "
+        "and a 1x-5x leverage sweep"
+    ),
+}
+
+_FACTOR_CRYPTO_ASSETS = ("BTC", "ETH", "SOL", "HYPE", "DOGE", "AAVE", "NEAR", "ENA")
+_FACTOR_ONCHAIN_ASSETS = (
+    "xyz:MU",
+    "xyz:GOOGL",
+    "xyz:NVDA",
+    "xyz:CRCL",
+    "xyz:TSLA",
+    "xyz:META",
+    "xyz:MSTR",
+    "xyz:INTC",
+    "xyz:AAPL",
+    "xyz:COIN",
+    "xyz:AMD",
+    "xyz:AMZN",
+    "xyz:GOLD",
+    "xyz:SILVER",
+    "xyz:CL",
+    "xyz:BRENTOIL",
+    "xyz:COPPER",
+    "xyz:NATGAS",
+    "xyz:PLATINUM",
+    "xyz:PALLADIUM",
+)
+_FACTOR_BENCHMARK = "xyz:SP500"
+
 _CRYPTO_MOMENTUM_RESEARCH_METHOD = {
     "source": "Hyperliquid info API 4h candles via HyperliquidDataClient",
     "window_start": "2024-09-04T00:00:00+00:00",
@@ -382,6 +432,100 @@ _MAKER_RESEARCH_METHOD = {
 
 
 STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
+    StarterDefinition(
+        id="mixed-factor-balance-4h",
+        name="Mixed Factor Balance · 4h",
+        family="multi_factor",
+        summary=(
+            "A long-only factor allocator that balances crypto trend, quality, and "
+            "carry with relative-value equity and commodity perps."
+        ),
+        timeframe="4h",
+        module="wayfinder_paths.jobs.strategies.mixed_factor_balance",
+        symbols=(*_FACTOR_CRYPTO_ASSETS, *_FACTOR_ONCHAIN_ASSETS, _FACTOR_BENCHMARK),
+        crypto_assets=_FACTOR_CRYPTO_ASSETS,
+        tokenized_equities=(*_FACTOR_ONCHAIN_ASSETS, _FACTOR_BENCHMARK),
+        rules=(
+            "Rank crypto by 3-day and 7-day BTC-residual strength, low volatility, and funding carry; hold the top two at 20% each.",
+            "Rank HIP-3 equities and commodities by 7-day-versus-1-day relative value, 7-day SP500-residual strength, and low volatility; hold the top two at 25% each.",
+            "Rebalance crypto daily and the onchain sleeve every three days on the 16:00 UTC completed bar; buffer incumbents while they remain above the 55th percentile.",
+            "Hold the onchain sleeve in cash unless both 3-day and 7-day SP500 trends are positive with at least 55% market breadth; xyz:SP500 is signal-only.",
+            "Maximum unlevered target gross is 90%, leaving a 10% cash reserve.",
+        ),
+        params={
+            "beta_bars": 42,
+            "min_assets": 8,
+            "minimum_dollar_volume": 1_000_000.0,
+            "side_count": 2,
+            "sleeve_gross": {"crypto": 0.40, "onchain": 0.50},
+            "factor_weights": {
+                "crypto": {
+                    "medium_strength": 0.35,
+                    "slow_strength": 0.25,
+                    "low_volatility": 0.25,
+                    "carry": 0.15,
+                },
+                "onchain": {
+                    "relative_value": 0.45,
+                    "slow_strength": 0.35,
+                    "low_volatility": 0.20,
+                },
+            },
+            "rebalance_bars": {"crypto": 6, "onchain": 18},
+            "rebalance_offset": 4,
+            "rebalance_threshold": 0.025,
+            "min_trade_notional": 25.0,
+            "stop_atr_period": 24,
+        },
+        research_evidence={
+            **_FACTOR_RESEARCH_METHOD,
+            "return_after_costs_and_funding": 0.3245,
+            "funding_return_contribution": -0.0161,
+            "sharpe": 2.0015,
+            "max_drawdown": -0.1380,
+            "buy_hold_return": 0.2364,
+            "chronological_fold_returns": [0.0313, 0.1595, -0.0334, 0.1458],
+            "recent_7d_return": 0.1095,
+            "rebalance_phase_returns": {
+                "0": 0.0891,
+                "1": 0.2789,
+                "2": 0.3150,
+                "3": 0.4899,
+                "4": 0.3245,
+                "5": 0.5197,
+            },
+            "selection_holdouts": {
+                "crypto": {
+                    "candidate": "trend_quality",
+                    "return_after_costs_and_funding": 0.0860,
+                    "sharpe": 4.09,
+                },
+                "onchain": {
+                    "candidate": "relative_value_quality",
+                    "return_after_costs_and_funding": 0.0056,
+                    "sharpe": 2.31,
+                },
+            },
+            "jobs_v1_engine": {
+                "return_after_fees_and_slippage": 0.3245,
+                "sharpe": 2.0015,
+                "max_drawdown": -0.1380,
+                "trade_count": 192,
+                "total_fees_usd": 201.83,
+                "total_funding_usd": -160.73,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 3,
+                "funding_included": True,
+                "trace_valid": True,
+            },
+        },
+        cautions=(
+            "The evidence window is 180 days and overlaps the recent crypto run-up; forward paper tracking remains required.",
+            "The onchain sleeve is inactive when the broad trend-and-breadth gate is off.",
+            "Leverage above 1x exceeded the catalog's -20% account-halt threshold in the historical sweep.",
+        ),
+    ),
     StarterDefinition(
         id="mixed-rsi-snapback-1h",
         name="Mixed RSI Snapback · 1h",

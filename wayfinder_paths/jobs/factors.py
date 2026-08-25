@@ -6,10 +6,31 @@ drawdowns remain owned by the jobs_v1 execution simulator.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 import numpy as np
 import pandas as pd
+
+
+def panel_from_frames(
+    frames: Mapping[str, pd.DataFrame],
+    column: str,
+    *,
+    symbols: Sequence[str] | None = None,
+) -> pd.DataFrame:
+    """Align one column from per-symbol frames on their UTC timestamps."""
+    selected = list(symbols) if symbols is not None else list(frames)
+    series: dict[str, pd.Series] = {}
+    for symbol in selected:
+        frame = frames.get(symbol)
+        if frame is None or column not in frame:
+            continue
+        timestamps = pd.to_datetime(frame["timestamp"], utc=True)
+        values = pd.to_numeric(frame[column], errors="coerce")
+        series[symbol] = pd.Series(values.to_numpy(), index=timestamps)
+    if not series:
+        return pd.DataFrame()
+    return pd.concat(series, axis=1).sort_index()
 
 
 def _numeric_panel(values: pd.DataFrame) -> pd.DataFrame:
@@ -102,9 +123,7 @@ def residual_return(
     if horizon <= 0:
         raise ValueError("residual return horizon must be positive")
     prices = _numeric_panel(close)
-    benchmark = pd.to_numeric(
-        benchmark_close.reindex(prices.index), errors="coerce"
-    )
+    benchmark = pd.to_numeric(benchmark_close.reindex(prices.index), errors="coerce")
     asset_bar_returns = prices.pct_change(fill_method=None)
     benchmark_bar_returns = benchmark.pct_change(fill_method=None)
     beta = rolling_beta(
