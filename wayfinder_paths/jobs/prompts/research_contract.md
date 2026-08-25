@@ -15,6 +15,9 @@ This contract is stable across job-worker wakes and compaction.
   and paired candidate-versus-incumbent results as applicable.
 - Recent/event windows used to generate or select a candidate are development
   evidence and cannot also serve as its audit holdout.
+- Factor research declares a small pooled column x horizon family, uses
+  `factor_scan` before basket construction, and spends `factor_holdout` once
+  per frozen orientation. Rank IC is admission evidence, not economic PnL.
 - Robustness is advisory in contract v1. It enriches candidate evidence but does
   not change or bypass the existing approval gate.
 - The parent strategy/job agent orchestrates and decides. Quant delegation is

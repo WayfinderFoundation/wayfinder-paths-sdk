@@ -332,11 +332,33 @@ def test_op_runner_routes_research_ops(monkeypatch) -> None:
         "signal_check_job",
         lambda job_id, **kw: {"stub": "signal", "column": kw.get("column")},
     )
+    monkeypatch.setattr(
+        research_mod,
+        "factor_scan_job",
+        lambda job_id, **kw: {"stub": "factor", "columns": kw.get("columns")},
+    )
+    monkeypatch.setattr(
+        research_mod,
+        "factor_holdout_check_job",
+        lambda job_id, **kw: {"stub": "tail", "column": kw.get("column")},
+    )
     assert op_runner._run("pair_check", {"job_id": "j"}) == {"stub": "pair", "job": "j"}
     assert op_runner._run("signal_check", {"job_id": "j", "column": "z"}) == {
         "stub": "signal",
         "column": "z",
     }
+    assert op_runner._run_op(
+        "factor_scan", {"job_id": "j", "columns": ["mom", "carry"]}
+    ) == {"stub": "factor", "columns": ["mom", "carry"]}
+    assert op_runner._run_op(
+        "factor_holdout",
+        {
+            "job_id": "j",
+            "column": "mom",
+            "horizon": 4,
+            "orientation": "high_score_outperforms",
+        },
+    ) == {"stub": "tail", "column": "mom"}
 
 
 def _cross_section(n_bars: int, n_symbols: int, *, informative: bool, seed: int = 5):

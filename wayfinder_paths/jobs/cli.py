@@ -69,6 +69,8 @@ from wayfinder_paths.jobs.proposals import (
 from wayfinder_paths.jobs.regime_health import regime_health_job
 from wayfinder_paths.jobs.replication import replication_job
 from wayfinder_paths.jobs.research import (
+    factor_holdout_check_job,
+    factor_scan_job,
     holdout_check_job,
     pair_check_job,
     rank_check_job,
@@ -1044,6 +1046,69 @@ def rank_check_cmd(job_id: str, column: str, horizons: str | None) -> None:
         column=column,
         horizons=[int(h) for h in horizons.split(",")] if horizons else None,
         store=store,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="factor-scan",
+    help="Pooled rank-IC screen of declared precomputed factor columns. Uses "
+    "next-open outcomes, BH correction, chronological folds, and reserves "
+    "the final tail.",
+)
+@click.argument("job_id")
+@click.option(
+    "--columns", required=True, help="Comma-separated precomputed factor columns."
+)
+@click.option(
+    "--horizons", default=None, help="Comma-separated forward horizons in bars."
+)
+@click.option(
+    "--holdout-fraction", type=float, default=0.15, show_default=True
+)
+def factor_scan_cmd(
+    job_id: str, columns: str, horizons: str | None, holdout_fraction: float
+) -> None:
+    result = factor_scan_job(
+        job_id,
+        columns=[value.strip() for value in columns.split(",") if value.strip()],
+        horizons=[int(value) for value in horizons.split(",")] if horizons else None,
+        holdout_fraction=holdout_fraction,
+        store=JobStore(),
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="factor-holdout",
+    help="Spend the reserved tail once for one frozen factor cell. Repeats "
+    "return the original artifact without recomputing it.",
+)
+@click.argument("job_id")
+@click.option("--column", required=True)
+@click.option("--horizon", type=int, required=True)
+@click.option(
+    "--orientation",
+    type=click.Choice(["high_score_outperforms", "low_score_outperforms"]),
+    required=True,
+)
+@click.option(
+    "--holdout-fraction", type=float, default=0.15, show_default=True
+)
+def factor_holdout_cmd(
+    job_id: str,
+    column: str,
+    horizon: int,
+    orientation: str,
+    holdout_fraction: float,
+) -> None:
+    result = factor_holdout_check_job(
+        job_id,
+        column=column,
+        horizon=horizon,
+        orientation=orientation,
+        holdout_fraction=holdout_fraction,
+        store=JobStore(),
     )
     _echo_json({"ok": True, "result": result})
 

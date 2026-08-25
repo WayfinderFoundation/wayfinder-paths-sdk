@@ -314,6 +314,8 @@ def test_research_context_files_stay_small_and_versioned() -> None:
         root / ".opencode/plugins/wayfinder-compaction.ts",
     ):
         assert RESEARCH_CONTRACT_VERSION in path.read_text(encoding="utf-8")
+    assert "rules/factor-research.md" in skill.read_text(encoding="utf-8")
+    assert "factor_scan" in contract.read_text(encoding="utf-8")
 
 
 def test_worker_stable_prefix_loads_research_contract_once(tmp_path: Path) -> None:

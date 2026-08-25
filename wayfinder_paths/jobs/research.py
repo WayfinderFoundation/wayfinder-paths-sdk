@@ -24,8 +24,9 @@ Statistical caveats (documented, deliberate):
   the scan's multiplicity control is Benjamini-Hochberg over the full test
   family, and event decimation (horizon-spaced) removes forward-window
   overlap — the dominant dependence source at these frequencies.
-- Deferred rigor (recorded, not built): HAC/Newey-West + block-bootstrap
-  standard errors (revisit if the null-world tests start failing), Deflated
+- Factor rank screens use Newey-West standard errors for overlapping forward
+  horizons. Deferred for event scans: HAC/block-bootstrap standard errors
+  (revisit if the null-world tests start failing), Deflated
   Sharpe / PBO-CSCV strategy-level overfit stats, BTC/ETH market-relative
   controls + matched regime baselines, funding/carry scan family.
 
@@ -1319,6 +1320,276 @@ def scan_signals(
             "standalone timing alpha here; a complete trade SYSTEM can still "
             "work (gates + exits + regime), but new signal mining on this "
             "series is unlikely to pay"
+        ),
+    }
+
+
+def _hac_t_stat(values: np.ndarray, lag: int) -> float:
+    """Newey-West t-stat for a mean with a bounded overlap lag."""
+    finite = values[np.isfinite(values)]
+    size = len(finite)
+    if size < 3:
+        return 0.0
+    centered = finite - finite.mean()
+    long_run_variance = float(np.dot(centered, centered) / size)
+    for offset in range(1, min(max(lag, 0), size - 1) + 1):
+        weight = 1.0 - offset / (lag + 1.0)
+        covariance = float(
+            np.dot(centered[offset:], centered[:-offset]) / size
+        )
+        long_run_variance += 2.0 * weight * covariance
+    standard_error = math.sqrt(max(long_run_variance, 0.0) / size)
+    return float(finite.mean() / standard_error) if standard_error > 0 else 0.0
+
+
+def _factor_panel(
+    frames: Mapping[str, pd.DataFrame], column: str
+) -> pd.DataFrame:
+    return pd.concat(
+        {
+            symbol: frame.assign(
+                timestamp=pd.to_datetime(frame["timestamp"], utc=True)
+            ).set_index("timestamp")[column]
+            for symbol, frame in frames.items()
+        },
+        axis=1,
+    ).sort_index()
+
+
+def _factor_ic_values(
+    scores: pd.DataFrame,
+    forward_returns: pd.DataFrame,
+    timestamps: pd.Index,
+    *,
+    min_assets: int,
+) -> np.ndarray:
+    signal = scores.reindex(timestamps)
+    outcome = forward_returns.reindex(timestamps)
+    valid = signal.notna() & outcome.notna()
+    signal_rank = signal.where(valid).rank(axis=1, method="average")
+    outcome_rank = outcome.where(valid).rank(axis=1, method="average")
+    correlations = signal_rank.corrwith(outcome_rank, axis=1)
+    correlations = correlations.where(valid.sum(axis=1).ge(min_assets)).dropna()
+    return correlations.to_numpy(dtype=float)
+
+
+def factor_rank_scan(
+    frames: Mapping[str, pd.DataFrame],
+    columns: Sequence[str],
+    *,
+    horizons: Sequence[int] | None = None,
+    holdout_fraction: float = 0.15,
+    folds: int = 4,
+    q_threshold: float = 0.10,
+    min_folds_agree: int = 3,
+    min_assets: int = 4,
+) -> dict[str, Any]:
+    """Pooled cross-sectional factor admission screen on a training prefix.
+
+    Scores are formed on completed bar ``t`` and evaluated from the next bar's
+    open. The final ``holdout_fraction`` is described but never scored here.
+    Columns x horizons form one Benjamini-Hochberg family.
+    """
+    requested = list(dict.fromkeys(str(column) for column in columns if column))
+    if not requested:
+        raise ValueError("factor scan requires at least one column")
+    tested_horizons = sorted({int(value) for value in (horizons or (1, 4, 12, 24))})
+    if not tested_horizons or tested_horizons[0] <= 0:
+        raise ValueError("factor scan horizons must be positive")
+    if not 0.0 < holdout_fraction < 0.5:
+        raise ValueError("factor scan holdout_fraction must be between 0 and 0.5")
+    if folds < 2 or min_folds_agree < 1 or min_folds_agree > folds:
+        raise ValueError("factor scan requires 2+ folds and a valid fold gate")
+    if min_assets < 4:
+        raise ValueError("factor scan min_assets must be at least 4")
+    if len(frames) < min_assets:
+        raise ValueError(
+            f"factor scan needs >={min_assets} symbols; received {sorted(frames)}"
+        )
+    missing = {
+        column: sorted(
+            symbol for symbol, frame in frames.items() if column not in frame.columns
+        )
+        for column in requested
+    }
+    missing = {column: symbols for column, symbols in missing.items() if symbols}
+    if missing:
+        raise KeyError(f"factor columns missing after precompute: {missing}")
+    open_prices = _factor_panel(frames, "open").apply(
+        pd.to_numeric, errors="coerce"
+    )
+    index = open_prices.index
+    if len(index) < 40:
+        raise ValueError("factor scan needs at least 40 synchronized timestamps")
+    cutoff_position = int(len(index) * (1.0 - holdout_fraction))
+    train_index = index[:cutoff_position]
+    forward_returns = {
+        horizon: (
+            open_prices.shift(-(horizon + 1)) / open_prices.shift(-1) - 1.0
+        )
+        for horizon in tested_horizons
+    }
+    rows: list[dict[str, Any]] = []
+    for column in requested:
+        scores = _factor_panel(frames, column).reindex(index).apply(
+            pd.to_numeric, errors="coerce"
+        )
+        for horizon in tested_horizons:
+            values = _factor_ic_values(
+                scores,
+                forward_returns[horizon],
+                train_index,
+                min_assets=min_assets,
+            )
+            size = len(values)
+            mean_ic = float(values.mean()) if size else 0.0
+            t_stat = _hac_t_stat(values, horizon)
+            fold_values = [part for part in np.array_split(values, folds) if len(part)]
+            fold_means = [float(part.mean()) for part in fold_values]
+            sign = np.sign(mean_ic)
+            agreeing = sum(np.sign(value) == sign for value in fold_means)
+            rows.append(
+                {
+                    "column": column,
+                    "horizon": horizon,
+                    "n": size,
+                    "mean_ic": mean_ic,
+                    "t_stat_hac": t_stat,
+                    "p_value": _t_to_pvalue(t_stat),
+                    "orientation": (
+                        "high_score_outperforms"
+                        if mean_ic > 0
+                        else "low_score_outperforms"
+                        if mean_ic < 0
+                        else None
+                    ),
+                    "fold_means": fold_means,
+                    "folds_agreeing": int(agreeing),
+                    "fold_stable": bool(
+                        len(fold_values) == folds and agreeing >= min_folds_agree
+                    ),
+                }
+            )
+    for row, q_value in zip(
+        rows,
+        bh_qvalues([float(row["p_value"]) for row in rows]),
+        strict=True,
+    ):
+        row["q_value"] = float(q_value)
+        row["passed"] = bool(
+            int(row["n"]) >= 30
+            and q_value <= q_threshold
+            and row["fold_stable"]
+        )
+    rows.sort(key=lambda row: (float(row["q_value"]), -abs(float(row["t_stat_hac"]))))
+    passed = [row for row in rows if row["passed"]]
+    return {
+        "columns": requested,
+        "horizons": tested_horizons,
+        "symbols": sorted(str(symbol) for symbol in frames),
+        "tests_run": len(rows),
+        "method": {
+            "signal_time": "completed bar close",
+            "forward_return": "next open to horizon open",
+            "t_stat": "Newey-West",
+            "multiplicity": "Benjamini-Hochberg over columns x horizons",
+            "q_threshold": q_threshold,
+            "folds": folds,
+            "min_folds_agree": min_folds_agree,
+        },
+        "holdout": {
+            "fraction": holdout_fraction,
+            "cutoff_ts": str(index[cutoff_position]),
+            "train_bars": len(train_index),
+            "holdout_bars": len(index) - len(train_index),
+            "opened": False,
+        },
+        "passed": passed,
+        "results": rows,
+        "read": (
+            f"{len(passed)} of {len(rows)} factor cells passed pooled q<="
+            f"{q_threshold:.2f}, n>=30, and {min_folds_agree}/{folds} fold "
+            "sign agreement. Rank admission is not an economic backtest: "
+            "freeze at most three candidates, spend factor-holdout once, "
+            "then test turnover, costs, funding, and drawdown in jobs_v1."
+        ),
+    }
+
+
+def factor_rank_holdout(
+    frames: Mapping[str, pd.DataFrame],
+    column: str,
+    horizon: int,
+    orientation: str,
+    *,
+    holdout_fraction: float = 0.15,
+    cutoff_ts: str | pd.Timestamp | None = None,
+    min_assets: int = 4,
+) -> dict[str, Any]:
+    """Open the reserved tail once for one frozen factor cell."""
+    if orientation not in {"high_score_outperforms", "low_score_outperforms"}:
+        raise ValueError("factor holdout requires a frozen score orientation")
+    if horizon <= 0:
+        raise ValueError("factor holdout horizon must be positive")
+    if not 0.0 < holdout_fraction < 0.5:
+        raise ValueError("factor holdout_fraction must be between 0 and 0.5")
+    if len(frames) < min_assets:
+        raise ValueError(
+            f"factor holdout needs >={min_assets} symbols; received {sorted(frames)}"
+        )
+    missing = sorted(
+        symbol for symbol, frame in frames.items() if column not in frame.columns
+    )
+    if missing:
+        raise KeyError(f"factor column {column!r} missing after precompute: {missing}")
+    open_prices = _factor_panel(frames, "open").apply(
+        pd.to_numeric, errors="coerce"
+    )
+    if len(open_prices.index) < 40:
+        raise ValueError("factor holdout needs at least 40 synchronized timestamps")
+    scores = _factor_panel(frames, column).reindex(open_prices.index).apply(
+        pd.to_numeric, errors="coerce"
+    )
+    if cutoff_ts is None:
+        cutoff_position = int(len(open_prices.index) * (1.0 - holdout_fraction))
+    else:
+        frozen_cutoff = pd.to_datetime(cutoff_ts, utc=True)
+        cutoff_position = int(open_prices.index.searchsorted(frozen_cutoff))
+        if cutoff_position <= 0 or cutoff_position >= len(open_prices.index):
+            raise ValueError(
+                "factor holdout cutoff must fall inside the synchronized panel"
+            )
+    holdout_index = open_prices.index[cutoff_position:]
+    forward_returns = (
+        open_prices.shift(-(horizon + 1)) / open_prices.shift(-1) - 1.0
+    )
+    values = _factor_ic_values(
+        scores,
+        forward_returns,
+        holdout_index,
+        min_assets=min_assets,
+    )
+    mean_ic = float(values.mean()) if len(values) else 0.0
+    t_stat = _hac_t_stat(values, horizon)
+    expected_sign = 1.0 if orientation == "high_score_outperforms" else -1.0
+    confirmed = bool(len(values) >= 10 and expected_sign * t_stat >= 1.645)
+    return {
+        "column": column,
+        "horizon": horizon,
+        "orientation": orientation,
+        "n": len(values),
+        "mean_ic": mean_ic,
+        "t_stat_hac": t_stat,
+        "cutoff_ts": str(open_prices.index[cutoff_position]),
+        "holdout_bars": len(holdout_index),
+        "confirmation_threshold": {"min_n": 10, "one_sided_t": 1.645},
+        "verdict": "confirm" if confirmed else "reject",
+        "read": (
+            "tail IC confirms the frozen orientation; proceed to the exact "
+            "jobs_v1 economic simulation"
+            if confirmed
+            else "reserved-tail IC did not confirm the frozen orientation; "
+            "do not retune this factor family on the opened tail"
         ),
     }
 
@@ -2638,24 +2909,15 @@ def holdout_check_job(
     return result
 
 
-def rank_check_job(
-    job_id: str,
-    *,
-    column: str,
-    horizons: list[int] | None = None,
-    store: Any | None = None,
-) -> dict[str, Any]:
-    """Rank-IC study of a strategy's precomputed ranking column across the
-    job's symbols — the pre-build test for basket/cross-sectional ideas
-    (event_study covers per-symbol entry signals; this covers rankings)."""
+def _precomputed_job_frames(
+    job_id: str, store: Any
+) -> tuple[Any, list[str], dict[str, pd.DataFrame]]:
+    """Load one job's bars with its strategy precompute columns applied."""
     from wayfinder_paths.jobs.execution.features import apply_precompute
     from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
     from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
     from wayfinder_paths.jobs.execution.simulator import _load_strategy
     from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
-    from wayfinder_paths.jobs.store import JobStore
-
-    store = store or JobStore()
     root = store.job_dir(job_id)
     job_data = _load_job_yaml(root)
     spec_data, _ = resolve_execution_spec(root, job_data)
@@ -2676,10 +2938,27 @@ def rank_check_job(
         symbol: frame[frame["symbol"] == symbol].reset_index(drop=True)
         for symbol in symbols
     }
+    return root, symbols, frames
+
+
+def rank_check_job(
+    job_id: str,
+    *,
+    column: str,
+    horizons: list[int] | None = None,
+    store: Any | None = None,
+) -> dict[str, Any]:
+    """Rank-IC study of a strategy's precomputed ranking column across the
+    job's symbols — the pre-build test for basket/cross-sectional ideas
+    (event_study covers per-symbol entry signals; this covers rankings)."""
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = store or JobStore()
+    root, symbols, frames = _precomputed_job_frames(job_id, store)
     missing = [s for s, f in frames.items() if column not in f.columns]
     if missing:
         non_bar = sorted(
-            set(frame.columns)
+            set().union(*(set(frame.columns) for frame in frames.values()))
             - {"timestamp", "symbol", "open", "high", "low", "close", "volume"}
         )
         raise KeyError(
@@ -2707,6 +2986,146 @@ def rank_check_job(
             "type": "rank_check_completed",
             "column": column,
             "horizons": list(horizons or []),
+            "artifact": relative_artifact,
+        },
+    )
+    result["artifact"] = str(artifact)
+    return result
+
+
+def factor_scan_job(
+    job_id: str,
+    *,
+    columns: list[str],
+    horizons: list[int] | None = None,
+    holdout_fraction: float = 0.15,
+    store: Any | None = None,
+) -> dict[str, Any]:
+    """Screen a declared factor family with pooled multiplicity control."""
+    from wayfinder_paths.jobs.models import utc_now_iso
+    from wayfinder_paths.jobs.research_contract import RESEARCH_CONTRACT_VERSION
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = store or JobStore()
+    _, _, frames = _precomputed_job_frames(job_id, store)
+    result = factor_rank_scan(
+        frames,
+        columns,
+        horizons=horizons,
+        holdout_fraction=holdout_fraction,
+    )
+    result["research_contract_version"] = RESEARCH_CONTRACT_VERSION
+    result["generated_at"] = utc_now_iso()
+    relative_artifact = "results/research/factor_scan.json"
+    artifact = store.write_json(job_id, relative_artifact, result)
+    store.append_journal(
+        job_id,
+        {
+            "type": "factor_scan_completed",
+            "columns": list(result["columns"]),
+            "horizons": list(result["horizons"]),
+            "passed": len(result["passed"]),
+            "artifact": relative_artifact,
+        },
+    )
+    result["artifact"] = str(artifact)
+    return result
+
+
+def factor_holdout_check_job(
+    job_id: str,
+    *,
+    column: str,
+    horizon: int,
+    orientation: str,
+    holdout_fraction: float = 0.15,
+    store: Any | None = None,
+) -> dict[str, Any]:
+    """Spend the factor tail once; repeat calls return the original result."""
+    import hashlib
+
+    from wayfinder_paths.jobs.models import utc_now_iso
+    from wayfinder_paths.jobs.research_contract import RESEARCH_CONTRACT_VERSION
+    from wayfinder_paths.jobs.store import JobStore
+
+    store = store or JobStore()
+    root = store.job_dir(job_id)
+    key = f"{column}|{horizon}|{orientation}|{holdout_fraction:.8f}"
+    trial = hashlib.sha1(key.encode()).hexdigest()[:12]
+    relative_artifact = f"results/research/factor_holdout_{trial}.json"
+    artifact = root / relative_artifact
+    if artifact.exists():
+        cached = store.read_json(job_id, relative_artifact)
+        if not isinstance(cached, dict):
+            raise ValueError(f"invalid factor holdout artifact: {relative_artifact}")
+        result = cached
+        result["already_spent"] = True
+        result["read"] = (
+            "this factor tail was already spent; returning the original "
+            "artifact without recomputing it"
+        )
+        result["artifact"] = str(artifact)
+        return result
+    scan_artifact = root / "results/research/factor_scan.json"
+    if not scan_artifact.exists():
+        raise FileNotFoundError(
+            "factor holdout requires results/research/factor_scan.json; "
+            "run factor-scan and freeze a passing cell first"
+        )
+    scan = store.read_json(job_id, "results/research/factor_scan.json")
+    if not isinstance(scan, dict):
+        raise ValueError("persisted factor scan is not a JSON object")
+    passed_cell = next(
+        (
+            row
+            for row in scan.get("passed", [])
+            if row.get("column") == column
+            and int(row.get("horizon", 0)) == horizon
+            and row.get("orientation") == orientation
+        ),
+        None,
+    )
+    if passed_cell is None:
+        raise ValueError(
+            "factor holdout may only open a column, horizon, and orientation "
+            "that passed the persisted factor scan"
+        )
+    scan_holdout = scan.get("holdout", {})
+    scan_fraction = float(scan_holdout.get("fraction", holdout_fraction))
+    if not math.isclose(scan_fraction, holdout_fraction):
+        raise ValueError(
+            "factor holdout_fraction must match the persisted factor scan "
+            f"({scan_fraction})"
+        )
+    cutoff_ts = scan_holdout.get("cutoff_ts")
+    if not cutoff_ts:
+        raise ValueError("persisted factor scan is missing its holdout cutoff")
+    _, _, frames = _precomputed_job_frames(job_id, store)
+    result = factor_rank_holdout(
+        frames,
+        column,
+        horizon,
+        orientation,
+        holdout_fraction=holdout_fraction,
+        cutoff_ts=cutoff_ts,
+    )
+    result.update(
+        {
+            "research_contract_version": RESEARCH_CONTRACT_VERSION,
+            "generated_at": utc_now_iso(),
+            "already_spent": False,
+            "training_scan_artifact": "results/research/factor_scan.json",
+        }
+    )
+    artifact = store.write_json(job_id, relative_artifact, result)
+    store.append_journal(
+        job_id,
+        {
+            "type": "factor_holdout_completed",
+            "column": column,
+            "horizon": horizon,
+            "orientation": orientation,
+            "verdict": result["verdict"],
             "artifact": relative_artifact,
         },
     )

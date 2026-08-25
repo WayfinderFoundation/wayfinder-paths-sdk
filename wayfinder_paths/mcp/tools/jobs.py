@@ -59,6 +59,8 @@ JobAction = Literal[
     "derive_features",
     "holdout_check",
     "rank_check",
+    "factor_scan",
+    "factor_holdout",
     "strategy_library",
     "backtest_job",
     "op_status",
@@ -344,9 +346,14 @@ async def core_jobs(
     via_proposal: bool = False,
     symbols: list[str] | None = None,
     column: str | None = None,
+    columns: list[str] | None = None,
     horizons: list[int] | None = None,
     bar_interval: str | None = None,
     direction: Literal["long", "short", "auto"] | None = None,
+    orientation: Literal[
+        "high_score_outperforms", "low_score_outperforms"
+    ]
+    | None = None,
     timeframes: list[str] | None = None,
     holdout_fraction: float = 0.15,
     signal: str | None = None,
@@ -412,6 +419,10 @@ async def core_jobs(
         script), `holdout_check` (one-shot confirmation of a FROZEN scan
         candidate — signal + horizon + direction — on the reserved tail;
         spend it once per candidate, the trial ledger remembers),
+        `factor_scan` (pooled rank-IC admission for a declared family of
+        precomputed factor columns, with BH correction, chronological folds,
+        next-open outcomes, and a reserved tail), `factor_holdout` (spend
+        that tail once for one frozen column/horizon/orientation),
         `strategy_library` (list the
         shipped reference strategies — verbatim ports of audited live
         scripts; when the user references a known/live strategy, start here
@@ -731,6 +742,36 @@ async def core_jobs(
         return await _run_job_op(
             "rank_check",
             {"job_id": job_id, "column": column, "horizons": horizons},
+        )
+
+    if action == "factor_scan":
+        if not columns:
+            return err("invalid_request", "factor_scan requires columns")
+        return await _run_job_op(
+            "factor_scan",
+            {
+                "job_id": job_id,
+                "columns": columns,
+                "horizons": horizons,
+                "holdout_fraction": holdout_fraction,
+            },
+        )
+
+    if action == "factor_holdout":
+        if not column or horizon is None or orientation is None:
+            return err(
+                "invalid_request",
+                "factor_holdout requires column, horizon, and orientation",
+            )
+        return await _run_job_op(
+            "factor_holdout",
+            {
+                "job_id": job_id,
+                "column": column,
+                "horizon": horizon,
+                "orientation": orientation,
+                "holdout_fraction": holdout_fraction,
+            },
         )
 
     if action == "experiments":

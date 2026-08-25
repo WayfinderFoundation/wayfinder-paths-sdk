@@ -61,6 +61,10 @@ supplied revision-bound artifacts and question. Do not recreate execution PnL,
 fills, funding cashflows, or promotion rules in a parallel simulator. Return
 bounded metrics and caveats to the parent; the parent owns `robustness_check`,
 candidate comparison, approval interpretation, and deployment decisions.
+For cross-sectional factor briefs, reuse `wayfinder_paths.jobs.factors`, keep
+the declared columns x horizons in one pooled `factor_scan`, and report IC,
+HAC t-stat, BH q-value, fold signs, orientation, coverage, and turnover inputs.
+Never open or retune on the reserved tail; the parent spends `factor_holdout`.
 
 ## Data and Scripts
 
