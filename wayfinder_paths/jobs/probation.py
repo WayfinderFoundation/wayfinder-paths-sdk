@@ -157,6 +157,12 @@ def open_paper_probation_leg(
     baseline_net: float | None = None,
     backtest_trades: int | None = None,
     notes: str | None = None,
+    candidate_bundle_id: str | None = None,
+    candidate_bundle: str | None = None,
+    campaign_id: str | None = None,
+    candidate_revision: str | None = None,
+    forward_context_cutoff: str | None = None,
+    shadow_stream: str | None = None,
 ) -> dict[str, Any]:
     """Open a PAPER probation leg for a candidate that is "not clearly worse"
     than baseline — no baseline beat and no owner approval required, because
@@ -222,6 +228,18 @@ def open_paper_probation_leg(
         )
     if any(leg.get("name") == name for leg in doc["legs"]):
         raise ValueError(f"probation leg {name!r} already exists")
+    candidate_linkage = {
+        key: value
+        for key, value in {
+            "candidate_bundle_id": candidate_bundle_id,
+            "candidate_bundle": candidate_bundle,
+            "campaign_id": campaign_id,
+            "candidate_revision": candidate_revision,
+            "forward_context_cutoff": forward_context_cutoff,
+            "shadow_stream": shadow_stream,
+        }.items()
+        if value is not None
+    }
     leg = {
         "name": name,
         "symbol": symbol,
@@ -233,6 +251,7 @@ def open_paper_probation_leg(
         # is the forward paper stream, adjudicated by the controller.
         "size_fraction": 0.0,
         "proposal_id": proposal_id,
+        **candidate_linkage,
         "entry": {
             "candidate_net_return": float(candidate_net),
             "baseline_net_return": float(baseline_net),
@@ -261,6 +280,11 @@ def open_paper_probation_leg(
             "leg": name,
             "symbol": symbol,
             "proposal_id": proposal_id,
+            **{
+                key: candidate_linkage[key]
+                for key in ("candidate_bundle_id", "campaign_id")
+                if key in candidate_linkage
+            },
             "entry": leg["entry"],
         },
     )

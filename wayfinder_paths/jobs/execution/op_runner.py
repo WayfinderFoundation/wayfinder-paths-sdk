@@ -34,6 +34,8 @@ _EVIDENCE_OPS = {
     "holdout_check",
     "restamp",
     "robustness_check",
+    "evolution_finalize",
+    "forward_experience",
 }
 
 
@@ -123,6 +125,48 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
         from wayfinder_paths.jobs.robustness import robustness_check_job
 
         return robustness_check_job(kwargs.pop("job_id"), **kwargs)
+    if op == "evolution_evaluate":
+        from wayfinder_paths.jobs.evolution_campaign import evaluate_candidate
+        from wayfinder_paths.jobs.store import JobStore
+
+        return evaluate_candidate(
+            JobStore(), kwargs.pop("job_id"), kwargs.pop("candidate_id")
+        )
+    if op == "evolution_finalize":
+        from wayfinder_paths.jobs.evolution_campaign import finalize_campaign
+        from wayfinder_paths.jobs.store import JobStore
+
+        return finalize_campaign(JobStore(), kwargs.pop("job_id"))
+    if op == "forward_experience":
+        from wayfinder_paths.jobs.forward_experience import build_forward_experience
+        from wayfinder_paths.jobs.store import JobStore
+
+        return build_forward_experience(JobStore(), kwargs.pop("job_id"))
+    if op == "candidate_shadows":
+        import asyncio
+
+        import pandas as pd
+
+        from wayfinder_paths.jobs.candidate_shadow import run_candidate_shadows
+        from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+        from wayfinder_paths.jobs.store import JobStore
+
+        store = JobStore()
+        job_id = kwargs.pop("job_id")
+        result = asyncio.run(
+            run_candidate_shadows(
+                store,
+                job_id,
+                view=CompletedBarsView.from_rows(kwargs.pop("rows")),
+                now=pd.Timestamp(kwargs.pop("now")),
+            )
+        )
+        errors = [row for row in result if row.get("error") and row.get("notify")]
+        if errors:
+            store.append_journal(
+                job_id, {"type": "candidate_shadow_failed", "errors": errors}
+            )
+        return result
     if op == "backtest_job":
         from wayfinder_paths.jobs.execution.job import (
             backtest_execution_job,

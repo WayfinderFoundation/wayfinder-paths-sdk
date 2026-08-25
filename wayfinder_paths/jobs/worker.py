@@ -755,6 +755,7 @@ def _build_worker_prompt_sections(
     )
     remediation_overrides = remediation_actionable and not remediation_quiet
     search_assignment = None
+    evolution_campaign = None
     if (
         mode == "intervene"
         and apply_proposal_id is None
@@ -767,6 +768,12 @@ def _build_worker_prompt_sections(
             search_assignment = assign_island(store, job_id)
         except Exception:  # noqa: BLE001
             search_assignment = None
+        try:
+            from wayfinder_paths.jobs.evolution_campaign import campaign_prompt_block
+
+            evolution_campaign = campaign_prompt_block(store, job_id)
+        except Exception:  # noqa: BLE001 - optional rollout cannot block a wake
+            evolution_campaign = None
     dynamic_payload = {
         "scorecard": snapshot.get("scorecard") or {},
         "forward": forward_block,
@@ -794,6 +801,7 @@ def _build_worker_prompt_sections(
         "archive": _archive_block(store, job_id),
         "restage_tasks": restage_tasks,
         "search_assignment": search_assignment,
+        "open_evolution_campaign": evolution_campaign,
         "portfolio": _portfolio_context(store, job_id),
     }
 
@@ -829,6 +837,11 @@ def _build_worker_prompt_sections(
         "have NAMED new "
         "evidence that did not exist at rejection time, and the new proposal "
         "summary must cite both the rejected proposal id and that evidence. "
+        "- OPEN EVOLUTION is a parallel paper-research lane. When the dynamic "
+        "`open_evolution_campaign` block is present, follow its `next_action`; "
+        "edit ONLY the named candidate bundle, never the active workspace. "
+        "Candidate audit data is reserved for evolution-finalize, and a "
+        "paper_probation result cannot authorize or place a live order. "
         "Your own reasoned self-rejections (superseded/stale drafts) do not "
         "bind — iterate freely. Before proposing ANYTHING, scan the rejected "
         "proposals for an equivalent prior ask.\n"

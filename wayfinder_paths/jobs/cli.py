@@ -29,6 +29,11 @@ from wayfinder_paths.jobs.decision_gates import (
     resolve_decision_gate,
 )
 from wayfinder_paths.jobs.decision_log import build_decision_log
+from wayfinder_paths.jobs.evolution_campaign import (
+    campaign_status,
+    prepare_candidate,
+    start_campaign,
+)
 from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.experiments import (
     list_experiments,
@@ -1129,6 +1134,110 @@ def robustness_check_cmd(
                 "candidate_dir": str(candidate_dir) if candidate_dir else None,
                 "robustness_plan": plan,
             },
+        )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="evolution-start",
+    help="Start the gated, isolated open-ended research campaign for a job.",
+)
+@click.argument("job_id")
+@click.option("--force", is_flag=True, help="Replace cooldown/completed state.")
+def evolution_start_cmd(job_id: str, force: bool) -> None:
+    try:
+        result = start_campaign(JobStore(), job_id, force=force)
+    except (FileNotFoundError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(name="evolution-status", help="Show the current evolution campaign.")
+@click.argument("job_id")
+def evolution_status_cmd(job_id: str) -> None:
+    _echo_json({"ok": True, "result": campaign_status(JobStore(), job_id)})
+
+
+@job_cli.command(
+    name="evolution-prepare",
+    help="Create one isolated candidate bundle for the code-mutation worker.",
+)
+@click.argument("job_id")
+@click.option("--family", required=True)
+@click.option("--summary", required=True)
+@click.option(
+    "--mutation-kind", type=click.Choice(["structural", "parameter"]), default=None
+)
+def evolution_prepare_cmd(
+    job_id: str, family: str, summary: str, mutation_kind: str | None
+) -> None:
+    try:
+        result = prepare_candidate(
+            JobStore(),
+            job_id,
+            family=family,
+            summary=summary,
+            mutation_kind=mutation_kind,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="evolution-evaluate",
+    help="Run a candidate's static and low-fidelity screen in isolation.",
+)
+@click.argument("job_id")
+@click.argument("candidate_id")
+@click.option("--foreground", is_flag=True)
+def evolution_evaluate_cmd(job_id: str, candidate_id: str, foreground: bool) -> None:
+    if foreground:
+        from wayfinder_paths.jobs.evolution_campaign import evaluate_candidate
+
+        result = evaluate_candidate(JobStore(), job_id, candidate_id)
+    else:
+        result = spawn_detached_op(
+            JobStore(),
+            job_id,
+            "evolution_evaluate",
+            {"job_id": job_id, "candidate_id": candidate_id},
+        )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="evolution-finalize",
+    help="Run bounded full-dev and sealed-audit stages in isolation.",
+)
+@click.argument("job_id")
+@click.option("--foreground", is_flag=True)
+def evolution_finalize_cmd(job_id: str, foreground: bool) -> None:
+    if foreground:
+        from wayfinder_paths.jobs.evolution_campaign import finalize_campaign
+
+        result = finalize_campaign(JobStore(), job_id)
+    else:
+        result = spawn_detached_op(
+            JobStore(), job_id, "evolution_finalize", {"job_id": job_id}
+        )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="forward-experience",
+    help="Refresh owner-scoped live execution calibration and paper priors.",
+)
+@click.argument("job_id")
+@click.option("--foreground", is_flag=True)
+def forward_experience_cmd(job_id: str, foreground: bool) -> None:
+    if foreground:
+        from wayfinder_paths.jobs.forward_experience import build_forward_experience
+
+        result = build_forward_experience(JobStore(), job_id)
+    else:
+        result = spawn_detached_op(
+            JobStore(), job_id, "forward_experience", {"job_id": job_id}
         )
     _echo_json({"ok": True, "result": result})
 

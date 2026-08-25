@@ -427,6 +427,11 @@ async def tick_job(
         if not feature_skip:
             view = merge_features(view, feature_frames, feature_specs)
 
+    # Candidate shadows receive the same completed bars and exogenous feature
+    # snapshot, but apply their own precompute hook below in an isolated paper
+    # engine. Keep this reference before the incumbent adds derived columns.
+    shadow_view = view
+
     # Strategy-precomputed indicator columns (optional `precompute` hook): one
     # vectorized pass over the bounded window, after the exogenous feature
     # merge so precompute() can consume those columns. The backtest applies
@@ -549,6 +554,29 @@ async def tick_job(
         root=root,
         mode=mode,
     )
+    # Evolution probation is a true parallel A/B lane: same incoming bars,
+    # separate state/telemetry, PaperBroker only. It is deliberately
+    # best-effort so candidate computation cannot delay or fail the incumbent.
+    try:
+        from wayfinder_paths.jobs.background import spawn_detached_op
+        from wayfinder_paths.jobs.candidate_shadow import active_candidate_shadows
+
+        if active_candidate_shadows(store, job.id):
+            spawn_detached_op(
+                store,
+                job.id,
+                "candidate_shadows",
+                {
+                    "job_id": job.id,
+                    "rows": [
+                        {**row, "timestamp": row["timestamp"].isoformat()}
+                        for row in shadow_view.to_rows()
+                    ],
+                    "now": now.isoformat(),
+                },
+            )
+    except Exception as exc:  # noqa: BLE001 - never blocks incumbent execution
+        logger.debug(f"candidate shadows skipped: {exc}")
     try:
         _record_pending_trade_forensics(root, view)
     except Exception as exc:  # noqa: BLE001 — telemetry must never fail a tick

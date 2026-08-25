@@ -84,6 +84,28 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         },
         "exploration_floor": 0.25,
     },
+    # Isolated open-ended code evolution. The rollout is deliberately limited
+    # to the named lab job; other jobs see no campaign state or extra work.
+    "evolution": {
+        "enabled": True,
+        "allowed_job_ids": ["majors-5m-lab"],
+        "campaign_hours": 4,
+        "cooldown_hours": 24,
+        "generated_programs": 12,
+        "full_dev_survivors": 4,
+        "inner_optuna_finalists": 2,
+        "inner_optuna_trials": 20,
+        "sealed_audits": 2,
+        "split": {"train": 0.70, "validation": 0.15, "audit": 0.15},
+        "parent_mix": {
+            "incumbent": 0.30,
+            "qd_elite": 0.30,
+            "crossover": 0.20,
+            "de_novo": 0.20,
+        },
+        "min_structural_fraction": 0.50,
+        "max_parameter_fraction": 0.25,
+    },
 }
 
 
@@ -171,6 +193,15 @@ class ImproverSpec:
     @property
     def exploration_floor(self) -> float:
         return float(self.policy["islands"]["exploration_floor"])
+
+    @property
+    def evolution(self) -> dict[str, Any]:
+        return dict(self.policy["evolution"])
+
+    def evolution_enabled_for(self, job_id: str) -> bool:
+        evolution = self.policy["evolution"]
+        allowed = {str(item) for item in evolution.get("allowed_job_ids") or []}
+        return bool(evolution.get("enabled")) and job_id in allowed
 
     def tier(self, name: str) -> dict[str, Any]:
         return dict(self.policy["tiers"][name])

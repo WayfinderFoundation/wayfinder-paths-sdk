@@ -155,3 +155,36 @@ async def test_robustness_check_defaults_to_background(tmp_path, monkeypatch) ->
         background=False,
     )
     assert captured["sync_op"] == "robustness_check"
+
+
+@pytest.mark.asyncio
+async def test_evolution_heavy_stages_default_to_background(
+    tmp_path, monkeypatch
+) -> None:
+    captured: list[tuple[str, dict]] = []
+
+    async def fake_start(store, job_id, op, kwargs):
+        captured.append((op, kwargs))
+        return {"ok": True, "result": {"started": True}}
+
+    monkeypatch.setattr(jobs_module, "_start_background_op", fake_start)
+    monkeypatch.setattr(jobs_module, "JobStore", lambda: JobStore(repo_root=tmp_path))
+
+    evaluated = await core_jobs(
+        action="evolution_evaluate",
+        job_id="majors-5m-lab",
+        candidate_id="candidate-1",
+    )
+    finalized = await core_jobs(action="evolution_finalize", job_id="majors-5m-lab")
+    experienced = await core_jobs(action="forward_experience", job_id="majors-5m-lab")
+    assert evaluated["result"]["started"] is True
+    assert finalized["result"]["started"] is True
+    assert experienced["result"]["started"] is True
+    assert captured == [
+        (
+            "evolution_evaluate",
+            {"job_id": "majors-5m-lab", "candidate_id": "candidate-1"},
+        ),
+        ("evolution_finalize", {"job_id": "majors-5m-lab"}),
+        ("forward_experience", {"job_id": "majors-5m-lab"}),
+    ]

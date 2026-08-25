@@ -73,6 +73,12 @@ JobAction = Literal[
     "backtest_diagnose",
     "experiments",
     "robustness_check",
+    "evolution_start",
+    "evolution_status",
+    "evolution_prepare",
+    "evolution_evaluate",
+    "evolution_finalize",
+    "forward_experience",
     "promote_params",
     "proposals",
     "propose",
@@ -324,6 +330,9 @@ async def core_jobs(
     intent_contract: dict[str, Any] | None = None,
     execution_params: dict[str, Any] | None = None,
     candidate_dir: str | None = None,
+    candidate_id: str | None = None,
+    family: str | None = None,
+    mutation_kind: Literal["structural", "parameter"] | None = None,
     scenario_plan: dict[str, Any] | None = None,
     improver: dict[str, Any] | None = None,
     memo: str | None = None,
@@ -828,6 +837,68 @@ async def core_jobs(
         if background is not False:
             return await _start_background_op(store, job_id, "robustness_check", kwargs)
         return await _run_job_op("robustness_check", kwargs)
+
+    if action == "evolution_start":
+        if not job_id:
+            return err("invalid_request", "evolution_start requires job_id")
+        from wayfinder_paths.jobs.evolution_campaign import start_campaign
+
+        return ok(start_campaign(store, job_id, force=force))
+
+    if action == "evolution_status":
+        if not job_id:
+            return err("invalid_request", "evolution_status requires job_id")
+        from wayfinder_paths.jobs.evolution_campaign import campaign_status
+
+        return ok(campaign_status(store, job_id))
+
+    if action == "evolution_prepare":
+        if not job_id or not family or not summary:
+            return err(
+                "invalid_request",
+                "evolution_prepare requires job_id, family, and summary",
+            )
+        from wayfinder_paths.jobs.evolution_campaign import prepare_candidate
+
+        return ok(
+            prepare_candidate(
+                store,
+                job_id,
+                family=family,
+                summary=summary,
+                mutation_kind=mutation_kind,
+            )
+        )
+
+    if action == "evolution_evaluate":
+        if not job_id or not candidate_id:
+            return err(
+                "invalid_request", "evolution_evaluate requires job_id and candidate_id"
+            )
+        kwargs = {"job_id": job_id, "candidate_id": candidate_id}
+        if background is not False:
+            return await _start_background_op(
+                store, job_id, "evolution_evaluate", kwargs
+            )
+        return await _run_job_op("evolution_evaluate", kwargs)
+
+    if action == "evolution_finalize":
+        if not job_id:
+            return err("invalid_request", "evolution_finalize requires job_id")
+        kwargs = {"job_id": job_id}
+        if background is not False:
+            return await _start_background_op(
+                store, job_id, "evolution_finalize", kwargs
+            )
+        return await _run_job_op("evolution_finalize", kwargs)
+
+    if action == "forward_experience":
+        if not job_id:
+            return err("invalid_request", "forward_experience requires job_id")
+        kwargs = {"job_id": job_id}
+        if background is not False:
+            return await _start_background_op(store, job_id, "forward_experience", kwargs)
+        return await _run_job_op("forward_experience", kwargs)
 
     if action == "promote_params":
         return await _run_job_op(
