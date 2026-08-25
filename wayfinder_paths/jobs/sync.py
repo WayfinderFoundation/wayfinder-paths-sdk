@@ -563,7 +563,10 @@ async def venue_deposit(
     store = store or JobStore()
     job = store.load(job_id)
     label = _funded_wallet_label(job)
-    outcome = await hyperliquid_deposit_usdc(wallet_label=label, amount_usdc=amount)
+    envelope = await hyperliquid_deposit_usdc(wallet_label=label, amount_usdc=amount)
+    if not envelope["ok"]:
+        raise ValueError(f"venue deposit failed: {envelope}")
+    outcome = envelope["result"]
     if outcome["status"] == "failed":
         raise ValueError(f"venue deposit failed: {outcome}")
     funding = store.read_json(job_id, "state/funding.json", default=None) or {}
@@ -593,7 +596,10 @@ async def venue_withdraw(
     store = store or JobStore()
     job = store.load(job_id)
     label = _funded_wallet_label(job)
-    outcome = await hyperliquid_withdraw_usdc(wallet_label=label, amount_usdc=amount)
+    envelope = await hyperliquid_withdraw_usdc(wallet_label=label, amount_usdc=amount)
+    if not envelope["ok"]:
+        raise ValueError(f"venue withdraw failed: {envelope}")
+    outcome = envelope["result"]
     if outcome["status"] == "failed":
         raise ValueError(f"venue withdraw failed: {outcome}")
     current = float(job.execution_params.get("initial_capital") or 0.0)

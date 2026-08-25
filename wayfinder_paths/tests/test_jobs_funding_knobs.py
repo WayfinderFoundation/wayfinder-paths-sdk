@@ -148,7 +148,7 @@ def test_venue_deposit_bridges_then_grows_capital(tmp_path, monkeypatch) -> None
 
     async def fake_deposit(*, wallet_label, amount_usdc):
         calls.append({"wallet_label": wallet_label, "amount_usdc": amount_usdc})
-        return {"status": "confirmed"}
+        return {"ok": True, "result": {"status": "confirmed"}}
 
     import wayfinder_paths.mcp.tools.hyperliquid as hl
 
@@ -176,7 +176,7 @@ def test_venue_deposit_failed_send_never_touches_capital(tmp_path, monkeypatch) 
     store.save(job)
 
     async def fake_deposit(*, wallet_label, amount_usdc):
-        return {"status": "failed", "error": "no gas"}
+        return {"ok": True, "result": {"status": "failed", "error": "no gas"}}
 
     import wayfinder_paths.mcp.tools.hyperliquid as hl
 
@@ -200,7 +200,7 @@ def test_venue_withdraw_shrinks_capital_floored_at_zero(tmp_path, monkeypatch) -
     monkeypatch.setattr(sync_module, "sync_all_jobs", lambda **kwargs: None)
 
     async def fake_withdraw(*, wallet_label, amount_usdc):
-        return {"status": "confirmed"}
+        return {"ok": True, "result": {"status": "confirmed"}}
 
     import wayfinder_paths.mcp.tools.hyperliquid as hl
 
