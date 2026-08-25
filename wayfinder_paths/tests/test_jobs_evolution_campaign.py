@@ -14,8 +14,10 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _parent_source,
     _same_family_nonwins,
     _write_timeseries_prefix,
+    campaign_due,
     campaign_prompt_block,
     campaign_status,
+    evolution_compute_window_open,
     finalize_campaign,
     maybe_start_campaign,
     prepare_candidate,
@@ -72,7 +74,7 @@ def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
     )
     assert snapshot.read_text(encoding="utf-8") == original
     assert manifest["forward_context_cutoff"] == now.isoformat()
-    block = campaign_prompt_block(store, job_id)
+    block = campaign_prompt_block(store, job_id, now=now)
     assert block is not None
     assert len(block["cases"]) <= MAX_PROMPT_CASES
     assert block["constraints"] == {
@@ -84,9 +86,63 @@ def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
     assert len(load_starter_casebook()) > len(block["cases"])
 
 
+@pytest.mark.parametrize(
+    ("hour", "minute", "expected"),
+    [
+        (0, 59, True),
+        (1, 0, False),
+        (3, 59, False),
+        (4, 0, True),
+        (6, 0, False),
+        (9, 59, False),
+        (10, 0, True),
+    ],
+)
+def test_evolution_pauses_during_deepseek_peak_pricing(
+    tmp_path, hour: int, minute: int, expected: bool
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    now = datetime(2026, 8, 25, hour, minute, tzinfo=UTC)
+    assert evolution_compute_window_open(store, job_id, now=now) is expected
+
+
+def test_campaign_start_reserves_full_window_before_peak_pricing(tmp_path) -> None:
+    safe_store, safe_id = _job(tmp_path / "safe", "majors-5m-lab")
+    safe = datetime(2026, 8, 25, 19, tzinfo=UTC)
+    assert evolution_compute_window_open(
+        safe_store, safe_id, now=safe, reserve_campaign=True
+    )
+    assert campaign_due(safe_store, safe_id, now=safe)
+
+    blocked_store, blocked_id = _job(tmp_path / "blocked", "majors-5m-lab")
+    blocked = datetime(2026, 8, 25, 21, tzinfo=UTC)
+    assert not evolution_compute_window_open(
+        blocked_store, blocked_id, now=blocked, reserve_campaign=True
+    )
+    assert not campaign_due(blocked_store, blocked_id, now=blocked)
+    assert maybe_start_campaign(blocked_store, blocked_id, now=blocked) is None
+    with pytest.raises(ValueError, match="peak pricing"):
+        start_campaign(blocked_store, blocked_id, now=blocked)
+
+
+def test_active_campaign_prompt_is_suppressed_during_peak_pricing(tmp_path) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    store.write_json(
+        job_id,
+        "state/evolution_campaign.json",
+        {"campaign_id": "campaign-1", "status": "active"},
+    )
+    assert campaign_prompt_block(
+        store, job_id, now=datetime(2026, 8, 25, 2, tzinfo=UTC)
+    ) == {
+        "status": "blocked",
+        "reason": "evolution worker paused during peak model pricing",
+    }
+
+
 def test_prepare_candidate_isolated_lineage_and_mutation_budget(tmp_path) -> None:
     store, job_id = _job(tmp_path, "majors-5m-lab")
-    start_campaign(store, job_id, now=datetime(2026, 8, 25, tzinfo=UTC))
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
     active_script = store.job_dir(job_id) / "workspace/src/strategy.py"
     active_script.write_text("raise RuntimeError('post-freeze change')\n")
     first = prepare_candidate(
@@ -95,7 +151,7 @@ def test_prepare_candidate_isolated_lineage_and_mutation_budget(tmp_path) -> Non
         family="breakout",
         summary="structural breadth and exit mutation",
         mutation_kind="parameter",  # slot 1 is forced structural by budget
-        now=datetime(2026, 8, 25, 1, tzinfo=UTC),
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
     )
     assert first["mutation_kind"] == "structural"
     root = store.job_dir(job_id)
@@ -115,7 +171,7 @@ def test_prepare_candidate_isolated_lineage_and_mutation_budget(tmp_path) -> Non
         job_id,
         family="breakout",
         summary="second structural attempt",
-        now=datetime(2026, 8, 25, 1, tzinfo=UTC),
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
     )
     state = campaign_status(store, job_id)
     state["candidates"][0]["status"] = "low_fidelity_rejected"
@@ -126,7 +182,7 @@ def test_prepare_candidate_isolated_lineage_and_mutation_budget(tmp_path) -> Non
         job_id,
         family="breakout",
         summary="stuck rule jumps basin",
-        now=datetime(2026, 8, 25, 1, tzinfo=UTC),
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
     )
     assert second["parent_source"] == "qd_elite"
     assert third["forced_jump"] is True
@@ -147,7 +203,7 @@ def test_prepare_candidate_isolated_lineage_and_mutation_budget(tmp_path) -> Non
 
 def test_campaign_cooldown_is_enforced(tmp_path) -> None:
     store, job_id = _job(tmp_path, "majors-5m-lab")
-    now = datetime(2026, 8, 25, tzinfo=UTC)
+    now = datetime(2026, 8, 25, 12, tzinfo=UTC)
     state = start_campaign(store, job_id, now=now)
     state["status"] = "complete"
     store.write_json(job_id, "state/evolution_campaign.json", state)
@@ -159,7 +215,7 @@ def test_finalize_enforces_stage_budgets_and_isolates_candidate_failure(
     tmp_path, monkeypatch
 ) -> None:
     store, job_id = _job(tmp_path, "majors-5m-lab")
-    started = datetime(2026, 8, 25, tzinfo=UTC)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
     start_campaign(store, job_id, now=started)
     candidates = []
     for index in range(6):
@@ -168,7 +224,7 @@ def test_finalize_enforces_stage_budgets_and_isolates_candidate_failure(
             job_id,
             family=f"family-{index}",
             summary=f"candidate {index}",
-            now=started.replace(hour=1),
+            now=started.replace(hour=13),
         )
         candidates.append(candidate)
     state = campaign_status(store, job_id)
@@ -262,13 +318,13 @@ def test_quality_diversity_keeps_two_non_dominated_per_cell(tmp_path) -> None:
 
 def test_candidate_bundle_is_confined_to_its_exact_campaign_slot(tmp_path) -> None:
     store, job_id = _job(tmp_path, "majors-5m-lab")
-    state = start_campaign(store, job_id, now=datetime(2026, 8, 25, tzinfo=UTC))
+    state = start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
     candidate = prepare_candidate(
         store,
         job_id,
         family="breakout",
         summary="containment fixture",
-        now=datetime(2026, 8, 25, 1, tzinfo=UTC),
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
     )
     expected = (store.job_dir(job_id) / candidate["bundle"]).resolve()
     assert resolve_candidate_bundle(store, job_id, candidate) == expected

@@ -91,6 +91,15 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "allowed_job_ids": ["majors-5m-lab"],
         "campaign_hours": 4,
         "start_interval_hours": 24,
+        # DeepSeek has announced 2x pricing during 09:00-12:00 and
+        # 14:00-18:00 Beijing time. Keep this in UTC so host DST cannot move it.
+        # The guard leaves one hourly worker interval for the final prompt to
+        # finish before peak pricing starts.
+        "pricing_schedule": {
+            "provider": "deepseek",
+            "blocked_windows_utc": [["01:00", "04:00"], ["06:00", "10:00"]],
+            "campaign_guard_minutes": 60,
+        },
         # Backward-compatible fallback for job-local policies written before
         # start_interval_hours was introduced.
         "cooldown_hours": 12,

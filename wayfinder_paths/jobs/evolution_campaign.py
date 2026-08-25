@@ -15,7 +15,7 @@ import math
 import os
 import shutil
 import tempfile
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +73,61 @@ def campaign_status(store: JobStore, job_id: str) -> dict[str, Any]:
     return store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
 
 
+def evolution_compute_window_open(
+    store: JobStore,
+    job_id: str,
+    *,
+    now: datetime | None = None,
+    reserve_campaign: bool = False,
+) -> bool:
+    """Return whether evolution model work fits outside priced peak windows."""
+    spec = ImproverSpec.load(store.job_dir(job_id))
+    schedule = spec.evolution.get("pricing_schedule") or {}
+    windows = schedule.get("blocked_windows_utc") or []
+    if not windows:
+        return True
+    current = _aware(now or datetime.now(UTC))
+    duration = timedelta(microseconds=1)
+    if reserve_campaign:
+        duration = timedelta(
+            hours=float(spec.evolution["campaign_hours"]),
+            minutes=float(schedule.get("campaign_guard_minutes") or 0),
+        )
+    return not _overlaps_daily_utc_windows(current, current + duration, windows)
+
+
+def _overlaps_daily_utc_windows(
+    start: datetime, end: datetime, windows: list[Any]
+) -> bool:
+    """Check a UTC interval against recurring half-open daily windows."""
+    first_day = start.date() - timedelta(days=1)
+    last_day = end.date()
+    day = first_day
+    while day <= last_day:
+        for raw_window in windows:
+            if not isinstance(raw_window, (list, tuple)) or len(raw_window) != 2:
+                raise ValueError("pricing windows must be [start, end] UTC pairs")
+            blocked_start = datetime.combine(
+                day, _parse_utc_clock(raw_window[0]), tzinfo=UTC
+            )
+            blocked_end = datetime.combine(
+                day, _parse_utc_clock(raw_window[1]), tzinfo=UTC
+            )
+            if blocked_end <= blocked_start:
+                blocked_end += timedelta(days=1)
+            if start < blocked_end and end > blocked_start:
+                return True
+        day += timedelta(days=1)
+    return False
+
+
+def _parse_utc_clock(value: Any) -> time:
+    try:
+        return time.fromisoformat(str(value))
+    except ValueError as exc:
+        raise ValueError(f"invalid UTC pricing-window time: {value!r}") from exc
+
+
 def campaign_due(store: JobStore, job_id: str, *, now: datetime | None = None) -> bool:
     """Cheap, read-only cadence check used before spawning campaign setup."""
     spec = ImproverSpec.load(store.job_dir(job_id))
@@ -80,6 +135,11 @@ def campaign_due(store: JobStore, job_id: str, *, now: datetime | None = None) -
         return False
     existing = campaign_status(store, job_id)
     if existing.get("status") in {"active", "finalizing"}:
+        return False
+    current = _aware(now or datetime.now(UTC))
+    if not evolution_compute_window_open(
+        store, job_id, now=current, reserve_campaign=True
+    ):
         return False
     from wayfinder_paths.jobs.paper_experiment import experiment_status
 
@@ -94,7 +154,7 @@ def campaign_due(store: JobStore, job_id: str, *, now: datetime | None = None) -
             or spec.evolution["cooldown_hours"]
         )
     )
-    return _aware(now or datetime.now(UTC)) - _parse(anchor) >= cadence
+    return current - _parse(anchor) >= cadence
 
 
 def maybe_start_campaign(
@@ -124,6 +184,10 @@ def maybe_start_campaign(
             )
             if elapsed < cadence:
                 return existing
+        if not evolution_compute_window_open(
+            store, job_id, now=now, reserve_campaign=True
+        ):
+            return existing or None
         return start_campaign(store, job_id, now=now)
 
 
@@ -163,6 +227,10 @@ def _start_campaign(
         )
         if elapsed < cadence:
             raise ValueError("evolution campaign start interval has not elapsed")
+    if not force and not evolution_compute_window_open(
+        store, job_id, now=current, reserve_campaign=True
+    ):
+        raise ValueError("evolution campaign does not fit outside peak pricing")
 
     root = store.job_dir(job_id)
     dataset_path = root / "results" / "backtest" / "input_bars.json"
@@ -635,19 +703,26 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
     return state
 
 
-def campaign_prompt_block(store: JobStore, job_id: str) -> dict[str, Any] | None:
+def campaign_prompt_block(
+    store: JobStore, job_id: str, *, now: datetime | None = None
+) -> dict[str, Any] | None:
     """Bounded dynamic context; the full casebook is never reloaded into prompts."""
     try:
-        state = maybe_start_campaign(store, job_id)
+        state = maybe_start_campaign(store, job_id, now=now)
     except (FileNotFoundError, ValueError) as exc:
         return {"status": "blocked", "reason": str(exc)}
     if not state or state.get("status") != "active":
         return None
+    if not evolution_compute_window_open(store, job_id, now=now):
+        return {
+            "status": "blocked",
+            "reason": "evolution worker paused during peak model pricing",
+        }
     manifest = store.read_json(job_id, str(state["manifest"]), default={}) or {}
     candidates = state.get("candidates") or []
     prepared = [item for item in candidates if item.get("status") == "prepared"]
     policy = manifest.get("policy") or {}
-    deadline_elapsed = datetime.now(UTC) >= _parse(state["deadline_at"])
+    deadline_elapsed = _aware(now or datetime.now(UTC)) >= _parse(state["deadline_at"])
     if deadline_elapsed:
         next_action = "Generation deadline elapsed; run evolution-finalize now."
     elif prepared:
