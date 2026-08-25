@@ -11,6 +11,7 @@ from typing import Any
 import pandas as pd
 
 from wayfinder_paths.jobs.execution.ccxt_feed import (
+    default_quote,
     fetch_ccxt_dataset_rows,
     fetch_ccxt_funding_rows,
 )
@@ -56,7 +57,7 @@ def build_live_dataset(
     source: str = "venues",
     exchange: str = "binance",
     market_type: str = "swap",
-    quote: str = "USDT",
+    quote: str | None = None,
     feed: Any | None = None,
     incremental: bool = True,
 ) -> dict[str, Any]:
@@ -117,7 +118,9 @@ def build_live_dataset(
             source_metadata = {
                 "exchange": exchange,
                 "market_type": market_type,
-                "quote": quote,
+                "quote": getattr(feed, "quote", None)
+                or quote
+                or default_quote(exchange),
                 "symbol_map": dict(feed.symbol_map),
                 "label_convention": "close_time",
             }
@@ -669,11 +672,12 @@ def _write_report(
 
 
 def _ccxt_missing_markets(
-    symbols: list[str], *, exchange: str, quote: str
+    symbols: list[str], *, exchange: str, quote: str | None
 ) -> list[str] | None:
     """Symbols with no swap OR spot market on the long-history exchange.
     None = probe failed (network etc.) — record nothing so the evidence gate
     stays conservative."""
+    quote = quote or default_quote(exchange)
     try:
         import ccxt
 
@@ -767,7 +771,7 @@ def fetch_funding_features(
     *,
     days: int = 30,
     exchange: str = "binance",
-    quote: str = "USDT",
+    quote: str | None = None,
     store: JobStore | None = None,
     exchange_client: Any | None = None,
 ) -> dict[str, Any]:

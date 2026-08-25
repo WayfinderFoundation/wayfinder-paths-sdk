@@ -60,6 +60,7 @@ from wayfinder_paths.jobs.forward_artifacts import load_forward_view
 from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
 from wayfinder_paths.jobs.ledger import append_ledger_row, tail_ledger
+from wayfinder_paths.jobs.lifecycle import lifecycle_sweep
 from wayfinder_paths.jobs.models import (
     AgentMode,
     WayfinderJob,
@@ -662,7 +663,11 @@ def reconcile_cmd(job_id: str, limit: int) -> None:
     default="swap",
     show_default=True,
 )
-@click.option("--quote", default="USDT", show_default=True)
+@click.option(
+    "--quote",
+    default=None,
+    help="Quote currency (default: USDC on hyperliquid, USDT elsewhere).",
+)
 @click.option(
     "--full",
     is_flag=True,
@@ -675,7 +680,7 @@ def fetch_dataset_cmd(
     source: str,
     exchange: str,
     market_type: str,
-    quote: str,
+    quote: str | None,
     full: bool,
 ) -> None:
     store = JobStore()
@@ -1051,8 +1056,14 @@ def rank_check_cmd(job_id: str, column: str, horizons: str | None) -> None:
 @click.argument("job_id")
 @click.option("--days", type=int, default=30, show_default=True)
 @click.option("--exchange", default="binance", show_default=True)
-@click.option("--quote", default="USDT", show_default=True)
-def fetch_funding_cmd(job_id: str, days: int, exchange: str, quote: str) -> None:
+@click.option(
+    "--quote",
+    default=None,
+    help="Quote currency (default: USDC on hyperliquid, USDT elsewhere).",
+)
+def fetch_funding_cmd(
+    job_id: str, days: int, exchange: str, quote: str | None
+) -> None:
     store = JobStore()
     result = fetch_funding_features(
         job_id, days=days, exchange=exchange, quote=quote, store=store
@@ -2170,6 +2181,19 @@ def pause_cmd(job_id: str) -> None:
 @click.argument("job_id")
 def resume_cmd(job_id: str) -> None:
     _pause_resume_loops(job_id, "resume")
+
+
+@job_cli.command(
+    name="lifecycle-sweep",
+    help="Run the fleet lifecycle sweep now: bootstrap nudge/park for "
+    "never-operational jobs plus monitor-decay park. The watchdog runs this "
+    "daily; --force bypasses the throttle.",
+)
+@click.option(
+    "--force", is_flag=True, default=False, help="Bypass the daily throttle."
+)
+def lifecycle_sweep_cmd(force: bool) -> None:
+    _echo_json({"ok": True, "result": lifecycle_sweep(JobStore(), force=force)})
 
 
 @job_cli.group(

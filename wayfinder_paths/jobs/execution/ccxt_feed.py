@@ -26,6 +26,14 @@ RETRYABLE_ERRORS = {
 }
 
 
+def default_quote(exchange_id: str) -> str:
+    """Hyperliquid's ccxt markets settle in USDC ("BTC/USDC:USDC"; HIP-3 keeps
+    the dex prefix in the base: "xyz:TSLA/USDC:USDC"). A baked USDT default
+    built symbols no hyperliquid market has, which surfaced as an opaque
+    failure deep in the fetch path."""
+    return "USDC" if exchange_id == "hyperliquid" else "USDT"
+
+
 class CcxtMarketFeed:
     """Dataset-building MarketDataFeed over ccxt.async_support.
 
@@ -45,14 +53,14 @@ class CcxtMarketFeed:
         self,
         *,
         exchange_id: str = "binance",
-        market_type: str = "swap",  # "swap" -> COIN/USDT:USDT, "spot" -> COIN/USDT
-        quote: str = "USDT",
+        market_type: str = "swap",  # "swap" -> COIN/<q>:<q>, "spot" -> COIN/<q>
+        quote: str | None = None,  # None -> exchange default (see default_quote)
         exchange: Any | None = None,  # injectable fake for tests
         retries: int = 3,
     ) -> None:
         self.exchange_id = exchange_id
         self.market_type = market_type
-        self.quote = quote
+        self.quote = quote or default_quote(exchange_id)
         self.retries = retries
         self.symbol_map: dict[str, str] = {}
         self._exchange = exchange
@@ -187,7 +195,7 @@ async def fetch_ccxt_dataset_rows(
     days: int,
     exchange_id: str = "binance",
     market_type: str = "swap",
-    quote: str = "USDT",
+    quote: str | None = None,
     exchange: Any | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Fetch OHLCV rows for a backtest dataset, plus a metadata fragment
@@ -212,7 +220,7 @@ async def fetch_ccxt_dataset_rows(
     metadata = {
         "exchange": exchange_id,
         "market_type": market_type,
-        "quote": quote,
+        "quote": feed.quote,
         "symbol_map": dict(feed.symbol_map),
         "label_convention": "close_time",
     }
@@ -224,7 +232,7 @@ async def fetch_ccxt_funding_rows(
     *,
     days: int,
     exchange_id: str = "binance",
-    quote: str = "USDT",
+    quote: str | None = None,
     exchange: Any | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Historical funding rates as canonical feature rows.
@@ -280,7 +288,7 @@ async def fetch_ccxt_funding_rows(
         await feed.close()
     metadata = {
         "exchange": exchange_id,
-        "quote": quote,
+        "quote": feed.quote,
         "symbol_map": dict(feed.symbol_map),
         "feature": "funding",
         "days": int(days),
