@@ -21,7 +21,14 @@ from wayfinder_paths.jobs.store import JobStore
 
 REMEDIATION_PATH = "state/regime_remediation.json"
 REMEDIATION_SCHEMA_VERSION = "1.0"
-REMEDIATION_RETRY_SECONDS = 30 * 60
+# Re-wake pacing for an open case WITHOUT new material evidence. 30 minutes
+# churned in production: nearly every scheduled tick re-woke the agent
+# (42/45 trigger wakes were scheduled-tick retries; 27 progress notes vs 2
+# evidence updates), and each wake produced another bounded progress note
+# that changed nothing before the next retry. Material evidence still wakes
+# immediately (the branch above the retry path), a recorded progress/blocker
+# note now counts as activity, and quiet retries wait 6 hours.
+REMEDIATION_RETRY_SECONDS = 6 * 60 * 60
 
 _ALERT_STATUSES = frozenset({"warning", "critical"})
 _STATUS_RANK = {
@@ -143,8 +150,12 @@ def sync_remediation_with_health(
     state = str(current.get("state") or "open")
     if state not in _ACTIONABLE_STATES:
         return None
+    # Progress-only ticks must not re-wake: a bounded evaluation/blocker note
+    # recorded since the last wake is the agent already working the case.
     last_wake = _parse_time(current.get("last_wake_requested_at"))
-    if last_wake and (now - last_wake).total_seconds() < REMEDIATION_RETRY_SECONDS:
+    progress_at = _parse_time((current.get("progress") or {}).get("recorded_at"))
+    anchors = [ts for ts in (last_wake, progress_at) if ts is not None]
+    if anchors and (now - max(anchors)).total_seconds() < REMEDIATION_RETRY_SECONDS:
         return None
 
     current["updated_at"] = now_iso

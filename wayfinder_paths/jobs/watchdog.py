@@ -1221,6 +1221,16 @@ def _check_research_impasse(
 
 # Pending claims are controller work: every watchdog pass runs the structured
 # coverage audit and applies pass/narrow/reject without waiting on an owner.
+def _check_decision_gates(
+    store: JobStore, job: Any, now: datetime
+) -> list[dict[str, Any]]:
+    """Pre-registered rework-vs-retire gates: paper jobs auto-resolve when
+    their criteria are met; live-capital jobs trip to owner_attention."""
+    from wayfinder_paths.jobs.decision_gates import evaluate_decision_gates
+
+    return evaluate_decision_gates(store, job, now=now)
+
+
 def _audit_pending_claims(store: JobStore, job_id: str) -> dict[str, Any] | None:
     from wayfinder_paths.jobs.exhaustion import (
         audit_and_adjudicate_exhaustion_claim,
@@ -1498,6 +1508,11 @@ def recover_stalled_applications(
                 recovered.append({"job_id": job.id, **lifecycle_event})
         except Exception as exc:
             errors.append({"job_id": job.id, "error": f"lifecycle: {exc}"})
+        try:
+            for gate_event in _check_decision_gates(store, job, now):
+                recovered.append({"job_id": job.id, **gate_event})
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"job_id": job.id, "error": f"decision_gates: {exc}"})
         try:
             audit_event = _audit_live_mode(store, job)
         except Exception as exc:  # noqa: BLE001

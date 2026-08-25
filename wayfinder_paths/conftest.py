@@ -16,6 +16,19 @@ _GB = 1024**3
 
 
 @pytest.fixture(autouse=True)
+def _paper_auto_apply_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disable the paper auto-apply tier for every test by default.
+
+    Auto-apply spawns a detached apply-worker process at propose time; the
+    suite's many propose fixtures are not built for that side effect (a
+    green paper params proposal would silently start applying mid-test).
+    Auto-apply tests opt back in with
+    monkeypatch.setenv("WAYFINDER_PAPER_AUTO_APPLY", "1") and stub the
+    launcher."""
+    monkeypatch.setenv("WAYFINDER_PAPER_AUTO_APPLY", "0")
+
+
+@pytest.fixture(autouse=True)
 def _healthy_disk_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin shutil.disk_usage to a healthy 50% volume for every test.
 
