@@ -662,7 +662,11 @@ def reconcile_cmd(job_id: str, limit: int) -> None:
     default="swap",
     show_default=True,
 )
-@click.option("--quote", default="USDT", show_default=True)
+@click.option(
+    "--quote",
+    default=None,
+    help="Quote currency (default: USDC on hyperliquid, USDT elsewhere).",
+)
 @click.option(
     "--full",
     is_flag=True,
@@ -675,7 +679,7 @@ def fetch_dataset_cmd(
     source: str,
     exchange: str,
     market_type: str,
-    quote: str,
+    quote: str | None,
     full: bool,
 ) -> None:
     store = JobStore()
@@ -1051,8 +1055,14 @@ def rank_check_cmd(job_id: str, column: str, horizons: str | None) -> None:
 @click.argument("job_id")
 @click.option("--days", type=int, default=30, show_default=True)
 @click.option("--exchange", default="binance", show_default=True)
-@click.option("--quote", default="USDT", show_default=True)
-def fetch_funding_cmd(job_id: str, days: int, exchange: str, quote: str) -> None:
+@click.option(
+    "--quote",
+    default=None,
+    help="Quote currency (default: USDC on hyperliquid, USDT elsewhere).",
+)
+def fetch_funding_cmd(
+    job_id: str, days: int, exchange: str, quote: str | None
+) -> None:
     store = JobStore()
     result = fetch_funding_features(
         job_id, days=days, exchange=exchange, quote=quote, store=store

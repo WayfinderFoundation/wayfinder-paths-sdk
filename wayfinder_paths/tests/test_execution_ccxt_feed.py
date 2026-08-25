@@ -11,6 +11,7 @@ from wayfinder_paths.jobs.execution import ExecutionSpec
 from wayfinder_paths.jobs.execution.ccxt_feed import (
     CcxtMarketFeed,
     fetch_ccxt_dataset_rows,
+    fetch_ccxt_funding_rows,
 )
 from wayfinder_paths.jobs.execution.preflight import build_live_dataset
 from wayfinder_paths.jobs.models import WayfinderJob
@@ -53,6 +54,11 @@ class FakeCcxtExchange:
         rows = self.candles.get(pair, [])
         return [row for row in rows if row[0] >= (since or 0)][:limit]
 
+    async def fetch_funding_rate_history(
+        self, pair: str, since: int | None = None, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        return []
+
     async def close(self) -> None:
         self.closed = True
 
@@ -83,6 +89,64 @@ async def test_symbol_resolution_missing_market_raises() -> None:
 
     with pytest.raises(ValueError, match="DOGE"):
         await feed.resolve_market_symbol("DOGE")
+
+
+async def test_hyperliquid_quote_defaults_to_usdc() -> None:
+    """Hyperliquid ccxt markets are /USDC:USDC; HIP-3 keeps the dex prefix in
+    the base (xyz:TSLA/USDC:USDC). The old baked USDT default built symbols
+    no hyperliquid market has."""
+    exchange = FakeCcxtExchange(
+        markets={
+            "xyz:TSLA/USDC:USDC": {"active": True},
+            "BTC/USDC:USDC": {"active": True},
+        }
+    )
+    feed = CcxtMarketFeed(exchange_id="hyperliquid", exchange=exchange)
+
+    assert feed.quote == "USDC"
+    assert await feed.resolve_market_symbol("xyz:TSLA") == "xyz:TSLA/USDC:USDC"
+    assert await feed.resolve_market_symbol("BTC") == "BTC/USDC:USDC"
+
+
+async def test_binance_quote_defaults_to_usdt() -> None:
+    exchange = FakeCcxtExchange(markets={"BTC/USDT:USDT": {"active": True}})
+    feed = CcxtMarketFeed(exchange=exchange)
+
+    assert feed.quote == "USDT"
+    assert await feed.resolve_market_symbol("BTC") == "BTC/USDT:USDT"
+
+
+async def test_explicit_quote_overrides_exchange_default() -> None:
+    exchange = FakeCcxtExchange(markets={"BTC/USDT:USDT": {"active": True}})
+    feed = CcxtMarketFeed(exchange_id="hyperliquid", quote="USDT", exchange=exchange)
+
+    assert feed.quote == "USDT"
+    assert await feed.resolve_market_symbol("BTC") == "BTC/USDT:USDT"
+
+
+async def test_missing_market_error_names_symbol_and_exchange() -> None:
+    feed = CcxtMarketFeed(
+        exchange_id="hyperliquid", exchange=FakeCcxtExchange(markets={})
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        await feed.resolve_market_symbol("xyz:TSLA")
+
+    message = str(excinfo.value)
+    assert "hyperliquid" in message
+    assert "xyz:TSLA/USDC:USDC" in message
+
+
+async def test_funding_rows_metadata_records_resolved_quote() -> None:
+    exchange = FakeCcxtExchange(markets={"BTC/USDC:USDC": {"active": True}})
+
+    rows, metadata = await fetch_ccxt_funding_rows(
+        ["BTC"], days=1, exchange_id="hyperliquid", exchange=exchange
+    )
+
+    assert rows == []
+    assert metadata["quote"] == "USDC"
+    assert metadata["symbol_map"] == {"BTC": "BTC/USDC:USDC"}
 
 
 async def test_pagination_stitches_and_dedupes() -> None:
