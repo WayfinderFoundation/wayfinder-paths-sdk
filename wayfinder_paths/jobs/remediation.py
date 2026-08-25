@@ -12,10 +12,12 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import os
 from collections.abc import Mapping
 from pathlib import PurePosixPath
 from typing import Any
 
+from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
@@ -27,8 +29,21 @@ REMEDIATION_SCHEMA_VERSION = "1.0"
 # evidence updates), and each wake produced another bounded progress note
 # that changed nothing before the next retry. Material evidence still wakes
 # immediately (the branch above the retry path), a recorded progress/blocker
-# note now counts as activity, and quiet retries wait 6 hours.
+# note now counts as activity, and quiet retries wait 6 hours before the
+# evidence-anchored backoff below takes over.
 REMEDIATION_RETRY_SECONDS = 6 * 60 * 60
+# Evidence-anchored re-check pacing. A blocked case re-affirming every
+# scheduled tick spammed the owner feed (rem-7b84af1: attempts 9→14 overnight,
+# each wake re-verifying identical facts — book flat, closed count unchanged).
+# Quiet re-checks now DOUBLE toward the cap; the moment material forward
+# evidence lands (new closed trades, counterfactual/promotion-verdict update,
+# gate flip, treatment/config change) the wait resets to the prompt interval
+# so adjudication is never starved. A hard max-quiet bound guarantees a case
+# can never go fully silent even with a mis-tuned cap.
+REMEDIATION_BACKOFF_BASE_SECONDS = 30 * 60
+REMEDIATION_BACKOFF_CAP_ENV = "WAYFINDER_REMEDIATION_BACKOFF_CAP_SECONDS"
+REMEDIATION_BACKOFF_CAP_SECONDS = 12 * 60 * 60
+REMEDIATION_MAX_QUIET_SECONDS = 24 * 60 * 60
 
 _ALERT_STATUSES = frozenset({"warning", "critical"})
 _STATUS_RANK = {
@@ -125,6 +140,18 @@ def sync_remediation_with_health(
             .get("fingerprint")
             if current
             else None,
+            # Seed the forward-evidence watermark at open so trades/verdicts
+            # landing before the first quiet retry reset it to a prompt
+            # re-check instead of waiting out the full interval.
+            "recheck": {
+                "watermark": _evidence_watermark(
+                    store,
+                    job_id,
+                    incumbent_revision=evidence.get("incumbent_revision"),
+                ),
+                "last_checked_at": now_iso,
+                "next_retry_seconds": REMEDIATION_RETRY_SECONDS,
+            },
         }
         store.write_json(job_id, REMEDIATION_PATH, case)
         store.append_journal(
@@ -150,24 +177,73 @@ def sync_remediation_with_health(
     state = str(current.get("state") or "open")
     if state not in _ACTIONABLE_STATES:
         return None
+    raw_recheck = current.get("recheck")
+    recheck: Mapping[str, Any] = raw_recheck if isinstance(raw_recheck, Mapping) else {}
+    watermark = _evidence_watermark(
+        store, job_id, incumbent_revision=evidence.get("incumbent_revision")
+    )
+    evidence_reasons = _watermark_reasons(recheck.get("watermark"), watermark)
+    next_retry = int(recheck.get("next_retry_seconds") or REMEDIATION_RETRY_SECONDS)
+    if evidence_reasons:
+        # Material forward evidence (trades closed, verdict landed, gate
+        # flipped, treatment changed): reset to a prompt re-check no matter
+        # how far the quiet backoff had grown. Nothing is persisted on the
+        # not-yet-due path, so the reset re-derives every tick until it fires.
+        next_retry = REMEDIATION_BACKOFF_BASE_SECONDS
     # Progress-only ticks must not re-wake: a bounded evaluation/blocker note
     # recorded since the last wake is the agent already working the case.
     last_wake = _parse_time(current.get("last_wake_requested_at"))
     progress_at = _parse_time((current.get("progress") or {}).get("recorded_at"))
     anchors = [ts for ts in (last_wake, progress_at) if ts is not None]
-    if anchors and (now - max(anchors)).total_seconds() < REMEDIATION_RETRY_SECONDS:
+    wait = min(next_retry, REMEDIATION_MAX_QUIET_SECONDS)
+    if anchors and (now - max(anchors)).total_seconds() < wait:
         return None
 
     current["updated_at"] = now_iso
     current["last_wake_requested_at"] = now_iso
     current["attempts"] = int(current.get("attempts") or 0) + 1
     current["health"] = evidence
+    current["recheck"] = {
+        "watermark": watermark,
+        "last_checked_at": now_iso,
+        # Quiet re-check → double toward the cap. Material → restart the
+        # ladder one doubling above the prompt interval (30m→1h→2h→4h→…).
+        "next_retry_seconds": min(
+            (REMEDIATION_BACKOFF_BASE_SECONDS if evidence_reasons else next_retry) * 2,
+            _backoff_cap_seconds(),
+        ),
+    }
     store.write_json(job_id, REMEDIATION_PATH, current)
+    if evidence_reasons:
+        store.append_journal(
+            job_id,
+            {
+                "type": "regime_remediation_evidence_updated",
+                "case_id": current.get("case_id"),
+                "state": state,
+                "material_reasons": evidence_reasons,
+                "source": "forward_evidence",
+            },
+        )
+    else:
+        # Heartbeat, not a transition: keep the owner feed to one compact
+        # line per quiet re-check instead of a full re-affirmation entry.
+        store.append_journal(
+            job_id,
+            {
+                "type": "remediation_recheck_quiet",
+                "case_id": current.get("case_id"),
+                "state": state,
+                "attempts": current["attempts"],
+                "last_checked_at": now_iso,
+                "next_retry_seconds": current["recheck"]["next_retry_seconds"],
+            },
+        )
     return {
         "event": "regime_remediation_due",
         "case_id": current.get("case_id"),
         "evidence_fingerprint": evidence["fingerprint"],
-        "material_reasons": ["open_case_without_proposal"],
+        "material_reasons": evidence_reasons or ["open_case_without_proposal"],
     }
 
 
@@ -255,14 +331,58 @@ def update_remediation_progress(
     case = load_remediation(store, job_id)
     if not case or str(case.get("state")) not in _ACTIONABLE_STATES:
         raise ValueError(f"job {job_id} has no actionable remediation case")
+    now_iso = utc_now_iso()
+    prior_state = str(case.get("state"))
+    prior_progress = case.get("progress") or {}
+    watermark = _evidence_watermark(
+        store,
+        job_id,
+        incumbent_revision=(case.get("health") or {}).get("incumbent_revision"),
+    )
+    # Consecutive no-change re-affirmations (same state, no new forward
+    # evidence since the last recorded note) roll into ONE note plus a compact
+    # journal heartbeat — the owner feed shows transitions, not heartbeats.
+    reaffirmation = (
+        state == prior_state
+        and isinstance(prior_progress.get("watermark"), Mapping)
+        and not _watermark_reasons(prior_progress.get("watermark"), watermark)
+    )
+    if reaffirmation:
+        progress = dict(prior_progress)
+        progress.update(
+            {
+                "note": note.strip()[:2_000],
+                "artifact_path": artifact_path or progress.get("artifact_path"),
+                "recorded_at": now_iso,
+                "first_recorded_at": progress.get("first_recorded_at")
+                or prior_progress.get("recorded_at"),
+                "reaffirmations": int(progress.get("reaffirmations") or 0) + 1,
+                "watermark": watermark,
+            }
+        )
+        case.update({"state": state, "updated_at": now_iso, "progress": progress})
+        store.write_json(job_id, REMEDIATION_PATH, case)
+        store.append_journal(
+            job_id,
+            {
+                "type": "remediation_recheck_quiet",
+                "case_id": case.get("case_id"),
+                "state": state,
+                "attempts": int(case.get("attempts") or 0),
+                "reaffirmations": progress["reaffirmations"],
+                "last_checked_at": now_iso,
+            },
+        )
+        return case
     case.update(
         {
             "state": state,
-            "updated_at": utc_now_iso(),
+            "updated_at": now_iso,
             "progress": {
                 "note": note.strip()[:2_000],
                 "artifact_path": artifact_path,
-                "recorded_at": utc_now_iso(),
+                "recorded_at": now_iso,
+                "watermark": watermark,
             },
         }
     )
@@ -350,6 +470,7 @@ def compact_remediation(case: Mapping[str, Any] | None) -> dict[str, Any] | None
             "candidate_gate",
             "rejection",
             "progress",
+            "recheck",
             "application_status",
             "applied_at",
             "resolved_at",
@@ -416,6 +537,79 @@ def _material_reasons(
         and evidence.get("incumbent_revision") != prior.get("incumbent_revision")
     ):
         reasons.append("incumbent_revision_changed")
+    return reasons
+
+
+def _backoff_cap_seconds() -> int:
+    raw = os.environ.get(REMEDIATION_BACKOFF_CAP_ENV)
+    if raw is None:
+        return REMEDIATION_BACKOFF_CAP_SECONDS
+    return max(int(raw), REMEDIATION_BACKOFF_BASE_SECONDS)
+
+
+def _evidence_watermark(
+    store: JobStore, job_id: str, *, incumbent_revision: Any
+) -> dict[str, Any]:
+    """Deterministic snapshot of the forward evidence a re-check adjudicates.
+
+    A change in ANY component is material: the case wakes promptly and the
+    quiet backoff resets. Everything here is a cheap file read — no network.
+    """
+    summary = store.read_json(job_id, "results/forward/summary.json", default={}) or {}
+    trades = summary.get("trades") or {}
+    counterfactual = (
+        store.read_json(job_id, "results/forward/counterfactual.json", default={}) or {}
+    )
+    # The counterfactual fingerprint (revision + closed-trade total) only moves
+    # when the shadow comparison actually has new inputs — computed_at churns
+    # on every ~6h recompute and must NOT count as evidence.
+    counterfactual_fp = counterfactual.get("fingerprint")
+    verdicts = (
+        store.read_json(job_id, "state/promotion_verdicts.json", default={}) or {}
+    )
+    try:
+        gate = evaluate_live_gate(job_id, store=store)
+        gate_mark: dict[str, Any] = {
+            "live_ready": bool(gate.get("live_ready")),
+            "reasons": sorted(str(reason) for reason in gate.get("reasons") or []),
+        }
+    except Exception as exc:  # noqa: BLE001 — a broken gate eval must not
+        # silence re-check scheduling (the case would starve); the error text
+        # itself watermarks, so flipping in/out of failure still counts.
+        gate_mark = {"error": str(exc)[:200]}
+    return {
+        "closed_trades": int(trades.get("closed_count") or 0),
+        "last_trade_at": trades.get("last_trade_at"),
+        "counterfactual": dict(counterfactual_fp)
+        if isinstance(counterfactual_fp, Mapping)
+        else None,
+        "verdicts": {
+            str(proposal_id): str((entry or {}).get("verdict") or "")
+            for proposal_id, entry in verdicts.items()
+            if isinstance(entry, Mapping)
+        },
+        "gate": gate_mark,
+        "incumbent_revision": incumbent_revision,
+    }
+
+
+def _watermark_reasons(prior: Any, current: Mapping[str, Any]) -> list[str]:
+    """Which evidence classes moved since the last check. Empty = quiet."""
+    if not isinstance(prior, Mapping):
+        return []
+    reasons: list[str] = []
+    if current.get("closed_trades") != prior.get("closed_trades") or current.get(
+        "last_trade_at"
+    ) != prior.get("last_trade_at"):
+        reasons.append("forward_trades_advanced")
+    if current.get("counterfactual") != prior.get("counterfactual"):
+        reasons.append("counterfactual_updated")
+    if current.get("verdicts") != prior.get("verdicts"):
+        reasons.append("promotion_verdict_updated")
+    if current.get("gate") != prior.get("gate"):
+        reasons.append("gate_state_changed")
+    if current.get("incumbent_revision") != prior.get("incumbent_revision"):
+        reasons.append("treatment_changed")
     return reasons
 
 
