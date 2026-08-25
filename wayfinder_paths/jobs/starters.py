@@ -1458,7 +1458,7 @@ def create_starter_job(
         "initial_capital": 10_000.0,
         "fee_bps": 4.5,
         "slippage_bps": 3.5,
-        "min_trade_notional": 10.0,
+        "min_trade_notional": 25.0,
         "leverage": selected_leverage,
         # Without this the driver's default 200-bar window caps ctx.bar_index
         # below warmup for most starters and they never trade.

@@ -29,7 +29,7 @@ class MixedSleeveMomentumStrategy:
         "rebalance_offset": 48,
         "weight_per_leg": 0.25,
         "rebalance_threshold": 0.10,
-        "min_trade_notional": 10.0,
+        "min_trade_notional": 25.0,
         **RANKING_STOP_DEFAULTS,
         "stop_atr_period": 96,
     }

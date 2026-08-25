@@ -39,7 +39,7 @@ class PairRelativeStrengthStrategy:
         "rebalance_bars": 7,
         "rebalance_offset": 4,
         "rebalance_threshold": 0.0,
-        "min_trade_notional": 10.0,
+        "min_trade_notional": 25.0,
         **PAIR_PROTECTION_DEFAULTS,
     }
 

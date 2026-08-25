@@ -32,7 +32,7 @@ class CryptoMomentumPersistenceStrategy:
         "broad_bull_momentum_threshold": 0.10,
         "broad_bull_weight_shift": 0.175,
         "rebalance_threshold": 0.10,
-        "min_trade_notional": 10.0,
+        "min_trade_notional": 25.0,
         **RANKING_STOP_DEFAULTS,
         "stop_atr_period": 12,
     }

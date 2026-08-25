@@ -29,7 +29,7 @@ class MixedRsiSnapbackStrategy:
         "max_hold_bars": 72,
         "weight_per_leg": 0.25,
         "rebalance_threshold": 0.10,
-        "min_trade_notional": 10.0,
+        "min_trade_notional": 25.0,
         **MEAN_REVERSION_STOP_DEFAULTS,
     }
 
