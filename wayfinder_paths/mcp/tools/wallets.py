@@ -21,6 +21,7 @@ from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
+    expand_all_wallets,
     load_wallet_ring,
     load_wallets,
     normalize_address,
@@ -438,16 +439,19 @@ async def core_get_wallets(
 ) -> dict[str, Any]:
     """List configured wallets with profile + protocols + current balances.
 
-    No args → every wallet. Pass `label` to filter to one wallet ring (one entry per
-    available chain leg, or an `err(...)` response if not found).
+    No args (or `label="all"`) → every wallet. Pass `label` to filter to one
+    wallet ring (one entry per available chain leg, or an `err(...)` response
+    if not found).
 
     Args:
-        label: Optional wallet label filter.
+        label: Optional wallet label filter; "all" is equivalent to no filter.
         transactions_limit: Most-recent N entries to include in `profile.transactions`.
             Defaults to 5 to keep the response compact (the store caps history at 100).
             Bump higher for deeper audit; the agent should rarely need >20.
     """
     store = WalletProfileStore.default()
+    if label is not None and await expand_all_wallets(label) is not None:
+        label = None
     if label is not None:
         existing = await load_wallet_ring(label)
         if not existing:

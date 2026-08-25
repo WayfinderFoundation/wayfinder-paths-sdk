@@ -255,6 +255,17 @@ async def resolve_wallet_address(
     return normalize_address(w["address"]), want
 
 
+async def expand_all_wallets(wallet_label: str | None) -> list[str] | None:
+    """Return every wallet label when `wallet_label` is the "all" sentinel,
+    else None. An actual wallet named "all" wins over the sentinel, so the
+    matcher can never shadow a real wallet."""
+    if (wallet_label or "").strip().lower() != "all":
+        return None
+    if await find_wallet_by_label(wallet_label):
+        return None
+    return [w["label"] for w in await load_wallets()]
+
+
 def parse_amount_to_raw(amount: str, decimals: int) -> int:
     s = str(amount).strip()
     if "." not in s:

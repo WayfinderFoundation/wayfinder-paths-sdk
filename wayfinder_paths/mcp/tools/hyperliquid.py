@@ -38,6 +38,7 @@ from wayfinder_paths.mcp.state.profile_store import WalletProfileStore
 from wayfinder_paths.mcp.utils import (
     catch_errors,
     err,
+    expand_all_wallets,
     ok,
     parse_amount_to_raw,
     resolve_wallet_address,
@@ -1939,7 +1940,17 @@ async def hyperliquid_get_state(label: str) -> dict[str, Any]:
     `"default"` accounts keep separate `perp_account_value` /
     `perp_withdrawable` / `spot_usdc_total` ledgers. For per-market sizing
     use `hyperliquid_get_trade_asset`.
+
+    `label="all"` fans out across every wallet and returns `wallets`, a map
+    of wallet label to that wallet's state envelope — use it whenever the
+    question spans wallets (e.g. total balance), so no wallet is missed.
     """
+    all_labels = await expand_all_wallets(label)
+    if all_labels is not None:
+        states = await asyncio.gather(
+            *(hyperliquid_get_state(wallet) for wallet in all_labels)
+        )
+        return ok({"wallets": dict(zip(all_labels, states, strict=True))})
     addr, _ = await resolve_wallet_address(wallet_label=label)
     if not addr:
         return err("not_found", f"Wallet not found: {label}")
