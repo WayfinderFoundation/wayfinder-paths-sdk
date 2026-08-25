@@ -50,6 +50,10 @@ JOB_RESULT_MARKER = "WAYFINDER_JOB_RESULT "
 BURST_CAP_CPU_S = 500.0
 BURST_LOW_WATER_CPU_S = 120.0
 BURST_MAX_POSTPONE_S = 600.0
+# Short starvation floor for trading-adjacent work (paper script ticks, agent
+# wakes, indeterminate-mode jobs) so a drain episode can't hold them for the
+# full BURST_MAX_POSTPONE_S. Env-tunable via WAYFINDER_BURST_SHORT_POSTPONE_S.
+BURST_SHORT_POSTPONE_S = 120.0
 DEFAULT_SYNC_DEBOUNCE_SECONDS = 90.0
 DEFAULT_MAX_RSS_MB = 900.0
 # While a proposal application is applying, the RSS restart exit is deferred
@@ -147,6 +151,47 @@ def _kill_process_group(pid: int, *, sig: int) -> None:
         return
     except Exception as exc:  # noqa: BLE001
         logger.debug(f"Failed to kill process group {pid}: {exc}")
+
+
+def _burst_short_postpone_s() -> float:
+    raw = os.environ.get("WAYFINDER_BURST_SHORT_POSTPONE_S")
+    if raw is None or not str(raw).strip():
+        return BURST_SHORT_POSTPONE_S
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            f"Invalid WAYFINDER_BURST_SHORT_POSTPONE_S={raw!r}; "
+            f"using {BURST_SHORT_POSTPONE_S}"
+        )
+        return BURST_SHORT_POSTPONE_S
+
+
+def _burst_postpone_tier(job: Mapping[str, Any]) -> tuple[str, float | None]:
+    """Classify a due job for burst admission from the payload env the
+    compiler already bakes (no new plumbing): (tier, max postpone seconds),
+    where None means fully exempt — never postponed.
+
+    - live jobs_v1 script ticks are exempt: tick-resident protections
+      (protective closes, kill-review, pair budgets) only run inside the
+      tick, and live ticks are warm-forked and cheap — not the drain source.
+    - The application watchdog is exempt: it un-sticks paused loops.
+    - Paper ticks, agent wakes, and indeterminate-mode jobs_v1 jobs get the
+      short floor (fail toward trading availability).
+    - Everything else (legacy scripts, strategy jobs, heavy ops) keeps the
+      full BURST_MAX_POSTPONE_S floor.
+    """
+    env = (job.get("payload") or {}).get("env") or {}
+    if env.get("WAYFINDER_WATCHDOG"):
+        return "watchdog-exempt", None
+    if env.get("WAYFINDER_JOB_AGENT_MODE"):
+        return "agent-short", _burst_short_postpone_s()
+    if env.get("WAYFINDER_JOB_EXECUTION_CONTRACT") == "jobs_v1":
+        mode = str(env.get("WAYFINDER_JOB_MODE") or "").strip().lower()
+        if mode == "live":
+            return "live-exempt", None
+        return "script-short", _burst_short_postpone_s()
+    return "default", BURST_MAX_POSTPONE_S
 
 
 def _max_rss_mb_from_env() -> float:
@@ -813,16 +858,23 @@ class RunnerDaemon:
         job_name = job["name"]
         # Burst admission: hold the launch while the machine is draining its
         # shared-cpu budget, so background jobs never pin it. The job stays due
-        # and retries next tick once the budget recovers. Bounded by
-        # BURST_MAX_POSTPONE_S so a persistent backlog can't starve it.
+        # and retries next tick once the budget recovers. Tiered by job class:
+        # live jobs_v1 ticks are never postponed (tick-resident protections —
+        # protective closes, kill-review, pair budgets — only run inside the
+        # tick); trading-adjacent work gets a short floor; everything else is
+        # bounded by BURST_MAX_POSTPONE_S so a backlog can't starve it.
         if self._burst is not None and self._burst.over_quota():
-            first = self._postponed_since.setdefault(job_id, time.monotonic())
-            if time.monotonic() - first < BURST_MAX_POSTPONE_S:
-                logger.debug(
-                    f"Postponing job {job_name}: burst balance "
-                    f"{self._burst.balance:.0f} CPU-s < {BURST_LOW_WATER_CPU_S:.0f}"
-                )
-                return None
+            tier, floor_s = _burst_postpone_tier(job)
+            if floor_s is not None:
+                first = self._postponed_since.setdefault(job_id, time.monotonic())
+                if time.monotonic() - first < floor_s:
+                    logger.debug(
+                        f"Postponing job {job_name}: burst balance "
+                        f"{self._burst.balance:.0f} CPU-s < "
+                        f"{BURST_LOW_WATER_CPU_S:.0f} "
+                        f"(tier={tier} floor={floor_s:.0f}s)"
+                    )
+                    return None
         self._postponed_since.pop(job_id, None)
         scheduled_for = (
             int(job.get("next_run_at") or now) if reason == "schedule" else None
