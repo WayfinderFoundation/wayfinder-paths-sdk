@@ -93,3 +93,38 @@ async def test_hyperliquid_get_state_all_returns_per_wallet_envelopes():
     assert set(per_wallet) == {"wallet-one", "wallet-two"}
     assert per_wallet["wallet-one"]["ok"] is True
     assert per_wallet["wallet-two"]["ok"] is False  # not_found envelope, not a raise
+
+
+@pytest.mark.asyncio
+async def test_core_get_wallets_all_label_lists_every_wallet():
+    from types import SimpleNamespace
+
+    from wayfinder_paths.mcp.tools.wallets import core_get_wallets
+
+    store = SimpleNamespace(
+        get_protocols_for_wallet=lambda _a: [],
+        get_profile=lambda _a, transactions_limit=5: {},
+    )
+    with (
+        patch(
+            "wayfinder_paths.mcp.tools.wallets.expand_all_wallets",
+            AsyncMock(return_value=["wallet-one", "wallet-two"]),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.wallets.load_wallets",
+            AsyncMock(return_value=WALLETS),
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.wallets.WalletProfileStore.default",
+            return_value=store,
+        ),
+        patch(
+            "wayfinder_paths.mcp.tools.wallets._fetch_balances",
+            AsyncMock(return_value={"tokens": []}),
+        ),
+    ):
+        out = await core_get_wallets(label="all")
+
+    assert out["ok"] is True
+    labels = [w["label"] for w in out["result"]["wallets"]]
+    assert labels == ["wallet-one", "wallet-two"]
