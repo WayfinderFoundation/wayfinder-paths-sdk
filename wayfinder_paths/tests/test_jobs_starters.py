@@ -257,7 +257,11 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
             item["research_evidence"]["risk_overlay_backtest_scope"]
             == "per_position_ohlc_stops"
         )
-        assert item["research_evidence"]["return_after_costs_and_funding"] > 0
+        funded_return = item["research_evidence"].get("return_after_costs_and_funding")
+        if item["research_evidence"].get("funding_included") is False:
+            assert funded_return is None
+        else:
+            assert funded_return is not None and funded_return > 0
         engine = item["research_evidence"]["jobs_v1_engine"]
         assert engine["return_after_fees_and_slippage"] > 0
         assert engine["funding_included"] is False
@@ -282,6 +286,11 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
     assert crypto_momentum["params"]["score_volatility_bars"] == 168
     assert crypto_momentum["params"]["broad_bull_momentum_threshold"] == 0.10
     assert crypto_momentum["params"]["broad_bull_weight_shift"] == 0.175
+    assert crypto_momentum["robustness_plan"]["walk_forward"] == {
+        "train_bars": 1440,
+        "test_bars": 360,
+        "folds": 4,
+    }
     assert crypto_momentum["research_evidence"]["sharpe"] > 1.0
     assert all(
         sharpe > 1.0
@@ -494,6 +503,54 @@ def test_crypto_momentum_leans_long_without_raising_gross_in_broad_rally() -> No
     notionals = {intent["side"]: intent["notional"] for intent in intents}
     assert notionals == pytest.approx({"sell": 1750.0, "buy": 5250.0})
     assert sum(notionals.values()) == pytest.approx(7000.0)
+    for symbol in ("BTC", "ETH", "SOL", "HYPE"):
+        assert bool(ctx.view.symbol_frame(symbol)["gate_broad_bull"].iloc[-1])
+
+
+def test_crypto_momentum_breadth_requires_timestamp_synchronized_symbols() -> None:
+    strategy = CryptoMomentumPersistenceStrategy(
+        {
+            "symbols": ["A", "B"],
+            "fast_momentum_bars": 1,
+            "slow_momentum_bars": 1,
+            "score_volatility_bars": 1,
+            "broad_bull_momentum_threshold": 0.0,
+            "stop_atr_period": 1,
+        }
+    )
+
+    def frame(timestamps: list[str], closes: list[float]) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(timestamps, utc=True),
+                "symbol": "A",
+                "open": closes,
+                "high": closes,
+                "low": closes,
+                "close": closes,
+                "volume": 1.0,
+            }
+        )
+
+    frames = {
+        "A": frame(
+            [
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T01:00:00Z",
+                "2026-01-01T02:00:00Z",
+            ],
+            [1.0, 1.1, 1.2],
+        ),
+        "B": frame(
+            ["2026-01-01T00:00:00Z", "2026-01-01T02:00:00Z"],
+            [1.0, 1.2],
+        ),
+    }
+    frames["B"]["symbol"] = "B"
+
+    derived = strategy.precompute(frames)
+    assert bool(derived["A"]["gate_broad_bull"].iloc[1]) is False
+    assert bool(derived["A"]["gate_broad_bull"].iloc[2]) is True
 
 
 def test_sleeve_momentum_keeps_crypto_and_equity_sleeves_separate() -> None:
@@ -897,7 +954,13 @@ def test_create_starter_spawns_detached_dataset_fetch(
         {
             "job_id": "mixed-rsi-snapback-1h",
             "op": "fetch_dataset",
-            "kwargs": {"job_id": "mixed-rsi-snapback-1h", "days": 120},
+            "kwargs": {
+                "job_id": "mixed-rsi-snapback-1h",
+                "days": 120,
+                "exchange": "hyperliquid",
+                "quote": "USDC",
+                "include_funding": True,
+            },
         }
     ]
     assert result["dataset_fetch"] == {"spawned": True, "days": 120, "pid": 4242}

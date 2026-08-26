@@ -146,6 +146,29 @@ def test_assignment_journaled_and_stamped(tmp_path) -> None:
     assert events[-1]["improver_revision"]  # PR 3 stamp rides along
 
 
+def test_evolution_background_ops_do_not_pin_hourly_rotation(tmp_path) -> None:
+    store, job_id = _job(tmp_path)
+    first = assign_island(store, job_id)
+    ops = store.job_dir(job_id) / "state" / "background_ops"
+    ops.mkdir(parents=True)
+    (ops / "evolution_finalize.json").write_text(
+        json.dumps(
+            {
+                "op": "evolution_finalize",
+                "state": "done",
+                "finished_at": datetime.now(UTC).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    second = assign_island(store, job_id)
+
+    assert "continuation_ops" not in second
+    assert not any("continuation" in reason for reason in second["reasons"])
+    assert second["island"] != first["island"]
+
+
 def test_wake_context_carries_assignment_and_quant_rule(tmp_path) -> None:
     from wayfinder_paths.jobs.worker import prepare_job_worker_prompt
 

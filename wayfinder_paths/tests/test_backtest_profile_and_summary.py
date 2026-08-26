@@ -1011,6 +1011,8 @@ def test_fetch_funding_features_end_to_end(tmp_path) -> None:
     assert result["rows_fetched"] == 6  # 3 rows x 2 symbols
     assert result["rows_appended"] == 6
     assert result["per_symbol"] == {"ETH": 3, "SOL": 3}
+    assert result["missing_symbols"] == []
+    assert result["symbol_coverage_fraction"] == 1.0
     assert result["feature_declared_now"] is True
 
     lines = [
@@ -1031,3 +1033,44 @@ def test_fetch_funding_features_end_to_end(tmp_path) -> None:
     )
     assert again["rows_appended"] == 0
     assert again["feature_declared_now"] is False
+
+
+def test_fetch_funding_features_preserves_partial_symbol_coverage(tmp_path) -> None:
+    import json as _json
+
+    from wayfinder_paths.jobs.execution.preflight import fetch_funding_features
+    from wayfinder_paths.jobs.store import JobStore
+
+    class PartialFundingExchange(_FakeFundingExchange):
+        async def fetch_funding_rate_history(self, market, since=None, limit=500):
+            if market.startswith("SOL/"):
+                raise RuntimeError("funding history unavailable")
+            return await super().fetch_funding_rate_history(
+                market, since=since, limit=limit
+            )
+
+    store = JobStore(repo_root=tmp_path)
+    root = store.job_dir("partial-funding")
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "job.yaml").write_text("id: partial-funding\n")
+    (root / "execution_spec.json").write_text(
+        _json.dumps(
+            {
+                "market_kind": "perp",
+                "data_contract": {"bar_interval": "1h", "symbols": ["ETH", "SOL"]},
+            }
+        )
+    )
+
+    result = fetch_funding_features(
+        "partial-funding",
+        days=2,
+        store=store,
+        exchange_client=PartialFundingExchange(),
+    )
+    assert result["rows_fetched"] == 3
+    assert result["per_symbol"] == {"ETH": 3, "SOL": 0}
+    assert result["missing_symbols"] == ["SOL"]
+    assert result["symbol_coverage_fraction"] == 0.5
+    assert "SOL" in result["warning"]
+    assert "funding history unavailable" in result["metadata"]["errors"]["SOL"]

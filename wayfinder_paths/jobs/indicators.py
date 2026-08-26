@@ -34,10 +34,47 @@ def atr(frame: pd.DataFrame, period: int = 14) -> pd.Series:
     return true_range.ewm(alpha=1 / period, adjust=False).mean()
 
 
+def trailing_return(close: pd.Series, period: int) -> pd.Series:
+    """Simple trailing return in decimal units (``0.10`` means 10%)."""
+    if period <= 0:
+        raise ValueError("trailing return period must be positive")
+    return pd.to_numeric(close, errors="coerce").pct_change(period)
+
+
+def realized_volatility(close: pd.Series, period: int) -> pd.Series:
+    """Rolling stdev of simple per-bar returns; intentionally not annualized."""
+    if period <= 0:
+        raise ValueError("realized volatility period must be positive")
+    returns = pd.to_numeric(close, errors="coerce").pct_change()
+    return returns.rolling(period, min_periods=period).std()
+
+
+def panel_breadth(
+    panel: pd.DataFrame, threshold: float, *, min_assets: int
+) -> pd.Series:
+    """Fraction of finite synchronized assets at or above ``threshold``.
+
+    Rows with fewer than ``min_assets`` finite observations are unknown rather
+    than bearish. Callers can therefore require their configured universe
+    before using breadth as a trading gate.
+    """
+    if min_assets <= 0:
+        raise ValueError("panel breadth min_assets must be positive")
+    numeric = panel.apply(pd.to_numeric, errors="coerce")
+    finite = numeric.notna() & np.isfinite(numeric)
+    eligible = finite.sum(axis=1)
+    denominator = eligible.where(eligible.gt(0))
+    breadth = (
+        numeric.ge(float(threshold)).where(finite, False).sum(axis=1) / denominator
+    )
+    return breadth.where(eligible >= min_assets)
+
+
 def _spec_error(spec: str, reason: str) -> ValueError:
     return ValueError(
         f"bad indicator spec {spec!r}: {reason}. Known specs: sma:N, ema:N, "
-        "rsi:N, atr:N, bb:N:K (bollinger %B and bandwidth), macd:F:S:SIG, "
+        "rsi:N, atr:N, ret:N, rv:N, bb:N:K (bollinger %B and bandwidth), "
+        "macd:F:S:SIG, "
         "don:N (donchian position), vwap, vr:N (variance ratio), "
         "volpct:N (ATR percentile), clv (close location in bar range), "
         "wickratio:N (upper/lower wick share, N-bar mean), volz:N (volume "
@@ -78,6 +115,12 @@ def compute_indicator(frame: pd.DataFrame, spec: str) -> dict[str, pd.Series]:
         case "atr":
             n = _one(14)
             return {f"atr{n}": atr(frame, n)}
+        case "ret":
+            n = _one(24)
+            return {f"ret{n}": trailing_return(close, n)}
+        case "rv":
+            n = _one(24)
+            return {f"rv{n}": realized_volatility(close, n)}
         case "vwap":
             if nums:
                 raise _spec_error(spec, "vwap takes no parameters")

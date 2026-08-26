@@ -19,8 +19,8 @@
 // and drop the anchored-summary merge (the <previous-summary> incremental
 // update). Appending keeps that intact and layers our rules on top.
 //
-// This is still the unmodified opencode baseline — next step is editing
-// SUMMARY_TEMPLATE (e.g. re-adding "exclude wallet balances, fetch live").
+// Keep Wayfinder additions inside SUMMARY_TEMPLATE so the upstream hook and
+// anchored-summary behavior remain unchanged.
 
 import type { Plugin } from "@opencode-ai/plugin"
 
@@ -33,7 +33,7 @@ const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <te
 - [one or two brief sentences describing what the user is trying to accomplish]
 
 ## Important Details
-- [constraints/preferences, decisions and why, important facts/assumptions, exact context needed to continue, or "(none)"]
+- [constraints/preferences, decisions and why, important facts/assumptions, exact context needed to continue, loaded skill names, and versioned research-contract identifiers such as jobs-research-contract-v1; or "(none)"]
 
 ## Work State
 ### Completed

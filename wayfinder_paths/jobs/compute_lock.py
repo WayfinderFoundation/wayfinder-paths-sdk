@@ -24,7 +24,9 @@ import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 LOCK_RELATIVE = ".wayfinder/compute.lock"
 DEFAULT_TIMEOUT_S = 600.0
@@ -45,17 +47,12 @@ def _lock_path(repo_root: Path | None) -> Path:
 
 
 @contextmanager
-def heavy_compute_lock(
-    *,
-    repo_root: Path | None = None,
-    label: str = "",
-    timeout_s: float = DEFAULT_TIMEOUT_S,
-) -> Iterator[None]:
-    if getattr(_local, "held", False):
-        # Reentrant: the outermost holder owns the flock.
+def _exclusive_file_lock(path: Path, *, label: str, timeout_s: float) -> Iterator[None]:
+    held_paths: set[str] = getattr(_local, "held_paths", set())
+    key = str(path.resolve())
+    if key in held_paths:
         yield
         return
-    path = _lock_path(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     # "a+" — opening must NOT truncate: a contender that fails to acquire
     # reads the current holder's pid/label out of this file for its error.
@@ -74,9 +71,9 @@ def heavy_compute_lock(
                     except OSError:
                         pass
                     raise ComputeLockBusy(
-                        "heavy-compute lock busy after "
+                        f"{label or 'exclusive'} lock busy after "
                         f"{timeout_s:.0f}s (held by: {holder or 'unknown'}) — "
-                        "another heavy computation is running on this box; "
+                        "another operation is using this resource; "
                         "retry when it finishes"
                     ) from None
                 time.sleep(_POLL_S)
@@ -84,11 +81,125 @@ def heavy_compute_lock(
         handle.truncate()
         handle.write(f"pid={os.getpid()} label={label}\n")
         handle.flush()
+        _local.held_paths = {*held_paths, key}
+        try:
+            yield
+        finally:
+            _local.held_paths = held_paths
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
+@contextmanager
+def heavy_compute_lock(
+    *,
+    repo_root: Path | None = None,
+    label: str = "",
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> Iterator[None]:
+    """Serialize memory-heavy work across every job on this machine."""
+    with _exclusive_file_lock(_lock_path(repo_root), label=label, timeout_s=timeout_s):
+        previously_held = getattr(_local, "held", False)
         _local.held = True
         try:
             yield
         finally:
-            _local.held = False
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    finally:
-        handle.close()
+            _local.held = previously_held
+
+
+@contextmanager
+def job_state_lock(
+    repo_root: Path,
+    job_id: str,
+    *,
+    name: str,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> Iterator[None]:
+    """Serialize a named read-modify-write state funnel for one job."""
+    from wayfinder_paths.jobs.models import safe_job_id
+
+    path = (
+        Path(repo_root)
+        / ".wayfinder"
+        / "jobs"
+        / safe_job_id(job_id)
+        / "state"
+        / f"{name}.lock"
+    )
+    with _exclusive_file_lock(
+        path,
+        label=f"{name}:{safe_job_id(job_id)}",
+        timeout_s=timeout_s,
+    ):
+        yield
+
+
+@contextmanager
+def experiment_compute_lock(
+    store: Any,
+    job_id: str,
+    *,
+    label: str,
+    duty_fraction: float = 0.20,
+    window_hours: float = 12.0,
+) -> Iterator[None]:
+    """Serialize evolution work and enforce its rolling compute-duty budget."""
+    relative = "state/evolution_compute_budget.json"
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(hours=window_hours)
+    with job_state_lock(store.repo_root, job_id, name="evolution_compute_budget"):
+        budget = store.read_json(job_id, relative, default={}) or {}
+        events = [
+            event
+            for event in budget.get("events") or []
+            if _event_time(event) >= cutoff
+        ]
+        used = sum(float(event.get("wall_seconds") or 0.0) for event in events)
+        limit = float(duty_fraction) * float(window_hours) * 3600.0
+        if used >= limit:
+            raise ComputeLockBusy(
+                f"evolution compute duty exhausted ({used:.1f}/{limit:.1f}s "
+                f"over {window_hours:g}h); retry in the next budget window"
+            )
+        with heavy_compute_lock(repo_root=store.repo_root, label=label):
+            started = time.monotonic()
+            try:
+                yield
+            finally:
+                elapsed = max(0.0, time.monotonic() - started)
+                current = datetime.now(UTC)
+                cutoff = current - timedelta(hours=window_hours)
+                events = [
+                    event
+                    for event in budget.get("events") or []
+                    if _event_time(event) >= cutoff
+                ]
+                events.append(
+                    {
+                        "ts": current.isoformat(),
+                        "label": label,
+                        "wall_seconds": round(elapsed, 3),
+                    }
+                )
+                store.write_json(
+                    job_id,
+                    relative,
+                    {
+                        "window_hours": window_hours,
+                        "duty_fraction": duty_fraction,
+                        "total_wall_seconds": round(
+                            float(budget.get("total_wall_seconds") or 0.0) + elapsed,
+                            3,
+                        ),
+                        "events": events,
+                    },
+                )
+
+
+def _event_time(event: dict[str, Any]) -> datetime:
+    try:
+        value = datetime.fromisoformat(str(event.get("ts")))
+    except (TypeError, ValueError):
+        return datetime.min.replace(tzinfo=UTC)
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)

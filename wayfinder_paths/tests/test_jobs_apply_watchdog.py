@@ -19,6 +19,7 @@ from wayfinder_paths.jobs.models import WayfinderJob, utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.watchdog import (
     WATCHDOG_RUNNER_JOB_NAME,
+    _run_evolution_campaign_pass,
     ensure_application_watchdog,
     recover_stalled_applications,
 )
@@ -1003,3 +1004,60 @@ def test_watchdog_gate_restamp_escalates_instead_of_looping(
         if e["action"] == "gate_restamp_not_converging"
     ]
     assert len(escalations) == 1, "escalates once, then stands down"
+
+
+def test_watchdog_mechanically_finalizes_then_expires_campaign(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-watchdog")
+    deadline = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store.write_json(
+        job.id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "active",
+            "stage": "generate",
+            "deadline_at": deadline.isoformat(),
+        },
+    )
+    launches: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.op_status_summary",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.spawn_detached_op",
+        lambda store, job_id, op, payload: (
+            launches.append((op, payload)) or {"pid": 123}
+        ),
+    )
+
+    first = _run_evolution_campaign_pass(store, job.id, deadline)
+    assert first == {
+        "action": "evolution_campaign_finalize_started",
+        "campaign_id": "campaign-1",
+        "attempt": 1,
+        "pid": 123,
+    }
+    assert launches == [("evolution_finalize", {"job_id": job.id})]
+    state = store.read_json(job.id, "state/evolution_campaign.json")
+    assert state["status"] == "finalizing"
+
+    assert (
+        _run_evolution_campaign_pass(store, job.id, deadline + timedelta(minutes=4))
+        is None
+    )
+    retried = _run_evolution_campaign_pass(
+        store, job.id, deadline + timedelta(minutes=5)
+    )
+    assert retried["attempt"] == 2
+
+    expired = _run_evolution_campaign_pass(
+        store, job.id, deadline + timedelta(minutes=61)
+    )
+    assert expired["action"] == "evolution_campaign_expired"
+    assert store.read_json(job.id, "state/evolution_campaign.json")["status"] == (
+        "expired"
+    )

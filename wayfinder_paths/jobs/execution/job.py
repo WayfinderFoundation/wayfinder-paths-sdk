@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import bisect
 import json
+import math
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import yaml
 
 from wayfinder_paths.jobs.background import op_running
@@ -25,6 +28,7 @@ from wayfinder_paths.jobs.execution.validation import (
     resolve_execution_spec,
     validate_execution_job,
 )
+from wayfinder_paths.jobs.execution.venues import MarketEvent
 from wayfinder_paths.jobs.execution.walk_forward import (
     load_walk_forward_folds,
     persist_walk_forward_folds,
@@ -180,6 +184,11 @@ def _backtest_execution_job_locked(
             dataset = PreparedExecutionDataset(
                 dataset.bars.window(len(timestamps) - 1, quick_bars),
                 {**dataset.metadata, "quick_bars": quick_bars},
+                _events_in_window(
+                    dataset.market_events,
+                    timestamps[-quick_bars],
+                    timestamps[-1],
+                ),
             )
     output_dir = root / "results" / "backtest"
     stamp = {
@@ -423,6 +432,10 @@ def _load_dataset(
         stamps = dataset.bars.timestamps
         window = (stamps[0], stamps[-1]) if stamps else None
         frames = load_feature_rows(list(feature_roots or (root,)), specs, window=window)
+        market_events = list(dataset.market_events)
+        funding = frames.get("funding")
+        if funding is not None and not funding.empty:
+            market_events.extend(_funding_market_events(dataset.bars, funding))
         dataset = PreparedExecutionDataset(
             merge_features(dataset.bars, frames, specs),
             {
@@ -430,8 +443,51 @@ def _load_dataset(
                 "features": [item.name for item in specs],
                 "feature_coverage": _feature_coverage(dataset.bars, frames),
             },
+            market_events,
         )
     return dataset
+
+
+def _funding_market_events(bars: Any, funding: Any) -> list[MarketEvent]:
+    """Align each funding settlement to the first completed bar at/after it."""
+    timestamps = bars.timestamps
+    if not timestamps:
+        return []
+    first, last = timestamps[0], timestamps[-1]
+    seen: set[tuple[str, str]] = set()
+    events: list[MarketEvent] = []
+    for row in funding.itertuples(index=False):
+        source_timestamp = row.timestamp
+        symbol = str(row.symbol) if row.symbol is not None else ""
+        if not symbol or source_timestamp < first or source_timestamp > last:
+            continue
+        try:
+            rate = float(row.value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(rate):
+            continue
+        source_iso = source_timestamp.isoformat()
+        key = (source_iso, symbol)
+        if key in seen:
+            continue
+        seen.add(key)
+        effective = timestamps[bisect.bisect_left(timestamps, source_timestamp)]
+        events.append(
+            MarketEvent(
+                kind="funding",
+                symbol=symbol,
+                timestamp=effective.isoformat(),
+                payload={"rate": rate, "source_timestamp": source_iso},
+            )
+        )
+    return events
+
+
+def _events_in_window(
+    events: list[MarketEvent], start: Any, end: Any
+) -> list[MarketEvent]:
+    return [event for event in events if start <= pd.Timestamp(event.timestamp) <= end]
 
 
 def _feature_coverage(bars: Any, frames: Mapping[str, Any]) -> dict[str, Any]:

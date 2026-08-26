@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,6 +13,7 @@ import yaml
 
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 DEFAULT_MAX_BACKTEST_AGE_DAYS = 30
 
@@ -305,8 +307,10 @@ def evaluate_economic_gate(
     job_id: str,
     *,
     candidate_dir: str | Path,
+    baseline_dir: str | Path | None = None,
     store: JobStore | None = None,
     probation: bool = False,
+    dataset_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Independent economic acceptance: paired candidate-vs-incumbent replay
     on identical OOS folds under the owner constitution. Computed by gate
@@ -323,15 +327,21 @@ def evaluate_economic_gate(
     store = store or JobStore()
     root = store.job_dir(job_id)
     candidate_root = Path(candidate_dir)
+    baseline_root = Path(baseline_dir) if baseline_dir is not None else root
+    protected_dataset_root = Path(dataset_root) if dataset_root is not None else None
     constitution = load_constitution(root)
 
-    baseline_yaml = _load_job_yaml(root)
+    baseline_yaml = _load_job_yaml(baseline_root)
     candidate_yaml = _load_job_yaml(candidate_root)
     spec_data, _ = resolve_execution_spec(candidate_root, candidate_yaml)
     if not spec_data:
         return _economic_unavailable(constitution, "no execution spec", probation)
     spec = ExecutionSpec.from_dict(spec_data)
-    baseline_script = store.resolve_script_entrypoint(job_id, baseline_yaml)
+    baseline_script = store.resolve_script_entrypoint(
+        job_id,
+        baseline_yaml,
+        candidate_dir=baseline_root if baseline_root != root else None,
+    )
     candidate_script = store.resolve_script_entrypoint(
         job_id, candidate_yaml, candidate_dir=candidate_root
     )
@@ -345,12 +355,21 @@ def evaluate_economic_gate(
     # readiness verdict is always recomputed (pure policy, no simulation).
     fold_key = {
         "candidate_revision": compute_workspace_revision(candidate_root),
-        "baseline_revision": compute_workspace_revision(root),
+        "baseline_revision": compute_workspace_revision(baseline_root),
         "constitution_revision": constitution.get("revision"),
-        "dataset_fingerprint": _candidate_dataset_fingerprint(candidate_root, root),
+        "dataset_fingerprint": _candidate_dataset_fingerprint(
+            candidate_root, protected_dataset_root or root
+        ),
         "fold_spec": {**constitution["evaluation"], "warmup_bars": 60},
     }
-    persist_path = candidate_root / PAIRED_FOLDS_RELATIVE
+    persist_path = (
+        protected_dataset_root
+        / "reports"
+        / "economic"
+        / f"{fold_key['candidate_revision']}.json"
+        if protected_dataset_root is not None
+        else candidate_root / PAIRED_FOLDS_RELATIVE
+    )
     evaluation = _reusable_paired_evaluation(
         persist_path, fold_key, constitution, probation=probation
     )
@@ -368,7 +387,14 @@ def evaluate_economic_gate(
         reused = True
     else:
         try:
-            dataset = _load_dataset(candidate_root, spec, candidate_yaml)
+            dataset = _load_dataset(
+                protected_dataset_root or candidate_root,
+                spec,
+                candidate_yaml,
+                feature_roots=(protected_dataset_root,)
+                if protected_dataset_root is not None
+                else None,
+            )
         except FileNotFoundError:
             # Candidate bundles carry workspace/ + job.yaml only. Jobs that
             # keep their dataset at the JOB root
@@ -379,33 +405,33 @@ def evaluate_economic_gate(
             # the error propagates — with the propose-time infra-abort, a
             # dataset that validated moments ago but vanished for the
             # economic step is a box condition, not evidence.
+            if protected_dataset_root is not None:
+                raise
             dataset = _load_dataset(root, spec, candidate_yaml)
 
-        evaluation = paired_fold_evaluation(
-            baseline_script=baseline_script,
-            candidate_script=candidate_script,
-            dataset=dataset,
-            spec=spec,
-            baseline_params=baseline_yaml.get("execution_params") or {},
-            candidate_params=candidate_yaml.get("execution_params") or {},
-            constitution=constitution,
-        )
+        started = time.monotonic()
+        try:
+            evaluation = paired_fold_evaluation(
+                baseline_script=baseline_script,
+                candidate_script=candidate_script,
+                dataset=dataset,
+                spec=spec,
+                baseline_params=baseline_yaml.get("execution_params") or {},
+                candidate_params=candidate_yaml.get("execution_params") or {},
+                constitution=constitution,
+            )
+        finally:
+            sim_wall_seconds = time.monotonic() - started
         reused = False
         try:
-            persist_path.parent.mkdir(parents=True, exist_ok=True)
-            persist_path.write_text(
-                json.dumps(
-                    {
-                        "key": fold_key,
-                        "evaluation": evaluation,
-                        "generated_at": utc_now_iso(),
-                    },
-                    indent=2,
-                    sort_keys=True,
-                    default=str,
-                )
-                + "\n",
-                encoding="utf-8",
+            atomic_write_json(
+                persist_path,
+                {
+                    "key": fold_key,
+                    "evaluation": evaluation,
+                    "generated_at": utc_now_iso(),
+                },
+                default=str,
             )
         except OSError:
             pass  # persistence is an optimization, never a gate failure
@@ -426,6 +452,7 @@ def evaluate_economic_gate(
         "fold_count": evaluation.get("fold_count"),
         "audit_slice": _audit_summary(evaluation.get("audit_slice")),
         "status": evaluation.get("status"),
+        "sim_wall_seconds": 0.0 if reused else round(sim_wall_seconds, 3),
         **({"reused": True} if reused else {}),
         "checked_at": utc_now_iso(),
     }

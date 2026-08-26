@@ -84,6 +84,49 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         },
         "exploration_floor": 0.25,
     },
+    # Isolated open-ended code evolution. The rollout is deliberately limited
+    # to the named lab job; other jobs see no campaign state or extra work.
+    "evolution": {
+        "enabled": True,
+        "allowed_job_ids": ["majors-5m-lab"],
+        "campaign_hours": 4,
+        "start_interval_hours": 24,
+        # DeepSeek has announced 2x pricing during 09:00-12:00 and
+        # 14:00-18:00 Beijing time. Keep this in UTC so host DST cannot move it.
+        # The guard leaves one hourly worker interval for the final prompt to
+        # finish before peak pricing starts.
+        "pricing_schedule": {
+            "provider": "deepseek",
+            "blocked_windows_utc": [["01:00", "04:00"], ["06:00", "10:00"]],
+            "campaign_guard_minutes": 60,
+        },
+        # Backward-compatible fallback for job-local policies written before
+        # start_interval_hours was introduced.
+        "cooldown_hours": 12,
+        "generated_programs": 12,
+        "full_dev_survivors": 4,
+        "inner_optuna_finalists": 2,
+        "inner_optuna_trials": 20,
+        "proposal_finalists": 1,
+        "split": {"train": 0.80, "validation": 0.20},
+        "parent_mix": {
+            "incumbent": 0.30,
+            "qd_elite": 0.30,
+            "crossover": 0.20,
+            "de_novo": 0.20,
+        },
+        "min_structural_fraction": 0.50,
+        "max_parameter_fraction": 0.25,
+        "paper_experiment": {
+            "enabled": True,
+            "duration_days": 14,
+            "bar_interval": "5m",
+            "qualification_days": 7,
+            "proposal_hours": 24,
+            "compute_duty_fraction": 0.20,
+            "confidence": 0.90,
+        },
+    },
 }
 
 
@@ -171,6 +214,15 @@ class ImproverSpec:
     @property
     def exploration_floor(self) -> float:
         return float(self.policy["islands"]["exploration_floor"])
+
+    @property
+    def evolution(self) -> dict[str, Any]:
+        return dict(self.policy["evolution"])
+
+    def evolution_enabled_for(self, job_id: str) -> bool:
+        evolution = self.policy["evolution"]
+        allowed = {str(item) for item in evolution.get("allowed_job_ids") or []}
+        return bool(evolution.get("enabled")) and job_id in allowed
 
     def tier(self, name: str) -> dict[str, Any]:
         return dict(self.policy["tiers"][name])

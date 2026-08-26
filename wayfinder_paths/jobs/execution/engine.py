@@ -11,6 +11,7 @@ from typing import Any
 
 import pandas as pd
 
+from wayfinder_paths.jobs.execution.gates import latest_gate_state
 from wayfinder_paths.jobs.execution.primitives import (
     DEFAULT_INITIAL_CAPITAL,
     REDUCE_ONLY_ACTIONS,
@@ -166,11 +167,9 @@ class EngineState:
 
     def save(self, path: str | Path) -> None:
         location = Path(path)
-        location.parent.mkdir(parents=True, exist_ok=True)
-        location.write_text(
-            json.dumps(self.to_dict(), indent=2, default=str) + "\n",
-            encoding="utf-8",
-        )
+        from wayfinder_paths.runner.monitor_state import atomic_write_json
+
+        atomic_write_json(location, self.to_dict(), default=str)
 
 
 @dataclass
@@ -183,6 +182,7 @@ class TickResult:
     trade_rows: list[dict[str, Any]] = field(default_factory=list)
     guard_events: list[dict[str, Any]] = field(default_factory=list)
     ledger_snapshot: dict[str, Any] = field(default_factory=dict)
+    gates: dict[str, dict[str, Any]] = field(default_factory=dict)
     snapshot: StateSnapshot = field(default_factory=StateSnapshot)
 
 
@@ -310,6 +310,7 @@ async def _run_tick_inner(
         result.skipped = True
         result.skip_reason = "no_bars_at_timestamp"
         return result
+    result.gates = latest_gate_state(view)
     state.ledger.on_bar_tick(bar_ts)
 
     await _settle_resting_orders(
@@ -349,9 +350,19 @@ async def _run_tick_inner(
             )
     state.pending_intents = deferred_intents
 
+    reference_prices = (
+        {symbol: float(view.latest(symbol)["close"]) for symbol in view.symbols}
+        if events
+        else {}
+    )
     for event in events or []:
         _apply_market_event(
-            event, state=state, trace=trace, result=result, timestamp=bar_iso
+            event,
+            state=state,
+            trace=trace,
+            result=result,
+            timestamp=bar_iso,
+            reference_prices=reference_prices,
         )
 
     await _evaluate_brackets(
@@ -402,6 +413,7 @@ async def _run_tick_inner(
                     "visible_bar_count": len(view),
                     "visible_latest_timestamp": _latest_visible_timestamp(view),
                     "guard_event_count": len(result.guard_events),
+                    "gates": result.gates,
                 }
             )
             return result
@@ -599,6 +611,7 @@ async def _run_tick_inner(
             # timestamp is the invariant that actually proves causal replay.
             "visible_latest_timestamp": _latest_visible_timestamp(ctx.view),
             "guard_event_count": len(result.guard_events),
+            "gates": result.gates,
         }
     )
     return result
@@ -1162,15 +1175,32 @@ def _apply_market_event(
     trace: ExecutionTrace,
     result: TickResult,
     timestamp: str,
+    reference_prices: Mapping[str, float],
 ) -> None:
     if event.kind == "funding":
-        amount = float(event.payload.get("amount") or 0.0)
+        position = state.ledger.positions.get(event.symbol)
+        rate = event.payload.get("rate")
+        reference_price = event.payload.get("mark_price")
+        if reference_price is None:
+            reference_price = reference_prices.get(event.symbol)
+        if "amount" in event.payload:
+            amount = float(event.payload["amount"])
+        elif position is not None and rate is not None and reference_price is not None:
+            direction = 1.0 if position.side == "long" else -1.0
+            amount = -direction * position.size * float(reference_price) * float(rate)
+        else:
+            amount = 0.0
         state.ledger.realized_pnl += amount
         result.guard_events.append(
             {
                 "kind": "funding_applied",
                 "symbol": event.symbol,
                 "amount": amount,
+                "rate": float(rate) if rate is not None else None,
+                "reference_price": (
+                    float(reference_price) if reference_price is not None else None
+                ),
+                "source_timestamp": event.payload.get("source_timestamp"),
                 "timestamp": timestamp,
             }
         )

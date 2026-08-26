@@ -251,39 +251,44 @@ async def fetch_ccxt_funding_rows(
     start_ms = now_ms - int(days) * 86_400_000
     rows: list[dict[str, Any]] = []
     per_symbol: dict[str, int] = {}
+    errors: dict[str, str] = {}
     try:
         client = await feed._get_exchange()
         for coin in symbols:
-            market = await feed.resolve_market_symbol(str(coin))
-            since = start_ms
-            count = 0
-            for _page in range(200):  # hard cap: no infinite pagination
-                page = await client.fetch_funding_rate_history(
-                    market, since=since, limit=500
-                )
-                if not page:
-                    break
-                for item in page:
-                    rate = item.get("fundingRate")
-                    ts = item.get("timestamp")
-                    if rate is None or ts is None:
-                        continue
-                    rows.append(
-                        {
-                            "timestamp": pd.Timestamp(
-                                int(ts), unit="ms", tz="UTC"
-                            ).isoformat(),
-                            "name": "funding",
-                            "value": float(rate),
-                            "symbol": str(coin),
-                        }
+            try:
+                market = await feed.resolve_market_symbol(str(coin))
+                since = start_ms
+                count = 0
+                for _page in range(200):  # hard cap: no infinite pagination
+                    page = await client.fetch_funding_rate_history(
+                        market, since=since, limit=500
                     )
-                    count += 1
-                next_since = int(page[-1]["timestamp"]) + 1
-                if next_since <= since or next_since >= now_ms or len(page) < 2:
-                    break
-                since = next_since
-            per_symbol[str(coin)] = count
+                    if not page:
+                        break
+                    for item in page:
+                        rate = item.get("fundingRate")
+                        ts = item.get("timestamp")
+                        if rate is None or ts is None:
+                            continue
+                        rows.append(
+                            {
+                                "timestamp": pd.Timestamp(
+                                    int(ts), unit="ms", tz="UTC"
+                                ).isoformat(),
+                                "name": "funding",
+                                "value": float(rate),
+                                "symbol": str(coin),
+                            }
+                        )
+                        count += 1
+                    next_since = int(page[-1]["timestamp"]) + 1
+                    if next_since <= since or next_since >= now_ms or len(page) < 2:
+                        break
+                    since = next_since
+                per_symbol[str(coin)] = count
+            except Exception as exc:  # noqa: BLE001 - preserve partial coverage
+                per_symbol[str(coin)] = 0
+                errors[str(coin)] = str(exc)
     finally:
         await feed.close()
     metadata = {
@@ -293,5 +298,6 @@ async def fetch_ccxt_funding_rows(
         "feature": "funding",
         "days": int(days),
         "per_symbol": per_symbol,
+        "errors": errors,
     }
     return rows, metadata

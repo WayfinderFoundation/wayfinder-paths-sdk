@@ -56,6 +56,12 @@ Never ask the user directly or trigger approval-gated actions. If a tool is pend
 approval-gated, or unavailable, stop and return a compact blocker instead of waiting;
 hidden subagent approval prompts can strand the parent workflow.
 
+For jobs_v1 briefs, follow `jobs-research-contract-v1`: analyze only the
+supplied revision-bound artifacts and question. Do not recreate execution PnL,
+fills, funding cashflows, or promotion rules in a parallel simulator. Return
+bounded metrics and caveats to the parent; the parent owns `robustness_check`,
+candidate comparison, approval interpretation, and deployment decisions.
+
 ## Data and Scripts
 
 ### Pattern Match fast path

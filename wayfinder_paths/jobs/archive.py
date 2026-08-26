@@ -11,12 +11,23 @@ from __future__ import annotations
 
 from typing import Any
 
+from wayfinder_paths.jobs.compute_lock import job_state_lock
 from wayfinder_paths.jobs.improver.spec import revision_stamp
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
 ARCHIVE_PATH = "state/archive.json"
 ARCHIVE_STATUSES = {
+    "generated",
+    "invalid",
+    "low_fidelity_rejected",
+    "dev_frontier",
+    "audit_rejected",
+    "paper_probation",
+    "proposal_rejected",
+    "proposal_deferred",
+    "paper_proposal",
+    "paper_experiment",
     "incumbent",
     "frontier",
     "archived",
@@ -27,6 +38,16 @@ ARCHIVE_STATUSES = {
 # Pareto axes over the objective vector: maximize growth, minimize the rest.
 _MAXIMIZE = ("net_log_growth",)
 _MINIMIZE = ("downside_deviation", "tail_loss", "max_drawdown_pct")
+_NON_RANKED_STATUSES = {
+    "generated",
+    "invalid",
+    "low_fidelity_rejected",
+    "audit_rejected",
+    "proposal_rejected",
+    "proposal_deferred",
+    "refuted",
+    "retired",
+}
 
 
 def load_archive(store: JobStore, job_id: str) -> dict[str, Any]:
@@ -51,6 +72,43 @@ def record_candidate(
     proposal_id: str | None = None,
     behavior: dict[str, Any] | None = None,
     evidence: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    with job_state_lock(store.repo_root, job_id, name="archive"):
+        return _record_candidate(
+            store,
+            job_id,
+            candidate_id=candidate_id,
+            family=family,
+            summary=summary,
+            status=status,
+            objective=objective,
+            revision=revision,
+            parent_id=parent_id,
+            parent_candidate_ids=parent_candidate_ids,
+            proposal_id=proposal_id,
+            behavior=behavior,
+            evidence=evidence,
+            metadata=metadata,
+        )
+
+
+def _record_candidate(
+    store: JobStore,
+    job_id: str,
+    *,
+    candidate_id: str,
+    family: str,
+    summary: str,
+    status: str,
+    objective: dict[str, Any] | None,
+    revision: str | None = None,
+    parent_id: str | None = None,
+    parent_candidate_ids: list[str] | None = None,
+    proposal_id: str | None = None,
+    behavior: dict[str, Any] | None = None,
+    evidence: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if status not in ARCHIVE_STATUSES:
         raise ValueError(f"status must be one of {sorted(ARCHIVE_STATUSES)}")
@@ -67,15 +125,18 @@ def record_candidate(
             {
                 "status": existing["status"] if sticky else status,
                 "objective": objective or existing.get("objective"),
+                "revision": revision or existing.get("revision"),
                 "evidence": existing.get("evidence")
                 if sticky
                 else (evidence or existing.get("evidence")),
                 "updated_at": utc_now_iso(),
             }
         )
+        if metadata:
+            existing.setdefault("metadata", {}).update(metadata)
         # Content-derived IDs dedup re-proposals of the same workspace: the
         # entry accumulates every proposal UUID and parent edge instead of
-        # duplicating. Behavior is content-derived too — fill it once.
+        # duplicating. Refresh behavior when a later evaluation supplies it.
         if proposal_id:
             ids = existing.setdefault("proposal_ids", [])
             if proposal_id not in ids:
@@ -84,7 +145,7 @@ def record_candidate(
             parents = existing.setdefault("parent_candidate_ids", [])
             if parent and parent not in parents:
                 parents.append(parent)
-        if behavior and not existing.get("behavior"):
+        if behavior:
             existing["behavior"] = behavior
         entry = existing
     else:
@@ -100,6 +161,7 @@ def record_candidate(
             "proposal_ids": [proposal_id] if proposal_id else [],
             "behavior": behavior or {},
             "evidence": evidence,
+            "metadata": dict(metadata or {}),
             "created_at": utc_now_iso(),
             **revision_stamp(store.job_dir(job_id)),
         }
@@ -109,7 +171,71 @@ def record_candidate(
     return entry
 
 
+def behavior_cell(behavior: dict[str, Any] | None) -> str | None:
+    """Map a candidate into the 3×3×3 quality-diversity archive."""
+    behavior = behavior or {}
+    try:
+        direction = float(behavior["direction_bias"])
+        hold_value = behavior.get("median_hold_bars")
+        hold_bars = float(
+            hold_value if hold_value is not None else behavior["average_hold_bars"]
+        )
+        density = float(behavior["trades_per_asset_30d"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    direction_bin = (
+        "short" if direction < -0.25 else "long" if direction > 0.25 else "mixed"
+    )
+    hold_bin = "fast" if hold_bars <= 12 else "slow" if hold_bars > 72 else "medium"
+    density_bin = "sparse" if density < 5 else "dense" if density > 20 else "regular"
+    return f"{direction_bin}/{hold_bin}/{density_bin}"
+
+
+def quality_diversity_snapshot(
+    store: JobStore, job_id: str, *, per_cell: int = 2
+) -> dict[str, list[dict[str, Any]]]:
+    """Return up to two non-dominated candidates per occupied behavior cell."""
+    cells: dict[str, list[dict[str, Any]]] = {}
+    for entry in load_archive(store, job_id).get("candidates") or []:
+        if entry.get("status") in _NON_RANKED_STATUSES:
+            continue
+        cell = behavior_cell(entry.get("behavior"))
+        if cell is not None:
+            cells.setdefault(cell, []).append(entry)
+    snapshot: dict[str, list[dict[str, Any]]] = {}
+    for cell, entries in cells.items():
+        nondominated = [
+            entry
+            for entry in entries
+            if not any(
+                _dominates(other, entry) for other in entries if other is not entry
+            )
+        ]
+        nondominated.sort(
+            key=lambda entry: float(
+                (entry.get("objective") or {}).get("net_log_growth") or 0.0
+            ),
+            reverse=True,
+        )
+        snapshot[cell] = nondominated[: max(1, int(per_cell))]
+    return snapshot
+
+
 def set_candidate_status(
+    store: JobStore,
+    job_id: str,
+    candidate_id: str,
+    status: str,
+    *,
+    evidence: str | None = None,
+) -> dict[str, Any]:
+    with job_state_lock(store.repo_root, job_id, name="archive"):
+        return _set_candidate_status(
+            store, job_id, candidate_id, status, evidence=evidence
+        )
+
+
+def _set_candidate_status(
     store: JobStore,
     job_id: str,
     candidate_id: str,
@@ -137,18 +263,19 @@ def set_incumbent(store: JobStore, job_id: str, candidate_id: str) -> None:
     branches (still ranked on the frontier — that is the point). The id
     resolves as content id first, then proposal UUID, then raw revision —
     promotion callers hold different handles across archive generations."""
-    doc = load_archive(store, job_id)
-    promoted = _resolve(doc, candidate_id)
-    if promoted is None:
-        return
-    for entry in doc.get("candidates") or []:
-        if entry.get("status") == "incumbent":
-            entry["status"] = "archived"
-            entry["updated_at"] = utc_now_iso()
-    promoted["status"] = "incumbent"
-    promoted["updated_at"] = utc_now_iso()
-    _refresh_frontier(doc)
-    store.write_json(job_id, ARCHIVE_PATH, doc)
+    with job_state_lock(store.repo_root, job_id, name="archive"):
+        doc = load_archive(store, job_id)
+        promoted = _resolve(doc, candidate_id)
+        if promoted is None:
+            return
+        for entry in doc.get("candidates") or []:
+            if entry.get("status") == "incumbent":
+                entry["status"] = "archived"
+                entry["updated_at"] = utc_now_iso()
+        promoted["status"] = "incumbent"
+        promoted["updated_at"] = utc_now_iso()
+        _refresh_frontier(doc)
+        store.write_json(job_id, ARCHIVE_PATH, doc)
 
 
 def archive_snapshot_block(store: JobStore, job_id: str) -> dict[str, Any]:
@@ -242,7 +369,7 @@ def _refresh_frontier(doc: dict[str, Any]) -> None:
         entry
         for entry in doc.get("candidates") or []
         if isinstance(entry.get("objective"), dict)
-        and entry.get("status") not in {"refuted", "retired"}
+        and entry.get("status") not in _NON_RANKED_STATUSES
     ]
     for entry in doc.get("candidates") or []:
         entry["on_frontier"] = False

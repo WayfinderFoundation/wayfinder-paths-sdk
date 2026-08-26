@@ -20,7 +20,7 @@ from __future__ import annotations
 import math
 import random
 from collections import defaultdict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -35,8 +35,8 @@ from wayfinder_paths.jobs.execution.walk_forward import _slice
 
 
 def objective_vector(
-    equity_curve: list[Mapping[str, Any]],
-    trades: list[Mapping[str, Any]],
+    equity_curve: Sequence[Mapping[str, Any]],
+    trades: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     """Return/risk quantities the owner utility is defined over. Downside
     deviation (not plain variance) so upside volatility is not penalized."""
@@ -55,17 +55,14 @@ def objective_vector(
     # tail_loss silently 0 — the tail ceiling could never trip.
     closes_only = [row for row in trades if row.get("reduce_only") is True]
     counted = closes_only if closes_only else trades
-    pnls = [
-        float(
-            row.get("pnl")
-            if row.get("pnl") is not None
-            else row.get("net_pnl")
-            if row.get("net_pnl") is not None
-            else row.get("realized_pnl_delta")
-            or 0.0
-        )
-        for row in counted
-    ]
+    pnls = []
+    for row in counted:
+        value: Any = row.get("pnl")
+        if value is None:
+            value = row.get("net_pnl")
+        if value is None:
+            value = row.get("realized_pnl_delta")
+        pnls.append(float(value or 0.0))
     worst_k = max(1, len(pnls) // 10)
     tail_loss = (
         abs(sum(sorted(pnls)[:worst_k])) / base_equity if base_equity > 0 else 0.0
@@ -94,7 +91,7 @@ def utility(vector: Mapping[str, Any], weights: Mapping[str, Any]) -> float:
 
 
 def daily_log_returns(
-    equity_curve: list[Mapping[str, Any]],
+    equity_curve: Sequence[Mapping[str, Any]],
 ) -> list[tuple[str, float]]:
     """Calendar-day log returns from an equity curve (last equity per day)."""
     by_day: dict[str, float] = {}
@@ -129,9 +126,37 @@ def block_bootstrap_lcb(
 ) -> float | None:
     """Lower confidence bound on the TOTAL growth delta via a circular
     moving-block bootstrap. None when there is nothing to resample."""
+    totals = _block_bootstrap_totals(
+        deltas, block_len=block_len, iterations=iterations, seed=seed
+    )
+    if not totals:
+        return None
+    index = int((1.0 - confidence) * (len(totals) - 1))
+    return totals[index]
+
+
+def block_bootstrap_p_value(
+    deltas: list[float],
+    *,
+    block_len: int,
+    iterations: int,
+    seed: int = 7,
+) -> float | None:
+    """One-sided probability that the paired total is nonpositive."""
+    totals = _block_bootstrap_totals(
+        deltas, block_len=block_len, iterations=iterations, seed=seed
+    )
+    if not totals:
+        return None
+    return (1 + sum(total <= 0 for total in totals)) / (len(totals) + 1)
+
+
+def _block_bootstrap_totals(
+    deltas: list[float], *, block_len: int, iterations: int, seed: int
+) -> list[float]:
     n = len(deltas)
     if n < 2:
-        return None
+        return []
     block = max(1, min(block_len, n))
     rng = random.Random(seed)
     blocks_needed = math.ceil(n / block)
@@ -143,8 +168,7 @@ def block_bootstrap_lcb(
             sample.extend(deltas[(start + offset) % n] for offset in range(block))
         totals.append(sum(sample[:n]))
     totals.sort()
-    index = int((1.0 - confidence) * (iterations - 1))
-    return totals[index]
+    return totals
 
 
 def paired_fold_evaluation(
@@ -234,6 +258,11 @@ def paired_fold_evaluation(
         iterations=int(evaluation["bootstrap_iterations"]),
         confidence=float(evaluation["confidence"]),
     )
+    growth_p_value = block_bootstrap_p_value(
+        deltas,
+        block_len=int(evaluation["block_days"]),
+        iterations=int(evaluation["bootstrap_iterations"]),
+    )
     delta_estimate = utility(candidate_vector, weights) - utility(
         baseline_vector, weights
     )
@@ -271,6 +300,7 @@ def paired_fold_evaluation(
             "lcb": delta_lcb,
             "confidence": float(evaluation["confidence"]),
             "paired_days": len(deltas),
+            "p_value": growth_p_value,
         },
         "audit_slice": {
             "start": str(timestamps[dev_total]),
@@ -372,7 +402,7 @@ def _bar_seconds(spec: ExecutionSpec) -> int:
     return bar_interval_seconds(spec.data_contract.get("bar_interval"))
 
 
-def _max_drawdown(equity_curve: list[Mapping[str, Any]]) -> float:
+def _max_drawdown(equity_curve: Sequence[Mapping[str, Any]]) -> float:
     peak = 0.0
     worst = 0.0
     for row in equity_curve:

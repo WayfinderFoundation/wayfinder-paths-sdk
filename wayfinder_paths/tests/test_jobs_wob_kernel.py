@@ -8,7 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from wayfinder_paths.jobs.benchmarks.adapters import funnel_search, random_search
+from wayfinder_paths.jobs.benchmarks.adapters import (
+    funnel_search,
+    quality_diversity_funnel,
+    random_search,
+)
 from wayfinder_paths.jobs.benchmarks.compiler import compile_genome, write_interpreter
 from wayfinder_paths.jobs.benchmarks.grammar import (
     GENOME_SIGNALS,
@@ -45,6 +49,24 @@ def test_grammar_space_codec_and_hash_stability() -> None:
     # calls, sensitive to any grammar change.
     assert grammar_hash() == grammar_hash()
     assert grammar_hash(signals=GENOME_SIGNALS[:6]) != grammar_hash()
+
+
+def test_quality_diversity_lane_spends_matched_budget_across_cells() -> None:
+    genomes = enumerate_genomes(signals=("new_low_5", "rsi14_ge_70"))
+    dev = [
+        prepare_continuation(
+            reversion_world(bars=350, seed=seed),
+            signal_names=("new_low_5", "rsi14_ge_70"),
+        )
+        for seed in (31, 32)
+    ]
+    run = quality_diversity_funnel(genomes, dev, budget=24, fee_bps=4.5, seed=7)
+    control = funnel_search(genomes, dev, budget=24, fee_bps=4.5, seed=7)
+    assert run["train_evaluations"] == control["train_evaluations"] == 19
+    assert run["evaluation_count"] <= 24
+    assert control["evaluation_count"] <= 24
+    assert run["occupied_cells"] >= 6
+    assert run["optimizer"] == "qd_funnel"
 
 
 def test_oracle_engine_parity_on_shared_contract() -> None:

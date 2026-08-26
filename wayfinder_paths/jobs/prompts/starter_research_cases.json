@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0",
+  "cases": [
+    {
+      "id": "starter-warmup-parity",
+      "tags": ["warmup", "data-contract", "validity"],
+      "lesson": "Seven of eleven early starters produced no trades because their configured live lookback could not satisfy strategy warmup. Reject candidates whose live window cannot reach their first valid decision.",
+      "source": "starter research PR #686"
+    },
+    {
+      "id": "passive-capitulation-diversification",
+      "tags": ["mean-reversion", "diversification", "execution"],
+      "lesson": "Diversified passive capitulation was more stable than concentrated HYPE-only variants; apparent maker improvements remain hypotheses when queue position and partial fills are not modelled.",
+      "source": "starter research PR #679"
+    },
+    {
+      "id": "momentum-simple-branches",
+      "tags": ["momentum", "ablation", "simplicity"],
+      "lesson": "The durable momentum result came from the simple base. Smoothing, score gates, dynamic volatility, and diversified-selection branches were removed after failing their ablations.",
+      "source": "starter research PR #699"
+    },
+    {
+      "id": "broad-rally-overlay-honesty",
+      "tags": ["momentum", "regime", "holdout"],
+      "lesson": "A broad-rally overlay improved the recent run but was inspired by that same run and did not activate in older folds. Treat it as a forward-test hypothesis, not independent holdout evidence.",
+      "source": "starter research PR #701"
+    },
+    {
+      "id": "factor-timestamp-integrity",
+      "tags": ["factor", "timestamp", "validity"],
+      "lesson": "Early factor positives vanished after correcting mislabeled timeframes, start-labeled funding, and rank-buffer overflow. Verify timestamp semantics and capacity before scoring economics.",
+      "source": "starter research PR #716"
+    },
+    {
+      "id": "leverage-is-not-edge",
+      "tags": ["leverage", "risk", "ablation"],
+      "lesson": "Leverage frequently converted acceptable unlevered paths into risk-halt breaches. Search signal and exit structure separately from exposure scaling.",
+      "source": "starter research PRs #669/#672"
+    },
+    {
+      "id": "live-concentration-audit",
+      "tags": ["live", "concentration", "short"],
+      "lesson": "Recent owner live evidence concentrated most losses in one symbol while aggregate win rate obscured it. Always inspect symbol, direction, and exit attribution before changing the whole strategy.",
+      "source": "owner-scoped forward diagnostics"
+    },
+    {
+      "id": "exact-cost-and-label-parity",
+      "tags": ["costs", "funding", "execution", "validity"],
+      "lesson": "Candidates are comparable only when fees, funding, next-open execution, interval labels, and feature availability match between incumbent, candidate, and forward paths.",
+      "source": "starter research synthesis"
+    }
+  ]
+}

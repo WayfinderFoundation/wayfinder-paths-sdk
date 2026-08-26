@@ -40,6 +40,7 @@ from wayfinder_paths.jobs.sync import (
 )
 from wayfinder_paths.jobs.worker import run_job_worker
 from wayfinder_paths.mcp.utils import catch_errors, err, ok
+from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 JobAction = Literal[
     "list",
@@ -72,6 +73,13 @@ JobAction = Literal[
     "op_status",
     "backtest_diagnose",
     "experiments",
+    "robustness_check",
+    "evolution_start",
+    "evolution_status",
+    "evolution_prepare",
+    "evolution_evaluate",
+    "evolution_finalize",
+    "forward_experience",
     "promote_params",
     "proposals",
     "propose",
@@ -221,7 +229,7 @@ async def _start_background_op(
         "started_at": utc_now_iso(),
         **({"island": island} if island else {}),
     }
-    status_path.write_text(json.dumps(status), encoding="utf-8")
+    atomic_write_json(status_path, status)
     task = asyncio.get_running_loop().create_task(
         _reap_background_op(proc, status_path)
     )
@@ -251,7 +259,7 @@ async def _reap_background_op(proc: Any, status_path: Path) -> None:
             "finished_at": utc_now_iso(),
         }
     )
-    status_path.write_text(json.dumps(status), encoding="utf-8")
+    atomic_write_json(status_path, status)
 
 
 def _background_op_status(store: JobStore, job_id: str, op: str) -> dict[str, Any]:
@@ -265,7 +273,7 @@ def _background_op_status(store: JobStore, job_id: str, op: str) -> dict[str, An
         # finished anyway; otherwise the run is lost.
         result = _load_json_file(ops_dir / f"{op}.result.json")
         status["state"] = "done" if result is not None else "lost"
-        (ops_dir / f"{op}.json").write_text(json.dumps(status), encoding="utf-8")
+        atomic_write_json(ops_dir / f"{op}.json", status)
     payload = dict(status)
     log_path = ops_dir / f"{op}.log"
     if log_path.exists():
@@ -323,12 +331,17 @@ async def core_jobs(
     intent_contract: dict[str, Any] | None = None,
     execution_params: dict[str, Any] | None = None,
     candidate_dir: str | None = None,
+    candidate_id: str | None = None,
+    family: str | None = None,
+    mutation_kind: Literal["structural", "parameter"] | None = None,
     scenario_plan: dict[str, Any] | None = None,
     improver: dict[str, Any] | None = None,
     memo: str | None = None,
     strict: bool = False,
     grid_path: str | None = None,
     grid: dict[str, Any] | list[dict[str, Any]] | None = None,
+    robustness_plan: dict[str, Any] | None = None,
+    robustness_warnings_acknowledged: list[str] | None = None,
     workers: int = 0,
     parallel: Literal["serial", "thread", "process"] = "process",
     compile: bool = True,  # noqa: A002
@@ -338,6 +351,7 @@ async def core_jobs(
     background: bool | None = None,
     op: str | None = None,
     days: int = 14,
+    include_funding: bool = False,
     dataset_source: Literal["venues", "ccxt"] = "venues",
     exchange: str = "binance",
     market_type: Literal["swap", "spot"] = "swap",
@@ -434,7 +448,8 @@ async def core_jobs(
         basket on that ranking) and `pair_check` (the
         statistical admission gate for any pair/spread idea — run it FIRST; a
         REJECT saves days of tuning), `fetch_dataset` (real candles into the
-        job; `dataset_source="ccxt"` + `exchange="binance"` for long history),
+        job; `dataset_source="ccxt"` + `exchange="binance"` for long history;
+        use `include_funding=True` for same-window perp carry),
         `fetch_funding` (historical funding rates into the job's feature
         store — first-class carry data, as-of merged onto the bars as a
         `funding` column), `backtest_job` (runs DETACHED by
@@ -442,7 +457,8 @@ async def core_jobs(
         pass `background=False` only for quick_bars-sized runs),
         `backtest_diagnose` (ranked next steps), `experiments` (param grid via
         `grid` inline or `grid_path`; pass `wf_test_bars`/`wf_folds` for
-        walk-forward out-of-sample validation), then `promote_params`
+        walk-forward out-of-sample validation), `robustness_check` (detached
+        advisory neighbor/phase/leverage/walk-forward/scenario evidence), then `promote_params`
         (`grid_id`/`run_id`) once it survives OOS.
 
         Funding: `venue_deposit` / `venue_withdraw` (amount, and destination
@@ -661,6 +677,7 @@ async def core_jobs(
                 "exchange": exchange,
                 "market_type": market_type,
                 "quote": quote,
+                "include_funding": include_funding,
             },
         )
 
@@ -811,6 +828,76 @@ async def core_jobs(
             )
         return await _run_job_op("experiments", experiments_kwargs)
 
+    if action == "robustness_check":
+        if not job_id:
+            return err("invalid_request", "robustness_check requires job_id")
+        kwargs = {
+            "job_id": job_id,
+            "candidate_dir": candidate_dir,
+            "robustness_plan": robustness_plan,
+        }
+        if background is not False:
+            return await _start_background_op(store, job_id, "robustness_check", kwargs)
+        return await _run_job_op("robustness_check", kwargs)
+
+    if action == "evolution_start":
+        if not job_id:
+            return err("invalid_request", "evolution_start requires job_id")
+        return await _run_job_op("evolution_start", {"job_id": job_id, "force": force})
+
+    if action == "evolution_status":
+        if not job_id:
+            return err("invalid_request", "evolution_status requires job_id")
+        from wayfinder_paths.jobs.evolution_campaign import campaign_status
+
+        return ok(campaign_status(store, job_id))
+
+    if action == "evolution_prepare":
+        if not job_id or not family or not summary:
+            return err(
+                "invalid_request",
+                "evolution_prepare requires job_id, family, and summary",
+            )
+        return await _run_job_op(
+            "evolution_prepare",
+            {
+                "job_id": job_id,
+                "family": family,
+                "summary": summary,
+                "mutation_kind": mutation_kind,
+            },
+        )
+
+    if action == "evolution_evaluate":
+        if not job_id or not candidate_id:
+            return err(
+                "invalid_request", "evolution_evaluate requires job_id and candidate_id"
+            )
+        kwargs = {"job_id": job_id, "candidate_id": candidate_id}
+        if background is not False:
+            return await _start_background_op(
+                store, job_id, "evolution_evaluate", kwargs
+            )
+        return await _run_job_op("evolution_evaluate", kwargs)
+
+    if action == "evolution_finalize":
+        if not job_id:
+            return err("invalid_request", "evolution_finalize requires job_id")
+        kwargs = {"job_id": job_id}
+        if background is not False:
+            return await _start_background_op(
+                store, job_id, "evolution_finalize", kwargs
+            )
+        return await _run_job_op("evolution_finalize", kwargs)
+
+    if action == "forward_experience":
+        if not job_id:
+            return err("invalid_request", "forward_experience requires job_id")
+        kwargs = {"job_id": job_id}
+        if background is not False:
+            return await _start_background_op(store, job_id, "forward_experience", kwargs)
+        return await _run_job_op("forward_experience", kwargs)
+
     if action == "promote_params":
         return await _run_job_op(
             "promote_params",
@@ -875,6 +962,7 @@ async def core_jobs(
                 scenario_plan=scenario_plan,
                 proposal_id=proposal_id,
                 memo=memo,
+                robustness_warnings_acknowledged=robustness_warnings_acknowledged,
             )
         )
 

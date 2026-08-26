@@ -17,6 +17,7 @@ from wayfinder_paths.jobs.models import (
     safe_job_id,
     utc_now_iso,
 )
+from wayfinder_paths.runner.monitor_state import atomic_write_json
 from wayfinder_paths.runner.paths import find_repo_root
 
 APPLICATION_STATUSES = {
@@ -268,10 +269,7 @@ class JobStore:
 
     def write_json(self, job_id: str, relative: str, data: Any) -> Path:
         path = self.job_dir(job_id) / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        atomic_write_json(path, data)
         return path
 
     def read_jsonl(
@@ -377,11 +375,7 @@ class JobStore:
         if not proposal_id:
             raise ValueError("proposal_id is required")
         path = self.job_dir(job_id) / "proposals" / f"{proposal_id}.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(proposal, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        atomic_write_json(path, proposal)
         return path
 
     def _require_scenarios(self, job_id: str) -> bool:
@@ -416,6 +410,18 @@ class JobStore:
             )
         if not report.get("revision"):
             raise ValueError("candidate_report is missing its candidate revision")
+        from wayfinder_paths.jobs.robustness import (
+            required_robustness_acknowledgements,
+        )
+
+        required_warnings = required_robustness_acknowledgements(
+            report.get("robustness")
+        )
+        acknowledged = set(proposal.get("robustness_warnings_acknowledged") or [])
+        if missing := required_warnings - acknowledged:
+            raise ValueError(
+                f"candidate robustness warnings are not acknowledged: {sorted(missing)}"
+            )
         validation_summary = report.get("validation_summary") or {}
         validation_status = validation_summary.get("status")
         if validation_status != "passed":
@@ -902,10 +908,7 @@ class JobStore:
 
     def _write_json_if_missing(self, path: Path, data: Any) -> None:
         if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-            )
+            atomic_write_json(path, data)
 
     def _write_jsonl_if_missing(self, path: Path) -> None:
         if not path.exists():

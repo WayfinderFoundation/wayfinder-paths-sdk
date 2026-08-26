@@ -53,6 +53,12 @@ approval-gated actions. If a tool is pending, approval-gated, or unavailable, st
 return a compact blocker instead of waiting; hidden subagent approval prompts can strand
 the parent workflow.
 
+For jobs_v1 strategy work, provide fresh catalyst, regime, funding, basis,
+liquidity, or open-interest context under `jobs-research-contract-v1`. Do not
+claim strategy performance or rebuild PnL from market data; route historical
+performance and parameter claims to the parent job agent's framework
+`robustness_check` or to a bounded quant handoff.
+
 ## Sports data and betting backtests — delegate to `wayfinder-sports`
 
 You can delegate to the hidden `wayfinder-sports` subagent (via the task tool) for anything involving sports. You do NOT have sports tools yourself — `wayfinder-sports` owns them — so when a task needs sports, hand it off rather than trying to fetch it.

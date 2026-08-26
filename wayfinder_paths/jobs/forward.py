@@ -17,6 +17,7 @@ from wayfinder_paths.jobs.models import (
     safe_job_id,
     utc_now_iso,
 )
+from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 FORWARD_SCHEMA_VERSION = "0.1"
 FORWARD_FILES = {
@@ -436,10 +437,7 @@ def _read_json(path: Path, default: Any) -> Any:
 
 
 def _write_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(data, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
-    )
+    atomic_write_json(path, data, default=str)
 
 
 def _tail_jsonl(path: Path, limit: int) -> list[dict[str, Any]]:

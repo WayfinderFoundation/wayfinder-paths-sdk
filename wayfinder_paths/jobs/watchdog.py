@@ -1271,6 +1271,113 @@ def _audit_pending_claims(store: JobStore, job_id: str) -> dict[str, Any] | None
 # kill/graduate flips out of the 5-minute noise floor.
 _LIFECYCLE_MARKER = "state/lifecycle_pass.json"
 _LIFECYCLE_INTERVAL_S = 6 * 3600
+_CAMPAIGN_FINALIZE_RETRY_S = (0, 5 * 60, 15 * 60, 30 * 60)
+_CAMPAIGN_FINALIZE_GRACE = timedelta(minutes=60)
+
+
+def _run_evolution_campaign_pass(
+    store: JobStore, job_id: str, now: datetime
+) -> dict[str, Any] | None:
+    """Close deadline-bound campaigns independently of agent wake delivery."""
+    from wayfinder_paths.jobs.background import op_status_summary, spawn_detached_op
+    from wayfinder_paths.jobs.compute_lock import job_state_lock
+    from wayfinder_paths.jobs.evolution_campaign import CAMPAIGN_STATE_PATH
+
+    state = store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
+    if state.get("status") not in {"active", "finalizing"}:
+        return None
+    try:
+        deadline = datetime.fromisoformat(str(state["deadline_at"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=UTC)
+    if now < deadline and state.get("status") == "active":
+        return None
+
+    op = op_status_summary(store.job_dir(job_id), "evolution_finalize")
+    if state.get("status") == "finalizing" and (op or {}).get("status") == "running":
+        return None
+
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
+        if state.get("status") not in {"active", "finalizing"}:
+            return None
+        attempts = int(state.get("finalize_attempts") or 0)
+        if now - deadline >= _CAMPAIGN_FINALIZE_GRACE:
+            state.update(
+                {
+                    "status": "expired",
+                    "stage": "expired",
+                    "expired_at": now.isoformat(),
+                    "expiry_reason": "finalization did not complete within 60 minutes",
+                }
+            )
+            store.write_json(job_id, CAMPAIGN_STATE_PATH, state)
+            store.append_journal(
+                job_id,
+                {
+                    "type": "evolution_campaign_expired",
+                    "campaign_id": state.get("campaign_id"),
+                    "finalize_attempts": attempts,
+                },
+            )
+            return {
+                "action": "evolution_campaign_expired",
+                "campaign_id": state.get("campaign_id"),
+            }
+        if attempts >= len(_CAMPAIGN_FINALIZE_RETRY_S):
+            return None
+        last_attempt = state.get("finalize_last_attempt_at")
+        if attempts and _age(now, last_attempt) < timedelta(
+            seconds=_CAMPAIGN_FINALIZE_RETRY_S[attempts]
+        ):
+            return None
+        state.update(
+            {
+                "status": "finalizing",
+                "stage": "finalizing",
+                "finalize_attempts": attempts + 1,
+                "finalize_last_attempt_at": now.isoformat(),
+            }
+        )
+        store.write_json(job_id, CAMPAIGN_STATE_PATH, state)
+
+    spawned = spawn_detached_op(store, job_id, "evolution_finalize", {"job_id": job_id})
+    return {
+        "action": "evolution_campaign_finalize_started",
+        "campaign_id": state.get("campaign_id"),
+        "attempt": attempts + 1,
+        "pid": spawned.get("pid"),
+    }
+
+
+def _run_paper_experiment_pass(
+    store: JobStore, job_id: str, now: datetime
+) -> dict[str, Any] | None:
+    from wayfinder_paths.jobs.paper_experiment import (
+        harvest_hourly_control_candidates,
+        maybe_adjudicate_proposals,
+        maybe_finalize_experiment,
+    )
+
+    adjudicated = maybe_adjudicate_proposals(store, job_id, now=now)
+    if adjudicated:
+        return {
+            "action": "evolution_proposal_adjudicated",
+            "outcomes": adjudicated,
+        }
+    verdict = maybe_finalize_experiment(store, job_id, now=now)
+    if verdict is not None:
+        return {"action": "evolution_experiment_completed", **verdict}
+    staged = harvest_hourly_control_candidates(store, job_id, now=now)
+    if staged is not None:
+        return {
+            "action": "evolution_control_proposal_staged",
+            "candidate_id": staged.get("candidate_id"),
+            "revision": staged.get("revision"),
+        }
+    return None
 
 
 def _run_lifecycle_pass(
@@ -1504,6 +1611,20 @@ def recover_stalled_applications(
             claims_event = None
         if claims_event is not None:
             recovered.append({"job_id": job.id, **claims_event})
+        try:
+            campaign_event = _run_evolution_campaign_pass(store, job.id, now)
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"job_id": job.id, "error": f"evolution: {exc}"})
+            campaign_event = None
+        if campaign_event is not None:
+            recovered.append({"job_id": job.id, **campaign_event})
+        try:
+            experiment_event = _run_paper_experiment_pass(store, job.id, now)
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"job_id": job.id, "error": f"paper_experiment: {exc}"})
+            experiment_event = None
+        if experiment_event is not None:
+            recovered.append({"job_id": job.id, **experiment_event})
         try:
             for lifecycle_event in _run_lifecycle_pass(store, job.id, now):
                 recovered.append({"job_id": job.id, **lifecycle_event})

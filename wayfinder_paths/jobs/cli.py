@@ -15,6 +15,7 @@ from wayfinder_paths.jobs.application import (
     validate_application_candidate,
 )
 from wayfinder_paths.jobs.apply_launcher import launch_application
+from wayfinder_paths.jobs.background import spawn_detached_op
 from wayfinder_paths.jobs.backtest_artifacts import (
     diagnose_backtest,
     load_backtest_view,
@@ -28,6 +29,11 @@ from wayfinder_paths.jobs.decision_gates import (
     resolve_decision_gate,
 )
 from wayfinder_paths.jobs.decision_log import build_decision_log
+from wayfinder_paths.jobs.evolution_campaign import (
+    campaign_status,
+    prepare_candidate,
+    start_campaign,
+)
 from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.experiments import (
     list_experiments,
@@ -82,6 +88,7 @@ from wayfinder_paths.jobs.research import (
     signal_check_job,
     signal_scan_job,
 )
+from wayfinder_paths.jobs.robustness import robustness_check_job
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.starters import create_starter_job, starter_catalog
 from wayfinder_paths.jobs.store import JobStore
@@ -669,6 +676,12 @@ def reconcile_cmd(job_id: str, limit: int) -> None:
     help="Quote currency (default: USDC on hyperliquid, USDT elsewhere).",
 )
 @click.option(
+    "--include-funding",
+    is_flag=True,
+    default=False,
+    help="Fetch same-window historical funding in the same isolated operation.",
+)
+@click.option(
     "--full",
     is_flag=True,
     default=False,
@@ -681,6 +694,7 @@ def fetch_dataset_cmd(
     exchange: str,
     market_type: str,
     quote: str | None,
+    include_funding: bool,
     full: bool,
 ) -> None:
     store = JobStore()
@@ -694,6 +708,14 @@ def fetch_dataset_cmd(
         quote=quote,
         incremental=not full,
     )
+    if include_funding:
+        result["funding"] = fetch_funding_features(
+            job_id,
+            days=days,
+            exchange=exchange,
+            quote=quote,
+            store=store,
+        )
     _echo_json({"ok": True, "result": result})
 
 
@@ -1066,6 +1088,157 @@ def fetch_funding_cmd(job_id: str, days: int, exchange: str, quote: str | None) 
     result = fetch_funding_features(
         job_id, days=days, exchange=exchange, quote=quote, store=store
     )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="robustness-check",
+    help="Run advisory neighbor/phase/leverage/walk-forward/scenario evidence.",
+)
+@click.argument("job_id")
+@click.option("--candidate-dir", type=click.Path(path_type=Path), default=None)
+@click.option(
+    "--plan",
+    "plan_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Optional plan JSON; defaults to validation.robustness_plan.",
+)
+@click.option(
+    "--foreground",
+    is_flag=True,
+    default=False,
+    help="Wait for completion instead of starting the isolated background op.",
+)
+def robustness_check_cmd(
+    job_id: str,
+    candidate_dir: Path | None,
+    plan_path: Path | None,
+    foreground: bool,
+) -> None:
+    plan = json.loads(plan_path.read_text(encoding="utf-8")) if plan_path else None
+    if foreground:
+        result = robustness_check_job(
+            job_id,
+            candidate_dir=candidate_dir,
+            robustness_plan=plan,
+            store=JobStore(),
+        )
+    else:
+        result = spawn_detached_op(
+            JobStore(),
+            job_id,
+            "robustness_check",
+            {
+                "job_id": job_id,
+                "candidate_dir": str(candidate_dir) if candidate_dir else None,
+                "robustness_plan": plan,
+            },
+        )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="evolution-start",
+    help="Start the gated, isolated open-ended research campaign for a job.",
+)
+@click.argument("job_id")
+@click.option("--force", is_flag=True, help="Replace cooldown/completed state.")
+def evolution_start_cmd(job_id: str, force: bool) -> None:
+    try:
+        result = start_campaign(JobStore(), job_id, force=force)
+    except (FileNotFoundError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(name="evolution-status", help="Show the current evolution campaign.")
+@click.argument("job_id")
+def evolution_status_cmd(job_id: str) -> None:
+    _echo_json({"ok": True, "result": campaign_status(JobStore(), job_id)})
+
+
+@job_cli.command(
+    name="evolution-prepare",
+    help="Create one isolated candidate bundle for the code-mutation worker.",
+)
+@click.argument("job_id")
+@click.option("--family", required=True)
+@click.option("--summary", required=True)
+@click.option(
+    "--mutation-kind", type=click.Choice(["structural", "parameter"]), default=None
+)
+def evolution_prepare_cmd(
+    job_id: str, family: str, summary: str, mutation_kind: str | None
+) -> None:
+    try:
+        result = prepare_candidate(
+            JobStore(),
+            job_id,
+            family=family,
+            summary=summary,
+            mutation_kind=mutation_kind,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="evolution-evaluate",
+    help="Run a candidate's static and low-fidelity screen in isolation.",
+)
+@click.argument("job_id")
+@click.argument("candidate_id")
+@click.option("--foreground", is_flag=True)
+def evolution_evaluate_cmd(job_id: str, candidate_id: str, foreground: bool) -> None:
+    if foreground:
+        from wayfinder_paths.jobs.evolution_campaign import evaluate_candidate
+
+        result = evaluate_candidate(JobStore(), job_id, candidate_id)
+    else:
+        result = spawn_detached_op(
+            JobStore(),
+            job_id,
+            "evolution_evaluate",
+            {"job_id": job_id, "candidate_id": candidate_id},
+        )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="evolution-finalize",
+    help="Run bounded full-dev and stage one causal paper proposal.",
+)
+@click.argument("job_id")
+@click.option("--foreground", is_flag=True)
+def evolution_finalize_cmd(job_id: str, foreground: bool) -> None:
+    if foreground:
+        from wayfinder_paths.jobs.evolution_campaign import finalize_campaign
+
+        result = finalize_campaign(JobStore(), job_id)
+    else:
+        result = spawn_detached_op(
+            JobStore(), job_id, "evolution_finalize", {"job_id": job_id}
+        )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="forward-experience",
+    help="Refresh owner-scoped live execution calibration and paper priors.",
+)
+@click.argument("job_id")
+@click.option("--foreground", is_flag=True)
+def forward_experience_cmd(job_id: str, foreground: bool) -> None:
+    if foreground:
+        from wayfinder_paths.jobs.forward_experience import build_forward_experience
+
+        result = build_forward_experience(JobStore(), job_id)
+    else:
+        result = spawn_detached_op(
+            JobStore(), job_id, "forward_experience", {"job_id": job_id}
+        )
     _echo_json({"ok": True, "result": result})
 
 
@@ -1664,6 +1837,12 @@ def approve_cmd(
     help="Full proposed improver spec JSON (kind=improver_change only).",
 )
 @click.option("--proposal-id", default=None)
+@click.option(
+    "--ack-robustness-warning",
+    "robustness_warnings_acknowledged",
+    multiple=True,
+    help="Acknowledge an exact robustness warning code (repeatable).",
+)
 @click.option("--memo", default=None, help="Markdown proposal memo (inline).")
 @click.option(
     "--memo-file",
@@ -1681,6 +1860,7 @@ def propose_cmd(
     scenario_json: str | None,
     improver_json: str | None,
     proposal_id: str | None,
+    robustness_warnings_acknowledged: tuple[str, ...],
     memo: str | None,
     memo_file: str | None,
 ) -> None:
@@ -1699,6 +1879,7 @@ def propose_cmd(
         improver=json.loads(improver_json) if improver_json else None,
         proposal_id=proposal_id,
         memo=memo,
+        robustness_warnings_acknowledged=list(robustness_warnings_acknowledged),
     )
     _echo_json({"ok": True, "result": proposal})
 

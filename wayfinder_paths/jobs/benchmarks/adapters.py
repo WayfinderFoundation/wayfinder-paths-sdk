@@ -122,6 +122,13 @@ def tpe_search(
         sampler=optuna.samplers.TPESampler(seed=seed),
     )
     study.optimize(objective, n_trials=budget)
+    if len(lineage) < budget:
+        evaluated = {genome.genome_id for genome, _ in lineage}
+        remaining = [genome for genome in genomes if genome.genome_id not in evaluated]
+        rng = random.Random(seed + 1)
+        rng.shuffle(remaining)
+        for genome in remaining[: budget - len(lineage)]:
+            lineage.append((genome, dev_score(genome, dev_series, fee_bps=fee_bps)))
     if not lineage:
         return {"lineage": [], "selected": None, "optimizer": "tpe"}
     selected = max(lineage, key=lambda pair: pair[1])[0]
@@ -144,12 +151,14 @@ def funnel_search(
     if len(dev_series) < 2:
         raise ValueError("funnel_search requires train + holdout dev paths")
     train, holdout = dev_series[0], dev_series[1]
+    holdout_budget = min(holdout_top_k, max(0, budget - 1))
+    train_budget = max(1, budget - holdout_budget)
     proposal = tpe_search(
-        genomes, [train], budget=budget, fee_bps=fee_bps, seed=seed
+        genomes, [train], budget=train_budget, fee_bps=fee_bps, seed=seed
     )
     lineage = proposal["lineage"]
     ranked = sorted(lineage, key=lambda pair: pair[1], reverse=True)
-    top = [genome for genome, score in ranked[:holdout_top_k] if score > 0]
+    top = [genome for genome, score in ranked[:holdout_budget] if score > 0]
     best_genome, best_holdout = None, 0.0
     holdout_scores: list[tuple[str, float]] = []
     for genome in top:
@@ -162,7 +171,115 @@ def funnel_search(
         "selected": best_genome,  # None = abstain
         "optimizer": "funnel",
         "holdout_scores": holdout_scores,
+        "train_evaluations": len(lineage),
+        "holdout_evaluations": len(holdout_scores),
+        "evaluation_count": len(lineage) + len(holdout_scores),
     }
+
+
+def quality_diversity_funnel(
+    genomes: Sequence[Genome],
+    dev_series: Sequence[ContinuationSeries],
+    *,
+    budget: int,
+    fee_bps: float,
+    seed: int,
+    holdout_top_k: int = 5,
+) -> dict[str, Any]:
+    """Matched-budget MAP-Elites-shaped search with holdout abstention.
+
+    The benchmark grammar is intentionally bounded, so this is not the
+    production code-evolution operator. It tests the campaign's key claim:
+    retaining structural diversity before sealed adjudication beats collapsing
+    early onto one locally strong family.
+    """
+    if len(dev_series) < 2:
+        raise ValueError("quality_diversity_funnel requires train + holdout")
+    rng = random.Random(seed)
+    buckets: dict[tuple[str, str, str], list[Genome]] = {}
+    for genome in genomes:
+        buckets.setdefault(_genome_cell(genome), []).append(genome)
+    for values in buckets.values():
+        rng.shuffle(values)
+    holdout_budget = min(holdout_top_k, max(0, budget - 1))
+    target = min(max(1, budget - holdout_budget), len(genomes))
+    coverage_budget = min(len(buckets), max(1, target // 4))
+    proposal = tpe_search(
+        genomes,
+        [dev_series[0]],
+        budget=max(0, target - coverage_budget),
+        fee_bps=fee_bps,
+        seed=seed,
+    )
+    lineage: list[tuple[Genome, float]] = list(proposal["lineage"])
+    archives: dict[tuple[str, str, str], list[tuple[Genome, float]]] = {}
+
+    def retain(genome: Genome, score: float) -> None:
+        cell = _genome_cell(genome)
+        values = archives.setdefault(cell, [])
+        if any(existing.genome_id == genome.genome_id for existing, _ in values):
+            return
+        values.append((genome, score))
+        values.sort(key=lambda pair: pair[1], reverse=True)
+        del values[2:]
+
+    for genome, score in lineage:
+        retain(genome, score)
+
+    # Preserve the existing TPE exploit path, reserving only 25% of the
+    # matched evaluation budget for cells it missed or under-sampled.
+    seen = {genome.genome_id for genome, _ in lineage}
+    for values in buckets.values():
+        values[:] = [genome for genome in values if genome.genome_id not in seen]
+    while len(lineage) < target:
+        available = [cell for cell, values in buckets.items() if values]
+        if not available:
+            break
+        rng.shuffle(available)
+        cell = min(available, key=lambda key: len(archives.get(key, ())))
+        genome = buckets[cell].pop()
+        score = dev_score(genome, [dev_series[0]], fee_bps=fee_bps)
+        lineage.append((genome, score))
+        retain(genome, score)
+    finalists = sorted(
+        (pair for values in archives.values() for pair in values),
+        key=lambda pair: pair[1],
+        reverse=True,
+    )
+    selected, selected_score = None, 0.0
+    holdout_scores: list[tuple[str, float]] = []
+    for genome, train_score in finalists[:holdout_budget]:
+        if train_score <= 0:
+            continue
+        score = dev_score(genome, [dev_series[1]], fee_bps=fee_bps)
+        holdout_scores.append((genome.genome_id, score))
+        if score > selected_score:
+            selected, selected_score = genome, score
+    return {
+        "lineage": lineage,
+        "selected": selected,
+        "optimizer": "qd_funnel",
+        "occupied_cells": len(archives),
+        "holdout_scores": holdout_scores,
+        "train_evaluations": len(lineage),
+        "holdout_evaluations": len(holdout_scores),
+        "evaluation_count": len(lineage) + len(holdout_scores),
+    }
+
+
+def _genome_cell(genome: Genome) -> tuple[str, str, str]:
+    signal = genome.signal
+    family = (
+        "breakout"
+        if "new_" in signal
+        else "reversion"
+        if "rsi" in signal or "bb20" in signal
+        else "trend"
+    )
+    params = dict(genome.exit_params)
+    hold = int(params.get("hold_bars") or 8)
+    speed = "fast" if hold <= 4 else "slow" if hold >= 16 else "medium"
+    return genome.direction, speed, family
 
 
 ADAPTERS = {
@@ -170,4 +287,5 @@ ADAPTERS = {
     "grid": grid_search,
     "tpe": tpe_search,
     "funnel": funnel_search,
+    "qd_funnel": quality_diversity_funnel,
 }

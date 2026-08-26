@@ -9,7 +9,7 @@ from typing import Any
 import pandas as pd
 
 from wayfinder_paths.jobs.execution.primitives import ExecutionContext
-from wayfinder_paths.jobs.indicators import atr
+from wayfinder_paths.jobs.indicators import atr, trailing_return
 
 # These brackets are catastrophe exits; each strategy's normal exit or rebalance
 # remains responsible for routine risk. The bands below passed full-period and
@@ -129,13 +129,7 @@ def trailing_return_features(
     column: str,
 ) -> dict[str, pd.DataFrame]:
     return {
-        symbol: pd.DataFrame(
-            {
-                column: pd.to_numeric(frame["close"], errors="coerce").pct_change(
-                    lookback
-                )
-            }
-        )
+        symbol: pd.DataFrame({column: trailing_return(frame["close"], lookback)})
         for symbol, frame in frames.items()
     }
 

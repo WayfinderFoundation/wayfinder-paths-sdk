@@ -242,12 +242,15 @@ def _continuation_ops(root: Path, *, now: datetime | None) -> list[str]:
             continue
         if not isinstance(doc, dict):
             continue
+        op_name = str(doc.get("op") or path.stem)
+        if op_name == "candidate_shadows" or op_name.startswith("evolution_"):
+            continue
         state = str(doc.get("state") or "")
         if state == "running":
             pid = doc.get("pid")
             if isinstance(pid, int) and pid > 0 and not _pid_alive(pid):
                 continue
-            ops.append(str(doc.get("op") or path.stem))
+            ops.append(op_name)
             continue
         if state != "done" or doc.get("harvested"):
             continue
@@ -258,7 +261,7 @@ def _continuation_ops(root: Path, *, now: datetime | None) -> list[str]:
         if finished.tzinfo is None:
             finished = finished.replace(tzinfo=UTC)
         if (current - finished).total_seconds() <= _CONTINUATION_WINDOW_S:
-            ops.append(str(doc.get("op") or path.stem))
+            ops.append(op_name)
     return ops
 
 
