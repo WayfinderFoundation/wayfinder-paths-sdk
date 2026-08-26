@@ -10,9 +10,13 @@ import pandas as pd
 import yaml
 
 from wayfinder_paths.jobs.models import WayfinderJob
+from wayfinder_paths.jobs.pattern_match_universe import (
+    create_pattern_match_universe_job,
+)
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.universe import (
     UNIVERSE_SCAN_PATH,
+    fetch_hyperliquid_perp_universe,
     universe_scan_job,
 )
 
@@ -102,6 +106,92 @@ def test_universe_scan_filters_pools_and_persists(tmp_path) -> None:
         encoding="utf-8"
     )
     assert "universe-scan-" in ledger
+
+
+async def test_hyperliquid_universe_discovery_includes_native_and_hip3() -> None:
+    class InfoClient:
+        async def post(self, payload):
+            if payload == {"type": "perpDexs"}:
+                return [None, {"name": "xyz"}]
+            if payload.get("dex") == "xyz":
+                return (
+                    {"universe": [{"name": "xyz:TSLA", "maxLeverage": 10}]},
+                    [{"dayNtlVlm": "9000000", "funding": "0", "openInterest": "5"}],
+                )
+            return (
+                {"universe": [{"name": "BTC", "maxLeverage": 40}]},
+                [{"dayNtlVlm": "10000000", "funding": "0.00001", "openInterest": "2"}],
+            )
+
+    rows = await fetch_hyperliquid_perp_universe(client=InfoClient())
+    assert {row["symbol"] for row in rows} == {"BTC", "xyz:TSLA"}
+    native = next(row for row in rows if row["symbol"] == "BTC")
+    hip3 = next(row for row in rows if row["symbol"] == "xyz:TSLA")
+    assert native["dex"] == "hyperliquid" and native["venue"] == "native"
+    assert hip3["dex"] == "xyz" and hip3["venue"] == "hip3"
+
+
+def test_create_pattern_universe_job_is_15m_shadow_first(tmp_path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    listed = [
+        {
+            "symbol": "BTC",
+            "venue": "native",
+            "dex": "hyperliquid",
+            "volume_24h_usd": 20_000_000,
+            "delisted": False,
+        },
+        {
+            "symbol": "xyz:TSLA",
+            "venue": "hip3",
+            "dex": "xyz",
+            "volume_24h_usd": 10_000_000,
+            "delisted": False,
+        },
+        {
+            "symbol": "TINY",
+            "venue": "native",
+            "dex": "hyperliquid",
+            "volume_24h_usd": 1_000_000,
+            "delisted": False,
+        },
+        {
+            "symbol": "xyz:SP500",
+            "venue": "hip3",
+            "dex": "xyz",
+            "volume_24h_usd": 8_000_000,
+            "delisted": False,
+        },
+    ]
+    result = create_pattern_match_universe_job(
+        store=store,
+        compile_job=False,
+        fetch_universe=lambda: listed,
+    )
+    job = result["job"]
+    assert job["script_loop"]["interval_seconds"] == 900
+    assert job["script_loop"]["mode"] == "paper"
+    assert job["execution_params"]["allow_orders"] is False
+    assert job["execution_params"]["include_funding_context"] is True
+    assert job["execution_params"]["warmup_bars"] == 10_012
+    assert job["execution_params"]["minimum_history_bars"] == 10_000
+    assert job["execution_params"]["symbols"] == ["BTC", "xyz:TSLA"]
+    assert job["execution_params"]["universe_symbols"] == [
+        "BTC",
+        "xyz:TSLA",
+        "xyz:SP500",
+    ]
+    assert result["universe"] == {
+        "markets": 3,
+        "native": 1,
+        "hip3": 2,
+        "model_markets": 2,
+        "abstention_markets": 1,
+    }
+    strategy = (
+        store.job_dir(job["id"]) / "workspace" / "src" / "strategy.py"
+    ).read_text(encoding="utf-8")
+    assert "pattern_match_universe import build_strategy" in strategy
 
 
 def test_resolve_dataset_keeps_file_metadata(tmp_path) -> None:

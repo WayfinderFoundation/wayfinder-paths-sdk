@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from wayfinder_paths.core.clients.HyperliquidDataClient import (
@@ -73,6 +74,29 @@ class SafeHyperliquidMarketClient:
                     break
                 await asyncio.sleep(0.25 * (2**attempt))
         raise RuntimeError(f"Hyperliquid candle fetch failed: {last_error}")
+
+    async def get_funding_context(
+        self,
+        asset_name: str,
+        *,
+        start_ms: int,
+        end_ms: int,
+        retries: int = 3,
+    ) -> pd.DataFrame:
+        """Funding rate + premium rows used by the Pattern Match rerank."""
+        last_error: Exception | None = None
+        for attempt in range(max(1, retries)):
+            try:
+                response = await self.client.get_funding_history_response(
+                    asset_name, start_ms, end_ms
+                )
+                return _funding_context_frame(response.get("rows") or [])
+            except Exception as exc:
+                last_error = exc
+                if "429" not in str(exc) or attempt >= retries - 1:
+                    break
+                await asyncio.sleep(0.25 * (2**attempt))
+        raise RuntimeError(f"Hyperliquid funding fetch failed: {last_error}")
 
 
 def summarize_trade_capacity(
@@ -223,8 +247,16 @@ class HyperliquidMarketFeed:
     path validation and backtest dataset building use, so live never fetches
     differently than what was validated."""
 
-    def __init__(self, client: HyperliquidDataClient | None = None) -> None:
+    def __init__(
+        self,
+        client: HyperliquidDataClient | None = None,
+        *,
+        include_funding_context: bool = False,
+        concurrency: int = 1,
+    ) -> None:
         self._safe = SafeHyperliquidMarketClient(client)
+        self.include_funding_context = bool(include_funding_context)
+        self.concurrency = max(1, int(concurrency))
 
     async def get_completed_bars(
         self,
@@ -235,12 +267,29 @@ class HyperliquidMarketFeed:
         as_of: datetime | None = None,
     ) -> CompletedBarsView:
         lookback_hours = _lookback_hours(lookback_bars, interval)
-        rows: list[dict[str, Any]] = []
-        for symbol in symbols:
-            view = await self._safe.get_completed_bars(
-                symbol, interval, lookback_hours=lookback_hours
-            )
-            rows.extend(view.to_rows())
+        semaphore = asyncio.Semaphore(self.concurrency)
+
+        async def fetch(symbol: str) -> list[dict[str, Any]]:
+            async with semaphore:
+                view = await self._safe.get_completed_bars(
+                    symbol, interval, lookback_hours=lookback_hours
+                )
+                if not self.include_funding_context or not view.timestamps:
+                    return view.to_rows()
+                # Pull one prior observation so the first candle can receive
+                # a causal as-of feature instead of beginning with a NaN.
+                funding_start = view.timestamps[0] - pd.Timedelta(hours=2)
+                start_ms = int(funding_start.timestamp() * 1_000)
+                end_ms = int(view.timestamps[-1].timestamp() * 1_000)
+                funding = await self._safe.get_funding_context(
+                    symbol, start_ms=start_ms, end_ms=end_ms
+                )
+                return _merge_funding_context(
+                    view, funding, interval=interval
+                ).to_rows()
+
+        chunks = await asyncio.gather(*(fetch(str(symbol)) for symbol in symbols))
+        rows = [row for chunk in chunks for row in chunk]
         merged = CompletedBarsView.from_rows(rows)
         if as_of is not None:
             merged = merged.through(as_of)
@@ -523,7 +572,10 @@ class HyperliquidPerpAdapter:
 
     def __init__(self, *, mode: str, params: dict[str, Any] | None = None) -> None:
         params = params or {}
-        self.feed = HyperliquidMarketFeed()
+        self.feed = HyperliquidMarketFeed(
+            include_funding_context=bool(params.get("include_funding_context")),
+            concurrency=int(params.get("market_data_concurrency") or 1),
+        )
         if mode == "live":
             self.broker: Any = HyperliquidPerpBroker(
                 wallet_label=str(params.get("wallet_label") or "main"),
@@ -789,6 +841,82 @@ def _candles_to_completed_view(
             }
         )
     return CompletedBarsView.from_rows(parsed)
+
+
+def _funding_context_frame(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    parsed = []
+    for row in rows:
+        try:
+            timestamp = pd.Timestamp(int(row["time"]), unit="ms", tz="UTC")
+            rate = float(row["fundingRate"])
+            premium = float(row["premium"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if math.isfinite(rate) and math.isfinite(premium):
+            parsed.append(
+                {
+                    "timestamp": timestamp,
+                    "funding_rate": rate,
+                    "premium": premium,
+                }
+            )
+    return pd.DataFrame(parsed, columns=["timestamp", "funding_rate", "premium"])
+
+
+def _merge_funding_context(
+    view: CompletedBarsView, funding: pd.DataFrame, *, interval: str
+) -> CompletedBarsView:
+    bars = view.to_frame().sort_values("timestamp")
+    if funding.empty:
+        bars["funding_rate"] = None
+        bars["premium"] = None
+        bars["funding_observed_at"] = None
+        bars["funding_payment_rate"] = None
+        return CompletedBarsView(bars)
+    context = funding.sort_values("timestamp").drop_duplicates("timestamp", keep="last")
+    payments = _funding_payments_by_bar(
+        bars["timestamp"],
+        context,
+        default_interval_seconds=bar_interval_seconds(interval) or 15 * 60,
+    )
+    context = context.rename(columns={"timestamp": "funding_observed_at"})
+    merged = pd.merge_asof(
+        bars,
+        context,
+        left_on="timestamp",
+        right_on="funding_observed_at",
+        direction="backward",
+    )
+    merged["funding_payment_rate"] = payments
+    return CompletedBarsView(merged)
+
+
+def _funding_payments_by_bar(
+    bar_timestamps: pd.Series,
+    funding: pd.DataFrame,
+    *,
+    default_interval_seconds: int = 15 * 60,
+) -> np.ndarray:
+    """Sum settlements in each completed bar's ``(open, close]`` interval."""
+    bar_ns = pd.DatetimeIndex(bar_timestamps).asi8
+    payments = np.zeros(len(bar_ns), dtype=np.float64)
+    if not len(bar_ns):
+        return payments
+    interval_ns = (
+        int(np.median(np.diff(bar_ns)))
+        if len(bar_ns) > 1
+        else int(pd.Timedelta(seconds=default_interval_seconds).value)
+    )
+    event_ns = pd.DatetimeIndex(funding["timestamp"]).asi8
+    rates = funding["funding_rate"].to_numpy(dtype=np.float64)
+    target = np.searchsorted(bar_ns, event_ns, side="left")
+    valid = (
+        (target < len(bar_ns))
+        & (event_ns > bar_ns[0] - interval_ns)
+        & np.isfinite(rates)
+    )
+    np.add.at(payments, target[valid], rates[valid])
+    return payments
 
 
 def _float_pair(data: dict[str, Any], key: str) -> tuple[float | None, float | None]:

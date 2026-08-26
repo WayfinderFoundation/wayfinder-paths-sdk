@@ -188,20 +188,57 @@ def universe_scan_job(
     return artifact
 
 
-def _fetch_hl_universe() -> list[dict[str, Any]]:
-    import asyncio
+async def fetch_hyperliquid_perp_universe(
+    *, client: Any | None = None, include_hip3: bool = True
+) -> list[dict[str, Any]]:
+    """Return native and HIP-3 perps with canonical executable symbols.
 
+    A context row is positionally tied to its metadata row.  A length mismatch
+    is therefore fatal rather than silently truncating the universe.
+    """
     from wayfinder_paths.core.clients.HyperliquidInfoClient import (
         HyperliquidInfoClient,
     )
 
-    async def _fetch() -> list[dict[str, Any]]:
-        meta, ctxs = await HyperliquidInfoClient().post({"type": "metaAndAssetCtxs"})
-        rows: list[dict[str, Any]] = []
-        for asset, ctx in zip(meta.get("universe", []), ctxs, strict=False):
+    info = client or HyperliquidInfoClient()
+    dex_names = [""]
+    if include_hip3:
+        listed = await info.post({"type": "perpDexs"})
+        for descriptor in listed or []:
+            if descriptor is None:
+                continue
+            dex_name = str(descriptor.get("name") or "").strip()
+            if not dex_name:
+                raise RuntimeError("Hyperliquid returned a perp DEX without a name")
+            if dex_name not in dex_names:
+                dex_names.append(dex_name)
+    rows: list[dict[str, Any]] = []
+    seen_symbols: set[str] = set()
+    for dex_name in dex_names:
+        request: dict[str, Any] = {"type": "metaAndAssetCtxs"}
+        if dex_name:
+            request["dex"] = dex_name
+        meta, contexts = await info.post(request)
+        assets = list(meta.get("universe") or [])
+        if len(assets) != len(contexts):
+            raise RuntimeError(
+                f"Hyperliquid universe/context length mismatch for "
+                f"{dex_name or 'native'}: {len(assets)} != {len(contexts)}"
+            )
+        for asset, ctx in zip(assets, contexts, strict=True):
+            symbol = str(asset.get("name") or "").strip()
+            if not symbol:
+                raise RuntimeError(
+                    f"Hyperliquid returned an unnamed {dex_name or 'native'} market"
+                )
+            if symbol in seen_symbols:
+                raise RuntimeError(f"Hyperliquid returned duplicate market {symbol}")
+            seen_symbols.add(symbol)
             rows.append(
                 {
-                    "symbol": str(asset.get("name")),
+                    "symbol": symbol,
+                    "dex": dex_name or "hyperliquid",
+                    "venue": "hip3" if dex_name else "native",
                     "volume_24h_usd": float(ctx.get("dayNtlVlm") or 0.0),
                     "funding_hourly": float(ctx.get("funding") or 0.0),
                     "open_interest": float(ctx.get("openInterest") or 0.0),
@@ -209,9 +246,20 @@ def _fetch_hl_universe() -> list[dict[str, Any]]:
                     "delisted": bool(asset.get("isDelisted")),
                 }
             )
-        return rows
+    return sorted(
+        rows,
+        key=lambda item: (
+            item["venue"],
+            -float(item["volume_24h_usd"]),
+            item["symbol"],
+        ),
+    )
 
-    return asyncio.run(_fetch())
+
+def _fetch_hl_universe() -> list[dict[str, Any]]:
+    import asyncio
+
+    return asyncio.run(fetch_hyperliquid_perp_universe())
 
 
 def _fetch_hl_bars(symbol: str, days: int) -> Any:
@@ -271,6 +319,7 @@ def load_universe_scan(store: JobStore, job_id: str) -> dict[str, Any] | None:
 
 __all__ = [
     "UNIVERSE_SCAN_PATH",
+    "fetch_hyperliquid_perp_universe",
     "load_universe_scan",
     "universe_scan_job",
 ]
