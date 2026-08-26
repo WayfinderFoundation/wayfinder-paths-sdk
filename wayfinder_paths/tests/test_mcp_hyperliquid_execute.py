@@ -15,6 +15,7 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_get_trade_asset,
     hyperliquid_place_limit_order,
     hyperliquid_place_market_order,
+    hyperliquid_place_trigger_order,
     hyperliquid_withdraw_usdc,
 )
 
@@ -1065,3 +1066,43 @@ async def test_hyperliquid_reduce_only_rejects_size_above_live_position():
     assert out["ok"] is False
     assert out["error"]["code"] == "reduce_only_size_exceeds_position"
     assert out["error"]["details"]["closeable_size"] == 0.25
+
+
+@pytest.mark.asyncio
+async def test_trigger_order_rounds_off_grid_stop_instead_of_rejecting():
+    """Machine-computed stop prices (entry × stop multiple) are almost never
+    on HL's tick grid (67258.8 is 6 sig figs). The trigger path must round to
+    the grid like the adapter does — the old reject-first validator meant the
+    stop never got placed, positions sat unprotected, and live jobs halted on
+    unconfirmed protection."""
+    seen: dict[str, Any] = {}
+
+    class _TriggerFake(_FakeExecutionAdapter):
+        def get_valid_order_price(self, _asset_id: int, price: float) -> float:
+            # Mirror HL's 5-sig-fig floor for the regression value.
+            return 67258.0 if abs(float(price) - 67258.8) < 1e-9 else float(price)
+
+        async def place_trigger_order(self, asset_id, is_buy, tpx, sz, sender, **kwargs):
+            seen["tpx"] = tpx
+            seen["limit_price"] = kwargs.get("limit_price")
+            return True, {"status": "ok"}
+
+    fake = _TriggerFake()
+    with (
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid._make_hl_adapter",
+            new=AsyncMock(return_value=(fake, "0x1234")),
+        ),
+        patch("wayfinder_paths.mcp.tools.hyperliquid._annotate_hl_profile"),
+    ):
+        out = await hyperliquid_place_trigger_order(
+            wallet_label="main",
+            asset_name="BTC-USDC",
+            tpsl="sl",
+            trigger_price=67258.8,
+            is_buy=False,
+            size=0.01,
+        )
+
+    assert out["ok"] is True, out
+    assert seen["tpx"] == 67258.0

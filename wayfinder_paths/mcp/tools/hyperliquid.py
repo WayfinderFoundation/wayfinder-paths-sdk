@@ -1548,9 +1548,15 @@ async def hyperliquid_place_trigger_order(
             f"(lot size = {min_tick}). Try size={min_tick}."
         )
 
+    # Trigger prices arrive machine-computed (entry × stop multiple) and are
+    # almost never on HL's tick grid — round to the grid like the adapter
+    # itself does, instead of rejecting. Rejecting here left positions
+    # unprotected: the stop never reached the adapter's own rounding, and
+    # the framework halted on the unconfirmed protection. Plain order paths
+    # keep the strict validator (they're fed clean prices).
     if limit_px is not None:
-        _validate_price(adapter=adapter, asset_id=resolved_asset_id, price=limit_px)
-    _validate_price(adapter=adapter, asset_id=resolved_asset_id, price=tpx)
+        limit_px = adapter.get_valid_order_price(resolved_asset_id, float(limit_px))
+    tpx = adapter.get_valid_order_price(resolved_asset_id, float(tpx))
 
     ok_order, res = await adapter.place_trigger_order(
         resolved_asset_id,
