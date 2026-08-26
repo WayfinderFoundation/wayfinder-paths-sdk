@@ -190,8 +190,8 @@ def test_agent_wake_tier_classification():
     )
 
     wake = {"payload": {"env": {"WAYFINDER_JOB_AGENT_MODE": "intervene"}}}
-    # Scheduled occurrences of this tier are skipped outright under drain
-    # (asserted below); event-triggered ones postpone on the short floor.
+    # Agent wakes defer on the short floor under drain — never skipped
+    # (a skip-outright variant once starved wakes for 90+ minutes).
     assert _burst_postpone_tier(wake) == ("agent", BURST_SHORT_POSTPONE_S)
 
     paper = {
@@ -215,10 +215,13 @@ def test_agent_wake_tier_classification():
     assert _burst_postpone_tier(live) == ("live-exempt", None)
 
 
-def test_scheduled_agent_wake_skipped_under_drain(tmp_path, monkeypatch):
-    """A scheduled wake due while over quota is dropped for the occurrence:
-    schedule advances, no run reserved. Event-triggered wakes still launch
-    through the postpone path instead of being skipped."""
+def test_scheduled_agent_wake_deferred_not_skipped_under_drain(tmp_path, monkeypatch):
+    """A scheduled wake due while over quota is DEFERRED, never dropped: the
+    schedule does not advance (the job stays due and retries every tick) and
+    no run is reserved until the short floor elapses. The skip-outright
+    variant advanced the schedule on every drained occurrence and starved a
+    job's wakes for 90+ minutes while its own evolution evals drained the
+    bucket."""
     from wayfinder_paths.runner import daemon as daemon_mod
 
     calls = {"advanced": None, "reserved": 0}
@@ -254,5 +257,6 @@ def test_scheduled_agent_wake_skipped_under_drain(tmp_path, monkeypatch):
     }
     result = daemon._maybe_start_job(job=job, now=1000, reason="schedule")
     assert result is None
-    assert calls["advanced"] == (7, 4600)
+    assert calls["advanced"] is None  # stays due — deferred, not dropped
     assert calls["reserved"] == 0
+    assert 7 in daemon._postponed_since  # floor clock started

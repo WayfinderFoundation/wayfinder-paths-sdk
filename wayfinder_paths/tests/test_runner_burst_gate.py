@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from unittest.mock import Mock
@@ -156,7 +157,7 @@ def test_paper_jobs_v1_tick_gets_short_floor(tmp_path: Path, monkeypatch) -> Non
     assert d._maybe_start_job(job=job, now=1_000, reason="schedule") is not None
 
 
-def test_scheduled_agent_wake_skips_occurrence_even_past_short_floor(
+def test_scheduled_agent_wake_runs_past_short_floor(
     tmp_path: Path, monkeypatch
 ) -> None:
     d = _daemon(
@@ -172,7 +173,71 @@ def test_scheduled_agent_wake_skips_occurrence_even_past_short_floor(
     assert d._maybe_start_job(job=job, now=1_000, reason="schedule") is None
     d._postponed_since[job["id"]] = time.monotonic() - (BURST_SHORT_POSTPONE_S + 1)
     _mock_popen(monkeypatch)
-    assert d._maybe_start_job(job=job, now=1_000, reason="schedule") is None
+    assert d._maybe_start_job(job=job, now=1_000, reason="schedule") is not None
+
+
+def test_agent_wake_deferral_keeps_job_due(tmp_path: Path) -> None:
+    """Deferring an agent wake must NOT advance the schedule — the job stays
+    due and retries every tick until the floor admits it. The skip-outright
+    variant advanced the schedule on every drained occurrence, starving wakes
+    for as long as the drain lasted."""
+    d = _daemon(tmp_path, env={"WAYFINDER_JOB_AGENT_MODE": "review"})
+    _force_burst(d, over=True)
+    before = d._db.get_job(name="j")
+    assert before is not None
+    assert d._maybe_start_job(job=_job(d), now=1_000, reason="schedule") is None
+    after = d._db.get_job(name="j")
+    assert after is not None
+    assert after[1].next_run_at == before[1].next_run_at
+
+
+def _job_root_with_campaign(tmp_path: Path, status: str) -> Path:
+    job_root = tmp_path / "jobs" / "majors"
+    (job_root / "state").mkdir(parents=True)
+    (job_root / "state" / "evolution_campaign.json").write_text(
+        json.dumps({"campaign_id": "campaign-1", "status": status}),
+        encoding="utf-8",
+    )
+    return job_root
+
+
+def test_active_evolution_campaign_exempts_agent_wake(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A wake whose job has an ACTIVE evolution campaign launches immediately
+    under drain — the campaign's evals are what drained the bucket, and only
+    the wake relaunches them when they die."""
+    job_root = _job_root_with_campaign(tmp_path, "active")
+    d = _daemon(
+        tmp_path,
+        env={
+            "WAYFINDER_JOB_EXECUTION_CONTRACT": "jobs_v1",
+            "WAYFINDER_JOB_MODE": "live",
+            "WAYFINDER_JOB_AGENT_MODE": "review",
+            "WAYFINDER_JOB_DIR": str(job_root),
+        },
+    )
+    _force_burst(d, over=True)
+    _mock_popen(monkeypatch)
+    assert d._maybe_start_job(job=_job(d), now=1_000, reason="schedule") is not None
+
+
+def test_inactive_evolution_campaign_keeps_agent_wake_gated(
+    tmp_path: Path, monkeypatch
+) -> None:
+    job_root = _job_root_with_campaign(tmp_path, "completed")
+    d = _daemon(
+        tmp_path,
+        env={
+            "WAYFINDER_JOB_EXECUTION_CONTRACT": "jobs_v1",
+            "WAYFINDER_JOB_MODE": "live",
+            "WAYFINDER_JOB_AGENT_MODE": "review",
+            "WAYFINDER_JOB_DIR": str(job_root),
+        },
+    )
+    _force_burst(d, over=True)
+    _mock_popen(monkeypatch)
+    assert d._maybe_start_job(job=_job(d), now=1_000, reason="schedule") is None
 
 
 def test_indeterminate_mode_defaults_to_short_floor(
