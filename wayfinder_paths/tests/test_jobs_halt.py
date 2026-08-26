@@ -15,6 +15,7 @@ from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.engine import EngineState
 from wayfinder_paths.jobs.execution.paper import PaperBroker
 from wayfinder_paths.jobs.halt import clear_halt, read_halt, request_halt
+from wayfinder_paths.jobs.models import DEFAULT_FORWARD_SUMMARY
 from wayfinder_paths.tests.test_jobs_live_driver import (
     PERP_CAPS,
     FakeAdapter,
@@ -217,8 +218,6 @@ def test_clearing_loss_streak_halt_resets_the_streak(tmp_path: Path) -> None:
     """Without the reset, clearing is a treadmill: the next tick re-reads the
     stale streak, re-latches before any trade runs, and the only organic
     reset (a winning close) can never happen under reduce-only."""
-    from wayfinder_paths.jobs.models import DEFAULT_FORWARD_SUMMARY
-
     store, job, root = _make_job(tmp_path)
     store.write_json(
         job.id,
@@ -243,8 +242,6 @@ def test_clearing_loss_streak_halt_resets_the_streak(tmp_path: Path) -> None:
 
 
 def test_clearing_other_halts_leaves_streak_alone(tmp_path: Path) -> None:
-    from wayfinder_paths.jobs.models import DEFAULT_FORWARD_SUMMARY
-
     store, job, root = _make_job(tmp_path)
     store.write_json(
         job.id,

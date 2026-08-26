@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.models import DEFAULT_FORWARD_SUMMARY, utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 
 HALT_PATH = "state/halt.json"
@@ -128,8 +128,6 @@ def clear_halt(store: JobStore, job_id: str, *, by: str) -> dict[str, Any]:
 
 
 def _reset_loss_streak(store: JobStore, job_id: str, *, by: str) -> None:
-    from wayfinder_paths.jobs.models import DEFAULT_FORWARD_SUMMARY
-
     summary = store.read_json(job_id, DEFAULT_FORWARD_SUMMARY, default=None)
     trades = (summary or {}).get("trades")
     if not isinstance(trades, dict):
