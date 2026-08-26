@@ -136,6 +136,95 @@ def test_lookback_bars_still_windows_for_back_compat() -> None:
     assert res.profile["compute_window_source"] == "lookback_bars"
 
 
+def test_declared_window_bounds_every_decide_view() -> None:
+    """warmup_bars=W ⇒ decide() never sees more than W timestamps (and
+    symbol_frame() never more than W rows) — the same bounded view the live
+    driver fetches, so backtest inputs ≡ forward inputs by construction."""
+    seen: list[int] = []
+
+    def build(params=None):
+        def decide(ctx: ExecutionContext):
+            seen.append(len(ctx.view.timestamps))
+            assert len(ctx.view.symbol_frame("IMX")) <= 40
+            return []
+
+        return types.SimpleNamespace(decide=decide)
+
+    res = simulate_execution(build, _dataset(300), SPEC, {"warmup_bars": 40})
+    assert res.profile["compute_window"] == 40
+    assert max(seen) == 40  # ramps up to W, never beyond
+
+
+def test_undeclared_window_surfaces_hint_as_validation_warning(monkeypatch) -> None:
+    """An undeclared window still runs bounded at the default cap, but the
+    profiler's O(N²)/heavy-tick hint must land in validation warnings so the
+    agent is told to declare warmup_bars; declared runs stay clean."""
+    from wayfinder_paths.jobs.execution import simulator as sim
+
+    monkeypatch.setattr(sim, "_tick_time_growing", lambda tick_ms: True)
+    marker = "no declared compute window"
+    undeclared = simulate_execution(_build_strategy, _dataset(120), SPEC, {})
+    assert any(marker in warning for warning in undeclared.validation["warnings"])
+    declared = simulate_execution(
+        _build_strategy, _dataset(120), SPEC, {"warmup_bars": 40}
+    )
+    assert not any(marker in warning for warning in declared.validation["warnings"])
+
+
+def test_resolve_compute_window_is_the_single_view_depth_contract() -> None:
+    """One resolution feeds the simulator slice AND the driver's live fetch
+    depth: params warmup_bars > params lookback_bars > strategy attribute >
+    default; full_history opts backtests out but keeps a legacy live depth."""
+    from wayfinder_paths.jobs.execution.primitives import (
+        DEFAULT_WARMUP_BARS as DEFAULT,
+    )
+    from wayfinder_paths.jobs.execution.primitives import (
+        FULL_HISTORY_LIVE_DEPTH_BARS,
+        resolve_compute_window,
+    )
+
+    strategy = types.SimpleNamespace(warmup_bars=77)
+    window = resolve_compute_window({"warmup_bars": 96, "lookback_bars": 250}, strategy)
+    assert (window.size, window.source, window.live_depth, window.declared) == (
+        96,
+        "warmup_bars",
+        96,
+        True,
+    )
+    window = resolve_compute_window({"lookback_bars": 250}, strategy)
+    assert (window.size, window.source, window.live_depth) == (
+        250,
+        "lookback_bars",
+        250,
+    )
+    window = resolve_compute_window({}, strategy)
+    assert (window.size, window.source, window.live_depth) == (
+        77,
+        "strategy.warmup_bars",
+        77,
+    )
+    window = resolve_compute_window({}, None)
+    assert (window.size, window.source, window.live_depth, window.declared) == (
+        DEFAULT,
+        "default",
+        DEFAULT,
+        False,
+    )
+    window = resolve_compute_window(
+        {"full_history": True, "lookback_bars": 300}, strategy
+    )
+    assert (window.size, window.full_history, window.live_depth, window.declared) == (
+        None,
+        True,
+        300,
+        False,
+    )
+    assert (
+        resolve_compute_window({"full_history": True}, None).live_depth
+        == FULL_HISTORY_LIVE_DEPTH_BARS
+    )
+
+
 def test_summarize_backtest_payload_drops_heavy_arrays() -> None:
     res = simulate_execution(_build_strategy, _dataset(120), SPEC, {})
     payload = {

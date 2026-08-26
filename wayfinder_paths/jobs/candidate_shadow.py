@@ -17,6 +17,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     ExecutionSpec,
     StateSnapshot,
+    resolve_compute_window,
 )
 from wayfinder_paths.jobs.execution.simulator import (
     _load_strategy,
@@ -196,6 +197,11 @@ async def _run_target(
         raise FileNotFoundError("candidate execution script missing")
     params = dict(job_data.get("execution_params") or {})
     strategy = _load_strategy(script, params)
+    # Same bounded window the simulator replays with and the live driver
+    # fetches — the shadow lane must not hand candidates deeper history than
+    # production would.
+    window = resolve_compute_window(params, strategy)
+    view = window.slice_view(view, len(view.timestamps) - 1)
     candidate_view = apply_precompute(strategy, view)
     shadow_root = _shadow_state_root(
         root,

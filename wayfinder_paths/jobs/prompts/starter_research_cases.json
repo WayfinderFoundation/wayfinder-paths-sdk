@@ -48,6 +48,12 @@
       "tags": ["costs", "funding", "execution", "validity"],
       "lesson": "Candidates are comparable only when fees, funding, next-open execution, interval labels, and feature availability match between incumbent, candidate, and forward paths.",
       "source": "starter research synthesis"
+    },
+    {
+      "id": "bounded-window-parity",
+      "tags": ["warmup", "data-contract", "performance", "validity"],
+      "lesson": "Live decide() sees a bounded window of completed bars; any backtest logic consuming more history than the declared warmup_bars is testing a strategy that cannot exist in production, and recomputing over full history turns replays quadratic. Declare the window, compute within it, carry long memory as incremental state.",
+      "source": "majors evolution campaign 1 post-mortem (2026-08-26)"
     }
   ]
 }
