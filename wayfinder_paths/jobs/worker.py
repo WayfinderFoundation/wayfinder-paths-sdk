@@ -28,6 +28,7 @@ from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.sync import snapshot_job, sync_all_jobs
 from wayfinder_paths.jobs.wake_economy import (
     REMEDIATION_QUIET_LINE,
+    WAKE_ECONOMY_PATH,
     maybe_skip_wake,
     record_full_wake,
     remediation_backed_off,
@@ -670,6 +671,8 @@ def _build_worker_prompt_sections(
     mode: str,
     snapshot: dict[str, Any],
     apply_proposal_id: str | None = None,
+    wake_source: str = "scheduled_timer",
+    wake_triggers: list[str] | None = None,
 ) -> dict[str, str]:
     root = store.job_dir(job_id)
     from wayfinder_paths.jobs.improver.spec import ImproverSpec
@@ -758,6 +761,7 @@ def _build_worker_prompt_sections(
     if (
         mode == "intervene"
         and apply_proposal_id is None
+        and not wake_triggers
         and not restage_tasks
         and not remediation_overrides
     ):
@@ -794,6 +798,10 @@ def _build_worker_prompt_sections(
         "archive": _archive_block(store, job_id),
         "restage_tasks": restage_tasks,
         "search_assignment": search_assignment,
+        "wake": {
+            "source": wake_source,
+            "triggers": sorted(set(wake_triggers or [])),
+        },
         "portfolio": _portfolio_context(store, job_id),
     }
 
@@ -1358,6 +1366,17 @@ def _build_worker_prompt_sections(
             "the new base, reject it (agent housekeeping) and only then "
             "propose fresh.\n\n"
         )
+    report_outcome_directive = ""
+    if apply_proposal_id is None:
+        report_outcome_directive = (
+            "- REPORT OUTCOME: include `outcome` as exactly one of "
+            "no_change | deferred | experiment_completed | candidate_proposed | "
+            "remediation_advanced | blocked, plus `material_change` as a boolean. "
+            "For a scheduled wake with no material delta, use no_change and update "
+            "only the compact latest report; do not append candidate/decision "
+            "ledgers, memory, the research agenda/island agenda, or remediation "
+            "reaffirmations.\n"
+        )
     dynamic_context = (
         f"{DYNAMIC_CONTEXT_MARKER}\n"
         f"{gate_alert}"
@@ -1378,6 +1397,7 @@ def _build_worker_prompt_sections(
         f"{ideation_task_line}"
         f"{task_line}"
         "- Write the appropriate monitor/intervene/auto/apply report.\n"
+        f"{report_outcome_directive}"
         "- Emit a user-visible result only for meaningful state transitions, "
         "warnings, proposals, or blocked auto decisions.\n"
     )
@@ -1396,6 +1416,8 @@ def prepare_job_worker_prompt(
     job_id: str,
     mode: str,
     apply_proposal_id: str | None = None,
+    wake_source: str = "scheduled_timer",
+    wake_triggers: list[str] | None = None,
 ) -> dict[str, Any]:
     """Prepare the exact prompt payload used for a job worker wakeup.
 
@@ -1454,6 +1476,8 @@ def prepare_job_worker_prompt(
         mode=mode_typed,
         snapshot=snapshot,
         apply_proposal_id=apply_proposal_id,
+        wake_source=wake_source,
+        wake_triggers=wake_triggers,
     )
     return {
         **prompt_sections,
@@ -1483,7 +1507,13 @@ def _emit_job_result(
 
 
 def run_job_worker(
-    job_id: str, mode: str = "monitor", *, apply_proposal_id: str | None = None
+    job_id: str,
+    mode: str = "monitor",
+    *,
+    apply_proposal_id: str | None = None,
+    wake_source: str = "scheduled_timer",
+    wake_triggers: list[str] | None = None,
+    force_llm: bool = False,
 ) -> dict[str, Any]:
     store = JobStore()
     job = store.load(job_id)
@@ -1491,6 +1521,12 @@ def run_job_worker(
     if mode == "off":
         mode = "monitor"
     mode_typed: AgentMode = mode
+    if apply_proposal_id is not None and wake_source == "scheduled_timer":
+        wake_source = "proposal_apply"
+    wake_context: dict[str, Any] = {
+        "wake_source": wake_source,
+        "wake_triggers": sorted(set(wake_triggers or [])),
+    }
 
     blocked_reason = (
         _auto_limits_error(job.agent_loop.auto_limits) if mode_typed == "auto" else None
@@ -1505,6 +1541,7 @@ def run_job_worker(
             session_id=None,
             queued=False,
             error=blocked_reason,
+            wake_context=wake_context,
         )
         _emit_job_result(report["summary"], job.id)
         return report
@@ -1519,7 +1556,13 @@ def run_job_worker(
     # saturated paper job whose evidence watermark has not moved since the
     # last full wake skips the LLM session entirely.
     quiet_report = maybe_skip_wake(
-        store, job, mode=mode_typed, apply_proposal_id=apply_proposal_id
+        store,
+        job,
+        mode=mode_typed,
+        apply_proposal_id=apply_proposal_id,
+        force=force_llm,
+        wake_source=wake_source,
+        wake_triggers=wake_triggers,
     )
     if quiet_report is not None:
         return quiet_report
@@ -1532,6 +1575,8 @@ def run_job_worker(
         job_id=job.id,
         mode=mode_typed,
         apply_proposal_id=apply_proposal_id,
+        wake_source=wake_source,
+        wake_triggers=wake_triggers,
     )
     prompt = prompt_sections["prompt"]
 
@@ -1553,7 +1598,11 @@ def run_job_worker(
     if queued:
         # Anchor the wake-economy skip window on delivered wakes only: a
         # failed queue leaves the state untouched so the retry runs in full.
-        record_full_wake(store, job)
+        record_full_wake(store, job, wake_source=wake_source)
+        wake_state = store.read_json(job.id, WAKE_ECONOMY_PATH, default={}) or {}
+        wake_context["decision_watermark_hash"] = wake_state.get(
+            "decision_watermark_hash"
+        )
 
     report = _write_report(
         store=store,
@@ -1576,6 +1625,7 @@ def run_job_worker(
             "dynamic_context_hash": prompt_sections["dynamic_context_hash"],
             "metrics": "not_available",
         },
+        wake_context=wake_context,
     )
 
     if report["status"] != "green":
@@ -1752,12 +1802,13 @@ def _write_report(
     error: str | None,
     apply_proposal_id: str | None = None,
     cache: dict[str, Any] | None = None,
+    wake_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     report_dir = (
         store.job_dir(job_id) / "reports" / ("apply" if apply_proposal_id else mode)
     )
     report_dir.mkdir(parents=True, exist_ok=True)
-    report = {
+    report: dict[str, Any] = {
         "job_id": job_id,
         "mode": mode,
         "status": status,
@@ -1771,6 +1822,8 @@ def _write_report(
         report["apply_proposal_id"] = apply_proposal_id
     if cache is not None:
         report["cache"] = cache
+    if wake_context is not None:
+        report.update(wake_context)
     (report_dir / "latest.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
@@ -1806,7 +1859,14 @@ def _write_report(
         scorecard_updates,
     )
     store.append_journal(
-        job_id, {"type": "agent_wakeup", "mode": mode, "report": report}
+        job_id,
+        {
+            "type": "agent_wakeup",
+            "mode": mode,
+            "wake_source": report.get("wake_source"),
+            "wake_triggers": report.get("wake_triggers") or [],
+            "report": report,
+        },
     )
 
     try:

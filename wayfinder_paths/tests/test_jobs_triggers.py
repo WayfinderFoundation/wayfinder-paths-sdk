@@ -50,6 +50,9 @@ def test_matching_trigger_fires_once_and_debounces(
     assert first["triggers"] == ["risk_halt"]
     assert len(wakes) == 1
     assert wakes[0]["mode"] == "intervene"
+    assert wakes[0]["wake_source"] == "test"
+    assert wakes[0]["wake_triggers"] == ["risk_halt"]
+    assert wakes[0]["force_llm"] is True
     journal = (store.job_dir(job.id) / "journal.jsonl").read_text(encoding="utf-8")
     assert "agent_triggered_wake" in journal
 
@@ -137,6 +140,15 @@ def test_default_triggers_include_risk_halt() -> None:
 
 def test_tick_trigger_event_derivation() -> None:
     assert _tick_trigger_events({"ok": False}) == ["script_failure"]
+    assert (
+        _tick_trigger_events(
+            {
+                "ok": False,
+                "error": "rate_limited: Client error '429 Too Many Requests'",
+            }
+        )
+        == []
+    )
     assert _tick_trigger_events({"ok": True, "snapshot": {"status": "ambiguous"}}) == [
         "reconcile_mismatch"
     ]
