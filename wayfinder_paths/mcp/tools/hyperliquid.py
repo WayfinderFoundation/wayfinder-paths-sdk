@@ -1470,6 +1470,7 @@ async def hyperliquid_place_trigger_order(
     price: float | None = None,
     reduce_only: bool = True,
     cloid: str | None = None,
+    align_price_to_grid: bool = False,
 ) -> dict[str, Any]:
     """Place a perp take-profit / stop-loss trigger order.
 
@@ -1548,15 +1549,24 @@ async def hyperliquid_place_trigger_order(
             f"(lot size = {min_tick}). Try size={min_tick}."
         )
 
-    # Trigger prices arrive machine-computed (entry × stop multiple) and are
-    # almost never on HL's tick grid — round to the grid like the adapter
-    # itself does, instead of rejecting. Rejecting here left positions
-    # unprotected: the stop never reached the adapter's own rounding, and
-    # the framework halted on the unconfirmed protection. Plain order paths
-    # keep the strict validator (they're fed clean prices).
-    if limit_px is not None:
-        limit_px = adapter.get_valid_order_price(resolved_asset_id, float(limit_px))
-    tpx = adapter.get_valid_order_price(resolved_asset_id, float(tpx))
+    # Off-grid prices are the CALLER's decision to resolve. Interactive
+    # agents get the strict reject (the error names the floored price) so
+    # rounding direction stays their choice; deterministic engine callers
+    # opt into grid alignment explicitly with align_price_to_grid=True —
+    # their prices are machine-computed (entry × stop multiple) and almost
+    # never land on the tick grid.
+    if align_price_to_grid:
+        if limit_px is not None:
+            limit_px = adapter.get_valid_order_price(
+                resolved_asset_id, float(limit_px)
+            )
+        tpx = adapter.get_valid_order_price(resolved_asset_id, float(tpx))
+    else:
+        if limit_px is not None:
+            _validate_price(
+                adapter=adapter, asset_id=resolved_asset_id, price=limit_px
+            )
+        _validate_price(adapter=adapter, asset_id=resolved_asset_id, price=tpx)
 
     ok_order, res = await adapter.place_trigger_order(
         resolved_asset_id,

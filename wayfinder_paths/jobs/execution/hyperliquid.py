@@ -412,6 +412,10 @@ class HyperliquidPerpBroker:
                 is_market_trigger=True,
                 reduce_only=True,
                 cloid=client_order_id,
+                # Engine stops are entry × stop-multiple products — never
+                # tick-aligned. Alignment is this caller's explicit choice;
+                # sub-tick flooring is risk-neutral for protection.
+                align_price_to_grid=True,
             )
         except Exception as exc:
             return await self._resolve_stop_after_error(
