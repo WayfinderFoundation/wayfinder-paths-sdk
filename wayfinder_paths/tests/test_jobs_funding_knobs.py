@@ -286,3 +286,46 @@ def test_mcp_venue_actions_share_button_code_path(tmp_path, monkeypatch) -> None
 
     missing = asyncio.run(jobs_tool.core_jobs("venue_deposit", job_id=job_id))
     assert not missing["ok"]
+
+
+def test_create_paths_infer_initializer_from_busy_session(monkeypatch) -> None:
+    """Agent-built jobs showed no conversation trail: MCP calls carry no
+    session identity and agents can't know their own id. The create paths
+    now attribute to the single busy session on the box."""
+    from wayfinder_paths.mcp.tools import jobs as jobs_tool
+
+    monkeypatch.setattr(jobs_tool, "is_opencode_instance", lambda: True)
+
+    class FakeClient:
+        def session_statuses(self):
+            return {
+                "ses_user": {"type": "busy"},
+                "ses_wake": {"type": "busy"},
+                "ses_idle": {"type": "idle"},
+            }
+
+        def list_sessions(self):
+            return [
+                {"id": "ses_user", "title": "Strategy Lab · custom idea"},
+                {"id": "ses_wake", "title": "job/other-job/intervene"},
+                {"id": "ses_idle", "title": "Strategy Lab"},
+            ]
+
+    monkeypatch.setattr(jobs_tool, "OPENCODE_CLIENT", FakeClient())
+    assert jobs_tool._infer_initializer_session() == "ses_user"
+
+    class Ambiguous(FakeClient):
+        def session_statuses(self):
+            return {"a": {"type": "busy"}, "b": {"type": "busy"}}
+
+        def list_sessions(self):
+            return [
+                {"id": "a", "title": "Strategy Lab"},
+                {"id": "b", "title": "Strategy Lab"},
+            ]
+
+    monkeypatch.setattr(jobs_tool, "OPENCODE_CLIENT", Ambiguous())
+    assert jobs_tool._infer_initializer_session() is None
+
+    monkeypatch.setattr(jobs_tool, "is_opencode_instance", lambda: False)
+    assert jobs_tool._infer_initializer_session() is None
