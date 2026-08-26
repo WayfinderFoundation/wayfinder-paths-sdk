@@ -191,18 +191,19 @@ def sync_remediation_with_health(
         # not-yet-due path, so the reset re-derives every tick until it fires.
         next_retry = REMEDIATION_BACKOFF_BASE_SECONDS
     # Progress-only ticks must not re-wake: a bounded evaluation/blocker note
-    # recorded since the last wake is the agent already working the case.
+    # is an accountable terminal result until the evidence watermark moves.
     last_wake = _parse_time(current.get("last_wake_requested_at"))
     progress_at = _parse_time((current.get("progress") or {}).get("recorded_at"))
-    anchors = [ts for ts in (last_wake, progress_at) if ts is not None]
+    last_check = _parse_time(recheck.get("last_checked_at"))
+    anchors = [ts for ts in (last_wake, progress_at, last_check) if ts is not None]
     wait = min(next_retry, REMEDIATION_MAX_QUIET_SECONDS)
     if anchors and (now - max(anchors)).total_seconds() < wait:
         return None
 
     current["updated_at"] = now_iso
-    current["last_wake_requested_at"] = now_iso
-    current["attempts"] = int(current.get("attempts") or 0) + 1
     current["health"] = evidence
+    progress_watermark = (current.get("progress") or {}).get("watermark")
+    accountable_progress = isinstance(progress_watermark, Mapping)
     current["recheck"] = {
         "watermark": watermark,
         "last_checked_at": now_iso,
@@ -213,6 +214,12 @@ def sync_remediation_with_health(
             _backoff_cap_seconds(),
         ),
     }
+    wake_required = bool(evidence_reasons) or not accountable_progress
+    if wake_required:
+        current["last_wake_requested_at"] = now_iso
+        current["attempts"] = int(current.get("attempts") or 0) + 1
+    else:
+        current["quiet_checks"] = int(current.get("quiet_checks") or 0) + 1
     store.write_json(job_id, REMEDIATION_PATH, current)
     if evidence_reasons:
         store.append_journal(
@@ -235,10 +242,13 @@ def sync_remediation_with_health(
                 "case_id": current.get("case_id"),
                 "state": state,
                 "attempts": current["attempts"],
+                "llm_wake_requested": wake_required,
                 "last_checked_at": now_iso,
                 "next_retry_seconds": current["recheck"]["next_retry_seconds"],
             },
         )
+    if not wake_required:
+        return None
     return {
         "event": "regime_remediation_due",
         "case_id": current.get("case_id"),

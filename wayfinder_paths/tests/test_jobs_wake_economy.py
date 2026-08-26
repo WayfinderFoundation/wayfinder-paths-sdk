@@ -111,18 +111,12 @@ def test_posture_saturated_when_nothing_is_mid_flight(tmp_path: Path) -> None:
     assert posture == {"posture": "saturated", "blockers": []}
 
 
-def test_each_mid_flight_condition_defeats_saturation(tmp_path: Path) -> None:
+def test_each_actionable_condition_defeats_saturation(tmp_path: Path) -> None:
     cases = [
         (
             "not_operational",
             lambda store, job: store.refresh_scorecard(
                 job.id, {"last_script_run_at": None}
-            ),
-        ),
-        (
-            "research_lane_active",
-            lambda store, job: store.write_json(
-                job.id, "state/research_lane.json", {"active_lane": "vol-regimes"}
             ),
         ),
         (
@@ -155,10 +149,6 @@ def test_each_mid_flight_condition_defeats_saturation(tmp_path: Path) -> None:
             "remediation_case_active",
             lambda store, job: sync_remediation_with_health(store, job.id, _health()),
         ),
-        (
-            "forward_sample_adequate",
-            lambda store, job: _record_closed_trades(store, job.id, 20),
-        ),
     ]
     for index, (blocker, arrange) in enumerate(cases):
         store, job = _saturated_job(tmp_path / f"case-{index}", f"posture-{index}")
@@ -168,6 +158,31 @@ def test_each_mid_flight_condition_defeats_saturation(tmp_path: Path) -> None:
 
         assert posture["posture"] == "in_flight", blocker
         assert posture["blockers"] == [blocker]
+
+
+def test_stable_lane_mature_sample_and_parallel_campaign_can_skip(
+    tmp_path: Path,
+) -> None:
+    store, job = _saturated_job(tmp_path)
+    store.write_json(
+        job.id,
+        "state/research_lane.json",
+        {"active_lane": "vol-regimes", "notes": "x" * 100_000},
+    )
+    _record_closed_trades(store, job.id, 40)
+    store.write_json(
+        job.id,
+        "state/evolution_campaign.json",
+        {"campaign_id": "campaign-1", "status": "active", "stage": "generate"},
+    )
+
+    assert research_saturation_posture(store, job.id) == {
+        "posture": "saturated",
+        "blockers": [],
+    }
+    watermark = saturation_watermark(store, job.id)
+    assert watermark["lane"] == {"active_lane": "vol-regimes"}
+    assert len(json.dumps(watermark)) < 5_000
 
 
 def test_backed_off_remediation_case_does_not_defeat_saturation(
@@ -190,6 +205,17 @@ def test_skip_path_writes_quiet_report_without_touching_llm(
 ) -> None:
     store, job = _saturated_job(tmp_path)
     record_full_wake(store, job)
+    root = store.job_dir(job.id)
+    protected = {
+        "memory.md": "durable memory\n",
+        "research/agenda.md": "research agenda\n",
+        "research/islands/exploit.md": "island agenda\n",
+        "ledgers/candidates.jsonl": '{"status":"no_edge"}\n',
+    }
+    for relative, content in protected.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
     monkeypatch.setattr("wayfinder_paths.jobs.worker.JobStore", lambda: store)
     monkeypatch.setattr(
         "wayfinder_paths.jobs.worker.OPENCODE_CLIENT", ForbiddenOpenCodeClient()
@@ -198,9 +224,15 @@ def test_skip_path_writes_quiet_report_without_touching_llm(
     report = run_job_worker(job.id, mode="intervene")
 
     assert report["status"] == "quiet"
+    assert report["outcome"] == "no_change"
+    assert report["material_change"] is False
+    assert report["wake_source"] == "scheduled_timer"
+    assert report["decision_watermark_hash"]
     assert report["skip_reason"] == "saturation_watermark_unchanged"
     assert report["watermark"]["closed_trades"] == 0
     assert report["next_full_wake_by"]
+    for relative, content in protected.items():
+        assert (root / relative).read_text(encoding="utf-8") == content
     latest = json.loads(
         (store.job_dir(job.id) / "reports" / "intervene" / "latest.json").read_text(
             encoding="utf-8"
@@ -225,8 +257,8 @@ def test_watermark_movement_forces_full_wake(
     monkeypatch.setattr("wayfinder_paths.jobs.worker.JobStore", lambda: store)
     monkeypatch.setattr("wayfinder_paths.jobs.worker.OPENCODE_CLIENT", client)
 
-    # One closed trade (still below the gate minimum → still saturated) moves
-    # the watermark: the next wake must run in full and re-anchor the state.
+    # One closed trade moves the watermark: the next wake must run in full and
+    # re-anchor the state.
     _record_closed_trades(store, job.id, 1)
     report = run_job_worker(job.id, mode="intervene")
 
@@ -246,7 +278,7 @@ def test_quiet_max_floor_forces_full_wake(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     store, job = _saturated_job(tmp_path)
-    record_full_wake(store, job, now=datetime.now(UTC) - timedelta(hours=25))
+    record_full_wake(store, job, now=datetime.now(UTC) - timedelta(hours=13))
 
     assert maybe_skip_wake(store, job, mode="intervene", apply_proposal_id=None) is None
 
@@ -264,6 +296,24 @@ def test_live_apply_and_auto_wakes_never_skip(tmp_path: Path) -> None:
     job.script_loop.mode = "live"
     store.save(job)
     assert maybe_skip_wake(store, job, mode="intervene", apply_proposal_id=None) is None
+
+
+def test_forced_trigger_wake_never_skips(tmp_path: Path) -> None:
+    store, job = _saturated_job(tmp_path)
+    record_full_wake(store, job)
+
+    assert (
+        maybe_skip_wake(
+            store,
+            job,
+            mode="intervene",
+            apply_proposal_id=None,
+            force=True,
+            wake_source="scheduled_tick",
+            wake_triggers=["risk_halt"],
+        )
+        is None
+    )
 
 
 def test_kill_switch_disables_the_skip_path(
@@ -355,8 +405,7 @@ def test_saturation_watermark_components_move_independently(tmp_path: Path) -> N
     )
     assert saturation_watermark(store3, job3.id) != base3
     posture = research_saturation_posture(store3, job3.id)
-    assert posture["posture"] == "in_flight"
-    assert "evolution_campaign_open" in posture["blockers"]
+    assert posture == {"posture": "saturated", "blockers": []}
 
     store4, job4 = _saturated_job(tmp_path / "experiment", "experiment-demo")
     base4 = saturation_watermark(store4, job4.id)
@@ -404,3 +453,23 @@ def test_saturation_watermark_components_move_independently(tmp_path: Path) -> N
     }
     store4.write_json(job4.id, "state/evolution_experiment.json", experiment)
     assert saturation_watermark(store4, job4.id) != active
+
+
+def test_prompt_carries_wake_provenance_and_compact_outcome_contract(
+    tmp_path: Path,
+) -> None:
+    store, job = _saturated_job(tmp_path)
+
+    prompt = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job),
+        wake_source="scheduled_tick",
+        wake_triggers=["risk_halt"],
+    )["prompt"]
+
+    assert '"source": "scheduled_tick"' in prompt
+    assert '"triggers": [' in prompt and '"risk_halt"' in prompt
+    assert "no_change | deferred | experiment_completed" in prompt
+    assert "do not append candidate/decision ledgers" in prompt

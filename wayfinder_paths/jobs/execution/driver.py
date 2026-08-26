@@ -130,7 +130,7 @@ def run_scheduled_tick(job_dir: str | Path | None = None) -> dict[str, Any]:
 
 def _tick_trigger_events(payload: dict[str, Any]) -> list[str]:
     events: list[str] = []
-    if payload.get("ok") is not True:
+    if payload.get("ok") is not True and not _is_retryable_data_failure(payload):
         events.append("script_failure")
     snapshot = payload.get("snapshot") or {}
     if snapshot.get("status") == "ambiguous":
@@ -158,6 +158,27 @@ def _tick_trigger_events(payload: dict[str, Any]) -> list[str]:
         # Compatibility with reports produced before durable remediation cases.
         events.append("regime_shift")
     return events
+
+
+def _is_retryable_data_failure(payload: Mapping[str, Any]) -> bool:
+    """Keep transient public-data throttling on the mechanical retry path.
+
+    Derived-feature refresh already journals persistent feed degradation and
+    recovery. Waking an LLM for each 429 cannot repair the provider and was a
+    major source of duplicate canary sessions; non-rate-limit failures retain
+    the existing immediate ``script_failure`` trigger.
+    """
+    error = str(payload.get("error") or "").lower()
+    return any(
+        marker in error
+        for marker in (
+            "rate_limited",
+            "rate limited",
+            "too many requests",
+            "http 429",
+            "status code 429",
+        )
+    )
 
 
 async def tick_job(

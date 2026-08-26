@@ -156,7 +156,15 @@ def _fire_triggers(
     # → execution.driver → triggers
     from wayfinder_paths.jobs.worker import run_job_worker
 
-    wakeup = run_job_worker(job.id, mode=loop.mode)
+    wakeup = run_job_worker(
+        job.id,
+        mode=loop.mode,
+        wake_source=source,
+        wake_triggers=due,
+        # A trigger wake represents named actionable work. It must not be
+        # mistaken for an unchanged scheduled heartbeat by wake economy.
+        force_llm=True,
+    )
     return {"triggers": due, "source": source, "ts": utc_now_iso(), **wakeup}
 
 

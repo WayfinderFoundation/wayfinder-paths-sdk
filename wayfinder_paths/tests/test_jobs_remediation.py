@@ -91,9 +91,8 @@ def test_case_opens_once_and_retries_until_accountable_outcome(
     assert load_remediation(store, job_id)["attempts"] == 2  # type: ignore[index]
 
 
-def test_recorded_progress_defers_the_retry_wake(tmp_path: Path) -> None:
-    """A bounded progress note is the agent already working the case — the
-    next quiet retry anchors on the note, not the original wake."""
+def test_recorded_progress_makes_unchanged_rechecks_mechanical(tmp_path: Path) -> None:
+    """An accountable outcome remains quiet until its evidence moves."""
     store, job_id = _store(tmp_path)
     now = dt.datetime(2026, 8, 21, 12, tzinfo=dt.UTC)
     sync_remediation_with_health(store, job_id, _health(), now=now)
@@ -114,14 +113,20 @@ def test_recorded_progress_defers_the_retry_wake(tmp_path: Path) -> None:
         is None
     )
 
-    # 6h+ after the progress note: the quiet retry fires again.
+    # 6h+ after the progress note: the deterministic recheck advances its
+    # backoff but does not emit another LLM event.
     retry = sync_remediation_with_health(
         store,
         job_id,
         _health(),
         now=dt.datetime.now(dt.UTC) + dt.timedelta(hours=6, minutes=1),
     )
-    assert retry and retry["event"] == "regime_remediation_due"
+    assert retry is None
+    case = load_remediation(store, job_id)
+    assert case and case["quiet_checks"] == 1
+    assert case["attempts"] == 1
+    assert case["recheck"]["next_retry_seconds"] == 12 * 3600
+    assert _journal_types(store, job_id).count("remediation_recheck_quiet") == 1
 
 
 def test_material_evidence_still_wakes_through_the_debounce(tmp_path: Path) -> None:
