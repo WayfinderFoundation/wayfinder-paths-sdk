@@ -15,6 +15,7 @@ from wayfinder_paths.mcp.tools.hyperliquid import (
     hyperliquid_get_trade_asset,
     hyperliquid_place_limit_order,
     hyperliquid_place_market_order,
+    hyperliquid_place_trigger_order,
     hyperliquid_withdraw_usdc,
 )
 
@@ -1065,3 +1066,72 @@ async def test_hyperliquid_reduce_only_rejects_size_above_live_position():
     assert out["ok"] is False
     assert out["error"]["code"] == "reduce_only_size_exceeds_position"
     assert out["error"]["details"]["closeable_size"] == 0.25
+
+
+class _OffGridTriggerFake(_FakeExecutionAdapter):
+    """Floors the regression value the way HL's 5-sig-fig rule would."""
+
+    def __init__(self):
+        super().__init__()
+        self.seen: dict[str, Any] = {}
+
+    def get_valid_order_price(self, _asset_id: int, price: float) -> float:
+        return 67258.0 if abs(float(price) - 67258.8) < 1e-9 else float(price)
+
+    def get_price_decimals(self, _asset_id: int) -> int:
+        return 1
+
+    async def place_trigger_order(self, asset_id, is_buy, tpx, sz, sender, **kwargs):
+        self.seen["tpx"] = tpx
+        return True, {"status": "ok"}
+
+
+def _patched_trigger_adapter(fake):
+    return (
+        patch(
+            "wayfinder_paths.mcp.tools.hyperliquid._make_hl_adapter",
+            new=AsyncMock(return_value=(fake, "0x1234")),
+        ),
+        patch("wayfinder_paths.mcp.tools.hyperliquid._annotate_hl_profile"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_trigger_order_rejects_off_grid_price_by_default():
+    """Interactive callers keep the strict validator: rounding direction is
+    the agent's decision, and the error names the floored candidate."""
+    fake = _OffGridTriggerFake()
+    p1, p2 = _patched_trigger_adapter(fake)
+    with p1, p2:
+        out = await hyperliquid_place_trigger_order(
+            wallet_label="main",
+            asset_name="BTC-USDC",
+            tpsl="sl",
+            trigger_price=67258.8,
+            is_buy=False,
+            size=0.01,
+        )
+    assert out["ok"] is False
+    # The refusal hands the agent the floored candidate to decide on.
+    assert "67258.0" in out["error"]["message"]
+    assert "tpx" not in fake.seen
+
+
+@pytest.mark.asyncio
+async def test_trigger_order_places_grid_aligned_price():
+    """A grid-aligned resubmission (what the strict error asks for) goes
+    straight through."""
+    fake = _OffGridTriggerFake()
+    p1, p2 = _patched_trigger_adapter(fake)
+    with p1, p2:
+        out = await hyperliquid_place_trigger_order(
+            wallet_label="main",
+            asset_name="BTC-USDC",
+            tpsl="sl",
+            trigger_price=67258.0,
+            is_buy=False,
+            size=0.01,
+        )
+
+    assert out["ok"] is True, out
+    assert fake.seen["tpx"] == 67258.0
