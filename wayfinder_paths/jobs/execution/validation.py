@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
+import math
 import py_compile
 import re
 import tokenize
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -14,13 +16,18 @@ import yaml
 from croniter import croniter
 
 from wayfinder_paths.jobs.execution.features import (
+    apply_precompute,
     load_feature_rows,
     parse_feature_specs,
 )
 from wayfinder_paths.jobs.execution.primitives import (
+    CompletedBarsView,
     ExecutionSpec,
+    ExecutionTrace,
+    StateSnapshot,
     _load_module_from_path,
     bar_interval_seconds,
+    resolve_compute_window,
 )
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.store import JobStore
@@ -237,6 +244,7 @@ def validate_execution_job(
                 {"name": "strategy_module_loads", "passed": False, "error": str(exc)}
             )
         checks.extend(_execution_scenario_checks(script_path, job_data, spec))
+        checks.extend(_window_invariance_checks(root, script_path, job_data, spec))
 
     trace_report = _latest_trace_validation(root, spec)
     if trace_report is not None:
@@ -404,6 +412,187 @@ def _evidence_window_check(root: Path) -> list[dict[str, Any]]:
     ]
 
 
+# Window-invariance probe: a mechanical backtest ≡ forward-input proof for
+# declared compute windows. Bars beyond the declared window must be invisible
+# to decide(), so replaying a bar with W and with W+extra bars from identical
+# fresh state must produce identical intents.
+WINDOW_PROBE_SAMPLES = 12
+WINDOW_PROBE_EXTRA_BARS = 64
+BOUNDED_WINDOW_HINT = (
+    "live decide() sees at most the declared window of completed bars; any "
+    "logic that consumes more history than warmup_bars is testing a strategy "
+    "that cannot exist in production. Declare warmup_bars covering your "
+    "longest indicator lookback plus buffer, compute within that window, and "
+    "carry long memory as incremental state."
+)
+
+
+def _probe_values_match(left: Any, right: Any) -> bool:
+    """Structural equality with float tolerance: sizing arithmetic may carry
+    float noise between the two slices (e.g. an EMA seeded 64 rows earlier)
+    without any real dependence beyond the window."""
+    match left, right:
+        case dict(), dict():
+            return left.keys() == right.keys() and all(
+                _probe_values_match(left[key], right[key]) for key in left
+            )
+        case ((list() | tuple()), (list() | tuple())):
+            return len(left) == len(right) and all(
+                _probe_values_match(a, b) for a, b in zip(left, right, strict=True)
+            )
+        case bool(), _:
+            return left == right
+        case ((int() | float()), (int() | float())):
+            return math.isclose(float(left), float(right), rel_tol=1e-6, abs_tol=1e-9)
+        case _:
+            return left == right
+
+
+def window_invariance_probe(
+    script_entrypoint: str | Path | Callable[..., Any],
+    bars: CompletedBarsView,
+    execution_spec: ExecutionSpec | Mapping[str, Any] | None,
+    params: Mapping[str, Any],
+    *,
+    samples: int = WINDOW_PROBE_SAMPLES,
+) -> dict[str, Any]:
+    """Replay sampled decision bars twice — declared window W versus
+    min(available, W + WINDOW_PROBE_EXTRA_BARS) — from identical fresh state
+    and require identical intents. A mismatch means decide() consumed history
+    beyond its declared window: its backtest inputs are not its live inputs."""
+    from wayfinder_paths.jobs.execution.engine import (  # circular import
+        EngineState,
+        run_tick,
+    )
+    from wayfinder_paths.jobs.execution.simulator import (  # circular import
+        BacktestBroker,
+        _load_strategy,
+    )
+
+    params_data = dict(params)
+    spec = ExecutionSpec.coerce(execution_spec)
+    window = resolve_compute_window(
+        params_data, _load_strategy(script_entrypoint, dict(params_data))
+    )
+    if not window.declared or window.size is None:
+        return {
+            "status": "skipped",
+            "reason": f"compute window is {window.source}, not declared",
+        }
+    size = window.size
+    timestamps = bars.timestamps
+    first = size  # earliest index where the wide slice adds bars
+    if len(timestamps) - 1 < first:
+        return {
+            "status": "skipped",
+            "reason": "dataset does not extend beyond the declared window",
+        }
+    span = len(timestamps) - 1 - first
+    count = max(1, min(samples, span + 1))
+    step = span / max(count - 1, 1)
+    indices = sorted({first + round(k * step) for k in range(count)})
+
+    async def decided_intents(index: int, lookback: int) -> list[dict[str, Any]]:
+        # Fresh strategy + fresh engine state per replay: the two runs differ
+        # ONLY in view depth, so any intent difference is window dependence.
+        strategy = _load_strategy(script_entrypoint, dict(params_data))
+        view = apply_precompute(strategy, bars.window(index, lookback))
+        trace = ExecutionTrace(execution_spec=spec.to_dict())
+        await run_tick(
+            strategy,
+            view=view,
+            brokers={"*": BacktestBroker()},
+            state=EngineState(),
+            spec=spec,
+            params=params_data,
+            timestamp=timestamps[index],
+            snapshot=StateSnapshot(status="valid"),
+            trace=trace,
+        )
+        return trace.intents
+
+    async def probe() -> dict[str, Any]:
+        for index in indices:
+            base = await decided_intents(index, size)
+            wide = await decided_intents(index, size + WINDOW_PROBE_EXTRA_BARS)
+            if not _probe_values_match(base, wide):
+                return {
+                    "status": "failed",
+                    "bar": timestamps[index].isoformat(),
+                    "window": size,
+                    "window_source": window.source,
+                    "base_intents": base,
+                    "wide_intents": wide,
+                }
+        return {
+            "status": "passed",
+            "window": size,
+            "window_source": window.source,
+            "bars_probed": len(indices),
+        }
+
+    return asyncio.run(probe())
+
+
+def _window_invariance_checks(
+    root: Path, script_path: Path, job_data: Mapping[str, Any], spec: ExecutionSpec
+) -> list[dict[str, Any]]:
+    """Bounded-window parity gate: for jobs that DECLARE a compute window,
+    prove backtest inputs ≡ forward inputs on the canonical dataset. Jobs
+    without a declared window are exempt — the simulator surfaces the
+    profiler hint as a backtest validation warning instead."""
+    from wayfinder_paths.jobs.execution.simulator import (  # circular import
+        _load_strategy,
+    )
+
+    params = dict(job_data.get("execution_params") or {})
+    try:
+        window = resolve_compute_window(params, _load_strategy(script_path, params))
+    except Exception:  # noqa: BLE001 — strategy_module_loads reports this already
+        return []
+    if not window.declared:
+        return []
+    from wayfinder_paths.jobs.execution.job import _load_dataset  # circular import
+
+    try:
+        dataset = _load_dataset(root, spec, dict(job_data))
+        probe = window_invariance_probe(script_path, dataset.bars, spec, params)
+    except FileNotFoundError:
+        return []  # fixture/scenario-driven validation contexts have no dataset
+    except Exception as exc:  # noqa: BLE001 — a broken probe must not block jobs
+        return [
+            {
+                "name": "window_invariance",
+                "passed": False,
+                "blocking": False,
+                "error": str(exc)[:300],
+            }
+        ]
+    if probe["status"] == "skipped":
+        return [
+            {
+                "name": "window_invariance",
+                "passed": True,
+                "blocking": False,
+                "note": probe["reason"],
+            }
+        ]
+    check: dict[str, Any] = {
+        "name": "window_invariance",
+        "passed": probe["status"] == "passed",
+        "details": {
+            key: value for key, value in probe.items() if not key.endswith("_intents")
+        },
+    }
+    if probe["status"] != "passed":
+        check["error"] = (
+            f"decide() at bar {probe['bar']} changed its intents when handed "
+            f"{WINDOW_PROBE_EXTRA_BARS} bars beyond the declared window of "
+            f"{probe['window']} ({probe['window_source']}) — {BOUNDED_WINDOW_HINT}"
+        )
+    return [check]
+
+
 def _feature_checks(root: Path, spec: ExecutionSpec) -> list[dict[str, Any]]:
     try:
         specs = parse_feature_specs(spec)
@@ -559,16 +748,17 @@ def _timing_checks(
             "blocking": False,
         },
         {
-            # The live driver always fetches a bounded window (default 200
-            # bars); an undeclared lookback means backtests see full history
-            # while live sees 200 — path-dependent indicators (Wilder ATR,
-            # SuperTrend) will diverge. Declaring it aligns both AND bounds
-            # per-tick backtest cost. Blocking for starter jobs: most catalog
-            # starters have warmup_bars > 200, so an undeclared lookback caps
-            # ctx.bar_index below warmup and the job silently never trades.
+            # The live driver and the backtest simulator hand decide() the
+            # SAME declared window (warmup_bars canonical, lookback_bars
+            # back-compat); undeclared jobs ride the default cap without ever
+            # stating what history the strategy needs. Blocking for starter
+            # jobs: most catalog starters have warmup_bars above the old live
+            # default, so an undeclared window caps ctx.bar_index below
+            # warmup and the job silently never trades.
             "name": "lookback_bars_declared",
-            "passed": bool(params.get("lookback_bars")) or not is_jobs_v1,
-            "value": params.get("lookback_bars"),
+            "passed": bool(params.get("warmup_bars") or params.get("lookback_bars"))
+            or not is_jobs_v1,
+            "value": params.get("warmup_bars") or params.get("lookback_bars"),
             "blocking": is_jobs_v1 and is_starter,
         },
     ]

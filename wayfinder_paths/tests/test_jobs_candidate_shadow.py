@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pandas as pd
 import yaml
@@ -117,7 +118,19 @@ def test_candidate_shadow_uses_separate_paper_state_and_stream(tmp_path) -> None
             / revision
             / "engine_state.json"
         ).exists()
-    assert any(
-        (root / "results" / "forward" / "experiment" / "proposals").rglob("ticks.jsonl")
+    ticks_paths = list(
+        (root / "results" / "forward" / "experiment" / "proposals").rglob(
+            "ticks.jsonl"
+        )
     )
+    assert ticks_paths
+    # Shadow replays hand candidates the SAME bounded window the simulator and
+    # live driver resolve (lookback_bars=20 here) — never the full growing
+    # replay history.
+    for ticks_path in ticks_paths:
+        rows = [
+            json.loads(line)
+            for line in ticks_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert rows and max(row["view_window"]["rows"] for row in rows) <= 20
     assert asyncio.run(run_candidate_shadows(store, job.id)) == []

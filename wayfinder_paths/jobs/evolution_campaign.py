@@ -33,16 +33,21 @@ from wayfinder_paths.jobs.execution.features import parse_feature_specs
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.optimize import is_search_space, run_optuna_search
 from wayfinder_paths.jobs.execution.primitives import (
+    DEFAULT_WARMUP_BARS,
     ExecutionSpec,
     bar_interval_seconds,
+    resolve_compute_window,
 )
 from wayfinder_paths.jobs.execution.simulator import (
     PreparedExecutionDataset,
+    _load_strategy,
     simulate_execution,
 )
 from wayfinder_paths.jobs.execution.validation import (
+    BOUNDED_WINDOW_HINT,
     resolve_execution_spec,
     validate_execution_job,
+    window_invariance_probe,
 )
 from wayfinder_paths.jobs.execution.walk_forward import _slice, _test_window_stats
 from wayfinder_paths.jobs.forward_experience import (
@@ -268,6 +273,15 @@ def _start_campaign(
             experience=experience,
             development_fraction=1.0,
         )
+    # Seed the frozen source's compute window BEFORE any candidate copies it:
+    # candidates inherit the declaration without their bundle diverging from
+    # the baseline, so the identical-to-source guard still catches unedited
+    # candidates. Behavior-neutral — the seeded value is exactly what
+    # resolve_compute_window already produced for the source.
+    _seed_bundle_window(store, job_id, campaign_root / "source")
+    snapshots["source_bundle"]["revision"] = compute_workspace_revision(
+        campaign_root / "source"
+    )
     campaign_policy = {
         **spec.evolution,
         "same_family_non_wins": spec.stuck_same_family_non_wins,
@@ -393,6 +407,7 @@ def _prepare_candidate(
         store.job_dir(job_id) / CAMPAIGN_ROOT / str(state["campaign_id"]) / "source"
     )
     _copy_active_bundle(frozen_source, candidate_root)
+    seeded_window = _seed_bundle_window(store, job_id, candidate_root)
     candidate = {
         "candidate_id": candidate_id,
         "campaign_id": state["campaign_id"],
@@ -405,6 +420,7 @@ def _prepare_candidate(
         "mutation_kind": chosen_mutation,
         "forced_jump": forced_jump,
         "bundle": relative,
+        "warmup_bars": seeded_window,
         "prepared_at": utc_now_iso(),
     }
     atomic_write_json(candidate_root / "candidate.json", candidate)
@@ -428,6 +444,57 @@ def _prepare_candidate(
         },
     )
     return candidate
+
+
+def _source_baseline_revision(manifest: dict[str, Any]) -> str:
+    """Revision an UNEDITED candidate carries: the frozen (window-seeded)
+    source bundle. Falls back to the active-root revision for campaigns
+    started before window seeding existed — the two were identical then."""
+    return str(
+        (manifest.get("source_bundle") or {}).get("revision")
+        or manifest.get("source_revision")
+        or ""
+    )
+
+
+def _seed_bundle_window(store: JobStore, job_id: str, bundle_root: Path) -> int:
+    """Campaign candidates must declare their compute window up front —
+    backtest and live hand decide() the same bounded view only when
+    warmup_bars is explicit in params. Inherit the source bundle's declared
+    window; otherwise seed the simulator's default cap."""
+    job_data = _load_job_yaml(bundle_root)
+    params = dict(job_data.get("execution_params") or {})
+    if params.get("warmup_bars"):
+        return int(params["warmup_bars"])
+    script = store.resolve_script_entrypoint(
+        job_id, job_data, candidate_dir=bundle_root
+    )
+    strategy = (
+        _load_strategy(script, dict(params))
+        if script is not None and script.exists()
+        else None
+    )
+    window = resolve_compute_window(params, strategy)
+    seeded = window.size if window.declared and window.size else DEFAULT_WARMUP_BARS
+    params["warmup_bars"] = seeded
+    job_data["execution_params"] = params
+    atomic_write_text(
+        bundle_root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
+    )
+    return seeded
+
+
+def _require_declared_window(subject: dict[str, Any], params: dict[str, Any]) -> None:
+    """Undeclared (or full_history) candidates are inadmissible: the campaign
+    contract is that whatever the backtest measured is what live would run."""
+    window = resolve_compute_window(
+        params, _load_strategy(subject["script"], dict(params))
+    )
+    if not window.declared:
+        raise ValueError(
+            "candidate does not declare a bounded compute window "
+            f"(execution_params.warmup_bars) — {BOUNDED_WINDOW_HINT}"
+        )
 
 
 def evaluate_candidate(
@@ -457,7 +524,7 @@ def _evaluate_candidate(
     revision = compute_workspace_revision(candidate_root)
     manifest = store.read_json(job_id, str(state["manifest"]), default={}) or {}
     if (
-        revision == manifest.get("source_revision")
+        revision == _source_baseline_revision(manifest)
         and not (candidate_root / "search_space.json").exists()
     ):
         return _reject_candidate(
@@ -480,6 +547,30 @@ def _evaluate_candidate(
         )
         quick = _tail(train, 10_000)
         params, _, calibration = _calibrated_params(store, job_id, subject)
+        _require_declared_window(subject, params)
+        probe = window_invariance_probe(
+            subject["script"], quick.bars, subject["spec"], params
+        )
+        if probe["status"] == "failed":
+            return _reject_candidate(
+                store,
+                job_id,
+                state,
+                candidate,
+                "invalid",
+                {
+                    "error": (
+                        f"window-invariance probe failed at bar {probe['bar']}: "
+                        "decide() consumed history beyond its declared window "
+                        f"of {probe['window']} bars — {BOUNDED_WINDOW_HINT}"
+                    ),
+                    "probe": {
+                        key: value
+                        for key, value in probe.items()
+                        if not key.endswith("_intents")
+                    },
+                },
+            )
         result = simulate_execution(subject["script"], quick, subject["spec"], params)
     except Exception as exc:  # noqa: BLE001 - candidate failure is evidence
         return _reject_candidate(
@@ -788,6 +879,7 @@ def _full_dev(
         subject["dataset"], train_end=train_end, validation_end=validation_end
     )
     params, stress_params, calibration = _calibrated_params(store, job_id, subject)
+    _require_declared_window(subject, params)
     tuning: dict[str, Any] | None = None
     search_path = root / "search_space.json"
     if tune and search_path.exists():
@@ -826,6 +918,17 @@ def _full_dev(
                 root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
             )
         tuning = {"trials": len(grid.runs), "selected_params": params}
+    # Post-tune probe: optuna may have moved the window params, so prove the
+    # FINAL configuration is window-invariant before spending dev backtests.
+    probe = window_invariance_probe(
+        subject["script"], train.bars, subject["spec"], params
+    )
+    if probe["status"] == "failed":
+        raise ValueError(
+            f"window-invariance probe failed at bar {probe['bar']}: decide() "
+            "consumed history beyond its declared window of "
+            f"{probe['window']} bars — {BOUNDED_WINDOW_HINT}"
+        )
     revision = compute_workspace_revision(root)
     manifest = (
         store.read_json(
@@ -833,7 +936,7 @@ def _full_dev(
         )
         or {}
     )
-    if revision == manifest.get("source_revision"):
+    if revision == _source_baseline_revision(manifest):
         raise ValueError("candidate has no effective mutation after tuning")
     train_result, train_stats = _window_result(subject, 0.0, train_end, params)
     validation_result, validation_stats = _window_result(

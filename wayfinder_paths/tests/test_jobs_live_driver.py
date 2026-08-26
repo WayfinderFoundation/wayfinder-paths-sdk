@@ -497,6 +497,51 @@ async def test_happy_paper_ticks_fill_at_next_bar_open(tmp_path: Path) -> None:
     assert json.loads(ticks[0])["view_hash"]
 
 
+class RecordingFeed(FakeFeed):
+    def __init__(self, view: CompletedBarsView) -> None:
+        super().__init__(view)
+        self.lookbacks: list[int] = []
+
+    async def get_completed_bars(
+        self, symbols: Any, interval: str, *, lookback_bars: int, as_of: Any = None
+    ) -> CompletedBarsView:
+        self.lookbacks.append(lookback_bars)
+        return await super().get_completed_bars(
+            symbols, interval, lookback_bars=lookback_bars, as_of=as_of
+        )
+
+
+async def test_driver_view_depth_uses_shared_window_resolution(
+    tmp_path: Path,
+) -> None:
+    """A declared warmup_bars sizes the live fetch through the SAME resolution
+    the simulator slices with — one window contract, so a strategy backtested
+    on W bars is handed W bars live. lookback_bars-only jobs keep their exact
+    depth; undeclared jobs get the simulator default."""
+    from wayfinder_paths.jobs.execution.primitives import DEFAULT_WARMUP_BARS
+
+    for params, expected in (
+        ({"warmup_bars": 96}, 96),
+        ({"lookback_bars": 250}, 250),
+        ({}, DEFAULT_WARMUP_BARS),
+    ):
+        store, job, root = _make_job(tmp_path / f"depth-{expected}", params=params)
+        broker = PaperBroker(capabilities=PERP_CAPS)
+        view = _view(2)
+        adapter = FakeAdapter(view, broker)
+        feed = RecordingFeed(view)
+        adapter.feed = feed
+        await tick_job(
+            job,
+            root,
+            "paper",
+            store=store,
+            adapters={"hyperliquid": adapter},
+            now=_now(view),
+        )
+        assert feed.lookbacks == [expected], params
+
+
 async def test_duplicate_bar_tick_is_skipped_and_idempotent(tmp_path: Path) -> None:
     store, job, root = _make_job(tmp_path)
     broker = PaperBroker(capabilities=PERP_CAPS)

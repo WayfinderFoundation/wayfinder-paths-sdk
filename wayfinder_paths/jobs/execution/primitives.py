@@ -347,6 +347,91 @@ class CompletedBarsView:
         return self._bars.to_dict(orient="records")
 
 
+# Default per-bar compute window. Bounding the view handed to each decide()
+# keeps the DEFAULT backtest O(N·k) instead of O(N²): a strategy that
+# recomputes indicators over the whole handed frame goes quadratic when that
+# frame grows with the replay index (the classic "simple backtest pegs the
+# CPU" trap). 512 bars covers the lookback of essentially every standard
+# indicator (SMA200, ATR/ADX, long EMAs) with margin. Strategies tune it via
+# `warmup_bars`; genuine since-genesis strategies opt out with
+# `full_history: true`.
+DEFAULT_WARMUP_BARS = 512
+
+# A full_history strategy still needs a concrete live fetch depth (no feed
+# pages "everything since genesis" each tick); 200 bars is the legacy driver
+# default, so pre-contract live jobs keep their exact fetch size.
+FULL_HISTORY_LIVE_DEPTH_BARS = 200
+
+_DECLARED_WINDOW_SOURCES = frozenset(
+    {"warmup_bars", "lookback_bars", "strategy.warmup_bars"}
+)
+
+
+@dataclass(frozen=True)
+class ComputeWindow:
+    """The single decide() history contract shared by the backtest simulator,
+    the live driver, and the candidate shadow replayer.
+
+    One resolution + one slice makes backtest inputs ≡ forward inputs by
+    construction: whatever window a strategy declares is exactly the history
+    every execution path hands it."""
+
+    size: int | None  # None ⇒ full history (explicit `full_history` opt-out)
+    source: str
+    live_depth: int  # completed bars a live/shadow fetch loads each tick
+
+    @property
+    def full_history(self) -> bool:
+        return self.size is None
+
+    @property
+    def declared(self) -> bool:
+        """True when the window was declared (params or strategy attribute)
+        rather than defaulted — the precondition for the window-invariance
+        probe and for evolution-campaign admission."""
+        return self.source in _DECLARED_WINDOW_SOURCES
+
+    def slice_view(self, bars: CompletedBarsView, index: int) -> CompletedBarsView:
+        """Causal view for a decision at timestamp `index`: at most `size`
+        trailing timestamps, or everything through `index` for full history."""
+        if self.size is None:
+            return bars.through(index)
+        return bars.window(index, self.size)
+
+
+def resolve_compute_window(
+    params: Mapping[str, Any], strategy: Any = None
+) -> ComputeWindow:
+    """Size of the trailing view handed to decide() each tick.
+
+    Resolution (first hit wins):
+      1. ``params['warmup_bars']``   — explicit, canonical name.
+      2. ``params['lookback_bars']`` — back-compat with the old windowing lever.
+      3. ``strategy.warmup_bars``    — strategy-declared attribute.
+      4. ``DEFAULT_WARMUP_BARS``.
+    ``params['full_history']`` truthy opts backtests into full-history views;
+    live fetches then fall back to the legacy driver depth (``lookback_bars``
+    or ``FULL_HISTORY_LIVE_DEPTH_BARS``).
+    """
+    if params.get("full_history"):
+        live_depth = max(
+            int(params.get("lookback_bars") or FULL_HISTORY_LIVE_DEPTH_BARS), 1
+        )
+        return ComputeWindow(size=None, source="full_history", live_depth=live_depth)
+    for key in ("warmup_bars", "lookback_bars"):
+        raw = params.get(key)
+        if raw:
+            size = max(int(raw), 1)
+            return ComputeWindow(size=size, source=key, live_depth=size)
+    attr = getattr(strategy, "warmup_bars", None)
+    if attr:
+        size = max(int(attr), 1)
+        return ComputeWindow(size=size, source="strategy.warmup_bars", live_depth=size)
+    return ComputeWindow(
+        size=DEFAULT_WARMUP_BARS, source="default", live_depth=DEFAULT_WARMUP_BARS
+    )
+
+
 # Actions that only ever shrink an existing position — never sized up by
 # engine-level leverage, never blocked as fresh exposure.
 REDUCE_ONLY_ACTIONS = frozenset({"CLOSE", "STOP_LOSS", "TAKE_PROFIT"})
