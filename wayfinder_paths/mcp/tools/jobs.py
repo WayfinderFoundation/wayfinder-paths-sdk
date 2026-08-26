@@ -21,6 +21,7 @@ from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
 from wayfinder_paths.jobs.models import (
     WayfinderJob,
+    default_wake_seconds,
     infer_job_kind,
     normalize_agent_mode,
     utc_now_iso,
@@ -592,6 +593,14 @@ async def core_jobs(
         job.job_kind = infer_job_kind(job.script_loop.enabled, mode)
         if agent_wake_seconds is not None:
             job.agent_loop.wake_interval_seconds = agent_wake_seconds
+        elif (
+            job.agent_loop.enabled
+            and not job.agent_loop.wake_interval_seconds
+            and not job.agent_loop.cron_expr
+        ):
+            # Jobs created with mode off carry wake_interval_seconds=null;
+            # an enabled loop with no schedule crashes the recompile below.
+            job.agent_loop.wake_interval_seconds = default_wake_seconds(mode)
         store.save(job)
         # Journal the operator's selection so a later revert (e.g. a stale
         # candidate promotion) is diagnosable from the job dir alone.
