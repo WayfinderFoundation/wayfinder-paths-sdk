@@ -73,21 +73,16 @@ def test_disabled_when_proc_unreadable(monkeypatch):
     assert est.over_quota() is False  # never gates off-platform
 
 
-def test_agent_wakes_hold_while_drained():
+def test_agent_wake_tier_classification():
     from wayfinder_paths.runner.daemon import (
-        BURST_AGENT_POSTPONE_S,
         BURST_SHORT_POSTPONE_S,
         _burst_postpone_tier,
     )
 
     wake = {"payload": {"env": {"WAYFINDER_JOB_AGENT_MODE": "intervene"}}}
-    tier, floor = _burst_postpone_tier(wake)
-    # Advisory multi-minute LLM sessions must not force-launch on a drained
-    # machine after the short floor — they hold until the balance recovers
-    # (long ceiling only as a starvation backstop).
-    assert tier == "agent-drain-hold"
-    assert floor == BURST_AGENT_POSTPONE_S
-    assert floor > BURST_SHORT_POSTPONE_S
+    # Scheduled occurrences of this tier are skipped outright under drain
+    # (asserted below); event-triggered ones postpone on the short floor.
+    assert _burst_postpone_tier(wake) == ("agent", BURST_SHORT_POSTPONE_S)
 
     paper = {
         "payload": {
@@ -108,3 +103,46 @@ def test_agent_wakes_hold_while_drained():
         }
     }
     assert _burst_postpone_tier(live) == ("live-exempt", None)
+
+
+def test_scheduled_agent_wake_skipped_under_drain(tmp_path, monkeypatch):
+    """A scheduled wake due while over quota is dropped for the occurrence:
+    schedule advances, no run reserved. Event-triggered wakes still launch
+    through the postpone path instead of being skipped."""
+    from wayfinder_paths.runner import daemon as daemon_mod
+
+    calls = {"advanced": None, "reserved": 0}
+
+    class FakeBurst:
+        balance = 0.0
+
+        def over_quota(self):
+            return True
+
+    class FakeDB:
+        def set_next_run_at(self, *, job_id, next_run_at):
+            calls["advanced"] = (job_id, next_run_at)
+
+        def reserve_run(self, **kwargs):
+            calls["reserved"] += 1
+            return 1
+
+    daemon = daemon_mod.RunnerDaemon.__new__(daemon_mod.RunnerDaemon)
+    daemon._burst = FakeBurst()
+    daemon._db = FakeDB()
+    daemon._running = []
+    daemon._max_workers = 4
+    daemon._postponed_since = {}
+
+    monkeypatch.setattr(daemon_mod, "next_run_after", lambda schedule, now: now + 3600)
+    monkeypatch.setattr(daemon_mod, "schedule_from_job", lambda job: object())
+
+    job = {
+        "id": 7,
+        "name": "wake-job",
+        "payload": {"env": {"WAYFINDER_JOB_AGENT_MODE": "intervene"}},
+    }
+    result = daemon._maybe_start_job(job=job, now=1000, reason="schedule")
+    assert result is None
+    assert calls["advanced"] == (7, 4600)
+    assert calls["reserved"] == 0

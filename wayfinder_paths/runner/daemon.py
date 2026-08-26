@@ -55,10 +55,10 @@ BURST_MAX_POSTPONE_S = 600.0
 # BURST_MAX_POSTPONE_S. Env-tunable via WAYFINDER_BURST_SHORT_POSTPONE_S.
 BURST_SHORT_POSTPONE_S = 120.0
 # Agent wakes are advisory LLM sessions that burn CPU for many minutes — the
-# single worst thing to force-launch on a drained machine. Hold them until
-# the balance recovers, with a long ceiling so a pathological permanent drain
-# still can't starve intervention forever. WAYFINDER_BURST_AGENT_POSTPONE_S.
-BURST_AGENT_POSTPONE_S = 3600.0
+# single worst thing to launch on a drained machine. SCHEDULED wakes due
+# under the water mark are skipped outright (schedule advances; the next
+# wake fires normally). Event-triggered wakes (risk_halt etc.) are
+# time-sensitive responses and keep the short postpone floor instead.
 DEFAULT_SYNC_DEBOUNCE_SECONDS = 90.0
 DEFAULT_MAX_RSS_MB = 900.0
 # While a proposal application is applying, the RSS restart exit is deferred
@@ -173,10 +173,6 @@ def _burst_short_postpone_s() -> float:
     return _env_postpone_s("WAYFINDER_BURST_SHORT_POSTPONE_S", BURST_SHORT_POSTPONE_S)
 
 
-def _burst_agent_postpone_s() -> float:
-    return _env_postpone_s("WAYFINDER_BURST_AGENT_POSTPONE_S", BURST_AGENT_POSTPONE_S)
-
-
 def _burst_postpone_tier(job: Mapping[str, Any]) -> tuple[str, float | None]:
     """Classify a due job for burst admission from the payload env the
     compiler already bakes (no new plumbing): (tier, max postpone seconds),
@@ -188,9 +184,8 @@ def _burst_postpone_tier(job: Mapping[str, Any]) -> tuple[str, float | None]:
     - The application watchdog is exempt: it un-sticks paused loops.
     - Paper ticks and indeterminate-mode jobs_v1 jobs get the short floor
       (fail toward trading availability).
-    - Agent wakes hold until the balance recovers (long ceiling): they're
-      advisory multi-minute LLM sessions — launching one on a drained
-      machine is the drain, and a skipped wake re-fires on its schedule.
+    - Agent wakes: scheduled occurrences are SKIPPED under drain (see
+      _maybe_start_job); event-triggered ones postpone on the short floor.
     - Everything else (legacy scripts, strategy jobs, heavy ops) keeps the
       full BURST_MAX_POSTPONE_S floor.
     """
@@ -198,7 +193,7 @@ def _burst_postpone_tier(job: Mapping[str, Any]) -> tuple[str, float | None]:
     if env.get("WAYFINDER_WATCHDOG"):
         return "watchdog-exempt", None
     if env.get("WAYFINDER_JOB_AGENT_MODE"):
-        return "agent-drain-hold", _burst_agent_postpone_s()
+        return "agent", _burst_short_postpone_s()
     if env.get("WAYFINDER_JOB_EXECUTION_CONTRACT") == "jobs_v1":
         mode = str(env.get("WAYFINDER_JOB_MODE") or "").strip().lower()
         if mode == "live":
@@ -878,6 +873,22 @@ class RunnerDaemon:
         # bounded by BURST_MAX_POSTPONE_S so a backlog can't starve it.
         if self._burst is not None and self._burst.over_quota():
             tier, floor_s = _burst_postpone_tier(job)
+            if tier == "agent" and reason == "schedule":
+                # A scheduled advisory wake due on a drained machine is
+                # dropped for this occurrence — advance the schedule so the
+                # next one fires normally once credits re-bank. Event
+                # triggers (risk_halt, reconcile_mismatch) don't take this
+                # branch: they postpone briefly below instead.
+                if advance_schedule:
+                    nxt = next_run_after(schedule_from_job(job), now=now)
+                    if nxt is not None:
+                        self._db.set_next_run_at(job_id=job_id, next_run_at=nxt)
+                logger.info(
+                    f"Skipping scheduled agent wake {job_name}: burst balance "
+                    f"{self._burst.balance:.0f} CPU-s < "
+                    f"{BURST_LOW_WATER_CPU_S:.0f} low water"
+                )
+                return None
             if floor_s is not None:
                 first = self._postponed_since.setdefault(job_id, time.monotonic())
                 if time.monotonic() - first < floor_s:
