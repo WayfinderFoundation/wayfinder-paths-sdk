@@ -15,6 +15,7 @@ from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.engine import EngineState
 from wayfinder_paths.jobs.execution.paper import PaperBroker
 from wayfinder_paths.jobs.halt import clear_halt, read_halt, request_halt
+from wayfinder_paths.jobs.models import DEFAULT_FORWARD_SUMMARY
 from wayfinder_paths.tests.test_jobs_live_driver import (
     PERP_CAPS,
     FakeAdapter,
@@ -211,3 +212,43 @@ def test_halt_snapshot_key_in_sync(tmp_path: Path) -> None:
 
     clear_halt(store, job.id, by="owner")
     assert snapshot_job(job.id, store=store)["halt"] is None
+
+
+def test_clearing_loss_streak_halt_resets_the_streak(tmp_path: Path) -> None:
+    """Without the reset, clearing is a treadmill: the next tick re-reads the
+    stale streak, re-latches before any trade runs, and the only organic
+    reset (a winning close) can never happen under reduce-only."""
+    store, job, root = _make_job(tmp_path)
+    store.write_json(
+        job.id,
+        DEFAULT_FORWARD_SUMMARY,
+        {"trades": {"current_loss_streak": 7, "losses": 7, "wins": 0}},
+    )
+    request_halt(
+        store,
+        job.id,
+        reason="pause_after_consecutive_losses breached: 7 >= 5",
+        source="risk_limits",
+    )
+
+    cleared = clear_halt(store, job.id, by="owner")
+    assert cleared["cleared"] is True
+    summary = store.read_json(job.id, DEFAULT_FORWARD_SUMMARY, default={})
+    assert summary["trades"]["current_loss_streak"] == 0
+    # Other tallies are history, not state — they stay.
+    assert summary["trades"]["losses"] == 7
+    journal = (root / "journal.jsonl").read_text(encoding="utf-8")
+    assert "loss_streak_reset" in journal
+
+
+def test_clearing_other_halts_leaves_streak_alone(tmp_path: Path) -> None:
+    store, job, root = _make_job(tmp_path)
+    store.write_json(
+        job.id,
+        DEFAULT_FORWARD_SUMMARY,
+        {"trades": {"current_loss_streak": 3}},
+    )
+    request_halt(store, job.id, reason="manual", source="manual")
+    clear_halt(store, job.id, by="owner")
+    summary = store.read_json(job.id, DEFAULT_FORWARD_SUMMARY, default={})
+    assert summary["trades"]["current_loss_streak"] == 3
