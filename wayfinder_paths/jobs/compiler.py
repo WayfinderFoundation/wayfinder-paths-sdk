@@ -5,7 +5,7 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any
 
-from wayfinder_paths.jobs.models import WayfinderJob
+from wayfinder_paths.jobs.models import WayfinderJob, default_wake_seconds
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 
@@ -87,7 +87,18 @@ class JobCompiler:
             resp = self.bridge.add_or_update_script_job(
                 name=job.agent_loop.runner_job_name,
                 script_path=wrappers["agent"],
-                interval_seconds=job.agent_loop.wake_interval_seconds,
+                # A mode flip can enable the loop with wake_interval_seconds
+                # still null (set-mode without --wake on a job created with
+                # mode off). Registering with no schedule raises AFTER the
+                # script loop registered but BEFORE runner_links is written —
+                # a half-compiled job the UI can't see runs for. Default here
+                # so every path (create, set-mode, watchdog repair) heals.
+                interval_seconds=job.agent_loop.wake_interval_seconds
+                or (
+                    None
+                    if job.agent_loop.cron_expr
+                    else default_wake_seconds(job.agent_loop.mode)
+                ),
                 cron_expr=job.agent_loop.cron_expr,
                 timezone=job.agent_loop.timezone,
                 timeout_seconds=job.agent_loop.timeout_seconds,

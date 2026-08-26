@@ -65,6 +65,10 @@ def infer_job_kind(script_enabled: bool, agent_mode: AgentMode) -> JobKind:
     return "agent_only"
 
 
+def default_wake_seconds(mode: AgentMode) -> int:
+    return 900 if mode == "auto" else 3600
+
+
 def utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -236,7 +240,7 @@ class WayfinderJob:
             mode=normalized_mode,
             runner_job_name=f"{jid}-agent",
             wake_interval_seconds=agent_wake_seconds
-            or (900 if normalized_mode == "auto" else 3600 if agent_enabled else None),
+            or (default_wake_seconds(normalized_mode) if agent_enabled else None),
             timezone=timezone,
             triggers=[
                 "script_failure",

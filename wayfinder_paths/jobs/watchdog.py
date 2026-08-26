@@ -27,6 +27,7 @@ from textwrap import dedent
 from typing import Any, TypedDict
 
 from wayfinder_paths.jobs.application import complete_application
+from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.failures import cpu_steal_pct
 from wayfinder_paths.jobs.lifecycle import lifecycle_sweep
 from wayfinder_paths.jobs.models import utc_now_iso
@@ -932,6 +933,68 @@ def _check_agent_mode_drift(
     return None
 
 
+# Unlinked-loop repair: JobCompiler.compile registers the script loop, then
+# the agent loop, then writes runner_links.json + journals "compiled". A
+# crash between those steps (e.g. an enabled agent loop with a null wake
+# interval raising "provide exactly one of interval_seconds or cron_expr")
+# strands the job half-compiled forever: job.yaml promises loops, the seed
+# runner_links.json stays `{"jobs": []}`, the UI's run history keys on those
+# links and renders empty, and nothing ever retries — create/set-mode already
+# returned. The watchdog is the only recurring owner, so it recompiles any
+# job whose enabled loops are missing from its links. The grace window keeps
+# it from racing a create that is about to compile.
+_UNLINKED_REPAIR_PATH = "state/unlinked_repair.json"
+UNLINKED_REPAIR_GRACE = timedelta(minutes=15)
+
+
+def _check_unlinked_loops(
+    store: JobStore, job: Any, now: datetime
+) -> dict[str, Any] | None:
+    expected = set()
+    if job.script_loop.enabled:
+        expected.add("script")
+    if job.agent_loop.enabled and job.agent_loop.mode != "off":
+        expected.add("agent")
+    if not expected or _age(now, job.created_at) < UNLINKED_REPAIR_GRACE:
+        return None
+    links = store.read_json(job.id, "runner_links.json", default={}) or {}
+    present = {item["loop"] for item in links.get("jobs") or []}
+    missing = sorted(expected - present)
+    if not missing:
+        return None
+    scorecard = store.read_json(job.id, "scorecard.json", default={}) or {}
+    if scorecard.get("paused"):
+        return None
+    try:
+        JobCompiler(store=store).compile(job, start_daemon=False)
+    except Exception as exc:  # noqa: BLE001 — journal instead of silent retry
+        error = str(exc)
+        marker = store.read_json(job.id, _UNLINKED_REPAIR_PATH, default={}) or {}
+        if marker.get("error") == error:
+            return None  # already journaled this failure; retried silently
+        store.write_json(
+            job.id, _UNLINKED_REPAIR_PATH, {"error": error, "ts": now.isoformat()}
+        )
+        store.append_journal(
+            job.id,
+            {
+                "type": "unlinked_loops_compile_failed",
+                "missing": missing,
+                "error": error,
+            },
+        )
+        return {
+            "action": "unlinked_loops_compile_failed",
+            "missing": missing,
+            "error": error,
+        }
+    store.write_json(job.id, _UNLINKED_REPAIR_PATH, {})
+    store.append_journal(
+        job.id, {"type": "unlinked_loops_recompiled", "missing": missing}
+    )
+    return {"action": "unlinked_loops_recompiled", "missing": missing}
+
+
 # Research-impasse alerting: all three production research jobs froze the
 # same way — staleness computed correctly and the wake mandate fired every
 # wake, but the mandate's "state why research is not warranted" hatch let the
@@ -1682,6 +1745,13 @@ def recover_stalled_applications(
             drift_event = None
         if drift_event is not None:
             recovered.append({"job_id": job.id, **drift_event})
+        try:
+            unlinked_event = _check_unlinked_loops(store, job, now)
+        except Exception as exc:  # noqa: BLE001
+            errors.append({"job_id": job.id, "error": f"unlinked: {exc}"})
+            unlinked_event = None
+        if unlinked_event is not None:
+            recovered.append({"job_id": job.id, **unlinked_event})
         try:
             impasse_event = _check_research_impasse(store, job, proposals, now)
         except Exception as exc:
