@@ -252,3 +252,36 @@ def test_clearing_other_halts_leaves_streak_alone(tmp_path: Path) -> None:
     clear_halt(store, job.id, by="owner")
     summary = store.read_json(job.id, DEFAULT_FORWARD_SUMMARY, default={})
     assert summary["trades"]["current_loss_streak"] == 3
+
+
+def test_pause_refuses_live_funded_job(tmp_path: Path, monkeypatch) -> None:
+    """A paused live job leaves venue money unmanaged — pause must refuse
+    until the bankroll is withdrawn (capital 0), unless forced."""
+    from click.testing import CliRunner
+
+    from wayfinder_paths.jobs import cli as cli_module
+
+    store, job, root = _make_job(tmp_path)
+    job.script_loop.mode = "live"
+    job.execution_params["initial_capital"] = 52.8
+    store.save(job)
+    monkeypatch.setattr(cli_module, "JobStore", lambda: store)
+
+    runner = CliRunner()
+    refused = runner.invoke(cli_module.job_cli, ["pause", job.id])
+    assert refused.exit_code != 0
+    assert "withdraw" in refused.output
+
+    # Unfunded (capital 0) pauses freely and stamps the synced flag.
+    job.execution_params["initial_capital"] = 0.0
+    store.save(job)
+    monkeypatch.setattr(cli_module, "sync_all_jobs", lambda **kwargs: None)
+    allowed = runner.invoke(cli_module.job_cli, ["pause", job.id])
+    assert allowed.exit_code == 0, allowed.output
+    scorecard = store.read_json(job.id, "scorecard.json", default={})
+    assert scorecard["paused"] is True
+
+    resumed = runner.invoke(cli_module.job_cli, ["resume", job.id])
+    assert resumed.exit_code == 0, resumed.output
+    scorecard = store.read_json(job.id, "scorecard.json", default={})
+    assert scorecard["paused"] is False

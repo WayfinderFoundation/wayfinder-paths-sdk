@@ -2351,13 +2351,30 @@ def _pause_resume_loops(job_id: str, action: Literal["pause", "resume"]) -> None
         for loop in (job.script_loop, job.agent_loop)
         if loop.enabled
     ]
+    # The synced flag is what buckets the job into the UI's paused section —
+    # runner-link state alone never reaches the frontend.
+    store.refresh_scorecard(job_id, {"paused": action == "pause"})
     sync_all_jobs(store=store)
     _echo_json({"ok": True, "result": responses})
 
 
-@job_cli.command(name="pause", help="Pause a job's runner loops.")
+@job_cli.command(
+    name="pause",
+    help="Pause a job's runner loops (script + agent). Refuses while the job "
+    "is LIVE with declared capital — a paused live job leaves venue money "
+    "with nothing managing it; withdraw first (or --force).",
+)
 @click.argument("job_id")
-def pause_cmd(job_id: str) -> None:
+@click.option("--force", is_flag=True, default=False)
+def pause_cmd(job_id: str, force: bool) -> None:
+    store = JobStore()
+    job = store.load(job_id)
+    capital = float(job.execution_params.get("initial_capital") or 0.0)
+    if not force and job.script_loop.mode == "live" and capital > 0:
+        raise click.ClickException(
+            f"job is live with declared capital ${capital:g} — withdraw the "
+            "bankroll first so no venue money sits unmanaged, or pass --force"
+        )
     _pause_resume_loops(job_id, "pause")
 
 
