@@ -357,3 +357,50 @@ def test_saturation_watermark_components_move_independently(tmp_path: Path) -> N
     posture = research_saturation_posture(store3, job3.id)
     assert posture["posture"] == "in_flight"
     assert "evolution_campaign_open" in posture["blockers"]
+
+    store4, job4 = _saturated_job(tmp_path / "experiment", "experiment-demo")
+    base4 = saturation_watermark(store4, job4.id)
+    experiment = {
+        "experiment_id": "experiment-1",
+        "status": "qualifying",
+        "admissions": {"control": 0, "evolution": 0},
+        "arms": {
+            arm: {"champion": {"revision": f"{arm}-baseline"}}
+            for arm in ("control", "evolution")
+        },
+        "proposals": {
+            arm: {"active": None, "history": []} for arm in ("control", "evolution")
+        },
+    }
+    store4.write_json(job4.id, "state/evolution_experiment.json", experiment)
+    staged = saturation_watermark(store4, job4.id)
+    assert staged != base4
+
+    experiment["proposals"]["evolution"]["active"] = {
+        "candidate_id": "candidate-1",
+        "revision": "revision-1",
+        "status": "queued",
+        "last_common_bar": "2026-08-25T00:00:00+00:00",
+    }
+    store4.write_json(job4.id, "state/evolution_experiment.json", experiment)
+    active = saturation_watermark(store4, job4.id)
+    assert active != staged
+
+    experiment["proposals"]["evolution"]["active"]["last_common_bar"] = (
+        "2026-08-25T01:00:00+00:00"
+    )
+    store4.write_json(job4.id, "state/evolution_experiment.json", experiment)
+    assert saturation_watermark(store4, job4.id) == active
+
+    experiment["proposals"]["evolution"] = {
+        "active": None,
+        "history": [
+            {
+                "candidate_id": "candidate-1",
+                "revision": "revision-1",
+                "status": "rejected",
+            }
+        ],
+    }
+    store4.write_json(job4.id, "state/evolution_experiment.json", experiment)
+    assert saturation_watermark(store4, job4.id) != active

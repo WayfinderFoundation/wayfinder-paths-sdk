@@ -255,6 +255,7 @@ def test_finalize_enforces_stage_budgets_and_isolates_candidate_failure(
         calls["gate"] += 1
         return {
             "status": "ok",
+            "ready": True,
             "objective": {"candidate": {"trade_count": 12}},
             "sim_wall_seconds": 1.0,
         }
@@ -284,6 +285,56 @@ def test_finalize_enforces_stage_budgets_and_isolates_candidate_failure(
     }
     assert calls == {"dev": 3, "gate": 1, "proposal": 1}
     assert any(item["status"] == "invalid" for item in result["candidates"])
+
+
+def test_finalize_rejects_economically_unready_finalist(tmp_path, monkeypatch) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    prepare_candidate(
+        store,
+        job_id,
+        family="noise",
+        summary="candidate with available but negative paired evidence",
+        now=started.replace(hour=13),
+    )
+    state = campaign_status(store, job_id)
+    state["candidates"][0].update(
+        {
+            "status": "quick_complete",
+            "objective": {
+                "net_log_growth": 0.1,
+                "downside_deviation": 0.01,
+                "tail_loss": 0.01,
+                "max_drawdown_pct": 0.05,
+            },
+        }
+    )
+    state["counts"]["quick_evaluated"] = 1
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign._full_dev",
+        lambda *args, **kwargs: {"status": "dev_frontier", "evidence": "passed"},
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.evaluate_economic_gate",
+        lambda *args, **kwargs: {
+            "status": "ok",
+            "ready": False,
+            "reasons": ["paired utility estimate not > 0"],
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.paper_experiment.stage_paper_proposal",
+        lambda *args, **kwargs: pytest.fail("unready finalist reached paper staging"),
+    )
+
+    result = finalize_campaign(store, job_id)
+
+    candidate = result["candidates"][0]
+    assert candidate["status"] == "proposal_rejected"
+    assert candidate["evidence"] == "paired utility estimate not > 0"
 
 
 def test_quality_diversity_keeps_two_non_dominated_per_cell(tmp_path) -> None:

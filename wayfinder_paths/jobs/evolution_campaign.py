@@ -637,10 +637,15 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
                         / CAMPAIGN_DATA_ROOT
                     ),
                 )
-                if economic.get("status") != "ok":
+                if economic.get("ready") is not True:
                     outcome = {
                         "status": "proposal_rejected",
-                        "evidence": "paired development evidence unavailable",
+                        "evidence": (
+                            "; ".join(
+                                str(reason) for reason in economic.get("reasons") or []
+                            )
+                            or "paired development evidence did not clear the economic gate"
+                        ),
                         "economic": economic,
                     }
                 else:

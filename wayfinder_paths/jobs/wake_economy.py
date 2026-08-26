@@ -60,7 +60,7 @@ def wake_economy_enabled() -> bool:
 def research_saturation_posture(
     store: JobStore, job_id: str, *, job: WayfinderJob | None = None
 ) -> dict[str, Any]:
-    """"saturated" ONLY when every research obligation is settled AND the
+    """Return "saturated" only when every research obligation is settled and the
     forward book is still below its evidence gate. Anything mid-flight
     defeats saturation — let the claim machinery play first."""
     job = job or store.load(job_id)
@@ -115,6 +115,44 @@ def saturation_watermark(
     campaign = (
         store.read_json(job_id, "state/evolution_campaign.json", default={}) or {}
     )
+    experiment = (
+        store.read_json(job_id, "state/evolution_experiment.json", default={}) or {}
+    )
+    experiment_arms = experiment.get("arms") or {}
+    experiment_proposals = experiment.get("proposals") or {}
+    experiment_watermark = None
+    if experiment:
+        proposal_watermarks = {}
+        for arm in ("control", "evolution"):
+            proposal = experiment_proposals.get(arm) or {}
+            active = proposal.get("active")
+            history = proposal.get("history") or []
+            proposal_watermarks[arm] = {
+                "active": {
+                    key: active.get(key)
+                    for key in ("candidate_id", "revision", "status")
+                }
+                if isinstance(active, Mapping)
+                else None,
+                "latest": {
+                    key: history[-1].get(key)
+                    for key in ("candidate_id", "revision", "status")
+                }
+                if history and isinstance(history[-1], Mapping)
+                else None,
+            }
+        experiment_watermark = {
+            "experiment_id": experiment.get("experiment_id"),
+            "status": experiment.get("status"),
+            "admissions": experiment.get("admissions"),
+            "champions": {
+                arm: ((experiment_arms.get(arm) or {}).get("champion") or {}).get(
+                    "revision"
+                )
+                for arm in ("control", "evolution")
+            },
+            "proposals": proposal_watermarks,
+        }
     return {
         "claims": {
             str(claim.get("claim_id")): str(claim.get("status") or "")
@@ -150,9 +188,8 @@ def saturation_watermark(
         }
         if campaign
         else None,
-        "halt": {"source": halt.get("source"), "ts": halt.get("ts")}
-        if halt
-        else None,
+        "evolution_experiment": experiment_watermark,
+        "halt": {"source": halt.get("source"), "ts": halt.get("ts")} if halt else None,
     }
 
 
@@ -184,9 +221,7 @@ def remediation_wake_block(case: Mapping[str, Any] | None) -> dict[str, Any] | N
     if not compact or case is None:
         return None
     recheck_raw = compact.get("recheck")
-    recheck: Mapping[str, Any] = (
-        recheck_raw if isinstance(recheck_raw, Mapping) else {}
-    )
+    recheck: Mapping[str, Any] = recheck_raw if isinstance(recheck_raw, Mapping) else {}
     next_recheck_at = None
     anchors = [
         _parse_time(case.get("last_wake_requested_at")),
@@ -230,10 +265,7 @@ def maybe_skip_wake(
     now = now or dt.datetime.now(dt.UTC)
     state = store.read_json(job.id, WAKE_ECONOMY_PATH, default={}) or {}
     last_full = _parse_time(state.get("last_full_wake_at"))
-    if (
-        last_full is None
-        or (now - last_full).total_seconds() >= _quiet_max_seconds()
-    ):
+    if last_full is None or (now - last_full).total_seconds() >= _quiet_max_seconds():
         return None  # max-quiet floor: a full wake is due regardless
     if research_saturation_posture(store, job.id, job=job)["posture"] != "saturated":
         return None
@@ -316,9 +348,7 @@ def _forward_gate_minimum(job: WayfinderJob) -> int:
 
 def _quiet_max_seconds() -> float:
     return (
-        float(
-            os.environ.get(WAKE_QUIET_MAX_HOURS_ENV) or DEFAULT_WAKE_QUIET_MAX_HOURS
-        )
+        float(os.environ.get(WAKE_QUIET_MAX_HOURS_ENV) or DEFAULT_WAKE_QUIET_MAX_HOURS)
         * 3600
     )
 

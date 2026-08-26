@@ -97,11 +97,17 @@ def ensure_paper_experiment(
                     "false_promotion_rate",
                     "tokens_per_admission",
                     "sim_hours_per_admission",
+                    "resource_budget_balance",
+                    "admissions_parity",
                 ],
                 "decision_rule": {
                     "accrete": "paired_lcb_gt_zero_without_safety_regression",
                     "kill": "paired_ucb_lt_zero_or_hard_constraint_breach",
                     "otherwise": "inconclusive",
+                },
+                "parity_policy": {
+                    "resource_budget": "reported_only",
+                    "admissions": "reported_only",
                 },
                 "candidate_entry": (
                     "immutable_24h_forward_paper_proposal_against_current_arm_champion"
@@ -245,6 +251,7 @@ def stage_paper_proposal(
                 "candidate_id": reference["candidate_id"],
                 "revision": reference["revision"],
                 "bundle": reference["bundle"],
+                "source": reference.get("source"),
                 "stream": f"{stream_base}/reference",
                 "last_processed_bar": None,
                 "error_count": 0,
@@ -567,6 +574,15 @@ def _maybe_adjudicate_proposals(
             mature=mature,
             coverage=coverage,
         )
+        if verdict["status"] == "qualified" and state.get("status") not in {
+            "qualifying",
+            "active",
+        }:
+            verdict["status"] = "rejected"
+            verdict["reasons"].append(
+                "paper experiment closed before candidate admission"
+            )
+            verdict["qualified_before_experiment_close"] = True
         if verdict["status"] == "qualified":
             frozen = resolve_experiment_bundle(
                 store, job_id, state, proposal["candidate"]
@@ -645,6 +661,12 @@ def _proposal_verdict(
     if float(candidate_stats["max_drawdown_pct"]) > max_drawdown:
         reasons.append("candidate breached the owner drawdown ceiling")
     reasons.extend(str(item) for item in entry["reasons"])
+    if str(
+        (proposal.get("reference") or {}).get("source") or "incumbent"
+    ) != "incumbent" and float(candidate_stats["net_return"]) <= float(
+        reference_stats["net_return"]
+    ):
+        reasons.append("candidate did not strictly improve the paper champion")
     return {
         "status": "qualified" if not reasons else "rejected",
         "arm": proposal["arm"],
@@ -1046,13 +1068,14 @@ def _verdict_report(
             (state.get("protocol") or {}).get("resource_budget_tolerance") or 0.20
         ),
     )
-    if (
-        lcb is not None
-        and lcb > 0
-        and not hard_breach
-        and false_promotion_safe
-        and budget_balance["matched"]
-    ):
+    admissions = dict(state.get("admissions") or {})
+    admissions_parity = {
+        "matched": int(admissions.get("evolution") or 0)
+        >= int(admissions.get("control") or 0),
+        "control": int(admissions.get("control") or 0),
+        "evolution": int(admissions.get("evolution") or 0),
+    }
+    if lcb is not None and lcb > 0 and not hard_breach and false_promotion_safe:
         verdict = "accrete"
     elif (ucb is not None and ucb < 0) or hard_breach:
         verdict = "kill"
@@ -1069,7 +1092,8 @@ def _verdict_report(
         "paired_delta_ucb": ucb,
         "confidence": confidence,
         "hard_constraint_breach": hard_breach,
-        "admissions": dict(state.get("admissions") or {}),
+        "admissions": admissions,
+        "admissions_parity": admissions_parity,
         "false_promotions": false_promotions,
         "resource_cost": resource_cost,
         "resource_budget_balance": budget_balance,
