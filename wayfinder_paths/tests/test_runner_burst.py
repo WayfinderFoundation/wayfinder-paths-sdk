@@ -71,3 +71,40 @@ def test_disabled_when_proc_unreadable(monkeypatch):
     est.update()  # no-op
     assert est.enabled is False
     assert est.over_quota() is False  # never gates off-platform
+
+
+def test_agent_wakes_hold_while_drained():
+    from wayfinder_paths.runner.daemon import (
+        BURST_AGENT_POSTPONE_S,
+        BURST_SHORT_POSTPONE_S,
+        _burst_postpone_tier,
+    )
+
+    wake = {"payload": {"env": {"WAYFINDER_JOB_AGENT_MODE": "intervene"}}}
+    tier, floor = _burst_postpone_tier(wake)
+    # Advisory multi-minute LLM sessions must not force-launch on a drained
+    # machine after the short floor — they hold until the balance recovers
+    # (long ceiling only as a starvation backstop).
+    assert tier == "agent-drain-hold"
+    assert floor == BURST_AGENT_POSTPONE_S
+    assert floor > BURST_SHORT_POSTPONE_S
+
+    paper = {
+        "payload": {
+            "env": {
+                "WAYFINDER_JOB_EXECUTION_CONTRACT": "jobs_v1",
+                "WAYFINDER_JOB_MODE": "paper",
+            }
+        }
+    }
+    assert _burst_postpone_tier(paper) == ("script-short", BURST_SHORT_POSTPONE_S)
+
+    live = {
+        "payload": {
+            "env": {
+                "WAYFINDER_JOB_EXECUTION_CONTRACT": "jobs_v1",
+                "WAYFINDER_JOB_MODE": "live",
+            }
+        }
+    }
+    assert _burst_postpone_tier(live) == ("live-exempt", None)
