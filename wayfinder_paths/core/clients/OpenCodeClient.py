@@ -29,6 +29,14 @@ class OpenCodeClient:
         except Exception:
             return False
 
+    def session_statuses(self) -> dict[str, Any]:
+        """Live non-idle sessions: id -> {"type": "busy"|"retry"|...}.
+        Empty on any failure — status is advisory."""
+        try:
+            return self.client.get(f"{self.base_url}/session/status").json()
+        except Exception:  # noqa: BLE001 — advisory read
+            return {}
+
     def list_sessions(self) -> list[dict[str, Any]]:
         try:
             return self.client.get(f"{self.base_url}/session").json()

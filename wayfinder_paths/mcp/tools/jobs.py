@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import Any, Literal
 
+from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
+from wayfinder_paths.core.config import is_opencode_instance
 from wayfinder_paths.jobs.application import (
     claim_application,
     complete_application,
@@ -293,6 +295,31 @@ def _background_op_status(store: JobStore, job_id: str, op: str) -> dict[str, An
     return ok(payload)
 
 
+def _infer_initializer_session() -> str | None:
+    """Best-effort attribution of a create call to the conversation making
+    it. MCP tool calls carry no session identity, but the calling session is
+    busy RIGHT NOW (it is mid-tool-call) — ask the local opencode API. This
+    is why every agent-built job used to show "No linked conversations":
+    agents cannot know their own session id to pass explicitly. Ambiguity
+    (several busy non-wake sessions) returns None rather than guessing."""
+    if not is_opencode_instance():
+        return None
+    busy = [
+        session_id
+        for session_id, status in OPENCODE_CLIENT.session_statuses().items()
+        if status["type"] in {"busy", "retry"}
+    ]
+    if not busy:
+        return None
+    if len(busy) == 1:
+        return busy[0]
+    titles = {
+        session["id"]: session["title"] for session in OPENCODE_CLIENT.list_sessions()
+    }
+    user_busy = [sid for sid in busy if not titles.get(sid, "").startswith("job/")]
+    return user_busy[0] if len(user_busy) == 1 else None
+
+
 @catch_errors
 async def core_jobs(
     action: JobAction,
@@ -487,7 +514,8 @@ async def core_jobs(
                 job_id=job_id,
                 store=store,
                 compile_job=compile,
-                initializer_session_id=initializer_session_id,
+                initializer_session_id=initializer_session_id
+                or _infer_initializer_session(),
                 leverage=leverage,
                 agent_mode=agent_mode,
             )
@@ -541,6 +569,8 @@ async def core_jobs(
             agent_wake_seconds=agent_wake_seconds,
             auto_limits=auto_limits,
             execution_contract=execution_contract,
+            initializer_session_id=initializer_session_id
+            or _infer_initializer_session(),
         )
         job_path = store.create_job(job)
         result: dict[str, Any] = {"job": job.to_dict(), "job_yaml": str(job_path)}
