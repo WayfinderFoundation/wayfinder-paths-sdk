@@ -1273,6 +1273,49 @@ _LIFECYCLE_MARKER = "state/lifecycle_pass.json"
 _LIFECYCLE_INTERVAL_S = 6 * 3600
 _CAMPAIGN_FINALIZE_RETRY_S = (0, 5 * 60, 15 * 60, 30 * 60)
 _CAMPAIGN_FINALIZE_GRACE = timedelta(minutes=60)
+# A finalize op still writing output past the grace is extended, not expired:
+# expiry once fired mid-Optuna at exactly the grace boundary and the orphaned
+# finalize ran 8+ hours holding the replication lock. Freshness = op log
+# mtime — the simulator's per-bar progress lines land there continuously
+# during finalize backtests.
+_FINALIZE_LOG_FRESH = timedelta(minutes=10)
+_FINALIZE_EXTEND_MARKER = "state/evolution_finalize_extend.json"
+
+
+def _finalize_op_health(job_dir: Path, now: datetime) -> tuple[int | None, bool]:
+    """(pid, healthy) for the evolution_finalize detached op: healthy means
+    the recorded pid is alive AND the op log was written recently."""
+    ops_dir = job_dir / "state" / "background_ops"
+    try:
+        status = json.loads(
+            (ops_dir / "evolution_finalize.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return None, False
+    pid = status.get("pid") if isinstance(status, dict) else None
+    if not isinstance(pid, int) or not _pid_alive(pid):
+        return pid if isinstance(pid, int) else None, False
+    try:
+        log_age = now.timestamp() - (ops_dir / "evolution_finalize.log").stat().st_mtime
+    except OSError:
+        return pid, False
+    return pid, log_age < _FINALIZE_LOG_FRESH.total_seconds()
+
+
+def _reap_finalize_group(pid: int | None) -> bool:
+    """SIGKILL the finalize op's process group; pgid == pid because
+    spawn_detached_op starts the op with start_new_session=True. Signaling
+    the recorded pid AS a pgid also reaps surviving children when the session
+    leader already exited (os.getpgid would fail there). True when a live
+    group was killed."""
+    if not pid or pid <= 0:
+        return False
+    try:
+        os.killpg(pid, 0)
+        os.killpg(pid, signal.SIGKILL)
+    except OSError:
+        return False
+    return True
 
 
 def _run_evolution_campaign_pass(
@@ -1296,7 +1339,49 @@ def _run_evolution_campaign_pass(
         return None
 
     op = op_status_summary(store.job_dir(job_id), "evolution_finalize")
-    if state.get("status") == "finalizing" and (op or {}).get("status") == "running":
+    past_grace = now - deadline >= _CAMPAIGN_FINALIZE_GRACE
+    if past_grace:
+        # Finalize-aware expiry: a live finalize still writing output past
+        # the grace extends the campaign (journaled once per campaign); a
+        # dead or wedged one is reaped BEFORE the expiry takes the campaign
+        # lock the wedged process itself may be holding.
+        pid, healthy = _finalize_op_health(store.job_dir(job_id), now)
+        if healthy:
+            marker = store.read_json(job_id, _FINALIZE_EXTEND_MARKER) or {}
+            if marker.get("campaign_id") == state.get("campaign_id"):
+                return None
+            store.write_json(
+                job_id,
+                _FINALIZE_EXTEND_MARKER,
+                {
+                    "campaign_id": state.get("campaign_id"),
+                    "pid": pid,
+                    "noted_at": now.isoformat(),
+                },
+            )
+            store.append_journal(
+                job_id,
+                {
+                    "type": "evolution_finalize_still_running",
+                    "campaign_id": state.get("campaign_id"),
+                    "pid": pid,
+                },
+            )
+            return {
+                "action": "evolution_finalize_still_running",
+                "campaign_id": state.get("campaign_id"),
+                "pid": pid,
+            }
+        if _reap_finalize_group(pid):
+            store.append_journal(
+                job_id,
+                {
+                    "type": "evolution_finalize_reaped",
+                    "campaign_id": state.get("campaign_id"),
+                    "pid": pid,
+                },
+            )
+    elif state.get("status") == "finalizing" and (op or {}).get("status") == "running":
         return None
 
     with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
