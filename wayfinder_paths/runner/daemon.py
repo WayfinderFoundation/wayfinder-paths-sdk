@@ -50,10 +50,15 @@ JOB_RESULT_MARKER = "WAYFINDER_JOB_RESULT "
 BURST_CAP_CPU_S = 500.0
 BURST_LOW_WATER_CPU_S = 120.0
 BURST_MAX_POSTPONE_S = 600.0
-# Short starvation floor for trading-adjacent work (paper script ticks, agent
-# wakes, indeterminate-mode jobs) so a drain episode can't hold them for the
-# full BURST_MAX_POSTPONE_S. Env-tunable via WAYFINDER_BURST_SHORT_POSTPONE_S.
+# Short starvation floor for trading-adjacent work (paper script ticks,
+# indeterminate-mode jobs) so a drain episode can't hold them for the full
+# BURST_MAX_POSTPONE_S. Env-tunable via WAYFINDER_BURST_SHORT_POSTPONE_S.
 BURST_SHORT_POSTPONE_S = 120.0
+# Agent wakes are advisory LLM sessions that burn CPU for many minutes — the
+# single worst thing to force-launch on a drained machine. Hold them until
+# the balance recovers, with a long ceiling so a pathological permanent drain
+# still can't starve intervention forever. WAYFINDER_BURST_AGENT_POSTPONE_S.
+BURST_AGENT_POSTPONE_S = 3600.0
 DEFAULT_SYNC_DEBOUNCE_SECONDS = 90.0
 DEFAULT_MAX_RSS_MB = 900.0
 # While a proposal application is applying, the RSS restart exit is deferred
@@ -153,18 +158,23 @@ def _kill_process_group(pid: int, *, sig: int) -> None:
         logger.debug(f"Failed to kill process group {pid}: {exc}")
 
 
-def _burst_short_postpone_s() -> float:
-    raw = os.environ.get("WAYFINDER_BURST_SHORT_POSTPONE_S")
+def _env_postpone_s(env_key: str, default: float) -> float:
+    raw = os.environ.get(env_key)
     if raw is None or not str(raw).strip():
-        return BURST_SHORT_POSTPONE_S
+        return default
     try:
         return float(raw)
     except ValueError:
-        logger.warning(
-            f"Invalid WAYFINDER_BURST_SHORT_POSTPONE_S={raw!r}; "
-            f"using {BURST_SHORT_POSTPONE_S}"
-        )
-        return BURST_SHORT_POSTPONE_S
+        logger.warning(f"Invalid {env_key}={raw!r}; using {default}")
+        return default
+
+
+def _burst_short_postpone_s() -> float:
+    return _env_postpone_s("WAYFINDER_BURST_SHORT_POSTPONE_S", BURST_SHORT_POSTPONE_S)
+
+
+def _burst_agent_postpone_s() -> float:
+    return _env_postpone_s("WAYFINDER_BURST_AGENT_POSTPONE_S", BURST_AGENT_POSTPONE_S)
 
 
 def _burst_postpone_tier(job: Mapping[str, Any]) -> tuple[str, float | None]:
@@ -176,8 +186,11 @@ def _burst_postpone_tier(job: Mapping[str, Any]) -> tuple[str, float | None]:
       (protective closes, kill-review, pair budgets) only run inside the
       tick, and live ticks are warm-forked and cheap — not the drain source.
     - The application watchdog is exempt: it un-sticks paused loops.
-    - Paper ticks, agent wakes, and indeterminate-mode jobs_v1 jobs get the
-      short floor (fail toward trading availability).
+    - Paper ticks and indeterminate-mode jobs_v1 jobs get the short floor
+      (fail toward trading availability).
+    - Agent wakes hold until the balance recovers (long ceiling): they're
+      advisory multi-minute LLM sessions — launching one on a drained
+      machine is the drain, and a skipped wake re-fires on its schedule.
     - Everything else (legacy scripts, strategy jobs, heavy ops) keeps the
       full BURST_MAX_POSTPONE_S floor.
     """
@@ -185,7 +198,7 @@ def _burst_postpone_tier(job: Mapping[str, Any]) -> tuple[str, float | None]:
     if env.get("WAYFINDER_WATCHDOG"):
         return "watchdog-exempt", None
     if env.get("WAYFINDER_JOB_AGENT_MODE"):
-        return "agent-short", _burst_short_postpone_s()
+        return "agent-drain-hold", _burst_agent_postpone_s()
     if env.get("WAYFINDER_JOB_EXECUTION_CONTRACT") == "jobs_v1":
         mode = str(env.get("WAYFINDER_JOB_MODE") or "").strip().lower()
         if mode == "live":
