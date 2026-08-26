@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import json
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -30,7 +32,7 @@ from wayfinder_paths.jobs.starter_casebook import (
     load_starter_casebook,
 )
 from wayfinder_paths.jobs.store import JobStore
-from wayfinder_paths.jobs.worker import _queue_evolution_worker
+from wayfinder_paths.jobs.worker import _queue_evolution_worker, nudge_evolution_session
 
 
 def _job(tmp_path, job_id: str) -> tuple[JobStore, str]:
@@ -442,6 +444,62 @@ def test_jsonl_features_are_frozen_at_the_campaign_cutoff(tmp_path) -> None:
     assert [row["value"] for row in rows] == [0, 1]
 
 
+def test_next_action_pipelines_authoring_against_detached_evaluation(tmp_path) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    working = started.replace(hour=13)
+    prepare_candidate(
+        store, job_id, family="breakout", summary="pipeline probe", now=working
+    )
+
+    block = campaign_prompt_block(store, job_id, now=working)
+    assert block is not None
+    assert "evolution-evaluate" in block["next_action"]
+    assert "evolution-prepare" in block["next_action"]
+    assert "do not wait" in block["next_action"]
+
+    for index in range(2):
+        prepare_candidate(
+            store, job_id, family="breakout", summary=f"queued {index}", now=working
+        )
+    drain = campaign_prompt_block(store, job_id, now=working)
+    assert "evolution-evaluate" in drain["next_action"]
+    assert "evolution-prepare" not in drain["next_action"]
+
+    state = campaign_status(store, job_id)
+    manifest = json.loads(
+        (store.job_dir(job_id) / state["manifest"]).read_text(encoding="utf-8")
+    )
+    budget = int(manifest["policy"]["generated_programs"])
+    for candidate in state["candidates"]:
+        candidate["status"] = "quick_complete"
+    while len(state["candidates"]) < budget:
+        state["candidates"].append({"status": "quick_complete"})
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    done = campaign_prompt_block(store, job_id, now=working)
+    assert (
+        done["next_action"] == "Run evolution-finalize in the isolated background "
+        "worker."
+    )
+
+    # Budget exhausted with a candidate still awaiting evaluation: drain only.
+    state["candidates"][0]["status"] = "prepared"
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    exhausted = campaign_prompt_block(store, job_id, now=working)
+    assert "evolution-evaluate" in exhausted["next_action"]
+    assert "evolution-prepare" not in exhausted["next_action"]
+
+    elapsed = campaign_prompt_block(
+        store, job_id, now=datetime(2026, 8, 25, 16, 30, tzinfo=UTC)
+    )
+    assert (
+        elapsed["next_action"] == "Generation deadline elapsed; run "
+        "evolution-finalize now."
+    )
+    assert elapsed["deadline_elapsed"] is True
+
+
 def test_evolution_uses_a_dedicated_long_lived_session(tmp_path, monkeypatch) -> None:
     store, job_id = _job(tmp_path, "majors-5m-lab")
     store.write_json(
@@ -483,5 +541,114 @@ def test_evolution_uses_a_dedicated_long_lived_session(tmp_path, monkeypatch) ->
     assert result == {"queued": True, "session_id": "evolution-session"}
     assert len(client.prompts) == 1
     assert "immutable 24-hour forward paper proposal" in client.prompts[0][1]
+    assert "do not wait for its result" in client.prompts[0][1]
     session = store.read_json(job_id, "reports/evolution/session.json")
     assert session["session_id"] == "evolution-session"
+
+
+class _FakeEvolutionClient:
+    def __init__(self, job_id: str) -> None:
+        self.job_id = job_id
+        self.prompts: list[tuple[str, str, str]] = []
+
+    def healthy(self) -> bool:
+        return True
+
+    def find_child_session(self, *, parent_id: Any, title: str) -> str:
+        assert title == f"job/{self.job_id}/evolution"
+        return "evolution-session"
+
+    def create_session(self, **kwargs: Any) -> str:
+        raise AssertionError("the stable evolution session should be reused")
+
+    def prompt_async(self, *, session_id: str, text: str, agent: str) -> bool:
+        self.prompts.append((session_id, text, agent))
+        return True
+
+
+def test_op_completion_nudge_reuses_session_and_respects_kill_switch(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    store.write_json(
+        job_id,
+        "state/evolution_campaign.json",
+        {"campaign_id": "campaign-1", "status": "active"},
+    )
+    client = _FakeEvolutionClient(job_id)
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.OPENCODE_CLIENT", client)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.campaign_prompt_block",
+        lambda store, job_id: {
+            "campaign_id": "campaign-1",
+            "next_action": "prepare the next candidate",
+        },
+    )
+
+    result = nudge_evolution_session(store, job_id)
+
+    assert result == {"queued": True, "session_id": "evolution-session"}
+    assert len(client.prompts) == 1
+    session = store.read_json(job_id, "reports/evolution/session.json")
+    assert session["session_id"] == "evolution-session"
+    latest = store.read_json(job_id, "reports/evolution/latest.json")
+    assert latest["source"] == "op_completion"
+    journal = store.job_dir(job_id) / "journal.jsonl"
+    entry = json.loads(journal.read_text(encoding="utf-8").splitlines()[-1])
+    assert entry["type"] == "evolution_worker_wakeup"
+    assert entry["source"] == "op_completion"
+
+    # No nudge without an active campaign.
+    store.write_json(
+        job_id,
+        "state/evolution_campaign.json",
+        {"campaign_id": "campaign-1", "status": "complete"},
+    )
+    assert nudge_evolution_session(store, job_id) is None
+    assert len(client.prompts) == 1
+
+    # Kill-switch disables op-completion nudges entirely.
+    store.write_json(
+        job_id,
+        "state/evolution_campaign.json",
+        {"campaign_id": "campaign-1", "status": "active"},
+    )
+    monkeypatch.setenv("WAYFINDER_EVOLUTION_NUDGE", "0")
+    assert nudge_evolution_session(store, job_id) is None
+    assert len(client.prompts) == 1
+
+
+def test_op_runner_nudges_after_evolution_ops_and_contains_failures(
+    monkeypatch, capsys
+) -> None:
+    from wayfinder_paths.jobs.execution import op_runner
+
+    nudged: list[str] = []
+    monkeypatch.setattr(op_runner, "_lower_priority", lambda: None)
+    monkeypatch.setattr(op_runner, "_run", lambda op, kwargs: {"ok": True})
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.nudge_evolution_session",
+        lambda store, job_id: nudged.append(job_id),
+    )
+
+    def run_main(op: str, kwargs: dict[str, Any]) -> None:
+        monkeypatch.setattr(
+            "sys.stdin", io.StringIO(json.dumps({"op": op, "kwargs": kwargs}))
+        )
+        op_runner.main()
+
+    run_main("evolution_evaluate", {"job_id": "majors-5m-lab", "candidate_id": "c1"})
+    # evolution_start completion nudges too: the first campaign prompt no
+    # longer waits out a full hourly wake interval.
+    run_main("evolution_start", {"job_id": "majors-5m-lab"})
+    run_main("backtest_job", {"job_id": "majors-5m-lab"})
+    assert nudged == ["majors-5m-lab", "majors-5m-lab"]
+
+    def boom(store: Any, job_id: str) -> None:
+        raise RuntimeError("nudge failed")
+
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.nudge_evolution_session", boom)
+    run_main("evolution_evaluate", {"job_id": "majors-5m-lab", "candidate_id": "c1"})
+    # The op result was written all four times; the failed nudge stayed inside
+    # its guard instead of failing the op.
+    assert capsys.readouterr().out.count('{"ok": true}') == 4

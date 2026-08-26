@@ -247,11 +247,35 @@ def _lower_priority() -> None:
         pass
 
 
+_NUDGE_OPS = {"evolution_start", "evolution_evaluate"}
+
+
+def _nudge_evolution(op: str, kwargs: dict[str, Any]) -> None:
+    """Poke the persistent evolution session the moment a campaign op lands,
+    so the agent resumes immediately instead of idling until the next hourly
+    wake. Best-effort: a nudge failure must never fail the op it follows."""
+    if op not in _NUDGE_OPS or not kwargs.get("job_id"):
+        return
+    try:
+        from wayfinder_paths.jobs.store import JobStore
+        from wayfinder_paths.jobs.worker import nudge_evolution_session
+
+        nudge_evolution_session(JobStore(), str(kwargs["job_id"]))
+    except Exception:  # noqa: BLE001 - observability lane only
+        pass
+
+
 def main() -> None:
     _lower_priority()
     request = json.load(sys.stdin)
-    result = _run(request["op"], dict(request.get("kwargs") or {}))
+    op = str(request["op"])
+    kwargs = dict(request.get("kwargs") or {})
+    result = _run(op, dict(kwargs))
     json.dump(result, sys.stdout, default=str)
+    # Flush before nudging: the re-prompted session's campaign block must see
+    # the completed op's result file, not a half-written one.
+    sys.stdout.flush()
+    _nudge_evolution(op, kwargs)
 
 
 if __name__ == "__main__":

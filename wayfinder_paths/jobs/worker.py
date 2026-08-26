@@ -1637,6 +1637,37 @@ def _queue_evolution_worker(store: JobStore, job_id: str) -> dict[str, Any] | No
         return {"queued": False, "error": str(exc)[:300]}
     if not campaign or campaign.get("status") == "blocked":
         return None
+    return _prompt_evolution_session(store, job_id, campaign, source="wake")
+
+
+def nudge_evolution_session(store: JobStore, job_id: str) -> dict[str, Any] | None:
+    """Re-prompt the persistent evolution session as soon as a detached
+    campaign op (start/evaluate) lands, instead of leaving the fresh state
+    idle until the next hourly wake. Best-effort: callers must tolerate None.
+    """
+    if os.environ.get("WAYFINDER_EVOLUTION_NUDGE") == "0":
+        return None
+    if not OPENCODE_CLIENT.healthy():
+        return None
+    try:
+        from wayfinder_paths.jobs.evolution_campaign import (
+            campaign_prompt_block,
+            campaign_status,
+        )
+
+        if campaign_status(store, job_id).get("status") != "active":
+            return None
+        campaign = campaign_prompt_block(store, job_id)
+    except Exception as exc:  # noqa: BLE001 - a nudge must never fail its op
+        return {"queued": False, "error": str(exc)[:300]}
+    if not campaign or campaign.get("status") == "blocked":
+        return None
+    return _prompt_evolution_session(store, job_id, campaign, source="op_completion")
+
+
+def _prompt_evolution_session(
+    store: JobStore, job_id: str, campaign: dict[str, Any], *, source: str
+) -> dict[str, Any] | None:
     controller_session_id = os.environ.get("OPENCODE_SESSION_ID") or os.environ.get(
         "OPENCODE_SESSIONID"
     )
@@ -1660,7 +1691,10 @@ def _queue_evolution_worker(store: JobStore, job_id: str) -> dict[str, Any] | No
         "active workspace. Candidate inputs are frozen at campaign start. A finalist "
         "is only staged for an immutable 24-hour forward paper proposal; it cannot "
         "authorize live trading or bypass owner promotion. Reuse the repository's "
-        "research toolkit and starter casebook instead of recreating indicators.\n\n"
+        "research toolkit and starter casebook instead of recreating indicators. "
+        "After launching an evolution-evaluate, do not wait for its result — keep "
+        "preparing candidates until the generation budget or the deadline is "
+        "reached; evaluation results arrive via follow-up prompts.\n\n"
         "Campaign:\n" + _canonical_json(campaign, max_chars=12_000)
     )
     queued = OPENCODE_CLIENT.prompt_async(
@@ -1686,6 +1720,7 @@ def _queue_evolution_worker(store: JobStore, job_id: str) -> dict[str, Any] | No
             else "Dedicated evolution wake could not be queued",
             "session_id": session_id,
             "queued": queued,
+            "source": source,
             "created_at": created_at,
         },
     )
@@ -1696,6 +1731,7 @@ def _queue_evolution_worker(store: JobStore, job_id: str) -> dict[str, Any] | No
             "campaign_id": campaign.get("campaign_id"),
             "session_id": session_id,
             "queued": queued,
+            "source": source,
         },
     )
     return {"queued": queued, "session_id": session_id}
