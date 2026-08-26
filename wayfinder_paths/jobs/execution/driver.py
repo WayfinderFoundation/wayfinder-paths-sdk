@@ -31,6 +31,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     ExecutionTrace,
     StateSnapshot,
     bar_interval_seconds,
+    resolve_compute_window,
 )
 from wayfinder_paths.jobs.execution.protection import monitor_native_protection
 from wayfinder_paths.jobs.execution.risk import RISK_STATE_PATH, check_risk_halt
@@ -306,7 +307,10 @@ async def tick_job(
         }
     brokers = {name: adapter.broker for name, adapter in adapters.items()}
 
-    lookback_bars = int(params.get("lookback_bars") or 200)
+    # One window contract with the backtest simulator: a declared warmup_bars
+    # (or legacy lookback_bars) sizes the live fetch exactly like the replay
+    # slice, so decide() sees the same bounded history in both.
+    lookback_bars = resolve_compute_window(params, strategy).live_depth
     rows: list[dict[str, Any]] = []
     for adapter in adapters.values():
         view = await adapter.feed.get_completed_bars(

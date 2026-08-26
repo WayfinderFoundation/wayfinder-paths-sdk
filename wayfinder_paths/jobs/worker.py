@@ -1694,7 +1694,10 @@ def _prompt_evolution_session(
         "research toolkit and starter casebook instead of recreating indicators. "
         "After launching an evolution-evaluate, do not wait for its result — keep "
         "preparing candidates until the generation budget or the deadline is "
-        "reached; evaluation results arrive via follow-up prompts.\n\n"
+        "reached; evaluation results arrive via follow-up prompts. Declare "
+        "execution_params.warmup_bars covering your longest indicator lookback "
+        "plus buffer; recompute from that bounded window or carry state "
+        "incrementally — never recompute over full history.\n\n"
         "Campaign:\n" + _canonical_json(campaign, max_chars=12_000)
     )
     queued = OPENCODE_CLIENT.prompt_async(

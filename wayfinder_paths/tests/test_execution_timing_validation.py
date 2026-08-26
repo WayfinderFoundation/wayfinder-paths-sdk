@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
+import types
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
-from wayfinder_paths.jobs.execution import ExecutionSpec
+from wayfinder_paths.jobs.execution import ExecutionSpec, OrderIntent
 from wayfinder_paths.jobs.execution.simulator import (
     PreparedExecutionDataset,
     run_execution_grid,
@@ -469,3 +471,136 @@ def test_live_mode_blocks_without_wallet_label() -> None:
     assert _live_wallet_checks(paper) == []
     legacy = {"execution_contract": "legacy", "script_loop": {"mode": "live"}}
     assert _live_wallet_checks(legacy) == []
+
+
+def _build_windowed_strategy(params: dict[str, Any]) -> Any:
+    """Reads only the trailing 10 closes — window-invariant by construction."""
+
+    def decide(ctx: Any) -> list[OrderIntent]:
+        closes = ctx.view.symbol_frame("SNX")["close"].astype(float)
+        if len(closes) < 10:
+            return []
+        last = float(closes.iloc[-1])
+        if last > float(closes.iloc[-10:].mean()):
+            return [
+                OrderIntent(
+                    action="OPEN",
+                    venue="hyperliquid",
+                    symbol="SNX",
+                    side="long",
+                    size=1.0,
+                    bracket={"stop_loss": last * 0.95, "take_profit": last * 1.05},
+                )
+            ]
+        return []
+
+    return types.SimpleNamespace(decide=decide)
+
+
+def _build_full_frame_strategy(params: dict[str, Any]) -> Any:
+    """Sizes off the mean of EVERYTHING handed — the parity trap: its
+    decisions depend on how deep the harness's view happens to be."""
+
+    def decide(ctx: Any) -> list[OrderIntent]:
+        closes = ctx.view.symbol_frame("SNX")["close"].astype(float)
+        return [
+            OrderIntent(
+                action="OPEN",
+                venue="hyperliquid",
+                symbol="SNX",
+                side="long",
+                notional=float(closes.mean()),
+            )
+        ]
+
+    return types.SimpleNamespace(decide=decide)
+
+
+_PROBE_SPEC = {
+    "market_kind": "perp",
+    "data_contract": {"bar_interval": "5m", "symbols": ["SNX"]},
+}
+
+
+def test_window_invariance_probe_passes_window_respecting_strategy() -> None:
+    from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+    from wayfinder_paths.jobs.execution.validation import window_invariance_probe
+
+    bars = CompletedBarsView.from_rows(_bars(140))
+    result = window_invariance_probe(
+        _build_windowed_strategy, bars, _PROBE_SPEC, {"warmup_bars": 30}
+    )
+    assert result["status"] == "passed"
+    assert result["window"] == 30
+    assert result["bars_probed"] >= 2
+
+    # Undeclared windows have nothing to prove — the probe skips.
+    skipped = window_invariance_probe(_build_windowed_strategy, bars, _PROBE_SPEC, {})
+    assert skipped["status"] == "skipped"
+
+
+def test_window_invariance_probe_reds_full_frame_recompute() -> None:
+    from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+    from wayfinder_paths.jobs.execution.validation import window_invariance_probe
+
+    bars = CompletedBarsView.from_rows(_bars(140))
+    result = window_invariance_probe(
+        _build_full_frame_strategy, bars, _PROBE_SPEC, {"warmup_bars": 30}
+    )
+    assert result["status"] == "failed"
+    assert result["window"] == 30
+    assert result["bar"]  # the differing bar is named
+    assert result["base_intents"] != result["wide_intents"]
+
+
+def test_window_invariance_check_reds_validation_with_hint(tmp_path: Path) -> None:
+    """The validate_execution_job check: a declared-window job whose decide()
+    reads beyond the window goes RED (blocking) with the differing bar and the
+    bounded-window hint; a window-respecting job passes; undeclared jobs are
+    exempt."""
+    from wayfinder_paths.jobs.execution.validation import (
+        BOUNDED_WINDOW_HINT,
+        _window_invariance_checks,
+    )
+
+    root = tmp_path / "job"
+    bars_path = root / "results" / "backtest" / "input_bars.json"
+    bars_path.parent.mkdir(parents=True, exist_ok=True)
+    bars_path.write_text(json.dumps({"bars": _bars(140)}), encoding="utf-8")
+    script = root / "workspace" / "src" / "strategy.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "def decide(ctx):\n"
+        "    closes = ctx.view.symbol_frame('SNX')['close'].astype(float)\n"
+        "    return [{'action': 'OPEN', 'venue': 'hyperliquid', 'symbol': 'SNX',\n"
+        "             'side': 'long', 'notional': float(closes.mean())}]\n",
+        encoding="utf-8",
+    )
+    spec = ExecutionSpec.coerce(_PROBE_SPEC)
+    job_data = {"execution_params": {"warmup_bars": 30, "symbols": ["SNX"]}}
+
+    checks = _window_invariance_checks(root, script, job_data, spec)
+    assert len(checks) == 1
+    check = checks[0]
+    assert check["name"] == "window_invariance"
+    assert check["passed"] is False
+    assert check.get("blocking") is not False  # RED, not advisory
+    assert check["details"]["bar"] in check["error"]
+    assert BOUNDED_WINDOW_HINT in check["error"]
+
+    script.write_text(
+        "def decide(ctx):\n"
+        "    closes = ctx.view.symbol_frame('SNX')['close'].astype(float)\n"
+        "    if len(closes) < 10:\n"
+        "        return []\n"
+        "    if float(closes.iloc[-1]) > float(closes.iloc[-10:].mean()):\n"
+        "        return [{'action': 'OPEN', 'venue': 'hyperliquid',\n"
+        "                 'symbol': 'SNX', 'side': 'long', 'size': 1.0}]\n"
+        "    return []\n",
+        encoding="utf-8",
+    )
+    passing = _window_invariance_checks(root, script, job_data, spec)
+    assert len(passing) == 1 and passing[0]["passed"] is True
+
+    # No declared window ⇒ no check (the simulator warns instead).
+    assert _window_invariance_checks(root, script, {"execution_params": {}}, spec) == []

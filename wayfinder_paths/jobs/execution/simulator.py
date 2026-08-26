@@ -24,10 +24,16 @@ from wayfinder_paths.jobs.execution.engine import (
 )
 from wayfinder_paths.jobs.execution.features import apply_precompute
 from wayfinder_paths.jobs.execution.gates import summarize_gate_diagnostics
+
+# DEFAULT_WARMUP_BARS is re-exported under its own name: the compute-window
+# contract moved to primitives (ONE resolution shared by this simulator, the
+# live driver, and the candidate shadow replayer) but existing callers import
+# it from here.
 from wayfinder_paths.jobs.execution.primitives import (
     DEFAULT_INITIAL_CAPITAL,
     REDUCE_ONLY_ACTIONS,
     CompletedBarsView,
+    ComputeWindow,
     ExecutionSpec,
     ExecutionTrace,
     FillEvent,
@@ -37,6 +43,10 @@ from wayfinder_paths.jobs.execution.primitives import (
     TradeCapacity,
     _load_module_from_path,
     bar_interval_seconds,
+    resolve_compute_window,
+)
+from wayfinder_paths.jobs.execution.primitives import (
+    DEFAULT_WARMUP_BARS as DEFAULT_WARMUP_BARS,
 )
 from wayfinder_paths.jobs.execution.validation import validate_execution_trace
 from wayfinder_paths.jobs.execution.venues import (
@@ -290,44 +300,6 @@ def _resolve_maker_fee_bps(
     return _DEFAULT_MAKER_FEE_BPS.get(venue, 0.0)
 
 
-# Default per-bar compute window. Bounding the view the simulator hands each
-# tick keeps the DEFAULT backtest O(N·k) instead of O(N²): a strategy that
-# recomputes indicators over the whole handed frame goes quadratic when that
-# frame grows with the replay index (the classic "simple backtest pegs the
-# CPU" trap). 512 bars covers the lookback of essentially every standard
-# indicator (SMA200, ATR/ADX, long EMAs) with margin. Strategies tune it via
-# `warmup_bars`; genuine since-genesis strategies opt out with
-# `full_history: true`.
-DEFAULT_WARMUP_BARS = 512
-
-
-def _resolve_compute_window(
-    params_data: Mapping[str, Any], strategy: Any
-) -> tuple[int | None, str, bool]:
-    """Size of the trailing view handed to `decide()` each bar.
-
-    Resolution (first hit wins):
-      1. ``params['warmup_bars']``  — explicit, canonical name.
-      2. ``params['lookback_bars']`` — back-compat with the old windowing lever.
-      3. ``strategy.warmup_bars``   — strategy-declared attribute.
-      4. ``DEFAULT_WARMUP_BARS``.
-    ``params['full_history']`` truthy opts back into full-history views.
-
-    Returns ``(window_size | None, source, full_history)``; ``None`` window ⇒
-    full history (``through(index)``).
-    """
-    if params_data.get("full_history"):
-        return None, "full_history", True
-    for key in ("warmup_bars", "lookback_bars"):
-        raw = params_data.get(key)
-        if raw:
-            return max(int(raw), 1), key, False
-    attr = getattr(strategy, "warmup_bars", None)
-    if attr:
-        return max(int(attr), 1), "strategy.warmup_bars", False
-    return DEFAULT_WARMUP_BARS, "default", False
-
-
 def _percentile(values: list[float], pct: float) -> float:
     if not values:
         return 0.0
@@ -378,9 +350,7 @@ def _build_profile(
     tick_ms: list[float],
     wall_start: float,
     total_bars: int,
-    window_size: int | None,
-    window_source: str,
-    full_history: bool,
+    window: ComputeWindow,
 ) -> dict[str, Any]:
     wall_s = time.perf_counter() - wall_start
     timed = len(tick_ms)
@@ -398,8 +368,8 @@ def _build_profile(
             "max": round(max(tick_ms), 2) if tick_ms else 0.0,
             "last": round(tick_ms[-1], 2) if tick_ms else 0.0,
         },
-        "compute_window": "full_history" if full_history else window_size,
-        "compute_window_source": window_source,
+        "compute_window": "full_history" if window.full_history else window.size,
+        "compute_window_source": window.source,
         "tick_time_growing": growing,
     }
     # Most "why is this backtest so slow" cases are a heavy full recompute in
@@ -473,12 +443,11 @@ def simulate_execution(
     )
     # None unless params["enable_liquidation"] is truthy — default-off parity.
     liquidation = LiquidationConfig.from_params(params_data)
-    # Each tick sees a bounded trailing window (the same the live driver
-    # fetches) so per-tick strategy recompute stays O(k), not O(index). This
-    # is now the DEFAULT — full history is opt-in via `full_history: true`.
-    window_size, window_source, full_history = _resolve_compute_window(
-        params_data, strategy
-    )
+    # Each tick sees a bounded trailing window — resolved by the SAME
+    # function that sizes the live driver's fetch and the shadow replayer's
+    # slice, so backtest inputs ≡ forward inputs by construction. Full
+    # history is opt-in via `full_history: true`.
+    window = resolve_compute_window(params_data, strategy)
 
     total_bars = len(dataset.bars.timestamps)
     progress_every = max(1, total_bars // 20)
@@ -521,11 +490,7 @@ def simulate_execution(
             tick_start = time.perf_counter()
             tick = await run_tick(
                 strategy,
-                view=(
-                    dataset.bars.through(index)
-                    if full_history
-                    else dataset.bars.window(index, window_size)
-                ),
+                view=window.slice_view(dataset.bars, index),
                 brokers={"*": broker},
                 state=state,
                 spec=spec,
@@ -569,7 +534,21 @@ def simulate_execution(
         )
     asyncio.run(_run_simulation())
 
+    profile = _build_profile(
+        tick_ms=tick_ms,
+        wall_start=wall_start,
+        total_bars=total_bars,
+        window=window,
+    )
     validation = validate_execution_trace(trace.to_dict(), spec)
+    if window.source == "default" and profile.get("hint"):
+        # The default cap already bounds the run, but the strategy never told
+        # backtest and live what history it needs — surface the profiler's
+        # diagnosis where agents actually look (validation warnings).
+        validation["warnings"].append(
+            "no declared compute window (set execution_params.warmup_bars): "
+            + str(profile["hint"])
+        )
     stats = _stats(
         equity_curve,
         trades,
@@ -605,14 +584,6 @@ def simulate_execution(
         "params": params_data,
         "validation": validation,
     }
-    profile = _build_profile(
-        tick_ms=tick_ms,
-        wall_start=wall_start,
-        total_bars=total_bars,
-        window_size=window_size,
-        window_source=window_source,
-        full_history=full_history,
-    )
     return ExecutionBacktestResult(
         run_id=uuid.uuid4().hex[:12],
         params=params_data,

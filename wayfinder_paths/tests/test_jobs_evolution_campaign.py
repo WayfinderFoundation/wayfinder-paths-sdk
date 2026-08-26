@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import io
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+import yaml
 
 from wayfinder_paths.jobs.archive import (
     behavior_cell,
@@ -19,6 +20,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     campaign_due,
     campaign_prompt_block,
     campaign_status,
+    evaluate_candidate,
     evolution_compute_window_open,
     finalize_campaign,
     maybe_start_campaign,
@@ -26,10 +28,13 @@ from wayfinder_paths.jobs.evolution_campaign import (
     resolve_candidate_bundle,
     start_campaign,
 )
+from wayfinder_paths.jobs.execution.primitives import DEFAULT_WARMUP_BARS
+from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.starter_casebook import (
     MAX_PROMPT_CASES,
     load_starter_casebook,
+    select_starter_cases,
 )
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.worker import _queue_evolution_worker, nudge_evolution_session
@@ -616,6 +621,175 @@ def test_op_completion_nudge_reuses_session_and_respects_kill_switch(
     monkeypatch.setenv("WAYFINDER_EVOLUTION_NUDGE", "0")
     assert nudge_evolution_session(store, job_id) is None
     assert len(client.prompts) == 1
+
+
+_EVAL_SPEC = {
+    "market_kind": "perp",
+    "data_contract": {"bar_interval": "1h", "symbols": ["IMX"]},
+}
+
+
+def _hourly_bars(count: int) -> list[dict[str, Any]]:
+    rows = []
+    for index in range(count):
+        price = 10.0 + index * 0.05
+        stamp = datetime(2026, 8, 1, tzinfo=UTC) + timedelta(hours=index)
+        rows.append(
+            {
+                "timestamp": stamp.isoformat(),
+                "symbol": "IMX",
+                "open": price,
+                "high": price * 1.01,
+                "low": price * 0.99,
+                "close": price,
+                "volume": 100.0,
+            }
+        )
+    return rows
+
+
+def _evaluatable_job(
+    tmp_path: Any, *, source_params: dict[str, Any] | None = None
+) -> tuple[JobStore, str]:
+    """Like _job but with a real spec, runnable strategy, and enough bars for
+    the low-fidelity screen — so evaluate_candidate runs end to end."""
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "majors-5m-lab",
+        name="Majors momentum lab",
+        goal="find robust momentum and factor strategies",
+        script="workspace/src/strategy.py",
+        agent_mode="intervene",
+        execution_contract="jobs_v1",
+        interval_seconds=3600,
+    )
+    job.execution_spec = dict(_EVAL_SPEC)
+    job.execution_params = {
+        "symbols": ["IMX"],
+        "initial_capital": 1_000.0,
+        **(source_params or {}),
+    }
+    store.save(job)
+    root = store.job_dir(job.id)
+    script = root / "workspace" / "src" / "strategy.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("def decide(ctx):\n    return []\n", encoding="utf-8")
+    bars = root / "results" / "backtest" / "input_bars.json"
+    bars.parent.mkdir(parents=True, exist_ok=True)
+    bars.write_text(
+        json.dumps({"metadata": {"days": 120}, "bars": _hourly_bars(60)}),
+        encoding="utf-8",
+    )
+    return store, job.id
+
+
+def _read_bundle_params(store: JobStore, job_id: str, bundle: str) -> dict[str, Any]:
+    data = yaml.safe_load(
+        (store.job_dir(job_id) / bundle / "job.yaml").read_text(encoding="utf-8")
+    )
+    return dict(data["execution_params"])
+
+
+def test_prepare_candidate_seeds_declared_window(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path / "default")
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="seed default",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    params = _read_bundle_params(store, job_id, candidate["bundle"])
+    assert params["warmup_bars"] == DEFAULT_WARMUP_BARS
+    assert candidate["warmup_bars"] == DEFAULT_WARMUP_BARS
+    # The frozen source was seeded identically, so an UNEDITED candidate still
+    # matches the baseline revision (the identical-to-source guard holds).
+    state = campaign_status(store, job_id)
+    manifest = json.loads(
+        (store.job_dir(job_id) / state["manifest"]).read_text(encoding="utf-8")
+    )
+    bundle_root = store.job_dir(job_id) / candidate["bundle"]
+    assert (
+        compute_workspace_revision(bundle_root)
+        == manifest["source_bundle"]["revision"]
+    )
+
+    # A source that already declared a window (legacy lookback_bars) is
+    # inherited, never overwritten with the default.
+    inherit_store, inherit_id = _evaluatable_job(
+        tmp_path / "inherit", source_params={"lookback_bars": 48}
+    )
+    start_campaign(inherit_store, inherit_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    inherited = prepare_candidate(
+        inherit_store,
+        inherit_id,
+        family="breakout",
+        summary="seed inherited",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    params = _read_bundle_params(inherit_store, inherit_id, inherited["bundle"])
+    assert params["warmup_bars"] == 48
+
+
+def test_evaluate_rejects_undeclared_window_candidate(tmp_path) -> None:
+    """A candidate that dodges the bounded-window contract (full_history)
+    is invalid with the bounded-window hint as the reason."""
+    store, job_id = _evaluatable_job(tmp_path)
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="undeclared window",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    bundle = store.job_dir(job_id) / candidate["bundle"]
+    data = yaml.safe_load((bundle / "job.yaml").read_text(encoding="utf-8"))
+    data["execution_params"].pop("warmup_bars")
+    data["execution_params"]["full_history"] = True
+    data["execution_params"]["lookback_bars"] = 20
+    (bundle / "job.yaml").write_text(
+        yaml.safe_dump(data, sort_keys=False), encoding="utf-8"
+    )
+
+    result = evaluate_candidate(store, job_id, candidate["candidate_id"])
+
+    assert result["status"] == "invalid"
+    evidence = json.dumps(result["evidence"])
+    assert "warmup_bars" in evidence
+    assert "cannot exist in production" in evidence
+
+
+def test_evaluate_accepts_seeded_candidate(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="seeded and edited",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    script = (
+        store.job_dir(job_id) / candidate["bundle"] / "workspace" / "src" / "strategy.py"
+    )
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\nSTRUCTURAL_PROBE = True\n",
+        encoding="utf-8",
+    )
+
+    result = evaluate_candidate(store, job_id, candidate["candidate_id"])
+
+    assert result["status"] == "quick_complete", result.get("evidence")
+
+
+def test_casebook_includes_bounded_window_parity_case() -> None:
+    cases = {case["id"] for case in load_starter_casebook()}
+    assert "bounded-window-parity" in cases
+    selected = select_starter_cases({"warmup", "performance"})
+    assert len(selected) <= MAX_PROMPT_CASES
+    assert any(case["id"] == "bounded-window-parity" for case in selected)
 
 
 def test_op_runner_nudges_after_evolution_ops_and_contains_failures(

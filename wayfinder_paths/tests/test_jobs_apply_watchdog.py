@@ -1061,3 +1061,132 @@ def test_watchdog_mechanically_finalizes_then_expires_campaign(
     assert store.read_json(job.id, "state/evolution_campaign.json")["status"] == (
         "expired"
     )
+
+
+def _journal_types(store: JobStore, job_id: str) -> list[str]:
+    path = store.job_dir(job_id) / "journal.jsonl"
+    if not path.exists():
+        return []
+    return [
+        str(json.loads(line).get("type"))
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _finalizing_campaign(
+    store: JobStore, job_id: str, deadline: datetime, *, pid: int
+) -> Path:
+    store.write_json(
+        job_id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "finalizing",
+            "stage": "finalizing",
+            "deadline_at": deadline.isoformat(),
+            "finalize_attempts": 1,
+            "finalize_last_attempt_at": deadline.isoformat(),
+        },
+    )
+    ops = store.job_dir(job_id) / "state" / "background_ops"
+    ops.mkdir(parents=True, exist_ok=True)
+    (ops / "evolution_finalize.json").write_text(
+        json.dumps(
+            {
+                "op": "evolution_finalize",
+                "job_id": job_id,
+                "state": "running",
+                "pid": pid,
+            }
+        ),
+        encoding="utf-8",
+    )
+    log = ops / "evolution_finalize.log"
+    log.write_text("[backtest] bar 100/27648 · 12 bars/s\n", encoding="utf-8")
+    return log
+
+
+def test_watchdog_extends_grace_while_finalize_is_healthy(tmp_path: Path) -> None:
+    """A live finalize with a fresh log past the grace is EXTENDED, not
+    expired — expiry once fired mid-Optuna and the orphan ran 8+ hours
+    holding the replication lock. The still-running journal is deduped to
+    once per campaign."""
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-healthy")
+    deadline = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    log = _finalizing_campaign(store, job.id, deadline, pid=os.getpid())
+    now = deadline + timedelta(minutes=61)
+    os.utime(log, (now.timestamp() - 60, now.timestamp() - 60))
+
+    first = _run_evolution_campaign_pass(store, job.id, now)
+
+    assert first == {
+        "action": "evolution_finalize_still_running",
+        "campaign_id": "campaign-1",
+        "pid": os.getpid(),
+    }
+    state = store.read_json(job.id, "state/evolution_campaign.json")
+    assert state["status"] == "finalizing"  # extended, not expired
+
+    later = now + timedelta(minutes=5)
+    os.utime(log, (later.timestamp() - 60, later.timestamp() - 60))
+    assert _run_evolution_campaign_pass(store, job.id, later) is None
+    assert _journal_types(store, job.id).count("evolution_finalize_still_running") == 1
+
+
+def test_watchdog_reaps_stale_live_finalize_on_expiry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live pid whose log went stale is wedged: the watchdog SIGKILLs the
+    op's process group (pgid == pid via start_new_session) BEFORE expiring,
+    and journals the reap with the pid."""
+    import signal
+
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-wedged")
+    deadline = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    log = _finalizing_campaign(store, job.id, deadline, pid=os.getpid())
+    now = deadline + timedelta(minutes=61)
+    stale = now.timestamp() - 20 * 60
+    os.utime(log, (stale, stale))
+    killed: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.watchdog.os.killpg",
+        lambda pid, sig: killed.append((pid, sig)),
+    )
+
+    expired = _run_evolution_campaign_pass(store, job.id, now)
+
+    assert expired["action"] == "evolution_campaign_expired"
+    assert killed == [(os.getpid(), 0), (os.getpid(), signal.SIGKILL)]
+    assert store.read_json(job.id, "state/evolution_campaign.json")["status"] == (
+        "expired"
+    )
+    types = _journal_types(store, job.id)
+    assert "evolution_finalize_reaped" in types
+    assert "evolution_campaign_expired" in types
+
+
+def test_watchdog_expires_dead_finalize_without_reap(tmp_path: Path) -> None:
+    """A dead finalize pid past the grace expires exactly as before — no
+    process group to reap, no reap journal."""
+    import subprocess
+    import sys
+
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-dead")
+    deadline = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    _finalizing_campaign(store, job.id, deadline, pid=proc.pid)
+
+    expired = _run_evolution_campaign_pass(
+        store, job.id, deadline + timedelta(minutes=61)
+    )
+
+    assert expired["action"] == "evolution_campaign_expired"
+    assert store.read_json(job.id, "state/evolution_campaign.json")["status"] == (
+        "expired"
+    )
+    assert "evolution_finalize_reaped" not in _journal_types(store, job.id)
