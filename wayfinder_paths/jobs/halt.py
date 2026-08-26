@@ -113,8 +113,33 @@ def clear_halt(store: JobStore, job_id: str, *, by: str) -> dict[str, Any]:
         path.unlink()
     if existing is not None:
         store.append_journal(job_id, {"type": "halt_cleared", "by": by})
+        if "pause_after_consecutive_losses" in str(existing.get("reason") or ""):
+            # Clearing a loss-streak halt must reset the streak counter, or
+            # the clear is a no-op treadmill: the very next tick re-reads the
+            # stale count, re-latches before any trade can run, and a win
+            # (the only organic reset) can never happen under reduce-only.
+            # The owner's clear IS the acknowledgement of those losses.
+            _reset_loss_streak(store, job_id, by=by)
         store.refresh_scorecard(
             job_id,
             {"live_execution_status": existing.get("prior_live_execution_status")},
         )
     return {"cleared": existing is not None, "previous": existing}
+
+
+def _reset_loss_streak(store: JobStore, job_id: str, *, by: str) -> None:
+    from wayfinder_paths.jobs.models import DEFAULT_FORWARD_SUMMARY
+
+    summary = store.read_json(job_id, DEFAULT_FORWARD_SUMMARY, default=None)
+    trades = (summary or {}).get("trades")
+    if not isinstance(trades, dict):
+        return
+    previous = int(trades.get("current_loss_streak") or 0)
+    if previous == 0:
+        return
+    trades["current_loss_streak"] = 0
+    store.write_json(job_id, DEFAULT_FORWARD_SUMMARY, summary)
+    store.append_journal(
+        job_id,
+        {"type": "loss_streak_reset", "by": by, "from": previous},
+    )
