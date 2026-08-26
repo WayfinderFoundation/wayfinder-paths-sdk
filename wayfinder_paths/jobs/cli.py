@@ -70,6 +70,7 @@ from wayfinder_paths.jobs.lifecycle import lifecycle_sweep
 from wayfinder_paths.jobs.models import (
     AgentMode,
     WayfinderJob,
+    default_wake_seconds,
     infer_job_kind,
     normalize_agent_mode,
 )
@@ -1703,6 +1704,14 @@ def agent_set_mode_cmd(job_id: str, mode: AgentMode, wake_seconds: int | None) -
     job.job_kind = infer_job_kind(job.script_loop.enabled, normalized_mode)
     if wake_seconds is not None:
         job.agent_loop.wake_interval_seconds = wake_seconds
+    elif (
+        job.agent_loop.enabled
+        and not job.agent_loop.wake_interval_seconds
+        and not job.agent_loop.cron_expr
+    ):
+        # Jobs created with mode off carry wake_interval_seconds=null; an
+        # enabled loop with no schedule crashes the recompile below.
+        job.agent_loop.wake_interval_seconds = default_wake_seconds(normalized_mode)
     store.save(job)
     # Journal the operator's selection so a later revert (e.g. a stale
     # candidate promotion) is diagnosable from the job dir alone.
