@@ -826,3 +826,27 @@ def test_op_runner_nudges_after_evolution_ops_and_contains_failures(
     # The op result was written all four times; the failed nudge stayed inside
     # its guard instead of failing the op.
     assert capsys.readouterr().out.count('{"ok": true}') == 4
+
+
+def test_cli_evolution_start_nudges_the_session(monkeypatch, tmp_path) -> None:
+    """An inline CLI force-start must nudge the evolution session itself —
+    it never passes through the op runner whose completion hook nudges."""
+    from click.testing import CliRunner
+
+    from wayfinder_paths.jobs import cli as cli_module
+
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        cli_module, "start_campaign", lambda store, job_id, force: {"status": "active"}
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "nudge_evolution_session",
+        lambda store, job_id: calls.append(("nudge", job_id)) or {"queued": True},
+    )
+    outcome = CliRunner().invoke(
+        cli_module.job_cli, ["evolution-start", "job-nudge-demo", "--force"]
+    )
+    assert outcome.exit_code == 0, outcome.output
+    assert calls == [("nudge", "job-nudge-demo")]
+    assert '"queued": true' in outcome.output

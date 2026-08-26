@@ -104,7 +104,7 @@ from wayfinder_paths.jobs.sync import (
     venue_withdraw,
 )
 from wayfinder_paths.jobs.universe import universe_scan_job
-from wayfinder_paths.jobs.worker import run_job_worker
+from wayfinder_paths.jobs.worker import nudge_evolution_session, run_job_worker
 
 
 def _echo_json(data: Any) -> None:
@@ -1145,11 +1145,15 @@ def robustness_check_cmd(
 @click.argument("job_id")
 @click.option("--force", is_flag=True, help="Replace cooldown/completed state.")
 def evolution_start_cmd(job_id: str, force: bool) -> None:
+    store = JobStore()
     try:
-        result = start_campaign(JobStore(), job_id, force=force)
+        result = start_campaign(store, job_id, force=force)
     except (FileNotFoundError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
-    _echo_json({"ok": True, "result": result})
+    # The op-runner path nudges on op completion; an inline CLI start must
+    # nudge itself or the fresh campaign idles until the next hourly wake.
+    nudge = nudge_evolution_session(store, job_id)
+    _echo_json({"ok": True, "result": result, "nudge": nudge})
 
 
 @job_cli.command(name="evolution-status", help="Show the current evolution campaign.")
