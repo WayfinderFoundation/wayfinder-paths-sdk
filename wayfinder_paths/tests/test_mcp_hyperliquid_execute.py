@@ -1118,10 +1118,9 @@ async def test_trigger_order_rejects_off_grid_price_by_default():
 
 
 @pytest.mark.asyncio
-async def test_trigger_order_aligns_to_grid_when_caller_opts_in():
-    """Engine stops are entry × stop-multiple products (never tick-aligned);
-    with align_price_to_grid=True the stop is floored and PLACED — the old
-    reject left positions unprotected and halted live jobs."""
+async def test_trigger_order_places_grid_aligned_price():
+    """A grid-aligned resubmission (what the strict error asks for) goes
+    straight through."""
     fake = _OffGridTriggerFake()
     p1, p2 = _patched_trigger_adapter(fake)
     with p1, p2:
@@ -1129,10 +1128,9 @@ async def test_trigger_order_aligns_to_grid_when_caller_opts_in():
             wallet_label="main",
             asset_name="BTC-USDC",
             tpsl="sl",
-            trigger_price=67258.8,
+            trigger_price=67258.0,
             is_buy=False,
             size=0.01,
-            align_price_to_grid=True,
         )
 
     assert out["ok"] is True, out

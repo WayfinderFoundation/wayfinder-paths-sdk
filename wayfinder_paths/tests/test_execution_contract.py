@@ -417,6 +417,29 @@ async def test_trade_capacity_accepts_mcp_result_shape(monkeypatch) -> None:
     assert capacity.max_notional == 25
 
 
+class _GridAdapter:
+    """Floors 67258.8 to the 5-sig-fig grid; passes aligned prices through."""
+
+    def get_valid_order_price(self, _asset_id: int, price: float) -> float:
+        return 67258.0 if abs(float(price) - 67258.8) < 1e-9 else float(price)
+
+
+def _patch_engine_price_alignment(monkeypatch) -> None:
+    async def fake_make(_label):
+        return _GridAdapter(), "0xfeed"
+
+    async def fake_resolve(_adapter, _symbol):
+        return 0, "perp"
+
+    monkeypatch.setattr(
+        "wayfinder_paths.mcp.tools.hyperliquid._make_hl_adapter", fake_make
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.mcp.tools.hyperliquid._resolve_asset", fake_resolve
+    )
+
+
+
 @pytest.mark.asyncio
 async def test_hyperliquid_trigger_order_passes_cloid(monkeypatch) -> None:
     adapter = HyperliquidAdapter()
@@ -479,6 +502,7 @@ async def test_live_broker_installs_stop_with_exact_cloid(monkeypatch) -> None:
         "wayfinder_paths.mcp.tools.hyperliquid.hyperliquid_place_trigger_order",
         fake_trigger,
     )
+    _patch_engine_price_alignment(monkeypatch)
     broker = HyperliquidPerpBroker(wallet_label="risk-wallet")
 
     result = await broker.place_stop_loss(
@@ -493,3 +517,35 @@ async def test_live_broker_installs_stop_with_exact_cloid(monkeypatch) -> None:
     assert result.order_id == "42"
     assert captured["cloid"] == "0x00000000000000000000000000000001"
     assert captured["reduce_only"] is True
+    assert captured["trigger_price"] == 90_000.0
+
+
+@pytest.mark.asyncio
+async def test_live_broker_aligns_off_grid_stop_before_the_tool(monkeypatch) -> None:
+    """Engine stop prices are entry × stop-multiple products — never on the
+    tick grid. The engine must align them itself (the agent-facing tool
+    strictly rejects off-grid prices); the old pass-through meant every stop
+    was refused, the position force-closed, and the job halted."""
+    captured: dict[str, object] = {}
+
+    async def fake_trigger(**kwargs):  # noqa: ANN003
+        captured.update(kwargs)
+        return {"ok": True, "result": {"status": "confirmed", "effects": []}}
+
+    monkeypatch.setattr(
+        "wayfinder_paths.mcp.tools.hyperliquid.hyperliquid_place_trigger_order",
+        fake_trigger,
+    )
+    _patch_engine_price_alignment(monkeypatch)
+    broker = HyperliquidPerpBroker(wallet_label="risk-wallet")
+
+    result = await broker.place_stop_loss(
+        symbol="BTC",
+        side="sell",
+        size=0.1,
+        trigger_price=67258.8,
+        client_order_id="0x00000000000000000000000000000002",
+    )
+
+    assert result.confirmed is True
+    assert captured["trigger_price"] == 67258.0

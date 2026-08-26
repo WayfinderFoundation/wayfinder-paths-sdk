@@ -398,10 +398,24 @@ class HyperliquidPerpBroker:
         client_order_id: str,
     ) -> NativeProtectionResult:
         from wayfinder_paths.mcp.tools.hyperliquid import (
+            _make_hl_adapter,
+            _resolve_asset,
             hyperliquid_place_trigger_order,
         )
 
         try:
+            # Engine stop prices are entry × stop-multiple products — never
+            # on the venue tick grid. The tool is agent-facing and strictly
+            # rejects off-grid prices (rounding direction is the agent's
+            # decision there), so this deterministic caller aligns its own
+            # price first with the same adapter flooring. Sub-tick movement
+            # is risk-neutral for protection; an unplaced stop force-closes
+            # the position and halts the job.
+            adapter, _sender = await _make_hl_adapter(self.wallet_label)
+            asset_id, _market_type = await _resolve_asset(adapter, symbol)
+            trigger_price = adapter.get_valid_order_price(
+                asset_id, float(trigger_price)
+            )
             outcome = await hyperliquid_place_trigger_order(
                 wallet_label=self.wallet_label,
                 asset_name=symbol,
@@ -412,10 +426,6 @@ class HyperliquidPerpBroker:
                 is_market_trigger=True,
                 reduce_only=True,
                 cloid=client_order_id,
-                # Engine stops are entry × stop-multiple products — never
-                # tick-aligned. Alignment is this caller's explicit choice;
-                # sub-tick flooring is risk-neutral for protection.
-                align_price_to_grid=True,
             )
         except Exception as exc:
             return await self._resolve_stop_after_error(
