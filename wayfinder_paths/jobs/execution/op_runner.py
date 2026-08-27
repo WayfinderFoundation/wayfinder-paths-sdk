@@ -27,6 +27,8 @@ import subprocess
 import sys
 from typing import Any
 
+from wayfinder_paths.jobs.execution.op_process import track_evolution_process
+
 _EVIDENCE_OPS = {
     "backtest_job",
     "experiments",
@@ -270,7 +272,8 @@ def main() -> None:
     request = json.load(sys.stdin)
     op = str(request["op"])
     kwargs = dict(request.get("kwargs") or {})
-    result = _run(op, dict(kwargs))
+    with track_evolution_process(op, kwargs):
+        result = _run(op, dict(kwargs))
     json.dump(result, sys.stdout, default=str)
     # Flush before nudging: the re-prompted session's campaign block must see
     # the completed op's result file, not a half-written one.

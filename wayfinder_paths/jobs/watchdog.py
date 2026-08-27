@@ -1330,12 +1330,14 @@ def _run_evolution_campaign_pass(
         CAMPAIGN_DRAIN,
         CAMPAIGN_STATE_PATH,
     )
+    from wayfinder_paths.jobs.execution.op_process import terminate_campaign_ops
     from wayfinder_paths.jobs.worker import retire_evolution_session
 
     state = store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
     campaign_id = str(state.get("campaign_id") or "")
     if state.get("status") not in {"active", "finalizing"}:
         if state.get("status") in {"complete", "expired"} and state.get("campaign_id"):
+            terminate_campaign_ops(store, job_id, str(state["campaign_id"]))
             retired = retire_evolution_session(store, job_id, str(state["campaign_id"]))
             if (
                 retired
@@ -1393,6 +1395,18 @@ def _run_evolution_campaign_pass(
                 )
                 expired_bootstrap = True
         if expired_bootstrap:
+            reaped = terminate_campaign_ops(
+                store, job_id, str(state.get("campaign_id") or "")
+            )
+            if reaped:
+                store.append_journal(
+                    job_id,
+                    {
+                        "type": "evolution_campaign_ops_reaped",
+                        "campaign_id": state.get("campaign_id"),
+                        "ops": reaped,
+                    },
+                )
             retirement = retire_evolution_session(
                 store, job_id, str(state.get("campaign_id") or "")
             )
@@ -1401,6 +1415,8 @@ def _run_evolution_campaign_pass(
                 "campaign_id": state.get("campaign_id"),
                 "session_retired": bool(retirement and retirement.get("retired")),
             }
+            if reaped:
+                result["reaped_ops"] = reaped
             if retirement and retirement.get("error"):
                 result["retirement_error"] = retirement["error"]
             return result
@@ -1523,10 +1539,16 @@ def _run_evolution_campaign_pass(
                     "finalize_attempts": attempts,
                 },
             )
-            return {
+            reaped = terminate_campaign_ops(
+                store, job_id, str(state.get("campaign_id") or "")
+            )
+            result = {
                 "action": "evolution_campaign_expired",
                 "campaign_id": state.get("campaign_id"),
             }
+            if reaped:
+                result["reaped_ops"] = reaped
+            return result
         if attempts >= len(_CAMPAIGN_FINALIZE_RETRY_S):
             return None
         last_attempt = state.get("finalize_last_attempt_at")

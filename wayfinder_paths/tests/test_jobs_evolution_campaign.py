@@ -31,7 +31,9 @@ from wayfinder_paths.jobs.evolution_campaign import (
     resolve_candidate_bundle,
     start_campaign,
 )
+from wayfinder_paths.jobs.execution.op_process import op_runner_command
 from wayfinder_paths.jobs.execution.primitives import DEFAULT_WARMUP_BARS
+from wayfinder_paths.jobs.failures import TransientInfrastructureError
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.starter_casebook import (
@@ -44,6 +46,7 @@ from wayfinder_paths.jobs.worker import (
     _queue_evolution_worker,
     nudge_evolution_session,
     retire_evolution_session,
+    run_job_worker,
 )
 
 
@@ -108,6 +111,102 @@ def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
         "finalist_requires_24h_forward_proposal": True,
     }
     assert len(load_starter_casebook()) > len(block["cases"])
+
+
+def test_campaign_start_defers_while_intervention_worker_is_busy(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.require_evolution_launch_headroom",
+        lambda: {"ready": True},
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.job_worker_session_busy", lambda *args: True
+    )
+
+    with pytest.raises(TransientInfrastructureError, match="intervention worker"):
+        start_campaign(store, job_id)
+
+    assert campaign_status(store, job_id) == {}
+
+
+def test_runner_command_declares_control_and_heavy_resource_tiers() -> None:
+    assert "--resource-tier=control" in op_runner_command("evolution_prepare")
+    assert "--resource-tier=control" in op_runner_command("evolution_start")
+    assert "--resource-tier=heavy" in op_runner_command("evolution_evaluate")
+    assert "--resource-tier=heavy" in op_runner_command("backtest_job")
+
+
+def test_due_campaign_defers_without_spawning_when_burst_credit_is_low(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+
+    class FakeClient:
+        def healthy(self) -> bool:
+            return True
+
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.OPENCODE_CLIENT", FakeClient())
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.campaign_due", lambda *args: True
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.resource_envelope.evolution_launch_readiness",
+        lambda: {
+            "ready": False,
+            "source": "governor",
+            "reason": "burst reserve is low",
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.spawn_detached_op",
+        lambda *args, **kwargs: pytest.fail("campaign start should not spawn"),
+    )
+
+    result = _queue_evolution_worker(store, job_id)
+
+    assert result == {
+        "queued": False,
+        "starting": False,
+        "deferred": True,
+        "reason": "burst reserve is low",
+    }
+
+
+def test_active_evolution_suppresses_the_parallel_intervention_llm(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.JobStore", lambda: store)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker._queue_evolution_worker",
+        lambda *args: {"queued": True, "session_id": "evolution-session"},
+    )
+
+    report = run_job_worker(job_id, mode="intervene")
+
+    assert report["queued"] is False
+    assert report["session_id"] == "evolution-session"
+    assert "deferred while evolution owns the lane" in report["summary"]
+
+
+def test_governor_diagnostic_error_does_not_wedge_the_intervention_lane(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    normal_report = {"status": "green", "summary": "normal lane reached"}
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.JobStore", lambda: store)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker._queue_evolution_worker",
+        lambda *args: {"queued": False, "error": "governor state is stale"},
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.maybe_skip_wake",
+        lambda *args, **kwargs: normal_report,
+    )
+
+    assert run_job_worker(job_id, mode="intervene") is normal_report
 
 
 @pytest.mark.parametrize(

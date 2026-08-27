@@ -12,6 +12,7 @@ import pytest
 
 import wayfinder_paths.mcp.tools.jobs as jobs_module
 from wayfinder_paths.jobs.background import op_status_summary
+from wayfinder_paths.jobs.execution.op_process import terminate_campaign_ops
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.mcp.tools.jobs import (
     _background_op_status,
@@ -107,6 +108,56 @@ def test_sync_status_reconciles_dead_detached_operation(tmp_path) -> None:
     assert reconciled["state"] == "failed"
     assert reconciled["reconciled_at"]
     assert "without a result" in reconciled["error"]
+
+
+def test_campaign_close_reaps_registered_runner_group(tmp_path, monkeypatch) -> None:
+    store, job_id = _store(tmp_path)
+    registry = store.job_dir(job_id) / "state" / "running_ops"
+    registry.mkdir(parents=True)
+    (registry / "4242.json").write_text(
+        json.dumps(
+            {
+                "pid": 4242,
+                "process_group": 4242,
+                "op": "evolution_prepare",
+                "campaign_id": "campaign-1",
+                "resource_tier": "control",
+                "process_start_ticks": 1234,
+            }
+        )
+    )
+    ops_dir = _background_ops_dir(store, job_id)
+    ops_dir.mkdir(parents=True, exist_ok=True)
+    status_path = ops_dir / "evolution_prepare.json"
+    status_path.write_text(
+        json.dumps({"pid": 4242, "op": "evolution_prepare", "state": "running"})
+    )
+    killed = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.op_process._pid_alive", lambda pid: True
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.op_process._pid_matches_runner",
+        lambda pid, op, start_ticks: True,
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.op_process.os.getpgid", lambda pid: pid
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.op_process.os.killpg",
+        lambda process_group, sig: killed.append((process_group, sig)),
+    )
+
+    reaped = terminate_campaign_ops(store, job_id, "campaign-1")
+
+    assert reaped == [
+        {"pid": 4242, "op": "evolution_prepare", "resource_tier": "control"}
+    ]
+    assert killed and killed[0][0] == 4242
+    assert not (registry / "4242.json").exists()
+    status = json.loads(status_path.read_text())
+    assert status["state"] == "killed"
+    assert status["reason"] == "owning evolution campaign closed"
 
 
 @pytest.mark.asyncio
