@@ -67,3 +67,37 @@ def test_find_runner_session_returns_none_when_no_match() -> None:
         messages={"ses_other": [{"text": "hello world"}]},
     )
     assert c.find_runner_session() is None
+
+
+def test_exact_session_lifecycle_uses_server_api() -> None:
+    calls: list[tuple[str, str]] = []
+
+    class Response:
+        def __init__(self, status_code: int) -> None:
+            self.status_code = status_code
+            self.is_success = 200 <= status_code < 300
+
+    class LifecycleStub:
+        def get(self, url: str) -> Response:
+            calls.append(("GET", url))
+            return Response(404 if url.endswith("/missing") else 200)
+
+        def post(self, url: str) -> Response:
+            calls.append(("POST", url))
+            return Response(200)
+
+        def delete(self, url: str) -> Response:
+            calls.append(("DELETE", url))
+            return Response(204)
+
+    client = OpenCodeClient()
+    client.client = LifecycleStub()  # type: ignore[assignment]
+
+    assert client.session_exists("session-1") is True
+    assert client.session_exists("missing") is False
+    assert client.abort_session("session-1") is True
+    assert client.delete_session("session-1") is True
+    assert calls[-2:] == [
+        ("POST", "http://localhost:3096/session/session-1/abort"),
+        ("DELETE", "http://localhost:3096/session/session-1"),
+    ]

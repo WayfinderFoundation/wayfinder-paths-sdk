@@ -1273,6 +1273,7 @@ _LIFECYCLE_MARKER = "state/lifecycle_pass.json"
 _LIFECYCLE_INTERVAL_S = 6 * 3600
 _CAMPAIGN_FINALIZE_RETRY_S = (0, 5 * 60, 15 * 60, 30 * 60)
 _CAMPAIGN_FINALIZE_GRACE = timedelta(minutes=60)
+_CAMPAIGN_EVALUATE_DRAIN_GRACE = timedelta(minutes=15)
 # A finalize op still writing output past the grace is extended, not expired:
 # expiry once fired mid-Optuna at exactly the grace boundary and the orphaned
 # finalize ran 8+ hours holding the replication lock. Freshness = op log
@@ -1324,10 +1325,25 @@ def _run_evolution_campaign_pass(
     """Close deadline-bound campaigns independently of agent wake delivery."""
     from wayfinder_paths.jobs.background import op_status_summary, spawn_detached_op
     from wayfinder_paths.jobs.compute_lock import job_state_lock
-    from wayfinder_paths.jobs.evolution_campaign import CAMPAIGN_STATE_PATH
+    from wayfinder_paths.jobs.evolution_campaign import (
+        CAMPAIGN_DRAIN,
+        CAMPAIGN_STATE_PATH,
+    )
+    from wayfinder_paths.jobs.worker import retire_evolution_session
 
     state = store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
     if state.get("status") not in {"active", "finalizing"}:
+        if state.get("status") in {"complete", "expired"} and state.get("campaign_id"):
+            retired = retire_evolution_session(store, job_id, str(state["campaign_id"]))
+            if (
+                retired
+                and retired.get("retired")
+                and not retired.get("already_retired")
+            ):
+                return {
+                    "action": "evolution_session_retired",
+                    "campaign_id": state.get("campaign_id"),
+                }
         return None
     try:
         deadline = datetime.fromisoformat(str(state["deadline_at"]))
@@ -1336,7 +1352,54 @@ def _run_evolution_campaign_pass(
     if deadline.tzinfo is None:
         deadline = deadline.replace(tzinfo=UTC)
     if now < deadline and state.get("status") == "active":
-        return None
+        if now < deadline - CAMPAIGN_DRAIN:
+            return None
+        with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+            state = store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
+            if state.get("status") != "active":
+                return None
+            if not state.get("drain_started_at"):
+                state["stage"] = "draining"
+                state["drain_started_at"] = now.isoformat()
+                store.write_json(job_id, CAMPAIGN_STATE_PATH, state)
+                store.append_journal(
+                    job_id,
+                    {
+                        "type": "evolution_campaign_draining",
+                        "campaign_id": state.get("campaign_id"),
+                    },
+                )
+        retired = retire_evolution_session(
+            store, job_id, str(state.get("campaign_id") or "")
+        )
+        return {
+            "action": "evolution_campaign_draining",
+            "campaign_id": state.get("campaign_id"),
+            "session_retired": bool(retired and retired.get("retired")),
+        }
+
+    evaluating = op_status_summary(store.job_dir(job_id), "evolution_evaluate")
+    if (evaluating or {}).get(
+        "status"
+    ) == "running" and now - deadline < _CAMPAIGN_EVALUATE_DRAIN_GRACE:
+        return {
+            "action": "evolution_campaign_waiting_for_evaluation",
+            "campaign_id": state.get("campaign_id"),
+        }
+
+    retirement = retire_evolution_session(
+        store, job_id, str(state.get("campaign_id") or "")
+    )
+    if (
+        retirement
+        and not retirement.get("retired")
+        and now - deadline < _CAMPAIGN_FINALIZE_GRACE
+    ):
+        return {
+            "action": "evolution_campaign_waiting_for_session_retirement",
+            "campaign_id": state.get("campaign_id"),
+            "error": retirement.get("error"),
+        }
 
     op = op_status_summary(store.job_dir(job_id), "evolution_finalize")
     past_grace = now - deadline >= _CAMPAIGN_FINALIZE_GRACE

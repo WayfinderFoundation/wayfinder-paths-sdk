@@ -43,6 +43,38 @@ class OpenCodeClient:
         except Exception:
             return []
 
+    def session_exists(self, session_id: str) -> bool | None:
+        """Return whether one exact session still exists.
+
+        Evolution workers persist their session id outside OpenCode so detached
+        nudges can reuse it even when they have no controller-session ancestry.
+        """
+        try:
+            response = self.client.get(f"{self.base_url}/session/{session_id}")
+            if response.status_code == 404:
+                return False
+            return True if response.is_success else None
+        except Exception:  # noqa: BLE001 - advisory lifecycle read
+            return None
+
+    def abort_session(self, session_id: str) -> bool:
+        try:
+            return self.client.post(
+                f"{self.base_url}/session/{session_id}/abort"
+            ).is_success
+        except Exception as error:  # noqa: BLE001 - best-effort cleanup
+            logger.debug(f"Failed to abort OpenCode session {session_id}: {error}")
+            return False
+
+    def delete_session(self, session_id: str) -> bool:
+        try:
+            return self.client.delete(
+                f"{self.base_url}/session/{session_id}"
+            ).is_success
+        except Exception as error:  # noqa: BLE001 - best-effort cleanup
+            logger.debug(f"Failed to delete OpenCode session {session_id}: {error}")
+            return False
+
     def create_session(
         self,
         *,

@@ -18,7 +18,7 @@ from wayfinder_paths.jobs.compute_lock import job_state_lock
 from wayfinder_paths.jobs.economics import block_bootstrap_lcb
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.improver.spec import ImproverSpec
-from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.models import EVOLUTION_SESSION_ARCHIVE_PATH, utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.runner.monitor_state import atomic_write_json
 
@@ -507,6 +507,27 @@ def current_job_token_usage(
 
     session_ids: list[str] = []
     reports = store.job_dir(job_id) / "reports"
+    experiment = state or experiment_status(store, job_id)
+    started = _parse(
+        experiment.get("started_at") or experiment["qualification_started_at"]
+    )
+    archived_metrics: list[dict[str, Any]] = []
+    archived_ids: set[str] = set()
+    if arm != "control":
+        archive_path = store.job_dir(job_id) / EVOLUTION_SESSION_ARCHIVE_PATH
+        try:
+            archive = json.loads(archive_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            archive = {}
+        for item in archive.get("sessions") or []:
+            try:
+                created = _parse(item.get("created_at"))
+            except (TypeError, ValueError):
+                created = started
+            if created < started or not isinstance(item.get("metrics"), dict):
+                continue
+            archived_ids.add(str(item.get("session_id") or ""))
+            archived_metrics.append(dict(item["metrics"]))
     for path in reports.glob("*/session.json"):
         if arm == "evolution" and path.parent.name != "evolution":
             continue
@@ -516,13 +537,23 @@ def current_job_token_usage(
             session = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if session.get("session_id"):
-            session_ids.append(str(session["session_id"]))
-    experiment = state or experiment_status(store, job_id)
-    started = _parse(
-        experiment.get("started_at") or experiment["qualification_started_at"]
-    )
-    return meter_session_ids(session_ids, since_ms=int(started.timestamp() * 1000))
+        session_id = str(session.get("session_id") or "")
+        if (
+            session_id
+            and session_id not in archived_ids
+            and not session.get("retired_at")
+        ):
+            session_ids.append(session_id)
+    totals = meter_session_ids(session_ids, since_ms=int(started.timestamp() * 1000))
+    for metrics in archived_metrics:
+        for key, value in metrics.items():
+            if key == "tool_result_bytes_by_tool" and isinstance(value, dict):
+                target = totals.setdefault(key, {})
+                for tool, size in value.items():
+                    target[str(tool)] = int(target.get(str(tool)) or 0) + int(size or 0)
+            elif isinstance(value, (int, float)):
+                totals[key] = totals.get(key, 0) + value
+    return totals
 
 
 def maybe_adjudicate_proposals(

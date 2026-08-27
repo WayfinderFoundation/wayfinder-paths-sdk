@@ -11,6 +11,7 @@ import json
 import pytest
 
 import wayfinder_paths.mcp.tools.jobs as jobs_module
+from wayfinder_paths.jobs.background import op_status_summary
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.mcp.tools.jobs import (
     _background_op_status,
@@ -88,6 +89,24 @@ def test_op_status_detects_lost_and_orphan_done(tmp_path) -> None:
 
     missing = _background_op_status(store, job_id, "never_ran")
     assert missing["error"]["code"] == "not_found"
+
+
+def test_sync_status_reconciles_dead_detached_operation(tmp_path) -> None:
+    store, job_id = _store(tmp_path)
+    ops_dir = _background_ops_dir(store, job_id)
+    ops_dir.mkdir(parents=True, exist_ok=True)
+    status_path = ops_dir / "evolution_finalize.json"
+    status_path.write_text(
+        json.dumps({"op": "evolution_finalize", "state": "running", "pid": 2**22 - 1})
+    )
+
+    summary = op_status_summary(store.job_dir(job_id), "evolution_finalize")
+
+    assert summary and summary["status"] == "failed"
+    reconciled = json.loads(status_path.read_text())
+    assert reconciled["state"] == "failed"
+    assert reconciled["reconciled_at"]
+    assert "without a result" in reconciled["error"]
 
 
 @pytest.mark.asyncio

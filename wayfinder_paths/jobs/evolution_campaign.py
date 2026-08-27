@@ -9,12 +9,14 @@ workspace and no function in this module can authorize live trading.
 
 from __future__ import annotations
 
+import gc
 import hashlib
 import json
 import math
 import os
 import shutil
 import tempfile
+import uuid
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -28,7 +30,11 @@ from wayfinder_paths.jobs.archive import (
     record_candidate,
     set_candidate_status,
 )
-from wayfinder_paths.jobs.compute_lock import experiment_compute_lock, job_state_lock
+from wayfinder_paths.jobs.compute_lock import (
+    ComputeLockBusy,
+    experiment_compute_lock,
+    job_state_lock,
+)
 from wayfinder_paths.jobs.execution.features import parse_feature_specs
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.optimize import is_search_space, run_optuna_search
@@ -50,6 +56,7 @@ from wayfinder_paths.jobs.execution.validation import (
     window_invariance_probe,
 )
 from wayfinder_paths.jobs.execution.walk_forward import _slice, _test_window_stats
+from wayfinder_paths.jobs.failures import TransientInfrastructureError, classify_failure
 from wayfinder_paths.jobs.forward_experience import (
     CALIBRATION_PATH,
     build_forward_experience,
@@ -60,7 +67,12 @@ from wayfinder_paths.jobs.gating import (
     evaluate_economic_gate,
 )
 from wayfinder_paths.jobs.improver.spec import ImproverSpec, revision_stamp
+from wayfinder_paths.jobs.isolated_phase import run_isolated_phase
 from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.resource_envelope import (
+    evolution_resource_phase,
+    require_evolution_headroom,
+)
 from wayfinder_paths.jobs.robustness import _strategy_warmup_bars
 from wayfinder_paths.jobs.starter_casebook import select_starter_cases
 from wayfinder_paths.jobs.store import JobStore
@@ -72,6 +84,7 @@ CAMPAIGN_DATA_ROOT = "dataset"
 FORWARD_SNAPSHOT = "forward_experience.json"
 SCHEMA_VERSION = "1.0"
 _PARENT_SOURCES = ("incumbent", "qd_elite", "crossover", "de_novo")
+CAMPAIGN_DRAIN = timedelta(minutes=30)
 
 
 def campaign_status(store: JobStore, job_id: str) -> dict[str, Any]:
@@ -500,47 +513,134 @@ def _require_declared_window(subject: dict[str, Any], params: dict[str, Any]) ->
 def evaluate_candidate(
     store: JobStore, job_id: str, candidate_id: str
 ) -> dict[str, Any]:
+    """Claim, compute outside campaign state, then commit idempotently."""
+    claim_id = uuid.uuid4().hex
     with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = _active_campaign(store, job_id)
+        candidate = _candidate(state, candidate_id)
+        if candidate["status"] == "quick_running":
+            try:
+                claim_age = datetime.now(UTC) - _parse(
+                    candidate["evaluation_claimed_at"]
+                )
+            except (KeyError, TypeError, ValueError):
+                claim_age = timedelta.max
+            if claim_age < timedelta(hours=2):
+                return candidate
+        elif candidate["status"] not in {"prepared", "quick_failed"}:
+            return candidate
+        campaign_id = str(state["campaign_id"])
+        candidate.update(
+            {
+                "status": "quick_running",
+                "evaluation_claim_id": claim_id,
+                "evaluation_claimed_at": utc_now_iso(),
+            }
+        )
+        candidate_snapshot = dict(candidate)
+        _save_campaign(store, job_id, state)
+    try:
         with experiment_compute_lock(
             store, job_id, label=f"evolution-evaluate:{job_id}"
         ):
-            return _evaluate_candidate(store, job_id, candidate_id)
+            with evolution_resource_phase(
+                store,
+                job_id,
+                phase="quick_evaluate",
+                candidate_id=candidate_id,
+            ):
+                outcome = _evaluate_candidate(
+                    store, job_id, candidate_snapshot, campaign_id=campaign_id
+                )
+    except (ComputeLockBusy, TransientInfrastructureError):
+        _release_finalize_claim(
+            store,
+            job_id,
+            campaign_id=campaign_id,
+            candidate_id=candidate_id,
+            claim_id=claim_id,
+            claim_field="evaluation_claim_id",
+            restored_status="quick_failed",
+        )
+        raise
+    except Exception as exc:  # noqa: BLE001 - candidate failure is evidence
+        outcome = {"status": "invalid", "evidence": {"error": str(exc)[:500]}}
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = campaign_status(store, job_id)
+        if str(state.get("campaign_id") or "") != campaign_id:
+            return {**outcome, "commit_skipped": "campaign changed"}
+        candidate = _candidate(state, candidate_id)
+        if candidate.get("evaluation_claim_id") != claim_id:
+            return candidate
+        candidate.update(outcome)
+        candidate.pop("evaluation_claim_id", None)
+        candidate.pop("evaluation_claimed_at", None)
+        candidate["evaluated_at"] = utc_now_iso()
+        state["counts"]["quick_evaluated"] += 1
+        _save_campaign(store, job_id, state)
+    if candidate["status"] == "quick_complete":
+        record_candidate(
+            store,
+            job_id,
+            candidate_id=candidate_id,
+            family=str(candidate["family"]),
+            summary=str(candidate["summary"]),
+            status="generated",
+            objective=candidate["objective"],
+            revision=candidate["revision"],
+            behavior=candidate["behavior"],
+            evidence="low-fidelity train screen passed",
+            metadata={
+                "quick": candidate["quick"],
+                "execution_calibration": candidate["execution_calibration"],
+            },
+        )
+    else:
+        set_candidate_status(
+            store,
+            job_id,
+            candidate_id,
+            str(candidate["status"]),
+            evidence=json.dumps(candidate.get("evidence") or {}, default=str)[:300],
+        )
+    return candidate
 
 
 def _evaluate_candidate(
-    store: JobStore, job_id: str, candidate_id: str
+    store: JobStore,
+    job_id: str,
+    candidate: dict[str, Any],
+    *,
+    campaign_id: str,
 ) -> dict[str, Any]:
-    """Run static checks and the low-fidelity train screen for one bundle."""
-    state = _active_campaign(store, job_id)
-    candidate = _candidate(state, candidate_id)
-    if candidate["status"] not in {"prepared", "quick_failed"}:
-        return candidate
-    candidate_root = resolve_candidate_bundle(store, job_id, candidate)
+    """Compute one low-fidelity screen without mutating campaign state."""
+    candidate_root = resolve_candidate_bundle(
+        store, job_id, candidate, campaign_id=campaign_id
+    )
     report = validate_execution_job(job_id, candidate_dir=candidate_root, store=store)
     if not _candidate_validation_passed(report):
-        return _reject_candidate(
-            store, job_id, state, candidate, "invalid", {"validation": report}
-        )
+        return {"status": "invalid", "evidence": {"validation": report}}
     revision = compute_workspace_revision(candidate_root)
-    manifest = store.read_json(job_id, str(state["manifest"]), default={}) or {}
+    manifest = (
+        store.read_json(
+            job_id, f"{CAMPAIGN_ROOT}/{campaign_id}/manifest.json", default={}
+        )
+        or {}
+    )
     if (
         revision == _source_baseline_revision(manifest)
         and not (candidate_root / "search_space.json").exists()
     ):
-        return _reject_candidate(
-            store,
-            job_id,
-            state,
-            candidate,
-            "invalid",
-            {"error": "candidate bundle is identical to its source revision"},
-        )
+        return {
+            "status": "invalid",
+            "evidence": {
+                "error": "candidate bundle is identical to its source revision"
+            },
+        }
     try:
-        subject = _load_subject(
-            store, job_id, candidate_root, campaign_id=str(state["campaign_id"])
-        )
+        subject = _load_subject(store, job_id, candidate_root, campaign_id=campaign_id)
         train_end, validation_end = _split_bounds(
-            store, job_id, campaign_id=str(state["campaign_id"])
+            store, job_id, campaign_id=campaign_id
         )
         train, _, _ = _split_dataset(
             subject["dataset"], train_end=train_end, validation_end=validation_end
@@ -552,13 +652,9 @@ def _evaluate_candidate(
             subject["script"], quick.bars, subject["spec"], params
         )
         if probe["status"] == "failed":
-            return _reject_candidate(
-                store,
-                job_id,
-                state,
-                candidate,
-                "invalid",
-                {
+            return {
+                "status": "invalid",
+                "evidence": {
                     "error": (
                         f"window-invariance probe failed at bar {probe['bar']}: "
                         "decide() consumed history beyond its declared window "
@@ -570,105 +666,86 @@ def _evaluate_candidate(
                         if not key.endswith("_intents")
                     },
                 },
-            )
+            }
         result = simulate_execution(subject["script"], quick, subject["spec"], params)
     except Exception as exc:  # noqa: BLE001 - candidate failure is evidence
-        return _reject_candidate(
-            store,
-            job_id,
-            state,
-            candidate,
-            "invalid",
-            {"error": str(exc)[:500]},
-        )
+        # Contract/validation failures are candidate evidence even when their
+        # explanation mentions "memory" (for example, bounded incremental
+        # memory). Do not let the deliberately broad infrastructure string
+        # classifier turn those into retry loops.
+        if isinstance(exc, ValueError):
+            return {"status": "invalid", "evidence": {"error": str(exc)[:500]}}
+        if isinstance(exc, MemoryError) or classify_failure(str(exc)) == (
+            "infrastructure"
+        ):
+            raise TransientInfrastructureError(str(exc)) from exc
+        return {"status": "invalid", "evidence": {"error": str(exc)[:500]}}
     compact = _compact_result(result)
     if not result.validation.get("execution_valid"):
-        return _reject_candidate(
-            store, job_id, state, candidate, "low_fidelity_rejected", compact
-        )
-    candidate.update(
-        {
-            "status": "quick_complete",
-            "revision": revision,
-            "quick": compact,
-            "objective": _objective(result.stats, params),
-            "behavior": _behavior(result, quick, subject["spec"]),
-            "execution_calibration": calibration,
-            "evaluated_at": utc_now_iso(),
-        }
-    )
-    state["counts"]["quick_evaluated"] += 1
-    _save_campaign(store, job_id, state)
-    record_candidate(
-        store,
-        job_id,
-        candidate_id=candidate_id,
-        family=str(candidate["family"]),
-        summary=str(candidate["summary"]),
-        status="generated",
-        objective=candidate["objective"],
-        revision=candidate["revision"],
-        behavior=candidate["behavior"],
-        evidence="low-fidelity train screen passed",
-        metadata={"quick": compact, "execution_calibration": calibration},
-    )
-    return candidate
+        return {"status": "low_fidelity_rejected", "evidence": compact}
+    return {
+        "status": "quick_complete",
+        "revision": revision,
+        "quick": compact,
+        "objective": _objective(result.stats, params),
+        "behavior": _behavior(result, quick, subject["spec"]),
+        "execution_calibration": calibration,
+        "evidence": "low-fidelity train screen passed",
+    }
 
 
 def finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
-    """Spend bounded full-dev, stage one causal proposal, then close."""
-    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+    """Resume bounded full-dev work without holding campaign state during sims."""
+    # A dedicated ownership lock prevents two CLI/watchdog finalizers from
+    # duplicating compute. It is intentionally NOT the campaign-state lock:
+    # evaluators and watchdog state transitions remain free while sims run.
+    with job_state_lock(
+        store.repo_root, job_id, name="evolution_finalize_owner", timeout_s=1
+    ):
         return _finalize_campaign(store, job_id)
 
 
 def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
-    state = campaign_status(store, job_id)
-    if state.get("status") not in {"active", "finalizing"}:
-        raise ValueError(f"job {job_id!r} has no open evolution campaign")
-    state["status"] = "finalizing"
-    state["stage"] = "finalizing"
-    state.setdefault("finalize_started_at", utc_now_iso())
-    _save_campaign(store, job_id, state)
-    policy = _campaign_policy(store, job_id, str(state["campaign_id"]))
-    quick = [
-        item for item in state["candidates"] if item.get("status") == "quick_complete"
-    ]
-    quick.sort(key=_candidate_score, reverse=True)
-    remaining_dev = max(
-        0,
-        int(policy["full_dev_survivors"]) - int(state["counts"]["full_dev"]),
-    )
-    survivors = quick[:remaining_dev]
-    state["stage"] = "full_dev"
-    _save_campaign(store, job_id, state)
-    dev_passed = [
-        item for item in state["candidates"] if item.get("status") == "dev_frontier"
-    ]
-    full_dev_before = int(state["counts"]["full_dev"])
-    for index, candidate in enumerate(survivors):
+    while True:
+        claimed = _claim_full_dev(store, job_id)
+        if claimed is None:
+            break
+        campaign_id, claim_id, candidate, tune = claimed
         try:
+            require_evolution_headroom()
             with experiment_compute_lock(
                 store,
                 job_id,
                 label=f"evolution-full-dev:{job_id}:{candidate['candidate_id']}",
             ):
-                outcome = _full_dev(
-                    store,
-                    job_id,
-                    candidate,
-                    tune=(
-                        full_dev_before + index < int(policy["inner_optuna_finalists"])
-                    ),
-                )
+                outcome = _isolated_full_dev(store, job_id, candidate, tune=tune)
+        except (ComputeLockBusy, TransientInfrastructureError):
+            _release_finalize_claim(
+                store,
+                job_id,
+                campaign_id=campaign_id,
+                candidate_id=str(candidate["candidate_id"]),
+                claim_id=claim_id,
+                claim_field="full_dev_claim_id",
+                restored_status="quick_complete",
+            )
+            raise
         except Exception as exc:  # noqa: BLE001 - isolate candidate failures
             outcome = {
                 "status": "invalid",
                 "evidence": f"full development evaluation failed: {str(exc)[:300]}",
             }
-        state["counts"]["full_dev"] += 1
-        candidate.update(outcome)
-        if candidate["status"] == "dev_frontier":
-            dev_passed.append(candidate)
+        committed = _commit_full_dev(
+            store,
+            job_id,
+            campaign_id=campaign_id,
+            candidate_id=str(candidate["candidate_id"]),
+            claim_id=claim_id,
+            outcome=outcome,
+        )
+        if committed is None:
+            continue
+        candidate = committed
         set_candidate_status(
             store,
             job_id,
@@ -692,41 +769,25 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
                 "tuning": candidate.get("tuning"),
             },
         )
-        _save_campaign(store, job_id, state)
+        gc.collect()
 
-    dev_passed.sort(key=_candidate_score, reverse=True)
-    remaining_proposals = max(
-        0,
-        int(policy.get("proposal_finalists") or 1)
-        - int(state["counts"].get("proposed") or 0),
-    )
-    state["stage"] = "paper_proposal"
-    _save_campaign(store, job_id, state)
-    for candidate in dev_passed[:remaining_proposals]:
+    while True:
+        claimed_proposal = _claim_proposal(store, job_id)
+        if claimed_proposal is None:
+            break
+        campaign_id, claim_id, candidate = claimed_proposal
         try:
+            require_evolution_headroom()
             with experiment_compute_lock(
                 store,
                 job_id,
                 label=f"evolution-proposal-gate:{job_id}:{candidate['candidate_id']}",
             ):
-                candidate_root = resolve_candidate_bundle(store, job_id, candidate)
-                economic = evaluate_economic_gate(
-                    job_id,
-                    candidate_dir=candidate_root,
-                    baseline_dir=(
-                        store.job_dir(job_id)
-                        / CAMPAIGN_ROOT
-                        / str(state["campaign_id"])
-                        / "source"
-                    ),
-                    probation=True,
-                    store=store,
-                    dataset_root=(
-                        store.job_dir(job_id)
-                        / CAMPAIGN_ROOT
-                        / str(state["campaign_id"])
-                        / CAMPAIGN_DATA_ROOT
-                    ),
+                candidate_root = resolve_candidate_bundle(
+                    store, job_id, candidate, campaign_id=campaign_id
+                )
+                economic = _isolated_economic_gate(
+                    store, job_id, candidate, campaign_id=campaign_id
                 )
                 if economic.get("ready") is not True:
                     outcome = {
@@ -768,13 +829,33 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
                             or "staged for one immutable forward paper day"
                         ),
                     }
+        except (ComputeLockBusy, TransientInfrastructureError):
+            _release_finalize_claim(
+                store,
+                job_id,
+                campaign_id=campaign_id,
+                candidate_id=str(candidate["candidate_id"]),
+                claim_id=claim_id,
+                claim_field="proposal_claim_id",
+                restored_status="dev_frontier",
+            )
+            raise
         except Exception as exc:  # noqa: BLE001 - isolate candidate failures
             outcome = {
                 "status": "proposal_rejected",
                 "evidence": f"paper proposal staging failed: {str(exc)[:300]}",
             }
-        candidate.update(outcome)
-        state["counts"]["proposed"] = int(state["counts"].get("proposed") or 0) + 1
+        committed = _commit_proposal(
+            store,
+            job_id,
+            campaign_id=campaign_id,
+            candidate_id=str(candidate["candidate_id"]),
+            claim_id=claim_id,
+            outcome=outcome,
+        )
+        if committed is None:
+            continue
+        candidate = committed
         set_candidate_status(
             store,
             job_id,
@@ -782,12 +863,16 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
             str(candidate["status"]),
             evidence=str(candidate.get("evidence") or "paper proposal")[:300],
         )
-        _save_campaign(store, job_id, state)
+        gc.collect()
 
-    state["status"] = "complete"
-    state["stage"] = "complete"
-    state["completed_at"] = utc_now_iso()
-    _save_campaign(store, job_id, state)
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = campaign_status(store, job_id)
+        if state.get("status") not in {"active", "finalizing"}:
+            return state
+        state["status"] = "complete"
+        state["stage"] = "complete"
+        state["completed_at"] = utc_now_iso()
+        _save_campaign(store, job_id, state)
     store.append_journal(
         job_id,
         {
@@ -797,6 +882,226 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
         },
     )
     return state
+
+
+def _claim_full_dev(
+    store: JobStore, job_id: str
+) -> tuple[str, str, dict[str, Any], bool] | None:
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = campaign_status(store, job_id)
+        if state.get("status") not in {"active", "finalizing"}:
+            raise ValueError(f"job {job_id!r} has no open evolution campaign")
+        campaign_id = str(state["campaign_id"])
+        policy = _campaign_policy(store, job_id, campaign_id)
+        remaining = max(
+            0,
+            int(policy["full_dev_survivors"]) - int(state["counts"]["full_dev"]),
+        )
+        eligible = [
+            item
+            for item in state["candidates"]
+            if item.get("status") in {"quick_complete", "full_dev_running"}
+        ]
+        eligible.sort(key=_candidate_score, reverse=True)
+        if not remaining or not eligible:
+            return None
+        candidate = eligible[0]
+        claim_id = uuid.uuid4().hex
+        tune = int(state["counts"]["full_dev"]) < int(policy["inner_optuna_finalists"])
+        candidate.update(
+            {
+                "status": "full_dev_running",
+                "full_dev_claim_id": claim_id,
+                "full_dev_claimed_at": utc_now_iso(),
+            }
+        )
+        state["status"] = "finalizing"
+        state["stage"] = "full_dev"
+        state.setdefault("finalize_started_at", utc_now_iso())
+        _save_campaign(store, job_id, state)
+        return campaign_id, claim_id, dict(candidate), tune
+
+
+def _isolated_full_dev(
+    store: JobStore, job_id: str, candidate: dict[str, Any], *, tune: bool
+) -> dict[str, Any]:
+    return run_isolated_phase(
+        _full_dev_child,
+        store.repo_root,
+        job_id,
+        candidate,
+        tune,
+        timeout_s=float(
+            os.environ.get("WAYFINDER_EVOLUTION_FULL_DEV_TIMEOUT_S", "5400")
+        ),
+    )
+
+
+def _full_dev_child(
+    repo_root: Path, job_id: str, candidate: dict[str, Any], tune: bool
+) -> dict[str, Any]:
+    store = JobStore(repo_root=repo_root)
+    with evolution_resource_phase(
+        store,
+        job_id,
+        phase="full_dev",
+        candidate_id=str(candidate["candidate_id"]),
+    ):
+        return _full_dev(store, job_id, candidate, tune=tune)
+
+
+def _commit_full_dev(
+    store: JobStore,
+    job_id: str,
+    *,
+    campaign_id: str,
+    candidate_id: str,
+    claim_id: str,
+    outcome: dict[str, Any],
+) -> dict[str, Any] | None:
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = campaign_status(store, job_id)
+        if str(state.get("campaign_id") or "") != campaign_id:
+            return None
+        candidate = _candidate(state, candidate_id)
+        if candidate.get("full_dev_claim_id") != claim_id:
+            return None
+        candidate.update(outcome)
+        candidate.pop("full_dev_claim_id", None)
+        candidate.pop("full_dev_claimed_at", None)
+        state["counts"]["full_dev"] += 1
+        _save_campaign(store, job_id, state)
+        return dict(candidate)
+
+
+def _claim_proposal(
+    store: JobStore, job_id: str
+) -> tuple[str, str, dict[str, Any]] | None:
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = campaign_status(store, job_id)
+        if state.get("status") not in {"active", "finalizing"}:
+            raise ValueError(f"job {job_id!r} has no open evolution campaign")
+        campaign_id = str(state["campaign_id"])
+        policy = _campaign_policy(store, job_id, campaign_id)
+        remaining = max(
+            0,
+            int(policy.get("proposal_finalists") or 1)
+            - int(state["counts"].get("proposed") or 0),
+        )
+        eligible = [
+            item
+            for item in state["candidates"]
+            if item.get("status") in {"dev_frontier", "proposal_running"}
+        ]
+        eligible.sort(key=_candidate_score, reverse=True)
+        if not remaining or not eligible:
+            return None
+        candidate = eligible[0]
+        claim_id = uuid.uuid4().hex
+        candidate.update(
+            {
+                "status": "proposal_running",
+                "proposal_claim_id": claim_id,
+                "proposal_claimed_at": utc_now_iso(),
+            }
+        )
+        state["stage"] = "paper_proposal"
+        _save_campaign(store, job_id, state)
+        return campaign_id, claim_id, dict(candidate)
+
+
+def _commit_proposal(
+    store: JobStore,
+    job_id: str,
+    *,
+    campaign_id: str,
+    candidate_id: str,
+    claim_id: str,
+    outcome: dict[str, Any],
+) -> dict[str, Any] | None:
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = campaign_status(store, job_id)
+        if str(state.get("campaign_id") or "") != campaign_id:
+            return None
+        candidate = _candidate(state, candidate_id)
+        if candidate.get("proposal_claim_id") != claim_id:
+            return None
+        candidate.update(outcome)
+        candidate.pop("proposal_claim_id", None)
+        candidate.pop("proposal_claimed_at", None)
+        state["counts"]["proposed"] = int(state["counts"].get("proposed") or 0) + 1
+        _save_campaign(store, job_id, state)
+        return dict(candidate)
+
+
+def _isolated_economic_gate(
+    store: JobStore,
+    job_id: str,
+    candidate: dict[str, Any],
+    *,
+    campaign_id: str,
+) -> dict[str, Any]:
+    return run_isolated_phase(
+        _economic_gate_child,
+        store.repo_root,
+        job_id,
+        candidate,
+        campaign_id,
+        timeout_s=float(os.environ.get("WAYFINDER_EVOLUTION_GATE_TIMEOUT_S", "3600")),
+    )
+
+
+def _economic_gate_child(
+    repo_root: Path,
+    job_id: str,
+    candidate: dict[str, Any],
+    campaign_id: str,
+) -> dict[str, Any]:
+    store = JobStore(repo_root=repo_root)
+    candidate_root = resolve_candidate_bundle(
+        store, job_id, candidate, campaign_id=campaign_id
+    )
+    with evolution_resource_phase(
+        store,
+        job_id,
+        phase="economic_gate",
+        candidate_id=str(candidate["candidate_id"]),
+    ):
+        return evaluate_economic_gate(
+            job_id,
+            candidate_dir=candidate_root,
+            baseline_dir=(
+                store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id / "source"
+            ),
+            probation=True,
+            store=store,
+            dataset_root=(
+                store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id / CAMPAIGN_DATA_ROOT
+            ),
+        )
+
+
+def _release_finalize_claim(
+    store: JobStore,
+    job_id: str,
+    *,
+    campaign_id: str,
+    candidate_id: str,
+    claim_id: str,
+    claim_field: str,
+    restored_status: str,
+) -> None:
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = campaign_status(store, job_id)
+        if str(state.get("campaign_id") or "") != campaign_id:
+            return
+        candidate = _candidate(state, candidate_id)
+        if candidate.get(claim_field) != claim_id:
+            return
+        candidate["status"] = restored_status
+        candidate.pop(claim_field, None)
+        candidate.pop(claim_field.replace("_id", "ed_at"), None)
+        _save_campaign(store, job_id, state)
 
 
 def campaign_prompt_block(
@@ -814,12 +1119,20 @@ def campaign_prompt_block(
             "status": "blocked",
             "reason": "evolution worker paused during peak model pricing",
         }
+    current = _aware(now or datetime.now(UTC))
+    deadline = _parse(state["deadline_at"])
+    if deadline - CAMPAIGN_DRAIN <= current < deadline:
+        return {
+            "status": "blocked",
+            "campaign_id": state["campaign_id"],
+            "reason": "evolution campaign is draining before finalization",
+        }
     manifest = store.read_json(job_id, str(state["manifest"]), default={}) or {}
     candidates = state.get("candidates") or []
     prepared = [item for item in candidates if item.get("status") == "prepared"]
     policy = manifest.get("policy") or {}
     budget = int(policy.get("generated_programs") or 0)
-    deadline_elapsed = _aware(now or datetime.now(UTC)) >= _parse(state["deadline_at"])
+    deadline_elapsed = current >= deadline
     if deadline_elapsed:
         next_action = "Generation deadline elapsed; run evolution-finalize now."
     elif prepared and len(candidates) < budget and len(prepared) < 3:
@@ -918,6 +1231,8 @@ def _full_dev(
                 root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
             )
         tuning = {"trials": len(grid.runs), "selected_params": params}
+        del grid
+        gc.collect()
     # Post-tune probe: optuna may have moved the window params, so prove the
     # FINAL configuration is window-invariant before spending dev backtests.
     probe = window_invariance_probe(
@@ -939,22 +1254,41 @@ def _full_dev(
     if revision == _source_baseline_revision(manifest):
         raise ValueError("candidate has no effective mutation after tuning")
     train_result, train_stats = _window_result(subject, 0.0, train_end, params)
+    train_valid = bool(train_result.validation.get("execution_valid"))
+    compact_train = _compact_result(train_result, stats=train_stats)
+    del train_result
+    gc.collect()
     validation_result, validation_stats = _window_result(
         subject, train_end, validation_end, params
     )
+    validation_valid = bool(validation_result.validation.get("execution_valid"))
+    objective = _objective(validation_stats, params)
+    behavior = _behavior(
+        validation_result,
+        validation,
+        subject["spec"],
+        stats=validation_stats,
+        start_at=validation.bars.timestamps[0],
+    )
+    compact_validation = _compact_result(validation_result, stats=validation_stats)
+    del validation_result
+    gc.collect()
     stress_result, stress_stats = _window_result(
         subject, train_end, validation_end, stress_params
     )
+    stress_valid = bool(stress_result.validation.get("execution_valid"))
+    compact_stress = _compact_result(stress_result, stats=stress_stats)
+    del stress_result
+    gc.collect()
     passed = (
-        train_result.validation.get("execution_valid")
-        and validation_result.validation.get("execution_valid")
-        and stress_result.validation.get("execution_valid")
+        train_valid
+        and validation_valid
+        and stress_valid
         and int(validation_stats.get("trade_count") or 0) > 0
         and float(validation_stats.get("net_return") or 0.0) > 0.0
         and float(stress_stats.get("net_return") or 0.0) > 0.0
         and bool(calibration["audit_passed"])
     )
-    objective = _objective(validation_stats, params)
     return {
         "status": "dev_frontier" if passed else "low_fidelity_rejected",
         "revision": revision,
@@ -962,18 +1296,12 @@ def _full_dev(
         "tuning": tuning,
         "execution_calibration": calibration,
         "dev": {
-            "train": _compact_result(train_result, stats=train_stats),
-            "validation": _compact_result(validation_result, stats=validation_stats),
-            "validation_stress": _compact_result(stress_result, stats=stress_stats),
+            "train": compact_train,
+            "validation": compact_validation,
+            "validation_stress": compact_stress,
         },
         "objective": objective,
-        "behavior": _behavior(
-            validation_result,
-            validation,
-            subject["spec"],
-            stats=validation_stats,
-            start_at=validation.bars.timestamps[0],
-        ),
+        "behavior": behavior,
         "evidence": "positive independent validation"
         if passed
         else "failed independent validation",
@@ -1179,31 +1507,6 @@ def _candidate_score(candidate: dict[str, Any]) -> float:
     )
 
 
-def _reject_candidate(
-    store: JobStore,
-    job_id: str,
-    state: dict[str, Any],
-    candidate: dict[str, Any],
-    status: str,
-    evidence: dict[str, Any],
-) -> dict[str, Any]:
-    was_pending = candidate.get("status") in {"prepared", "quick_failed"}
-    candidate.update(
-        {"status": status, "evidence": evidence, "evaluated_at": utc_now_iso()}
-    )
-    if was_pending:
-        state["counts"]["quick_evaluated"] += 1
-    _save_campaign(store, job_id, state)
-    set_candidate_status(
-        store,
-        job_id,
-        str(candidate["candidate_id"]),
-        status,
-        evidence=json.dumps(evidence, default=str)[:300],
-    )
-    return candidate
-
-
 def _candidate_validation_passed(report: dict[str, Any]) -> bool:
     """Ignore only deployment artifacts that an isolated bundle cannot own."""
     research_only = {
@@ -1382,7 +1685,7 @@ def _write_timeseries_prefix(
     if cutoff is None or source.suffix.lower() not in {".json", ".jsonl"}:
         return False
     if source.suffix.lower() == ".jsonl":
-        rows: list[dict[str, Any]] = []
+        jsonl_rows: list[dict[str, Any]] = []
         try:
             for line in source.read_text(
                 encoding="utf-8", errors="replace"
@@ -1393,13 +1696,13 @@ def _write_timeseries_prefix(
                     and (stamp := _row_timestamp(row)) is not None
                     and stamp <= cutoff
                 ):
-                    rows.append(row)
+                    jsonl_rows.append(row)
         except (OSError, ValueError):
             return False
         destination.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(
             destination,
-            "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in jsonl_rows),
         )
         return True
     try:

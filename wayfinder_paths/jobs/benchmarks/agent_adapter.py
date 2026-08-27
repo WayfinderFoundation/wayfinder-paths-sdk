@@ -223,7 +223,18 @@ def meter_session_ids(
     connection: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     """Meter known OpenCode sessions, optionally from a fixed start time."""
-    totals = {"sessions": 0, "messages": 0, "tokens_in": 0, "tokens_out": 0}
+    totals: dict[str, Any] = {
+        "sessions": 0,
+        "messages": 0,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "tokens_reasoning": 0,
+        "tokens_cache_read": 0,
+        "tokens_cache_write": 0,
+        "tool_calls": 0,
+        "tool_result_bytes": 0,
+        "tool_result_bytes_by_tool": {},
+    }
     if not session_ids or (connection is None and not session_db.exists()):
         return totals
     owned = connection is None
@@ -233,17 +244,44 @@ def meter_session_ids(
             totals["sessions"] += 1
             query = (
                 "SELECT json_extract(data,'$.tokens.input'), "
-                "json_extract(data,'$.tokens.output') FROM message "
+                "json_extract(data,'$.tokens.output'), "
+                "json_extract(data,'$.tokens.reasoning'), "
+                "json_extract(data,'$.tokens.cache.read'), "
+                "json_extract(data,'$.tokens.cache.write') FROM message "
                 "WHERE session_id=?"
             )
             params: tuple[Any, ...] = (session_id,)
             if since_ms is not None:
                 query += " AND time_created>=?"
                 params = (session_id, int(since_ms))
-            for tokens_in, tokens_out in db.execute(query, params):
+            for (
+                tokens_in,
+                tokens_out,
+                tokens_reasoning,
+                tokens_cache_read,
+                tokens_cache_write,
+            ) in db.execute(query, params):
                 totals["messages"] += 1
                 totals["tokens_in"] += int(tokens_in or 0)
                 totals["tokens_out"] += int(tokens_out or 0)
+                totals["tokens_reasoning"] += int(tokens_reasoning or 0)
+                totals["tokens_cache_read"] += int(tokens_cache_read or 0)
+                totals["tokens_cache_write"] += int(tokens_cache_write or 0)
+            part_query = (
+                "SELECT json_extract(data,'$.tool'), length(data) FROM part "
+                "WHERE session_id=? AND json_extract(data,'$.type')='tool'"
+            )
+            part_params: tuple[Any, ...] = (session_id,)
+            if since_ms is not None:
+                part_query += " AND time_created>=?"
+                part_params = (session_id, int(since_ms))
+            by_tool = totals["tool_result_bytes_by_tool"]
+            for tool, byte_count in db.execute(part_query, part_params):
+                tool_name = str(tool or "unknown")
+                size = int(byte_count or 0)
+                totals["tool_calls"] += 1
+                totals["tool_result_bytes"] += size
+                by_tool[tool_name] = int(by_tool.get(tool_name) or 0) + size
     finally:
         if owned:
             db.close()

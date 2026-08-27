@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -13,7 +14,9 @@ from wayfinder_paths.jobs.archive import (
     quality_diversity_snapshot,
     record_candidate,
 )
+from wayfinder_paths.jobs.compute_lock import ComputeLockBusy
 from wayfinder_paths.jobs.evolution_campaign import (
+    _isolated_full_dev,
     _parent_source,
     _same_family_nonwins,
     _write_timeseries_prefix,
@@ -37,7 +40,11 @@ from wayfinder_paths.jobs.starter_casebook import (
     select_starter_cases,
 )
 from wayfinder_paths.jobs.store import JobStore
-from wayfinder_paths.jobs.worker import _queue_evolution_worker, nudge_evolution_session
+from wayfinder_paths.jobs.worker import (
+    _queue_evolution_worker,
+    nudge_evolution_session,
+    retire_evolution_session,
+)
 
 
 def _job(tmp_path, job_id: str) -> tuple[JobStore, str]:
@@ -275,9 +282,11 @@ def test_finalize_enforces_stage_budgets_and_isolates_candidate_failure(
             "revision": kwargs["revision"],
         }
 
-    monkeypatch.setattr("wayfinder_paths.jobs.evolution_campaign._full_dev", fake_dev)
     monkeypatch.setattr(
-        "wayfinder_paths.jobs.evolution_campaign.evaluate_economic_gate", fake_gate
+        "wayfinder_paths.jobs.evolution_campaign._isolated_full_dev", fake_dev
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign._isolated_economic_gate", fake_gate
     )
     monkeypatch.setattr(
         "wayfinder_paths.jobs.paper_experiment.stage_paper_proposal", fake_stage
@@ -321,11 +330,11 @@ def test_finalize_rejects_economically_unready_finalist(tmp_path, monkeypatch) -
     store.write_json(job_id, "state/evolution_campaign.json", state)
 
     monkeypatch.setattr(
-        "wayfinder_paths.jobs.evolution_campaign._full_dev",
+        "wayfinder_paths.jobs.evolution_campaign._isolated_full_dev",
         lambda *args, **kwargs: {"status": "dev_frontier", "evidence": "passed"},
     )
     monkeypatch.setattr(
-        "wayfinder_paths.jobs.evolution_campaign.evaluate_economic_gate",
+        "wayfinder_paths.jobs.evolution_campaign._isolated_economic_gate",
         lambda *args, **kwargs: {
             "status": "ok",
             "ready": False,
@@ -342,6 +351,54 @@ def test_finalize_rejects_economically_unready_finalist(tmp_path, monkeypatch) -
     candidate = result["candidates"][0]
     assert candidate["status"] == "proposal_rejected"
     assert candidate["evidence"] == "paired utility estimate not > 0"
+
+
+def test_finalize_releases_campaign_state_lock_during_heavy_compute(
+    tmp_path, monkeypatch
+) -> None:
+    import wayfinder_paths.jobs.evolution_campaign as campaign_module
+
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    prepare_candidate(
+        store,
+        job_id,
+        family="lock-probe",
+        summary="prove compute does not pin campaign state",
+        now=started + timedelta(hours=1),
+    )
+    state = campaign_status(store, job_id)
+    state["candidates"][0]["status"] = "quick_complete"
+    state["candidates"][0]["objective"] = {"net_log_growth": 1.0}
+    state["counts"]["quick_evaluated"] = 1
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+
+    real_lock = campaign_module.job_state_lock
+    depth = 0
+
+    @contextmanager
+    def tracked_lock(*args, **kwargs):
+        nonlocal depth
+        tracks_campaign_state = kwargs.get("name") == "evolution_campaign"
+        with real_lock(*args, **kwargs):
+            depth += int(tracks_campaign_state)
+            try:
+                yield
+            finally:
+                depth -= int(tracks_campaign_state)
+
+    def fake_dev(*args, **kwargs):
+        assert depth == 0
+        return {"status": "low_fidelity_rejected", "evidence": "probe complete"}
+
+    monkeypatch.setattr(campaign_module, "job_state_lock", tracked_lock)
+    monkeypatch.setattr(campaign_module, "_isolated_full_dev", fake_dev)
+
+    result = finalize_campaign(store, job_id)
+
+    assert result["status"] == "complete"
+    assert result["counts"]["full_dev"] == 1
 
 
 def test_quality_diversity_keeps_two_non_dominated_per_cell(tmp_path) -> None:
@@ -495,6 +552,15 @@ def test_next_action_pipelines_authoring_against_detached_evaluation(tmp_path) -
     assert "evolution-evaluate" in exhausted["next_action"]
     assert "evolution-prepare" not in exhausted["next_action"]
 
+    draining = campaign_prompt_block(
+        store, job_id, now=datetime(2026, 8, 25, 15, 40, tzinfo=UTC)
+    )
+    assert draining == {
+        "status": "blocked",
+        "campaign_id": state["campaign_id"],
+        "reason": "evolution campaign is draining before finalization",
+    }
+
     elapsed = campaign_prompt_block(
         store, job_id, now=datetime(2026, 8, 25, 16, 30, tzinfo=UTC)
     )
@@ -520,8 +586,14 @@ def test_evolution_uses_a_dedicated_long_lived_session(tmp_path, monkeypatch) ->
         def healthy(self):
             return True
 
+        def session_exists(self, session_id):
+            return False
+
+        def session_statuses(self):
+            return {}
+
         def find_child_session(self, *, parent_id, title):
-            assert title == f"job/{job_id}/evolution"
+            assert title == f"job/{job_id}/evolution/campaign-1"
             return "evolution-session"
 
         def create_session(self, **kwargs):
@@ -545,8 +617,9 @@ def test_evolution_uses_a_dedicated_long_lived_session(tmp_path, monkeypatch) ->
 
     assert result == {"queued": True, "session_id": "evolution-session"}
     assert len(client.prompts) == 1
-    assert "immutable 24-hour forward paper proposal" in client.prompts[0][1]
-    assert "do not wait for its result" in client.prompts[0][1]
+    assert "PAPER-ONLY evolution campaign" in client.prompts[0][1]
+    assert "do not wait on detached evaluation" in client.prompts[0][1]
+    assert client.prompts[0][2] == "wayfinder-evolution-worker"
     session = store.read_json(job_id, "reports/evolution/session.json")
     assert session["session_id"] == "evolution-session"
 
@@ -559,8 +632,14 @@ class _FakeEvolutionClient:
     def healthy(self) -> bool:
         return True
 
+    def session_exists(self, session_id: str) -> bool:
+        return False
+
+    def session_statuses(self) -> dict[str, Any]:
+        return {}
+
     def find_child_session(self, *, parent_id: Any, title: str) -> str:
-        assert title == f"job/{self.job_id}/evolution"
+        assert title == f"job/{self.job_id}/evolution/campaign-1"
         return "evolution-session"
 
     def create_session(self, **kwargs: Any) -> str:
@@ -621,6 +700,128 @@ def test_op_completion_nudge_reuses_session_and_respects_kill_switch(
     monkeypatch.setenv("WAYFINDER_EVOLUTION_NUDGE", "0")
     assert nudge_evolution_session(store, job_id) is None
     assert len(client.prompts) == 1
+
+
+def test_parentless_evolution_nudges_reuse_persisted_campaign_session(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    store.write_json(
+        job_id,
+        "state/evolution_campaign.json",
+        {"campaign_id": "campaign-1", "status": "active"},
+    )
+    actions = iter(["prepare c1", "prepare c2", "prepare c2"])
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.campaign_prompt_block",
+        lambda store, job_id: {
+            "campaign_id": "campaign-1",
+            "next_action": next(actions),
+        },
+    )
+    monkeypatch.delenv("OPENCODE_SESSION_ID", raising=False)
+    monkeypatch.delenv("OPENCODE_SESSIONID", raising=False)
+
+    class ParentlessClient:
+        def __init__(self) -> None:
+            self.created = 0
+            self.prompts: list[str] = []
+            self.sessions: set[str] = set()
+
+        def healthy(self) -> bool:
+            return True
+
+        def session_exists(self, session_id: str) -> bool:
+            return session_id in self.sessions
+
+        def session_statuses(self) -> dict[str, Any]:
+            return {}
+
+        def find_child_session(self, *, parent_id: Any, title: str) -> None:
+            assert parent_id is None
+            return None
+
+        def create_session(self, **kwargs: Any) -> str:
+            self.created += 1
+            session_id = f"session-{self.created}"
+            self.sessions.add(session_id)
+            return session_id
+
+        def prompt_async(self, *, session_id: str, text: str, agent: str) -> bool:
+            self.prompts.append(session_id)
+            return True
+
+    client = ParentlessClient()
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.OPENCODE_CLIENT", client)
+
+    first = _queue_evolution_worker(store, job_id)
+    second = nudge_evolution_session(store, job_id)
+    duplicate = nudge_evolution_session(store, job_id)
+
+    assert first == {"queued": True, "session_id": "session-1"}
+    assert second == {"queued": True, "session_id": "session-1"}
+    assert duplicate == {
+        "queued": False,
+        "session_id": "session-1",
+        "deduplicated": True,
+    }
+    assert client.created == 1
+    assert client.prompts == ["session-1", "session-1"]
+
+
+def test_evolution_session_retirement_exports_before_exact_delete(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    store.write_json(
+        job_id,
+        "reports/evolution/session.json",
+        {
+            "campaign_id": "campaign-1",
+            "session_id": "session-1",
+            "created_at": "2026-08-25T12:00:00+00:00",
+        },
+    )
+
+    class RetireClient:
+        def __init__(self) -> None:
+            self.aborted: list[str] = []
+            self.deleted: list[str] = []
+
+        def session_statuses(self) -> dict[str, Any]:
+            return {"session-1": {"type": "busy"}}
+
+        def abort_session(self, session_id: str) -> bool:
+            self.aborted.append(session_id)
+            return True
+
+        def session_exists(self, session_id: str) -> bool:
+            return True
+
+        def delete_session(self, session_id: str) -> bool:
+            self.deleted.append(session_id)
+            return True
+
+    client = RetireClient()
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.OPENCODE_CLIENT", client)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.benchmarks.agent_adapter.meter_session_ids",
+        lambda session_ids: {
+            "sessions": 1,
+            "tokens_in": 123,
+            "tokens_out": 7,
+            "tool_result_bytes": 456,
+        },
+    )
+
+    retired = retire_evolution_session(store, job_id, "campaign-1")
+
+    assert retired and retired["retired"] is True
+    assert client.aborted == ["session-1"]
+    assert client.deleted == ["session-1"]
+    archive = store.read_json(job_id, "reports/evolution/sessions.json")
+    assert archive["sessions"][0]["metrics"]["tool_result_bytes"] == 456
+    assert archive["sessions"][0]["retired_at"]
 
 
 _EVAL_SPEC = {
@@ -711,8 +912,7 @@ def test_prepare_candidate_seeds_declared_window(tmp_path) -> None:
     )
     bundle_root = store.job_dir(job_id) / candidate["bundle"]
     assert (
-        compute_workspace_revision(bundle_root)
-        == manifest["source_bundle"]["revision"]
+        compute_workspace_revision(bundle_root) == manifest["source_bundle"]["revision"]
     )
 
     # A source that already declared a window (legacy lookback_bars) is
@@ -772,7 +972,11 @@ def test_evaluate_accepts_seeded_candidate(tmp_path) -> None:
         now=datetime(2026, 8, 25, 13, tzinfo=UTC),
     )
     script = (
-        store.job_dir(job_id) / candidate["bundle"] / "workspace" / "src" / "strategy.py"
+        store.job_dir(job_id)
+        / candidate["bundle"]
+        / "workspace"
+        / "src"
+        / "strategy.py"
     )
     script.write_text(
         script.read_text(encoding="utf-8") + "\nSTRUCTURAL_PROBE = True\n",
@@ -782,6 +986,68 @@ def test_evaluate_accepts_seeded_candidate(tmp_path) -> None:
     result = evaluate_candidate(store, job_id, candidate["candidate_id"])
 
     assert result["status"] == "quick_complete", result.get("evidence")
+
+
+def test_evaluate_releases_claim_when_compute_is_transiently_busy(
+    tmp_path, monkeypatch
+) -> None:
+    import wayfinder_paths.jobs.evolution_campaign as campaign_module
+
+    store, job_id = _evaluatable_job(tmp_path)
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="transient compute probe",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+
+    @contextmanager
+    def busy_compute(*args, **kwargs):
+        raise ComputeLockBusy("box busy")
+        yield
+
+    monkeypatch.setattr(campaign_module, "experiment_compute_lock", busy_compute)
+
+    with pytest.raises(ComputeLockBusy, match="box busy"):
+        evaluate_candidate(store, job_id, candidate["candidate_id"])
+
+    state = campaign_status(store, job_id)
+    recovered = state["candidates"][0]
+    assert recovered["status"] == "quick_failed"
+    assert "evaluation_claim_id" not in recovered
+    assert state["counts"]["quick_evaluated"] == 0
+
+
+def test_full_dev_runs_real_small_simulations_in_disposable_child(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="real isolated full-dev probe",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    script = (
+        store.job_dir(job_id)
+        / candidate["bundle"]
+        / "workspace"
+        / "src"
+        / "strategy.py"
+    )
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\nFULL_DEV_PROBE = True\n",
+        encoding="utf-8",
+    )
+
+    outcome = _isolated_full_dev(store, job_id, candidate, tune=False)
+
+    assert outcome["status"] in {"dev_frontier", "low_fidelity_rejected"}
+    resources = store.read_json(job_id, "reports/evolution/resources.json")
+    assert resources["latest"]["phase"] == "full_dev"
+    assert resources["latest"]["candidate_id"] == candidate["candidate_id"]
 
 
 def test_casebook_includes_bounded_window_parity_case() -> None:

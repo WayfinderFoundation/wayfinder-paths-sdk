@@ -236,6 +236,34 @@ def test_external_directory_grants_cover_vault_deny_governance_and_catch_all() -
     assert '"governance/**": deny' in worker
 
 
+def test_evolution_worker_has_minimal_vault_access_and_denies_audit() -> None:
+    path = ".opencode/agents/wayfinder-evolution-worker.md"
+    frontmatter = yaml.safe_load(Path(path).read_text().split("---\n")[1])
+    mapping = _external_directory_map(path)
+    assert list(mapping.items()) == [
+        ("*", "deny"),
+        ("/wf/user_vault/wayfinder/**", "allow"),
+        ("/wf/user_vault/governance/**", "deny"),
+        ("/wf/user_vault/audit/**", "deny"),
+    ]
+    manifest = Path(path).read_text()
+    assert '"governance/**": deny' in manifest
+    assert '"audit/**": deny' in manifest
+    assert frontmatter["permission"]["read"] == {
+        "*": "deny",
+        ".wayfinder/jobs/**": "allow",
+        "/wf/user_vault/wayfinder/jobs/**": "allow",
+    }
+    assert frontmatter["permission"]["write"] == frontmatter["permission"]["read"]
+    assert list(frontmatter["permission"]["edit"].items()) == [
+        ("*", "deny"),
+        (".wayfinder/jobs/**", "allow"),
+        ("governance/**", "deny"),
+        ("audit/**", "deny"),
+    ]
+    assert frontmatter["permission"]["bash"] == "deny"
+
+
 def _wildcard_match(string: str, pattern: str) -> bool:
     """Faithful port of opencode's Wildcard.match
     (packages/opencode/src/util/wildcard.ts L3-L19 @ v1.18.18, commit

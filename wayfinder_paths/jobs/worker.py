@@ -11,13 +11,16 @@ from loguru import logger
 
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.jobs.derived_features import refresh_derived_features_if_stale
-from wayfinder_paths.jobs.failures import cpu_steal_pct, disk_used_pct
+from wayfinder_paths.jobs.failures import disk_used_pct
 from wayfinder_paths.jobs.forward import is_forward_empty
 from wayfinder_paths.jobs.ledger import tail_ledger
 from wayfinder_paths.jobs.lifecycle import bootstrap_directive
 from wayfinder_paths.jobs.memory_hygiene import sanitize_job_memory
 from wayfinder_paths.jobs.models import (
+    EVOLUTION_SESSION_ARCHIVE_PATH,
+    EVOLUTION_SESSION_PATH,
     JOB_AUTO_WORKER_AGENT_NAME,
+    JOB_EVOLUTION_WORKER_AGENT_NAME,
     JOB_WORKER_AGENT_NAME,
     AgentMode,
     normalize_agent_mode,
@@ -561,14 +564,13 @@ def _compute_status_block(root: Path) -> dict[str, Any]:
     from the box on every wake so an infrastructure claim can always be
     checked against current reality. Best-effort on every field, never
     raises."""
-    mem_available_mb: int | None = None
-    try:
-        for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
-            if line.startswith("MemAvailable:"):
-                mem_available_mb = int(line.split()[1]) // 1024
-                break
-    except Exception:  # noqa: BLE001 — non-Linux boxes have no /proc/meminfo
-        mem_available_mb = None
+    from wayfinder_paths.jobs.resource_envelope import resource_snapshot
+
+    resources = resource_snapshot(sample_cpu=True)
+    available = resources.get("mem_available_mb")
+    mem_available_mb = (
+        int(available) if isinstance(available, (int, float)) else None
+    )
     last_experiment_at: str | None = None
     experiments_path = root / "results" / "backtest" / "experiments.jsonl"
     try:
@@ -589,7 +591,7 @@ def _compute_status_block(root: Path) -> dict[str, Any]:
         ).isoformat()
     except Exception:  # noqa: BLE001
         last_backtest_ok_at = None
-    steal = cpu_steal_pct()
+    steal = resources.get("cpu_steal_pct")
     disk = disk_used_pct(root)
     try:
         loadavg: list[float] | None = [round(v, 2) for v in os.getloadavg()]
@@ -1718,49 +1720,78 @@ def nudge_evolution_session(store: JobStore, job_id: str) -> dict[str, Any] | No
 def _prompt_evolution_session(
     store: JobStore, job_id: str, campaign: dict[str, Any], *, source: str
 ) -> dict[str, Any] | None:
+    from wayfinder_paths.jobs.compute_lock import job_state_lock
+
+    campaign_id = str(campaign.get("campaign_id") or "").strip()
+    if not campaign_id:
+        return {"queued": False, "error": "evolution campaign id missing"}
     controller_session_id = os.environ.get("OPENCODE_SESSION_ID") or os.environ.get(
         "OPENCODE_SESSIONID"
     )
-    title = f"job/{job_id}/evolution"
+    title = f"job/{job_id}/evolution/{campaign_id}"
+    prompt = (
+        "Continue this PAPER-ONLY evolution campaign. Follow `next_action`; "
+        "do not wait on detached evaluation. The dedicated agent instructions "
+        "already contain the safety and research contract.\n\nCampaign:\n"
+        + _canonical_json(campaign, max_chars=6_000)
+    )
+    fingerprint = hashlib.sha256(prompt.encode()).hexdigest()
+    created_at = utc_now_iso()
     try:
-        session_id = OPENCODE_CLIENT.find_child_session(
-            parent_id=controller_session_id, title=title
-        ) or OPENCODE_CLIENT.create_session(
-            parent_id=controller_session_id,
-            title=title,
-            agent=JOB_WORKER_AGENT_NAME,
-        )
+        with job_state_lock(store.repo_root, job_id, name="evolution_session"):
+            session = store.read_json(job_id, EVOLUTION_SESSION_PATH, default={}) or {}
+            session_id = str(session.get("session_id") or "")
+            stored_campaign = str(session.get("campaign_id") or "")
+            reusable = bool(
+                session_id
+                and stored_campaign in {"", campaign_id}
+                and not session.get("retired_at")
+                and OPENCODE_CLIENT.session_exists(session_id) is not False
+            )
+            if not reusable:
+                session_id = OPENCODE_CLIENT.find_child_session(
+                    parent_id=controller_session_id, title=title
+                ) or str(
+                    OPENCODE_CLIENT.create_session(
+                        parent_id=controller_session_id,
+                        title=title,
+                        agent=JOB_EVOLUTION_WORKER_AGENT_NAME,
+                    )
+                    or ""
+                )
+                session = {
+                    "schema_version": "1.0",
+                    "campaign_id": campaign_id,
+                    "session_id": session_id,
+                    "created_at": created_at,
+                }
+            if not session_id:
+                return {"queued": False, "error": "OpenCode server unavailable"}
+            if OPENCODE_CLIENT.session_statuses().get(session_id):
+                return {"queued": False, "session_id": session_id, "busy": True}
+            if session.get("last_prompt_fingerprint") == fingerprint:
+                return {
+                    "queued": False,
+                    "session_id": session_id,
+                    "deduplicated": True,
+                }
+            queued = OPENCODE_CLIENT.prompt_async(
+                session_id=session_id,
+                text=prompt,
+                agent=JOB_EVOLUTION_WORKER_AGENT_NAME,
+            )
+            if queued:
+                session.update(
+                    {
+                        "campaign_id": campaign_id,
+                        "last_prompt_at": created_at,
+                        "last_prompt_fingerprint": fingerprint,
+                        "last_source": source,
+                    }
+                )
+            store.write_json(job_id, EVOLUTION_SESSION_PATH, session)
     except Exception as exc:  # noqa: BLE001 - optional lane cannot block the funnel
         return {"queued": False, "error": str(exc)[:300]}
-    if not session_id:
-        return {"queued": False, "error": "OpenCode server unavailable"}
-    prompt = (
-        "Run the dedicated open-ended evolution campaign for this Wayfinder job.\n\n"
-        "This is a parallel PAPER-ONLY research lane. Follow `next_action` in the "
-        "campaign block below. Edit only its named candidate bundle; never edit the "
-        "active workspace. Candidate inputs are frozen at campaign start. A finalist "
-        "is only staged for an immutable 24-hour forward paper proposal; it cannot "
-        "authorize live trading or bypass owner promotion. Reuse the repository's "
-        "research toolkit and starter casebook instead of recreating indicators. "
-        "After launching an evolution-evaluate, do not wait for its result — keep "
-        "preparing candidates until the generation budget or the deadline is "
-        "reached; evaluation results arrive via follow-up prompts. Declare "
-        "execution_params.warmup_bars covering your longest indicator lookback "
-        "plus buffer; recompute from that bounded window or carry state "
-        "incrementally — never recompute over full history.\n\n"
-        "Campaign:\n" + _canonical_json(campaign, max_chars=12_000)
-    )
-    queued = OPENCODE_CLIENT.prompt_async(
-        session_id=session_id,
-        text=prompt,
-        agent=JOB_WORKER_AGENT_NAME,
-    )
-    created_at = utc_now_iso()
-    store.write_json(
-        job_id,
-        "reports/evolution/session.json",
-        {"session_id": session_id, "created_at": created_at},
-    )
     store.write_json(
         job_id,
         "reports/evolution/latest.json",
@@ -1788,6 +1819,92 @@ def _prompt_evolution_session(
         },
     )
     return {"queued": queued, "session_id": session_id}
+
+
+def retire_evolution_session(
+    store: JobStore, job_id: str, campaign_id: str
+) -> dict[str, Any] | None:
+    """Export and delete exactly the automation-owned session for a campaign.
+
+    The export is written before deletion, making retries safe if the process
+    dies between the durable accounting write and the OpenCode API call.
+    """
+    from wayfinder_paths.jobs.benchmarks.agent_adapter import meter_session_ids
+    from wayfinder_paths.jobs.compute_lock import job_state_lock
+
+    with job_state_lock(store.repo_root, job_id, name="evolution_session"):
+        session = store.read_json(job_id, EVOLUTION_SESSION_PATH, default={}) or {}
+        if str(session.get("campaign_id") or "") != str(campaign_id):
+            return None
+        if session.get("retired_at"):
+            return {
+                "retired": True,
+                "already_retired": True,
+                "session_id": session.get("session_id"),
+            }
+        session_id = str(session.get("session_id") or "")
+        if not session_id:
+            return None
+        try:
+            metrics = meter_session_ids([session_id])
+        except Exception as exc:  # noqa: BLE001 - never delete before export
+            return {
+                "retired": False,
+                "session_id": session_id,
+                "error": f"session metrics export failed: {str(exc)[:300]}",
+            }
+        archive = (
+            store.read_json(job_id, EVOLUTION_SESSION_ARCHIVE_PATH, default={}) or {}
+        )
+        entries = list(archive.get("sessions") or [])
+        exported = {
+            "campaign_id": str(campaign_id),
+            "session_id": session_id,
+            "created_at": session.get("created_at"),
+            "exported_at": utc_now_iso(),
+            "metrics": metrics,
+        }
+        entries = [
+            item
+            for item in entries
+            if not (
+                item.get("campaign_id") == str(campaign_id)
+                and item.get("session_id") == session_id
+            )
+        ]
+        entries.append(exported)
+        store.write_json(
+            job_id,
+            EVOLUTION_SESSION_ARCHIVE_PATH,
+            {"schema_version": "1.0", "sessions": entries},
+        )
+        if OPENCODE_CLIENT.session_statuses().get(session_id):
+            if not OPENCODE_CLIENT.abort_session(session_id):
+                return {"retired": False, "session_id": session_id, "busy": True}
+        deleted = OPENCODE_CLIENT.session_exists(
+            session_id
+        ) is False or OPENCODE_CLIENT.delete_session(session_id)
+        if not deleted:
+            return {"retired": False, "session_id": session_id}
+        retired_at = utc_now_iso()
+        session["retired_at"] = retired_at
+        store.write_json(job_id, EVOLUTION_SESSION_PATH, session)
+        entries[-1]["retired_at"] = retired_at
+        store.write_json(
+            job_id,
+            EVOLUTION_SESSION_ARCHIVE_PATH,
+            {"schema_version": "1.0", "sessions": entries},
+        )
+        store.append_journal(
+            job_id,
+            {
+                "type": "evolution_session_retired",
+                "campaign_id": str(campaign_id),
+                "session_id": session_id,
+                "metrics": metrics,
+            },
+        )
+        return {"retired": True, "session_id": session_id, "metrics": metrics}
 
 
 def _write_report(
