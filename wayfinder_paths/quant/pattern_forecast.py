@@ -13,7 +13,10 @@ from typing import Any
 
 import numpy as np
 
-from wayfinder_paths.quant.pattern_match import _normalized_shape, _path_features
+from wayfinder_paths.quant.pattern_match import (
+    normalized_price_shape,
+    price_path_features,
+)
 
 DEFAULT_HORIZONS = (2, 4, 8, 24, 48)
 DEFAULT_INTERVAL_MS = 15 * 60 * 1_000
@@ -128,10 +131,10 @@ def forecast_price_analogs(
     query_end = len(closes) - 1
     query_start = query_end - config.pattern_bars + 1
     query_values = closes[query_start : query_end + 1]
-    query_shape = _normalized_shape(query_values)
+    query_shape = normalized_price_shape(query_values)
     if query_shape is None:
         raise ValueError("pattern has zero price variance")
-    query_range, query_volatility = _path_features(query_values)
+    query_range, query_volatility = price_path_features(query_values)
 
     max_horizon = max(config.horizons)
     minimum_start = max(0, query_end - config.history_limit + 1)
