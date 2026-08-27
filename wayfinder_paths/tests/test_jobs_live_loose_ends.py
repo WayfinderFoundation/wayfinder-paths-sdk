@@ -253,11 +253,15 @@ def test_evolution_worker_has_minimal_vault_access_and_denies_audit() -> None:
         "*": "deny",
         ".wayfinder/jobs/**": "allow",
         "/wf/user_vault/wayfinder/jobs/**": "allow",
+        "wf/sdk/.wayfinder/jobs/**": "allow",
+        "wf/user_vault/wayfinder/jobs/**": "allow",
     }
     assert frontmatter["permission"]["write"] == frontmatter["permission"]["read"]
     assert list(frontmatter["permission"]["edit"].items()) == [
         ("*", "deny"),
         (".wayfinder/jobs/**", "allow"),
+        ("wf/sdk/.wayfinder/jobs/**", "allow"),
+        ("wf/user_vault/wayfinder/jobs/**", "allow"),
         ("governance/**", "deny"),
         ("audit/**", "deny"),
     ]
@@ -275,6 +279,38 @@ def test_evolution_worker_has_minimal_vault_access_and_denies_audit() -> None:
         "wayfinder_contracts_execute",
     ):
         assert _evaluate(denied, "*", ruleset)["action"] == "deny"
+
+
+def test_evolution_worker_can_mutate_candidate_from_global_project() -> None:
+    """The production image has no git metadata, so opencode's worktree is `/`.
+
+    Read and edit permissions receive paths relative to that worktree, not the
+    absolute paths passed to the tools. Cover both names the worker uses for a
+    candidate: the SDK's `.wayfinder` symlink and its canonical vault target.
+    """
+    path = ".opencode/agents/wayfinder-evolution-worker.md"
+    frontmatter = yaml.safe_load(Path(path).read_text().split("---\n")[1])
+    permission = frontmatter["permission"]
+    candidates = (
+        "wf/sdk/.wayfinder/jobs/majors-5m-lab/research/evolution/"
+        "campaigns/campaign-1/candidates/candidate-1/workspace/src/strategy.py",
+        "wf/user_vault/wayfinder/jobs/majors-5m-lab/research/evolution/"
+        "campaigns/campaign-1/candidates/candidate-1/workspace/src/strategy.py",
+    )
+
+    for operation in ("read", "edit"):
+        ruleset = _from_config({operation: permission[operation]})
+        for candidate in candidates:
+            assert _evaluate(operation, candidate, ruleset)["action"] == "allow"
+        assert _evaluate(operation, "wf/sdk/AGENTS.md", ruleset)["action"] == "deny"
+        assert (
+            _evaluate(
+                operation,
+                "wf/user_vault/audit/evolution/private.json",
+                ruleset,
+            )["action"]
+            == "deny"
+        )
 
 
 def _wildcard_match(string: str, pattern: str) -> bool:

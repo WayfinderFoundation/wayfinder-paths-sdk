@@ -8,10 +8,14 @@ permission:
   task:
     "*": deny
   question: deny
+  # Baked images have no git metadata, so opencode authorizes file tools with
+  # paths relative to the global `/` worktree (`wf/...`, without a leading `/`).
   read:
     "*": deny
     ".wayfinder/jobs/**": allow
     "/wf/user_vault/wayfinder/jobs/**": allow
+    "wf/sdk/.wayfinder/jobs/**": allow
+    "wf/user_vault/wayfinder/jobs/**": allow
   grep: deny
   glob: deny
   list: allow
@@ -19,9 +23,13 @@ permission:
     "*": deny
     ".wayfinder/jobs/**": allow
     "/wf/user_vault/wayfinder/jobs/**": allow
+    "wf/sdk/.wayfinder/jobs/**": allow
+    "wf/user_vault/wayfinder/jobs/**": allow
   edit:
     "*": deny
     ".wayfinder/jobs/**": allow
+    "wf/sdk/.wayfinder/jobs/**": allow
+    "wf/user_vault/wayfinder/jobs/**": allow
     "governance/**": deny
     "audit/**": deny
   external_directory:
