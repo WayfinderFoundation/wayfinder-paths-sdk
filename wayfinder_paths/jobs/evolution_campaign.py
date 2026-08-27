@@ -72,6 +72,7 @@ from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.resource_envelope import (
     evolution_resource_phase,
     require_evolution_headroom,
+    require_evolution_launch_headroom,
 )
 from wayfinder_paths.jobs.robustness import _strategy_warmup_bars
 from wayfinder_paths.jobs.starter_casebook import select_starter_cases
@@ -249,6 +250,13 @@ def _start_campaign(
         store, job_id, now=current, reserve_campaign=True
     ):
         raise ValueError("evolution campaign does not fit outside peak pricing")
+    require_evolution_launch_headroom()
+    from wayfinder_paths.jobs.worker import job_worker_session_busy
+
+    if job_worker_session_busy(job_id, "intervene"):
+        raise TransientInfrastructureError(
+            "evolution campaign deferred while the intervention worker is active"
+        )
 
     root = store.job_dir(job_id)
     dataset_path = root / "results" / "backtest" / "input_bars.json"
@@ -1110,7 +1118,7 @@ def campaign_prompt_block(
     """Bounded dynamic context; the full casebook is never reloaded into prompts."""
     try:
         state = maybe_start_campaign(store, job_id, now=now)
-    except (FileNotFoundError, ValueError) as exc:
+    except (FileNotFoundError, TransientInfrastructureError, ValueError) as exc:
         return {"status": "blocked", "reason": str(exc)}
     if not state or state.get("status") != "active":
         return None

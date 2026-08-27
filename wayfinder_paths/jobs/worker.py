@@ -10,6 +10,7 @@ from typing import Any
 from loguru import logger
 
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
+from wayfinder_paths.core.config import is_opencode_instance
 from wayfinder_paths.jobs.derived_features import refresh_derived_features_if_stale
 from wayfinder_paths.jobs.failures import disk_used_pct
 from wayfinder_paths.jobs.forward import is_forward_empty
@@ -568,9 +569,7 @@ def _compute_status_block(root: Path) -> dict[str, Any]:
 
     resources = resource_snapshot(sample_cpu=True)
     available = resources.get("mem_available_mb")
-    mem_available_mb = (
-        int(available) if isinstance(available, (int, float)) else None
-    )
+    mem_available_mb = int(available) if isinstance(available, (int, float)) else None
     last_experiment_at: str | None = None
     experiments_path = root / "results" / "backtest" / "experiments.jsonl"
     try:
@@ -1549,10 +1548,35 @@ def run_job_worker(
         return report
 
     # Open-ended evolution has its own long-lived session. It is intentionally
-    # queued independently from the hourly funnel so a four-hour campaign can
-    # keep coherent context without pinning the normal island rotation.
+    # kept separate from the hourly funnel so a four-hour campaign can keep
+    # coherent context without running two LLM sessions against one CPU pool.
+    evolution_wake: dict[str, Any] | None = None
     if mode_typed == "intervene" and apply_proposal_id is None:
-        _queue_evolution_worker(store, job.id)
+        evolution_wake = _queue_evolution_worker(store, job.id)
+        from wayfinder_paths.jobs.evolution_campaign import campaign_status
+
+        evolution_status = campaign_status(store, job.id).get("status")
+        evolution_claimed_lane = bool(
+            evolution_wake is not None and not evolution_wake.get("error")
+        )
+        if evolution_claimed_lane or evolution_status in {"active", "finalizing"}:
+            session_id = str((evolution_wake or {}).get("session_id") or "") or None
+            reason = str((evolution_wake or {}).get("reason") or "").strip()
+            return _write_report(
+                store=store,
+                job_id=job.id,
+                mode=mode_typed,
+                status="green",
+                summary=(
+                    f"Intervention LLM wake deferred to evolution: {reason}"
+                    if reason
+                    else "Intervention LLM wake deferred while evolution owns the lane"
+                ),
+                session_id=session_id,
+                queued=False,
+                error=None,
+                wake_context=wake_context,
+            )
 
     # Wake economy cheap-skip (same tier as the auto-limits guard above): a
     # saturated paper job whose evidence watermark has not moved since the
@@ -1662,6 +1686,24 @@ def _ensure_worker_session(job_id: str, mode: str) -> str | None:
         return None
 
 
+def job_worker_session_busy(job_id: str, mode: str) -> bool:
+    """Whether the ordinary job worker currently owns the shared LLM lane."""
+    if not is_opencode_instance() or not OPENCODE_CLIENT.healthy():
+        return False
+    controller_session_id = os.environ.get("OPENCODE_SESSION_ID") or os.environ.get(
+        "OPENCODE_SESSIONID"
+    )
+    try:
+        session_id = OPENCODE_CLIENT.find_child_session(
+            parent_id=controller_session_id,
+            title=f"job/{job_id}/{mode}",
+        )
+        return bool(session_id and OPENCODE_CLIENT.session_statuses().get(session_id))
+    except Exception:
+        logger.opt(exception=True).debug("Failed to inspect OpenCode job worker")
+        return False
+
+
 def _queue_evolution_worker(store: JobStore, job_id: str) -> dict[str, Any] | None:
     from wayfinder_paths.jobs.improver.spec import ImproverSpec
 
@@ -1676,8 +1718,31 @@ def _queue_evolution_worker(store: JobStore, job_id: str) -> dict[str, Any] | No
             campaign_prompt_block,
             campaign_status,
         )
+        from wayfinder_paths.jobs.resource_envelope import evolution_launch_readiness
 
         if campaign_due(store, job_id):
+            readiness = evolution_launch_readiness()
+            if not readiness["ready"]:
+                deferred = {
+                    "queued": False,
+                    "starting": False,
+                    "reason": str(readiness.get("reason") or "resource guard"),
+                }
+                if readiness.get("source") == "governor":
+                    # A healthy governor with low credit needs the ordinary
+                    # LLM lane quiet so the reserve can actually recover.
+                    deferred["deferred"] = True
+                else:
+                    # A stale/invalid governor must not wedge both lanes.
+                    deferred["error"] = deferred["reason"]
+                return deferred
+            if job_worker_session_busy(job_id, "intervene"):
+                return {
+                    "queued": False,
+                    "starting": False,
+                    "deferred": True,
+                    "reason": "the intervention worker is already active",
+                }
             started = spawn_detached_op(
                 store, job_id, "evolution_start", {"job_id": job_id}
             )

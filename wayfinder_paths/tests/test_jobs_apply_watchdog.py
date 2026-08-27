@@ -1086,7 +1086,6 @@ def test_watchdog_drains_and_retires_session_before_finalize(
             retired.append(campaign_id) or {"retired": True}
         ),
     )
-
     result = _run_evolution_campaign_pass(
         store, job.id, deadline - timedelta(minutes=20)
     )
@@ -1127,6 +1126,16 @@ def test_watchdog_expires_campaign_that_never_generates_a_candidate(
             retired.append(campaign_id) or {"retired": True}
         ),
     )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.op_process.terminate_campaign_ops",
+        lambda store, job_id, campaign_id: [
+            {
+                "pid": 4242,
+                "op": "evolution_prepare",
+                "resource_tier": "control",
+            }
+        ],
+    )
 
     assert (
         _run_evolution_campaign_pass(
@@ -1142,6 +1151,13 @@ def test_watchdog_expires_campaign_that_never_generates_a_candidate(
         "action": "evolution_campaign_bootstrap_failed",
         "campaign_id": "campaign-1",
         "session_retired": True,
+        "reaped_ops": [
+            {
+                "pid": 4242,
+                "op": "evolution_prepare",
+                "resource_tier": "control",
+            }
+        ],
     }
     assert retired == ["campaign-1"]
     state = store.read_json(job.id, "state/evolution_campaign.json")
@@ -1149,6 +1165,7 @@ def test_watchdog_expires_campaign_that_never_generates_a_candidate(
     assert state["stage"] == "expired"
     assert state["expiry_reason"] == "no_candidates_generated"
     assert "evolution_campaign_bootstrap_failed" in _journal_types(store, job.id)
+    assert "evolution_campaign_ops_reaped" in _journal_types(store, job.id)
 
 
 def test_watchdog_keeps_campaign_after_first_candidate(tmp_path: Path) -> None:

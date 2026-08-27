@@ -9,21 +9,20 @@ parseable result file = done)."""
 from __future__ import annotations
 
 import json
+import os
 import subprocess
-import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.jobs.compute_lock import job_state_lock
+from wayfinder_paths.jobs.execution.op_process import op_runner_command
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 
 def _pid_alive(pid: Any) -> bool:
-    import os
-
     if not isinstance(pid, int) or pid <= 0:
         return False
     try:
@@ -120,7 +119,7 @@ def _spawn_detached_op(
     result_path.unlink(missing_ok=True)
     with log_path.open("wb") as log_handle, result_path.open("wb") as result_handle:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "wayfinder_paths.jobs.execution.op_runner"],
+            op_runner_command(op),
             stdin=subprocess.PIPE,
             stdout=result_handle,
             stderr=log_handle,

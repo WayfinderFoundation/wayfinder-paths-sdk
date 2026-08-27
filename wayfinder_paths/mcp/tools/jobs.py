@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sys
 from pathlib import Path
 from typing import Any, Literal
 
@@ -19,6 +18,7 @@ from wayfinder_paths.jobs.apply_launcher import launch_application
 from wayfinder_paths.jobs.backtest_artifacts import diagnose_backtest
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.experiments import list_experiments
+from wayfinder_paths.jobs.execution.op_process import op_runner_command
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
 from wayfinder_paths.jobs.models import (
@@ -112,12 +112,11 @@ async def _run_job_op(op: str, kwargs: dict[str, Any]) -> dict[str, Any]:
     clean tool error. See op_runner for the protocol.
     """
     proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "wayfinder_paths.jobs.execution.op_runner",
+        *op_runner_command(op),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
     stdout, stderr = await proc.communicate(
         json.dumps({"op": op, "kwargs": kwargs}).encode()
@@ -203,9 +202,7 @@ async def _start_background_op(
     result_path.unlink(missing_ok=True)
     with log_path.open("wb") as log_handle, result_path.open("wb") as result_handle:
         proc = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "wayfinder_paths.jobs.execution.op_runner",
+            *op_runner_command(op),
             stdin=asyncio.subprocess.PIPE,
             stdout=result_handle,
             stderr=log_handle,
@@ -940,7 +937,9 @@ async def core_jobs(
             return err("invalid_request", "forward_experience requires job_id")
         kwargs = {"job_id": job_id}
         if background is not False:
-            return await _start_background_op(store, job_id, "forward_experience", kwargs)
+            return await _start_background_op(
+                store, job_id, "forward_experience", kwargs
+            )
         return await _run_job_op("forward_experience", kwargs)
 
     if action == "promote_params":
