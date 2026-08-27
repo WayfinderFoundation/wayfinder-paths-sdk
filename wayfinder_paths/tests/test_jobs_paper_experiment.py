@@ -12,6 +12,7 @@ from wayfinder_paths.jobs.paper_experiment import (
     _proposal_verdict,
     _resource_cost,
     _verdict_report,
+    current_job_token_usage,
     ensure_paper_experiment,
     experiment_status,
     maybe_adjudicate_proposals,
@@ -44,6 +45,42 @@ def _candidate_source(store: JobStore, job_id: str, name: str = "candidate-sourc
     )
     (source / "job.yaml").write_bytes((root / "job.yaml").read_bytes())
     return source, compute_workspace_revision(source)
+
+
+def test_archived_evolution_sessions_remain_in_resource_accounting(
+    tmp_path: Path,
+) -> None:
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    store, job_id, state = _job(tmp_path, now=started)
+    store.write_json(
+        job_id,
+        "reports/evolution/sessions.json",
+        {
+            "sessions": [
+                {
+                    "campaign_id": "campaign-1",
+                    "session_id": "deleted-session",
+                    "created_at": started.isoformat(),
+                    "retired_at": (started + timedelta(hours=4)).isoformat(),
+                    "metrics": {
+                        "sessions": 1,
+                        "tokens_in": 100,
+                        "tokens_out": 10,
+                        "tool_calls": 3,
+                        "tool_result_bytes": 500,
+                        "tool_result_bytes_by_tool": {"read": 400, "bash": 100},
+                    },
+                }
+            ]
+        },
+    )
+
+    usage = current_job_token_usage(store, job_id, arm="evolution", state=state)
+
+    assert usage["sessions"] == 1
+    assert usage["tokens_in"] == 100
+    assert usage["tool_result_bytes"] == 500
+    assert usage["tool_result_bytes_by_tool"] == {"read": 400, "bash": 100}
 
 
 def _write_days(

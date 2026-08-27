@@ -19,6 +19,7 @@ score_run/aggregate pipeline as every other lane.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -29,8 +30,24 @@ from wayfinder_paths.jobs.benchmarks.compiler import write_interpreter
 from wayfinder_paths.jobs.benchmarks.grammar import Genome
 
 DEFAULT_OPENCODE = Path.home() / ".opencode" / "bin" / "opencode"
-DEFAULT_SESSION_DB = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+
+
+def resolve_session_db() -> Path:
+    """Locate the active OpenCode database across local and Fly layouts."""
+    override = os.getenv("OPENCODE_DB_PATH")
+    if override:
+        return Path(override)
+    persisted = Path("/wf/user_vault/conversations/opencode.db")
+    if persisted.exists():
+        return persisted
+    return Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+
+
+DEFAULT_SESSION_DB = resolve_session_db()
 DEFAULT_AGENT = "wayfinder-job-worker"
+_DIAGNOSTIC_TOOL_LIMIT = 25
+_DIAGNOSTIC_ERROR_LIMIT = 300
+_DIAGNOSTIC_TEXT_LIMIT = 1_500
 # opencode.json (provider config) is untracked; worktrees lack it. Fall back
 # to the primary checkout when the given repo_root is a bare worktree.
 PRIMARY_CHECKOUT = Path("/Users/adrianhaldenby/Documents/wayfinder-paths-sdk")
@@ -223,31 +240,150 @@ def meter_session_ids(
     connection: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
     """Meter known OpenCode sessions, optionally from a fixed start time."""
-    totals = {"sessions": 0, "messages": 0, "tokens_in": 0, "tokens_out": 0}
+    totals: dict[str, Any] = {
+        "sessions": 0,
+        "messages": 0,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "tokens_reasoning": 0,
+        "tokens_cache_read": 0,
+        "tokens_cache_write": 0,
+        "tool_calls": 0,
+        "tool_result_bytes": 0,
+        "tool_result_bytes_by_tool": {},
+    }
     if not session_ids or (connection is None and not session_db.exists()):
         return totals
     owned = connection is None
     db = connection or sqlite3.connect(str(session_db))
     try:
         for session_id in dict.fromkeys(session_ids):
+            try:
+                found = db.execute(
+                    "SELECT 1 FROM session WHERE id=? LIMIT 1", (session_id,)
+                ).fetchone()
+            except sqlite3.OperationalError:
+                # Small test/legacy databases may predate the session table.
+                # In those, message ownership is still enough to prove that
+                # this is the persisted session we were asked to meter.
+                found = db.execute(
+                    "SELECT 1 FROM message WHERE session_id=? LIMIT 1", (session_id,)
+                ).fetchone()
+            if not found:
+                continue
             totals["sessions"] += 1
             query = (
                 "SELECT json_extract(data,'$.tokens.input'), "
-                "json_extract(data,'$.tokens.output') FROM message "
+                "json_extract(data,'$.tokens.output'), "
+                "json_extract(data,'$.tokens.reasoning'), "
+                "json_extract(data,'$.tokens.cache.read'), "
+                "json_extract(data,'$.tokens.cache.write') FROM message "
                 "WHERE session_id=?"
             )
             params: tuple[Any, ...] = (session_id,)
             if since_ms is not None:
                 query += " AND time_created>=?"
                 params = (session_id, int(since_ms))
-            for tokens_in, tokens_out in db.execute(query, params):
+            for (
+                tokens_in,
+                tokens_out,
+                tokens_reasoning,
+                tokens_cache_read,
+                tokens_cache_write,
+            ) in db.execute(query, params):
                 totals["messages"] += 1
                 totals["tokens_in"] += int(tokens_in or 0)
                 totals["tokens_out"] += int(tokens_out or 0)
+                totals["tokens_reasoning"] += int(tokens_reasoning or 0)
+                totals["tokens_cache_read"] += int(tokens_cache_read or 0)
+                totals["tokens_cache_write"] += int(tokens_cache_write or 0)
+            part_query = (
+                "SELECT json_extract(data,'$.tool'), length(data) FROM part "
+                "WHERE session_id=? AND json_extract(data,'$.type')='tool'"
+            )
+            part_params: tuple[Any, ...] = (session_id,)
+            if since_ms is not None:
+                part_query += " AND time_created>=?"
+                part_params = (session_id, int(since_ms))
+            by_tool = totals["tool_result_bytes_by_tool"]
+            for tool, byte_count in db.execute(part_query, part_params):
+                tool_name = str(tool or "unknown")
+                size = int(byte_count or 0)
+                totals["tool_calls"] += 1
+                totals["tool_result_bytes"] += size
+                by_tool[tool_name] = int(by_tool.get(tool_name) or 0) + size
     finally:
         if owned:
             db.close()
     return totals
+
+
+def session_diagnostic_summary(
+    session_id: str,
+    *,
+    session_db: Path = DEFAULT_SESSION_DB,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """Return a bounded tool/error trace before an OpenCode session is deleted.
+
+    Full tool inputs and outputs stay out of the archive. The one retained input
+    field is a lifecycle ``action`` name, which is needed to distinguish
+    evolution_prepare from other calls through the shared core_jobs tool.
+    """
+    owned = connection is None
+    db = connection or sqlite3.connect(str(session_db))
+    tool_calls: list[dict[str, str]] = []
+    try:
+        tool_count = int(
+            db.execute(
+                "SELECT count(*) FROM part WHERE session_id=? "
+                "AND json_extract(data,'$.type')='tool'",
+                (session_id,),
+            ).fetchone()[0]
+        )
+        rows = list(
+            db.execute(
+                "SELECT json_extract(data,'$.tool'), "
+                "json_extract(data,'$.state.status'), "
+                "json_extract(data,'$.state.input.action'), "
+                "json_extract(data,'$.state.error') FROM part "
+                "WHERE session_id=? AND json_extract(data,'$.type')='tool' "
+                "ORDER BY time_created DESC, id DESC LIMIT ?",
+                (session_id, _DIAGNOSTIC_TOOL_LIMIT),
+            )
+        )
+        for tool, status, action, error in reversed(rows):
+            entry = {"tool": str(tool or "unknown")}
+            if status:
+                entry["status"] = str(status)[:80]
+            if action:
+                entry["action"] = str(action)[:120]
+            if error:
+                entry["error"] = str(error)[:_DIAGNOSTIC_ERROR_LIMIT]
+            tool_calls.append(entry)
+        text_row = db.execute(
+            "SELECT json_extract(part.data,'$.text') FROM part "
+            "JOIN message ON message.id=part.message_id "
+            "WHERE part.session_id=? "
+            "AND json_extract(part.data,'$.type')='text' "
+            "AND json_extract(message.data,'$.role')='assistant' "
+            "ORDER BY part.time_created DESC, part.id DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+    finally:
+        if owned:
+            db.close()
+    final_assistant_text = (
+        str(text_row[0])[-_DIAGNOSTIC_TEXT_LIMIT:]
+        if text_row and text_row[0] is not None
+        else None
+    )
+    return {
+        "schema_version": "1.0",
+        "tool_calls": tool_calls,
+        "omitted_tool_calls": max(0, tool_count - len(tool_calls)),
+        "final_assistant_text": final_assistant_text,
+    }
 
 
 def harvest_lineage(*, sandbox: Path, job_id: str) -> dict[str, Any]:

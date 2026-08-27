@@ -276,6 +276,12 @@ def _background_op_status(store: JobStore, job_id: str, op: str) -> dict[str, An
         # finished anyway; otherwise the run is lost.
         result = _load_json_file(ops_dir / f"{op}.result.json")
         status["state"] = "done" if result is not None else "lost"
+        # A complete result is the detached-success contract. The in-process
+        # reaper normally records this, but op_status can win the short race
+        # after the child exits and before the reaper flushes its status.
+        if result is not None:
+            status.setdefault("exit_code", 0)
+            status.setdefault("finished_at", utc_now_iso())
         atomic_write_json(ops_dir / f"{op}.json", status)
     payload = dict(status)
     log_path = ops_dir / f"{op}.log"

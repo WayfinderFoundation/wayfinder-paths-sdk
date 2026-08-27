@@ -1063,6 +1063,161 @@ def test_watchdog_mechanically_finalizes_then_expires_campaign(
     )
 
 
+def test_watchdog_drains_and_retires_session_before_finalize(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-drain")
+    deadline = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store.write_json(
+        job.id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "active",
+            "stage": "generate",
+            "deadline_at": deadline.isoformat(),
+        },
+    )
+    retired: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.retire_evolution_session",
+        lambda store, job_id, campaign_id: (
+            retired.append(campaign_id) or {"retired": True}
+        ),
+    )
+
+    result = _run_evolution_campaign_pass(
+        store, job.id, deadline - timedelta(minutes=20)
+    )
+
+    assert result == {
+        "action": "evolution_campaign_draining",
+        "campaign_id": "campaign-1",
+        "session_retired": True,
+    }
+    assert retired == ["campaign-1"]
+    state = store.read_json(job.id, "state/evolution_campaign.json")
+    assert state["stage"] == "draining"
+    assert state["drain_started_at"]
+
+
+def test_watchdog_expires_campaign_that_never_generates_a_candidate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-bootstrap-failure")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store.write_json(
+        job.id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "active",
+            "stage": "generate",
+            "started_at": started.isoformat(),
+            "deadline_at": (started + timedelta(hours=4)).isoformat(),
+            "counts": {"generated": 0},
+        },
+    )
+    retired: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.retire_evolution_session",
+        lambda store, job_id, campaign_id: (
+            retired.append(campaign_id) or {"retired": True}
+        ),
+    )
+
+    assert (
+        _run_evolution_campaign_pass(
+            store, job.id, started + timedelta(minutes=14, seconds=59)
+        )
+        is None
+    )
+    result = _run_evolution_campaign_pass(
+        store, job.id, started + timedelta(minutes=15)
+    )
+
+    assert result == {
+        "action": "evolution_campaign_bootstrap_failed",
+        "campaign_id": "campaign-1",
+        "session_retired": True,
+    }
+    assert retired == ["campaign-1"]
+    state = store.read_json(job.id, "state/evolution_campaign.json")
+    assert state["status"] == "expired"
+    assert state["stage"] == "expired"
+    assert state["expiry_reason"] == "no_candidates_generated"
+    assert "evolution_campaign_bootstrap_failed" in _journal_types(store, job.id)
+
+
+def test_watchdog_keeps_campaign_after_first_candidate(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-bootstrapped")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store.write_json(
+        job.id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "active",
+            "stage": "generate",
+            "started_at": started.isoformat(),
+            "deadline_at": (started + timedelta(hours=4)).isoformat(),
+            "counts": {"generated": 1},
+        },
+    )
+
+    assert (
+        _run_evolution_campaign_pass(store, job.id, started + timedelta(minutes=20))
+        is None
+    )
+    assert store.read_json(job.id, "state/evolution_campaign.json")["status"] == (
+        "active"
+    )
+
+
+def test_watchdog_does_not_stack_finalize_on_unretired_session(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-session-block")
+    deadline = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store.write_json(
+        job.id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "active",
+            "stage": "draining",
+            "deadline_at": deadline.isoformat(),
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.retire_evolution_session",
+        lambda *args, **kwargs: {
+            "retired": False,
+            "error": "session metrics export failed",
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.op_status_summary",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.spawn_detached_op",
+        lambda *args, **kwargs: pytest.fail("finalize started before session retired"),
+    )
+
+    result = _run_evolution_campaign_pass(store, job.id, deadline)
+
+    assert result == {
+        "action": "evolution_campaign_waiting_for_session_retirement",
+        "campaign_id": "campaign-1",
+        "error": "session metrics export failed",
+    }
+
+
 def _journal_types(store: JobStore, job_id: str) -> list[str]:
     path = store.job_dir(job_id) / "journal.jsonl"
     if not path.exists():

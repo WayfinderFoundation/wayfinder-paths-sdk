@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -64,12 +65,23 @@ def op_status_summary(job_dir: Path, op: str) -> dict[str, Any] | None:
     if not isinstance(status, dict):
         return None
     state = status.get("state")
-    if state == "running" and not _pid_alive(status.get("pid")):
+    stale_running = state == "running" and not _pid_alive(status.get("pid"))
+    reconciled_failure = state == "failed" and status.get("error") == (
+        "detached operation exited without a result"
+    )
+    if stale_running or reconciled_failure:
         try:
             json.loads((ops_dir / f"{op}.result.json").read_text(encoding="utf-8"))
             state = "done"
         except (OSError, ValueError):
             state = "failed"
+        status["state"] = state
+        status.setdefault("reconciled_at", datetime.now(UTC).isoformat())
+        if state == "failed":
+            status.setdefault("error", "detached operation exited without a result")
+        else:
+            status.pop("error", None)
+        atomic_write_json(ops_dir / f"{op}.json", status)
     if state not in ("running", "done"):
         state = "failed"
     summary: dict[str, Any] = {"status": state}
