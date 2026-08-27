@@ -19,6 +19,7 @@ score_run/aggregate pipeline as every other lane.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -29,7 +30,20 @@ from wayfinder_paths.jobs.benchmarks.compiler import write_interpreter
 from wayfinder_paths.jobs.benchmarks.grammar import Genome
 
 DEFAULT_OPENCODE = Path.home() / ".opencode" / "bin" / "opencode"
-DEFAULT_SESSION_DB = Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+
+
+def resolve_session_db() -> Path:
+    """Locate the active OpenCode database across local and Fly layouts."""
+    override = os.getenv("OPENCODE_DB_PATH")
+    if override:
+        return Path(override)
+    persisted = Path("/wf/user_vault/conversations/opencode.db")
+    if persisted.exists():
+        return persisted
+    return Path.home() / ".local" / "share" / "opencode" / "opencode.db"
+
+
+DEFAULT_SESSION_DB = resolve_session_db()
 DEFAULT_AGENT = "wayfinder-job-worker"
 # opencode.json (provider config) is untracked; worktrees lack it. Fall back
 # to the primary checkout when the given repo_root is a bare worktree.

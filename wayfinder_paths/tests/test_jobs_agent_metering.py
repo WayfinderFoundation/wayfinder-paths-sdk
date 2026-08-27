@@ -3,7 +3,17 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from wayfinder_paths.jobs.benchmarks.agent_adapter import meter_session_ids
+from wayfinder_paths.jobs.benchmarks.agent_adapter import (
+    meter_session_ids,
+    resolve_session_db,
+)
+
+
+def test_session_db_path_honors_explicit_override(tmp_path, monkeypatch) -> None:
+    expected = tmp_path / "opencode.db"
+    monkeypatch.setenv("OPENCODE_DB_PATH", str(expected))
+
+    assert resolve_session_db() == expected
 
 
 def test_session_meter_includes_cache_tokens_and_tool_payload_bytes(tmp_path) -> None:
