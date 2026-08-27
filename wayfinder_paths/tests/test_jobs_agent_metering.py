@@ -6,6 +6,7 @@ import sqlite3
 from wayfinder_paths.jobs.benchmarks.agent_adapter import (
     meter_session_ids,
     resolve_session_db,
+    session_diagnostic_summary,
 )
 
 
@@ -92,3 +93,74 @@ def test_session_meter_does_not_count_unknown_session(tmp_path) -> None:
     totals = meter_session_ids(["missing"], session_db=session_db)
 
     assert totals["sessions"] == 0
+
+
+def test_session_diagnostics_are_bounded_and_exclude_tool_payloads(tmp_path) -> None:
+    session_db = tmp_path / "opencode.db"
+    connection = sqlite3.connect(session_db)
+    connection.executescript(
+        """
+        CREATE TABLE message (
+          id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT
+        );
+        CREATE TABLE part (
+          id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+          time_created INTEGER, data TEXT
+        );
+        """
+    )
+    connection.execute(
+        "INSERT INTO message VALUES (?,?,?,?)",
+        ("assistant-1", "session-1", 100, json.dumps({"role": "assistant"})),
+    )
+    for index in range(30):
+        connection.execute(
+            "INSERT INTO part VALUES (?,?,?,?,?)",
+            (
+                f"tool-{index}",
+                "assistant-1",
+                "session-1",
+                100 + index,
+                json.dumps(
+                    {
+                        "type": "tool",
+                        "tool": "wayfinder_core_jobs",
+                        "state": {
+                            "status": "completed",
+                            "input": {
+                                "action": "evolution_prepare",
+                                "secret": "must-not-survive",
+                            },
+                            "output": "x" * 10_000,
+                            "error": "e" * 500 if index == 29 else None,
+                        },
+                    }
+                ),
+            ),
+        )
+    connection.execute(
+        "INSERT INTO part VALUES (?,?,?,?,?)",
+        (
+            "text-1",
+            "assistant-1",
+            "session-1",
+            200,
+            json.dumps({"type": "text", "text": "z" * 2_000}),
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    summary = session_diagnostic_summary("session-1", session_db=session_db)
+
+    assert len(summary["tool_calls"]) == 25
+    assert summary["omitted_tool_calls"] == 5
+    assert summary["tool_calls"][-1] == {
+        "tool": "wayfinder_core_jobs",
+        "status": "completed",
+        "action": "evolution_prepare",
+        "error": "e" * 300,
+    }
+    assert summary["final_assistant_text"] == "z" * 1_500
+    assert "must-not-survive" not in json.dumps(summary)
+    assert "x" * 100 not in json.dumps(summary)

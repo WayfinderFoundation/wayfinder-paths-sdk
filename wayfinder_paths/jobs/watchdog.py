@@ -1274,6 +1274,7 @@ _LIFECYCLE_INTERVAL_S = 6 * 3600
 _CAMPAIGN_FINALIZE_RETRY_S = (0, 5 * 60, 15 * 60, 30 * 60)
 _CAMPAIGN_FINALIZE_GRACE = timedelta(minutes=60)
 _CAMPAIGN_EVALUATE_DRAIN_GRACE = timedelta(minutes=15)
+_CAMPAIGN_BOOTSTRAP_GRACE = timedelta(minutes=15)
 # A finalize op still writing output past the grace is extended, not expired:
 # expiry once fired mid-Optuna at exactly the grace boundary and the orphaned
 # finalize ran 8+ hours holding the replication lock. Freshness = op log
@@ -1332,6 +1333,7 @@ def _run_evolution_campaign_pass(
     from wayfinder_paths.jobs.worker import retire_evolution_session
 
     state = store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
+    campaign_id = str(state.get("campaign_id") or "")
     if state.get("status") not in {"active", "finalizing"}:
         if state.get("status") in {"complete", "expired"} and state.get("campaign_id"):
             retired = retire_evolution_session(store, job_id, str(state["campaign_id"]))
@@ -1351,6 +1353,57 @@ def _run_evolution_campaign_pass(
         return None
     if deadline.tzinfo is None:
         deadline = deadline.replace(tzinfo=UTC)
+    started_at: datetime | None = None
+    try:
+        started_at = datetime.fromisoformat(str(state["started_at"]))
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=UTC)
+    except (KeyError, TypeError, ValueError):
+        pass
+    if (
+        state.get("status") == "active"
+        and started_at is not None
+        and now - started_at >= _CAMPAIGN_BOOTSTRAP_GRACE
+        and int((state.get("counts") or {}).get("generated") or 0) == 0
+    ):
+        expired_bootstrap = False
+        with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+            state = store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
+            if (
+                str(state.get("campaign_id") or "") == campaign_id
+                and state.get("status") == "active"
+                and int((state.get("counts") or {}).get("generated") or 0) == 0
+            ):
+                state.update(
+                    {
+                        "status": "expired",
+                        "stage": "expired",
+                        "expired_at": now.isoformat(),
+                        "expiry_reason": "no_candidates_generated",
+                    }
+                )
+                store.write_json(job_id, CAMPAIGN_STATE_PATH, state)
+                store.append_journal(
+                    job_id,
+                    {
+                        "type": "evolution_campaign_bootstrap_failed",
+                        "campaign_id": state.get("campaign_id"),
+                        "reason": "no_candidates_generated",
+                    },
+                )
+                expired_bootstrap = True
+        if expired_bootstrap:
+            retirement = retire_evolution_session(
+                store, job_id, str(state.get("campaign_id") or "")
+            )
+            result = {
+                "action": "evolution_campaign_bootstrap_failed",
+                "campaign_id": state.get("campaign_id"),
+                "session_retired": bool(retirement and retirement.get("retired")),
+            }
+            if retirement and retirement.get("error"):
+                result["retirement_error"] = retirement["error"]
+            return result
     if now < deadline and state.get("status") == "active":
         if now < deadline - CAMPAIGN_DRAIN:
             return None

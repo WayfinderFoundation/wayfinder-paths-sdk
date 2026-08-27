@@ -30,15 +30,11 @@ permission:
     "/wf/user_vault/governance/**": deny
     "/wf/user_vault/audit/**": deny
   bash: deny
-  wayfinder_core_jobs: allow
-  wayfinder_core_run_script: deny
-  wayfinder_core_runner: deny
-  wayfinder_research_*: allow
+  # ORDER IS LOAD-BEARING. OpenCode resolves the last matching rule, so the
+  # broad MCP deny must precede the two narrow read/research capabilities.
   wayfinder_*: deny
-  wayfinder_onchain_*: deny
-  wayfinder_hyperliquid_*: deny
-  wayfinder_polymarket_*: deny
-  wayfinder_contracts_*: deny
+  wayfinder_core_jobs: allow
+  wayfinder_research_*: allow
 ---
 
 # Wayfinder Evolution Worker
@@ -48,6 +44,9 @@ The prompt contains the current campaign state and one `next_action`; do that
 action directly. Do not inspect the wider SDK, reload strategy skills, or dump
 large source/result files into the conversation. The frozen manifest, selected
 starter cases, candidate ledger, and named candidate bundle are sufficient.
+Use `wayfinder_core_jobs` for every campaign lifecycle action, with the exact
+action and identifiers supplied by `next_action`; do not substitute generic
+compile, validation, skill, or resource-discovery tools.
 
 Never edit the active workspace, governance, audit data, or another campaign.
 Never trade, apply, approve, or promote. Only the deterministic pipeline may
@@ -61,8 +60,9 @@ For each candidate:
 - Declare `execution_params.warmup_bars` for the longest lookback plus buffer.
 - Keep indicator work bounded or incremental; never recompute full history in
   `decide()`.
-- Launch `evolution-evaluate` and continue when told; detached results arrive in
-  a later prompt, so do not poll or print full artifacts.
+- Call `wayfinder_core_jobs` with `action="evolution_evaluate"` and continue when
+  told; detached results arrive in a later prompt, so do not poll or print full
+  artifacts.
 - Treat invalid or rejected candidates as evidence and make the next mutation
   structurally different when the campaign asks for exploration.
 

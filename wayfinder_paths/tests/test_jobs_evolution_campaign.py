@@ -90,6 +90,16 @@ def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
     assert manifest["forward_context_cutoff"] == now.isoformat()
     block = campaign_prompt_block(store, job_id, now=now)
     assert block is not None
+    assert block["job_id"] == job_id
+    for required in (
+        "wayfinder_core_jobs",
+        'action="evolution_prepare"',
+        f'job_id="{job_id}"',
+        "family=",
+        "summary=",
+        'mutation_kind="structural"',
+    ):
+        assert required in block["next_action"]
     assert len(block["cases"]) <= MAX_PROMPT_CASES
     assert block["constraints"] == {
         "paper_only": True,
@@ -517,8 +527,10 @@ def test_next_action_pipelines_authoring_against_detached_evaluation(tmp_path) -
 
     block = campaign_prompt_block(store, job_id, now=working)
     assert block is not None
-    assert "evolution-evaluate" in block["next_action"]
-    assert "evolution-prepare" in block["next_action"]
+    assert 'action="evolution_evaluate"' in block["next_action"]
+    assert 'action="evolution_prepare"' in block["next_action"]
+    assert f'job_id="{job_id}"' in block["next_action"]
+    assert "background=true" in block["next_action"]
     assert "do not wait" in block["next_action"]
 
     for index in range(2):
@@ -526,8 +538,8 @@ def test_next_action_pipelines_authoring_against_detached_evaluation(tmp_path) -
             store, job_id, family="breakout", summary=f"queued {index}", now=working
         )
     drain = campaign_prompt_block(store, job_id, now=working)
-    assert "evolution-evaluate" in drain["next_action"]
-    assert "evolution-prepare" not in drain["next_action"]
+    assert 'action="evolution_evaluate"' in drain["next_action"]
+    assert 'action="evolution_prepare"' not in drain["next_action"]
 
     state = campaign_status(store, job_id)
     manifest = json.loads(
@@ -540,17 +552,16 @@ def test_next_action_pipelines_authoring_against_detached_evaluation(tmp_path) -
         state["candidates"].append({"status": "quick_complete"})
     store.write_json(job_id, "state/evolution_campaign.json", state)
     done = campaign_prompt_block(store, job_id, now=working)
-    assert (
-        done["next_action"] == "Run evolution-finalize in the isolated background "
-        "worker."
-    )
+    assert 'action="evolution_finalize"' in done["next_action"]
+    assert f'job_id="{job_id}"' in done["next_action"]
+    assert "background=true" in done["next_action"]
 
     # Budget exhausted with a candidate still awaiting evaluation: drain only.
     state["candidates"][0]["status"] = "prepared"
     store.write_json(job_id, "state/evolution_campaign.json", state)
     exhausted = campaign_prompt_block(store, job_id, now=working)
-    assert "evolution-evaluate" in exhausted["next_action"]
-    assert "evolution-prepare" not in exhausted["next_action"]
+    assert 'action="evolution_evaluate"' in exhausted["next_action"]
+    assert 'action="evolution_prepare"' not in exhausted["next_action"]
 
     draining = campaign_prompt_block(
         store, job_id, now=datetime(2026, 8, 25, 15, 40, tzinfo=UTC)
@@ -564,10 +575,9 @@ def test_next_action_pipelines_authoring_against_detached_evaluation(tmp_path) -
     elapsed = campaign_prompt_block(
         store, job_id, now=datetime(2026, 8, 25, 16, 30, tzinfo=UTC)
     )
-    assert (
-        elapsed["next_action"] == "Generation deadline elapsed; run "
-        "evolution-finalize now."
-    )
+    assert 'action="evolution_finalize"' in elapsed["next_action"]
+    assert f'job_id="{job_id}"' in elapsed["next_action"]
+    assert "background=true" in elapsed["next_action"]
     assert elapsed["deadline_elapsed"] is True
 
 
@@ -813,6 +823,21 @@ def test_evolution_session_retirement_exports_before_exact_delete(
             "tool_result_bytes": 456,
         },
     )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.benchmarks.agent_adapter.session_diagnostic_summary",
+        lambda session_id: {
+            "schema_version": "1.0",
+            "tool_calls": [
+                {
+                    "tool": "wayfinder_core_jobs",
+                    "action": "evolution_prepare",
+                    "status": "completed",
+                }
+            ],
+            "omitted_tool_calls": 0,
+            "final_assistant_text": "candidate prepared",
+        },
+    )
 
     retired = retire_evolution_session(store, job_id, "campaign-1")
 
@@ -821,6 +846,9 @@ def test_evolution_session_retirement_exports_before_exact_delete(
     assert client.deleted == ["session-1"]
     archive = store.read_json(job_id, "reports/evolution/sessions.json")
     assert archive["sessions"][0]["metrics"]["tool_result_bytes"] == 456
+    assert archive["sessions"][0]["diagnostics"]["tool_calls"][0]["action"] == (
+        "evolution_prepare"
+    )
     assert archive["sessions"][0]["retired_at"]
 
 
@@ -859,6 +887,49 @@ def test_evolution_session_retirement_refuses_unresolved_metering(
 
     assert retired and retired["retired"] is False
     assert "exact persisted session" in retired["error"]
+    assert client.deleted == []
+    assert not (store.job_dir(job_id) / "reports/evolution/sessions.json").exists()
+
+
+def test_evolution_session_retirement_refuses_failed_diagnostic_export(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    store.write_json(
+        job_id,
+        "reports/evolution/session.json",
+        {"campaign_id": "campaign-1", "session_id": "session-1"},
+    )
+
+    class RetireClient:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        def session_statuses(self) -> dict[str, Any]:
+            return {}
+
+        def session_exists(self, session_id: str) -> bool:
+            return True
+
+        def delete_session(self, session_id: str) -> bool:
+            self.deleted.append(session_id)
+            return True
+
+    client = RetireClient()
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.OPENCODE_CLIENT", client)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.benchmarks.agent_adapter.meter_session_ids",
+        lambda session_ids: {"sessions": 1},
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.benchmarks.agent_adapter.session_diagnostic_summary",
+        lambda session_id: (_ for _ in ()).throw(RuntimeError("database locked")),
+    )
+
+    retired = retire_evolution_session(store, job_id, "campaign-1")
+
+    assert retired and retired["retired"] is False
+    assert retired["error"] == "session diagnostic export failed: database locked"
     assert client.deleted == []
     assert not (store.job_dir(job_id) / "reports/evolution/sessions.json").exists()
 

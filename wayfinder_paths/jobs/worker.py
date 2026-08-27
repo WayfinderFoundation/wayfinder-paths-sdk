@@ -1829,7 +1829,10 @@ def retire_evolution_session(
     The export is written before deletion, making retries safe if the process
     dies between the durable accounting write and the OpenCode API call.
     """
-    from wayfinder_paths.jobs.benchmarks.agent_adapter import meter_session_ids
+    from wayfinder_paths.jobs.benchmarks.agent_adapter import (
+        meter_session_ids,
+        session_diagnostic_summary,
+    )
     from wayfinder_paths.jobs.compute_lock import job_state_lock
 
     with job_state_lock(store.repo_root, job_id, name="evolution_session"):
@@ -1859,6 +1862,14 @@ def retire_evolution_session(
                 "session_id": session_id,
                 "error": "session metrics export did not resolve the exact persisted session",
             }
+        try:
+            diagnostics = session_diagnostic_summary(session_id)
+        except Exception as exc:  # noqa: BLE001 - never delete before export
+            return {
+                "retired": False,
+                "session_id": session_id,
+                "error": f"session diagnostic export failed: {str(exc)[:300]}",
+            }
         archive = (
             store.read_json(job_id, EVOLUTION_SESSION_ARCHIVE_PATH, default={}) or {}
         )
@@ -1869,6 +1880,7 @@ def retire_evolution_session(
             "created_at": session.get("created_at"),
             "exported_at": utc_now_iso(),
             "metrics": metrics,
+            "diagnostics": diagnostics,
         }
         entries = [
             item

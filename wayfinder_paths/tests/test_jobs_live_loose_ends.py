@@ -262,6 +262,19 @@ def test_evolution_worker_has_minimal_vault_access_and_denies_audit() -> None:
         ("audit/**", "deny"),
     ]
     assert frontmatter["permission"]["bash"] == "deny"
+    ruleset = _from_config(frontmatter["permission"])
+    assert _evaluate("wayfinder_core_jobs", "*", ruleset)["action"] == "allow"
+    assert (
+        _evaluate("wayfinder_research_search_delta_lab_assets", "*", ruleset)["action"]
+        == "allow"
+    )
+    for denied in (
+        "wayfinder_core_run_script",
+        "wayfinder_core_runner",
+        "wayfinder_hyperliquid_place_market_order",
+        "wayfinder_contracts_execute",
+    ):
+        assert _evaluate(denied, "*", ruleset)["action"] == "deny"
 
 
 def _wildcard_match(string: str, pattern: str) -> bool:

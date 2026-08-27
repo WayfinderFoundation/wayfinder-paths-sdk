@@ -45,6 +45,9 @@ def resolve_session_db() -> Path:
 
 DEFAULT_SESSION_DB = resolve_session_db()
 DEFAULT_AGENT = "wayfinder-job-worker"
+_DIAGNOSTIC_TOOL_LIMIT = 25
+_DIAGNOSTIC_ERROR_LIMIT = 300
+_DIAGNOSTIC_TEXT_LIMIT = 1_500
 # opencode.json (provider config) is untracked; worktrees lack it. Fall back
 # to the primary checkout when the given repo_root is a bare worktree.
 PRIMARY_CHECKOUT = Path("/Users/adrianhaldenby/Documents/wayfinder-paths-sdk")
@@ -313,6 +316,74 @@ def meter_session_ids(
         if owned:
             db.close()
     return totals
+
+
+def session_diagnostic_summary(
+    session_id: str,
+    *,
+    session_db: Path = DEFAULT_SESSION_DB,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    """Return a bounded tool/error trace before an OpenCode session is deleted.
+
+    Full tool inputs and outputs stay out of the archive. The one retained input
+    field is a lifecycle ``action`` name, which is needed to distinguish
+    evolution_prepare from other calls through the shared core_jobs tool.
+    """
+    owned = connection is None
+    db = connection or sqlite3.connect(str(session_db))
+    tool_calls: list[dict[str, str]] = []
+    try:
+        tool_count = int(
+            db.execute(
+                "SELECT count(*) FROM part WHERE session_id=? "
+                "AND json_extract(data,'$.type')='tool'",
+                (session_id,),
+            ).fetchone()[0]
+        )
+        rows = list(
+            db.execute(
+                "SELECT json_extract(data,'$.tool'), "
+                "json_extract(data,'$.state.status'), "
+                "json_extract(data,'$.state.input.action'), "
+                "json_extract(data,'$.state.error') FROM part "
+                "WHERE session_id=? AND json_extract(data,'$.type')='tool' "
+                "ORDER BY time_created DESC, id DESC LIMIT ?",
+                (session_id, _DIAGNOSTIC_TOOL_LIMIT),
+            )
+        )
+        for tool, status, action, error in reversed(rows):
+            entry = {"tool": str(tool or "unknown")}
+            if status:
+                entry["status"] = str(status)[:80]
+            if action:
+                entry["action"] = str(action)[:120]
+            if error:
+                entry["error"] = str(error)[:_DIAGNOSTIC_ERROR_LIMIT]
+            tool_calls.append(entry)
+        text_row = db.execute(
+            "SELECT json_extract(part.data,'$.text') FROM part "
+            "JOIN message ON message.id=part.message_id "
+            "WHERE part.session_id=? "
+            "AND json_extract(part.data,'$.type')='text' "
+            "AND json_extract(message.data,'$.role')='assistant' "
+            "ORDER BY part.time_created DESC, part.id DESC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+    finally:
+        if owned:
+            db.close()
+    final_assistant_text = (
+        str(text_row[0])[-_DIAGNOSTIC_TEXT_LIMIT:]
+        if text_row and text_row[0] is not None
+        else None
+    )
+    return {
+        "schema_version": "1.0",
+        "tool_calls": tool_calls,
+        "omitted_tool_calls": max(0, tool_count - len(tool_calls)),
+        "final_assistant_text": final_assistant_text,
+    }
 
 
 def harvest_lineage(*, sandbox: Path, job_id: str) -> dict[str, Any]:

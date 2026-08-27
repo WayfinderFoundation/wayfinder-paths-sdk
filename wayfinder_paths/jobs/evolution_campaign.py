@@ -1133,34 +1133,48 @@ def campaign_prompt_block(
     policy = manifest.get("policy") or {}
     budget = int(policy.get("generated_programs") or 0)
     deadline_elapsed = current >= deadline
+    prepare_call = (
+        'Call wayfinder_core_jobs with action="evolution_prepare", '
+        f'job_id="{job_id}", family="<specific structural family>", '
+        'summary="<concise testable hypothesis>", and mutation_kind="structural".'
+    )
     if deadline_elapsed:
-        next_action = "Generation deadline elapsed; run evolution-finalize now."
+        next_action = (
+            "Generation deadline elapsed. Call wayfinder_core_jobs with "
+            f'action="evolution_finalize", job_id="{job_id}", background=true.'
+        )
     elif prepared and len(candidates) < budget and len(prepared) < 3:
         # Pipelined authoring: evaluation runs as a detached op, so the agent
         # keeps writing the next candidate instead of idling on the result.
         next_action = (
             f"Edit only files inside {prepared[0]['bundle']} (workspace, job.yaml, "
             "and optional search_space.json) if you have not already, then launch "
-            f"evolution-evaluate for {prepared[0]['candidate_id']}. It runs "
+            'wayfinder_core_jobs with action="evolution_evaluate", '
+            f'job_id="{job_id}", candidate_id="{prepared[0]["candidate_id"]}", '
+            "and background=true. It runs "
             "detached — do not wait for its result, and an already_running "
             "response just means the launch already happened; that is normal, "
-            "move on. Immediately prepare the next candidate with "
-            "evolution-prepare while the evaluation runs."
+            f"move on. While it runs, {prepare_call}"
         )
     elif prepared:
         next_action = (
             f"Edit only files inside {prepared[0]['bundle']} (workspace, job.yaml, "
-            "and optional search_space.json), then run evolution-evaluate for "
-            f"{prepared[0]['candidate_id']}."
+            "and optional search_space.json), then call wayfinder_core_jobs with "
+            f'action="evolution_evaluate", job_id="{job_id}", '
+            f'candidate_id="{prepared[0]["candidate_id"]}", background=true.'
         )
     elif len(candidates) < budget:
         next_action = (
-            "Prepare the next candidate with evolution-prepare. At least half "
-            "the campaign must change signal/exit/regime/portfolio structure."
+            f"{prepare_call} At least half the campaign must change "
+            "signal/exit/regime/portfolio structure."
         )
     else:
-        next_action = "Run evolution-finalize in the isolated background worker."
+        next_action = (
+            'Call wayfinder_core_jobs with action="evolution_finalize", '
+            f'job_id="{job_id}", background=true.'
+        )
     return {
+        "job_id": job_id,
         "campaign_id": state["campaign_id"],
         "stage": state["stage"],
         "deadline_at": state["deadline_at"],
