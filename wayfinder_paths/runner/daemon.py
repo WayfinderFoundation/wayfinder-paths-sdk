@@ -47,6 +47,9 @@ JOB_RESULT_MARKER = "WAYFINDER_JOB_RESULT "
 # the worst-case cost of a single in-flight job so one already-running job can't
 # overshoot the budget to zero (validated in the docker burst-lab); max-postpone
 # bounds starvation so a due job can't be held behind a permanent backlog.
+MAX_ACTIVE_STRATEGIES = 2
+MAX_ACTIVE_LEGACY_JOBS = 3
+
 BURST_CAP_CPU_S = 500.0
 BURST_LOW_WATER_CPU_S = 120.0
 BURST_MAX_POSTPONE_S = 600.0
@@ -1283,6 +1286,43 @@ class RunnerDaemon:
             )
         payload_norm["notify_session_id"] = session_id
 
+        # Top-level workload caps: reject NEW registrations over the limit.
+        # Existing names fall through (the bridge retries them as updates —
+        # recompiles must always work) and running jobs are never touched, so
+        # over-cap fleets are grandfathered until their owner pauses down.
+        if self._db.get_job(name=name) is None:
+            active = [
+                job["payload"].get("env") or {}
+                for job in self._db.list_jobs()
+                if job["status"] == JobStatus.ACTIVE
+            ]
+            ids = {
+                e["WAYFINDER_HIGH_LEVEL_JOB_ID"]
+                for e in active
+                if e.get("WAYFINDER_HIGH_LEVEL_JOB_ID")
+            }
+            env = payload_norm.get("env") or {}
+            hl = env.get("WAYFINDER_HIGH_LEVEL_JOB_ID")
+            if hl and hl not in ids and len(ids) >= MAX_ACTIVE_STRATEGIES:
+                return {
+                    "ok": False,
+                    "error": f"active strategy limit ({MAX_ACTIVE_STRATEGIES}) "
+                    "reached — pause or delete a strategy first",
+                }
+            if not hl and not env.get("WAYFINDER_WATCHDOG"):
+                legacy = sum(
+                    1
+                    for e in active
+                    if not e.get("WAYFINDER_HIGH_LEVEL_JOB_ID")
+                    and not e.get("WAYFINDER_WATCHDOG")
+                )
+                if legacy >= MAX_ACTIVE_LEGACY_JOBS:
+                    return {
+                        "ok": False,
+                        "error": f"active runner-job limit "
+                        f"({MAX_ACTIVE_LEGACY_JOBS}) reached — pause or "
+                        "delete a runner job first",
+                    }
         try:
             now = int(time.time())
             job_id = self._db.add_job(
