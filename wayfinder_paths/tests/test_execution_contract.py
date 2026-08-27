@@ -102,6 +102,11 @@ def test_completed_bars_view_truncates_future_bars() -> None:
     assert len(view.through(1).to_frame()) == 2
 
 
+def test_prepared_dataset_rejects_open_time_provenance() -> None:
+    with pytest.raises(ValueError, match="label_convention.*close_time"):
+        PreparedExecutionDataset.from_rows(_bars(), {"label_convention": "open_time"})
+
+
 def test_bracket_engine_uses_high_low_for_long_and_short() -> None:
     bar = {"open": 10, "high": 12, "low": 8, "close": 11}
 
@@ -264,7 +269,15 @@ def test_job_backtest_and_validate_write_artifacts(tmp_path: Path) -> None:
     root = store.job_dir(job.id)
     _write_strategy(root / "workspace" / "src" / "strategy.py")
     bars_path = root / "results" / "backtest" / "input_bars.json"
-    bars_path.write_text(json.dumps(_bars()), encoding="utf-8")
+    bars_path.write_text(
+        json.dumps(
+            {
+                "bars": _bars(),
+                "metadata": {"label_convention": "close_time"},
+            }
+        ),
+        encoding="utf-8",
+    )
 
     result = backtest_execution_job(job.id, store=store)
     validation = validate_execution_job(job.id, strict=True, store=store)
@@ -437,7 +450,6 @@ def _patch_engine_price_alignment(monkeypatch) -> None:
     monkeypatch.setattr(
         "wayfinder_paths.mcp.tools.hyperliquid._resolve_asset", fake_resolve
     )
-
 
 
 @pytest.mark.asyncio

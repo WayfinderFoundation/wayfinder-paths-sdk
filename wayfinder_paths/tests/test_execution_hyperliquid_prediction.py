@@ -60,10 +60,10 @@ def test_candles_to_completed_view_parses_ms_epochs_correctly() -> None:
     """Real HL candle rows carry ms-int close times; they must parse as 2026
     dates, not 1970 (pd.to_datetime without unit= reads ints as ns)."""
     from wayfinder_paths.jobs.execution.hyperliquid import (
-        _candles_to_completed_view,
+        hyperliquid_candles_to_completed_view,
     )
 
-    view = _candles_to_completed_view("#1730", _candles(3))
+    view = hyperliquid_candles_to_completed_view("#1730", _candles(3))
     frame = view.to_frame()
 
     assert frame["timestamp"].dt.year.min() == 2026

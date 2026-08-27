@@ -36,7 +36,13 @@ def _make_job(
     script.write_text(STRATEGY.lstrip(), encoding="utf-8")
     (root / "results" / "backtest").mkdir(parents=True, exist_ok=True)
     (root / "results" / "backtest" / "input_bars.json").write_text(
-        json.dumps(_bars()), encoding="utf-8"
+        json.dumps(
+            {
+                "bars": _bars(),
+                "metadata": {"label_convention": "close_time"},
+            }
+        ),
+        encoding="utf-8",
     )
     return store, job.id, root
 
@@ -68,6 +74,40 @@ def test_gate_fails_without_artifacts(tmp_path: Path) -> None:
     assert "validation" in joined
     assert "backtest" in joined
     assert "preflight" in joined
+
+
+def test_jobs_v1_validation_requires_close_time_dataset_provenance(
+    tmp_path: Path,
+) -> None:
+    store, job_id, root = _make_job(tmp_path)
+    bars_path = root / "results" / "backtest" / "input_bars.json"
+    bars_path.write_text(json.dumps(_bars()), encoding="utf-8")
+
+    report = validate_execution_job(job_id, store=store)
+
+    check = next(
+        item for item in report["checks"] if item["name"] == "dataset_close_time_labels"
+    )
+    assert check["passed"] is False
+    assert check["blocking"] is True
+    assert report["status"] == "failed"
+
+
+def test_validation_grandfathers_legacy_live_fetch_provenance(tmp_path: Path) -> None:
+    store, job_id, root = _make_job(tmp_path)
+    bars_path = root / "results" / "backtest" / "input_bars.json"
+    bars_path.write_text(
+        json.dumps({"bars": _bars(), "metadata": {"source": "live_fetch"}}),
+        encoding="utf-8",
+    )
+
+    report = validate_execution_job(job_id, store=store)
+
+    check = next(
+        item for item in report["checks"] if item["name"] == "dataset_close_time_labels"
+    )
+    assert check["passed"] is True
+    assert "legacy live_fetch" in check["note"]
 
 
 def test_gate_fails_when_workspace_changes_after_backtest(tmp_path: Path) -> None:

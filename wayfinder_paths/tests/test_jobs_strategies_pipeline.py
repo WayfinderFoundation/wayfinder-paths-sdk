@@ -110,7 +110,13 @@ def _make_bundle(
     )
     (root / "results" / "backtest").mkdir(parents=True, exist_ok=True)
     (root / "results" / "backtest" / "input_bars.json").write_text(
-        json.dumps(_bars(config["closes"], config["symbol"])), encoding="utf-8"
+        json.dumps(
+            {
+                "bars": _bars(config["closes"], config["symbol"]),
+                "metadata": {"label_convention": "close_time"},
+            }
+        ),
+        encoding="utf-8",
     )
     return store, job, root
 

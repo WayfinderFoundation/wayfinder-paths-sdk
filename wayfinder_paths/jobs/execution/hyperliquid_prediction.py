@@ -10,11 +10,11 @@ import httpx
 from wayfinder_paths.jobs.execution.hyperliquid import (
     SafeHyperliquidMarketClient,
     _cancel_needs_asset_context,
-    _candles_to_completed_view,
     _hl_state_result,
     _lookback_hours,
     _paper_broker,
     _submit_market_order,
+    hyperliquid_candles_to_completed_view,
 )
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
@@ -147,7 +147,7 @@ class HyperliquidPredictionFeed:
         raw = await self._fallback.get_candles(
             symbol, interval=interval, lookback_hours=lookback_hours
         )
-        return _candles_to_completed_view(symbol, raw)
+        return hyperliquid_candles_to_completed_view(symbol, raw)
 
     async def get_events(
         self, symbols: Sequence[str], *, since: datetime | None = None

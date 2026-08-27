@@ -19,6 +19,7 @@ from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.paper import PaperBroker
 from wayfinder_paths.jobs.execution.primitives import (
+    BAR_CLOSE_LABEL,
     CompletedBarsView,
     ExecutionSpec,
     FillEvent,
@@ -122,7 +123,7 @@ def build_live_dataset(
                 or quote
                 or default_quote(exchange),
                 "symbol_map": dict(feed.symbol_map),
-                "label_convention": "close_time",
+                "label_convention": BAR_CLOSE_LABEL,
             }
         else:
             rows, source_metadata = asyncio.run(
@@ -163,6 +164,7 @@ def build_live_dataset(
         asyncio.run(_fetch())
         metadata = {
             "source": "live_fetch",
+            "label_convention": BAR_CLOSE_LABEL,
             "venues": sorted(adapters),
             "symbols": symbols,
             "interval": str(bar_interval),

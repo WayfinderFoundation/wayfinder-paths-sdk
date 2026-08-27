@@ -21,6 +21,7 @@ from wayfinder_paths.jobs.execution.features import (
     parse_feature_specs,
 )
 from wayfinder_paths.jobs.execution.primitives import (
+    BAR_CLOSE_LABEL,
     CompletedBarsView,
     ExecutionSpec,
     ExecutionTrace,
@@ -213,6 +214,7 @@ def validate_execution_job(
     spec = ExecutionSpec.from_dict(spec_data)
     checks.extend(_execution_spec_checks(spec))
     checks.extend(_timing_checks(job_data, spec))
+    checks.extend(_dataset_timestamp_checks(root, job_data))
     checks.extend(_feature_checks(root, spec))
     script_path = store.resolve_script_entrypoint(
         job_id,
@@ -265,6 +267,67 @@ def validate_execution_job(
     if not candidate_dir:
         store.write_json(job_id, "reports/validation/latest.json", report)
     return report
+
+
+def _dataset_timestamp_checks(
+    root: Path, job_data: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Require an auditable close-time label before a jobs_v1 dataset gates.
+
+    Timestamp values alone cannot distinguish an opening label from a closing
+    label when both land on the interval grid. The persisted provenance is the
+    only reliable boundary contract, so hand-built datasets must declare it.
+    Pre-contract ``live_fetch`` files are safe to grandfather because that
+    source has always gone through ``MarketDataFeed.get_completed_bars``.
+    """
+    paths = (
+        root / "results" / "backtest" / "input_bars.json",
+        root / "workspace" / "config" / "backtest_bars.json",
+    )
+    path = next((candidate for candidate in paths if candidate.exists()), None)
+    if path is None:
+        return []  # fixture/scenario-driven validation contexts
+
+    blocking = str(job_data.get("execution_contract") or "") == "jobs_v1"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return [
+            {
+                "name": "dataset_close_time_labels",
+                "passed": False,
+                "blocking": blocking,
+                "path": str(path),
+                "error": str(exc),
+            }
+        ]
+
+    metadata = payload.get("metadata") if isinstance(payload, dict) else None
+    metadata = metadata if isinstance(metadata, dict) else {}
+    convention = metadata.get("label_convention")
+    source = str(metadata.get("source") or "")
+    legacy_live_fetch = convention is None and source == "live_fetch"
+    passed = convention == BAR_CLOSE_LABEL or legacy_live_fetch
+    check: dict[str, Any] = {
+        "name": "dataset_close_time_labels",
+        "passed": passed,
+        "blocking": blocking,
+        "path": str(path),
+        "label_convention": convention,
+    }
+    if legacy_live_fetch:
+        check["note"] = (
+            "legacy live_fetch provenance accepted: this source has always "
+            "used completed-bar venue feeds; the next refresh will stamp "
+            f"label_convention={BAR_CLOSE_LABEL!r}"
+        )
+    elif not passed:
+        check["hint"] = (
+            f"wrap bars in {{'bars': [...], 'metadata': "
+            f"{{'label_convention': {BAR_CLOSE_LABEL!r}}}}} or rebuild with "
+            "wayfinder job fetch-dataset"
+        )
+    return [check]
 
 
 # Evidence-window policy (owner-set 2026-07-27): a 5m strategy validated on
