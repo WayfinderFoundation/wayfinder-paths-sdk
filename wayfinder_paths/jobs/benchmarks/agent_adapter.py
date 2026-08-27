@@ -255,6 +255,19 @@ def meter_session_ids(
     db = connection or sqlite3.connect(str(session_db))
     try:
         for session_id in dict.fromkeys(session_ids):
+            try:
+                found = db.execute(
+                    "SELECT 1 FROM session WHERE id=? LIMIT 1", (session_id,)
+                ).fetchone()
+            except sqlite3.OperationalError:
+                # Small test/legacy databases may predate the session table.
+                # In those, message ownership is still enough to prove that
+                # this is the persisted session we were asked to meter.
+                found = db.execute(
+                    "SELECT 1 FROM message WHERE session_id=? LIMIT 1", (session_id,)
+                ).fetchone()
+            if not found:
+                continue
             totals["sessions"] += 1
             query = (
                 "SELECT json_extract(data,'$.tokens.input'), "

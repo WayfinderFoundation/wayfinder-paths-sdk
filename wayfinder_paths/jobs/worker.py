@@ -1853,6 +1853,12 @@ def retire_evolution_session(
                 "session_id": session_id,
                 "error": f"session metrics export failed: {str(exc)[:300]}",
             }
+        if int(metrics.get("sessions") or 0) != 1:
+            return {
+                "retired": False,
+                "session_id": session_id,
+                "error": "session metrics export did not resolve the exact persisted session",
+            }
         archive = (
             store.read_json(job_id, EVOLUTION_SESSION_ARCHIVE_PATH, default={}) or {}
         )

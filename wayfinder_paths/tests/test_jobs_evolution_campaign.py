@@ -824,6 +824,45 @@ def test_evolution_session_retirement_exports_before_exact_delete(
     assert archive["sessions"][0]["retired_at"]
 
 
+def test_evolution_session_retirement_refuses_unresolved_metering(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    store.write_json(
+        job_id,
+        "reports/evolution/session.json",
+        {"campaign_id": "campaign-1", "session_id": "session-1"},
+    )
+
+    class RetireClient:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        def session_statuses(self) -> dict[str, Any]:
+            return {}
+
+        def session_exists(self, session_id: str) -> bool:
+            return True
+
+        def delete_session(self, session_id: str) -> bool:
+            self.deleted.append(session_id)
+            return True
+
+    client = RetireClient()
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.OPENCODE_CLIENT", client)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.benchmarks.agent_adapter.meter_session_ids",
+        lambda session_ids: {"sessions": 0},
+    )
+
+    retired = retire_evolution_session(store, job_id, "campaign-1")
+
+    assert retired and retired["retired"] is False
+    assert "exact persisted session" in retired["error"]
+    assert client.deleted == []
+    assert not (store.job_dir(job_id) / "reports/evolution/sessions.json").exists()
+
+
 _EVAL_SPEC = {
     "market_kind": "perp",
     "data_contract": {"bar_interval": "1h", "symbols": ["IMX"]},

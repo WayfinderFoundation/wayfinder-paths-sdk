@@ -60,6 +60,7 @@ def test_session_meter_includes_cache_tokens_and_tool_payload_bytes(tmp_path) ->
 
     totals = meter_session_ids(["session-1"], since_ms=100, session_db=session_db)
 
+    assert totals["sessions"] == 1
     assert totals["tokens_in"] == 10
     assert totals["tokens_out"] == 3
     assert totals["tokens_reasoning"] == 2
@@ -68,3 +69,26 @@ def test_session_meter_includes_cache_tokens_and_tool_payload_bytes(tmp_path) ->
     assert totals["tool_calls"] == 1
     assert totals["tool_result_bytes"] == len(tool_data)
     assert totals["tool_result_bytes_by_tool"] == {"read": len(tool_data)}
+
+
+def test_session_meter_does_not_count_unknown_session(tmp_path) -> None:
+    session_db = tmp_path / "opencode.db"
+    connection = sqlite3.connect(session_db)
+    connection.executescript(
+        """
+        CREATE TABLE session (id TEXT PRIMARY KEY);
+        CREATE TABLE message (
+          id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT
+        );
+        CREATE TABLE part (
+          id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+          time_created INTEGER, data TEXT
+        );
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    totals = meter_session_ids(["missing"], session_db=session_db)
+
+    assert totals["sessions"] == 0
