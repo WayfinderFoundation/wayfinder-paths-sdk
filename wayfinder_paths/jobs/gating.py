@@ -60,13 +60,17 @@ def clamp_leverage(
     return requested, None
 
 
-def compute_workspace_revision(root: Path) -> str:
+def compute_workspace_revision(
+    root: Path, *, retain_operator_dials: bool = False
+) -> str:
     """Content hash of workspace/* + job.yaml.
 
     Promotion copies the candidate byte-for-byte over the active workspace, so
     a hash computed on a candidate dir pre-promotion equals the promoted
     revision — artifacts stamped during candidate validation stay valid after
-    promotion.
+    promotion. ``retain_operator_dials`` reproduces the immediately preceding
+    hash definition for migrating already-approved evidence; new evidence must
+    always use the default.
     """
     digest = hashlib.sha256()
     workspace = root / "workspace"
@@ -112,8 +116,9 @@ def compute_workspace_revision(root: Path) -> str:
                 # stamps, baseline drift on staged candidates, and candidate
                 # promotion reverting the operator's selection. job_kind is
                 # derived from the same dial, so it leaves the hash with it.
-                data.pop("agent_loop", None)
-                data.pop("job_kind", None)
+                if not retain_operator_dials:
+                    data.pop("agent_loop", None)
+                    data.pop("job_kind", None)
                 match data.get("execution_params"):
                     case dict() as execution_params:
                         execution_params.pop("wallet_label", None)
