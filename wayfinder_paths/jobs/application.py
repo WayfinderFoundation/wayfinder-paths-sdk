@@ -370,6 +370,40 @@ def _complete_applied_application(
     # ~30-minute backtest with trading loops paused adds nothing — keep only
     # the cheap invariants (compile, scenario sims, config/report reads).
     reuse = assess_validation_reuse(store, job_id, proposal, candidate_dir)
+    maintenance = (proposal.get("candidate_report") or {}).get("maintenance") or {}
+    if maintenance.get("ready") is True and not reuse["eligible"]:
+        final_error = (
+            "behavior-equivalence proof is no longer reusable "
+            f"({reuse['reason']}); stage the maintenance change fresh"
+        )
+        store.append_journal(
+            job_id,
+            {
+                "type": "maintenance_apply_refused_stale_proof",
+                "proposal_id": proposal_id,
+                "reason": reuse["reason"],
+                **({"details": reuse["proof"]} if reuse["proof"] else {}),
+            },
+        )
+        _write_apply_report(
+            store,
+            job_id,
+            proposal_id,
+            status="red",
+            summary=f"Apply refused: {final_error}",
+            changed_files=changed_files or [],
+            validation={"status": "failed", "checks": [], "error": final_error},
+            error=final_error,
+        )
+        return _ApplicationOutcome(
+            final_status="failed",
+            final_error=final_error,
+            deterministic_validation={
+                "status": "failed",
+                "checks": [],
+                "error": final_error,
+            },
+        )
     if reuse["reason"] == "dataset_stale":
         # Freshness bound (live-capable only): the frozen evidence and the
         # on-disk dataset are provably identical, but the bars are older

@@ -177,6 +177,25 @@ def dataset_content_fingerprint(
     return fingerprint
 
 
+def dataset_fingerprint_identity(
+    fingerprint: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Path-independent identity for comparing two dataset snapshots.
+
+    Candidate bundles may resolve an identical copied dataset through a
+    different absolute path than the incumbent.  The path remains useful in
+    evidence records (and for freshness reads), but it is not part of the
+    data's content identity.
+    """
+    if not fingerprint:
+        return None
+    return {
+        key: fingerprint[key]
+        for key in ("sha256", "bytes", "features")
+        if key in fingerprint
+    }
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:

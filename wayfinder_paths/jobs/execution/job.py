@@ -175,6 +175,11 @@ def _backtest_execution_job_locked(
         raise FileNotFoundError(
             f"Execution script not found for job {job_id}: {script}"
         )
+    dataset_fingerprint_before = dataset_content_fingerprint(
+        root,
+        root,
+        feature_paths=tuple(item.path for item in parse_feature_specs(spec)),
+    )
     dataset = _load_dataset(root, spec, job_data)
     # `--quick N`: backtest only the last N bars — cheap enough to sweep many
     # parameters fast while iterating, before the full-history confirmation run.
@@ -195,6 +200,7 @@ def _backtest_execution_job_locked(
         "revision": compute_workspace_revision(root),
         "generated_at": utc_now_iso(),
         "dataset": dict(dataset.metadata),
+        "dataset_fingerprint": dataset_fingerprint_before,
     }
     if walk_forward is not None and not grid_path:
         raise ValueError("walk_forward requires a grid (pass grid_path)")
@@ -297,6 +303,15 @@ def _backtest_execution_job_locked(
     else:
         params = job_data.get("execution_params") or {}
         result = simulate_execution(script, dataset, spec, params)
+        dataset_fingerprint_after = dataset_content_fingerprint(
+            root,
+            root,
+            feature_paths=tuple(item.path for item in parse_feature_specs(spec)),
+        )
+        stamp["dataset_fingerprint_after"] = dataset_fingerprint_after
+        stamp["dataset_stable"] = (
+            dataset_fingerprint_before == dataset_fingerprint_after
+        )
         artifacts = write_backtest_artifacts(result, output_dir, extra=stamp)
         artifacts["trade_forensics"] = _write_trade_forensics(
             result, dataset, output_dir, stamp=stamp

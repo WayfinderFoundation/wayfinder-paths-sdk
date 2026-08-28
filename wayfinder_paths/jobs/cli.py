@@ -1856,6 +1856,13 @@ def approve_cmd(
     multiple=True,
     help="Acknowledge an exact robustness warning code (repeatable).",
 )
+@click.option(
+    "--acceptance-policy",
+    type=click.Choice(["economic_improvement", "behavior_equivalence"]),
+    default="economic_improvement",
+    show_default=True,
+    help="Use behavior_equivalence only for implementation-only code refactors.",
+)
 @click.option("--memo", default=None, help="Markdown proposal memo (inline).")
 @click.option(
     "--memo-file",
@@ -1874,6 +1881,7 @@ def propose_cmd(
     improver_json: str | None,
     proposal_id: str | None,
     robustness_warnings_acknowledged: tuple[str, ...],
+    acceptance_policy: str,
     memo: str | None,
     memo_file: str | None,
 ) -> None:
@@ -1893,6 +1901,7 @@ def propose_cmd(
         proposal_id=proposal_id,
         memo=memo,
         robustness_warnings_acknowledged=list(robustness_warnings_acknowledged),
+        acceptance_policy=acceptance_policy,
     )
     _echo_json({"ok": True, "result": proposal})
 

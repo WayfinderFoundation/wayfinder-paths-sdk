@@ -388,6 +388,7 @@ def _candidate_behavior_checks(
     job_id = str(job_data.get("id") or job_dir.name)
     spec = ExecutionSpec.from_dict(dict(job_data.get("execution_spec") or {}))
     candidate_revision = compute_workspace_revision(candidate_dir)
+    dataset_fingerprint_before = candidate_dataset_fingerprint(candidate_dir, job_dir)
     try:
         dataset = _load_dataset(
             candidate_dir,
@@ -422,6 +423,9 @@ def _candidate_behavior_checks(
                 spec,
                 params=dict(job_data.get("execution_params") or {}),
             )
+        dataset_fingerprint_after = candidate_dataset_fingerprint(
+            candidate_dir, job_dir
+        )
         # Persist the candidate backtest as a revision-stamped artifact inside
         # the candidate bundle (outside workspace/, so the candidate revision
         # is unchanged). Promotion copies it into the job's results/ — the
@@ -434,6 +438,11 @@ def _candidate_behavior_checks(
                 "revision": candidate_revision,
                 "generated_at": utc_now_iso(),
                 "dataset": dict(dataset.metadata),
+                "dataset_fingerprint": dataset_fingerprint_before,
+                "dataset_fingerprint_after": dataset_fingerprint_after,
+                "dataset_stable": (
+                    dataset_fingerprint_before == dataset_fingerprint_after
+                ),
             },
         )
         checks.append(

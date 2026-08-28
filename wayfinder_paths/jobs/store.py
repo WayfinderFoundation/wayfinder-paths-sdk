@@ -410,18 +410,23 @@ class JobStore:
             )
         if not report.get("revision"):
             raise ValueError("candidate_report is missing its candidate revision")
-        from wayfinder_paths.jobs.robustness import (
-            required_robustness_acknowledgements,
+        acceptance_policy = str(
+            report.get("acceptance_policy") or "economic_improvement"
         )
-
-        required_warnings = required_robustness_acknowledgements(
-            report.get("robustness")
-        )
-        acknowledged = set(proposal.get("robustness_warnings_acknowledged") or [])
-        if missing := required_warnings - acknowledged:
-            raise ValueError(
-                f"candidate robustness warnings are not acknowledged: {sorted(missing)}"
+        if acceptance_policy != "behavior_equivalence":
+            from wayfinder_paths.jobs.robustness import (
+                required_robustness_acknowledgements,
             )
+
+            required_warnings = required_robustness_acknowledgements(
+                report.get("robustness")
+            )
+            acknowledged = set(proposal.get("robustness_warnings_acknowledged") or [])
+            if missing := required_warnings - acknowledged:
+                raise ValueError(
+                    "candidate robustness warnings are not acknowledged: "
+                    f"{sorted(missing)}"
+                )
         validation_summary = report.get("validation_summary") or {}
         validation_status = validation_summary.get("status")
         if validation_status != "passed":
@@ -439,7 +444,14 @@ class JobStore:
                 f"{proposal.get('proposal_id')} to re-run validation against "
                 "the same staged candidate"
             )
+        behavior_equivalent = self._ensure_maintenance_gate(
+            job_id, proposal, report, acceptance_policy=acceptance_policy
+        )
         if report.get("mode") == "validation_only":
+            if acceptance_policy == "behavior_equivalence":
+                raise ValueError(
+                    "behavior-equivalence maintenance requires a full backtest"
+                )
             self._ensure_candidate_matches_report(job_id, proposal, report)
             return
         gate = report.get("gate") or {}
@@ -448,12 +460,68 @@ class JobStore:
             raise ValueError(f"candidate gate is not live-ready: {reasons}")
         economic = report.get("economic") or {}
         self._ensure_governance_gate(
-            job_id, economic, proposal_id=str(proposal.get("proposal_id") or "")
+            job_id,
+            economic,
+            proposal_id=str(proposal.get("proposal_id") or ""),
+            behavior_equivalent=behavior_equivalent,
         )
         self._ensure_candidate_matches_report(job_id, proposal, report)
 
+    def _ensure_maintenance_gate(
+        self,
+        job_id: str,
+        proposal: dict[str, Any],
+        report: dict[str, Any],
+        *,
+        acceptance_policy: str,
+    ) -> bool:
+        """Validate the system-generated proof for the maintenance lane."""
+        if acceptance_policy != "behavior_equivalence":
+            return False
+        if proposal.get("acceptance_policy") != "behavior_equivalence":
+            raise ValueError("proposal/report acceptance policy mismatch")
+        maintenance = report.get("maintenance") or {}
+        if maintenance.get("ready") is not True:
+            reasons = "; ".join(maintenance.get("reasons") or ["missing proof"])
+            raise ValueError(f"behavior equivalence is not proven: {reasons}")
+        if proposal.get("kind") != "code_change":
+            raise ValueError("behavior equivalence is limited to code_change")
+        if list(maintenance.get("changed_files") or []) != list(
+            proposal.get("changed_files") or []
+        ):
+            raise ValueError("maintenance proof changed-file set does not match")
+        if maintenance.get("baseline_revision") != proposal.get("base_revision"):
+            raise ValueError("maintenance proof baseline revision does not match")
+        if maintenance.get("candidate_revision") != report.get("revision"):
+            raise ValueError("maintenance proof candidate revision does not match")
+        if not maintenance.get("baseline_digest") or maintenance.get(
+            "baseline_digest"
+        ) != maintenance.get("candidate_digest"):
+            raise ValueError("maintenance execution-output digests do not match")
+
+        # Approval is synchronous at propose time, but re-check the cheap data
+        # identity anyway so a stale proof can never be approved later.
+        from wayfinder_paths.jobs.application import _candidate_dir_from_proposal
+        from wayfinder_paths.jobs.gating import dataset_fingerprint_identity
+        from wayfinder_paths.jobs.validation import candidate_dataset_fingerprint
+
+        candidate_dir = _candidate_dir_from_proposal(self, job_id, proposal)
+        current = dataset_fingerprint_identity(
+            candidate_dataset_fingerprint(candidate_dir, self.job_dir(job_id))
+        )
+        if not current or current != maintenance.get("dataset_fingerprint"):
+            raise ValueError(
+                "maintenance equivalence dataset changed since proof generation"
+            )
+        return True
+
     def _ensure_governance_gate(
-        self, job_id: str, economic: dict[str, Any], *, proposal_id: str = ""
+        self,
+        job_id: str,
+        economic: dict[str, Any],
+        *,
+        proposal_id: str = "",
+        behavior_equivalent: bool = False,
     ) -> None:
         """Fail-closed economic gating for live-capable jobs.
 
@@ -478,6 +546,24 @@ class JobStore:
                 "a protected file) — owner must inspect and re-commit "
                 "(wayfinder job governance-commit) before any promotion"
             )
+
+        if behavior_equivalent:
+            evaluated_revision = economic.get("constitution_revision")
+            current_revision = current.get("revision")
+            current_enforcement = str(current.get("enforcement") or "advisory")
+            if current_revision is None and current_enforcement != "blocking":
+                # Backward-compatible advisory jobs may have no constitution
+                # file and therefore no revision. There is no protected
+                # policy state to drift in that legacy shape.
+                return
+            if not evaluated_revision or evaluated_revision != current_revision:
+                raise ValueError(
+                    "ESCALATE: governance changed since behavior equivalence "
+                    f"was evaluated (report {evaluated_revision} vs current "
+                    f"{current_revision}) — stage the maintenance "
+                    "change fresh"
+                )
+            return
 
         enforcement = str(
             current.get("enforcement") or economic.get("enforcement") or "advisory"

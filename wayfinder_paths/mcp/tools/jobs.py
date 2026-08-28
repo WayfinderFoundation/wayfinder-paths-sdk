@@ -373,6 +373,9 @@ async def core_jobs(
     grid: dict[str, Any] | list[dict[str, Any]] | None = None,
     robustness_plan: dict[str, Any] | None = None,
     robustness_warnings_acknowledged: list[str] | None = None,
+    acceptance_policy: Literal["economic_improvement", "behavior_equivalence"] = (
+        "economic_improvement"
+    ),
     workers: int = 0,
     parallel: Literal["serial", "thread", "process"] = "process",
     compile: bool = True,  # noqa: A002
@@ -1007,6 +1010,7 @@ async def core_jobs(
                 proposal_id=proposal_id,
                 memo=memo,
                 robustness_warnings_acknowledged=robustness_warnings_acknowledged,
+                acceptance_policy=acceptance_policy,
             )
         )
 
