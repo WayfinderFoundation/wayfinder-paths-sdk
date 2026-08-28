@@ -7,12 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 
 import pytest
 
 import wayfinder_paths.mcp.tools.jobs as jobs_module
 from wayfinder_paths.jobs.background import op_status_summary
-from wayfinder_paths.jobs.execution.op_process import terminate_campaign_ops
+from wayfinder_paths.jobs.execution.op_process import (
+    recorded_process_alive,
+    terminate_campaign_ops,
+)
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.mcp.tools.jobs import (
     _background_op_status,
@@ -108,6 +112,46 @@ def test_sync_status_reconciles_dead_detached_operation(tmp_path) -> None:
     assert reconciled["state"] == "failed"
     assert reconciled["reconciled_at"]
     assert "without a result" in reconciled["error"]
+
+
+def test_detached_process_identity_rejects_pid_reuse_after_restart(monkeypatch) -> None:
+    import wayfinder_paths.jobs.execution.op_process as process_module
+
+    monkeypatch.setattr(process_module, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        process_module,
+        "process_identity_fields",
+        lambda pid: {"boot_id": "new-boot", "process_start_ticks": 222},
+    )
+    assert not recorded_process_alive(
+        {
+            "pid": 42,
+            "boot_id": "old-boot",
+            "process_start_ticks": 111,
+        }
+    )
+    assert not recorded_process_alive(
+        {"pid": 42, "boot_id": "new-boot", "process_start_ticks": 111}
+    )
+    assert recorded_process_alive(
+        {"pid": 42, "boot_id": "new-boot", "process_start_ticks": 222}
+    )
+
+
+def test_legacy_detached_status_older_than_boot_is_not_alive(monkeypatch) -> None:
+    import wayfinder_paths.jobs.execution.op_process as process_module
+
+    monkeypatch.setattr(process_module, "_pid_alive", lambda pid: True)
+    monkeypatch.setattr(process_module, "process_identity_fields", lambda pid: {})
+    monkeypatch.setattr(
+        process_module,
+        "_linux_booted_at",
+        lambda: datetime(2026, 8, 28, 5, tzinfo=UTC),
+    )
+
+    assert not recorded_process_alive(
+        {"pid": 42, "started_at": "2026-08-28T04:38:54+00:00"}
+    )
 
 
 def test_campaign_close_reaps_registered_runner_group(tmp_path, monkeypatch) -> None:

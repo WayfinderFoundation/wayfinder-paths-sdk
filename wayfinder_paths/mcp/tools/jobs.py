@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -18,7 +17,11 @@ from wayfinder_paths.jobs.apply_launcher import launch_application
 from wayfinder_paths.jobs.backtest_artifacts import diagnose_backtest
 from wayfinder_paths.jobs.compiler import JobCompiler
 from wayfinder_paths.jobs.execution.experiments import list_experiments
-from wayfinder_paths.jobs.execution.op_process import op_runner_command
+from wayfinder_paths.jobs.execution.op_process import (
+    op_runner_command,
+    process_identity_fields,
+    recorded_process_alive,
+)
 from wayfinder_paths.jobs.execution.validation import validate_execution_job
 from wayfinder_paths.jobs.halt import clear_halt, request_halt
 from wayfinder_paths.jobs.models import (
@@ -152,16 +155,6 @@ def _op_status_hint(job_id: str, op: str) -> str:
     )
 
 
-def _pid_alive(pid: Any) -> bool:
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
-
-
 def _load_json_file(path: Path) -> dict[str, Any] | None:
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
@@ -187,7 +180,7 @@ async def _start_background_op(
     if (
         existing
         and existing.get("state") == "running"
-        and _pid_alive(existing.get("pid"))
+        and recorded_process_alive(existing)
     ):
         return ok(
             {
@@ -227,6 +220,7 @@ async def _start_background_op(
         "state": "running",
         "pid": proc.pid,
         "started_at": utc_now_iso(),
+        **process_identity_fields(proc.pid),
         **({"island": island} if island else {}),
     }
     atomic_write_json(status_path, status)
@@ -267,7 +261,7 @@ def _background_op_status(store: JobStore, job_id: str, op: str) -> dict[str, An
     status = _load_json_file(ops_dir / f"{op}.json")
     if not status:
         return err("not_found", f"no background {op} run recorded for {job_id}")
-    if status.get("state") == "running" and not _pid_alive(status.get("pid")):
+    if status.get("state") == "running" and not recorded_process_alive(status):
         # The reaper lived in an MCP server that restarted mid-run. The child
         # was detached (own session), so a parseable result file means it
         # finished anyway; otherwise the run is lost.

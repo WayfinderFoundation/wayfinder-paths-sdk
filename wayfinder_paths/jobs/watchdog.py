@@ -1271,10 +1271,9 @@ def _audit_pending_claims(store: JobStore, job_id: str) -> dict[str, Any] | None
 # kill/graduate flips out of the 5-minute noise floor.
 _LIFECYCLE_MARKER = "state/lifecycle_pass.json"
 _LIFECYCLE_INTERVAL_S = 6 * 3600
-_CAMPAIGN_FINALIZE_RETRY_S = (0, 5 * 60, 15 * 60, 30 * 60)
+_CAMPAIGN_FINALIZE_RETRY_S = (0, 5 * 60, 15 * 60, 30 * 60, 60 * 60)
 _CAMPAIGN_FINALIZE_GRACE = timedelta(minutes=60)
-_CAMPAIGN_EVALUATE_DRAIN_GRACE = timedelta(minutes=15)
-_CAMPAIGN_BOOTSTRAP_GRACE = timedelta(minutes=15)
+_CAMPAIGN_FINALIZE_MAX_AGE = timedelta(hours=24)
 # A finalize op still writing output past the grace is extended, not expired:
 # expiry once fired mid-Optuna at exactly the grace boundary and the orphaned
 # finalize ran 8+ hours holding the replication lock. Freshness = op log
@@ -1388,14 +1387,19 @@ def _run_evolution_campaign_pass(
     from wayfinder_paths.jobs.evolution_campaign import (
         CAMPAIGN_DRAIN,
         CAMPAIGN_STATE_PATH,
+        recover_lost_candidate_evaluations,
     )
     from wayfinder_paths.jobs.execution.op_process import terminate_campaign_ops
-    from wayfinder_paths.jobs.worker import retire_evolution_session
+    from wayfinder_paths.jobs.worker import (
+        recover_evolution_stage_session,
+        retire_evolution_session,
+    )
 
     state = store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
-    campaign_id = str(state.get("campaign_id") or "")
     if state.get("status") not in {"active", "finalizing"}:
-        if state.get("status") in {"complete", "expired"} and state.get("campaign_id"):
+        if state.get("status") in {"complete", "expired", "failed"} and state.get(
+            "campaign_id"
+        ):
             terminate_campaign_ops(store, job_id, str(state["campaign_id"]))
             retired = retire_evolution_session(store, job_id, str(state["campaign_id"]))
             if (
@@ -1414,73 +1418,52 @@ def _run_evolution_campaign_pass(
         return None
     if deadline.tzinfo is None:
         deadline = deadline.replace(tzinfo=UTC)
-    started_at: datetime | None = None
-    try:
-        started_at = datetime.fromisoformat(str(state["started_at"]))
-        if started_at.tzinfo is None:
-            started_at = started_at.replace(tzinfo=UTC)
-    except (KeyError, TypeError, ValueError):
-        pass
-    if (
-        state.get("status") == "active"
-        and started_at is not None
-        and now - started_at >= _CAMPAIGN_BOOTSTRAP_GRACE
-        and int((state.get("counts") or {}).get("generated") or 0) == 0
-    ):
-        expired_bootstrap = False
-        with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
-            state = store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
-            if (
-                str(state.get("campaign_id") or "") == campaign_id
-                and state.get("status") == "active"
-                and int((state.get("counts") or {}).get("generated") or 0) == 0
-            ):
-                state.update(
-                    {
-                        "status": "expired",
-                        "stage": "expired",
-                        "expired_at": now.isoformat(),
-                        "expiry_reason": "no_candidates_generated",
-                    }
-                )
-                store.write_json(job_id, CAMPAIGN_STATE_PATH, state)
-                store.append_journal(
-                    job_id,
-                    {
-                        "type": "evolution_campaign_bootstrap_failed",
-                        "campaign_id": state.get("campaign_id"),
-                        "reason": "no_candidates_generated",
-                    },
-                )
-                expired_bootstrap = True
-        if expired_bootstrap:
-            reaped = terminate_campaign_ops(
-                store, job_id, str(state.get("campaign_id") or "")
-            )
-            if reaped:
-                store.append_journal(
-                    job_id,
-                    {
-                        "type": "evolution_campaign_ops_reaped",
-                        "campaign_id": state.get("campaign_id"),
-                        "ops": reaped,
-                    },
-                )
-            retirement = retire_evolution_session(
-                store, job_id, str(state.get("campaign_id") or "")
-            )
-            result = {
-                "action": "evolution_campaign_bootstrap_failed",
-                "campaign_id": state.get("campaign_id"),
-                "session_retired": bool(retirement and retirement.get("retired")),
-            }
-            if reaped:
-                result["reaped_ops"] = reaped
-            if retirement and retirement.get("error"):
-                result["retirement_error"] = retirement["error"]
-            return result
+    evaluating = op_status_summary(store.job_dir(job_id), "evolution_evaluate")
+    if (evaluating or {}).get("status") == "running":
+        return {
+            "action": "evolution_campaign_waiting_for_evaluation",
+            "campaign_id": state.get("campaign_id"),
+            "governor_paused": _op_governor_paused(
+                store.job_dir(job_id), "evolution_evaluate", now
+            ),
+        }
+    recovered = recover_lost_candidate_evaluations(
+        store,
+        job_id,
+        reason=(
+            "detached evaluator is no longer running"
+            if evaluating is None
+            else f"detached evaluator status is {evaluating.get('status')}"
+        ),
+        now=now,
+    )
+    if recovered:
+        return {
+            "action": "evolution_candidate_evaluation_recovered",
+            "campaign_id": state.get("campaign_id"),
+            "candidate_ids": recovered,
+        }
+    state = store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
+    pending_evaluation = [
+        candidate
+        for candidate in state.get("candidates") or []
+        if candidate.get("status") in {"prepared", "quick_failed"}
+    ]
     if now < deadline and state.get("status") == "active":
-        if now < deadline - CAMPAIGN_DRAIN:
+        if now < deadline - CAMPAIGN_DRAIN or pending_evaluation:
+            recovery = recover_evolution_stage_session(store, job_id, now=now)
+            if recovery:
+                return {
+                    "action": "evolution_stage_session_recovered",
+                    "campaign_id": state.get("campaign_id"),
+                    **recovery,
+                }
+            if pending_evaluation:
+                return {
+                    "action": "evolution_campaign_waiting_for_candidate_stage",
+                    "campaign_id": state.get("campaign_id"),
+                    "candidate_id": pending_evaluation[0].get("candidate_id"),
+                }
             return None
         with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
             state = store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
@@ -1506,37 +1489,38 @@ def _run_evolution_campaign_pass(
             "session_retired": bool(retired and retired.get("retired")),
         }
 
-    evaluating = op_status_summary(store.job_dir(job_id), "evolution_evaluate")
-    if (evaluating or {}).get("status") == "running" and (
-        now - deadline < _CAMPAIGN_EVALUATE_DRAIN_GRACE
-        or _op_governor_paused(store.job_dir(job_id), "evolution_evaluate", now)
-    ):
-        return {
-            "action": "evolution_campaign_waiting_for_evaluation",
-            "campaign_id": state.get("campaign_id"),
-        }
-
     retirement = retire_evolution_session(
         store, job_id, str(state.get("campaign_id") or "")
     )
-    if (
-        retirement
-        and not retirement.get("retired")
-        and now - deadline < _CAMPAIGN_FINALIZE_GRACE
-    ):
+    finalize_max_age_reached = now - deadline >= _CAMPAIGN_FINALIZE_MAX_AGE
+    if retirement and not retirement.get("retired") and not finalize_max_age_reached:
         return {
             "action": "evolution_campaign_waiting_for_session_retirement",
             "campaign_id": state.get("campaign_id"),
             "error": retirement.get("error"),
         }
 
+    if pending_evaluation and not finalize_max_age_reached:
+        candidate_id = str(pending_evaluation[0].get("candidate_id") or "")
+        spawned = spawn_detached_op(
+            store,
+            job_id,
+            "evolution_evaluate",
+            {"job_id": job_id, "candidate_id": candidate_id},
+        )
+        return {
+            "action": "evolution_candidate_evaluation_started",
+            "campaign_id": state.get("campaign_id"),
+            "candidate_id": candidate_id,
+            "pid": spawned.get("pid"),
+        }
+
     op = op_status_summary(store.job_dir(job_id), "evolution_finalize")
     past_grace = now - deadline >= _CAMPAIGN_FINALIZE_GRACE
     if past_grace:
-        # Finalize-aware expiry: a live finalize still writing output past
-        # the grace extends the campaign (journaled once per campaign); a
-        # dead or wedged one is reaped BEFORE the expiry takes the campaign
-        # lock the wedged process itself may be holding.
+        # A healthy finalizer may outlive the four-hour generation window.
+        # A stale process is reaped and relaunched from its durable candidate
+        # claims instead of expiring the whole campaign at the old 60m wall.
         pid, healthy = _finalize_op_health(store.job_dir(job_id), now)
         if healthy:
             marker = store.read_json(job_id, _FINALIZE_EXTEND_MARKER) or {}
@@ -1581,20 +1565,20 @@ def _run_evolution_campaign_pass(
         if state.get("status") not in {"active", "finalizing"}:
             return None
         attempts = int(state.get("finalize_attempts") or 0)
-        if now - deadline >= _CAMPAIGN_FINALIZE_GRACE:
+        if finalize_max_age_reached:
             state.update(
                 {
-                    "status": "expired",
-                    "stage": "expired",
-                    "expired_at": now.isoformat(),
-                    "expiry_reason": "finalization did not complete within 60 minutes",
+                    "status": "failed",
+                    "stage": "failed",
+                    "failed_at": now.isoformat(),
+                    "failure_reason": "finalization did not reach a terminal verdict within 24 hours",
                 }
             )
             store.write_json(job_id, CAMPAIGN_STATE_PATH, state)
             store.append_journal(
                 job_id,
                 {
-                    "type": "evolution_campaign_expired",
+                    "type": "evolution_campaign_failed",
                     "campaign_id": state.get("campaign_id"),
                     "finalize_attempts": attempts,
                 },
@@ -1603,17 +1587,17 @@ def _run_evolution_campaign_pass(
                 store, job_id, str(state.get("campaign_id") or "")
             )
             result = {
-                "action": "evolution_campaign_expired",
+                "action": "evolution_campaign_failed",
                 "campaign_id": state.get("campaign_id"),
             }
             if reaped:
                 result["reaped_ops"] = reaped
             return result
-        if attempts >= len(_CAMPAIGN_FINALIZE_RETRY_S):
-            return None
         last_attempt = state.get("finalize_last_attempt_at")
         if attempts and _age(now, last_attempt) < timedelta(
-            seconds=_CAMPAIGN_FINALIZE_RETRY_S[attempts]
+            seconds=_CAMPAIGN_FINALIZE_RETRY_S[
+                min(attempts, len(_CAMPAIGN_FINALIZE_RETRY_S) - 1)
+            ]
         ):
             return None
         state.update(
