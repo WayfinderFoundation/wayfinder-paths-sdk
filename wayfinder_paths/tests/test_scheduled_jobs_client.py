@@ -35,18 +35,19 @@ def test_bulk_sync_posts_jobs(cloud_env) -> None:
         return httpx.Response(200, json={"synced": 1, "deleted": 0})
 
     c = _make_client(handler)
-    c.bulk_sync(
+    result = c.bulk_sync(
         [{"job_name": "a", "status": "active", "interval_seconds": 60, "payload": {}}]
     )
 
     assert captured["method"] == "POST"
     assert captured["url"] == "https://api.test/opencode/instances/inst-xyz/jobs/sync/"
     assert b"job_name" in captured["body"]
+    assert result == {"synced": 1, "deleted": 0}
 
 
 def test_bulk_sync_swallows_5xx(cloud_env) -> None:
     c = _make_client(lambda _req: httpx.Response(500))
-    c.bulk_sync([{"job_name": "a"}])
+    assert c.bulk_sync([{"job_name": "a"}]) is None
 
 
 def test_report_run_posts_run_data(cloud_env) -> None:

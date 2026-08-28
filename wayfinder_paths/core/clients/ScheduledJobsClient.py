@@ -30,7 +30,7 @@ class ScheduledJobsClient:
             hdrs["X-API-KEY"] = api_key
         return hdrs
 
-    def bulk_sync(self, jobs: list[dict[str, Any]]) -> None:
+    def bulk_sync(self, jobs: list[dict[str, Any]]) -> dict[str, Any] | None:
         try:
             resp = self._client.post(
                 f"{self._base_url()}/sync/",
@@ -38,8 +38,11 @@ class ScheduledJobsClient:
                 headers=self._headers(),
             )
             resp.raise_for_status()
+            payload = resp.json()
+            return payload if isinstance(payload, dict) else None
         except Exception:
             logger.opt(exception=True).warning("Failed to bulk-sync jobs to backend")
+            return None
 
     def report_run(self, job_name: str, run_data: dict[str, Any]) -> None:
         try:
