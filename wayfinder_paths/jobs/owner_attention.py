@@ -362,8 +362,13 @@ def _decided_item(
     event_type = str(event.get("type") or "")
     ts = event.get("ts")
     if event_type == "proposal_auto_applied":
+        tier = str(event.get("tier") or "paper")
         return {
-            "kind": "paper_auto_apply",
+            "kind": (
+                "maintenance_auto_apply"
+                if tier == "behavior_equivalence"
+                else "paper_auto_apply"
+            ),
             "job_id": job_id,
             "ref_id": event.get("proposal_id"),
             "ts": ts,

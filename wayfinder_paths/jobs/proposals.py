@@ -42,6 +42,7 @@ from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.failures import TransientInfrastructureError, classify_failure
 from wayfinder_paths.jobs.gating import (
     compute_workspace_revision,
+    dataset_fingerprint_identity,
     evaluate_economic_gate,
     evaluate_live_gate,
 )
@@ -50,6 +51,13 @@ from wayfinder_paths.jobs.improver.spec import (
     improver_revision,
     merge_over_defaults,
     revision_stamp,
+)
+from wayfinder_paths.jobs.maintenance import (
+    ACCEPTANCE_POLICIES,
+    BEHAVIOR_EQUIVALENCE_POLICY,
+    ECONOMIC_IMPROVEMENT_POLICY,
+    maintenance_change_surface_reasons,
+    prove_behavior_equivalence,
 )
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.robustness import (
@@ -190,13 +198,52 @@ def maybe_auto_apply_paper_proposal(
     if paper_auto_apply_blockers(store, job_id, proposal):
         return None
     try:
-        proposal = store.approve_proposal(job_id, proposal_id)
+        return _auto_apply_proposal(
+            store,
+            job_id,
+            proposal_id,
+            tier="paper",
+            approved_by="paper-auto-apply",
+        )
     except ValueError:
         # The real gate said no — our eligibility precheck was optimistic.
         # The proposal stays pending on the owner path; nothing to unwind.
         return None
+
+
+def maybe_auto_apply_maintenance_proposal(
+    store: JobStore, job_id: str, proposal_id: str
+) -> dict[str, Any]:
+    """Queue a mechanically equivalent implementation change without review."""
+    proposal = store.load_proposal(job_id, proposal_id)
+    report = proposal.get("candidate_report") or {}
+    maintenance = report.get("maintenance") or {}
+    if (
+        report.get("acceptance_policy") != BEHAVIOR_EQUIVALENCE_POLICY
+        or maintenance.get("ready") is not True
+    ):
+        raise ValueError("maintenance proposal lacks a green equivalence proof")
+    return _auto_apply_proposal(
+        store,
+        job_id,
+        proposal_id,
+        tier="behavior_equivalence",
+        approved_by="behavior-equivalence-gate",
+    )
+
+
+def _auto_apply_proposal(
+    store: JobStore,
+    job_id: str,
+    proposal_id: str,
+    *,
+    tier: str,
+    approved_by: str,
+) -> dict[str, Any]:
+    """Shared mechanical approve/queue/launch path for autonomous tiers."""
+    proposal = store.approve_proposal(job_id, proposal_id)
     proposal["approval"]["required"] = False
-    proposal["approval"]["by"] = "paper-auto-apply"
+    proposal["approval"]["by"] = approved_by
     proposal["updated_at"] = utc_now_iso()
     store.write_proposal(job_id, proposal)
     report = proposal.get("candidate_report") or {}
@@ -213,11 +260,12 @@ def maybe_auto_apply_paper_proposal(
             "type": "proposal_auto_applied",
             "proposal_id": proposal_id,
             "kind": proposal.get("kind"),
-            "tier": "paper",
+            "tier": tier,
             "evidence": {
                 "validation_status": "passed",
                 "gate_live_ready": (report.get("gate") or {}).get("live_ready"),
                 "economic_ready": (report.get("economic") or {}).get("ready"),
+                "behavior_equivalent": (report.get("maintenance") or {}).get("ready"),
                 "candidate_revision": report.get("revision"),
             },
             "undo": undo,
@@ -254,6 +302,7 @@ def propose_change(
     proposal_id: str | None = None,
     memo: str | None = None,
     robustness_warnings_acknowledged: list[str] | None = None,
+    acceptance_policy: str = ECONOMIC_IMPROVEMENT_POLICY,
 ) -> dict[str, Any]:
     """Create a pending proposal backed by a validated pre-approval candidate.
 
@@ -270,6 +319,21 @@ def propose_change(
     """
     if kind not in PROPOSAL_KINDS:
         raise ValueError(f"kind must be one of {sorted(PROPOSAL_KINDS)}: {kind}")
+    if acceptance_policy not in ACCEPTANCE_POLICIES:
+        raise ValueError(
+            "acceptance_policy must be one of "
+            f"{sorted(ACCEPTANCE_POLICIES)}: {acceptance_policy}"
+        )
+    if acceptance_policy == BEHAVIOR_EQUIVALENCE_POLICY and (
+        kind != "code_change"
+        or candidate_source is None
+        or params is not None
+        or improver is not None
+    ):
+        raise ValueError(
+            "behavior_equivalence is only for code_change candidates with "
+            "candidate_source and no params or improver changes"
+        )
     if kind == "improver_change":
         if not isinstance(improver, dict) or not improver:
             raise ValueError(
@@ -297,7 +361,28 @@ def propose_change(
     )
     candidate_dir = store.repo_root / candidate_descriptor["candidate_dir"]
     _overlay_change(candidate_dir, candidate_source=candidate_source, params=params)
-    changed_files = _diff_workspaces(root, candidate_dir)
+    changed_files = _diff_workspaces(
+        root,
+        candidate_dir,
+        limit=None if acceptance_policy == BEHAVIOR_EQUIVALENCE_POLICY else 100,
+    )
+    if acceptance_policy == BEHAVIOR_EQUIVALENCE_POLICY:
+        surface_reasons = maintenance_change_surface_reasons(
+            root, candidate_dir, changed_files
+        )
+        if surface_reasons:
+            shutil.rmtree(candidate_dir.parent, ignore_errors=True)
+            store.append_journal(
+                job_id,
+                {
+                    "type": "maintenance_candidate_rejected",
+                    "proposal_id": pid,
+                    "reasons": surface_reasons,
+                },
+            )
+            raise ValueError(
+                "invalid maintenance change surface: " + "; ".join(surface_reasons)
+            )
 
     job = store.load(job_id)
     resolved_plan = scenario_plan
@@ -318,6 +403,7 @@ def propose_change(
         "job_id": job_id,
         "status": "pending",
         "kind": kind,
+        "acceptance_policy": acceptance_policy,
         "proposed_change": {
             "summary": summary,
             **({"execution_params": dict(params)} if params else {}),
@@ -372,13 +458,34 @@ def propose_change(
         )
         raise
     proposal["candidate_report"] = candidate_report
+    if acceptance_policy == BEHAVIOR_EQUIVALENCE_POLICY and (
+        (candidate_report.get("maintenance") or {}).get("ready") is not True
+    ):
+        reasons = (candidate_report.get("maintenance") or {}).get("reasons") or [
+            "behavior equivalence was not proven"
+        ]
+        shutil.rmtree(candidate_dir.parent, ignore_errors=True)
+        if memo:
+            memo_path.unlink(missing_ok=True)
+        store.append_journal(
+            job_id,
+            {
+                "type": "maintenance_candidate_rejected",
+                "proposal_id": pid,
+                "reasons": reasons,
+            },
+        )
+        raise ValueError(
+            "maintenance candidate did not prove full-history behavior "
+            f"equivalence: {'; '.join(str(reason) for reason in reasons)}"
+        )
     required_acknowledgements = required_robustness_acknowledgements(
         candidate_report.get("robustness")
     )
     missing_acknowledgements = required_acknowledgements - set(
         proposal["robustness_warnings_acknowledged"]
     )
-    if missing_acknowledgements:
+    if acceptance_policy != BEHAVIOR_EQUIVALENCE_POLICY and missing_acknowledgements:
         shutil.rmtree(candidate_dir.parent, ignore_errors=True)
         if memo:
             memo_path.unlink(missing_ok=True)
@@ -447,34 +554,51 @@ def propose_change(
         )
     except Exception:  # noqa: BLE001 — archive bookkeeping never breaks propose
         pass
-    try:
-        maybe_auto_apply_paper_proposal(store, job_id, pid)
-    except Exception as exc:  # noqa: BLE001 — the pending proposal is intact
-        # and the owner-approval path unaffected; record the miss.
-        store.append_journal(
-            job_id,
-            {
-                "type": "proposal_auto_apply_error",
-                "proposal_id": pid,
-                "error": str(exc)[:300],
-            },
-        )
+    if acceptance_policy == BEHAVIOR_EQUIVALENCE_POLICY:
+        try:
+            maybe_auto_apply_maintenance_proposal(store, job_id, pid)
+        except Exception as exc:
+            # A governance/data race between proof and queue must not become
+            # owner work. Close it as process housekeeping; the agent can
+            # propose the same refactor fresh against current state.
+            store.reject_proposal(
+                job_id,
+                pid,
+                reason=f"maintenance auto-apply gate changed: {exc}",
+                rejected_by="behavior-equivalence-gate",
+                kind="process",
+            )
+            raise
+    else:
+        try:
+            maybe_auto_apply_paper_proposal(store, job_id, pid)
+        except Exception as exc:  # noqa: BLE001 — pending owner path intact
+            store.append_journal(
+                job_id,
+                {
+                    "type": "proposal_auto_apply_error",
+                    "proposal_id": pid,
+                    "error": str(exc)[:300],
+                },
+            )
     store.refresh_scorecard(job_id)
     sync_all_jobs(store=store)
-    # Surface a chat affordance (contract C5): the opencode harness turns this
-    # marker into a job_result part; the FE renders a review deep-link chip.
-    print(
-        JOB_RESULT_MARKER
-        + json.dumps(
-            {
-                "type": "job_result",
-                "severity": "info",
-                "summary": f"Proposal created: {summary}",
-                "job_id": job_id,
-                "proposal_id": pid,
-            }
+    if acceptance_policy != BEHAVIOR_EQUIVALENCE_POLICY:
+        # Owner-reviewed proposals get a review deep-link chip. Mechanically
+        # equivalent maintenance is deliberately quiet: its audit trail lives
+        # in the journal/decided-autonomously feed, not owner attention.
+        print(
+            JOB_RESULT_MARKER
+            + json.dumps(
+                {
+                    "type": "job_result",
+                    "severity": "info",
+                    "summary": f"Proposal created: {summary}",
+                    "job_id": job_id,
+                    "proposal_id": pid,
+                }
+            )
         )
-    )
     return store.load_proposal(job_id, pid)
 
 
@@ -566,6 +690,10 @@ def _generate_candidate_report(
     comparison = _build_comparison(
         store, job_id, candidate_dir, base_revision=base_revision, pid=pid
     )
+    acceptance_policy = str(
+        proposal.get("acceptance_policy") or ECONOMIC_IMPROVEMENT_POLICY
+    )
+    maintenance: dict[str, Any] | None = None
     if comparison is not None:
         gate = evaluate_live_gate(job_id, candidate_dir=candidate_dir, store=store)
         gate_payload = {
@@ -573,35 +701,50 @@ def _generate_candidate_report(
             "reasons": gate.get("reasons") or [],
         }
         mode = "full"
-        probation = bool((proposal.get("proposed_change") or {}).get("probation"))
-        try:
-            economic = _economic_gate_with_infra_retry(
-                store, job_id, candidate_dir, probation=probation
+        if acceptance_policy == BEHAVIOR_EQUIVALENCE_POLICY:
+            maintenance = prove_behavior_equivalence(
+                active_dir=store.job_dir(job_id),
+                candidate_dir=candidate_dir,
+                changed_files=proposal.get("changed_files") or [],
             )
-        except TransientInfrastructureError:
-            # Box condition, not an economic verdict — propagate so the
-            # caller aborts instead of freezing ready=None + a bars/lock
-            # error into the immutable report that the fail-closed approve
-            # gate then ESCALATEs forever (2026-08-24 production incident:
-            # a transiently unlinked .wayfinder symlink made the bars file
-            # unreadable for exactly the economic step).
-            raise
-        except Exception as exc:  # noqa: BLE001 — an evidence-class crashed
-            # economic eval must not break propose; the record carries the
-            # REAL enforcement so the approval gate can fail closed on
-            # live-capable jobs (previously the crash forced "advisory" —
-            # the review's central fail-open finding).
             from wayfinder_paths.jobs.constitution import load_constitution
 
             constitution = load_constitution(store.job_dir(job_id))
             economic = {
                 "ready": None,
-                "reasons": [f"economic evaluation failed: {exc}"[:300]],
+                "reasons": [
+                    "economic improvement is not applicable to a mechanically "
+                    "equivalent implementation-only change"
+                ],
                 "enforcement": constitution.get("enforcement") or "advisory",
                 "constitution_revision": constitution.get("revision"),
-                "status": "error",
-                "escalate": True,
+                "status": "not_applicable",
+                "acceptance_policy": acceptance_policy,
             }
+        else:
+            probation = bool((proposal.get("proposed_change") or {}).get("probation"))
+            try:
+                economic = _economic_gate_with_infra_retry(
+                    store, job_id, candidate_dir, probation=probation
+                )
+            except TransientInfrastructureError:
+                # Box condition, not an economic verdict — propagate so the
+                # caller aborts instead of freezing ready=None + a bars/lock
+                # error into the immutable report that the fail-closed approve
+                # gate then ESCALATEs forever.
+                raise
+            except Exception as exc:  # noqa: BLE001 — evidence-class crash
+                from wayfinder_paths.jobs.constitution import load_constitution
+
+                constitution = load_constitution(store.job_dir(job_id))
+                economic = {
+                    "ready": None,
+                    "reasons": [f"economic evaluation failed: {exc}"[:300]],
+                    "enforcement": constitution.get("enforcement") or "advisory",
+                    "constitution_revision": constitution.get("revision"),
+                    "status": "error",
+                    "escalate": True,
+                }
     else:
         # Research-only / no-dataset jobs: nothing to backtest or gate — the
         # proposal is judged on validation alone (contract C1).
@@ -616,8 +759,10 @@ def _generate_candidate_report(
         "revision": candidate_revision,
         "base_revision": base_revision,
         "mode": mode,
+        "acceptance_policy": acceptance_policy,
         "gate": gate_payload,
         "economic": economic,
+        "maintenance": maintenance,
         # Content hash of the dataset (+ declared feature stores) this
         # report's backtest consumed. The apply pipeline re-derives it and
         # skips the expensive re-validation when it (and the candidate
@@ -1002,7 +1147,9 @@ def _replace_tree(source: Path, destination: Path) -> None:
     shutil.copytree(source, destination)
 
 
-def _diff_workspaces(root: Path, candidate_dir: Path) -> list[str]:
+def _diff_workspaces(
+    root: Path, candidate_dir: Path, *, limit: int | None = 100
+) -> list[str]:
     """Repo-relative-ish (candidate-relative) list of files whose bytes differ
     between the active bundle and the candidate. Bounded to keep the synced
     proposal payload small."""
@@ -1037,7 +1184,8 @@ def _diff_workspaces(root: Path, candidate_dir: Path) -> list[str]:
         and active_yaml.read_bytes() != candidate_yaml.read_bytes()
     ):
         changed.append("job.yaml")
-    return sorted(changed)[:100]
+    ordered = sorted(changed)
+    return ordered[:limit] if limit is not None else ordered
 
 
 def _build_comparison(
@@ -1061,7 +1209,18 @@ def _build_comparison(
         return None
     root = store.job_dir(job_id)
     baseline_latest = _read_json(root / "results" / "backtest" / "latest.json")
-    if not baseline_latest or baseline_latest.get("revision") != base_revision:
+    candidate_dataset_identity = dataset_fingerprint_identity(
+        candidate_latest.get("dataset_fingerprint")
+    )
+    baseline_dataset_identity = dataset_fingerprint_identity(
+        (baseline_latest or {}).get("dataset_fingerprint")
+    )
+    if (
+        not baseline_latest
+        or baseline_latest.get("revision") != base_revision
+        or candidate_dataset_identity is None
+        or baseline_dataset_identity != candidate_dataset_identity
+    ):
         try:
             payload = backtest_execution_job(job_id, store=store)
         except Exception:
@@ -1071,6 +1230,9 @@ def _build_comparison(
                 **(payload.get("result") or {}),
                 "revision": payload.get("revision"),
                 "dataset": payload.get("dataset"),
+                "dataset_fingerprint": payload.get("dataset_fingerprint"),
+                "dataset_fingerprint_after": payload.get("dataset_fingerprint_after"),
+                "dataset_stable": payload.get("dataset_stable"),
             }
         else:
             baseline_latest = None

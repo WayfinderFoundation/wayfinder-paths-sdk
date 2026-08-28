@@ -179,8 +179,12 @@ def assess_evidence_reuse(
             }
     validation_status = (report.get("validation_summary") or {}).get("status")
     economic_ready = (report.get("economic") or {}).get("ready")
+    maintenance_ready = (
+        report.get("acceptance_policy") == "behavior_equivalence"
+        and (report.get("maintenance") or {}).get("ready") is True
+    )
     green = validation_status == "passed" and (
-        phase != "apply" or economic_ready is True
+        phase != "apply" or economic_ready is True or maintenance_ready
     )
     if not green:
         return {
@@ -189,6 +193,7 @@ def assess_evidence_reuse(
             "proof": {
                 "validation_status": validation_status,
                 "economic_ready": economic_ready,
+                "maintenance_ready": maintenance_ready,
             },
         }
     report_hash = hashlib.sha256(
