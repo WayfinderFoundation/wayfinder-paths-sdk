@@ -11,11 +11,14 @@ import yaml
 
 from wayfinder_paths.jobs.archive import (
     behavior_cell,
+    load_archive,
     quality_diversity_snapshot,
     record_candidate,
 )
 from wayfinder_paths.jobs.compute_lock import ComputeLockBusy
 from wayfinder_paths.jobs.evolution_campaign import (
+    _claim_full_dev,
+    _commit_full_dev,
     _isolated_full_dev,
     _parent_source,
     _same_family_nonwins,
@@ -102,9 +105,11 @@ def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
         f'job_id="{job_id}"',
         "family=",
         "summary=",
-        'mutation_kind="structural"',
+        "Do not pass mutation_kind",
     ):
         assert required in block["next_action"]
+    assert 'mutation_kind="structural"' not in block["next_action"]
+    assert block["historical_lessons"]["outcomes"] == []
     assert len(block["cases"]) <= MAX_PROMPT_CASES
     assert block["constraints"] == {
         "paper_only": True,
@@ -326,6 +331,156 @@ def test_prepare_candidate_isolated_lineage_and_mutation_budget(tmp_path) -> Non
         "crossover": 2,
         "de_novo": 2,
     }
+
+
+def test_campaign_assigns_parameter_slots_and_preserves_optuna_budget(tmp_path) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    candidates = [
+        prepare_candidate(
+            store,
+            job_id,
+            family=f"family-{index}",
+            summary=f"candidate {index}",
+            now=started + timedelta(hours=1),
+        )
+        for index in range(1, 5)
+    ]
+    assert [candidate["mutation_kind"] for candidate in candidates] == [
+        "structural",
+        "structural",
+        "structural",
+        "parameter",
+    ]
+
+    state = campaign_status(store, job_id)
+    for candidate in state["candidates"][:3]:
+        candidate["status"] = "invalid"
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    parameter_prompt = campaign_prompt_block(
+        store, job_id, now=started + timedelta(hours=1)
+    )
+    assert parameter_prompt is not None
+    assert '"type":"int","low":12,"high":96' in parameter_prompt["next_action"]
+
+    parameter_root = store.job_dir(job_id) / candidates[-1]["bundle"]
+    (parameter_root / "search_space.json").write_text(
+        json.dumps(
+            {
+                "entry_threshold": {
+                    "type": "float",
+                    "low": 0.1,
+                    "high": 0.9,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    state = campaign_status(store, job_id)
+    state["candidates"][0].update(
+        {"status": "quick_complete", "objective": {"net_log_growth": 1.0}}
+    )
+    state["candidates"][-1].update(
+        {"status": "quick_complete", "objective": {"net_log_growth": 0.5}}
+    )
+    for candidate in state["candidates"][1:3]:
+        candidate["status"] = "invalid"
+    state["counts"]["quick_evaluated"] = 4
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+
+    structural_claim = _claim_full_dev(store, job_id)
+    assert structural_claim is not None
+    campaign_id, claim_id, structural, tune = structural_claim
+    assert structural["candidate_id"] == candidates[0]["candidate_id"]
+    assert tune is False
+    _commit_full_dev(
+        store,
+        job_id,
+        campaign_id=campaign_id,
+        candidate_id=structural["candidate_id"],
+        claim_id=claim_id,
+        outcome={"status": "low_fidelity_rejected", "evidence": "done"},
+    )
+
+    parameter_claim = _claim_full_dev(store, job_id)
+    assert parameter_claim is not None
+    _, _, parameter, tune = parameter_claim
+    assert parameter["candidate_id"] == candidates[-1]["candidate_id"]
+    assert tune is True
+
+
+def test_next_campaign_freezes_compact_prior_outcomes(tmp_path) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    first = start_campaign(store, job_id, now=started)
+    quick_candidate = prepare_candidate(
+        store,
+        job_id,
+        family="position-sizing",
+        summary="scale exposure by recent volatility",
+        now=started + timedelta(hours=1),
+    )
+    rejected_candidate = prepare_candidate(
+        store,
+        job_id,
+        family="regime-filter",
+        summary="suppress entries in weak trend regimes",
+        now=started + timedelta(hours=1),
+    )
+    state = campaign_status(store, job_id)
+    state["status"] = "complete"
+    state["candidates"][0].update(
+        {
+            "status": "quick_complete",
+            "quick": {"stats": {"net_return": 0.02, "trade_count": 8}},
+            "objective": {"net_log_growth": 0.0198},
+            "evidence": "low-fidelity train screen passed",
+        }
+    )
+    state["candidates"][1].update(
+        {
+            "status": "low_fidelity_rejected",
+            "quick": {"stats": {"net_return": -0.01, "trade_count": 5}},
+            "dev": {
+                "validation": {
+                    "stats": {
+                        "net_return": -0.03,
+                        "max_drawdown_pct": 0.08,
+                        "trade_count": 2,
+                    }
+                }
+            },
+            "objective": {"net_log_growth": -0.0305},
+            "evidence": "failed independent validation",
+        }
+    )
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    assert {entry["status"] for entry in load_archive(store, job_id)["candidates"]} == {
+        "generated"
+    }
+
+    second = start_campaign(store, job_id, now=started + timedelta(days=1), force=True)
+    manifest = store.read_json(job_id, second["manifest"])
+    lessons = manifest["historical_lessons"]["outcomes"]
+    assert [lesson["candidate_id"] for lesson in lessons[:2]] == [
+        rejected_candidate["candidate_id"],
+        quick_candidate["candidate_id"],
+    ]
+    assert lessons[0]["quick_result"] == {"net_return": -0.01, "trade_count": 5}
+    assert lessons[0]["validation_result"] == {
+        "net_return": -0.03,
+        "max_drawdown_pct": 0.08,
+        "trade_count": 2,
+    }
+    assert lessons[0]["rejection_reason"] == "failed independent validation"
+    statuses = {
+        entry["candidate_id"]: entry["status"]
+        for entry in load_archive(store, job_id)["candidates"]
+    }
+    assert statuses[quick_candidate["candidate_id"]] == "quick_complete"
+    assert statuses[rejected_candidate["candidate_id"]] == "low_fidelity_rejected"
+    assert first["campaign_id"] != second["campaign_id"]
 
 
 def test_campaign_cooldown_is_enforced(tmp_path) -> None:
@@ -1505,7 +1660,9 @@ def test_evaluate_rejects_undeclared_window_candidate(tmp_path) -> None:
     assert "cannot exist in production" in evidence
 
 
-def test_evaluate_accepts_seeded_candidate(tmp_path) -> None:
+def test_evaluate_rejects_zero_trade_candidate_and_archives_quick_result(
+    tmp_path,
+) -> None:
     store, job_id = _evaluatable_job(tmp_path)
     start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
     candidate = prepare_candidate(
@@ -1529,7 +1686,47 @@ def test_evaluate_accepts_seeded_candidate(tmp_path) -> None:
 
     result = evaluate_candidate(store, job_id, candidate["candidate_id"])
 
-    assert result["status"] == "quick_complete", result.get("evidence")
+    assert result["status"] == "low_fidelity_rejected"
+    assert result["evidence"] == "quick screen produced no closed trades"
+    entry = next(
+        row
+        for row in load_archive(store, job_id)["candidates"]
+        if row["candidate_id"] == candidate["candidate_id"]
+    )
+    assert entry["status"] == "low_fidelity_rejected"
+    assert entry["metadata"]["quick"]["stats"]["trade_count"] == 0
+    assert quality_diversity_snapshot(store, job_id) == {}
+
+
+def test_evaluate_rejects_parameter_candidate_without_typed_search_space(
+    tmp_path,
+) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    candidates = [
+        prepare_candidate(
+            store,
+            job_id,
+            family=f"family-{index}",
+            summary=f"candidate {index}",
+            now=started + timedelta(hours=1),
+        )
+        for index in range(1, 5)
+    ]
+    parameter = candidates[-1]
+    assert parameter["mutation_kind"] == "parameter"
+
+    result = evaluate_candidate(store, job_id, parameter["candidate_id"])
+
+    assert result["status"] == "invalid"
+    assert "requires search_space.json" in json.dumps(result["evidence"])
+    entry = next(
+        row
+        for row in load_archive(store, job_id)["candidates"]
+        if row["candidate_id"] == parameter["candidate_id"]
+    )
+    assert entry["status"] == "invalid"
 
 
 def test_evaluate_releases_claim_when_compute_is_transiently_busy(

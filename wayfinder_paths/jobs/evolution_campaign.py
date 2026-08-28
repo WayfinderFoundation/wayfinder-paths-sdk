@@ -25,6 +25,8 @@ import pandas as pd
 import yaml
 
 from wayfinder_paths.jobs.archive import (
+    ARCHIVE_STATUSES,
+    evolution_lessons_block,
     load_archive,
     quality_diversity_snapshot,
     record_candidate,
@@ -86,6 +88,11 @@ FORWARD_SNAPSHOT = "forward_experience.json"
 SCHEMA_VERSION = "1.0"
 _PARENT_SOURCES = ("incumbent", "qd_elite", "crossover", "de_novo")
 CAMPAIGN_DRAIN = timedelta(minutes=30)
+_PARAMETER_SEARCH_GUIDANCE = (
+    "create search_space.json with bounded typed Optuna dimensions, for example "
+    '{"lookback":{"type":"int","low":12,"high":96}}; do not replace the '
+    "search with one hand-picked value."
+)
 
 
 def campaign_status(store: JobStore, job_id: str) -> dict[str, Any]:
@@ -283,6 +290,9 @@ def _start_campaign(
     deadline = current + timedelta(hours=float(spec.evolution["campaign_hours"]))
     with experiment_compute_lock(store, job_id, label=f"evolution-start:{job_id}"):
         experience = build_forward_experience(store, job_id, now=current)
+    if existing and existing.get("status") not in {"active", "finalizing"}:
+        _sync_campaign_archive(store, job_id, existing)
+    historical_lessons = evolution_lessons_block(store, job_id)
     cases = select_starter_cases(_job_tags(store, job_id))
     relative_root = f"{CAMPAIGN_ROOT}/{campaign_id}"
     campaign_root = root / relative_root
@@ -320,6 +330,7 @@ def _start_campaign(
         "forward_experience": snapshots["forward_experience"],
         "forward_context_cutoff": experience["forward_context_cutoff"],
         "execution_calibration": experience["live_execution"]["recommended"],
+        "historical_lessons": historical_lessons,
         "casebook": cases,
         "policy": campaign_policy,
         **revision_stamp(root),
@@ -591,31 +602,7 @@ def evaluate_candidate(
         candidate["evaluated_at"] = utc_now_iso()
         state["counts"]["quick_evaluated"] += 1
         _save_campaign(store, job_id, state)
-    if candidate["status"] == "quick_complete":
-        record_candidate(
-            store,
-            job_id,
-            candidate_id=candidate_id,
-            family=str(candidate["family"]),
-            summary=str(candidate["summary"]),
-            status="generated",
-            objective=candidate["objective"],
-            revision=candidate["revision"],
-            behavior=candidate["behavior"],
-            evidence="low-fidelity train screen passed",
-            metadata={
-                "quick": candidate["quick"],
-                "execution_calibration": candidate["execution_calibration"],
-            },
-        )
-    else:
-        set_candidate_status(
-            store,
-            job_id,
-            candidate_id,
-            str(candidate["status"]),
-            evidence=json.dumps(candidate.get("evidence") or {}, default=str)[:300],
-        )
+    _archive_campaign_candidate(store, job_id, candidate)
     return candidate
 
 
@@ -630,6 +617,13 @@ def _evaluate_candidate(
     candidate_root = resolve_candidate_bundle(
         store, job_id, candidate, campaign_id=campaign_id
     )
+    try:
+        search_space = _load_candidate_search_space(
+            candidate_root,
+            required=candidate.get("mutation_kind") == "parameter",
+        )
+    except ValueError as exc:
+        return {"status": "invalid", "evidence": {"error": str(exc)[:500]}}
     report = validate_execution_job(job_id, candidate_dir=candidate_root, store=store)
     if not _candidate_validation_passed(report):
         return {"status": "invalid", "evidence": {"validation": report}}
@@ -640,10 +634,7 @@ def _evaluate_candidate(
         )
         or {}
     )
-    if (
-        revision == _source_baseline_revision(manifest)
-        and not (candidate_root / "search_space.json").exists()
-    ):
+    if revision == _source_baseline_revision(manifest) and search_space is None:
         return {
             "status": "invalid",
             "evidence": {
@@ -696,13 +687,22 @@ def _evaluate_candidate(
     compact = _compact_result(result)
     if not result.validation.get("execution_valid"):
         return {"status": "low_fidelity_rejected", "evidence": compact}
-    return {
-        "status": "quick_complete",
+    common = {
         "revision": revision,
         "quick": compact,
         "objective": _objective(result.stats, params),
         "behavior": _behavior(result, quick, subject["spec"]),
         "execution_calibration": calibration,
+    }
+    if int(result.stats.get("trade_count") or 0) <= 0:
+        return {
+            **common,
+            "status": "low_fidelity_rejected",
+            "evidence": "quick screen produced no closed trades",
+        }
+    return {
+        **common,
+        "status": "quick_complete",
         "evidence": "low-fidelity train screen passed",
     }
 
@@ -771,29 +771,7 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
         if committed is None:
             continue
         candidate = committed
-        set_candidate_status(
-            store,
-            job_id,
-            str(candidate["candidate_id"]),
-            str(candidate["status"]),
-            evidence=str(candidate.get("evidence") or "full development evaluation"),
-        )
-        record_candidate(
-            store,
-            job_id,
-            candidate_id=str(candidate["candidate_id"]),
-            family=str(candidate["family"]),
-            summary=str(candidate["summary"]),
-            status=str(candidate["status"]),
-            objective=candidate.get("objective"),
-            revision=candidate.get("revision"),
-            behavior=candidate.get("behavior"),
-            evidence=str(candidate.get("evidence") or "full development evaluation"),
-            metadata={
-                "dev": candidate.get("dev"),
-                "tuning": candidate.get("tuning"),
-            },
-        )
+        _archive_campaign_candidate(store, job_id, candidate)
         gc.collect()
 
     while True:
@@ -930,9 +908,48 @@ def _claim_full_dev(
         eligible.sort(key=_candidate_score, reverse=True)
         if not remaining or not eligible:
             return None
-        candidate = eligible[0]
+        tuning_limit = int(policy["inner_optuna_finalists"])
+        tuning_allocated = sum(
+            item.get("full_dev_tune") is True for item in state["candidates"]
+        )
+        typed_search = {
+            str(item.get("candidate_id")): _candidate_has_typed_search_space(
+                store, job_id, campaign_id, item
+            )
+            for item in eligible
+        }
+        unclaimed_parameter_searches = sum(
+            item.get("mutation_kind") == "parameter"
+            and "full_dev_tune" not in item
+            and typed_search.get(str(item.get("candidate_id")), False)
+            for item in eligible
+        )
+        candidate: dict[str, Any] | None = None
+        tune = False
+        for item in eligible:
+            if "full_dev_tune" in item:
+                if item.get("mutation_kind") == "parameter" and not item.get(
+                    "full_dev_tune"
+                ):
+                    continue
+                candidate = item
+                tune = bool(item["full_dev_tune"])
+                break
+            has_search = typed_search.get(str(item.get("candidate_id")), False)
+            available = max(0, tuning_limit - tuning_allocated)
+            if item.get("mutation_kind") == "parameter":
+                if not has_search or not available:
+                    continue
+                tune = True
+            else:
+                reserved = min(unclaimed_parameter_searches, available)
+                tune = bool(has_search and available > reserved)
+            candidate = item
+            candidate["full_dev_tune"] = tune
+            break
+        if candidate is None:
+            return None
         claim_id = uuid.uuid4().hex
-        tune = int(state["counts"]["full_dev"]) < int(policy["inner_optuna_finalists"])
         candidate.update(
             {
                 "status": "full_dev_running",
@@ -945,6 +962,21 @@ def _claim_full_dev(
         state.setdefault("finalize_started_at", utc_now_iso())
         _save_campaign(store, job_id, state)
         return campaign_id, claim_id, dict(candidate), tune
+
+
+def _candidate_has_typed_search_space(
+    store: JobStore,
+    job_id: str,
+    campaign_id: str,
+    candidate: dict[str, Any],
+) -> bool:
+    try:
+        root = resolve_candidate_bundle(
+            store, job_id, candidate, campaign_id=campaign_id
+        )
+        return _load_candidate_search_space(root, required=False) is not None
+    except (OSError, ValueError):
+        return False
 
 
 def _isolated_full_dev(
@@ -1217,8 +1249,9 @@ def campaign_prompt_block(
     draining = deadline - CAMPAIGN_DRAIN <= current < deadline
     prepare_call = (
         'Call wayfinder_core_jobs with action="evolution_prepare", '
-        f'job_id="{job_id}", family="<specific structural family>", '
-        'summary="<concise testable hypothesis>", and mutation_kind="structural".'
+        f'job_id="{job_id}", family="<specific strategy family>", and '
+        'summary="<concise testable hypothesis>". Do not pass mutation_kind; '
+        "the campaign policy assigns structural and parameter slots."
     )
     if awaiting_evaluation:
         candidate = awaiting_evaluation[0]
@@ -1229,8 +1262,14 @@ def campaign_prompt_block(
             campaign_id=str(state["campaign_id"]),
         )
         session_stage = f"candidate-{int(candidate.get('slot') or 0):02d}"
+        mutation_instruction = (
+            f"This is a parameter candidate: {_PARAMETER_SEARCH_GUIDANCE} "
+            if candidate.get("mutation_kind") == "parameter"
+            else "This is a structural candidate: make the named causal code change. "
+        )
         next_action = (
-            f"Edit only files inside {candidate_root} (workspace, job.yaml, "
+            f"{mutation_instruction}Edit only files inside {candidate_root} "
+            "(workspace, job.yaml, "
             "and optional search_space.json), then launch "
             'wayfinder_core_jobs with action="evolution_evaluate", '
             f'job_id="{job_id}", candidate_id="{candidate["candidate_id"]}", '
@@ -1260,8 +1299,9 @@ def campaign_prompt_block(
             f'job_id="{job_id}", candidate_id="<returned candidate_id>", '
             "background=true. Do not wait for the detached result. END THIS "
             "STAGE immediately after launch; do not prepare another candidate. "
-            "At least half the campaign must change signal/exit/regime/portfolio "
-            "structure."
+            "If the returned mutation_kind is parameter, "
+            f"{_PARAMETER_SEARCH_GUIDANCE} If it is structural, make the named "
+            "causal code change."
         )
     else:
         session_stage = "finalize"
@@ -1279,6 +1319,7 @@ def campaign_prompt_block(
         "counts": state["counts"],
         "next_action": next_action,
         "candidate_outcomes": [_candidate_handoff(item) for item in candidates],
+        "historical_lessons": manifest.get("historical_lessons") or {},
         "cases": manifest.get("casebook") or [],
         "forward_context_cutoff": state.get("forward_context_cutoff"),
         "constraints": {
@@ -1324,14 +1365,80 @@ def _candidate_handoff(candidate: dict[str, Any]) -> dict[str, Any]:
             if quick_stats.get(key) is not None
         }
     evidence = candidate.get("evidence")
-    if evidence and not isinstance(evidence, dict):
-        handoff["evidence"] = str(evidence)[:240]
-    elif isinstance(evidence, dict):
-        handoff["evidence"] = json.dumps(evidence, default=str)[:240]
+    if evidence:
+        handoff["evidence"] = _compact_evidence(evidence, limit=240)
     recovery_reason = candidate.get("evaluation_recovery_reason")
     if recovery_reason:
         handoff["evaluation_recovery_reason"] = str(recovery_reason)[:240]
     return handoff
+
+
+def _sync_campaign_archive(store: JobStore, job_id: str, state: dict[str, Any]) -> None:
+    """Reconcile a terminal campaign before its state file is replaced."""
+    for candidate in state.get("candidates") or []:
+        _archive_campaign_candidate(store, job_id, candidate)
+
+
+def _archive_campaign_candidate(
+    store: JobStore, job_id: str, candidate: dict[str, Any]
+) -> None:
+    status = str(candidate.get("status") or "generated")
+    archive_status = status if status in ARCHIVE_STATUSES else "generated"
+    metadata = {
+        key: candidate[key]
+        for key in (
+            "campaign_id",
+            "bundle",
+            "mutation_kind",
+            "parent_source",
+            "quick",
+            "dev",
+            "tuning",
+        )
+        if candidate.get(key) is not None
+    }
+    record_candidate(
+        store,
+        job_id,
+        candidate_id=str(candidate["candidate_id"]),
+        family=str(candidate.get("family") or "unknown"),
+        summary=str(candidate.get("summary") or "evolution candidate"),
+        status=archive_status,
+        objective=candidate.get("objective"),
+        revision=candidate.get("revision"),
+        parent_candidate_ids=list(candidate.get("parent_candidate_ids") or []),
+        behavior=candidate.get("behavior"),
+        evidence=_compact_evidence(candidate.get("evidence") or archive_status),
+        metadata=metadata,
+    )
+
+
+def _compact_evidence(value: Any, *, limit: int = 300) -> str:
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, default=str)[:limit]
+    return str(value)[:limit]
+
+
+def _load_candidate_search_space(
+    candidate_root: Path, *, required: bool
+) -> dict[str, Any] | None:
+    search_path = candidate_root / "search_space.json"
+    if not search_path.exists():
+        if required:
+            raise ValueError(
+                "parameter candidate requires search_space.json with typed "
+                "Optuna dimensions"
+            )
+        return None
+    try:
+        payload = json.loads(search_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"candidate search space is unreadable: {search_path}"
+        ) from exc
+    if not isinstance(payload, dict) or not is_search_space(payload):
+        raise ValueError(f"candidate search space is not typed: {search_path}")
+    return payload
 
 
 def _full_dev(
@@ -1350,14 +1457,14 @@ def _full_dev(
     params, stress_params, calibration = _calibrated_params(store, job_id, subject)
     _require_declared_window(subject, params)
     tuning: dict[str, Any] | None = None
-    search_path = root / "search_space.json"
-    if tune and search_path.exists():
+    candidate_search = _load_candidate_search_space(
+        root, required=candidate.get("mutation_kind") == "parameter"
+    )
+    if tune and candidate_search is not None:
         search = {
             **params,
-            **json.loads(search_path.read_text(encoding="utf-8")),
+            **candidate_search,
         }
-        if not is_search_space(search):
-            raise ValueError(f"candidate search space is not typed: {search_path}")
         policy = _campaign_policy(store, job_id, campaign_id)
         grid = run_optuna_search(
             subject["script"],

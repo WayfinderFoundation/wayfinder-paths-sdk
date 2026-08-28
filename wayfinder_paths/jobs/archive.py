@@ -19,6 +19,7 @@ from wayfinder_paths.jobs.store import JobStore
 ARCHIVE_PATH = "state/archive.json"
 ARCHIVE_STATUSES = {
     "generated",
+    "quick_complete",
     "invalid",
     "low_fidelity_rejected",
     "dev_frontier",
@@ -40,6 +41,7 @@ _MAXIMIZE = ("net_log_growth",)
 _MINIMIZE = ("downside_deviation", "tail_loss", "max_drawdown_pct")
 _NON_RANKED_STATUSES = {
     "generated",
+    "quick_complete",
     "invalid",
     "low_fidelity_rejected",
     "audit_rejected",
@@ -48,6 +50,34 @@ _NON_RANKED_STATUSES = {
     "refuted",
     "retired",
 }
+
+_EVOLUTION_LESSON_STATUSES = {
+    "quick_complete",
+    "invalid",
+    "low_fidelity_rejected",
+    "dev_frontier",
+    "audit_rejected",
+    "proposal_rejected",
+    "proposal_deferred",
+    "paper_proposal",
+    "paper_experiment",
+    "refuted",
+}
+_EVOLUTION_REJECTION_STATUSES = {
+    "invalid",
+    "low_fidelity_rejected",
+    "audit_rejected",
+    "proposal_rejected",
+    "proposal_deferred",
+    "refuted",
+}
+_LESSON_STAT_KEYS = (
+    "net_return",
+    "max_drawdown_pct",
+    "trade_count",
+    "sharpe",
+    "profit_factor",
+)
 
 
 def load_archive(store: JobStore, job_id: str) -> dict[str, Any]:
@@ -316,6 +346,62 @@ def archive_snapshot_block(store: JobStore, job_id: str) -> dict[str, Any]:
             "revival candidate before any novel divergent search."
         ),
     }
+
+
+def evolution_lessons_block(
+    store: JobStore, job_id: str, *, limit: int = 8
+) -> dict[str, Any]:
+    """Return compact prior-campaign outcomes for the mutation worker."""
+    bounded_limit = max(0, int(limit))
+    lessons: list[dict[str, Any]] = []
+    candidates = load_archive(store, job_id).get("candidates") or []
+    for entry in reversed(candidates if bounded_limit else []):
+        metadata = entry.get("metadata") or {}
+        status = str(entry.get("status") or "")
+        if not metadata.get("campaign_id") or status not in _EVOLUTION_LESSON_STATUSES:
+            continue
+        lesson: dict[str, Any] = {
+            "candidate_id": entry.get("candidate_id"),
+            "campaign_id": metadata.get("campaign_id"),
+            "family": entry.get("family"),
+            "hypothesis": str(entry.get("summary") or "")[:160],
+            "status": status,
+        }
+        quick = _lesson_stats(metadata.get("quick"))
+        if quick:
+            lesson["quick_result"] = quick
+        dev = metadata.get("dev") or {}
+        validation = _lesson_stats(
+            dev.get("validation") if isinstance(dev, dict) else None
+        )
+        if validation:
+            lesson["validation_result"] = validation
+        tuning = metadata.get("tuning") or {}
+        if isinstance(tuning, dict) and tuning.get("trials") is not None:
+            lesson["optuna_trials"] = tuning["trials"]
+        if status in _EVOLUTION_REJECTION_STATUSES and entry.get("evidence"):
+            lesson["rejection_reason"] = str(entry["evidence"])[:240]
+        lessons.append(lesson)
+        if len(lessons) >= bounded_limit:
+            break
+    return {
+        "outcomes": lessons,
+        "_basis": (
+            "Prior evolution outcomes, newest first. Use them to avoid repeating "
+            "a failed hypothesis unchanged; revisit a family only with a named, "
+            "materially different mechanism or new forward evidence. A quick pass "
+            "is not independent validation."
+        ),
+    }
+
+
+def _lesson_stats(result: Any) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        return {}
+    stats = result.get("stats")
+    if not isinstance(stats, dict):
+        return {}
+    return {key: stats[key] for key in _LESSON_STAT_KEYS if stats.get(key) is not None}
 
 
 def lineage_of(store: JobStore, job_id: str, candidate_id: str) -> list[dict[str, Any]]:
