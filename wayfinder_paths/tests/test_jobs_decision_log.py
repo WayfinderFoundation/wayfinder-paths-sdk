@@ -7,6 +7,7 @@ import datetime as dt
 import json
 
 from wayfinder_paths.jobs.decision_log import build_decision_log
+from wayfinder_paths.jobs.evolution_funnel import summarize_evolution_funnel
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
 
@@ -28,6 +29,70 @@ def _write_proposal(root, pid: str, summary: str) -> None:
         json.dumps({"proposal_id": pid, "payload": {"summary": summary}}),
         encoding="utf-8",
     )
+
+
+def test_evolution_funnel_does_not_count_full_dev_failures_as_quick_rejects() -> None:
+    candidates = [
+        {"status": "quick_complete", "mutation_kind": "structural"}
+        for _ in range(9)
+    ]
+    candidates.extend(
+        [
+            {
+                "status": "low_fidelity_rejected",
+                "mutation_kind": "structural",
+                "full_dev_tune": False,
+                "full_dev_at": "2026-08-28T18:53:05+00:00",
+                "tuning": None,
+            },
+            {
+                "status": "low_fidelity_rejected",
+                "mutation_kind": "structural",
+                "full_dev_tune": False,
+                "full_dev_at": "2026-08-28T19:12:43+00:00",
+                "tuning": None,
+            },
+            {
+                "status": "dev_frontier",
+                "mutation_kind": "structural",
+                "full_dev_tune": False,
+                "tuning": None,
+            },
+        ]
+    )
+
+    funnel = summarize_evolution_funnel(
+        {
+            "counts": {
+                "generated": 12,
+                "quick_evaluated": 12,
+                "full_dev": 3,
+                "proposed": 0,
+            },
+            "budgets": {
+                "generated": 12,
+                "full_development": 4,
+                "optuna": 2,
+                "finalist_gate": 1,
+            },
+            "candidates": candidates,
+        }
+    )
+
+    assert funnel["quick_screen"] == {
+        "evaluated": 12,
+        "passed": 12,
+        "rejected": 0,
+        "pending": 0,
+    }
+    assert funnel["full_development"] == {
+        "evaluated": 3,
+        "target": 4,
+        "passed": 1,
+        "rejected": 2,
+        "running": 0,
+    }
+    assert funnel["optuna"] == {"completed": 0, "budget": 2, "running": 0}
 
 
 def test_threading_outcomes_and_stats(tmp_path) -> None:
@@ -202,9 +267,29 @@ def test_active_evolution_campaign_is_one_compact_progress_row(tmp_path) -> None
                 "full_dev": 0,
                 "proposed": 0,
             },
+            "budgets": {
+                "generated": 12,
+                "full_development": 4,
+                "optuna": 2,
+                "finalist_gate": 1,
+            },
             "candidates": [
                 {
+                    "candidate_id": "c01",
+                    "status": "quick_complete",
+                    "mutation_kind": "structural",
+                    "evaluated_at": "2026-08-28T16:30:00+00:00",
+                },
+                {
+                    "candidate_id": "c02",
+                    "status": "quick_complete",
+                    "mutation_kind": "parameter",
+                    "evaluated_at": "2026-08-28T16:40:00+00:00",
+                },
+                {
                     "candidate_id": "c03",
+                    "status": "prepared",
+                    "mutation_kind": "structural",
                     "prepared_at": "2026-08-28T17:00:00+00:00",
                 }
             ],
@@ -239,11 +324,46 @@ def test_active_evolution_campaign_is_one_compact_progress_row(tmp_path) -> None
         "kind": "research",
         "title": "Evolution campaign generating candidates",
         "detail": (
-            "3 generated · 2 screened · 0 full-development evaluations · "
-            "0 finalist-gate evaluations"
+            "3/12 generated (2 structural, 1 parameter) → quick 2 pass, "
+            "0 reject → full dev 0 pass, 0 reject "
+            "(0/4 complete; Optuna 0 tuned, budget 2) "
+            "→ gate 0/1; paper 0"
         ),
         "outcome": "info",
         "actor": "harness",
+        "metadata": {
+            "campaign_id": "campaign-1",
+            "funnel": {
+                "generated": {
+                    "total": 3,
+                    "target": 12,
+                    "structural": 2,
+                    "parameter": 1,
+                },
+                "quick_screen": {
+                    "evaluated": 2,
+                    "passed": 2,
+                    "rejected": 0,
+                    "pending": 1,
+                },
+                "full_development": {
+                    "evaluated": 0,
+                    "target": 4,
+                    "passed": 0,
+                    "rejected": 0,
+                    "running": 0,
+                },
+                "optuna": {"completed": 0, "budget": 2, "running": 0},
+                "finalist_gate": {
+                    "evaluated": 0,
+                    "target": 1,
+                    "advanced_to_paper": 0,
+                    "rejected": 0,
+                    "deferred": 0,
+                    "running": 0,
+                },
+            },
+        },
     }
 
 
@@ -270,6 +390,36 @@ def test_terminal_evolution_campaigns_show_outcomes_without_live_duplicate(
             "type": "evolution_campaign_completed",
             "campaign_id": "campaign-2",
             "paper_proposals": 1,
+            "funnel": {
+                "generated": {
+                    "total": 12,
+                    "target": 12,
+                    "structural": 9,
+                    "parameter": 3,
+                },
+                "quick_screen": {
+                    "evaluated": 12,
+                    "passed": 10,
+                    "rejected": 2,
+                    "pending": 0,
+                },
+                "full_development": {
+                    "evaluated": 4,
+                    "target": 4,
+                    "passed": 1,
+                    "rejected": 3,
+                    "running": 0,
+                },
+                "optuna": {"completed": 1, "budget": 2, "running": 0},
+                "finalist_gate": {
+                    "evaluated": 1,
+                    "target": 1,
+                    "advanced_to_paper": 1,
+                    "rejected": 0,
+                    "deferred": 0,
+                    "running": 0,
+                },
+            },
             "counts": {
                 "generated": 12,
                 "quick_evaluated": 12,
@@ -289,7 +439,16 @@ def test_terminal_evolution_campaigns_show_outcomes_without_live_duplicate(
         "Evolution campaign completed — 1 advanced to forward paper testing"
     )
     assert entries[0]["kind"] == "research"
-    assert "12 generated · 12 screened" in entries[0]["detail"]
+    assert "quick 10 pass, 2 reject" in entries[0]["detail"]
+    assert "Optuna 1 tuned, budget 2" in entries[0]["detail"]
+    assert entries[0]["metadata"]["funnel"]["finalist_gate"] == {
+        "evaluated": 1,
+        "target": 1,
+        "advanced_to_paper": 1,
+        "rejected": 0,
+        "deferred": 0,
+        "running": 0,
+    }
     assert entries[1]["title"] == "Evolution campaign stopped before completion"
     assert entries[1]["kind"] == "recovery"
     assert entries[1]["detail"].endswith("3 finalization attempt(s)")

@@ -37,6 +37,7 @@ from wayfinder_paths.jobs.compute_lock import (
     experiment_compute_lock,
     job_state_lock,
 )
+from wayfinder_paths.jobs.evolution_funnel import summarize_evolution_funnel
 from wayfinder_paths.jobs.execution.features import parse_feature_specs
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.optimize import is_search_space, run_optuna_search
@@ -353,6 +354,7 @@ def _start_campaign(
             "full_dev": 0,
             "proposed": 0,
         },
+        "budgets": _campaign_budgets(campaign_policy),
     }
     store.write_json(job_id, CAMPAIGN_STATE_PATH, state)
     store.append_journal(
@@ -872,6 +874,8 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
         state = campaign_status(store, job_id)
         if state.get("status") not in {"active", "finalizing"}:
             return state
+        policy = _campaign_policy(store, job_id, str(state["campaign_id"]))
+        state.setdefault("budgets", _campaign_budgets(policy))
         state["status"] = "complete"
         state["stage"] = "complete"
         state["completed_at"] = utc_now_iso()
@@ -882,6 +886,7 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
             "type": "evolution_campaign_completed",
             "campaign_id": state["campaign_id"],
             "counts": state["counts"],
+            "funnel": summarize_evolution_funnel(state),
             "paper_proposals": sum(
                 candidate.get("status") == "paper_proposal"
                 for candidate in state.get("candidates") or []
@@ -889,6 +894,15 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
         },
     )
     return state
+
+
+def _campaign_budgets(policy: dict[str, Any]) -> dict[str, int]:
+    return {
+        "generated": int(policy["generated_programs"]),
+        "full_development": int(policy["full_dev_survivors"]),
+        "optuna": int(policy["inner_optuna_finalists"]),
+        "finalist_gate": int(policy["proposal_finalists"]),
+    }
 
 
 def _claim_full_dev(

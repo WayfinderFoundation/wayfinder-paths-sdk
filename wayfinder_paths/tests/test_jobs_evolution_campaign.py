@@ -85,6 +85,12 @@ def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
     state = start_campaign(store, job_id, now=now)
     assert state["status"] == "active"
     assert state["counts"]["generated"] == 0
+    assert state["budgets"] == {
+        "generated": 12,
+        "full_development": 4,
+        "optuna": 2,
+        "finalist_gate": 1,
+    }
     assert campaign_status(store, job_id)["campaign_id"] == state["campaign_id"]
     root = store.job_dir(job_id)
     manifest_path = root / state["manifest"]
@@ -569,6 +575,19 @@ def test_finalize_enforces_stage_budgets_and_isolates_candidate_failure(
     }
     assert calls == {"dev": 3, "gate": 1, "proposal": 1}
     assert any(item["status"] == "invalid" for item in result["candidates"])
+    completed = next(
+        row
+        for row in store.read_jsonl(job_id, "journal.jsonl")
+        if row.get("type") == "evolution_campaign_completed"
+    )
+    assert completed["funnel"]["full_development"] == {
+        "evaluated": 4,
+        "target": 4,
+        "passed": 3,
+        "rejected": 1,
+        "running": 0,
+    }
+    assert completed["funnel"]["finalist_gate"]["advanced_to_paper"] == 1
 
 
 def test_finalize_rejects_economically_unready_finalist(tmp_path, monkeypatch) -> None:
