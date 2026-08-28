@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
 import pytest
 
-from wayfinder_paths.jobs.execution import ExecutionSpec
+from wayfinder_paths.jobs.execution import CompletedBarsView, ExecutionSpec
 from wayfinder_paths.jobs.execution.ccxt_feed import (
     CcxtMarketFeed,
     fetch_ccxt_dataset_rows,
@@ -272,6 +273,57 @@ def test_build_live_dataset_ccxt_source_writes_metadata(tmp_path: Path) -> None:
     assert payload["metadata"]["source"] == "ccxt"
     assert payload["bars"], "bars must be persisted"
     assert payload["bars"][0]["symbol"] == "SNX"
+
+
+def test_build_live_dataset_venue_source_writes_close_time_metadata(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new(
+        "venue-demo",
+        script=".wayfinder/jobs/venue-demo/workspace/src/strategy.py",
+        interval_seconds=3600,
+        execution_contract="jobs_v1",
+    )
+    spec = ExecutionSpec()
+    spec.data_contract["bar_interval"] = "1h"
+    job.execution_spec = spec.to_dict()
+    job.execution_params = {"symbols": ["SNX"]}
+    store.save(job)
+    rows = [
+        {
+            "timestamp": "2026-01-01T01:00:00Z",
+            "symbol": "SNX",
+            "open": 10,
+            "high": 11,
+            "low": 9,
+            "close": 10.5,
+            "volume": 100,
+        }
+    ]
+
+    class VenueFeed:
+        async def get_completed_bars(self, symbols, interval, *, lookback_bars):
+            return CompletedBarsView.from_rows(rows)
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.preflight._ccxt_missing_markets",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.derived_features.refresh_derived_features_if_stale",
+        lambda *args, **kwargs: {"refreshed": False},
+    )
+
+    result = build_live_dataset(
+        job.id,
+        days=1,
+        store=store,
+        adapters={"hyperliquid": SimpleNamespace(feed=VenueFeed())},
+        incremental=False,
+    )
+
+    assert result["metadata"]["label_convention"] == "close_time"
 
 
 def test_cli_fetch_dataset_source_option(monkeypatch) -> None:

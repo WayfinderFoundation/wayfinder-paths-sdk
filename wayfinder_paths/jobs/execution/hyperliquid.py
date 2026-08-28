@@ -66,7 +66,7 @@ class SafeHyperliquidMarketClient:
                     interval=interval,
                     lookback_hours=lookback_hours,
                 )
-                return _candles_to_completed_view(asset_name, rows)
+                return hyperliquid_candles_to_completed_view(asset_name, rows)
             except Exception as exc:
                 last_error = exc
                 if "429" not in str(exc) or attempt >= retries - 1:
@@ -765,7 +765,7 @@ def _lookback_hours(lookback_bars: int, interval: str) -> int:
     return max(1, math.ceil(lookback_bars * bar_seconds / 3600))
 
 
-def _candles_to_completed_view(
+def hyperliquid_candles_to_completed_view(
     asset_name: str, rows: list[CandleEntry]
 ) -> CompletedBarsView:
     now_ms = int(time.time() * 1000)

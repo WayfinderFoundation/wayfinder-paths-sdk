@@ -18,6 +18,7 @@ FillStatus = Literal["filled", "partial", "resting", "rejected", "ambiguous"]
 SnapshotStatus = Literal["valid", "ambiguous", "rate_limited", "stale", "risk_halt"]
 
 DEFAULT_INITIAL_CAPITAL = 10_000.0
+BAR_CLOSE_LABEL = "close_time"
 
 
 @dataclass

@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 
 from wayfinder_paths.jobs.execution.primitives import (
+    BAR_CLOSE_LABEL,
     CompletedBarsView,
     bar_interval_seconds,
 )
@@ -222,7 +223,7 @@ async def fetch_ccxt_dataset_rows(
         "market_type": market_type,
         "quote": feed.quote,
         "symbol_map": dict(feed.symbol_map),
-        "label_convention": "close_time",
+        "label_convention": BAR_CLOSE_LABEL,
     }
     return view.to_rows(), metadata
 

@@ -10,7 +10,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from wayfinder_paths.jobs.derived_features import derive_features_job
+from wayfinder_paths.core.clients.HyperliquidDataClient import HyperliquidDataClient
+from wayfinder_paths.jobs.derived_features import _native_hl_closes, derive_features_job
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
@@ -65,6 +66,31 @@ def _fake_fetch(coin: str, start_ms: int, end_ms: int) -> pd.Series:
     )
     values = [50_000 + i for i in range(len(stamps))]
     return pd.Series(values, index=stamps, dtype=float)
+
+
+def test_native_hl_closes_are_indexed_by_completion_time(monkeypatch) -> None:
+    open_ms = 1_767_225_600_000
+    close_ms = open_ms + 300_000 - 1
+
+    async def fake_candles(self, coin, start_ms, end_ms, interval):
+        return [
+            {
+                "t": open_ms,
+                "T": close_ms,
+                "o": "100",
+                "h": "102",
+                "l": "99",
+                "c": "101",
+                "v": "10",
+            }
+        ]
+
+    monkeypatch.setattr(HyperliquidDataClient, "get_candles", fake_candles)
+
+    closes = _native_hl_closes("BTC", open_ms, close_ms)
+
+    assert closes.index.tolist() == [pd.Timestamp(close_ms, unit="ms", tz="UTC")]
+    assert closes.iloc[0] == 101.0
 
 
 def test_derive_features_appends_and_dedupes(tmp_path: Path) -> None:

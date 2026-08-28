@@ -30,6 +30,7 @@ from wayfinder_paths.jobs.execution.gates import summarize_gate_diagnostics
 # live driver, and the candidate shadow replayer) but existing callers import
 # it from here.
 from wayfinder_paths.jobs.execution.primitives import (
+    BAR_CLOSE_LABEL,
     DEFAULT_INITIAL_CAPITAL,
     REDUCE_ONLY_ACTIONS,
     CompletedBarsView,
@@ -61,6 +62,14 @@ class PreparedExecutionDataset:
     bars: CompletedBarsView
     metadata: dict[str, Any] = field(default_factory=dict)
     market_events: list[MarketEvent] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        label_convention = self.metadata.get("label_convention")
+        if label_convention is not None and label_convention != BAR_CLOSE_LABEL:
+            raise ValueError(
+                "dataset metadata.label_convention must be "
+                f"{BAR_CLOSE_LABEL!r}; got {label_convention!r}"
+            )
 
     @classmethod
     def from_rows(

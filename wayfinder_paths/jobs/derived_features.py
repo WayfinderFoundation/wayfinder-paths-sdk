@@ -61,8 +61,12 @@ def _native_hl_closes(coin: str, start_ms: int, end_ms: int) -> pd.Series:
     rows = asyncio.run(_fetch())
     if not rows:
         return pd.Series(dtype=float)
-    stamps = [pd.Timestamp(int(r["t"]), unit="ms", tz="UTC") for r in rows]
-    return pd.Series([float(r["c"]) for r in rows], index=pd.Index(stamps)).sort_index()
+    from wayfinder_paths.jobs.execution.hyperliquid import (
+        hyperliquid_candles_to_completed_view,
+    )
+
+    frame = hyperliquid_candles_to_completed_view(coin, rows).to_frame()
+    return frame.set_index("timestamp")["close"].astype(float).sort_index()
 
 
 def derive_features_job(
