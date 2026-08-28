@@ -1378,6 +1378,49 @@ def _reap_finalize_group(pid: int | None) -> bool:
     return True
 
 
+def _expire_evolution_campaign(
+    store: JobStore, job_id: str, now: datetime
+) -> dict[str, Any] | None:
+    """Enforce one hard terminal horizon across every campaign stage."""
+    from wayfinder_paths.jobs.compute_lock import job_state_lock
+    from wayfinder_paths.jobs.evolution_campaign import CAMPAIGN_STATE_PATH
+    from wayfinder_paths.jobs.execution.op_process import terminate_campaign_ops
+    from wayfinder_paths.jobs.worker import retire_evolution_session
+
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
+        if state.get("status") not in {"active", "finalizing"}:
+            return None
+        attempts = int(state.get("finalize_attempts") or 0)
+        state.update(
+            {
+                "status": "failed",
+                "stage": "failed",
+                "failed_at": now.isoformat(),
+                "failure_reason": "campaign did not reach a terminal verdict within 24 hours",
+            }
+        )
+        store.write_json(job_id, CAMPAIGN_STATE_PATH, state)
+        store.append_journal(
+            job_id,
+            {
+                "type": "evolution_campaign_failed",
+                "campaign_id": state.get("campaign_id"),
+                "finalize_attempts": attempts,
+            },
+        )
+    campaign_id = str(state.get("campaign_id") or "")
+    reaped = terminate_campaign_ops(store, job_id, campaign_id)
+    retire_evolution_session(store, job_id, campaign_id)
+    result: dict[str, Any] = {
+        "action": "evolution_campaign_failed",
+        "campaign_id": state.get("campaign_id"),
+    }
+    if reaped:
+        result["reaped_ops"] = reaped
+    return result
+
+
 def _run_evolution_campaign_pass(
     store: JobStore, job_id: str, now: datetime
 ) -> dict[str, Any] | None:
@@ -1418,6 +1461,8 @@ def _run_evolution_campaign_pass(
         return None
     if deadline.tzinfo is None:
         deadline = deadline.replace(tzinfo=UTC)
+    if now - deadline >= _CAMPAIGN_FINALIZE_MAX_AGE:
+        return _expire_evolution_campaign(store, job_id, now)
     evaluating = op_status_summary(store.job_dir(job_id), "evolution_evaluate")
     if (evaluating or {}).get("status") == "running":
         return {
@@ -1492,15 +1537,14 @@ def _run_evolution_campaign_pass(
     retirement = retire_evolution_session(
         store, job_id, str(state.get("campaign_id") or "")
     )
-    finalize_max_age_reached = now - deadline >= _CAMPAIGN_FINALIZE_MAX_AGE
-    if retirement and not retirement.get("retired") and not finalize_max_age_reached:
+    if retirement and not retirement.get("retired"):
         return {
             "action": "evolution_campaign_waiting_for_session_retirement",
             "campaign_id": state.get("campaign_id"),
             "error": retirement.get("error"),
         }
 
-    if pending_evaluation and not finalize_max_age_reached:
+    if pending_evaluation:
         candidate_id = str(pending_evaluation[0].get("candidate_id") or "")
         spawned = spawn_detached_op(
             store,
@@ -1565,34 +1609,6 @@ def _run_evolution_campaign_pass(
         if state.get("status") not in {"active", "finalizing"}:
             return None
         attempts = int(state.get("finalize_attempts") or 0)
-        if finalize_max_age_reached:
-            state.update(
-                {
-                    "status": "failed",
-                    "stage": "failed",
-                    "failed_at": now.isoformat(),
-                    "failure_reason": "finalization did not reach a terminal verdict within 24 hours",
-                }
-            )
-            store.write_json(job_id, CAMPAIGN_STATE_PATH, state)
-            store.append_journal(
-                job_id,
-                {
-                    "type": "evolution_campaign_failed",
-                    "campaign_id": state.get("campaign_id"),
-                    "finalize_attempts": attempts,
-                },
-            )
-            reaped = terminate_campaign_ops(
-                store, job_id, str(state.get("campaign_id") or "")
-            )
-            result = {
-                "action": "evolution_campaign_failed",
-                "campaign_id": state.get("campaign_id"),
-            }
-            if reaped:
-                result["reaped_ops"] = reaped
-            return result
         last_attempt = state.get("finalize_last_attempt_at")
         if attempts and _age(now, last_attempt) < timedelta(
             seconds=_CAMPAIGN_FINALIZE_RETRY_S[

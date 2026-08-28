@@ -845,11 +845,11 @@ def harvest_hourly_control_candidates(
     seen = set(state.get("seen_candidates") or [])
     for proposal in store.proposals(job_id):
         report = proposal.get("candidate_report") or {}
-        revision = str(report.get("revision") or "")
+        recorded_revision = str(report.get("revision") or "")
         candidate_id = str(proposal.get("proposal_id") or "")
-        if not candidate_id or not revision:
+        if not candidate_id or not recorded_revision:
             continue
-        if f"control:{_safe_candidate_id(candidate_id)}:{revision}" in seen:
+        if f"control:{_safe_candidate_id(candidate_id)}:{recorded_revision}" in seen:
             continue
         if (
             (report.get("validation_summary") or {}).get("status") != "passed"
@@ -868,24 +868,49 @@ def harvest_hourly_control_candidates(
                 proposal,
             )
         )
-    if not candidates:
-        return None
-    _, proposal = max(candidates, key=lambda item: item[0])
-    report = proposal["candidate_report"]
-    candidate_root = _candidate_dir_from_proposal(store, job_id, proposal)
-    if not candidate_root.exists():
-        return None
-    return stage_paper_proposal(
-        store,
-        job_id,
-        arm="control",
-        candidate_id=str(proposal["proposal_id"]),
-        candidate_root=candidate_root,
-        revision=str(report["revision"]),
-        source="hourly_funnel",
-        evidence=report.get("economic") or {},
-        now=now,
-    )
+    for _, proposal in sorted(candidates, key=lambda item: item[0], reverse=True):
+        candidate_root = _candidate_dir_from_proposal(store, job_id, proposal)
+        if not candidate_root.exists():
+            continue
+        report = proposal["candidate_report"]
+        revision, migration = _normalize_control_revision(
+            candidate_root, str(report["revision"])
+        )
+        safe_id = _safe_candidate_id(str(proposal["proposal_id"]))
+        if f"control:{safe_id}:{revision}" in seen:
+            continue
+        evidence = dict(report.get("economic") or {})
+        if migration:
+            evidence["revision_migration"] = migration
+        return stage_paper_proposal(
+            store,
+            job_id,
+            arm="control",
+            candidate_id=str(proposal["proposal_id"]),
+            candidate_root=candidate_root,
+            revision=revision,
+            source="hourly_funnel",
+            evidence=evidence,
+            now=now,
+        )
+    return None
+
+
+def _normalize_control_revision(
+    candidate_root: Path, recorded_revision: str
+) -> tuple[str, dict[str, str] | None]:
+    """Restamp evidence across the operator-dial hash hygiene change only."""
+    current = compute_workspace_revision(candidate_root)
+    if current == recorded_revision:
+        return current, None
+    legacy = compute_workspace_revision(candidate_root, retain_operator_dials=True)
+    if legacy != recorded_revision:
+        raise ValueError("candidate revision does not match immutable bundle")
+    return current, {
+        "kind": "operator_dial_hash_hygiene",
+        "recorded_revision": recorded_revision,
+        "current_revision": current,
+    }
 
 
 def maybe_finalize_experiment(

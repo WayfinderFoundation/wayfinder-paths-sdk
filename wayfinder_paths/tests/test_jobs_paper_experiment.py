@@ -9,12 +9,14 @@ import pytest
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.paper_experiment import (
+    _normalize_control_revision,
     _proposal_verdict,
     _resource_cost,
     _verdict_report,
     current_job_token_usage,
     ensure_paper_experiment,
     experiment_status,
+    harvest_hourly_control_candidates,
     maybe_adjudicate_proposals,
     maybe_finalize_experiment,
     record_evidence,
@@ -197,6 +199,79 @@ def test_candidate_is_frozen_but_does_not_replace_champion_before_forward_day(
         "raise RuntimeError('changed source')\n", encoding="utf-8"
     )
     assert "changed source" not in copied.read_text(encoding="utf-8")
+
+
+def test_control_revision_migrates_only_known_operator_dial_hash(
+    tmp_path: Path,
+) -> None:
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    store, job_id, _ = _job(tmp_path, now=started)
+    source, current = _candidate_source(store, job_id)
+    legacy = compute_workspace_revision(source, retain_operator_dials=True)
+    assert legacy != current
+
+    normalized, migration = _normalize_control_revision(source, legacy)
+
+    assert normalized == current
+    assert migration == {
+        "kind": "operator_dial_hash_hygiene",
+        "recorded_revision": legacy,
+        "current_revision": current,
+    }
+    source.joinpath("workspace/src/strategy.py").write_text(
+        "def decide(ctx):\n    return [{'action': 'OPEN'}]\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="immutable bundle"):
+        _normalize_control_revision(source, legacy)
+
+
+def test_hourly_control_harvest_restamps_legacy_operator_dial_revision(
+    tmp_path: Path,
+) -> None:
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    store, job_id, _ = _job(tmp_path, now=started)
+    source, current = _candidate_source(store, job_id)
+    legacy = compute_workspace_revision(source, retain_operator_dials=True)
+    assert legacy != current
+    proposal_id = "prop-legacy-revision"
+    store.write_json(
+        job_id,
+        f"proposals/{proposal_id}.json",
+        {
+            "proposal_id": proposal_id,
+            "status": "approved",
+            "created_at": started.isoformat(),
+            "application": {
+                "status": "applied",
+                "candidate_dir": str(source.relative_to(store.repo_root)),
+            },
+            "candidate_report": {
+                "revision": legacy,
+                "validation_summary": {"status": "passed"},
+                "gate": {"live_ready": True},
+                "economic": {
+                    "ready": True,
+                    "paired_incumbent_delta": {"lcb": 0.1, "estimate": 0.2},
+                },
+            },
+        },
+    )
+
+    staged = harvest_hourly_control_candidates(
+        store, job_id, now=started + timedelta(hours=1)
+    )
+
+    assert staged is not None
+    assert staged["revision"] == current
+    assert staged["evidence"]["revision_migration"] == {
+        "kind": "operator_dial_hash_hygiene",
+        "recorded_revision": legacy,
+        "current_revision": current,
+    }
+    assert (
+        f"control:{staged['candidate_id']}:{current}"
+        in experiment_status(store, job_id)["seen_candidates"]
+    )
 
 
 def test_experiment_retires_only_legacy_evolution_probation(tmp_path: Path) -> None:

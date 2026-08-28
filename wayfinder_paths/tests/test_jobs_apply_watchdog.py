@@ -1472,6 +1472,55 @@ def test_watchdog_waits_for_governor_paused_evaluation_past_drain_grace(
     }
 
 
+def test_watchdog_closes_paused_evaluation_at_terminal_horizon(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-paused-evaluate-terminal")
+    deadline = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store.write_json(
+        job.id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "active",
+            "stage": "draining",
+            "deadline_at": deadline.isoformat(),
+            "candidates": [{"candidate_id": "c01", "status": "quick_running"}],
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.op_status_summary",
+        lambda _root, op: {"status": "running"}
+        if op == "evolution_evaluate"
+        else {"status": "failed"},
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.recover_lost_candidate_evaluations",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.retire_evolution_session",
+        lambda *args, **kwargs: {"retired": True},
+    )
+    terminated: list[str] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.op_process.terminate_campaign_ops",
+        lambda _store, _job_id, campaign_id: terminated.append(campaign_id) or [],
+    )
+
+    result = _run_evolution_campaign_pass(store, job.id, deadline + timedelta(hours=24))
+
+    assert result == {
+        "action": "evolution_campaign_failed",
+        "campaign_id": "campaign-1",
+    }
+    assert terminated == ["campaign-1"]
+    state = store.read_json(job.id, "state/evolution_campaign.json")
+    assert state["status"] == "failed"
+    assert state["failure_reason"].endswith("within 24 hours")
+
+
 def test_governor_pause_requires_fresh_state_and_matching_pid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -464,7 +464,12 @@ def _prepare_candidate(
             "parent_source": source,
         },
     )
-    return candidate
+    # ``bundle`` stays durable and job-relative.  The tool response also gives
+    # the short-lived mutation worker an exact authorized path so a fresh stage
+    # does not spend context discovering the SDK's hosted symlink layout.
+    result = dict(candidate)
+    result["bundle_path"] = str(candidate_root.resolve())
+    return result
 
 
 def _source_baseline_revision(manifest: dict[str, Any]) -> str:
@@ -1217,9 +1222,15 @@ def campaign_prompt_block(
     )
     if awaiting_evaluation:
         candidate = awaiting_evaluation[0]
+        candidate_root = resolve_candidate_bundle(
+            store,
+            job_id,
+            candidate,
+            campaign_id=str(state["campaign_id"]),
+        )
         session_stage = f"candidate-{int(candidate.get('slot') or 0):02d}"
         next_action = (
-            f"Edit only files inside {candidate['bundle']} (workspace, job.yaml, "
+            f"Edit only files inside {candidate_root} (workspace, job.yaml, "
             "and optional search_space.json), then launch "
             'wayfinder_core_jobs with action="evolution_evaluate", '
             f'job_id="{job_id}", candidate_id="{candidate["candidate_id"]}", '
@@ -1243,7 +1254,8 @@ def campaign_prompt_block(
     elif len(candidates) < budget:
         session_stage = f"candidate-{len(candidates) + 1:02d}"
         next_action = (
-            f"{prepare_call} Then edit only the returned candidate bundle and "
+            f"{prepare_call} Then edit only the exact `bundle_path` returned by "
+            "that call and "
             'launch wayfinder_core_jobs with action="evolution_evaluate", '
             f'job_id="{job_id}", candidate_id="<returned candidate_id>", '
             "background=true. Do not wait for the detached result. END THIS "

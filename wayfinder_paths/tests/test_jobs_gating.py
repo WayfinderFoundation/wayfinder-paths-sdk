@@ -4,6 +4,8 @@ import json
 import shutil
 from pathlib import Path
 
+import yaml
+
 from wayfinder_paths.jobs.execution import ExecutionSpec
 from wayfinder_paths.jobs.execution.job import backtest_execution_job
 from wayfinder_paths.jobs.execution.preflight import run_preflight
@@ -230,3 +232,17 @@ def test_agent_memory_edits_do_not_move_the_revision(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     assert compute_workspace_revision(root) != after_code
+
+
+def test_operator_dial_legacy_revision_can_be_reproduced(tmp_path: Path) -> None:
+    _, _, root = _make_job(tmp_path)
+    current = compute_workspace_revision(root)
+    legacy = compute_workspace_revision(root, retain_operator_dials=True)
+    job_yaml = root / "job.yaml"
+    data = yaml.safe_load(job_yaml.read_text(encoding="utf-8"))
+    data["agent_loop"] = {"mode": "monitor", "wake_seconds": 28_800}
+    data["job_kind"] = "script_and_agent"
+    job_yaml.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    assert compute_workspace_revision(root) == current
+    assert compute_workspace_revision(root, retain_operator_dials=True) != legacy

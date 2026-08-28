@@ -281,6 +281,8 @@ def test_prepare_candidate_isolated_lineage_and_mutation_budget(tmp_path) -> Non
     assert first["mutation_kind"] == "structural"
     root = store.job_dir(job_id)
     bundle = root / first["bundle"]
+    assert first["bundle_path"] == str(bundle.resolve())
+    assert "bundle_path" not in campaign_status(store, job_id)["candidates"][0]
     assert bundle != root
     assert (bundle / "workspace" / "src" / "strategy.py").exists()
     assert (
@@ -632,6 +634,11 @@ def test_next_action_isolates_one_candidate_per_stage_session(tmp_path) -> None:
     assert 'action="evolution_evaluate"' in block["next_action"]
     assert 'action="evolution_prepare"' not in block["next_action"]
     assert f'job_id="{job_id}"' in block["next_action"]
+    expected_root = (
+        store.job_dir(job_id)
+        / campaign_status(store, job_id)["candidates"][0]["bundle"]
+    ).resolve()
+    assert str(expected_root) in block["next_action"]
     assert "background=true" in block["next_action"]
     assert "Do not wait" in block["next_action"]
     assert "END THIS STAGE" in block["next_action"]
