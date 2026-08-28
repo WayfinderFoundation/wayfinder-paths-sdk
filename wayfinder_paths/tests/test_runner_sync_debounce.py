@@ -190,8 +190,21 @@ def test_debounced_fire_runs_both_backend_pushes_together(
 
     bulk_calls: list[list[dict]] = []
     sync_all_calls: list[dict] = []
+    anchor_calls: list[dict] = []
+    budget = {
+        "balance_cpu_seconds": 640.0,
+        "throttle_total_seconds": 12.0,
+        "baseline_cores": 0.25,
+        "observed_at": "2026-08-28T02:11:10+00:00",
+    }
     monkeypatch.setattr(
-        SCHEDULED_JOBS_CLIENT, "bulk_sync", lambda jobs: bulk_calls.append(jobs)
+        SCHEDULED_JOBS_CLIENT,
+        "bulk_sync",
+        lambda jobs: bulk_calls.append(jobs) or {"cpu_budget": budget},
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.runner.daemon.write_cpu_budget_anchor",
+        lambda payload: anchor_calls.append(payload),
     )
     monkeypatch.setattr(
         "wayfinder_paths.jobs.sync.sync_all_jobs",
@@ -205,3 +218,4 @@ def test_debounced_fire_runs_both_backend_pushes_together(
     time.sleep(0.2)
     assert len(bulk_calls) == 1
     assert len(sync_all_calls) == 1
+    assert anchor_calls == [budget]

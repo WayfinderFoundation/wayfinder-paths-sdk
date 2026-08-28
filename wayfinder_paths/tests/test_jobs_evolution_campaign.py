@@ -126,7 +126,7 @@ def test_campaign_start_defers_while_intervention_worker_is_busy(
     )
 
     with pytest.raises(TransientInfrastructureError, match="intervention worker"):
-        start_campaign(store, job_id)
+        start_campaign(store, job_id, now=datetime(2026, 8, 25, 19, tzinfo=UTC))
 
     assert campaign_status(store, job_id) == {}
 

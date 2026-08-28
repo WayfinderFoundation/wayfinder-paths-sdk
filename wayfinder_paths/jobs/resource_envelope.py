@@ -43,14 +43,10 @@ def require_evolution_headroom() -> dict[str, Any]:
     min_available = float(
         os.environ.get("WAYFINDER_EVOLUTION_MIN_AVAILABLE_MB", "1100")
     )
-    max_steal = float(os.environ.get("WAYFINDER_EVOLUTION_MAX_STEAL_PCT", "90"))
     available = snapshot.get("mem_available_mb")
-    steal = snapshot.get("cpu_steal_pct")
     reasons = []
     if isinstance(available, (int, float)) and available < min_available:
         reasons.append(f"MemAvailable {available:.0f}MB < {min_available:.0f}MB")
-    if isinstance(steal, (int, float)) and steal > max_steal:
-        reasons.append(f"CPU steal {steal:.1f}% > {max_steal:.1f}%")
     if reasons:
         raise TransientInfrastructureError(
             "evolution resource guard deferred heavy compute: " + "; ".join(reasons)
@@ -85,6 +81,9 @@ def evolution_launch_readiness(*, now: datetime | None = None) -> dict[str, Any]
         "ready": ready,
         "source": "governor",
         "balance_pct": state.get("balance_pct"),
+        "balance_cpu_seconds": state.get("balance_cpu_seconds"),
+        "capacity_cpu_seconds": state.get("capacity_cpu_seconds"),
+        "budget_source": state.get("source"),
         "paused": bool(state.get("paused")),
         "age_seconds": round(age, 1),
     }

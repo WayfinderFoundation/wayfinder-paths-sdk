@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import json
+
 import wayfinder_paths.runner.burst as burst_mod
-from wayfinder_paths.runner.burst import BurstEstimator
+from wayfinder_paths.runner.burst import (
+    BurstBudget,
+    BurstEstimator,
+    write_cpu_budget_anchor,
+)
 
 
 class _Clock:
@@ -62,6 +68,110 @@ def test_over_quota_threshold(monkeypatch):
     assert est.over_quota() is False
     est._balance = 15.0
     assert est.over_quota() is True
+
+
+def test_estimator_starts_conservatively_instead_of_at_capacity(monkeypatch):
+    monkeypatch.setattr(burst_mod, "_read_busy_jiffies", lambda: 0)
+    monkeypatch.setattr(burst_mod.os, "cpu_count", lambda: 2)
+
+    est = BurstEstimator(cap_cpu_s=1000.0, low_water_cpu_s=350.0)
+
+    assert est.balance == 10.0
+
+
+def test_fresh_governor_state_is_authoritative(tmp_path, monkeypatch):
+    state_path = tmp_path / "governor.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "2.0",
+                "updated_at": 1000.0,
+                "source": "fly_anchor",
+                "balance_cpu_seconds": 620.0,
+                "capacity_cpu_seconds": 1000.0,
+                "balance_pct": 62.0,
+                "allow_new_heavy": False,
+                "paused": False,
+                "affected_pids": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(burst_mod, "_read_busy_jiffies", lambda: 0)
+    fallback = BurstEstimator(cap_cpu_s=1000.0, low_water_cpu_s=350.0)
+    budget = BurstBudget(fallback, state_path=state_path, wall_clock=lambda: 1005.0)
+
+    assert budget.balance == 620.0
+    assert budget.over_quota() is True
+    assert budget.snapshot()["source"] == "fly_anchor"
+    assert budget.snapshot()["state_age_seconds"] == 5.0
+
+
+def test_stale_governor_state_falls_back_to_local_estimator(tmp_path, monkeypatch):
+    state_path = tmp_path / "governor.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "updated_at": 900.0,
+                "balance_cpu_seconds": 0.0,
+                "allow_new_heavy": False,
+                "paused": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(burst_mod, "_read_busy_jiffies", lambda: 0)
+    fallback = BurstEstimator(
+        cap_cpu_s=100.0,
+        low_water_cpu_s=20.0,
+        initial_balance_cpu_s=50.0,
+    )
+    budget = BurstBudget(fallback, state_path=state_path, wall_clock=lambda: 1000.0)
+
+    assert budget.balance == 50.0
+    assert budget.over_quota() is False
+    assert budget.snapshot()["source"] == "local_estimator"
+
+
+def test_backend_budget_anchor_is_narrow_atomic_and_private(tmp_path):
+    path = tmp_path / "anchor.json"
+    assert write_cpu_budget_anchor(
+        {
+            "balance_cpu_seconds": 1296.749,
+            "throttle_total_seconds": 784.294,
+            "baseline_cores": 0.25,
+            "observed_at": "2026-08-28T02:11:10+00:00",
+            "ignored": "never persisted",
+        },
+        path=path,
+        received_at=1000.0,
+    )
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "schema_version": "1.0",
+        "balance_cpu_seconds": 1296.749,
+        "throttle_total_seconds": 784.294,
+        "baseline_cores": 0.25,
+        "observed_at": "2026-08-28T02:11:10+00:00",
+        "received_at": 1000.0,
+    }
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_invalid_backend_budget_does_not_replace_anchor(tmp_path):
+    path = tmp_path / "anchor.json"
+    path.write_text('{"existing": true}', encoding="utf-8")
+
+    assert not write_cpu_budget_anchor(
+        {
+            "balance_cpu_seconds": -1,
+            "throttle_total_seconds": 0,
+            "baseline_cores": 0.25,
+            "observed_at": "2026-08-28T02:11:10+00:00",
+        },
+        path=path,
+    )
+    assert json.loads(path.read_text(encoding="utf-8")) == {"existing": True}
 
 
 def test_disabled_when_proc_unreadable(monkeypatch):

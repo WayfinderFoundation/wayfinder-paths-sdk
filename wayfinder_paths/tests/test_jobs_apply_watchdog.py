@@ -19,6 +19,7 @@ from wayfinder_paths.jobs.models import WayfinderJob, utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.watchdog import (
     WATCHDOG_RUNNER_JOB_NAME,
+    _op_governor_paused,
     _run_evolution_campaign_pass,
     ensure_application_watchdog,
     recover_stalled_applications,
@@ -1277,6 +1278,123 @@ def _finalizing_campaign(
     log = ops / "evolution_finalize.log"
     log.write_text("[backtest] bar 100/27648 · 12 bars/s\n", encoding="utf-8")
     return log
+
+
+def _write_governor_pause(
+    path: Path, *, now: datetime, affected_pids: list[int], age_s: float = 0
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "updated_at": now.timestamp() - age_s,
+                "paused": True,
+                "affected_pids": affected_pids,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_watchdog_waits_for_governor_paused_evaluation_past_drain_grace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-paused-evaluate")
+    deadline = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    now = deadline + timedelta(minutes=20)
+    store.write_json(
+        job.id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "active",
+            "stage": "draining",
+            "deadline_at": deadline.isoformat(),
+        },
+    )
+    ops = store.job_dir(job.id) / "state" / "background_ops"
+    ops.mkdir(parents=True, exist_ok=True)
+    (ops / "evolution_evaluate.json").write_text(
+        json.dumps({"state": "running", "pid": os.getpid()}), encoding="utf-8"
+    )
+    governor = tmp_path / "governor.json"
+    _write_governor_pause(governor, now=now, affected_pids=[os.getpid()])
+    monkeypatch.setenv("WAYFINDER_BURST_STATE_PATH", str(governor))
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.retire_evolution_session",
+        lambda *args, **kwargs: pytest.fail("paused evaluation was not awaited"),
+    )
+
+    assert _run_evolution_campaign_pass(store, job.id, now) == {
+        "action": "evolution_campaign_waiting_for_evaluation",
+        "campaign_id": "campaign-1",
+    }
+
+
+def test_governor_pause_requires_fresh_state_and_matching_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-pause-identity")
+    now = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    ops = store.job_dir(job.id) / "state" / "background_ops"
+    ops.mkdir(parents=True, exist_ok=True)
+    (ops / "evolution_evaluate.json").write_text(
+        json.dumps({"state": "running", "pid": os.getpid()}), encoding="utf-8"
+    )
+    governor = tmp_path / "governor.json"
+    monkeypatch.setenv("WAYFINDER_BURST_STATE_PATH", str(governor))
+
+    _write_governor_pause(governor, now=now, affected_pids=[os.getpid()], age_s=11)
+    assert not _op_governor_paused(store.job_dir(job.id), "evolution_evaluate", now)
+    _write_governor_pause(governor, now=now, affected_pids=[os.getpid() + 1])
+    assert not _op_governor_paused(store.job_dir(job.id), "evolution_evaluate", now)
+
+
+def test_watchdog_extends_finalize_while_registered_child_is_paused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-paused-finalize")
+    deadline = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    now = deadline + timedelta(minutes=61)
+    log = _finalizing_campaign(store, job.id, deadline, pid=os.getpid())
+    os.utime(log, (now.timestamp() - 20 * 60, now.timestamp() - 20 * 60))
+    child_pid = os.getpid() + 1000
+    governor = tmp_path / "governor.json"
+    registry = tmp_path / "heavy"
+    registry.mkdir()
+    (registry / "op.json").write_text(
+        json.dumps(
+            {
+                "supervisor_pid": os.getpid(),
+                "supervisor_start_ticks": 100,
+                "child_pid": child_pid,
+                "child_start_ticks": 200,
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_governor_pause(governor, now=now, affected_pids=[child_pid])
+    monkeypatch.setenv("WAYFINDER_BURST_STATE_PATH", str(governor))
+    monkeypatch.setenv("WAYFINDER_HEAVY_OP_REGISTRY_DIR", str(registry))
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.op_process.proc_start_ticks",
+        lambda pid: 100 if pid == os.getpid() else 200,
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.op_process.proc_parent_pid",
+        lambda pid: os.getpid() if pid == child_pid else None,
+    )
+
+    assert _run_evolution_campaign_pass(store, job.id, now) == {
+        "action": "evolution_finalize_still_running",
+        "campaign_id": "campaign-1",
+        "pid": os.getpid(),
+    }
+    assert store.read_json(job.id, "state/evolution_campaign.json")["status"] == (
+        "finalizing"
+    )
 
 
 def test_watchdog_extends_grace_while_finalize_is_healthy(tmp_path: Path) -> None:

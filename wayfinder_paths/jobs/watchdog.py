@@ -1282,6 +1282,63 @@ _CAMPAIGN_BOOTSTRAP_GRACE = timedelta(minutes=15)
 # during finalize backtests.
 _FINALIZE_LOG_FRESH = timedelta(minutes=10)
 _FINALIZE_EXTEND_MARKER = "state/evolution_finalize_extend.json"
+_BURST_STATE_PATH = "/tmp/wayfinder-burst-governor.json"
+_HEAVY_OP_REGISTRY_DIR = "/tmp/wayfinder-heavy-ops"
+_BURST_STATE_MAX_AGE_S = 10.0
+
+
+def _op_governor_paused(job_dir: Path, op: str, now: datetime) -> bool:
+    """True only when fresh governor state names this op or its heavy child."""
+    from wayfinder_paths.jobs.execution.op_process import (
+        proc_parent_pid,
+        proc_start_ticks,
+    )
+
+    try:
+        status = json.loads(
+            (job_dir / "state" / "background_ops" / f"{op}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        op_pid = status.get("pid")
+        if not isinstance(op_pid, int) or status.get("state") != "running":
+            return False
+        state_path = Path(
+            os.environ.get("WAYFINDER_BURST_STATE_PATH", _BURST_STATE_PATH)
+        )
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        age = max(0.0, now.timestamp() - float(state["updated_at"]))
+        affected = state.get("affected_pids")
+        if (
+            age > _BURST_STATE_MAX_AGE_S
+            or not bool(state.get("paused"))
+            or not isinstance(affected, list)
+        ):
+            return False
+        if op_pid in affected:
+            return True
+        registry_dir = Path(
+            os.environ.get("WAYFINDER_HEAVY_OP_REGISTRY_DIR", _HEAVY_OP_REGISTRY_DIR)
+        )
+        for path in registry_dir.glob("*.json"):
+            try:
+                record = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, TypeError, ValueError):
+                continue
+            child_pid = record.get("child_pid") if isinstance(record, dict) else None
+            if (
+                isinstance(record, dict)
+                and record.get("supervisor_pid") == op_pid
+                and record.get("supervisor_start_ticks") == proc_start_ticks(op_pid)
+                and isinstance(child_pid, int)
+                and child_pid in affected
+                and record.get("child_start_ticks") == proc_start_ticks(child_pid)
+                and proc_parent_pid(child_pid) == op_pid
+            ):
+                return True
+    except (OSError, TypeError, ValueError, KeyError):
+        return False
+    return False
 
 
 def _finalize_op_health(job_dir: Path, now: datetime) -> tuple[int | None, bool]:
@@ -1300,8 +1357,10 @@ def _finalize_op_health(job_dir: Path, now: datetime) -> tuple[int | None, bool]
     try:
         log_age = now.timestamp() - (ops_dir / "evolution_finalize.log").stat().st_mtime
     except OSError:
-        return pid, False
-    return pid, log_age < _FINALIZE_LOG_FRESH.total_seconds()
+        return pid, _op_governor_paused(job_dir, "evolution_finalize", now)
+    return pid, log_age < _FINALIZE_LOG_FRESH.total_seconds() or _op_governor_paused(
+        job_dir, "evolution_finalize", now
+    )
 
 
 def _reap_finalize_group(pid: int | None) -> bool:
@@ -1448,9 +1507,10 @@ def _run_evolution_campaign_pass(
         }
 
     evaluating = op_status_summary(store.job_dir(job_id), "evolution_evaluate")
-    if (evaluating or {}).get(
-        "status"
-    ) == "running" and now - deadline < _CAMPAIGN_EVALUATE_DRAIN_GRACE:
+    if (evaluating or {}).get("status") == "running" and (
+        now - deadline < _CAMPAIGN_EVALUATE_DRAIN_GRACE
+        or _op_governor_paused(store.job_dir(job_id), "evolution_evaluate", now)
+    ):
         return {
             "action": "evolution_campaign_waiting_for_evaluation",
             "campaign_id": state.get("campaign_id"),

@@ -156,7 +156,7 @@ def test_paper_jobs_v1_tick_gets_short_floor(tmp_path: Path, monkeypatch) -> Non
     assert d._maybe_start_job(job=job, now=1_000, reason="schedule") is not None
 
 
-def test_agent_wake_gets_short_floor_even_when_live(
+def test_scheduled_agent_wake_skips_occurrence_even_past_short_floor(
     tmp_path: Path, monkeypatch
 ) -> None:
     d = _daemon(
@@ -172,7 +172,7 @@ def test_agent_wake_gets_short_floor_even_when_live(
     assert d._maybe_start_job(job=job, now=1_000, reason="schedule") is None
     d._postponed_since[job["id"]] = time.monotonic() - (BURST_SHORT_POSTPONE_S + 1)
     _mock_popen(monkeypatch)
-    assert d._maybe_start_job(job=job, now=1_000, reason="schedule") is not None
+    assert d._maybe_start_job(job=job, now=1_000, reason="schedule") is None
 
 
 def test_indeterminate_mode_defaults_to_short_floor(

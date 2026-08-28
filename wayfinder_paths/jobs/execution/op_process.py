@@ -40,7 +40,7 @@ def op_runner_command(op: str) -> list[str]:
     ]
 
 
-def _proc_start_ticks(pid: int) -> int | None:
+def proc_start_ticks(pid: int) -> int | None:
     try:
         fields = (
             Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(") ", 1)[1]
@@ -48,6 +48,24 @@ def _proc_start_ticks(pid: int) -> int | None:
         return int(fields.split()[19])
     except (OSError, IndexError, ValueError):
         return None
+
+
+def proc_parent_pid(pid: int) -> int | None:
+    try:
+        fields = (
+            Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").rsplit(") ", 1)[1]
+        )
+        return int(fields.split()[1])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def pid_is_op_runner(pid: int) -> bool:
+    try:
+        parts = Path(f"/proc/{pid}/cmdline").read_bytes().rstrip(b"\0").split(b"\0")
+    except OSError:
+        return False
+    return _RUNNER_MODULE.encode() in parts
 
 
 def _pid_alive(pid: Any) -> bool:
@@ -66,7 +84,7 @@ def _pid_matches_runner(pid: int, op: str, start_ticks: int) -> bool:
     except OSError:
         return False
     return (
-        _proc_start_ticks(pid) == start_ticks
+        proc_start_ticks(pid) == start_ticks
         and b"wayfinder_paths.jobs.execution.op_runner" in parts
         and f"--op-name={op}".encode() in parts
     )
@@ -85,7 +103,7 @@ def track_evolution_process(op: str, kwargs: dict[str, Any]) -> Iterator[None]:
 
     store = JobStore()
     campaign_id = str(campaign_status(store, job_id).get("campaign_id") or "").strip()
-    process_start_ticks = _proc_start_ticks(os.getpid())
+    process_start_ticks = proc_start_ticks(os.getpid())
     if not campaign_id or process_start_ticks is None:
         yield
         return

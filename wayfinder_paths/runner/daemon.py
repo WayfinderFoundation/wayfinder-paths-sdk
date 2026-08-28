@@ -22,7 +22,13 @@ from wayfinder_paths import __version__
 from wayfinder_paths.core.clients.OpenCodeClient import OPENCODE_CLIENT
 from wayfinder_paths.core.clients.ScheduledJobsClient import SCHEDULED_JOBS_CLIENT
 from wayfinder_paths.core.config import is_opencode_instance
-from wayfinder_paths.runner.burst import BurstEstimator
+from wayfinder_paths.runner.burst import (
+    INITIAL_BALANCE_CPU_S_PER_VCPU,
+    MAX_BALANCE_CPU_S_PER_VCPU,
+    BurstBudget,
+    BurstEstimator,
+    write_cpu_budget_anchor,
+)
 from wayfinder_paths.runner.constants import (
     JOB_TYPE_SCRIPT,
     JOB_TYPE_STRATEGY,
@@ -47,8 +53,9 @@ JOB_RESULT_MARKER = "WAYFINDER_JOB_RESULT "
 # the worst-case cost of a single in-flight job so one already-running job can't
 # overshoot the budget to zero (validated in the docker burst-lab); max-postpone
 # bounds starvation so a due job can't be held behind a permanent backlog.
-BURST_CAP_CPU_S = 500.0
-BURST_LOW_WATER_CPU_S = 120.0
+_VCPUS = os.cpu_count() or 1
+BURST_CAP_CPU_S = MAX_BALANCE_CPU_S_PER_VCPU * _VCPUS
+BURST_LOW_WATER_CPU_S = 0.35 * BURST_CAP_CPU_S
 BURST_MAX_POSTPONE_S = 600.0
 # Short starvation floor for trading-adjacent work (paper script ticks,
 # indeterminate-mode jobs) so a drain episode can't hold them for the full
@@ -399,8 +406,12 @@ class RunnerDaemon:
         # a real burst budget. Elsewhere (dev, local runs) the /proc estimate is
         # meaningless, so leave jobs ungated.
         self._burst = (
-            BurstEstimator(
-                cap_cpu_s=BURST_CAP_CPU_S, low_water_cpu_s=BURST_LOW_WATER_CPU_S
+            BurstBudget(
+                BurstEstimator(
+                    cap_cpu_s=BURST_CAP_CPU_S,
+                    low_water_cpu_s=BURST_LOW_WATER_CPU_S,
+                    initial_balance_cpu_s=INITIAL_BALANCE_CPU_S_PER_VCPU * _VCPUS,
+                )
             )
             if burst_admission and is_opencode_instance()
             else None
@@ -800,7 +811,8 @@ class RunnerDaemon:
                     )
             finally:
                 db.close()
-            SCHEDULED_JOBS_CLIENT.bulk_sync(jobs)
+            response = SCHEDULED_JOBS_CLIENT.bulk_sync(jobs)
+            write_cpu_budget_anchor((response or {}).get("cpu_budget"))
 
             # 2. Wayfinder-jobs snapshot (per-mode session ids for the
             #    Conversations panel, proposals, and the reconciled
@@ -1152,6 +1164,9 @@ class RunnerDaemon:
                 "sock_path": str(self._paths.sock_path),
                 "running_workers": len(self._running),
                 "max_workers": self._max_workers,
+                "burst_budget": self._burst.snapshot()
+                if self._burst is not None
+                else {"source": "disabled"},
                 "jobs": self._db.list_jobs(),
                 "recent_runs": self._db.last_runs(limit=20),
             },
