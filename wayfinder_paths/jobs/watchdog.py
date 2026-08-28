@@ -1384,6 +1384,7 @@ def _expire_evolution_campaign(
     """Enforce one hard terminal horizon across every campaign stage."""
     from wayfinder_paths.jobs.compute_lock import job_state_lock
     from wayfinder_paths.jobs.evolution_campaign import CAMPAIGN_STATE_PATH
+    from wayfinder_paths.jobs.evolution_funnel import summarize_evolution_funnel
     from wayfinder_paths.jobs.execution.op_process import terminate_campaign_ops
     from wayfinder_paths.jobs.worker import retire_evolution_session
 
@@ -1408,6 +1409,7 @@ def _expire_evolution_campaign(
                 "campaign_id": state.get("campaign_id"),
                 "finalize_attempts": attempts,
                 "reason": state["failure_reason"],
+                "funnel": summarize_evolution_funnel(state),
             },
         )
     campaign_id = str(state.get("campaign_id") or "")

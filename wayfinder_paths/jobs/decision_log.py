@@ -21,6 +21,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+from wayfinder_paths.jobs.evolution_funnel import (
+    format_evolution_funnel,
+    summarize_evolution_funnel,
+)
 from wayfinder_paths.jobs.store import JobStore
 
 DEFAULT_LIMIT = 50
@@ -297,6 +301,7 @@ def _journal_entries(
             )
         elif kind == "evolution_campaign_completed":
             counts = event.get("counts") or {}
+            funnel = event.get("funnel")
             paper_proposals = _count(event, "paper_proposals")
             title = "Evolution campaign completed"
             if paper_proposals:
@@ -310,12 +315,23 @@ def _journal_entries(
                     ts,
                     "research",
                     title,
-                    _evolution_counts_detail(counts),
+                    (
+                        format_evolution_funnel(funnel)
+                        if isinstance(funnel, dict)
+                        else _evolution_counts_detail(counts)
+                    ),
                     "info",
                     actor="harness",
+                    metadata={
+                        "campaign_id": event.get("campaign_id"),
+                        "funnel": funnel,
+                    }
+                    if isinstance(funnel, dict)
+                    else None,
                 )
             )
         elif kind == "evolution_campaign_failed":
+            funnel = event.get("funnel")
             reason = str(
                 event.get("reason")
                 or "campaign did not reach a terminal verdict within its safety horizon"
@@ -323,6 +339,8 @@ def _journal_entries(
             attempts = _count(event, "finalize_attempts")
             if attempts:
                 reason += f"; {attempts} finalization attempt(s)"
+            if isinstance(funnel, dict):
+                reason += f" · {format_evolution_funnel(funnel)}"
             entries.append(
                 _entry(
                     ts,
@@ -331,6 +349,12 @@ def _journal_entries(
                     reason,
                     "info",
                     actor="watchdog",
+                    metadata={
+                        "campaign_id": event.get("campaign_id"),
+                        "funnel": funnel,
+                    }
+                    if isinstance(funnel, dict)
+                    else None,
                 )
             )
         elif kind == "data_feed_recovered":
@@ -378,13 +402,15 @@ def _active_evolution_entry(root: Path) -> dict[str, Any] | None:
         "full_dev": "Evolution campaign running full development",
         "paper_proposal": "Evolution campaign checking finalists",
     }.get(stage, "Evolution campaign in progress")
+    funnel = summarize_evolution_funnel(state)
     return _entry(
         _latest_evolution_ts(state),
         "research",
         title,
-        _evolution_counts_detail(state.get("counts") or {}),
+        format_evolution_funnel(funnel),
         "info",
         actor="harness",
+        metadata={"campaign_id": state.get("campaign_id"), "funnel": funnel},
     )
 
 
@@ -579,6 +605,7 @@ def _entry(
     actor: str,
     proposal_id: str | None = None,
     family: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     entry: dict[str, Any] = {
         "ts": ts,
@@ -592,6 +619,8 @@ def _entry(
         entry["proposal_id"] = proposal_id
     if family:
         entry["family"] = family
+    if metadata:
+        entry["metadata"] = metadata
     return entry
 
 
