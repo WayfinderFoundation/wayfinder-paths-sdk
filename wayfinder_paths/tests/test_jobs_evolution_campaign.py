@@ -1859,11 +1859,16 @@ def test_op_runner_nudges_after_evolution_ops_and_contains_failures(
     from wayfinder_paths.jobs.execution import op_runner
 
     nudged: list[str] = []
+    synced: list[str] = []
     monkeypatch.setattr(op_runner, "_lower_priority", lambda: None)
     monkeypatch.setattr(op_runner, "_run", lambda op, kwargs: {"ok": True})
     monkeypatch.setattr(
         "wayfinder_paths.jobs.worker.nudge_evolution_session",
         lambda store, job_id: nudged.append(job_id),
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.sync.sync_all_jobs",
+        lambda *, store: synced.append("sync"),
     )
 
     def run_main(op: str, kwargs: dict[str, Any]) -> None:
@@ -1876,17 +1881,23 @@ def test_op_runner_nudges_after_evolution_ops_and_contains_failures(
     # evolution_start completion nudges too: the first campaign prompt no
     # longer waits out a full hourly wake interval.
     run_main("evolution_start", {"job_id": "majors-5m-lab"})
+    run_main("evolution_finalize", {"job_id": "majors-5m-lab"})
     run_main("backtest_job", {"job_id": "majors-5m-lab"})
     assert nudged == ["majors-5m-lab", "majors-5m-lab"]
+    assert synced == ["sync", "sync", "sync"]
 
     def boom(store: Any, job_id: str) -> None:
         raise RuntimeError("nudge failed")
 
+    def sync_boom(*, store: Any) -> None:
+        raise RuntimeError("sync failed")
+
     monkeypatch.setattr("wayfinder_paths.jobs.worker.nudge_evolution_session", boom)
+    monkeypatch.setattr("wayfinder_paths.jobs.sync.sync_all_jobs", sync_boom)
     run_main("evolution_evaluate", {"job_id": "majors-5m-lab", "candidate_id": "c1"})
-    # The op result was written all four times; the failed nudge stayed inside
-    # its guard instead of failing the op.
-    assert capsys.readouterr().out.count('{"ok": true}') == 4
+    # The op result was written all five times; failed observability hooks stay
+    # inside their guards instead of failing the compute operation.
+    assert capsys.readouterr().out.count('{"ok": true}') == 5
 
 
 def test_cli_evolution_start_nudges_the_session(monkeypatch, tmp_path) -> None:

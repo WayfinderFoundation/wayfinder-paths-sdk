@@ -250,6 +250,7 @@ def _lower_priority() -> None:
 
 
 _NUDGE_OPS = {"evolution_start", "evolution_evaluate"}
+_EVOLUTION_ACTIVITY_OPS = _NUDGE_OPS | {"evolution_finalize"}
 
 
 def _nudge_evolution(op: str, kwargs: dict[str, Any]) -> None:
@@ -267,6 +268,19 @@ def _nudge_evolution(op: str, kwargs: dict[str, Any]) -> None:
         pass
 
 
+def _sync_evolution_activity(op: str, kwargs: dict[str, Any]) -> None:
+    """Publish campaign milestones without waiting for an unrelated wake."""
+    if op not in _EVOLUTION_ACTIVITY_OPS or not kwargs.get("job_id"):
+        return
+    try:
+        from wayfinder_paths.jobs.store import JobStore
+        from wayfinder_paths.jobs.sync import sync_all_jobs
+
+        sync_all_jobs(store=JobStore())
+    except Exception:  # noqa: BLE001 - observability lane only
+        pass
+
+
 def main() -> None:
     _lower_priority()
     request = json.load(sys.stdin)
@@ -279,6 +293,7 @@ def main() -> None:
     # the completed op's result file, not a half-written one.
     sys.stdout.flush()
     _nudge_evolution(op, kwargs)
+    _sync_evolution_activity(op, kwargs)
 
 
 if __name__ == "__main__":

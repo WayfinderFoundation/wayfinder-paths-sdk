@@ -186,6 +186,115 @@ def test_caps_and_empty_job(tmp_path) -> None:
     assert log["stats"]["proposals_created"] == 80
 
 
+def test_active_evolution_campaign_is_one_compact_progress_row(tmp_path) -> None:
+    store, job_id = _mk(tmp_path)
+    store.write_json(
+        job_id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "active",
+            "stage": "generate",
+            "started_at": "2026-08-28T16:00:00+00:00",
+            "counts": {
+                "generated": 3,
+                "quick_evaluated": 2,
+                "full_dev": 0,
+                "proposed": 0,
+            },
+            "candidates": [
+                {
+                    "candidate_id": "c03",
+                    "prepared_at": "2026-08-28T17:00:00+00:00",
+                }
+            ],
+        },
+    )
+    root = store.job_dir(job_id)
+    (root / "journal.jsonl").write_text(
+        "\n".join(
+            json.dumps(
+                {
+                    "ts": f"2026-08-28T16:0{i}:00+00:00",
+                    "type": event_type,
+                }
+            )
+            for i, event_type in enumerate(
+                (
+                    "evolution_campaign_started",
+                    "evolution_worker_wakeup",
+                    "evolution_session_retired",
+                )
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    entries = build_decision_log(store, job_id)["entries"]
+
+    assert len(entries) == 1
+    assert entries[0] == {
+        "ts": "2026-08-28T17:00:00+00:00",
+        "kind": "research",
+        "title": "Evolution campaign generating candidates",
+        "detail": (
+            "3 generated · 2 screened · 0 full-development evaluations · "
+            "0 finalist-gate evaluations"
+        ),
+        "outcome": "info",
+        "actor": "harness",
+    }
+
+
+def test_terminal_evolution_campaigns_show_outcomes_without_live_duplicate(
+    tmp_path,
+) -> None:
+    store, job_id = _mk(tmp_path)
+    store.write_json(
+        job_id,
+        "state/evolution_campaign.json",
+        {"campaign_id": "campaign-2", "status": "complete", "stage": "complete"},
+    )
+    root = store.job_dir(job_id)
+    journal = [
+        {
+            "ts": "2026-08-27T12:00:00+00:00",
+            "type": "evolution_campaign_failed",
+            "campaign_id": "campaign-1",
+            "finalize_attempts": 3,
+            "reason": "campaign exceeded its safety horizon",
+        },
+        {
+            "ts": "2026-08-28T12:00:00+00:00",
+            "type": "evolution_campaign_completed",
+            "campaign_id": "campaign-2",
+            "paper_proposals": 1,
+            "counts": {
+                "generated": 12,
+                "quick_evaluated": 12,
+                "full_dev": 4,
+                "proposed": 1,
+            },
+        },
+    ]
+    (root / "journal.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in journal) + "\n", encoding="utf-8"
+    )
+
+    entries = build_decision_log(store, job_id)["entries"]
+
+    assert len(entries) == 2
+    assert entries[0]["title"] == (
+        "Evolution campaign completed — 1 advanced to forward paper testing"
+    )
+    assert entries[0]["kind"] == "research"
+    assert "12 generated · 12 screened" in entries[0]["detail"]
+    assert entries[1]["title"] == "Evolution campaign stopped before completion"
+    assert entries[1]["kind"] == "recovery"
+    assert entries[1]["detail"].endswith("3 finalization attempt(s)")
+
+
 def test_apply_lifecycle_events(tmp_path) -> None:
     """The apply pipeline narrates itself: stale-baseline deferral, re-stage,
     genuine apply failure, and owner repair each become feed entries; applied

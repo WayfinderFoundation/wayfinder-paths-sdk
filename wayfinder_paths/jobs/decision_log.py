@@ -39,6 +39,9 @@ def build_decision_log(
     root = store.job_dir(job_id)
     proposals = _load_proposals(root)
     entries: list[dict[str, Any]] = []
+    active_evolution = _active_evolution_entry(root)
+    if active_evolution:
+        entries.append(active_evolution)
     entries.extend(_journal_entries(root, proposals))
     entries.extend(_ledger_entries(root))
     entries.extend(_universe_entries(root))
@@ -292,6 +295,44 @@ def _journal_entries(
                     actor="system",
                 )
             )
+        elif kind == "evolution_campaign_completed":
+            counts = event.get("counts") or {}
+            paper_proposals = _count(event, "paper_proposals")
+            title = "Evolution campaign completed"
+            if paper_proposals:
+                title += (
+                    f" — {paper_proposals} advanced to forward paper testing"
+                )
+            elif "paper_proposals" in event:
+                title += " — no candidate advanced"
+            entries.append(
+                _entry(
+                    ts,
+                    "research",
+                    title,
+                    _evolution_counts_detail(counts),
+                    "info",
+                    actor="harness",
+                )
+            )
+        elif kind == "evolution_campaign_failed":
+            reason = str(
+                event.get("reason")
+                or "campaign did not reach a terminal verdict within its safety horizon"
+            )
+            attempts = _count(event, "finalize_attempts")
+            if attempts:
+                reason += f"; {attempts} finalization attempt(s)"
+            entries.append(
+                _entry(
+                    ts,
+                    "recovery",
+                    "Evolution campaign stopped before completion",
+                    reason,
+                    "info",
+                    actor="watchdog",
+                )
+            )
         elif kind == "data_feed_recovered":
             entries.append(
                 _entry(
@@ -317,6 +358,71 @@ def _journal_entries(
                 )
             )
     return entries
+
+
+def _active_evolution_entry(root: Path) -> dict[str, Any] | None:
+    """Project mutable campaign state into one compact live feed row.
+
+    Worker wakes and candidate evaluations are intentionally not journal rows:
+    the UI needs the campaign's progress, not its orchestration chatter.  The
+    row disappears once the campaign is terminal, when the durable completion
+    or failure journal event takes over.
+    """
+    state = _read_json(root / "state" / "evolution_campaign.json")
+    if not state or state.get("status") not in {"active", "finalizing"}:
+        return None
+    stage = str(state.get("stage") or "generate")
+    title = {
+        "generate": "Evolution campaign generating candidates",
+        "draining": "Evolution campaign preparing full development",
+        "full_dev": "Evolution campaign running full development",
+        "paper_proposal": "Evolution campaign checking finalists",
+    }.get(stage, "Evolution campaign in progress")
+    return _entry(
+        _latest_evolution_ts(state),
+        "research",
+        title,
+        _evolution_counts_detail(state.get("counts") or {}),
+        "info",
+        actor="harness",
+    )
+
+
+def _latest_evolution_ts(state: dict[str, Any]) -> str:
+    timestamp_keys = (
+        "started_at",
+        "finalize_started_at",
+        "prepared_at",
+        "evaluation_claimed_at",
+        "evaluated_at",
+        "full_dev_claimed_at",
+        "full_dev_at",
+        "proposal_claimed_at",
+        "proposed_at",
+    )
+    values = [str(state.get(key) or "") for key in timestamp_keys]
+    for candidate in state.get("candidates") or []:
+        if isinstance(candidate, dict):
+            values.extend(str(candidate.get(key) or "") for key in timestamp_keys)
+    return max((value for value in values if value), default="")
+
+
+def _count(counts: Any, name: str) -> int:
+    if not isinstance(counts, dict):
+        return 0
+    try:
+        return max(int(counts.get(name) or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _evolution_counts_detail(counts: Any) -> str:
+    return (
+        f"{_count(counts, 'generated')} generated · "
+        f"{_count(counts, 'quick_evaluated')} screened · "
+        f"{_count(counts, 'full_dev')} full-development evaluations · "
+        f"{_count(counts, 'proposed')} finalist-gate evaluations"
+    )
 
 
 def _ledger_entries(root: Path) -> list[dict[str, Any]]:
