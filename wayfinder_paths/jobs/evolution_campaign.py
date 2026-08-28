@@ -882,6 +882,10 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
             "type": "evolution_campaign_completed",
             "campaign_id": state["campaign_id"],
             "counts": state["counts"],
+            "paper_proposals": sum(
+                candidate.get("status") == "paper_proposal"
+                for candidate in state.get("candidates") or []
+            ),
         },
     )
     return state
@@ -1026,6 +1030,7 @@ def _commit_full_dev(
         candidate.update(outcome)
         candidate.pop("full_dev_claim_id", None)
         candidate.pop("full_dev_claimed_at", None)
+        candidate["full_dev_at"] = utc_now_iso()
         state["counts"]["full_dev"] += 1
         _save_campaign(store, job_id, state)
         return dict(candidate)
@@ -1086,6 +1091,7 @@ def _commit_proposal(
         candidate.update(outcome)
         candidate.pop("proposal_claim_id", None)
         candidate.pop("proposal_claimed_at", None)
+        candidate["proposed_at"] = utc_now_iso()
         state["counts"]["proposed"] = int(state["counts"].get("proposed") or 0) + 1
         _save_campaign(store, job_id, state)
         return dict(candidate)

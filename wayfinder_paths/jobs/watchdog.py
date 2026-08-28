@@ -1407,6 +1407,7 @@ def _expire_evolution_campaign(
                 "type": "evolution_campaign_failed",
                 "campaign_id": state.get("campaign_id"),
                 "finalize_attempts": attempts,
+                "reason": state["failure_reason"],
             },
         )
     campaign_id = str(state.get("campaign_id") or "")
