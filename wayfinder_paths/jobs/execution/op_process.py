@@ -6,8 +6,10 @@ import json
 import os
 import signal
 import sys
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -58,6 +60,61 @@ def proc_parent_pid(pid: int) -> int | None:
         return int(fields.split()[1])
     except (OSError, IndexError, ValueError):
         return None
+
+
+def process_identity_fields(pid: int) -> dict[str, Any]:
+    """Stable identity fields for a detached process status record."""
+    fields: dict[str, Any] = {}
+    start_ticks = proc_start_ticks(pid)
+    if start_ticks is not None:
+        fields["process_start_ticks"] = start_ticks
+    try:
+        boot_id = (
+            Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+        )
+    except OSError:
+        boot_id = ""
+    if boot_id:
+        fields["boot_id"] = boot_id
+    return fields
+
+
+def _linux_booted_at() -> datetime | None:
+    try:
+        uptime_s = float(Path("/proc/uptime").read_text(encoding="utf-8").split()[0])
+    except (OSError, IndexError, ValueError):
+        return None
+    return datetime.fromtimestamp(time.time() - uptime_s, tz=UTC)
+
+
+def recorded_process_alive(record: dict[str, Any]) -> bool:
+    """Validate a recorded pid without trusting reuse across machine boots."""
+    pid = record.get("pid")
+    if not isinstance(pid, int) or not _pid_alive(pid):
+        return False
+    current = process_identity_fields(pid)
+    recorded_boot = record.get("boot_id")
+    if recorded_boot and current.get("boot_id") != recorded_boot:
+        return False
+    recorded_ticks = record.get("process_start_ticks")
+    if isinstance(recorded_ticks, int):
+        return current.get("process_start_ticks") == recorded_ticks
+    if recorded_boot:
+        return True
+
+    # Backward compatibility for status files written before identity fields
+    # existed. A process recorded before this Linux boot cannot still own the
+    # pid, even if the new machine has already reused that number.
+    try:
+        started_at = datetime.fromisoformat(str(record["started_at"]))
+        if started_at.tzinfo is None:
+            started_at = started_at.replace(tzinfo=UTC)
+        booted_at = _linux_booted_at()
+        if booted_at is not None and started_at < booted_at:
+            return False
+    except (KeyError, TypeError, ValueError):
+        pass
+    return True
 
 
 def pid_is_op_runner(pid: int) -> bool:

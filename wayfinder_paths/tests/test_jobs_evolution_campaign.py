@@ -28,6 +28,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     finalize_campaign,
     maybe_start_campaign,
     prepare_candidate,
+    recover_lost_candidate_evaluations,
     resolve_candidate_bundle,
     start_campaign,
 )
@@ -45,6 +46,7 @@ from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.worker import (
     _queue_evolution_worker,
     nudge_evolution_session,
+    recover_evolution_stage_session,
     retire_evolution_session,
     run_job_worker,
 )
@@ -615,7 +617,7 @@ def test_jsonl_features_are_frozen_at_the_campaign_cutoff(tmp_path) -> None:
     assert [row["value"] for row in rows] == [0, 1]
 
 
-def test_next_action_pipelines_authoring_against_detached_evaluation(tmp_path) -> None:
+def test_next_action_isolates_one_candidate_per_stage_session(tmp_path) -> None:
     store, job_id = _job(tmp_path, "majors-5m-lab")
     started = datetime(2026, 8, 25, 12, tzinfo=UTC)
     start_campaign(store, job_id, now=started)
@@ -626,17 +628,21 @@ def test_next_action_pipelines_authoring_against_detached_evaluation(tmp_path) -
 
     block = campaign_prompt_block(store, job_id, now=working)
     assert block is not None
+    assert block["session_stage"] == "candidate-01"
     assert 'action="evolution_evaluate"' in block["next_action"]
-    assert 'action="evolution_prepare"' in block["next_action"]
+    assert 'action="evolution_prepare"' not in block["next_action"]
     assert f'job_id="{job_id}"' in block["next_action"]
     assert "background=true" in block["next_action"]
-    assert "do not wait" in block["next_action"]
+    assert "Do not wait" in block["next_action"]
+    assert "END THIS STAGE" in block["next_action"]
+    assert block["candidate_outcomes"][0]["summary"] == "pipeline probe"
 
     for index in range(2):
         prepare_candidate(
             store, job_id, family="breakout", summary=f"queued {index}", now=working
         )
     drain = campaign_prompt_block(store, job_id, now=working)
+    assert drain["session_stage"] == "candidate-01"
     assert 'action="evolution_evaluate"' in drain["next_action"]
     assert 'action="evolution_prepare"' not in drain["next_action"]
 
@@ -651,6 +657,7 @@ def test_next_action_pipelines_authoring_against_detached_evaluation(tmp_path) -
         state["candidates"].append({"status": "quick_complete"})
     store.write_json(job_id, "state/evolution_campaign.json", state)
     done = campaign_prompt_block(store, job_id, now=working)
+    assert done["session_stage"] == "finalize"
     assert 'action="evolution_finalize"' in done["next_action"]
     assert f'job_id="{job_id}"' in done["next_action"]
     assert "background=true" in done["next_action"]
@@ -659,18 +666,25 @@ def test_next_action_pipelines_authoring_against_detached_evaluation(tmp_path) -
     state["candidates"][0]["status"] = "prepared"
     store.write_json(job_id, "state/evolution_campaign.json", state)
     exhausted = campaign_prompt_block(store, job_id, now=working)
+    assert exhausted["session_stage"] == "candidate-01"
     assert 'action="evolution_evaluate"' in exhausted["next_action"]
     assert 'action="evolution_prepare"' not in exhausted["next_action"]
 
     draining = campaign_prompt_block(
         store, job_id, now=datetime(2026, 8, 25, 15, 40, tzinfo=UTC)
     )
-    assert draining == {
-        "status": "blocked",
-        "campaign_id": state["campaign_id"],
-        "reason": "evolution campaign is draining before finalization",
-    }
+    assert draining["session_stage"] == "candidate-01"
+    assert 'action="evolution_evaluate"' in draining["next_action"]
 
+    elapsed = campaign_prompt_block(
+        store, job_id, now=datetime(2026, 8, 25, 16, 30, tzinfo=UTC)
+    )
+    assert elapsed["session_stage"] == "candidate-01"
+    assert 'action="evolution_evaluate"' in elapsed["next_action"]
+    assert elapsed["deadline_elapsed"] is True
+
+    state["candidates"][0]["status"] = "quick_complete"
+    store.write_json(job_id, "state/evolution_campaign.json", state)
     elapsed = campaign_prompt_block(
         store, job_id, now=datetime(2026, 8, 25, 16, 30, tzinfo=UTC)
     )
@@ -679,8 +693,61 @@ def test_next_action_pipelines_authoring_against_detached_evaluation(tmp_path) -
     assert "background=true" in elapsed["next_action"]
     assert elapsed["deadline_elapsed"] is True
 
+    state["candidates"][0]["status"] = "quick_running"
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    running = campaign_prompt_block(store, job_id, now=working)
+    assert running == {
+        "status": "blocked",
+        "campaign_id": state["campaign_id"],
+        "reason": f"candidate {state['candidates'][0]['candidate_id']} evaluation is running",
+    }
 
-def test_evolution_uses_a_dedicated_long_lived_session(tmp_path, monkeypatch) -> None:
+
+def test_stage_context_carries_bounded_candidate_evidence(tmp_path) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    prepare_candidate(
+        store,
+        job_id,
+        family="asymmetric-exit",
+        summary="retain gains while clipping reversals",
+        now=started + timedelta(minutes=5),
+    )
+    state = campaign_status(store, job_id)
+    state["candidates"][0].update(
+        {
+            "status": "quick_complete",
+            "objective": {"net_log_growth": 0.03},
+            "behavior": {"average_hold_bars": 8.0},
+            "quick": {
+                "stats": {
+                    "net_return": 0.031,
+                    "sharpe": 1.4,
+                    "trade_count": 27,
+                    "equity_curve": [1] * 5_000,
+                }
+            },
+            "evidence": "low-fidelity train screen passed",
+        }
+    )
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=10))
+
+    assert block and block["session_stage"] == "candidate-02"
+    outcome = block["candidate_outcomes"][0]
+    assert outcome["objective"] == {"net_log_growth": 0.03}
+    assert outcome["behavior"] == {"average_hold_bars": 8.0}
+    assert outcome["quick_stats"] == {
+        "net_return": 0.031,
+        "sharpe": 1.4,
+        "trade_count": 27,
+    }
+    assert "equity_curve" not in json.dumps(outcome)
+
+
+def test_evolution_uses_a_dedicated_stage_session(tmp_path, monkeypatch) -> None:
     store, job_id = _job(tmp_path, "majors-5m-lab")
     store.write_json(
         job_id,
@@ -702,7 +769,7 @@ def test_evolution_uses_a_dedicated_long_lived_session(tmp_path, monkeypatch) ->
             return {}
 
         def find_child_session(self, *, parent_id, title):
-            assert title == f"job/{job_id}/evolution/campaign-1"
+            assert title == f"job/{job_id}/evolution/campaign-1/candidate-01"
             return "evolution-session"
 
         def create_session(self, **kwargs):
@@ -718,6 +785,7 @@ def test_evolution_uses_a_dedicated_long_lived_session(tmp_path, monkeypatch) ->
         "wayfinder_paths.jobs.evolution_campaign.campaign_prompt_block",
         lambda store, job_id: {
             "campaign_id": "campaign-1",
+            "session_stage": "candidate-01",
             "next_action": "prepare the next candidate",
         },
     )
@@ -726,11 +794,12 @@ def test_evolution_uses_a_dedicated_long_lived_session(tmp_path, monkeypatch) ->
 
     assert result == {"queued": True, "session_id": "evolution-session"}
     assert len(client.prompts) == 1
-    assert "PAPER-ONLY evolution campaign" in client.prompts[0][1]
-    assert "do not wait on detached evaluation" in client.prompts[0][1]
+    assert "PAPER-ONLY evolution stage" in client.prompts[0][1]
+    assert "end the stage" in client.prompts[0][1]
     assert client.prompts[0][2] == "wayfinder-evolution-worker"
     session = store.read_json(job_id, "reports/evolution/session.json")
     assert session["session_id"] == "evolution-session"
+    assert session["session_stage"] == "candidate-01"
 
 
 class _FakeEvolutionClient:
@@ -748,7 +817,7 @@ class _FakeEvolutionClient:
         return {}
 
     def find_child_session(self, *, parent_id: Any, title: str) -> str:
-        assert title == f"job/{self.job_id}/evolution/campaign-1"
+        assert title == f"job/{self.job_id}/evolution/campaign-1/candidate-01"
         return "evolution-session"
 
     def create_session(self, **kwargs: Any) -> str:
@@ -774,6 +843,7 @@ def test_op_completion_nudge_reuses_session_and_respects_kill_switch(
         "wayfinder_paths.jobs.evolution_campaign.campaign_prompt_block",
         lambda store, job_id: {
             "campaign_id": "campaign-1",
+            "session_stage": "candidate-01",
             "next_action": "prepare the next candidate",
         },
     )
@@ -820,11 +890,12 @@ def test_parentless_evolution_nudges_reuse_persisted_campaign_session(
         "state/evolution_campaign.json",
         {"campaign_id": "campaign-1", "status": "active"},
     )
-    actions = iter(["prepare c1", "prepare c2", "prepare c2"])
+    actions = iter(["prepare c1", "edit c1", "edit c1"])
     monkeypatch.setattr(
         "wayfinder_paths.jobs.evolution_campaign.campaign_prompt_block",
         lambda store, job_id: {
             "campaign_id": "campaign-1",
+            "session_stage": "candidate-01",
             "next_action": next(actions),
         },
     )
@@ -876,6 +947,263 @@ def test_parentless_evolution_nudges_reuse_persisted_campaign_session(
     }
     assert client.created == 1
     assert client.prompts == ["session-1", "session-1"]
+
+
+def test_evaluation_completion_rotates_stage_and_passes_bounded_handoff(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    store.write_json(
+        job_id,
+        "state/evolution_campaign.json",
+        {"campaign_id": "campaign-1", "status": "active"},
+    )
+    store.write_json(
+        job_id,
+        "reports/evolution/session.json",
+        {
+            "schema_version": "1.1",
+            "campaign_id": "campaign-1",
+            "session_stage": "candidate-01",
+            "session_id": "session-1",
+            "created_at": "2026-08-25T12:00:00+00:00",
+        },
+    )
+
+    class StageClient:
+        def __init__(self) -> None:
+            self.sessions = {"session-1"}
+            self.deleted: list[str] = []
+            self.prompts: list[tuple[str, str]] = []
+
+        def healthy(self) -> bool:
+            return True
+
+        def session_exists(self, session_id: str) -> bool:
+            return session_id in self.sessions
+
+        def session_statuses(self) -> dict[str, Any]:
+            return {}
+
+        def find_child_session(self, *, parent_id: Any, title: str) -> None:
+            assert title.endswith("/candidate-02")
+            return None
+
+        def create_session(self, **kwargs: Any) -> str:
+            self.sessions.add("session-2")
+            return "session-2"
+
+        def delete_session(self, session_id: str) -> bool:
+            self.deleted.append(session_id)
+            self.sessions.discard(session_id)
+            return True
+
+        def prompt_async(self, *, session_id: str, text: str, agent: str) -> bool:
+            self.prompts.append((session_id, text))
+            return True
+
+    client = StageClient()
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.OPENCODE_CLIENT", client)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.campaign_prompt_block",
+        lambda store, job_id: {
+            "campaign_id": "campaign-1",
+            "session_stage": "candidate-02",
+            "next_action": "author candidate two",
+            "candidate_outcomes": [
+                {
+                    "candidate_id": "candidate-01",
+                    "status": "quick_complete",
+                    "summary": "candidate one improved drawdown",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.benchmarks.agent_adapter.meter_session_ids",
+        lambda session_ids: {
+            "sessions": 1,
+            "tokens_in": 100,
+            "tokens_out": 20,
+            "tokens_reasoning": 40,
+            "tool_calls": 3,
+            "tool_result_bytes": 500,
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.benchmarks.agent_adapter.session_diagnostic_summary",
+        lambda session_id: {
+            "schema_version": "1.0",
+            "tool_calls": [
+                {
+                    "tool": "wayfinder_core_jobs",
+                    "action": "evolution_evaluate",
+                    "status": "completed",
+                    "output": "raw result must never enter the next prompt",
+                }
+            ],
+            "omitted_tool_calls": 0,
+            "final_assistant_text": "candidate one authored and evaluation launched",
+        },
+    )
+
+    result = nudge_evolution_session(store, job_id)
+
+    assert result == {"queued": True, "session_id": "session-2"}
+    assert client.deleted == ["session-1"]
+    assert len(client.prompts) == 1
+    prompt = client.prompts[0][1]
+    assert "candidate-02" in prompt
+    assert "candidate one improved drawdown" in prompt
+    assert "candidate one authored and evaluation launched" in prompt
+    assert "tool_result_bytes" in prompt
+    assert "raw result must never enter the next prompt" not in prompt
+    current = store.read_json(job_id, "reports/evolution/session.json")
+    assert current["session_id"] == "session-2"
+    assert current["session_stage"] == "candidate-02"
+    archive = store.read_json(job_id, "reports/evolution/sessions.json")
+    assert archive["sessions"][0]["session_stage"] == "candidate-01"
+
+
+def test_stage_transition_waits_for_the_previous_session_to_be_idle(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    store.write_json(
+        job_id,
+        "state/evolution_campaign.json",
+        {"campaign_id": "campaign-1", "status": "active"},
+    )
+    store.write_json(
+        job_id,
+        "reports/evolution/session.json",
+        {
+            "schema_version": "1.1",
+            "campaign_id": "campaign-1",
+            "session_stage": "candidate-01",
+            "session_id": "session-1",
+        },
+    )
+
+    class BusyClient:
+        def healthy(self) -> bool:
+            return True
+
+        def session_exists(self, session_id: str) -> bool:
+            return True
+
+        def session_statuses(self) -> dict[str, Any]:
+            return {"session-1": {"type": "busy"}}
+
+        def abort_session(self, session_id: str) -> bool:
+            pytest.fail("a stage transition must not abort active authoring")
+
+        def delete_session(self, session_id: str) -> bool:
+            pytest.fail("a busy stage must not be deleted")
+
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.OPENCODE_CLIENT", BusyClient())
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.campaign_prompt_block",
+        lambda store, job_id: {
+            "campaign_id": "campaign-1",
+            "session_stage": "candidate-02",
+            "next_action": "author candidate two",
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.benchmarks.agent_adapter.meter_session_ids",
+        lambda session_ids: pytest.fail("busy session was exported prematurely"),
+    )
+
+    result = nudge_evolution_session(store, job_id)
+
+    assert result == {
+        "queued": False,
+        "transition_pending": True,
+        "session_id": "session-1",
+        "from_stage": "candidate-01",
+        "to_stage": "candidate-02",
+        "error": "previous stage session is still busy",
+    }
+
+
+def test_watchdog_restarts_stale_idle_stage_in_a_fresh_session(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    store.write_json(
+        job_id,
+        "reports/evolution/session.json",
+        {
+            "schema_version": "1.1",
+            "campaign_id": "campaign-1",
+            "session_stage": "candidate-01",
+            "session_id": "session-1",
+            "created_at": "2026-08-25T12:00:00+00:00",
+            "last_prompt_at": "2026-08-25T12:00:00+00:00",
+        },
+    )
+
+    class RecoveryClient:
+        def __init__(self) -> None:
+            self.sessions = {"session-1"}
+            self.created = 0
+
+        def healthy(self) -> bool:
+            return True
+
+        def session_exists(self, session_id: str) -> bool:
+            return session_id in self.sessions
+
+        def session_statuses(self) -> dict[str, Any]:
+            return {}
+
+        def delete_session(self, session_id: str) -> bool:
+            self.sessions.discard(session_id)
+            return True
+
+        def find_child_session(self, **kwargs: Any) -> None:
+            return None
+
+        def create_session(self, **kwargs: Any) -> str:
+            self.created += 1
+            session_id = f"recovery-{self.created}"
+            self.sessions.add(session_id)
+            return session_id
+
+        def prompt_async(self, **kwargs: Any) -> bool:
+            return True
+
+    client = RecoveryClient()
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.OPENCODE_CLIENT", client)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.campaign_prompt_block",
+        lambda store, job_id, now=None: {
+            "campaign_id": "campaign-1",
+            "session_stage": "candidate-01",
+            "next_action": "finish candidate one",
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.benchmarks.agent_adapter.meter_session_ids",
+        lambda session_ids: {"sessions": 1},
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.benchmarks.agent_adapter.session_diagnostic_summary",
+        lambda session_id: {
+            "tool_calls": [],
+            "final_assistant_text": "partial candidate work is persisted",
+        },
+    )
+
+    recovered = recover_evolution_stage_session(
+        store, job_id, now=datetime(2026, 8, 25, 12, 11, tzinfo=UTC)
+    )
+
+    assert recovered == {"queued": True, "session_id": "recovery-1"}
+    session = store.read_json(job_id, "reports/evolution/session.json")
+    assert session["session_id"] == "recovery-1"
+    assert session["session_stage"] == "candidate-01"
 
 
 def test_evolution_session_retirement_exports_before_exact_delete(
@@ -1227,6 +1555,60 @@ def test_evaluate_releases_claim_when_compute_is_transiently_busy(
     assert recovered["status"] == "quick_failed"
     assert "evaluation_claim_id" not in recovered
     assert state["counts"]["quick_evaluated"] == 0
+
+
+def test_lost_evaluator_claim_is_released_for_a_fresh_stage(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="recover after machine restart",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    state = campaign_status(store, job_id)
+    state["candidates"][0].update(
+        {
+            "status": "quick_running",
+            "evaluation_claim_id": "lost-claim",
+            "evaluation_claimed_at": "2026-08-25T13:05:00+00:00",
+        }
+    )
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+
+    recovered = recover_lost_candidate_evaluations(
+        store,
+        job_id,
+        reason="detached evaluator exited during machine roll",
+        now=datetime(2026, 8, 25, 13, 6, tzinfo=UTC),
+    )
+
+    assert recovered == [candidate["candidate_id"]]
+    current = campaign_status(store, job_id)["candidates"][0]
+    assert current["status"] == "quick_failed"
+    assert "evaluation_claim_id" not in current
+    assert current["evaluation_recovery_reason"].endswith("machine roll")
+    assert "evolution_candidate_evaluation_recovered" in (
+        store.job_dir(job_id) / "journal.jsonl"
+    ).read_text(encoding="utf-8")
+
+
+def test_finalize_refuses_to_skip_a_pending_candidate_stage(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary="must be evaluated before finalization",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+
+    with pytest.raises(TransientInfrastructureError, match=candidate["candidate_id"]):
+        finalize_campaign(store, job_id)
+
+    assert campaign_status(store, job_id)["status"] == "active"
 
 
 def test_full_dev_runs_real_small_simulations_in_disposable_child(tmp_path) -> None:

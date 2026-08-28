@@ -1007,7 +1007,7 @@ def test_watchdog_gate_restamp_escalates_instead_of_looping(
     assert len(escalations) == 1, "escalates once, then stands down"
 
 
-def test_watchdog_mechanically_finalizes_then_expires_campaign(
+def test_watchdog_retries_finalization_beyond_the_generation_grace(
     tmp_path: Path, monkeypatch
 ) -> None:
     store = JobStore(repo_root=tmp_path)
@@ -1055,13 +1055,57 @@ def test_watchdog_mechanically_finalizes_then_expires_campaign(
     )
     assert retried["attempt"] == 2
 
-    expired = _run_evolution_campaign_pass(
+    retried_again = _run_evolution_campaign_pass(
         store, job.id, deadline + timedelta(minutes=61)
     )
-    assert expired["action"] == "evolution_campaign_expired"
+    assert retried_again["action"] == "evolution_campaign_finalize_started"
+    assert retried_again["attempt"] == 3
     assert store.read_json(job.id, "state/evolution_campaign.json")["status"] == (
-        "expired"
+        "finalizing"
     )
+
+
+def test_watchdog_closes_a_permanently_failed_finalizer_after_24_hours(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-finalize-terminal-failure")
+    deadline = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store.write_json(
+        job.id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "finalizing",
+            "stage": "finalizing",
+            "deadline_at": deadline.isoformat(),
+            "finalize_attempts": 9,
+            "finalize_last_attempt_at": (deadline + timedelta(hours=23)).isoformat(),
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.op_status_summary",
+        lambda *args, **kwargs: {"status": "failed"},
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.retire_evolution_session",
+        lambda *args, **kwargs: {
+            "retired": False,
+            "error": "session store unavailable",
+        },
+    )
+
+    result = _run_evolution_campaign_pass(store, job.id, deadline + timedelta(hours=24))
+
+    assert result == {
+        "action": "evolution_campaign_failed",
+        "campaign_id": "campaign-1",
+    }
+    state = store.read_json(job.id, "state/evolution_campaign.json")
+    assert state["status"] == "failed"
+    assert state["stage"] == "failed"
+    assert state["failure_reason"].endswith("within 24 hours")
+    assert "evolution_campaign_failed" in _journal_types(store, job.id)
 
 
 def test_watchdog_drains_and_retires_session_before_finalize(
@@ -1102,7 +1146,132 @@ def test_watchdog_drains_and_retires_session_before_finalize(
     assert state["drain_started_at"]
 
 
-def test_watchdog_expires_campaign_that_never_generates_a_candidate(
+def test_watchdog_waits_for_an_evaluator_during_generation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-generating-evaluator")
+    now = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store.write_json(
+        job.id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "active",
+            "stage": "generate",
+            "deadline_at": (now + timedelta(hours=2)).isoformat(),
+            "candidates": [{"candidate_id": "c01", "status": "prepared"}],
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.op_status_summary",
+        lambda *args, **kwargs: {"status": "running"},
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.recover_evolution_stage_session",
+        lambda *args, **kwargs: pytest.fail("a second stage was started"),
+    )
+
+    assert _run_evolution_campaign_pass(store, job.id, now) == {
+        "action": "evolution_campaign_waiting_for_evaluation",
+        "campaign_id": "campaign-1",
+        "governor_paused": False,
+    }
+
+
+def test_watchdog_recovers_a_lost_evaluator_claim_before_reprompting(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-lost-evaluator")
+    now = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store.write_json(
+        job.id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "active",
+            "stage": "generate",
+            "deadline_at": (now + timedelta(hours=2)).isoformat(),
+            "candidates": [
+                {
+                    "candidate_id": "c01",
+                    "status": "quick_running",
+                    "evaluation_claim_id": "lost",
+                    "evaluation_claimed_at": now.isoformat(),
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.op_status_summary",
+        lambda *args, **kwargs: {"status": "failed"},
+    )
+
+    result = _run_evolution_campaign_pass(store, job.id, now)
+
+    assert result == {
+        "action": "evolution_candidate_evaluation_recovered",
+        "campaign_id": "campaign-1",
+        "candidate_ids": ["c01"],
+    }
+    candidate = store.read_json(job.id, "state/evolution_campaign.json")["candidates"][
+        0
+    ]
+    assert candidate["status"] == "quick_failed"
+    assert "evaluation_claim_id" not in candidate
+
+
+def test_watchdog_finishes_a_prepared_candidate_after_generation_deadline(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _make_job(store, "campaign-deadline-candidate")
+    deadline = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    store.write_json(
+        job.id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "active",
+            "stage": "draining",
+            "deadline_at": deadline.isoformat(),
+            "candidates": [{"candidate_id": "c01", "status": "prepared"}],
+        },
+    )
+    launches: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.op_status_summary",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.retire_evolution_session",
+        lambda *args, **kwargs: {"retired": True},
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.background.spawn_detached_op",
+        lambda store, job_id, op, payload: (
+            launches.append((op, payload)) or {"pid": 4321}
+        ),
+    )
+
+    result = _run_evolution_campaign_pass(store, job.id, deadline)
+
+    assert result == {
+        "action": "evolution_candidate_evaluation_started",
+        "campaign_id": "campaign-1",
+        "candidate_id": "c01",
+        "pid": 4321,
+    }
+    assert launches == [
+        (
+            "evolution_evaluate",
+            {"job_id": job.id, "candidate_id": "c01"},
+        )
+    ]
+
+
+def test_watchdog_keeps_recovering_campaign_that_has_not_generated_a_candidate(
     tmp_path: Path, monkeypatch
 ) -> None:
     store = JobStore(repo_root=tmp_path)
@@ -1120,53 +1289,24 @@ def test_watchdog_expires_campaign_that_never_generates_a_candidate(
             "counts": {"generated": 0},
         },
     )
-    retired: list[str] = []
     monkeypatch.setattr(
-        "wayfinder_paths.jobs.worker.retire_evolution_session",
-        lambda store, job_id, campaign_id: (
-            retired.append(campaign_id) or {"retired": True}
-        ),
-    )
-    monkeypatch.setattr(
-        "wayfinder_paths.jobs.execution.op_process.terminate_campaign_ops",
-        lambda store, job_id, campaign_id: [
-            {
-                "pid": 4242,
-                "op": "evolution_prepare",
-                "resource_tier": "control",
-            }
-        ],
+        "wayfinder_paths.jobs.worker.recover_evolution_stage_session",
+        lambda store, job_id, now: {"queued": True, "session_id": "recovery-1"},
     )
 
-    assert (
-        _run_evolution_campaign_pass(
-            store, job.id, started + timedelta(minutes=14, seconds=59)
-        )
-        is None
-    )
     result = _run_evolution_campaign_pass(
         store, job.id, started + timedelta(minutes=15)
     )
 
     assert result == {
-        "action": "evolution_campaign_bootstrap_failed",
+        "action": "evolution_stage_session_recovered",
         "campaign_id": "campaign-1",
-        "session_retired": True,
-        "reaped_ops": [
-            {
-                "pid": 4242,
-                "op": "evolution_prepare",
-                "resource_tier": "control",
-            }
-        ],
+        "queued": True,
+        "session_id": "recovery-1",
     }
-    assert retired == ["campaign-1"]
     state = store.read_json(job.id, "state/evolution_campaign.json")
-    assert state["status"] == "expired"
-    assert state["stage"] == "expired"
-    assert state["expiry_reason"] == "no_candidates_generated"
-    assert "evolution_campaign_bootstrap_failed" in _journal_types(store, job.id)
-    assert "evolution_campaign_ops_reaped" in _journal_types(store, job.id)
+    assert state["status"] == "active"
+    assert state["stage"] == "generate"
 
 
 def test_watchdog_keeps_campaign_after_first_candidate(tmp_path: Path) -> None:
@@ -1328,6 +1468,7 @@ def test_watchdog_waits_for_governor_paused_evaluation_past_drain_grace(
     assert _run_evolution_campaign_pass(store, job.id, now) == {
         "action": "evolution_campaign_waiting_for_evaluation",
         "campaign_id": "campaign-1",
+        "governor_paused": True,
     }
 
 
@@ -1425,11 +1566,11 @@ def test_watchdog_extends_grace_while_finalize_is_healthy(tmp_path: Path) -> Non
     assert _journal_types(store, job.id).count("evolution_finalize_still_running") == 1
 
 
-def test_watchdog_reaps_stale_live_finalize_on_expiry(
+def test_watchdog_reaps_and_retries_stale_live_finalize(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A live pid whose log went stale is wedged: the watchdog SIGKILLs the
-    op's process group (pgid == pid via start_new_session) BEFORE expiring,
+    op's process group (pgid == pid via start_new_session) before retrying,
     and journals the reap with the pid."""
     import signal
 
@@ -1446,21 +1587,21 @@ def test_watchdog_reaps_stale_live_finalize_on_expiry(
         lambda pid, sig: killed.append((pid, sig)),
     )
 
-    expired = _run_evolution_campaign_pass(store, job.id, now)
+    retried = _run_evolution_campaign_pass(store, job.id, now)
 
-    assert expired["action"] == "evolution_campaign_expired"
+    assert retried["action"] == "evolution_campaign_finalize_started"
+    assert retried["attempt"] == 2
     assert killed == [(os.getpid(), 0), (os.getpid(), signal.SIGKILL)]
     assert store.read_json(job.id, "state/evolution_campaign.json")["status"] == (
-        "expired"
+        "finalizing"
     )
     types = _journal_types(store, job.id)
     assert "evolution_finalize_reaped" in types
-    assert "evolution_campaign_expired" in types
+    assert "evolution_campaign_expired" not in types
 
 
-def test_watchdog_expires_dead_finalize_without_reap(tmp_path: Path) -> None:
-    """A dead finalize pid past the grace expires exactly as before — no
-    process group to reap, no reap journal."""
+def test_watchdog_retries_dead_finalize_without_reap(tmp_path: Path) -> None:
+    """A dead finalize pid is retried without signaling a nonexistent group."""
     import subprocess
     import sys
 
@@ -1471,12 +1612,13 @@ def test_watchdog_expires_dead_finalize_without_reap(tmp_path: Path) -> None:
     proc.wait()
     _finalizing_campaign(store, job.id, deadline, pid=proc.pid)
 
-    expired = _run_evolution_campaign_pass(
+    retried = _run_evolution_campaign_pass(
         store, job.id, deadline + timedelta(minutes=61)
     )
 
-    assert expired["action"] == "evolution_campaign_expired"
+    assert retried["action"] == "evolution_campaign_finalize_started"
+    assert retried["attempt"] == 2
     assert store.read_json(job.id, "state/evolution_campaign.json")["status"] == (
-        "expired"
+        "finalizing"
     )
     assert "evolution_finalize_reaped" not in _journal_types(store, job.id)

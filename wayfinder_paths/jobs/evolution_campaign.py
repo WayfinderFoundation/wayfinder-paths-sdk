@@ -714,6 +714,18 @@ def finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
 
 
 def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = campaign_status(store, job_id)
+        pending = [
+            str(candidate.get("candidate_id") or "")
+            for candidate in state.get("candidates") or []
+            if candidate.get("status") in {"prepared", "quick_failed", "quick_running"}
+        ]
+    if pending:
+        raise TransientInfrastructureError(
+            "candidate evaluation must finish before finalization: "
+            + ", ".join(candidate_id for candidate_id in pending if candidate_id)
+        )
     while True:
         claimed = _claim_full_dev(store, job_id)
         if claimed is None:
@@ -1112,6 +1124,55 @@ def _release_finalize_claim(
         _save_campaign(store, job_id, state)
 
 
+def recover_lost_candidate_evaluations(
+    store: JobStore,
+    job_id: str,
+    *,
+    reason: str,
+    now: datetime | None = None,
+) -> list[str]:
+    """Release evaluator claims after their detached owner disappears.
+
+    Candidate bundles are durable, so a fresh stage can safely relaunch the
+    low-fidelity evaluation. The watchdog calls this only after independently
+    proving that no evaluator process is running.
+    """
+    recovered: list[str] = []
+    recovered_at = _aware(now or datetime.now(UTC)).isoformat()
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = campaign_status(store, job_id)
+        if state.get("status") not in {"active", "finalizing"}:
+            return recovered
+        for candidate in state.get("candidates") or []:
+            if candidate.get("status") != "quick_running":
+                continue
+            candidate_id = str(candidate.get("candidate_id") or "")
+            candidate.update(
+                {
+                    "status": "quick_failed",
+                    "evaluation_recovered_at": recovered_at,
+                    "evaluation_recovery_reason": reason[:300],
+                }
+            )
+            candidate.pop("evaluation_claim_id", None)
+            candidate.pop("evaluation_claimed_at", None)
+            if candidate_id:
+                recovered.append(candidate_id)
+        if recovered:
+            _save_campaign(store, job_id, state)
+    for candidate_id in recovered:
+        store.append_journal(
+            job_id,
+            {
+                "type": "evolution_candidate_evaluation_recovered",
+                "campaign_id": state.get("campaign_id"),
+                "candidate_id": candidate_id,
+                "reason": reason[:300],
+            },
+        )
+    return recovered
+
+
 def campaign_prompt_block(
     store: JobStore, job_id: str, *, now: datetime | None = None
 ) -> dict[str, Any] | None:
@@ -1129,65 +1190,83 @@ def campaign_prompt_block(
         }
     current = _aware(now or datetime.now(UTC))
     deadline = _parse(state["deadline_at"])
-    if deadline - CAMPAIGN_DRAIN <= current < deadline:
+    manifest = store.read_json(job_id, str(state["manifest"]), default={}) or {}
+    candidates = state.get("candidates") or []
+    running = [item for item in candidates if item.get("status") == "quick_running"]
+    if running:
         return {
             "status": "blocked",
             "campaign_id": state["campaign_id"],
-            "reason": "evolution campaign is draining before finalization",
+            "reason": (
+                f"candidate {running[0].get('candidate_id')} evaluation is running"
+            ),
         }
-    manifest = store.read_json(job_id, str(state["manifest"]), default={}) or {}
-    candidates = state.get("candidates") or []
-    prepared = [item for item in candidates if item.get("status") == "prepared"]
+    awaiting_evaluation = [
+        item
+        for item in candidates
+        if item.get("status") in {"prepared", "quick_failed"}
+    ]
     policy = manifest.get("policy") or {}
     budget = int(policy.get("generated_programs") or 0)
     deadline_elapsed = current >= deadline
+    draining = deadline - CAMPAIGN_DRAIN <= current < deadline
     prepare_call = (
         'Call wayfinder_core_jobs with action="evolution_prepare", '
         f'job_id="{job_id}", family="<specific structural family>", '
         'summary="<concise testable hypothesis>", and mutation_kind="structural".'
     )
-    if deadline_elapsed:
+    if awaiting_evaluation:
+        candidate = awaiting_evaluation[0]
+        session_stage = f"candidate-{int(candidate.get('slot') or 0):02d}"
+        next_action = (
+            f"Edit only files inside {candidate['bundle']} (workspace, job.yaml, "
+            "and optional search_space.json), then launch "
+            'wayfinder_core_jobs with action="evolution_evaluate", '
+            f'job_id="{job_id}", candidate_id="{candidate["candidate_id"]}", '
+            "and background=true. Do not wait for the detached result. END THIS "
+            "STAGE immediately after launch; do not prepare another candidate. "
+            "A fresh stage session will receive the persisted outcome."
+        )
+    elif deadline_elapsed:
+        session_stage = "finalize"
         next_action = (
             "Generation deadline elapsed. Call wayfinder_core_jobs with "
-            f'action="evolution_finalize", job_id="{job_id}", background=true.'
+            f'action="evolution_finalize", job_id="{job_id}", background=true, '
+            "then END THIS STAGE. Finalization is detached and deterministic."
         )
-    elif prepared and len(candidates) < budget and len(prepared) < 3:
-        # Pipelined authoring: evaluation runs as a detached op, so the agent
-        # keeps writing the next candidate instead of idling on the result.
-        next_action = (
-            f"Edit only files inside {prepared[0]['bundle']} (workspace, job.yaml, "
-            "and optional search_space.json) if you have not already, then launch "
-            'wayfinder_core_jobs with action="evolution_evaluate", '
-            f'job_id="{job_id}", candidate_id="{prepared[0]["candidate_id"]}", '
-            "and background=true. It runs "
-            "detached — do not wait for its result, and an already_running "
-            "response just means the launch already happened; that is normal, "
-            f"move on. While it runs, {prepare_call}"
-        )
-    elif prepared:
-        next_action = (
-            f"Edit only files inside {prepared[0]['bundle']} (workspace, job.yaml, "
-            "and optional search_space.json), then call wayfinder_core_jobs with "
-            f'action="evolution_evaluate", job_id="{job_id}", '
-            f'candidate_id="{prepared[0]["candidate_id"]}", background=true.'
-        )
+    elif draining:
+        return {
+            "status": "blocked",
+            "campaign_id": state["campaign_id"],
+            "reason": "evolution campaign is draining before finalization",
+        }
     elif len(candidates) < budget:
+        session_stage = f"candidate-{len(candidates) + 1:02d}"
         next_action = (
-            f"{prepare_call} At least half the campaign must change "
-            "signal/exit/regime/portfolio structure."
+            f"{prepare_call} Then edit only the returned candidate bundle and "
+            'launch wayfinder_core_jobs with action="evolution_evaluate", '
+            f'job_id="{job_id}", candidate_id="<returned candidate_id>", '
+            "background=true. Do not wait for the detached result. END THIS "
+            "STAGE immediately after launch; do not prepare another candidate. "
+            "At least half the campaign must change signal/exit/regime/portfolio "
+            "structure."
         )
     else:
+        session_stage = "finalize"
         next_action = (
             'Call wayfinder_core_jobs with action="evolution_finalize", '
-            f'job_id="{job_id}", background=true.'
+            f'job_id="{job_id}", background=true, then END THIS STAGE. '
+            "Finalization is detached and deterministic."
         )
     return {
         "job_id": job_id,
         "campaign_id": state["campaign_id"],
         "stage": state["stage"],
+        "session_stage": session_stage,
         "deadline_at": state["deadline_at"],
         "counts": state["counts"],
         "next_action": next_action,
+        "candidate_outcomes": [_candidate_handoff(item) for item in candidates],
         "cases": manifest.get("casebook") or [],
         "forward_context_cutoff": state.get("forward_context_cutoff"),
         "constraints": {
@@ -1198,6 +1277,49 @@ def campaign_prompt_block(
         },
         "deadline_elapsed": deadline_elapsed,
     }
+
+
+def _candidate_handoff(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Bounded durable context passed between isolated authoring stages."""
+    handoff = {
+        "candidate_id": candidate.get("candidate_id"),
+        "slot": candidate.get("slot"),
+        "family": candidate.get("family"),
+        "mutation_kind": candidate.get("mutation_kind"),
+        "parent_source": candidate.get("parent_source"),
+        "status": candidate.get("status"),
+        "summary": str(candidate.get("summary") or "")[:240],
+    }
+    for key in ("objective", "behavior"):
+        value = candidate.get(key)
+        if isinstance(value, dict):
+            handoff[key] = value
+    quick = candidate.get("quick")
+    quick_stats = quick.get("stats") if isinstance(quick, dict) else None
+    if isinstance(quick_stats, dict):
+        handoff["quick_stats"] = {
+            key: quick_stats.get(key)
+            for key in (
+                "net_return",
+                "cagr",
+                "sharpe",
+                "sortino",
+                "max_drawdown_pct",
+                "trade_count",
+                "win_rate",
+                "profit_factor",
+            )
+            if quick_stats.get(key) is not None
+        }
+    evidence = candidate.get("evidence")
+    if evidence and not isinstance(evidence, dict):
+        handoff["evidence"] = str(evidence)[:240]
+    elif isinstance(evidence, dict):
+        handoff["evidence"] = json.dumps(evidence, default=str)[:240]
+    recovery_reason = candidate.get("evaluation_recovery_reason")
+    if recovery_reason:
+        handoff["evaluation_recovery_reason"] = str(recovery_reason)[:240]
+    return handoff
 
 
 def _full_dev(

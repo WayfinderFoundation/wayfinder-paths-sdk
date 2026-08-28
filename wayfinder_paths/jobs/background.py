@@ -9,27 +9,20 @@ parseable result file = done)."""
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from wayfinder_paths.jobs.compute_lock import job_state_lock
-from wayfinder_paths.jobs.execution.op_process import op_runner_command
+from wayfinder_paths.jobs.execution.op_process import (
+    op_runner_command,
+    process_identity_fields,
+    recorded_process_alive,
+)
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.runner.monitor_state import atomic_write_json
-
-
-def _pid_alive(pid: Any) -> bool:
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
 
 
 def op_running(job_dir: Path, op: str) -> bool:
@@ -44,7 +37,7 @@ def op_running(job_dir: Path, op: str) -> bool:
     return (
         isinstance(status, dict)
         and status.get("state") == "running"
-        and _pid_alive(status.get("pid"))
+        and recorded_process_alive(status)
     )
 
 
@@ -64,7 +57,7 @@ def op_status_summary(job_dir: Path, op: str) -> dict[str, Any] | None:
     if not isinstance(status, dict):
         return None
     state = status.get("state")
-    stale_running = state == "running" and not _pid_alive(status.get("pid"))
+    stale_running = state == "running" and not recorded_process_alive(status)
     reconciled_failure = state == "failed" and status.get("error") == (
         "detached operation exited without a result"
     )
@@ -110,7 +103,7 @@ def _spawn_detached_op(
     if (
         isinstance(existing, dict)
         and existing.get("state") == "running"
-        and _pid_alive(existing.get("pid"))
+        and recorded_process_alive(existing)
     ):
         return {"already_running": True, **existing}
 
@@ -134,6 +127,7 @@ def _spawn_detached_op(
         "state": "running",
         "pid": proc.pid,
         "started_at": utc_now_iso(),
+        **process_identity_fields(proc.pid),
     }
     atomic_write_json(status_path, status)
     return {"started": True, **status}

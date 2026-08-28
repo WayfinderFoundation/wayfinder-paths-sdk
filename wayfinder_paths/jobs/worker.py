@@ -43,6 +43,7 @@ JOB_RESULT_MARKER = "WAYFINDER_JOB_RESULT "
 STABLE_PREFIX_END_MARKER = "## End Stable Cache Prefix"
 DYNAMIC_CONTEXT_MARKER = "## Dynamic Wakeup Context"
 VOLATILE_STABLE_KEYS = {"created_at", "updated_at", "ts"}
+EVOLUTION_STAGE_RETRY_AFTER = dt.timedelta(minutes=10)
 
 
 def _read_text(path: Path, *, max_chars: int = 12_000) -> str:
@@ -1764,10 +1765,7 @@ def _queue_evolution_worker(store: JobStore, job_id: str) -> dict[str, Any] | No
 
 
 def nudge_evolution_session(store: JobStore, job_id: str) -> dict[str, Any] | None:
-    """Re-prompt the persistent evolution session as soon as a detached
-    campaign op (start/evaluate) lands, instead of leaving the fresh state
-    idle until the next hourly wake. Best-effort: callers must tolerate None.
-    """
+    """Advance the campaign into a fresh stage session after an op lands."""
     if os.environ.get("WAYFINDER_EVOLUTION_NUDGE") == "0":
         return None
     if not OPENCODE_CLIENT.healthy():
@@ -1788,6 +1786,53 @@ def nudge_evolution_session(store: JobStore, job_id: str) -> dict[str, Any] | No
     return _prompt_evolution_session(store, job_id, campaign, source="op_completion")
 
 
+def recover_evolution_stage_session(
+    store: JobStore, job_id: str, *, now: dt.datetime
+) -> dict[str, Any] | None:
+    """Restart a missing or stale idle stage without reviving its old context."""
+    if not OPENCODE_CLIENT.healthy():
+        return None
+    from wayfinder_paths.jobs.evolution_campaign import campaign_prompt_block
+
+    campaign = campaign_prompt_block(store, job_id, now=now)
+    if not campaign or campaign.get("status") == "blocked":
+        return None
+    desired_stage = str(campaign.get("session_stage") or "")
+    session = store.read_json(job_id, EVOLUTION_SESSION_PATH, default={}) or {}
+    session_id = str(session.get("session_id") or "")
+    if session_id and OPENCODE_CLIENT.session_statuses().get(session_id):
+        return None
+    missing = bool(
+        not session_id
+        or session.get("retired_at")
+        or OPENCODE_CLIENT.session_exists(session_id) is False
+    )
+    stage_changed = str(session.get("session_stage") or "") != desired_stage
+    stale = False
+    try:
+        prompted_at = dt.datetime.fromisoformat(str(session["last_prompt_at"]))
+        if prompted_at.tzinfo is None:
+            prompted_at = prompted_at.replace(tzinfo=dt.UTC)
+        stale = now - prompted_at >= EVOLUTION_STAGE_RETRY_AFTER
+    except (KeyError, TypeError, ValueError):
+        stale = bool(session_id)
+    if not (missing or stage_changed or stale):
+        return None
+    if session_id and not session.get("retired_at") and not missing:
+        retired = retire_evolution_session(
+            store, job_id, str(session.get("campaign_id") or "")
+        )
+        if not retired or not retired.get("retired"):
+            return {
+                "queued": False,
+                "transition_pending": True,
+                "error": (retired or {}).get("error") or "stage retirement failed",
+            }
+    return _prompt_evolution_session(
+        store, job_id, campaign, source="watchdog_recovery"
+    )
+
+
 def _prompt_evolution_session(
     store: JobStore, job_id: str, campaign: dict[str, Any], *, source: str
 ) -> dict[str, Any] | None:
@@ -1796,15 +1841,67 @@ def _prompt_evolution_session(
     campaign_id = str(campaign.get("campaign_id") or "").strip()
     if not campaign_id:
         return {"queued": False, "error": "evolution campaign id missing"}
+    session_stage = str(campaign.get("session_stage") or "").strip()
+    if not session_stage:
+        return {"queued": False, "error": "evolution session stage missing"}
+    campaign_payload = dict(campaign)
+    prior_handoff = _latest_evolution_stage_handoff(store, job_id, campaign_id)
+    existing = store.read_json(job_id, EVOLUTION_SESSION_PATH, default={}) or {}
+    existing_id = str(existing.get("session_id") or "")
+    existing_campaign = str(existing.get("campaign_id") or "")
+    existing_stage = str(existing.get("session_stage") or "")
+    existing_gone = bool(
+        existing_id and OPENCODE_CLIENT.session_exists(existing_id) is False
+    )
+    transition = bool(
+        existing_id
+        and not existing.get("retired_at")
+        and (
+            existing_campaign != campaign_id
+            or existing_stage != session_stage
+            or existing_gone
+        )
+    )
+    if transition:
+        retired = retire_evolution_session(
+            store, job_id, existing_campaign, abort_busy=False
+        )
+        if not retired or not retired.get("retired"):
+            return {
+                "queued": False,
+                "transition_pending": True,
+                "session_id": existing_id,
+                "from_stage": existing_stage or None,
+                "to_stage": session_stage,
+                "error": (retired or {}).get("error")
+                or (
+                    "previous stage session is still busy"
+                    if (retired or {}).get("busy")
+                    else "stage session retirement failed"
+                ),
+            }
+        if existing_campaign == campaign_id:
+            prior_handoff = retired.get("handoff") or prior_handoff
+    prior_stage_text = (
+        _canonical_json(prior_handoff, max_chars=2_200) if prior_handoff else "null"
+    )
+    candidate_outcomes = list(reversed(campaign_payload.pop("candidate_outcomes", [])))
+    outcomes_text = _canonical_json(
+        {"order": "newest_first", "candidates": candidate_outcomes}, max_chars=4_000
+    )
     controller_session_id = os.environ.get("OPENCODE_SESSION_ID") or os.environ.get(
         "OPENCODE_SESSIONID"
     )
-    title = f"job/{job_id}/evolution/{campaign_id}"
+    title = f"job/{job_id}/evolution/{campaign_id}/{session_stage}"
     prompt = (
-        "Continue this PAPER-ONLY evolution campaign. Follow `next_action`; "
-        "do not wait on detached evaluation. The dedicated agent instructions "
-        "already contain the safety and research contract.\n\nCampaign:\n"
-        + _canonical_json(campaign, max_chars=6_000)
+        f"Run PAPER-ONLY evolution stage `{session_stage}`. Use the persisted "
+        "candidate outcomes and prior-stage handoff; do not reload the retired "
+        "session or its raw tool results. Perform exactly this next action, then "
+        "end the stage:\n"
+        f"{campaign_payload.get('next_action')}\n\n"
+        f"Prior stage handoff:\n{prior_stage_text}\n\n"
+        f"Persisted candidate outcomes:\n{outcomes_text}\n\n"
+        "Campaign control state:\n" + _canonical_json(campaign_payload, max_chars=3_500)
     )
     fingerprint = hashlib.sha256(prompt.encode()).hexdigest()
     created_at = utc_now_iso()
@@ -1813,9 +1910,11 @@ def _prompt_evolution_session(
             session = store.read_json(job_id, EVOLUTION_SESSION_PATH, default={}) or {}
             session_id = str(session.get("session_id") or "")
             stored_campaign = str(session.get("campaign_id") or "")
+            stored_stage = str(session.get("session_stage") or "")
             reusable = bool(
                 session_id
-                and stored_campaign in {"", campaign_id}
+                and stored_campaign == campaign_id
+                and stored_stage == session_stage
                 and not session.get("retired_at")
                 and OPENCODE_CLIENT.session_exists(session_id) is not False
             )
@@ -1831,8 +1930,9 @@ def _prompt_evolution_session(
                     or ""
                 )
                 session = {
-                    "schema_version": "1.0",
+                    "schema_version": "1.1",
                     "campaign_id": campaign_id,
+                    "session_stage": session_stage,
                     "session_id": session_id,
                     "created_at": created_at,
                 }
@@ -1855,6 +1955,7 @@ def _prompt_evolution_session(
                 session.update(
                     {
                         "campaign_id": campaign_id,
+                        "session_stage": session_stage,
                         "last_prompt_at": created_at,
                         "last_prompt_fingerprint": fingerprint,
                         "last_source": source,
@@ -1874,6 +1975,7 @@ def _prompt_evolution_session(
             if queued
             else "Dedicated evolution wake could not be queued",
             "session_id": session_id,
+            "session_stage": session_stage,
             "queued": queued,
             "source": source,
             "created_at": created_at,
@@ -1884,6 +1986,7 @@ def _prompt_evolution_session(
         {
             "type": "evolution_worker_wakeup",
             "campaign_id": campaign.get("campaign_id"),
+            "session_stage": session_stage,
             "session_id": session_id,
             "queued": queued,
             "source": source,
@@ -1892,8 +1995,53 @@ def _prompt_evolution_session(
     return {"queued": queued, "session_id": session_id}
 
 
-def retire_evolution_session(
+def _evolution_stage_handoff(entry: dict[str, Any]) -> dict[str, Any]:
+    diagnostics = entry.get("diagnostics") or {}
+    metrics = entry.get("metrics") or {}
+    tool_calls = diagnostics.get("tool_calls") or []
+    return {
+        "from_stage": entry.get("session_stage"),
+        "retired_at": entry.get("retired_at") or entry.get("exported_at"),
+        "final_summary": str(diagnostics.get("final_assistant_text") or "")[-1_500:],
+        "tool_calls": [
+            {
+                key: call.get(key)
+                for key in ("tool", "action", "status", "error")
+                if call.get(key)
+            }
+            for call in tool_calls[-8:]
+            if isinstance(call, dict)
+        ],
+        "resource_usage": {
+            key: metrics.get(key)
+            for key in (
+                "tokens_in",
+                "tokens_out",
+                "tokens_reasoning",
+                "tool_calls",
+                "tool_result_bytes",
+            )
+            if metrics.get(key) is not None
+        },
+    }
+
+
+def _latest_evolution_stage_handoff(
     store: JobStore, job_id: str, campaign_id: str
+) -> dict[str, Any] | None:
+    archive = store.read_json(job_id, EVOLUTION_SESSION_ARCHIVE_PATH, default={}) or {}
+    for entry in reversed(list(archive.get("sessions") or [])):
+        if str(entry.get("campaign_id") or "") == campaign_id:
+            return _evolution_stage_handoff(entry)
+    return None
+
+
+def retire_evolution_session(
+    store: JobStore,
+    job_id: str,
+    campaign_id: str,
+    *,
+    abort_busy: bool = True,
 ) -> dict[str, Any] | None:
     """Export and delete exactly the automation-owned session for a campaign.
 
@@ -1911,14 +2059,18 @@ def retire_evolution_session(
         if str(session.get("campaign_id") or "") != str(campaign_id):
             return None
         if session.get("retired_at"):
+            handoff = _latest_evolution_stage_handoff(store, job_id, str(campaign_id))
             return {
                 "retired": True,
                 "already_retired": True,
                 "session_id": session.get("session_id"),
+                "handoff": handoff,
             }
         session_id = str(session.get("session_id") or "")
         if not session_id:
             return None
+        if not abort_busy and OPENCODE_CLIENT.session_statuses().get(session_id):
+            return {"retired": False, "session_id": session_id, "busy": True}
         try:
             metrics = meter_session_ids([session_id])
         except Exception as exc:  # noqa: BLE001 - never delete before export
@@ -1947,6 +2099,7 @@ def retire_evolution_session(
         entries = list(archive.get("sessions") or [])
         exported = {
             "campaign_id": str(campaign_id),
+            "session_stage": session.get("session_stage"),
             "session_id": session_id,
             "created_at": session.get("created_at"),
             "exported_at": utc_now_iso(),
@@ -1993,7 +2146,12 @@ def retire_evolution_session(
                 "metrics": metrics,
             },
         )
-        return {"retired": True, "session_id": session_id, "metrics": metrics}
+        return {
+            "retired": True,
+            "session_id": session_id,
+            "metrics": metrics,
+            "handoff": _evolution_stage_handoff(entries[-1]),
+        }
 
 
 def _write_report(
