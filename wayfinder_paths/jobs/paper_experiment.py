@@ -110,7 +110,7 @@ def ensure_paper_experiment(
                     "admissions": "reported_only",
                 },
                 "candidate_entry": (
-                    "immutable_24h_forward_paper_proposal_against_current_arm_champion"
+                    "immutable_24h_operational_burn_in_on_identical_bars"
                 ),
                 "proposal_clock": (
                     "first_post_queue_common_completed_5m_bar_through_24h"
@@ -157,6 +157,7 @@ def stage_paper_proposal(
     candidate_root: Path,
     revision: str,
     source: str,
+    source_candidate_id: str | None = None,
     evidence: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -164,7 +165,8 @@ def stage_paper_proposal(
 
     A proposal never replaces the arm champion directly. The candidate and the
     current champion first receive independent state and streams on identical
-    completed bars; only the mechanical adjudicator may promote it.
+    completed bars. This window judges only coverage, errors, and hard safety;
+    edge was already judged by the economic gate and belongs to the 14-day A/B.
     """
     if arm not in EXPERIMENT_ARMS:
         raise ValueError(f"unknown experiment arm {arm!r}")
@@ -230,7 +232,7 @@ def stage_paper_proposal(
             "status": "queued",
             "arm": arm,
             "candidate_id": safe_id,
-            "source_candidate_id": str(candidate_id),
+            "source_candidate_id": str(source_candidate_id or candidate_id),
             "revision": safe_revision,
             "bundle": relative,
             "source": source,
@@ -668,20 +670,7 @@ def _proposal_verdict(
     coverage: float,
 ) -> dict[str, Any]:
     from wayfinder_paths.jobs.constitution import load_constitution
-    from wayfinder_paths.jobs.probation import paper_entry_check
 
-    evidence = dict(proposal.get("evidence") or {})
-    objective = evidence.get("objective") or {}
-    candidate_objective = objective.get("candidate") or {}
-    backtest_trades = int(
-        evidence.get("backtest_trades") or candidate_objective.get("trade_count") or 0
-    )
-    entry = paper_entry_check(
-        candidate_net=float(candidate_stats["net_return"]),
-        baseline_net=float(reference_stats["net_return"]),
-        backtest_trades=backtest_trades,
-        spec=ImproverSpec.load(store.job_dir(job_id)),
-    )
     hard = load_constitution(store.job_dir(job_id))["hard_constraints"]
     max_drawdown = float(hard.get("max_drawdown_pct") or 0.25)
     reasons: list[str] = []
@@ -691,17 +680,8 @@ def _proposal_verdict(
         reasons.append("candidate raised during paper proposal")
     if int(proposal["reference"].get("error_count") or 0) > 0:
         reasons.append("reference raised during paper proposal")
-    if int(candidate_stats["closed_trades"]) < 1:
-        reasons.append("candidate produced no closed forward trade")
     if float(candidate_stats["max_drawdown_pct"]) > max_drawdown:
         reasons.append("candidate breached the owner drawdown ceiling")
-    reasons.extend(str(item) for item in entry["reasons"])
-    if str(
-        (proposal.get("reference") or {}).get("source") or "incumbent"
-    ) != "incumbent" and float(candidate_stats["net_return"]) <= float(
-        reference_stats["net_return"]
-    ):
-        reasons.append("candidate did not strictly improve the paper champion")
     return {
         "status": "qualified" if not reasons else "rejected",
         "arm": proposal["arm"],
@@ -710,7 +690,7 @@ def _proposal_verdict(
         "coverage": round(coverage, 4),
         "candidate": candidate_stats,
         "reference": reference_stats,
-        "paper_entry": entry,
+        "admission_basis": "operational_burn_in",
         "reasons": reasons,
         "paper_only": True,
     }
@@ -839,7 +819,7 @@ def _close_proposal(
                 "paper_experiment"
                 if verdict["status"] == "qualified"
                 else "proposal_rejected",
-                evidence="24-hour forward paper proposal " + verdict["status"],
+                evidence="24-hour operational burn-in " + verdict["status"],
             )
         except ValueError:
             pass
