@@ -42,7 +42,9 @@ def summarize_evolution_funnel(state: dict[str, Any]) -> dict[str, Any]:
         for candidate in candidates
     )
     optuna_completed = sum(
-        isinstance(candidate.get("tuning"), dict) for candidate in candidates
+        isinstance(candidate.get("tuning"), dict)
+        and _value(candidate["tuning"].get("trials")) > 0
+        for candidate in candidates
     )
     optuna_running = sum(
         candidate.get("full_dev_tune") is True
@@ -84,7 +86,18 @@ def summarize_evolution_funnel(state: dict[str, Any]) -> dict[str, Any]:
             ),
         },
         "optuna": {
+            "eligible": sum(
+                candidate.get("tuning_eligible") is True for candidate in candidates
+            ),
+            "previewed": sum(
+                isinstance(candidate.get("tuning_preview"), dict)
+                for candidate in candidates
+            ),
+            "selected": sum(
+                candidate.get("full_dev_tune") is True for candidate in candidates
+            ),
             "completed": optuna_completed,
+            "minimum": _optional_count(budgets, "optuna_minimum"),
             "budget": _optional_count(budgets, "optuna"),
             "running": optuna_running,
         },
@@ -118,12 +131,16 @@ def format_evolution_funnel(funnel: dict[str, Any]) -> str:
     generated_progress = _progress(generated.get("total"), generated.get("target"))
     full_dev_progress = _progress(full_dev.get("evaluated"), full_dev.get("target"))
     optuna_budget = optuna.get("budget")
+    optuna_minimum = optuna.get("minimum")
     gate_progress = _progress(gate.get("evaluated"), gate.get("target"))
     optuna_running = _value(optuna.get("running"))
     optuna_suffix = f", {optuna_running} running" if optuna_running else ""
-    budget_suffix = (
-        f", budget {_value(optuna_budget)}" if optuna_budget is not None else ""
-    )
+    optuna_limits = []
+    if optuna_minimum is not None:
+        optuna_limits.append(f"min {_value(optuna_minimum)}")
+    if optuna_budget is not None:
+        optuna_limits.append(f"budget {_value(optuna_budget)}")
+    limits_suffix = f"; {', '.join(optuna_limits)}" if optuna_limits else ""
     return (
         f"{generated_progress} generated "
         f"({_value(generated.get('structural'))} structural, "
@@ -133,7 +150,11 @@ def format_evolution_funnel(funnel: dict[str, Any]) -> str:
         f"full dev {_value(full_dev.get('passed'))} pass, "
         f"{_value(full_dev.get('rejected'))} reject "
         f"({full_dev_progress} complete; Optuna "
-        f"{_value(optuna.get('completed'))} tuned{budget_suffix}{optuna_suffix}) → "
+        f"{_value(optuna.get('completed'))} complete "
+        f"({_value(optuna.get('eligible'))} eligible, "
+        f"{_value(optuna.get('previewed'))} previewed, "
+        f"{_value(optuna.get('selected'))} selected"
+        f"{limits_suffix}{optuna_suffix})) → "
         f"gate {gate_progress}; paper {_value(gate.get('advanced_to_paper'))}"
     )
 

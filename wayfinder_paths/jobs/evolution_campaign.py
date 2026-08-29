@@ -19,6 +19,7 @@ import tempfile
 import uuid
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import pandas as pd
@@ -48,6 +49,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     resolve_compute_window,
 )
 from wayfinder_paths.jobs.execution.simulator import (
+    ExecutionGridResult,
     PreparedExecutionDataset,
     _load_strategy,
     simulate_execution,
@@ -89,10 +91,19 @@ FORWARD_SNAPSHOT = "forward_experience.json"
 SCHEMA_VERSION = "1.0"
 _PARENT_SOURCES = ("incumbent", "qd_elite", "crossover", "de_novo")
 CAMPAIGN_DRAIN = timedelta(minutes=30)
+_MAX_SEARCH_DIMENSIONS = 3
+_OPTUNA_SEED = 42
 _PARAMETER_SEARCH_GUIDANCE = (
-    "create search_space.json with bounded typed Optuna dimensions, for example "
+    "create search_space.json with at most three bounded typed Optuna dimensions, "
+    "for example "
     '{"lookback":{"type":"int","low":12,"high":96}}; do not replace the '
     "search with one hand-picked value."
+)
+_STRUCTURAL_SEARCH_GUIDANCE = (
+    "Make the named causal code change. If it introduces meaningful numeric "
+    "behavior knobs, also create search_space.json with at most three bounded "
+    "typed dimensions covering only those new knobs. Otherwise omit it; do not "
+    "invent tuning axes for a boolean or parameterless change."
 )
 
 
@@ -643,6 +654,8 @@ def _evaluate_candidate(
                 "error": "candidate bundle is identical to its source revision"
             },
         }
+    policy = manifest.get("policy") or {}
+    tuning_preview: dict[str, Any] | None = None
     try:
         subject = _load_subject(store, job_id, candidate_root, campaign_id=campaign_id)
         train_end, validation_end = _split_bounds(
@@ -674,6 +687,19 @@ def _evaluate_candidate(
                 },
             }
         result = simulate_execution(subject["script"], quick, subject["spec"], params)
+        if (
+            candidate.get("mutation_kind") == "parameter"
+            and search_space is not None
+            and result.validation.get("execution_valid")
+            and int(result.stats.get("trade_count") or 0) > 0
+        ):
+            tuning_preview = _parameter_tuning_preview(
+                subject,
+                train,
+                params,
+                search_space,
+                policy,
+            )
     except Exception as exc:  # noqa: BLE001 - candidate failure is evidence
         # Contract/validation failures are candidate evidence even when their
         # explanation mentions "memory" (for example, bounded incremental
@@ -695,7 +721,12 @@ def _evaluate_candidate(
         "objective": _objective(result.stats, params),
         "behavior": _behavior(result, quick, subject["spec"]),
         "execution_calibration": calibration,
+        "tuning_eligible": search_space is not None,
     }
+    if search_space is None:
+        common["tuning_skip_reason"] = "no_typed_search_space"
+    if tuning_preview is not None:
+        common["tuning_preview"] = tuning_preview
     if int(result.stats.get("trade_count") or 0) <= 0:
         return {
             **common,
@@ -707,6 +738,86 @@ def _evaluate_candidate(
         "status": "quick_complete",
         "evidence": "low-fidelity train screen passed",
     }
+
+
+def _parameter_tuning_preview(
+    subject: dict[str, Any],
+    train: PreparedExecutionDataset,
+    params: dict[str, Any],
+    search_space: dict[str, Any],
+    policy: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Rank parameter slots cheaply without touching validation data."""
+    trials = int(policy.get("inner_optuna_preview_trials") or 0)
+    if trials <= 0:
+        return None
+    bars = max(int(policy.get("inner_optuna_preview_bars") or 0), 1)
+    timeout = float(policy.get("inner_optuna_preview_timeout_seconds") or 0) or None
+    grid, preview = _run_evolution_optuna(
+        subject,
+        train,
+        {**params, **search_space},
+        trials=trials,
+        bars=bars,
+        timeout=timeout,
+    )
+    dimensions = _typed_search_dimensions(search_space)
+    if grid.ranked:
+        best = grid.ranked[0]
+        preview.update(
+            {
+                "objective": _objective(best["stats"], best["params"]),
+                "selected_params": {
+                    name: best["params"][name]
+                    for name in dimensions
+                    if name in best["params"]
+                },
+            }
+        )
+    del grid
+    gc.collect()
+    return preview
+
+
+def _run_evolution_optuna(
+    subject: dict[str, Any],
+    dataset: PreparedExecutionDataset,
+    search_space: dict[str, Any],
+    *,
+    trials: int,
+    bars: int,
+    timeout: float | None,
+) -> tuple[ExecutionGridResult, dict[str, Any]]:
+    search_data = _tail(dataset, bars) if bars > 0 else dataset
+    started = perf_counter()
+    grid = run_optuna_search(
+        subject["script"],
+        search_data,
+        subject["spec"],
+        search_space,
+        rank_by="net_return",
+        n_trials=trials,
+        seed=_OPTUNA_SEED,
+        timeout=timeout,
+        objectives=["net_return", "max_drawdown_pct"],
+    )
+    return grid, {
+        "status": "complete" if grid.ranked else "no_valid_trials",
+        "trials": len(grid.runs),
+        "valid_trials": max(len(grid.runs) - len(grid.invalid), 0),
+        "bars": len(search_data.bars.timestamps),
+        "seed": _OPTUNA_SEED,
+        "wall_seconds": round(perf_counter() - started, 3),
+    }
+
+
+def _typed_search_dimensions(search_space: dict[str, Any]) -> list[str]:
+    return sorted(
+        name
+        for name, value in search_space.items()
+        if isinstance(value, dict)
+        and value.get("type") in {"float", "int", "categorical"}
+    )
 
 
 def finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
@@ -901,6 +1012,7 @@ def _campaign_budgets(policy: dict[str, Any]) -> dict[str, int]:
         "generated": int(policy["generated_programs"]),
         "full_development": int(policy["full_dev_survivors"]),
         "optuna": int(policy["inner_optuna_finalists"]),
+        "optuna_minimum": int(policy.get("inner_optuna_min_finalists") or 0),
         "finalist_gate": int(policy["proposal_finalists"]),
     }
 
@@ -930,43 +1042,31 @@ def _claim_full_dev(
         tuning_allocated = sum(
             item.get("full_dev_tune") is True for item in state["candidates"]
         )
+        parameter_tuning_allocated = sum(
+            item.get("mutation_kind") == "parameter"
+            and item.get("full_dev_tune") is True
+            for item in state["candidates"]
+        )
         typed_search = {
             str(item.get("candidate_id")): _candidate_has_typed_search_space(
                 store, job_id, campaign_id, item
             )
             for item in eligible
         }
-        unclaimed_parameter_searches = sum(
-            item.get("mutation_kind") == "parameter"
-            and "full_dev_tune" not in item
-            and typed_search.get(str(item.get("candidate_id")), False)
-            for item in eligible
+        selection = _select_full_dev_candidate(
+            eligible,
+            typed_search=typed_search,
+            remaining=remaining,
+            tuning_limit=tuning_limit,
+            tuning_allocated=tuning_allocated,
+            parameter_tuning_allocated=parameter_tuning_allocated,
+            parameter_tuning_minimum=int(policy.get("inner_optuna_min_finalists") or 0),
         )
-        candidate: dict[str, Any] | None = None
-        tune = False
-        for item in eligible:
-            if "full_dev_tune" in item:
-                if item.get("mutation_kind") == "parameter" and not item.get(
-                    "full_dev_tune"
-                ):
-                    continue
-                candidate = item
-                tune = bool(item["full_dev_tune"])
-                break
-            has_search = typed_search.get(str(item.get("candidate_id")), False)
-            available = max(0, tuning_limit - tuning_allocated)
-            if item.get("mutation_kind") == "parameter":
-                if not has_search or not available:
-                    continue
-                tune = True
-            else:
-                reserved = min(unclaimed_parameter_searches, available)
-                tune = bool(has_search and available > reserved)
-            candidate = item
-            candidate["full_dev_tune"] = tune
-            break
-        if candidate is None:
+        if selection is None:
             return None
+        candidate, tune, selection_reason = selection
+        candidate["full_dev_tune"] = tune
+        candidate["full_dev_selection_reason"] = selection_reason
         claim_id = uuid.uuid4().hex
         candidate.update(
             {
@@ -980,6 +1080,62 @@ def _claim_full_dev(
         state.setdefault("finalize_started_at", utc_now_iso())
         _save_campaign(store, job_id, state)
         return campaign_id, claim_id, dict(candidate), tune
+
+
+def _select_full_dev_candidate(
+    eligible: list[dict[str, Any]],
+    *,
+    typed_search: dict[str, bool],
+    remaining: int,
+    tuning_limit: int,
+    tuning_allocated: int,
+    parameter_tuning_allocated: int,
+    parameter_tuning_minimum: int,
+) -> tuple[dict[str, Any], bool, str] | None:
+    available = max(tuning_limit - tuning_allocated, 0)
+    required_parameters = max(
+        min(parameter_tuning_minimum, tuning_limit) - parameter_tuning_allocated,
+        0,
+    )
+    parameter_searches = [
+        item
+        for item in eligible
+        if item.get("mutation_kind") == "parameter"
+        and typed_search.get(str(item.get("candidate_id")), False)
+        and item.get("full_dev_tune") is not False
+    ]
+    if available and parameter_searches and remaining <= required_parameters:
+        candidate = max(parameter_searches, key=_parameter_preview_score)
+        reason = str(candidate.get("full_dev_selection_reason") or "reserved_parameter")
+        return candidate, True, reason
+
+    for candidate in eligible:
+        existing_tune = candidate.get("full_dev_tune")
+        if existing_tune is not None:
+            if candidate.get("mutation_kind") == "parameter" and not existing_tune:
+                continue
+            return (
+                candidate,
+                bool(existing_tune),
+                str(candidate.get("full_dev_selection_reason") or "retry"),
+            )
+        has_search = typed_search.get(str(candidate.get("candidate_id")), False)
+        if candidate.get("mutation_kind") == "parameter":
+            if not has_search or not available:
+                continue
+            return candidate, True, "ranked_parameter_search"
+        tune = bool(has_search and available > required_parameters)
+        reason = "ranked_structural_search" if tune else "ranked_structural"
+        return candidate, tune, reason
+    return None
+
+
+def _parameter_preview_score(candidate: dict[str, Any]) -> float:
+    preview = candidate.get("tuning_preview") or {}
+    objective = preview.get("objective") if isinstance(preview, dict) else None
+    if objective:
+        return _candidate_score({"objective": objective})
+    return _candidate_score(candidate)
 
 
 def _candidate_has_typed_search_space(
@@ -1285,7 +1441,7 @@ def campaign_prompt_block(
         mutation_instruction = (
             f"This is a parameter candidate: {_PARAMETER_SEARCH_GUIDANCE} "
             if candidate.get("mutation_kind") == "parameter"
-            else "This is a structural candidate: make the named causal code change. "
+            else f"This is a structural candidate: {_STRUCTURAL_SEARCH_GUIDANCE} "
         )
         next_action = (
             f"{mutation_instruction}Edit only files inside {candidate_root} "
@@ -1320,8 +1476,8 @@ def campaign_prompt_block(
             "background=true. Do not wait for the detached result. END THIS "
             "STAGE immediately after launch; do not prepare another candidate. "
             "If the returned mutation_kind is parameter, "
-            f"{_PARAMETER_SEARCH_GUIDANCE} If it is structural, make the named "
-            "causal code change."
+            f"{_PARAMETER_SEARCH_GUIDANCE} If it is structural, "
+            f"{_STRUCTURAL_SEARCH_GUIDANCE}"
         )
     else:
         session_stage = "finalize"
@@ -1413,6 +1569,11 @@ def _archive_campaign_candidate(
             "parent_source",
             "quick",
             "dev",
+            "tuning_eligible",
+            "tuning_skip_reason",
+            "tuning_preview",
+            "full_dev_tune",
+            "full_dev_selection_reason",
             "tuning",
         )
         if candidate.get(key) is not None
@@ -1458,6 +1619,11 @@ def _load_candidate_search_space(
         ) from exc
     if not isinstance(payload, dict) or not is_search_space(payload):
         raise ValueError(f"candidate search space is not typed: {search_path}")
+    dimensions = len(_typed_search_dimensions(payload))
+    if dimensions > _MAX_SEARCH_DIMENSIONS:
+        raise ValueError(
+            "candidate search space exceeds the three-dimension evolution budget"
+        )
     return payload
 
 
@@ -1486,14 +1652,15 @@ def _full_dev(
             **candidate_search,
         }
         policy = _campaign_policy(store, job_id, campaign_id)
-        grid = run_optuna_search(
-            subject["script"],
+        search_bars = int(policy.get("inner_optuna_train_bars") or 0)
+        search_timeout = float(policy.get("inner_optuna_timeout_seconds") or 0) or None
+        grid, tuning = _run_evolution_optuna(
+            subject,
             train,
-            subject["spec"],
             search,
-            rank_by="net_return",
-            n_trials=min(int(policy["inner_optuna_trials"]), 20),
-            objectives=["net_return", "max_drawdown_pct"],
+            trials=min(int(policy["inner_optuna_trials"]), 20),
+            bars=search_bars,
+            timeout=search_timeout,
         )
         if grid.ranked:
             params = dict(grid.ranked[0]["params"])
@@ -1513,7 +1680,11 @@ def _full_dev(
             atomic_write_text(
                 root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
             )
-        tuning = {"trials": len(grid.runs), "selected_params": params}
+        tuning["selected_params"] = {
+            name: params[name]
+            for name in _typed_search_dimensions(candidate_search)
+            if name in params
+        }
         del grid
         gc.collect()
     # Post-tune probe: optuna may have moved the window params, so prove the

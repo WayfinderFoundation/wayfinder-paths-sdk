@@ -4,6 +4,7 @@ import io
 import json
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -20,8 +21,10 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _claim_full_dev,
     _commit_full_dev,
     _isolated_full_dev,
+    _parameter_tuning_preview,
     _parent_source,
     _same_family_nonwins,
+    _select_full_dev_candidate,
     _write_timeseries_prefix,
     campaign_due,
     campaign_prompt_block,
@@ -76,6 +79,21 @@ def _job(tmp_path, job_id: str) -> tuple[JobStore, str]:
     return store, job.id
 
 
+def _prepare_campaign_candidates(
+    store: JobStore, job_id: str, started: datetime
+) -> list[dict[str, Any]]:
+    return [
+        prepare_candidate(
+            store,
+            job_id,
+            family=f"family-{index}",
+            summary=f"candidate {index}",
+            now=started + timedelta(hours=1),
+        )
+        for index in range(1, 5)
+    ]
+
+
 def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
     other_store, other_id = _job(tmp_path / "other", "other-job")
     assert maybe_start_campaign(other_store, other_id) is None
@@ -89,6 +107,7 @@ def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
         "generated": 12,
         "full_development": 4,
         "optuna": 2,
+        "optuna_minimum": 1,
         "finalist_gate": 1,
     }
     assert campaign_status(store, job_id)["campaign_id"] == state["campaign_id"]
@@ -343,22 +362,19 @@ def test_campaign_assigns_parameter_slots_and_preserves_optuna_budget(tmp_path) 
     store, job_id = _job(tmp_path, "majors-5m-lab")
     started = datetime(2026, 8, 25, 12, tzinfo=UTC)
     start_campaign(store, job_id, now=started)
-    candidates = [
-        prepare_candidate(
-            store,
-            job_id,
-            family=f"family-{index}",
-            summary=f"candidate {index}",
-            now=started + timedelta(hours=1),
-        )
-        for index in range(1, 5)
-    ]
+    candidates = _prepare_campaign_candidates(store, job_id, started)
     assert [candidate["mutation_kind"] for candidate in candidates] == [
         "structural",
         "structural",
         "structural",
         "parameter",
     ]
+    structural_prompt = campaign_prompt_block(
+        store, job_id, now=started + timedelta(hours=1)
+    )
+    assert structural_prompt is not None
+    assert "meaningful numeric behavior knobs" in structural_prompt["next_action"]
+    assert "Otherwise omit it" in structural_prompt["next_action"]
 
     state = campaign_status(store, job_id)
     for candidate in state["candidates"][:3]:
@@ -414,6 +430,159 @@ def test_campaign_assigns_parameter_slots_and_preserves_optuna_budget(tmp_path) 
     _, _, parameter, tune = parameter_claim
     assert parameter["candidate_id"] == candidates[-1]["candidate_id"]
     assert tune is True
+    assert parameter["full_dev_selection_reason"] == "ranked_parameter_search"
+
+
+def test_full_dev_reservation_uses_parameter_preview_and_never_wedges() -> None:
+    structural = {
+        "candidate_id": "c01",
+        "mutation_kind": "structural",
+        "objective": {"net_log_growth": 0.8},
+    }
+    weaker_parameter = {
+        "candidate_id": "c04",
+        "mutation_kind": "parameter",
+        "objective": {"net_log_growth": 0.2},
+        "tuning_preview": {"objective": {"net_log_growth": 0.3}},
+    }
+    stronger_parameter = {
+        "candidate_id": "c08",
+        "mutation_kind": "parameter",
+        "objective": {"net_log_growth": 0.1},
+        "tuning_preview": {"objective": {"net_log_growth": 0.5}},
+    }
+    typed_search = {"c01": False, "c04": True, "c08": True}
+
+    selected = _select_full_dev_candidate(
+        [structural, weaker_parameter, stronger_parameter],
+        typed_search=typed_search,
+        remaining=1,
+        tuning_limit=2,
+        tuning_allocated=0,
+        parameter_tuning_allocated=0,
+        parameter_tuning_minimum=1,
+    )
+
+    assert selected == (stronger_parameter, True, "reserved_parameter")
+
+    fallback = _select_full_dev_candidate(
+        [structural],
+        typed_search={"c01": False},
+        remaining=1,
+        tuning_limit=2,
+        tuning_allocated=0,
+        parameter_tuning_allocated=0,
+        parameter_tuning_minimum=1,
+    )
+    assert fallback == (structural, False, "ranked_structural")
+
+
+def test_parameter_preview_is_seeded_bounded_and_compact(monkeypatch) -> None:
+    import wayfinder_paths.jobs.evolution_campaign as campaign_module
+
+    preview_data = SimpleNamespace(bars=SimpleNamespace(timestamps=list(range(2_000))))
+    captured: dict[str, Any] = {}
+
+    def fake_search(script, dataset, spec, search_space, **kwargs):
+        captured.update(
+            {
+                "script": script,
+                "dataset": dataset,
+                "spec": spec,
+                "search_space": search_space,
+                **kwargs,
+            }
+        )
+        best_params = {
+            "initial_capital": 1_000.0,
+            "symbols": ["IMX"],
+            "lookback": 48,
+        }
+        return SimpleNamespace(
+            runs=[{}, {}, {}],
+            invalid=[{}, {}],
+            ranked=[
+                {
+                    "params": best_params,
+                    "stats": {
+                        "net_return": 0.12,
+                        "avg_drawdown": -0.02,
+                        "worst_trade_pnl": -5.0,
+                        "max_drawdown_pct": -0.04,
+                    },
+                }
+            ],
+        )
+
+    monkeypatch.setattr(campaign_module, "_tail", lambda dataset, bars: preview_data)
+    monkeypatch.setattr(campaign_module, "run_optuna_search", fake_search)
+
+    preview = _parameter_tuning_preview(
+        {"script": "strategy.py", "spec": {"market_kind": "perp"}},
+        SimpleNamespace(),
+        {"initial_capital": 1_000.0, "symbols": ["IMX"]},
+        {"lookback": {"type": "int", "low": 12, "high": 96}},
+        {
+            "inner_optuna_preview_trials": 3,
+            "inner_optuna_preview_bars": 2_000,
+            "inner_optuna_preview_timeout_seconds": 300,
+        },
+    )
+
+    assert captured["dataset"] is preview_data
+    assert captured["n_trials"] == 3
+    assert captured["seed"] == 42
+    assert captured["timeout"] == 300
+    assert captured["objectives"] == ["net_return", "max_drawdown_pct"]
+    assert preview == {
+        "status": "complete",
+        "trials": 3,
+        "valid_trials": 1,
+        "bars": 2_000,
+        "seed": 42,
+        "wall_seconds": preview["wall_seconds"],
+        "objective": {
+            "net_log_growth": 0.11332869,
+            "downside_deviation": 0.02,
+            "tail_loss": 0.005,
+            "max_drawdown_pct": 0.04,
+        },
+        "selected_params": {"lookback": 48},
+    }
+    assert preview["wall_seconds"] >= 0
+
+    monkeypatch.setattr(
+        campaign_module,
+        "run_optuna_search",
+        lambda *args, **kwargs: SimpleNamespace(
+            runs=[{}, {}, {}], invalid=[{}, {}, {}], ranked=[]
+        ),
+    )
+    no_valid_preview = _parameter_tuning_preview(
+        {"script": "strategy.py", "spec": {}},
+        SimpleNamespace(),
+        {},
+        {"lookback": {"type": "int", "low": 12, "high": 96}},
+        {
+            "inner_optuna_preview_trials": 3,
+            "inner_optuna_preview_bars": 2_000,
+        },
+    )
+    assert no_valid_preview is not None
+    assert no_valid_preview["status"] == "no_valid_trials"
+    assert no_valid_preview["valid_trials"] == 0
+    assert "objective" not in no_valid_preview
+
+    assert (
+        _parameter_tuning_preview(
+            {"script": "strategy.py", "spec": {}},
+            SimpleNamespace(),
+            {},
+            {"lookback": {"type": "int", "low": 12, "high": 96}},
+            {},
+        )
+        is None
+    )
 
 
 def test_next_campaign_freezes_compact_prior_outcomes(tmp_path) -> None:
@@ -1723,16 +1892,7 @@ def test_evaluate_rejects_parameter_candidate_without_typed_search_space(
     store, job_id = _evaluatable_job(tmp_path)
     started = datetime(2026, 8, 25, 12, tzinfo=UTC)
     start_campaign(store, job_id, now=started)
-    candidates = [
-        prepare_candidate(
-            store,
-            job_id,
-            family=f"family-{index}",
-            summary=f"candidate {index}",
-            now=started + timedelta(hours=1),
-        )
-        for index in range(1, 5)
-    ]
+    candidates = _prepare_campaign_candidates(store, job_id, started)
     parameter = candidates[-1]
     assert parameter["mutation_kind"] == "parameter"
 
@@ -1746,6 +1906,29 @@ def test_evaluate_rejects_parameter_candidate_without_typed_search_space(
         if row["candidate_id"] == parameter["candidate_id"]
     )
     assert entry["status"] == "invalid"
+
+
+def test_evaluate_rejects_oversized_candidate_search_space(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    candidates = _prepare_campaign_candidates(store, job_id, started)
+    parameter = candidates[-1]
+    bundle = store.job_dir(job_id) / parameter["bundle"]
+    (bundle / "search_space.json").write_text(
+        json.dumps(
+            {
+                f"knob_{index}": {"type": "int", "low": 1, "high": 10}
+                for index in range(4)
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = evaluate_candidate(store, job_id, parameter["candidate_id"])
+
+    assert result["status"] == "invalid"
+    assert "three-dimension evolution budget" in json.dumps(result["evidence"])
 
 
 def test_evaluate_releases_claim_when_compute_is_transiently_busy(
@@ -1862,6 +2045,71 @@ def test_full_dev_runs_real_small_simulations_in_disposable_child(tmp_path) -> N
     resources = store.read_json(job_id, "reports/evolution/resources.json")
     assert resources["latest"]["phase"] == "full_dev"
     assert resources["latest"]["candidate_id"] == candidate["candidate_id"]
+
+
+def test_full_dev_optuna_uses_bounded_train_tail_and_timeout(
+    tmp_path, monkeypatch
+) -> None:
+    import wayfinder_paths.jobs.evolution_campaign as campaign_module
+
+    store, job_id = _evaluatable_job(tmp_path)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    candidates = _prepare_campaign_candidates(store, job_id, started)
+    parameter = candidates[-1]
+    bundle = store.job_dir(job_id) / parameter["bundle"]
+    (bundle / "search_space.json").write_text(
+        json.dumps({"lookback": {"type": "int", "low": 12, "high": 96}}),
+        encoding="utf-8",
+    )
+    manifest_path = store.job_dir(job_id) / state["manifest"]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["policy"].update(
+        {
+            "inner_optuna_trials": 5,
+            "inner_optuna_train_bars": 20,
+            "inner_optuna_timeout_seconds": 17,
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    captured: dict[str, Any] = {}
+
+    def fake_search(script, dataset, spec, search_space, **kwargs):
+        captured.update({"dataset": dataset, "search_space": search_space, **kwargs})
+        params = {
+            name: 48 if name == "lookback" else value
+            for name, value in search_space.items()
+            if not isinstance(value, dict)
+        }
+        params["lookback"] = 48
+        return SimpleNamespace(
+            runs=[{} for _ in range(5)],
+            invalid=[{}],
+            ranked=[
+                {
+                    "params": params,
+                    "stats": {"net_return": 0.01, "max_drawdown_pct": -0.01},
+                }
+            ],
+        )
+
+    monkeypatch.setattr(campaign_module, "run_optuna_search", fake_search)
+
+    outcome = campaign_module._full_dev(store, job_id, parameter, tune=True)
+
+    assert len(captured["dataset"].bars.timestamps) == 20
+    assert captured["n_trials"] == 5
+    assert captured["seed"] == 42
+    assert captured["timeout"] == 17
+    assert outcome["tuning"] == {
+        "status": "complete",
+        "trials": 5,
+        "valid_trials": 4,
+        "bars": 20,
+        "seed": 42,
+        "wall_seconds": outcome["tuning"]["wall_seconds"],
+        "selected_params": {"lookback": 48},
+    }
 
 
 def test_casebook_includes_bounded_window_parity_case() -> None:
