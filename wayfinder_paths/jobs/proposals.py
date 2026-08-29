@@ -41,6 +41,7 @@ from wayfinder_paths.jobs.execution.job import (
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.failures import TransientInfrastructureError, classify_failure
 from wayfinder_paths.jobs.gating import (
+    PAIRED_FOLDS_RELATIVE,
     compute_workspace_revision,
     dataset_fingerprint_identity,
     evaluate_economic_gate,
@@ -96,15 +97,29 @@ PAPER_AUTO_APPLY_ALLOWED_KINDS = frozenset(
 )
 PAPER_AUTO_APPLY_DAILY_CAP = 3
 PAPER_AUTO_APPLY_UNDO_WINDOW_HOURS = 72
-# Owner-owned knobs may never ride the auto tier, whatever the params look
-# like: sizing (leverage), custody (wallet), execution mode, governance.
+# Owner-owned knobs may never ride the auto tiers, whatever the params look
+# like: sizing (leverage), custody (wallet), execution mode, governance, risk.
 _PAPER_AUTO_APPLY_FORBIDDEN_PARAM = re.compile(
-    r"leverage|wallet|mode|governance", re.IGNORECASE
+    r"leverage|wallet|mode|governance|risk", re.IGNORECASE
 )
+
+# ── Maintenance auto-apply tier ──────────────────────────────────────────
+# Owner directive (majors-5m-lab incident): certified behavior-preserving
+# changes must never wait on an owner click. This lane is deliberately
+# SEPARATE from the paper tier above: the paper tier is paper-mode-only (any
+# gate-green change on a job that cannot touch live capital); this lane
+# covers live-capable jobs too, but ONLY proposals carrying a green
+# behavior-equivalence proof — the mechanical proof, not the job mode, is
+# the authority. Both route through the UNCHANGED `store.approve_proposal`.
+MAINTENANCE_AUTO_APPLY_ENV = "WAYFINDER_MAINTENANCE_AUTO_APPLY"  # "0" disables
 
 
 def paper_auto_apply_enabled() -> bool:
     return os.environ.get(PAPER_AUTO_APPLY_ENV) != "0"
+
+
+def maintenance_auto_apply_enabled() -> bool:
+    return os.environ.get(MAINTENANCE_AUTO_APPLY_ENV) != "0"
 
 
 def _param_keys(value: Any, prefix: str = "") -> list[str]:
@@ -211,24 +226,82 @@ def maybe_auto_apply_paper_proposal(
         return None
 
 
-def maybe_auto_apply_maintenance_proposal(
-    store: JobStore, job_id: str, proposal_id: str
-) -> dict[str, Any]:
-    """Queue a mechanically equivalent implementation change without review."""
-    proposal = store.load_proposal(job_id, proposal_id)
+def maintenance_auto_apply_blockers(
+    store: JobStore, job_id: str, proposal: dict[str, Any]
+) -> list[str]:
+    """Why this maintenance proposal must wait for an owner click.
+
+    Empty = auto-eligible. Deliberately separate from
+    `paper_auto_apply_blockers` (which gates on paper mode and gate-green
+    economics): this lane admits live-capable jobs, but ONLY certified
+    behavior-equivalence proposals whose diff touches no owner-owned knob
+    and whose job has no application already in flight."""
+    blockers: list[str] = []
+    if not maintenance_auto_apply_enabled():
+        blockers.append(
+            f"maintenance auto-apply disabled ({MAINTENANCE_AUTO_APPLY_ENV}=0)"
+        )
     report = proposal.get("candidate_report") or {}
-    maintenance = report.get("maintenance") or {}
     if (
         report.get("acceptance_policy") != BEHAVIOR_EQUIVALENCE_POLICY
-        or maintenance.get("ready") is not True
+        or proposal.get("acceptance_policy") != BEHAVIOR_EQUIVALENCE_POLICY
     ):
-        raise ValueError("maintenance proposal lacks a green equivalence proof")
+        blockers.append("not a behavior-equivalence proposal")
+    if (report.get("maintenance") or {}).get("ready") is not True:
+        blockers.append("behavior-equivalence proof is not green")
+    if (report.get("validation_summary") or {}).get("status") != "passed":
+        blockers.append("candidate validation not passed")
+    params = (proposal.get("proposed_change") or {}).get("execution_params") or {}
+    forbidden = sorted(
+        key
+        for key in _param_keys(params)
+        if _PAPER_AUTO_APPLY_FORBIDDEN_PARAM.search(key)
+    )
+    if forbidden:
+        blockers.append(f"diff touches owner-owned keys: {forbidden}")
+    proposal_id = str(proposal.get("proposal_id") or "")
+    in_flight = [
+        str(other.get("proposal_id"))
+        for other in store.proposals(job_id)
+        if str(other.get("proposal_id")) != proposal_id
+        and other["application"]["status"] in {"queued", "applying"}
+    ]
+    if in_flight:
+        blockers.append(f"an application is already in flight: {in_flight[0]}")
+    return blockers
+
+
+def maybe_auto_apply_maintenance_proposal(
+    store: JobStore, job_id: str, proposal_id: str
+) -> dict[str, Any] | None:
+    """Queue a mechanically equivalent implementation change without review.
+
+    Returns the auto-apply record when the lane fires, None when the
+    proposal stays pending on the (approvable) owner path — the kill switch
+    and defeated eligibility conditions are routing decisions, not errors.
+    Only the real approve gate raising propagates (governance/data race
+    between proof and queue)."""
+    proposal = store.load_proposal(job_id, proposal_id)
+    if proposal.get("status") != "pending":
+        return None
+    blockers = maintenance_auto_apply_blockers(store, job_id, proposal)
+    if blockers:
+        store.append_journal(
+            job_id,
+            {
+                "type": "maintenance_auto_apply_skipped",
+                "proposal_id": proposal_id,
+                "blockers": blockers,
+            },
+        )
+        return None
     return _auto_apply_proposal(
         store,
         job_id,
         proposal_id,
         tier="behavior_equivalence",
-        approved_by="behavior-equivalence-gate",
+        approved_by="maintenance-auto",
+        journal_type="maintenance_auto_applied",
     )
 
 
@@ -239,6 +312,7 @@ def _auto_apply_proposal(
     *,
     tier: str,
     approved_by: str,
+    journal_type: str = "proposal_auto_applied",
 ) -> dict[str, Any]:
     """Shared mechanical approve/queue/launch path for autonomous tiers."""
     proposal = store.approve_proposal(job_id, proposal_id)
@@ -257,7 +331,7 @@ def _auto_apply_proposal(
     store.append_journal(
         job_id,
         {
-            "type": "proposal_auto_applied",
+            "type": journal_type,
             "proposal_id": proposal_id,
             "kind": proposal.get("kind"),
             "tier": tier,
@@ -493,6 +567,43 @@ def propose_change(
             "deployment recommendation must acknowledge robustness warnings: "
             f"{sorted(missing_acknowledgements)}"
         )
+    # Approvability contract: a live-capable job under blocking governance
+    # must never stage a pending proposal the approve gate would refuse for
+    # an EVIDENCE reason (economic ready is not True) — the owner would see a
+    # permanently un-approvable item (majors-5m-lab incident,
+    # prop-code-change-1d15c703). Infra failures never reach here (the #700
+    # TransientInfrastructureError abort above owns them); infra-classified
+    # gate reasons still stage so the watchdog triage can revalidate.
+    # improver_change is excluded: it is governance-shaped and owner-only,
+    # and its candidate is definitionally identical code (delta 0) — the
+    # behavior-equivalence guidance below would be wrong for it.
+    if (
+        acceptance_policy != BEHAVIOR_EQUIVALENCE_POLICY
+        and kind != "improver_change"
+        and candidate_report.get("mode") == "full"
+        and store._job_is_live_capable(job_id)
+    ):
+        economic = candidate_report.get("economic") or {}
+        try:
+            store._ensure_governance_gate(job_id, economic, proposal_id=pid)
+        except ValueError as exc:
+            blocked_text = " | ".join(
+                [str(exc), *(str(r) for r in economic.get("reasons") or [])]
+            )
+            if classify_failure(blocked_text) != "infrastructure":
+                _refuse_ungated_stage(
+                    store,
+                    job_id,
+                    pid=pid,
+                    kind=kind,
+                    candidate_dir=candidate_dir,
+                    memo_path=(
+                        store.job_dir(job_id) / "proposals" / f"{pid}.md"
+                        if memo
+                        else None
+                    ),
+                    gate_error=str(exc),
+                )
 
     store.write_proposal(job_id, proposal)
     from wayfinder_paths.jobs.remediation import link_remediation_proposal
@@ -554,9 +665,10 @@ def propose_change(
         )
     except Exception:  # noqa: BLE001 — archive bookkeeping never breaks propose
         pass
+    maintenance_auto: dict[str, Any] | None = None
     if acceptance_policy == BEHAVIOR_EQUIVALENCE_POLICY:
         try:
-            maybe_auto_apply_maintenance_proposal(store, job_id, pid)
+            maintenance_auto = maybe_auto_apply_maintenance_proposal(store, job_id, pid)
         except Exception as exc:
             # A governance/data race between proof and queue must not become
             # owner work. Close it as process housekeeping; the agent can
@@ -583,10 +695,12 @@ def propose_change(
             )
     store.refresh_scorecard(job_id)
     sync_all_jobs(store=store)
-    if acceptance_policy != BEHAVIOR_EQUIVALENCE_POLICY:
-        # Owner-reviewed proposals get a review deep-link chip. Mechanically
-        # equivalent maintenance is deliberately quiet: its audit trail lives
-        # in the journal/decided-autonomously feed, not owner attention.
+    if maintenance_auto is None:
+        # Owner-reviewed proposals get a review deep-link chip — including a
+        # maintenance proposal whose auto lane was defeated (kill switch,
+        # blocker) and therefore sits in the owner queue. Auto-APPLIED
+        # maintenance stays deliberately quiet: its audit trail lives in the
+        # journal/decided-autonomously feed, not owner attention.
         print(
             JOB_RESULT_MARKER
             + json.dumps(
@@ -600,6 +714,86 @@ def propose_change(
             )
         )
     return store.load_proposal(job_id, pid)
+
+
+def _paired_folds_neutral(candidate_dir: Path) -> bool:
+    """Byte-identical paired evidence: delta_utility exactly 0.0 on EVERY
+    fold AND equal trade counts on every fold — the signature of a
+    behavior-preserving change routed down the economic lane by mistake
+    (the economic gate persisted its fold evaluation into the candidate
+    bundle moments ago)."""
+    persisted = _read_json(candidate_dir / PAIRED_FOLDS_RELATIVE) or {}
+    folds = (persisted.get("evaluation") or {}).get("folds")
+    if not isinstance(folds, list) or not folds:
+        return False
+    for row in folds:
+        if not isinstance(row, dict):
+            return False
+        try:
+            delta = float(row["delta_utility"])
+            baseline_trades = int((row.get("baseline") or {})["trade_count"])
+            candidate_trades = int((row.get("candidate") or {})["trade_count"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if delta != 0.0 or baseline_trades != candidate_trades:
+            return False
+    return True
+
+
+def _refuse_ungated_stage(
+    store: JobStore,
+    job_id: str,
+    *,
+    pid: str,
+    kind: str,
+    candidate_dir: Path,
+    memo_path: Path | None,
+    gate_error: str,
+) -> None:
+    """Refuse to write a pending proposal blocking governance cannot approve.
+
+    Mirrors the maintenance/robustness evidence-blocks above: clean up the
+    staged candidate, journal, raise — no proposal file, nothing for the
+    owner queue. The message is the teaching channel: a neutral change
+    (byte-identical paired folds) is told exactly which lane it belongs in.
+    """
+    if _paired_folds_neutral(candidate_dir):
+        neutral = True
+        guidance = (
+            "every paired fold shows delta_utility exactly 0.0 with identical "
+            "trade counts — this change looks behavior-preserving, not an "
+            "edge claim. Stage it as a behavior-equivalence proposal instead "
+            "(propose with acceptance_policy='behavior_equivalence'): the "
+            "maintenance equivalence proof certifies it mechanically and it "
+            "auto-applies with a note instead of waiting on an owner click. "
+            "The economic gate is for edge claims only."
+        )
+    else:
+        neutral = False
+        guidance = (
+            "blocking governance would never approve it, so it must not enter "
+            "the owner's queue. Gather evidence that clears the economic gate "
+            "(or set proposed_change.probation=true for a reduced-size "
+            "canary) and propose fresh."
+        )
+    reasons = [gate_error[:300], guidance]
+    shutil.rmtree(candidate_dir.parent, ignore_errors=True)
+    if memo_path is not None:
+        memo_path.unlink(missing_ok=True)
+    store.append_journal(
+        job_id,
+        {
+            "type": "proposal_refused_ungated",
+            "proposal_id": pid,
+            "proposal_kind": kind,
+            "behavior_preserving_folds": neutral,
+            "reasons": reasons,
+        },
+    )
+    raise ValueError(
+        "refusing to stage an un-approvable proposal on a live-capable job: "
+        f"{gate_error} — {guidance}"
+    )
 
 
 def _validate_improver_payload(improver: dict[str, Any]) -> None:

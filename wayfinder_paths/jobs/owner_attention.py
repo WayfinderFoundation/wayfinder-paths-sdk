@@ -30,7 +30,7 @@ from typing import Any
 
 from wayfinder_paths.jobs.halt import RISK_LATCH_SOURCES, read_halt
 from wayfinder_paths.jobs.models import WayfinderJob
-from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.store import JobStore, proposal_approvable
 
 DECIDED_WINDOW_DAYS = 7
 DECIDED_CAP = 50
@@ -141,6 +141,12 @@ def _needs_you(
     if job_live_capital_risk(job):
         for proposal in proposals:
             if proposal.get("status") != "pending":
+                continue
+            if not proposal_approvable(store, job_id, proposal)[0]:
+                # Owner directive: an un-approvable proposal must never be
+                # owner-visible. The watchdog triage owns blocked pendings
+                # (revalidate infra freezes, TTL-reject evidence-negatives) —
+                # the approval queue shows only items the owner CAN approve.
                 continue
             pid = str(proposal.get("proposal_id"))
             summary = str(
@@ -361,7 +367,10 @@ def _decided_item(
 ) -> dict[str, Any] | None:
     event_type = str(event.get("type") or "")
     ts = event.get("ts")
-    if event_type == "proposal_auto_applied":
+    if event_type in {"proposal_auto_applied", "maintenance_auto_applied"}:
+        # maintenance_auto_applied is the current maintenance-lane event;
+        # proposal_auto_applied with tier=behavior_equivalence is its shape in
+        # journals written before the lanes were split.
         tier = str(event.get("tier") or "paper")
         return {
             "kind": (
@@ -374,6 +383,16 @@ def _decided_item(
             "ts": ts,
             "decision": "auto_applied",
             "evidence": _compact(event.get("evidence")),
+            "undo": event.get("undo"),
+        }
+    if event_type == "proposal_expired_unapprovable":
+        return {
+            "kind": "proposal_expired",
+            "job_id": job_id,
+            "ref_id": event.get("proposal_id"),
+            "ts": ts,
+            "decision": "rejected_unapprovable",
+            "evidence": _compact(event.get("reasons")),
             "undo": event.get("undo"),
         }
     if event_type == "gate_auto_resolved":

@@ -27,11 +27,11 @@ from textwrap import dedent
 from typing import Any, TypedDict
 
 from wayfinder_paths.jobs.application import complete_application
-from wayfinder_paths.jobs.failures import cpu_steal_pct
+from wayfinder_paths.jobs.failures import classify_failure, cpu_steal_pct
 from wayfinder_paths.jobs.lifecycle import lifecycle_sweep
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
-from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.store import JobStore, proposal_approvable
 
 WATCHDOG_RUNNER_JOB_NAME = "wayfinder-application-watchdog"
 WATCHDOG_INTERVAL_SECONDS = 300
@@ -63,6 +63,15 @@ RESTAGE_NAG_TIMEOUT = timedelta(minutes=30)
 # an OOM'd backtest must not strand an owner-approved change — but bounded:
 # past this many failed attempts the owner is escalated instead.
 RESTAGE_MAX_ATTEMPTS = 5
+# Blocked-pending triage: a PENDING proposal the approve gate would refuse
+# (`proposal_approvable` False) is never owner work — needs_you filters it
+# out — so the watchdog owns its exit. Infra-frozen evidence is revalidated
+# on this cadence (per proposal, marker-deduped); evidence-negative
+# proposals past the TTL are machinery-rejected with an undo.
+TRIAGE_REVALIDATE_INTERVAL = timedelta(hours=6)
+PROPOSAL_BLOCKED_TTL_ENV = "WAYFINDER_PROPOSAL_BLOCKED_TTL_HOURS"
+DEFAULT_PROPOSAL_BLOCKED_TTL_HOURS = 48.0
+_PROPOSAL_TRIAGE_MARKER = "state/proposal_triage.json"
 # A kind=process owner rejection expects a corrected successor proposal.
 # None within this window → wake the agent once per entry ARM.
 SUCCESSOR_OVERDUE_TIMEOUT = timedelta(hours=12)
@@ -335,6 +344,163 @@ def _recover_restage(
     }
     store.append_journal(job_id, event)
     return event
+
+
+def _proposal_blocked_ttl() -> timedelta:
+    try:
+        hours = float(
+            os.environ.get(PROPOSAL_BLOCKED_TTL_ENV, "")
+            or DEFAULT_PROPOSAL_BLOCKED_TTL_HOURS
+        )
+    except ValueError:
+        hours = DEFAULT_PROPOSAL_BLOCKED_TTL_HOURS
+    return timedelta(hours=hours)
+
+
+def _triage_blocked_pendings(
+    store: JobStore,
+    job_id: str,
+    proposals: list[dict[str, Any]],
+    now: datetime,
+    *,
+    allow_revalidate: bool = True,
+) -> list[dict[str, Any]]:
+    """Own the exit of pending proposals the approve gate would refuse.
+
+    needs_you hides un-approvable pendings from the owner, so without this
+    pass they would sit forever with no actor. Two exits: an
+    INFRASTRUCTURE-frozen evidence snapshot is revalidated in place (same
+    candidate, quiet box — at most once per TRIAGE_REVALIDATE_INTERVAL per
+    proposal, marker-deduped, one heavy revalidate per watchdog pass); an
+    EVIDENCE-negative proposal older than the blocked TTL is
+    machinery-rejected with a decided_autonomously entry and an undo.
+    """
+    events: list[dict[str, Any]] = []
+    pending = [p for p in proposals if p.get("status") == "pending"]
+    if not pending:
+        return events
+    marker = store.read_json(job_id, _PROPOSAL_TRIAGE_MARKER) or {}
+    if not isinstance(marker, dict):
+        marker = {}
+    changed = False
+    ttl = _proposal_blocked_ttl()
+    for proposal in pending:
+        pid = str(proposal.get("proposal_id") or "")
+        if not pid:
+            continue
+        approvable, blocked_reason = proposal_approvable(store, job_id, proposal)
+        if approvable:
+            if marker.pop(pid, None) is not None:
+                changed = True  # block cleared — forget the triage history
+            continue
+        report = proposal.get("candidate_report") or {}
+        validation = report.get("validation_summary") or {}
+        economic = report.get("economic") or {}
+        frozen_text = " | ".join(
+            [
+                blocked_reason,
+                *(str(reason) for reason in economic.get("reasons") or []),
+                *(str(check) for check in validation.get("failed_checks") or []),
+            ]
+        )
+        infrastructure = (
+            validation.get("failure_kind") == "infrastructure"
+            or classify_failure(frozen_text) == "infrastructure"
+        )
+        entry = dict(marker.get(pid) or {})
+        if infrastructure:
+            if (
+                entry.get("revalidated_at")
+                and _age(now, entry.get("revalidated_at")) < TRIAGE_REVALIDATE_INTERVAL
+            ):
+                continue
+            if not allow_revalidate:
+                continue  # one heavy revalidate per pass; next pass retries
+            allow_revalidate = False
+            entry["revalidated_at"] = now.isoformat()
+            marker[pid] = entry
+            changed = True
+            # circular import: proposals → worker → …driver → triggers → watchdog
+            from wayfinder_paths.jobs.proposals import revalidate_proposal
+
+            try:
+                revalidated = revalidate_proposal(store, job_id, pid)
+                outcome = str(
+                    (revalidated.get("candidate_report") or {})
+                    .get("validation_summary", {})
+                    .get("status")
+                    or "revalidated"
+                )
+            except Exception as exc:  # noqa: BLE001 — attempt is journaled either way
+                outcome = f"revalidate_failed: {str(exc)[:200]}"
+            store.append_journal(
+                job_id,
+                {
+                    "type": "proposal_triage_revalidated",
+                    "proposal_id": pid,
+                    "blocked_reason": blocked_reason[:300],
+                    "outcome": outcome,
+                },
+            )
+            events.append(
+                {
+                    "action": "triage_revalidate",
+                    "proposal_id": pid,
+                    "outcome": outcome,
+                }
+            )
+            continue
+        basis = (
+            entry.get("revalidated_at")
+            or report.get("generated_at")
+            or proposal.get("updated_at")
+        )
+        if _age(now, basis) < ttl:
+            continue
+        undo = {"command": f"wayfinder job revalidate {job_id} {pid}"}
+        try:
+            store.reject_proposal(
+                job_id,
+                pid,
+                reason=(
+                    f"un-approvable for longer than {ttl.total_seconds() / 3600:g}h "
+                    f"— red gate housekeeping: {blocked_reason[:200]}"
+                ),
+                rejected_by="watchdog",
+                kind="process",
+            )
+        except ValueError as exc:
+            store.append_journal(
+                job_id,
+                {
+                    "type": "application_watchdog_skipped",
+                    "proposal_id": pid,
+                    "reason": f"triage reject refused: {exc}",
+                },
+            )
+            continue
+        marker.pop(pid, None)
+        changed = True
+        store.append_journal(
+            job_id,
+            {
+                "type": "proposal_expired_unapprovable",
+                "proposal_id": pid,
+                "reasons": [blocked_reason[:300]],
+                "ttl_hours": ttl.total_seconds() / 3600,
+                "undo": undo,
+            },
+        )
+        events.append(
+            {
+                "action": "proposal_expired_unapprovable",
+                "proposal_id": pid,
+                "outcome": "rejected",
+            }
+        )
+    if changed:
+        store.write_json(job_id, _PROPOSAL_TRIAGE_MARKER, marker)
+    return events
 
 
 def _staged_after(proposal: dict[str, Any], entry_ts: str) -> bool:
@@ -1789,6 +1955,9 @@ def recover_stalled_applications(
     restaged_this_pass = False
     # A gate re-stamp runs a full backtest — same one-per-pass budget rule.
     restamped_this_pass = False
+    # A triage revalidation re-runs candidate validation (a backtest) — same
+    # one-per-pass budget rule.
+    triage_revalidated_this_pass = False
     # One daemon RPC per pass, shared by the per-job agent-mode drift check.
     # job_states() itself returns {} on an unreachable daemon; the guard is
     # for everything else — a broken bridge must not stop recovery of the
@@ -1837,6 +2006,19 @@ def recover_stalled_applications(
                 continue
             if event is not None:
                 recovered.append({"job_id": job.id, **event})
+        try:
+            for triage_event in _triage_blocked_pendings(
+                store,
+                job.id,
+                proposals,
+                now,
+                allow_revalidate=not triage_revalidated_this_pass,
+            ):
+                recovered.append({"job_id": job.id, **triage_event})
+                if triage_event.get("action") == "triage_revalidate":
+                    triage_revalidated_this_pass = True
+        except Exception as exc:
+            errors.append({"job_id": job.id, "error": f"triage: {exc}"})
         try:
             pause_event = _recover_orphaned_pause(store, job.id, proposals)
         except Exception as exc:
