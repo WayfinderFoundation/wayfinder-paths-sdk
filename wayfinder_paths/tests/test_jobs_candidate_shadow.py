@@ -17,6 +17,8 @@ from wayfinder_paths.jobs.store import JobStore
 
 
 def test_candidate_shadow_uses_separate_paper_state_and_stream(tmp_path) -> None:
+    started = pd.Timestamp("2026-08-24T11:00:00Z")
+    queued_at = pd.Timestamp("2026-08-24T12:00:00Z")
     store = JobStore(repo_root=tmp_path)
     job = WayfinderJob.new("majors-5m-lab", script="workspace/src/strategy.py")
     store.save(job)
@@ -59,7 +61,7 @@ def test_candidate_shadow_uses_separate_paper_state_and_stream(tmp_path) -> None
         ),
         encoding="utf-8",
     )
-    experiment = ensure_paper_experiment(store, job.id)
+    experiment = ensure_paper_experiment(store, job.id, now=started.to_pydatetime())
     assert experiment is not None
     revision = experiment["initial_revision"]
     stage_paper_proposal(
@@ -73,14 +75,12 @@ def test_candidate_shadow_uses_separate_paper_state_and_stream(tmp_path) -> None
         evidence={
             "objective": {"candidate": {"trade_count": 12}},
         },
+        now=queued_at.to_pydatetime(),
     )
     view = CompletedBarsView.from_rows(
         [
             {
-                "timestamp": (
-                    pd.Timestamp("2026-08-24T12:00:00Z")
-                    + pd.Timedelta(minutes=5 * index)
-                ).isoformat(),
+                "timestamp": (started + pd.Timedelta(minutes=5 * index)).isoformat(),
                 "symbol": "BTC",
                 "open": 100 + index * 0.01,
                 "high": 101 + index * 0.01,
@@ -88,7 +88,7 @@ def test_candidate_shadow_uses_separate_paper_state_and_stream(tmp_path) -> None
                 "close": 100 + index * 0.01,
                 "volume": 10,
             }
-            for index in range(289)
+            for index in range(302)
         ]
     )
     first = asyncio.run(
@@ -119,9 +119,7 @@ def test_candidate_shadow_uses_separate_paper_state_and_stream(tmp_path) -> None
             / "engine_state.json"
         ).exists()
     ticks_paths = list(
-        (root / "results" / "forward" / "experiment" / "proposals").rglob(
-            "ticks.jsonl"
-        )
+        (root / "results" / "forward" / "experiment" / "proposals").rglob("ticks.jsonl")
     )
     assert ticks_paths
     # Shadow replays hand candidates the SAME bounded window the simulator and
@@ -133,4 +131,5 @@ def test_candidate_shadow_uses_separate_paper_state_and_stream(tmp_path) -> None
             for line in ticks_path.read_text(encoding="utf-8").splitlines()
         ]
         assert rows and max(row["view_window"]["rows"] for row in rows) <= 20
+        assert min(pd.Timestamp(row["bar_ts"]) for row in rows) > queued_at
     assert asyncio.run(run_candidate_shadows(store, job.id)) == []

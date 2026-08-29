@@ -475,6 +475,70 @@ def test_wall_clock_expiry_closes_proposal_without_forward_bars(
     assert slot["history"][-1]["status"] == "rejected"
 
 
+def test_proposal_ignores_pre_queue_ticks_and_trades(tmp_path: Path) -> None:
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    store, job_id, _ = _job(tmp_path, now=started)
+    source, revision = _candidate_source(store, job_id)
+    queued_at = started + timedelta(days=1)
+    proposal = stage_paper_proposal(
+        store,
+        job_id,
+        arm="evolution",
+        candidate_id="candidate-forward-only",
+        candidate_root=source,
+        revision=revision,
+        source="evolution_campaign",
+        evidence={
+            "objective": {"candidate": {"trade_count": 10}},
+            "token_usage": {"tokens_in": 1, "tokens_out": 1},
+        },
+        now=queued_at,
+    )
+    stale_ticks = [
+        json.dumps(
+            {
+                "bar_ts": (
+                    queued_at - timedelta(hours=24) + timedelta(minutes=5 * i)
+                ).isoformat()
+            }
+        )
+        for i in range(289)
+    ]
+    forward_ticks = [
+        json.dumps({"bar_ts": (queued_at + timedelta(minutes=5 * i)).isoformat()})
+        for i in range(1, 290)
+    ]
+    for role, pnl in (("candidate", 10.0), ("reference", 1.0)):
+        stream = store.job_dir(job_id) / proposal[role]["stream"]
+        stream.mkdir(parents=True, exist_ok=True)
+        (stream / "ticks.jsonl").write_text(
+            "\n".join([*stale_ticks, *forward_ticks]) + "\n", encoding="utf-8"
+        )
+        (stream / "trades.jsonl").write_text(
+            json.dumps(
+                {
+                    "timestamp": (queued_at - timedelta(hours=1)).isoformat(),
+                    "net_pnl": pnl,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    outcomes = maybe_adjudicate_proposals(
+        store, job_id, now=queued_at + timedelta(hours=24, minutes=5)
+    )
+
+    assert outcomes[0]["status"] == "rejected"
+    assert outcomes[0]["candidate"]["closed_trades"] == 0
+    assert "candidate produced no closed forward trade" in outcomes[0]["reasons"]
+    history = experiment_status(store, job_id)["proposals"]["evolution"]["history"]
+    assert (
+        history[-1]["first_common_bar"]
+        == (queued_at + timedelta(minutes=5)).isoformat()
+    )
+
+
 def test_late_qualified_proposal_closes_after_experiment_completion(
     tmp_path: Path,
 ) -> None:
@@ -495,7 +559,7 @@ def test_late_qualified_proposal_closes_after_experiment_completion(
         },
         now=started + timedelta(hours=1),
     )
-    first_bar = started + timedelta(hours=1)
+    first_bar = started + timedelta(hours=1, minutes=5)
     ticks = [
         json.dumps({"bar_ts": (first_bar + timedelta(minutes=5 * i)).isoformat()})
         for i in range(289)
