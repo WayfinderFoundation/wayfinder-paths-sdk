@@ -62,10 +62,12 @@ BURST_MAX_POSTPONE_S = 600.0
 # BURST_MAX_POSTPONE_S. Env-tunable via WAYFINDER_BURST_SHORT_POSTPONE_S.
 BURST_SHORT_POSTPONE_S = 120.0
 # Agent wakes are advisory LLM sessions that burn CPU for many minutes — the
-# single worst thing to launch on a drained machine. SCHEDULED wakes due
-# under the water mark are skipped outright (schedule advances; the next
-# wake fires normally). Event-triggered wakes (risk_halt etc.) are
-# time-sensitive responses and keep the short postpone floor instead.
+# single worst thing to launch on a drained machine — so they defer on the
+# short floor while the drain lasts. They are DEFERRED, never skipped: the
+# skip-outright variant once starved a job's wakes for 90+ minutes while its
+# own evolution evals drained the bucket and a dead eval sat unretried. A job
+# whose evolution campaign is active is fully exempt — its wake supervises
+# the very compute that drained the bucket.
 DEFAULT_SYNC_DEBOUNCE_SECONDS = 90.0
 DEFAULT_MAX_RSS_MB = 900.0
 # While a proposal application is applying, the RSS restart exit is deferred
@@ -180,6 +182,34 @@ def _burst_short_postpone_s() -> float:
     return _env_postpone_s("WAYFINDER_BURST_SHORT_POSTPONE_S", BURST_SHORT_POSTPONE_S)
 
 
+# job_dir -> (campaign file mtime, active). The check runs in the daemon
+# scheduling loop (only while over quota, only for due jobs), so a stat per
+# call plus a re-read on mtime change keeps it near-free.
+_campaign_active_cache: dict[str, tuple[float, bool]] = {}
+
+
+def _evolution_campaign_active(job_dir: str) -> bool:
+    """True when the jobs_v1 job rooted at `job_dir` has an ACTIVE evolution
+    campaign — its detached evals are the likely burst drain, and the agent
+    wake is what supervises (and retries) them."""
+    path = Path(job_dir) / "state" / "evolution_campaign.json"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        _campaign_active_cache.pop(job_dir, None)
+        return False
+    cached = _campaign_active_cache.get(job_dir)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+        active = isinstance(state, dict) and state.get("status") == "active"
+    except (OSError, ValueError):
+        active = False
+    _campaign_active_cache[job_dir] = (mtime, active)
+    return active
+
+
 def _burst_postpone_tier(job: Mapping[str, Any]) -> tuple[str, float | None]:
     """Classify a due job for burst admission from the payload env the
     compiler already bakes (no new plumbing): (tier, max postpone seconds),
@@ -191,8 +221,10 @@ def _burst_postpone_tier(job: Mapping[str, Any]) -> tuple[str, float | None]:
     - The application watchdog is exempt: it un-sticks paused loops.
     - Paper ticks and indeterminate-mode jobs_v1 jobs get the short floor
       (fail toward trading availability).
-    - Agent wakes: scheduled occurrences are SKIPPED under drain (see
-      _maybe_start_job); event-triggered ones postpone on the short floor.
+    - Agent wakes defer on the short floor — DEFERRED, never skipped, so a
+      persistent drain cannot starve supervision. A wake whose job has an
+      active evolution campaign is fully exempt: the campaign's evals ARE
+      the drain, and only the wake relaunches them when they die.
     - Everything else (legacy scripts, strategy jobs, heavy ops) keeps the
       full BURST_MAX_POSTPONE_S floor.
     """
@@ -200,6 +232,9 @@ def _burst_postpone_tier(job: Mapping[str, Any]) -> tuple[str, float | None]:
     if env.get("WAYFINDER_WATCHDOG"):
         return "watchdog-exempt", None
     if env.get("WAYFINDER_JOB_AGENT_MODE"):
+        job_dir = str(env.get("WAYFINDER_JOB_DIR") or "")
+        if job_dir and _evolution_campaign_active(job_dir):
+            return "agent-evolution-exempt", None
         return "agent", _burst_short_postpone_s()
     if env.get("WAYFINDER_JOB_EXECUTION_CONTRACT") == "jobs_v1":
         mode = str(env.get("WAYFINDER_JOB_MODE") or "").strip().lower()
@@ -885,25 +920,10 @@ class RunnerDaemon:
         # bounded by BURST_MAX_POSTPONE_S so a backlog can't starve it.
         if self._burst is not None and self._burst.over_quota():
             tier, floor_s = _burst_postpone_tier(job)
-            if tier == "agent" and reason == "schedule":
-                # A scheduled advisory wake due on a drained machine is
-                # dropped for this occurrence — advance the schedule so the
-                # next one fires normally once credits re-bank. Event
-                # triggers (risk_halt, reconcile_mismatch) don't take this
-                # branch: they postpone briefly below instead.
-                if advance_schedule:
-                    nxt = next_run_after(schedule_from_job(job), now=now)
-                    if nxt is not None:
-                        self._db.set_next_run_at(job_id=job_id, next_run_at=nxt)
-                logger.info(
-                    f"Skipping scheduled agent wake {job_name}: burst balance "
-                    f"{self._burst.balance:.0f} CPU-s < "
-                    f"{BURST_LOW_WATER_CPU_S:.0f} low water"
-                )
-                return None
             if floor_s is not None:
                 first = self._postponed_since.setdefault(job_id, time.monotonic())
-                if time.monotonic() - first < floor_s:
+                waited_s = time.monotonic() - first
+                if waited_s < floor_s:
                     logger.debug(
                         f"Postponing job {job_name}: burst balance "
                         f"{self._burst.balance:.0f} CPU-s < "
@@ -911,6 +931,11 @@ class RunnerDaemon:
                         f"(tier={tier} floor={floor_s:.0f}s)"
                     )
                     return None
+                logger.info(
+                    f"Starting job {job_name} despite burst drain: postponed "
+                    f"{waited_s:.0f}s >= {floor_s:.0f}s floor (tier={tier}, "
+                    f"balance {self._burst.balance:.0f} CPU-s)"
+                )
         self._postponed_since.pop(job_id, None)
         scheduled_for = (
             int(job.get("next_run_at") or now) if reason == "schedule" else None
