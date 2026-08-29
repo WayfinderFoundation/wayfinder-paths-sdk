@@ -33,8 +33,7 @@ def _write_proposal(root, pid: str, summary: str) -> None:
 
 def test_evolution_funnel_does_not_count_full_dev_failures_as_quick_rejects() -> None:
     candidates = [
-        {"status": "quick_complete", "mutation_kind": "structural"}
-        for _ in range(9)
+        {"status": "quick_complete", "mutation_kind": "structural"} for _ in range(9)
     ]
     candidates.extend(
         [
@@ -73,6 +72,7 @@ def test_evolution_funnel_does_not_count_full_dev_failures_as_quick_rejects() ->
                 "generated": 12,
                 "full_development": 4,
                 "optuna": 2,
+                "optuna_minimum": 1,
                 "finalist_gate": 1,
             },
             "candidates": candidates,
@@ -92,7 +92,15 @@ def test_evolution_funnel_does_not_count_full_dev_failures_as_quick_rejects() ->
         "rejected": 2,
         "running": 0,
     }
-    assert funnel["optuna"] == {"completed": 0, "budget": 2, "running": 0}
+    assert funnel["optuna"] == {
+        "eligible": 0,
+        "previewed": 0,
+        "selected": 0,
+        "completed": 0,
+        "minimum": 1,
+        "budget": 2,
+        "running": 0,
+    }
 
 
 def test_threading_outcomes_and_stats(tmp_path) -> None:
@@ -271,6 +279,7 @@ def test_active_evolution_campaign_is_one_compact_progress_row(tmp_path) -> None
                 "generated": 12,
                 "full_development": 4,
                 "optuna": 2,
+                "optuna_minimum": 1,
                 "finalist_gate": 1,
             },
             "candidates": [
@@ -284,6 +293,8 @@ def test_active_evolution_campaign_is_one_compact_progress_row(tmp_path) -> None
                     "candidate_id": "c02",
                     "status": "quick_complete",
                     "mutation_kind": "parameter",
+                    "tuning_eligible": True,
+                    "tuning_preview": {"status": "complete", "trials": 3},
                     "evaluated_at": "2026-08-28T16:40:00+00:00",
                 },
                 {
@@ -291,7 +302,7 @@ def test_active_evolution_campaign_is_one_compact_progress_row(tmp_path) -> None
                     "status": "prepared",
                     "mutation_kind": "structural",
                     "prepared_at": "2026-08-28T17:00:00+00:00",
-                }
+                },
             ],
         },
     )
@@ -326,7 +337,8 @@ def test_active_evolution_campaign_is_one_compact_progress_row(tmp_path) -> None
         "detail": (
             "3/12 generated (2 structural, 1 parameter) → quick 2 pass, "
             "0 reject → full dev 0 pass, 0 reject "
-            "(0/4 complete; Optuna 0 tuned, budget 2) "
+            "(0/4 complete; Optuna 0 complete "
+            "(1 eligible, 1 previewed, 0 selected; min 1, budget 2)) "
             "→ gate 0/1; paper 0"
         ),
         "outcome": "info",
@@ -353,7 +365,15 @@ def test_active_evolution_campaign_is_one_compact_progress_row(tmp_path) -> None
                     "rejected": 0,
                     "running": 0,
                 },
-                "optuna": {"completed": 0, "budget": 2, "running": 0},
+                "optuna": {
+                    "eligible": 1,
+                    "previewed": 1,
+                    "selected": 0,
+                    "completed": 0,
+                    "minimum": 1,
+                    "budget": 2,
+                    "running": 0,
+                },
                 "finalist_gate": {
                     "evaluated": 0,
                     "target": 1,
@@ -410,7 +430,15 @@ def test_terminal_evolution_campaigns_show_outcomes_without_live_duplicate(
                     "rejected": 3,
                     "running": 0,
                 },
-                "optuna": {"completed": 1, "budget": 2, "running": 0},
+                "optuna": {
+                    "eligible": 2,
+                    "previewed": 2,
+                    "selected": 1,
+                    "completed": 1,
+                    "minimum": 1,
+                    "budget": 2,
+                    "running": 0,
+                },
                 "finalist_gate": {
                     "evaluated": 1,
                     "target": 1,
@@ -440,7 +468,10 @@ def test_terminal_evolution_campaigns_show_outcomes_without_live_duplicate(
     )
     assert entries[0]["kind"] == "research"
     assert "quick 10 pass, 2 reject" in entries[0]["detail"]
-    assert "Optuna 1 tuned, budget 2" in entries[0]["detail"]
+    assert (
+        "Optuna 1 complete "
+        "(2 eligible, 2 previewed, 1 selected; min 1, budget 2)" in entries[0]["detail"]
+    )
     assert entries[0]["metadata"]["funnel"]["finalist_gate"] == {
         "evaluated": 1,
         "target": 1,
