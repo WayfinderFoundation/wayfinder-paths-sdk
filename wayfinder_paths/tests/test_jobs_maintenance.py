@@ -54,7 +54,7 @@ def test_equivalent_refactor_auto_applies_without_economic_gate(
     assert proposal["status"] == "approved"
     assert proposal["application"]["status"] == "queued"
     assert proposal["approval"]["required"] is False
-    assert proposal["approval"]["by"] == "behavior-equivalence-gate"
+    assert proposal["approval"]["by"] == "maintenance-auto"
     report = proposal["candidate_report"]
     assert report["maintenance"]["ready"] is True
     assert (

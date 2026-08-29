@@ -57,6 +57,9 @@ def _store(
 
 
 def _write_pending_proposal(store: JobStore, job_id: str, pid: str) -> None:
+    # Approvable by construction: needs_you only surfaces pending proposals
+    # `proposal_approvable` accepts — an un-approvable pending must never be
+    # owner-visible (the watchdog triage owns it instead).
     store.write_proposal(
         job_id,
         {
@@ -65,7 +68,15 @@ def _write_pending_proposal(store: JobStore, job_id: str, pid: str) -> None:
             "status": "pending",
             "kind": "params_update",
             "proposed_change": {"summary": "raise threshold"},
+            "intent_contract": {"goal": "improve net"},
+            "scenario_plan": {"scenarios": [{"name": "s1"}]},
             "application": {"status": "not_requested"},
+            "candidate_report": {
+                "revision": "rev-cand",
+                "validation_summary": {"status": "passed"},
+                "gate": {"live_ready": True, "reasons": []},
+                "economic": {"ready": True, "enforcement": "advisory"},
+            },
         },
     )
 

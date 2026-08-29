@@ -388,12 +388,23 @@ class JobStore:
         return bool(job.script_loop.enabled)
 
     def _ensure_candidate_report_gate(
-        self, job_id: str, proposal: dict[str, Any], *, allow_ungated: bool
+        self,
+        job_id: str,
+        proposal: dict[str, Any],
+        *,
+        allow_ungated: bool,
+        verify_candidate_bytes: bool = True,
     ) -> None:
         """jobs_v1 approvals require evidence: a candidate_report whose gate
         is live-ready (or, for research-only proposals, passed validation).
         This mirrors the backend approve gate SDK-side so on-machine approvals
-        (including auto mode, which has no override) can't skip it."""
+        (including auto mode, which has no override) can't skip it.
+
+        `verify_candidate_bytes=False` skips the two byte-level freshness
+        recomputations (candidate workspace hash, dataset fingerprint) so
+        read-only callers (`proposal_approvable`) can ask the same evidence
+        question without hashing every candidate file. Approve always runs
+        with the default True — behavior there is unchanged."""
         if allow_ungated:
             return
         try:
@@ -445,14 +456,19 @@ class JobStore:
                 "the same staged candidate"
             )
         behavior_equivalent = self._ensure_maintenance_gate(
-            job_id, proposal, report, acceptance_policy=acceptance_policy
+            job_id,
+            proposal,
+            report,
+            acceptance_policy=acceptance_policy,
+            verify_candidate_bytes=verify_candidate_bytes,
         )
         if report.get("mode") == "validation_only":
             if acceptance_policy == "behavior_equivalence":
                 raise ValueError(
                     "behavior-equivalence maintenance requires a full backtest"
                 )
-            self._ensure_candidate_matches_report(job_id, proposal, report)
+            if verify_candidate_bytes:
+                self._ensure_candidate_matches_report(job_id, proposal, report)
             return
         gate = report.get("gate") or {}
         if gate.get("live_ready") is not True:
@@ -465,7 +481,8 @@ class JobStore:
             proposal_id=str(proposal.get("proposal_id") or ""),
             behavior_equivalent=behavior_equivalent,
         )
-        self._ensure_candidate_matches_report(job_id, proposal, report)
+        if verify_candidate_bytes:
+            self._ensure_candidate_matches_report(job_id, proposal, report)
 
     def _ensure_maintenance_gate(
         self,
@@ -474,6 +491,7 @@ class JobStore:
         report: dict[str, Any],
         *,
         acceptance_policy: str,
+        verify_candidate_bytes: bool = True,
     ) -> bool:
         """Validate the system-generated proof for the maintenance lane."""
         if acceptance_policy != "behavior_equivalence":
@@ -498,6 +516,8 @@ class JobStore:
             "baseline_digest"
         ) != maintenance.get("candidate_digest"):
             raise ValueError("maintenance execution-output digests do not match")
+        if not verify_candidate_bytes:
+            return True
 
         # Approval is synchronous at propose time, but re-check the cheap data
         # identity anyway so a stale proof can never be approved later.
@@ -1035,6 +1055,34 @@ class JobStore:
                     "ts": utc_now_iso(),
                 }
             )
+
+
+def proposal_approvable(
+    store: JobStore, job_id: str, proposal: dict[str, Any]
+) -> tuple[bool, str]:
+    """READ-ONLY: would `approve_proposal` pass its evidence gates right now?
+
+    Reuses the exact approve-time gate internals
+    (`_validate_applicable_proposal` + `_ensure_candidate_report_gate`,
+    which folds in the maintenance and governance gates) minus the two
+    byte-level freshness recomputations (candidate workspace hash, dataset
+    fingerprint) — those hash every candidate file and belong to the approve
+    transaction, not to feed builders or watchdog scans. A proposal this
+    helper calls approvable can therefore still be refused at approve time
+    by a freshness guard; one it calls blocked would fail approve with the
+    same message this helper returns. Never raises."""
+    if proposal.get("status") == "rejected":
+        return False, "proposal is rejected"
+    try:
+        _validate_applicable_proposal(
+            proposal, require_scenarios=store._require_scenarios(job_id)
+        )
+        store._ensure_candidate_report_gate(
+            job_id, proposal, allow_ungated=False, verify_candidate_bytes=False
+        )
+    except Exception as exc:  # noqa: BLE001 — the refusal text IS the payload
+        return False, str(exc)
+    return True, ""
 
 
 def _infer_rejection_kind(reason: str | None) -> str:
