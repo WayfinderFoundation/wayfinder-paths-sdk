@@ -112,7 +112,9 @@ def ensure_paper_experiment(
                 "candidate_entry": (
                     "immutable_24h_forward_paper_proposal_against_current_arm_champion"
                 ),
-                "proposal_clock": "first_common_completed_5m_bar_through_24h",
+                "proposal_clock": (
+                    "first_post_queue_common_completed_5m_bar_through_24h"
+                ),
                 "proposal_pnl_in_primary_endpoint": False,
                 "multiplicity": "shared_benjamini_hochberg_evidence_ledger",
                 "evolution_compute_duty_cap": float(
@@ -243,7 +245,7 @@ def stage_paper_proposal(
                 "revision": safe_revision,
                 "bundle": relative,
                 "stream": f"{stream_base}/candidate",
-                "last_processed_bar": None,
+                "last_processed_bar": current.isoformat(),
                 "error_count": 0,
             },
             "reference": {
@@ -253,7 +255,7 @@ def stage_paper_proposal(
                 "bundle": reference["bundle"],
                 "source": reference.get("source"),
                 "stream": f"{stream_base}/reference",
-                "last_processed_bar": None,
+                "last_processed_bar": current.isoformat(),
                 "error_count": 0,
             },
             "evidence": dict(evidence or {}),
@@ -591,10 +593,12 @@ def _maybe_adjudicate_proposals(
             _save_proposal_progress(store, job_id, arm, proposal)
             continue
         candidate_stats = _proposal_stats(
-            store.job_dir(job_id) / str(proposal["candidate"]["stream"])
+            store.job_dir(job_id) / str(proposal["candidate"]["stream"]),
+            after=pd.Timestamp(proposal["queued_at"]),
         )
         reference_stats = _proposal_stats(
-            store.job_dir(job_id) / str(proposal["reference"]["stream"])
+            store.job_dir(job_id) / str(proposal["reference"]["stream"]),
+            after=pd.Timestamp(proposal["queued_at"]),
         )
         verdict = _proposal_verdict(
             store,
@@ -715,6 +719,7 @@ def _proposal_verdict(
 def _common_proposal_bars(
     store: JobStore, job_id: str, proposal: dict[str, Any]
 ) -> list[pd.Timestamp]:
+    queued_at = pd.Timestamp(proposal["queued_at"])
     streams = []
     for role in ("candidate", "reference"):
         path = store.job_dir(job_id) / str(proposal[role]["stream"]) / "ticks.jsonl"
@@ -723,20 +728,30 @@ def _common_proposal_bars(
             for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
                 try:
                     row = json.loads(line)
-                    stamps.add(pd.Timestamp(row.get("bar_ts") or row.get("ts")))
+                    stamp = pd.Timestamp(row.get("bar_ts") or row.get("ts"))
+                    if stamp > queued_at:
+                        stamps.add(stamp)
                 except (TypeError, ValueError):
                     continue
         streams.append(stamps)
     return sorted(streams[0] & streams[1])
 
 
-def _proposal_stats(stream: Path) -> dict[str, Any]:
+def _proposal_stats(stream: Path, *, after: pd.Timestamp) -> dict[str, Any]:
     pnls: list[float] = []
     path = stream / "trades.jsonl"
     if path.exists():
         for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             try:
                 row = json.loads(line)
+                stamp = pd.Timestamp(
+                    row.get("closed_at")
+                    or row.get("bar_ts")
+                    or row.get("timestamp")
+                    or row.get("ts")
+                )
+                if stamp <= after:
+                    continue
                 pnls.append(
                     float(
                         row.get("net_pnl")
