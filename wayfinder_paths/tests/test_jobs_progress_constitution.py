@@ -761,6 +761,21 @@ def test_wake_mandate_hatch_stripped_and_pinned(tmp_path: Path) -> None:
     store, job_id = _make_store(tmp_path, "mandate-pin")
     sections = prepare_job_worker_prompt(store=store, job_id=job_id, mode="intervene")
     prompt = sections["stable_prefix"]
+    original_constitution = (
+        "- PROGRESS CONSTITUTION: `evolution.research_staleness` is visible "
+        "state. When the job is healthy, no verdict is pending, and "
+        "`research_staleness.stale` is true (no experiment in >3 days, or "
+        ">100 wakes since the last proposal), the wake MUST end in exactly ONE "
+        "of: (a) a staged AND executed experiment, (b) a new probation leg — "
+        "the paper entry tier accepts any candidate not clearly worse than "
+        "baseline, no owner approval needed (wayfinder_paths.jobs.probation."
+        "open_paper_probation_leg / `wayfinder job probation-open-paper`) — or "
+        "(c) an exhaustion claim FILED for mechanical coverage audit "
+        "(`wayfinder job exhaustion file ...`). Stating that research is not "
+        "warranted is NOT a legal outcome of a stale wake — prose never "
+        "satisfies the constitution.\n"
+    )
+    assert original_constitution in prompt
     assert "PROGRESS CONSTITUTION" in prompt
     assert "exactly ONE of" in prompt
     assert "exhaustion claim FILED for mechanical coverage audit" in prompt

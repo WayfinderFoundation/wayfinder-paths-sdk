@@ -2294,6 +2294,8 @@ def _persist_executable_bundle(
 ) -> tuple[str, Path]:
     _validate_parent_component(candidate_id, "candidate id")
     _validate_parent_component(revision, "candidate revision")
+    if compute_workspace_revision(source) != revision:
+        raise ValueError("source executable parent revision mismatch")
     relative = f"{PARENT_BUNDLE_ROOT}/{candidate_id}/{revision}"
     destination = store.job_dir(job_id) / relative
     if destination.exists():
@@ -2479,14 +2481,18 @@ def _select_parent_plan(
     pool = (manifest.get("parent_pool") or {}).get("candidates") or []
     qd_ids = set((manifest.get("parent_pool") or {}).get("qd_elite_ids") or [])
     qd = [item for item in pool if item.get("candidate_id") in qd_ids]
+    crossover_pool = [item for item in pool if item.get("status") != "incumbent"]
     if requested_source == "incumbent":
         return {"source": "incumbent", "parents": []}
     if requested_source == "qd_elite" and qd:
         parent = qd[(slot - 1) % len(qd)]
         return {"source": "qd_elite", "parents": [parent], "primary": parent}
-    if requested_source == "crossover" and len(pool) >= 2:
-        first = (slot - 1) % len(pool)
-        pair = [pool[first], pool[(first + 1) % len(pool)]]
+    if requested_source == "crossover" and len(crossover_pool) >= 2:
+        first = (slot - 1) % len(crossover_pool)
+        pair = [
+            crossover_pool[first],
+            crossover_pool[(first + 1) % len(crossover_pool)],
+        ]
         pair.sort(key=_archive_entry_score, reverse=True)
         return {
             "source": "crossover",
@@ -2531,7 +2537,18 @@ def _materialize_candidate_seed(
         parent = _resolve_frozen_parent_bundle(
             store, job_id, campaign_id, str(primary.get("bundle") or "")
         )
+        if compute_workspace_revision(parent) != str(primary.get("revision") or ""):
+            raise ValueError("frozen executable parent revision mismatch")
         _copy_active_bundle(parent, candidate_root)
+        job_data = _load_job_yaml(candidate_root)
+        params = dict(job_data.get("execution_params") or {})
+        for key in _TARGET_EXECUTION_PARAM_KEYS:
+            params.pop(key, None)
+        params.update(_target_execution_params(frozen_source))
+        job_data["execution_params"] = params
+        atomic_write_text(
+            candidate_root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
+        )
     elif source == "starter_seed":
         _copy_clean_scaffold(store, job_id, frozen_source, candidate_root)
         _install_starter_seed(
@@ -2561,12 +2578,7 @@ def _copy_clean_scaffold(
     if risk_limits is not None:
         (destination / "workspace" / "risk_limits.json").write_bytes(risk_limits)
     job_data = _load_job_yaml(destination)
-    target_params = dict(job_data.get("execution_params") or {})
-    job_data["execution_params"] = {
-        key: target_params[key]
-        for key in _TARGET_EXECUTION_PARAM_KEYS
-        if key in target_params
-    }
+    job_data["execution_params"] = _target_execution_params(source_root)
     atomic_write_text(
         destination / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
     )
@@ -2606,15 +2618,8 @@ def _install_starter_seed(
     if script is None:
         raise ValueError("starter seed candidate has no execution entrypoint")
     atomic_write_text(script, source.read_text(encoding="utf-8"))
-    target_params = dict(job_data.get("execution_params") or {})
     params = dict(starter.get("params") or {})
-    params.update(
-        {
-            key: target_params[key]
-            for key in _TARGET_EXECUTION_PARAM_KEYS
-            if key in target_params
-        }
-    )
+    params.update(_target_execution_params(candidate_root))
     params["warmup_bars"] = int(starter["warmup_bars"])
     params["lookback_bars"] = int(starter["lookback_bars"])
     params.pop("full_history", None)
@@ -2622,6 +2627,13 @@ def _install_starter_seed(
     atomic_write_text(
         candidate_root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
     )
+
+
+def _target_execution_params(source_root: Path) -> dict[str, Any]:
+    params = dict(_load_job_yaml(source_root).get("execution_params") or {})
+    return {
+        key: params[key] for key in _TARGET_EXECUTION_PARAM_KEYS if key in params
+    }
 
 
 def _resolve_frozen_parent_bundle(

@@ -699,8 +699,10 @@ def _build_worker_prompt_sections(
         "the evolution campaign consumes this evidence."
         if evolution_enabled
         else (
-            "Act on a matured promotion verdict this wake: propose the next "
-            "candidate, run the next experiment, or record precisely why not."
+            "Act on it THIS wake — propose the next candidate, run the next "
+            "experiment, or record in the report precisely why not. A neutral "
+            "verdict means the change did nothing: that is license to try the "
+            "next candidate, not to wait."
         )
     )
     progress_rule = (
@@ -713,14 +715,20 @@ def _build_worker_prompt_sections(
         "staleness; evolution is the sole candidate factory.\n"
         if evolution_enabled
         else (
-            "- PROGRESS CONSTITUTION: `evolution.research_staleness` is visible "
-            "state. When the job is healthy, no verdict is pending, and "
-            f"research is stale (>{improver_spec.staleness_experiment_days:g} "
-            f"days without an experiment or >{improver_spec.staleness_wakes} "
-            "wakes since a proposal), end in exactly ONE of: a staged+executed "
-            "experiment, a paper probation leg, or an exhaustion claim FILED "
-            "for mechanical coverage audit. Stating that research is not "
-            "warranted is NOT a legal outcome.\n"
+            "- PROGRESS CONSTITUTION: `evolution.research_staleness` is "
+            "visible state. When the job is healthy, no verdict is pending, "
+            "and `research_staleness.stale` is true (no experiment in "
+            f">{improver_spec.staleness_experiment_days:g} days, or "
+            f">{improver_spec.staleness_wakes} wakes since the last "
+            "proposal), the wake MUST end in exactly ONE of: (a) a staged AND "
+            "executed experiment, (b) a new probation leg — the paper entry "
+            "tier accepts any candidate not clearly worse than baseline, no "
+            "owner approval needed (wayfinder_paths.jobs.probation."
+            "open_paper_probation_leg / `wayfinder job probation-open-paper`) "
+            "— or (c) an exhaustion claim FILED for mechanical coverage audit "
+            "(`wayfinder job exhaustion file ...`). Stating that research is "
+            "not warranted is NOT a legal outcome of a stale wake — prose "
+            "never satisfies the constitution.\n"
         )
     )
     memory_md = _read_text(root / "memory.md", max_chars=6000)
@@ -1052,6 +1060,21 @@ def _build_worker_prompt_sections(
             "exact behavior-equivalence maintenance, and owner-requested "
             "re-stage work. Forward results adjudicate changes; never fit to "
             "the forward stream.\n"
+            "- Regime alarm triage: a standing_checks."
+            "portfolio_regime_health warning/critical OVERRIDES ordinary "
+            "sensor work: stop routine diagnosis, read the detector's named "
+            "signals, then cite the automatically refreshed `attribution` "
+            "block before choosing whether to revert, de-risk, gate a regime, "
+            "or re-validate. Never explain away a critical drawdown because "
+            "one entry signal still backtests.\n"
+            "- If an allowed propose returns a failed validation, read ALL "
+            "failed check names and fix them in ONE follow-up propose; after "
+            "2 failed propose attempts in a wake, stop and report the blocker "
+            "instead of retrying.\n"
+            "- A pending proposal whose candidate_report failed with "
+            "failure_kind 'infrastructure' is a box condition, not evidence: "
+            "run `wayfinder job revalidate <job_id> <proposal_id>` on the "
+            "same candidate instead of rejecting or re-proposing.\n"
         )
         if evolution_enabled
         else (

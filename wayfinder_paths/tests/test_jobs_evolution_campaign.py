@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -22,8 +23,10 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _claim_full_dev,
     _commit_full_dev,
     _isolated_full_dev,
+    _materialize_candidate_seed,
     _parameter_tuning_preview,
     _parent_source,
+    _persist_executable_bundle,
     _same_family_nonwins,
     _select_full_dev_candidate,
     _select_parent_plan,
@@ -247,6 +250,9 @@ def test_evolution_enabled_intervention_prompt_is_sensor_and_safety_only(
     assert "supersedes generic candidate/probation mandates" in prefix
     assert "exact behavior-equivalence maintenance" in prefix
     assert "EVOLUTION SENSOR CONTRACT" in prompt
+    assert "Regime alarm triage" in prompt
+    assert "read ALL failed check names" in prompt
+    assert "wayfinder job revalidate <job_id> <proposal_id>" in prompt
     assert "open_paper_probation_leg" not in prompt
     assert "When you want to RECOMMEND a strategy/params change" not in prompt
 
@@ -465,6 +471,16 @@ def test_de_novo_seed_keeps_target_infra_but_drops_incumbent_alpha(tmp_path) -> 
 
 def test_next_campaign_materializes_real_qd_parent_bytes(tmp_path) -> None:
     store, job_id = _job(tmp_path, "majors-5m-lab")
+    job_path = store.job_dir(job_id) / "job.yaml"
+    job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
+    job_data["execution_params"] = {
+        "symbols": ["SOL"],
+        "fee_bps": 1.0,
+        "leverage": 1.0,
+        "wallet_label": "old-wallet",
+        "parent_alpha_threshold": 0.7,
+    }
+    job_path.write_text(yaml.safe_dump(job_data, sort_keys=False), encoding="utf-8")
     started = datetime(2026, 8, 25, 12, tzinfo=UTC)
     first_state = start_campaign(store, job_id, now=started)
     elite = prepare_candidate(
@@ -504,6 +520,17 @@ def test_next_campaign_materializes_real_qd_parent_bytes(tmp_path) -> None:
     store.write_json(job_id, "state/evolution_campaign.json", state)
     _archive_campaign_candidate(store, job_id, state["candidates"][0])
 
+    job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
+    job_data["execution_params"].update(
+        {
+            "symbols": ["BTC", "ETH"],
+            "fee_bps": 4.5,
+            "leverage": 2.0,
+            "wallet_label": "current-wallet",
+        }
+    )
+    job_path.write_text(yaml.safe_dump(job_data, sort_keys=False), encoding="utf-8")
+
     second_state = start_campaign(
         store, job_id, now=started + timedelta(days=1), force=True
     )
@@ -524,6 +551,7 @@ def test_next_campaign_materializes_real_qd_parent_bytes(tmp_path) -> None:
     child_script = (
         store.job_dir(job_id) / child["bundle"] / "workspace" / "src" / "strategy.py"
     ).read_text(encoding="utf-8")
+    child_params = _read_bundle_params(store, job_id, child["bundle"])
     manifest = json.loads(
         (store.job_dir(job_id) / second_state["manifest"]).read_text(encoding="utf-8")
     )
@@ -531,8 +559,13 @@ def test_next_campaign_materializes_real_qd_parent_bytes(tmp_path) -> None:
     assert second_state["campaign_id"] != first_state["campaign_id"]
     assert child["parent_source"] == "qd_elite"
     assert child["parent_candidate_ids"] == [elite["candidate_id"]]
-    assert child["seed_revision"] == revision
+    assert child["seed_revision"] != revision
     assert "ELITE_MARKER = 'real-parent'" in child_script
+    assert child_params["parent_alpha_threshold"] == 0.7
+    assert child_params["symbols"] == ["BTC", "ETH"]
+    assert child_params["fee_bps"] == 4.5
+    assert child_params["leverage"] == 2.0
+    assert child_params["wallet_label"] == "current-wallet"
     assert manifest["parent_pool"]["qd_elite_ids"] == [elite["candidate_id"]]
     archived = next(
         item
@@ -553,9 +586,18 @@ def test_crossover_requires_two_real_parents_and_uses_stronger_primary() -> None
         "bundle": "parents/strong",
         "objective": {"net_log_growth": 0.5},
     }
+    incumbent = {
+        "candidate_id": "archived-incumbent",
+        "bundle": "parents/archived-incumbent",
+        "status": "incumbent",
+        "objective": {"net_log_growth": 1.0},
+    }
     plan = _select_parent_plan(
         {
-            "parent_pool": {"candidates": [weak, strong], "qd_elite_ids": []},
+            "parent_pool": {
+                "candidates": [incumbent, weak, strong],
+                "qd_elite_ids": [],
+            },
             "starter_seeds": [],
         },
         requested_source="crossover",
@@ -566,6 +608,49 @@ def test_crossover_requires_two_real_parents_and_uses_stronger_primary() -> None
     assert plan["source"] == "crossover"
     assert plan["primary"]["candidate_id"] == "strong"
     assert plan["secondary"]["candidate_id"] == "weak"
+    assert "archived-incumbent" not in {
+        item["candidate_id"] for item in plan["parents"]
+    }
+
+
+def test_parent_bundle_integrity_is_checked_at_both_copy_boundaries(tmp_path) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    manifest_path = store.job_dir(job_id) / state["manifest"]
+    campaign_root = manifest_path.parent
+    frozen_source = campaign_root / "source"
+    revision = compute_workspace_revision(frozen_source)
+
+    with pytest.raises(ValueError, match="source executable parent revision mismatch"):
+        _persist_executable_bundle(
+            store,
+            job_id,
+            candidate_id="tampered-source",
+            revision="wrong-revision",
+            source=frozen_source,
+        )
+
+    parent = campaign_root / "parents" / "elite"
+    parent.mkdir(parents=True)
+    shutil.copy2(frozen_source / "job.yaml", parent / "job.yaml")
+    shutil.copytree(frozen_source / "workspace", parent / "workspace")
+    assert compute_workspace_revision(parent) == revision
+    (parent / "workspace" / "src" / "strategy.py").write_text(
+        "def decide(ctx):\n    raise RuntimeError('tampered')\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="frozen executable parent revision mismatch"):
+        _materialize_candidate_seed(
+            store,
+            job_id,
+            campaign_id=state["campaign_id"],
+            candidate_root=campaign_root / "candidates" / "poisoned-child",
+            plan={
+                "source": "qd_elite",
+                "primary": {"bundle": "parents/elite", "revision": revision},
+            },
+        )
 
 
 def test_campaign_freezes_only_existing_refutations_and_validated_wins(
