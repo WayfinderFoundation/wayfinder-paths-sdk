@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import shutil
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -18,13 +19,17 @@ from wayfinder_paths.jobs.archive import (
 )
 from wayfinder_paths.jobs.compute_lock import ComputeLockBusy
 from wayfinder_paths.jobs.evolution_campaign import (
+    _archive_campaign_candidate,
     _claim_full_dev,
     _commit_full_dev,
     _isolated_full_dev,
+    _materialize_candidate_seed,
     _parameter_tuning_preview,
     _parent_source,
+    _persist_executable_bundle,
     _same_family_nonwins,
     _select_full_dev_candidate,
+    _select_parent_plan,
     _write_timeseries_prefix,
     campaign_due,
     campaign_prompt_block,
@@ -48,10 +53,16 @@ from wayfinder_paths.jobs.starter_casebook import (
     load_starter_casebook,
     select_starter_cases,
 )
+from wayfinder_paths.jobs.starters import (
+    STARTER_DEFINITIONS,
+    starter_lookback_bars,
+    starter_warmup_bars,
+)
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.worker import (
     _queue_evolution_worker,
     nudge_evolution_session,
+    prepare_job_worker_prompt,
     recover_evolution_stage_session,
     retire_evolution_session,
     run_job_worker,
@@ -140,7 +151,9 @@ def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
         "paper_only": True,
         "live_requires_owner": True,
         "candidate_inputs_frozen_at_campaign_start": True,
-        "finalist_requires_24h_forward_proposal": True,
+        "finalist_requires_24h_operational_burn_in": True,
+        "starter_seed_evidence_resets": True,
+        "refuted_family_matching": "exact_free_form_family_v1",
     }
     assert len(load_starter_casebook()) > len(block["cases"])
 
@@ -221,6 +234,27 @@ def test_active_evolution_suppresses_the_parallel_intervention_llm(
     assert report["queued"] is False
     assert report["session_id"] == "evolution-session"
     assert "deferred while evolution owns the lane" in report["summary"]
+
+
+def test_evolution_enabled_intervention_prompt_is_sensor_and_safety_only(
+    tmp_path,
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+
+    sections = prepare_job_worker_prompt(store=store, job_id=job_id, mode="intervene")
+
+    prefix = sections["stable_prefix"]
+    prompt = sections["prompt"]
+    assert "sensor/safety lane" in prefix
+    assert "belong exclusively to the evolution campaign" in prefix
+    assert "supersedes generic candidate/probation mandates" in prefix
+    assert "exact behavior-equivalence maintenance" in prefix
+    assert "EVOLUTION SENSOR CONTRACT" in prompt
+    assert "Regime alarm triage" in prompt
+    assert "read ALL failed check names" in prompt
+    assert "wayfinder job revalidate <job_id> <proposal_id>" in prompt
+    assert "open_paper_probation_leg" not in prompt
+    assert "When you want to RECOMMEND a strategy/params change" not in prompt
 
 
 def test_governor_diagnostic_error_does_not_wedge_the_intervention_lane(
@@ -341,7 +375,10 @@ def test_prepare_candidate_isolated_lineage_and_mutation_budget(tmp_path) -> Non
         summary="stuck rule jumps basin",
         now=datetime(2026, 8, 25, 13, tzinfo=UTC),
     )
-    assert second["parent_source"] == "qd_elite"
+    assert second["requested_parent_source"] == "qd_elite"
+    assert second["parent_source"] == "starter_seed"
+    assert second["starter_seed_id"]
+    assert second["parent_candidate_ids"] == []
     assert third["forced_jump"] is True
     assert third["parent_source"] == "de_novo"
 
@@ -356,6 +393,338 @@ def test_prepare_candidate_isolated_lineage_and_mutation_budget(tmp_path) -> Non
         "crossover": 2,
         "de_novo": 2,
     }
+
+
+def test_cold_start_seed_uses_starter_window_and_resets_evidence(tmp_path) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    job_path = store.job_dir(job_id) / "job.yaml"
+    job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
+    job_data["execution_params"] = {
+        "symbols": ["BTC", "ETH"],
+        "fee_bps": 4.5,
+        "slippage_bps": 3.5,
+    }
+    job_path.write_text(yaml.safe_dump(job_data, sort_keys=False), encoding="utf-8")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    prepare_candidate(
+        store,
+        job_id,
+        family="incumbent-neighbor",
+        summary="consume incumbent slot",
+        now=started + timedelta(hours=1),
+    )
+    seeded = prepare_candidate(
+        store,
+        job_id,
+        family="starter-transfer",
+        summary="adapt an audited starter",
+        now=started + timedelta(hours=1),
+    )
+
+    definition = next(
+        item for item in STARTER_DEFINITIONS if item.id == seeded["starter_seed_id"]
+    )
+    params = _read_bundle_params(store, job_id, seeded["bundle"])
+    script = (
+        store.job_dir(job_id) / seeded["bundle"] / "workspace" / "src" / "strategy.py"
+    ).read_text(encoding="utf-8")
+
+    assert seeded["requested_parent_source"] == "qd_elite"
+    assert seeded["parent_source"] == "starter_seed"
+    assert seeded["evidence_reset"] is True
+    assert params["warmup_bars"] == starter_warmup_bars(definition)
+    assert params["lookback_bars"] == starter_lookback_bars(definition)
+    assert definition.module.rsplit(".", 1)[-1].split("_")[0] in script.lower()
+    assert params["symbols"] == ["BTC", "ETH"]
+    assert params["fee_bps"] == 4.5
+
+
+def test_de_novo_seed_keeps_target_infra_but_drops_incumbent_alpha(tmp_path) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    job_path = store.job_dir(job_id) / "job.yaml"
+    job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
+    job_data["execution_params"] = {
+        "symbols": ["BTC", "ETH"],
+        "fee_bps": 4.5,
+        "slippage_bps": 3.5,
+        "incumbent_alpha_threshold": 0.73,
+    }
+    job_path.write_text(yaml.safe_dump(job_data, sort_keys=False), encoding="utf-8")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    candidates = _prepare_campaign_candidates(store, job_id, started)
+    de_novo = candidates[3]
+    params = _read_bundle_params(store, job_id, de_novo["bundle"])
+    script = (
+        store.job_dir(job_id) / de_novo["bundle"] / "workspace" / "src" / "strategy.py"
+    ).read_text(encoding="utf-8")
+
+    assert de_novo["requested_parent_source"] == "de_novo"
+    assert de_novo["parent_source"] == "de_novo"
+    assert "incumbent_alpha_threshold" not in params
+    assert params["symbols"] == ["BTC", "ETH"]
+    assert params["fee_bps"] == 4.5
+    assert params["warmup_bars"] == DEFAULT_WARMUP_BARS
+    assert "Clean de-novo evolution scaffold" in script
+
+
+def test_next_campaign_materializes_real_qd_parent_bytes(tmp_path) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    job_path = store.job_dir(job_id) / "job.yaml"
+    job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
+    job_data["execution_params"] = {
+        "symbols": ["SOL"],
+        "fee_bps": 1.0,
+        "leverage": 1.0,
+        "wallet_label": "old-wallet",
+        "parent_alpha_threshold": 0.7,
+    }
+    job_path.write_text(yaml.safe_dump(job_data, sort_keys=False), encoding="utf-8")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    first_state = start_campaign(store, job_id, now=started)
+    elite = prepare_candidate(
+        store,
+        job_id,
+        family="compression-breakout",
+        summary="validated executable elite",
+        now=started + timedelta(hours=1),
+    )
+    elite_root = store.job_dir(job_id) / elite["bundle"]
+    elite_script = elite_root / "workspace" / "src" / "strategy.py"
+    elite_script.write_text(
+        "def decide(ctx):\n    return []\n\nELITE_MARKER = 'real-parent'\n",
+        encoding="utf-8",
+    )
+    revision = compute_workspace_revision(elite_root)
+    state = campaign_status(store, job_id)
+    state["candidates"][0].update(
+        {
+            "status": "dev_frontier",
+            "revision": revision,
+            "objective": {
+                "net_log_growth": 1.0,
+                "downside_deviation": 0.1,
+                "tail_loss": 0.1,
+                "max_drawdown_pct": 0.1,
+            },
+            "behavior": {
+                "direction_bias": 0.5,
+                "average_hold_bars": 24,
+                "trades_per_asset_30d": 10,
+            },
+            "dev": {"validation": {"stats": {"net_return": 0.1}}},
+        }
+    )
+    state["status"] = "complete"
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    _archive_campaign_candidate(store, job_id, state["candidates"][0])
+
+    job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
+    job_data["execution_params"].update(
+        {
+            "symbols": ["BTC", "ETH"],
+            "fee_bps": 4.5,
+            "leverage": 2.0,
+            "wallet_label": "current-wallet",
+        }
+    )
+    job_path.write_text(yaml.safe_dump(job_data, sort_keys=False), encoding="utf-8")
+
+    second_state = start_campaign(
+        store, job_id, now=started + timedelta(days=1), force=True
+    )
+    prepare_candidate(
+        store,
+        job_id,
+        family="incumbent-neighbor",
+        summary="consume incumbent slot",
+        now=started + timedelta(days=1, hours=1),
+    )
+    child = prepare_candidate(
+        store,
+        job_id,
+        family="compression-crossover",
+        summary="mutate the frozen elite",
+        now=started + timedelta(days=1, hours=1),
+    )
+    child_script = (
+        store.job_dir(job_id) / child["bundle"] / "workspace" / "src" / "strategy.py"
+    ).read_text(encoding="utf-8")
+    child_params = _read_bundle_params(store, job_id, child["bundle"])
+    manifest = json.loads(
+        (store.job_dir(job_id) / second_state["manifest"]).read_text(encoding="utf-8")
+    )
+
+    assert second_state["campaign_id"] != first_state["campaign_id"]
+    assert child["parent_source"] == "qd_elite"
+    assert child["parent_candidate_ids"] == [elite["candidate_id"]]
+    assert child["seed_revision"] != revision
+    assert "ELITE_MARKER = 'real-parent'" in child_script
+    assert child_params["parent_alpha_threshold"] == 0.7
+    assert child_params["symbols"] == ["BTC", "ETH"]
+    assert child_params["fee_bps"] == 4.5
+    assert child_params["leverage"] == 2.0
+    assert child_params["wallet_label"] == "current-wallet"
+    assert manifest["parent_pool"]["qd_elite_ids"] == [elite["candidate_id"]]
+    archived = next(
+        item
+        for item in load_archive(store, job_id)["candidates"]
+        if item["candidate_id"] == elite["candidate_id"]
+    )
+    assert archived["metadata"]["executable_bundle"].endswith(revision)
+
+
+def test_crossover_requires_two_real_parents_and_uses_stronger_primary() -> None:
+    weak = {
+        "candidate_id": "weak",
+        "bundle": "parents/weak",
+        "objective": {"net_log_growth": 0.1},
+    }
+    strong = {
+        "candidate_id": "strong",
+        "bundle": "parents/strong",
+        "objective": {"net_log_growth": 0.5},
+    }
+    incumbent = {
+        "candidate_id": "archived-incumbent",
+        "bundle": "parents/archived-incumbent",
+        "status": "incumbent",
+        "objective": {"net_log_growth": 1.0},
+    }
+    plan = _select_parent_plan(
+        {
+            "parent_pool": {
+                "candidates": [incumbent, weak, strong],
+                "qd_elite_ids": [],
+            },
+            "starter_seeds": [],
+        },
+        requested_source="crossover",
+        slot=1,
+        candidates=[],
+    )
+
+    assert plan["source"] == "crossover"
+    assert plan["primary"]["candidate_id"] == "strong"
+    assert plan["secondary"]["candidate_id"] == "weak"
+    assert "archived-incumbent" not in {
+        item["candidate_id"] for item in plan["parents"]
+    }
+
+
+def test_parent_bundle_integrity_is_checked_at_both_copy_boundaries(tmp_path) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    manifest_path = store.job_dir(job_id) / state["manifest"]
+    campaign_root = manifest_path.parent
+    frozen_source = campaign_root / "source"
+    revision = compute_workspace_revision(frozen_source)
+
+    with pytest.raises(ValueError, match="source executable parent revision mismatch"):
+        _persist_executable_bundle(
+            store,
+            job_id,
+            candidate_id="tampered-source",
+            revision="wrong-revision",
+            source=frozen_source,
+        )
+
+    parent = campaign_root / "parents" / "elite"
+    parent.mkdir(parents=True)
+    shutil.copy2(frozen_source / "job.yaml", parent / "job.yaml")
+    shutil.copytree(frozen_source / "workspace", parent / "workspace")
+    assert compute_workspace_revision(parent) == revision
+    (parent / "workspace" / "src" / "strategy.py").write_text(
+        "def decide(ctx):\n    raise RuntimeError('tampered')\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="frozen executable parent revision mismatch"):
+        _materialize_candidate_seed(
+            store,
+            job_id,
+            campaign_id=state["campaign_id"],
+            candidate_root=campaign_root / "candidates" / "poisoned-child",
+            plan={
+                "source": "qd_elite",
+                "primary": {"bundle": "parents/elite", "revision": revision},
+            },
+        )
+
+
+def test_campaign_freezes_only_existing_refutations_and_validated_wins(
+    tmp_path,
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    record_candidate(
+        store,
+        job_id,
+        candidate_id="refuted-1",
+        family="volatility-regime-entry-gate",
+        summary="failed branch",
+        status="refuted",
+        objective=None,
+        evidence="negative paired folds",
+    )
+    store.write_json(
+        job_id,
+        "probation.json",
+        {
+            "legs": [
+                {
+                    "name": "compression-gate",
+                    "symbol": "HYPE",
+                    "status": "graduated",
+                    "graduate": {"progress": "positive forward effect"},
+                    "closed_at": "2026-08-24T00:00:00+00:00",
+                }
+            ]
+        },
+    )
+    store.write_json(
+        job_id,
+        "state/promotion_verdicts.json",
+        {
+            "prop-win": {
+                "verdict": "beat",
+                "strategy_effect": 3.5,
+                "recorded_at": "2026-08-25T00:00:00+00:00",
+            },
+            "prop-execution-only": {
+                "verdict": "beat",
+                "strategy_effect": 0.0,
+                "recorded_at": "2026-08-26T00:00:00+00:00",
+            },
+        },
+    )
+
+    state = start_campaign(store, job_id, now=datetime(2026, 8, 27, 12, tzinfo=UTC))
+    manifest = json.loads(
+        (store.job_dir(job_id) / state["manifest"]).read_text(encoding="utf-8")
+    )
+    context = manifest["research_context"]
+
+    assert context["refuted_families"] == [
+        {
+            "family": "volatility-regime-entry-gate",
+            "candidate_id": "refuted-1",
+            "evidence": "negative paired folds",
+        }
+    ]
+    assert {item["id"] for item in context["validated_positives"]} == {
+        "compression-gate",
+        "prop-win",
+    }
+    assert context["matching"] == "exact_free_form_family_v1"
+    assert "not deletion of a refutation" in context["accepted_limitation"]
+    block = campaign_prompt_block(
+        store, job_id, now=datetime(2026, 8, 27, 13, tzinfo=UTC)
+    )
+    assert block is not None
+    assert block["research_context"] == context
+    assert "volatility-regime-entry-gate" in block["next_action"]
+    assert "prop-win" in block["next_action"]
 
 
 def test_campaign_assigns_parameter_slots_and_preserves_optuna_budget(tmp_path) -> None:

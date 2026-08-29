@@ -8,13 +8,11 @@ by weighted-deficit rotation against the ImproverSpec's allocation weights.
 No RNG — the assignment is a pure function of on-disk state, so any
 sequence is auditable and replayable.
 
-Islands:
-- exploit         — refine the incumbent's neighborhood (grids, exits, params)
-- adjacent        — validated family, new cell (regime, symbol, timeframe)
-- divergent       — new basin (family not in dead map, universe, sizing axis)
-- diversification — behaviorally different candidates from the live book
-- falsifier       — attack the incumbent; a confirmed refutation is a WIN
-- historian       — mine the archive (revive frontier branches, autopsy dead)
+The island names remain stable for allocation/history compatibility. Their
+directives are sensor-first: diagnose local surfaces, transfer, missing
+diversity, refutations, and archive evidence. On jobs with open evolution,
+that campaign is the only ordinary candidate factory; intervention keeps
+safety/remediation authority.
 
 Boosts are deterministic weight multipliers derived from visible state:
 verdict stuck-streak -> divergent; opportunity_recall.missed -> historian;
@@ -57,42 +55,38 @@ _CONTINUATION_WINDOW_S = 2 * 3600
 
 ISLAND_DIRECTIVES: dict[str, str] = {
     "exploit": (
-        "Refine the incumbent's neighborhood: parameter/exit-structure "
-        "experiments on the ACTIVE families (grid for attribution, optuna "
-        "for wide spaces), promote-params on validated winners. Cite the "
-        "trial lineage before sampling — re-running a flat region is spent "
-        "budget."
+        "Sense the incumbent's local surface: run deterministic parameter or "
+        "exit attribution on ACTIVE families and record flat/fragile regions. "
+        "When open evolution is enabled, hand validated findings to its archive; "
+        "do not author an ordinary alpha candidate in this lane."
     ),
     "adjacent": (
-        "Extend a VALIDATED family to a new cell: another regime "
-        "(--condition-regime), symbol, or timeframe. The family's evidence "
-        "transfers as a prior, not as a result — the new cell earns its own "
-        "scan + walk-forward before any proposal."
+        "Test whether a VALIDATED family transfers to another regime, symbol, "
+        "or timeframe. Produce a falsifiable diagnostic with its own scan and "
+        "walk-forward evidence; transfer is a prior, never a result."
     ),
     "divergent": (
-        "Jump basins: a family not in the dead map, a universe-scan, or the "
-        "sizing/leverage axis. Wide typed search spaces with "
-        "optimizer=optuna (multi-objective for structural sweeps). Do NOT "
-        "refine the incumbent this wake — that is exploit's job."
+        "Inspect an untested basin, universe slice, or sizing axis and produce "
+        "a bounded hypothesis brief grounded in data. When open evolution is "
+        "enabled, it owns executable candidate generation from that evidence."
     ),
     "diversification": (
-        "Hunt candidates whose BEHAVIOR differs from the live book: holding "
-        "period, direction bias, entry frequency (trial behavior "
-        "descriptors + archive behavior fields). A book of clones is one "
-        "bet wearing several names — score candidates by behavioral "
-        "distance, not just return."
+        "Measure where the live book lacks behavioral diversity: holding period, "
+        "direction bias, entry frequency, and cross-leg correlation. Record the "
+        "largest evidenced gap for evolution; do not build a parallel candidate."
     ),
     "falsifier": (
         "Attack the incumbent: re-run replication, probe regime-slice decay "
         "(t_recent within active cells), re-test the weakest live "
         "assumption on fresh data. You are trying to REFUTE — a confirmed "
-        "refutation (with a revert/kill proposal) is a successful wake."
+        "refutation is a successful wake. A concrete safety breach may still "
+        "produce a narrowly scoped revert, kill, or de-risk proposal."
     ),
     "historian": (
-        "Mine the archive: investigate opportunity_recall.missed candidates "
-        "FIRST (cite candidate_id), autopsy refuted branches for the "
-        "condition that killed them, map flat regions from trial lineage. "
-        "Output: revive with evidence, or bury with a written reason."
+        "Mine the existing archive: investigate opportunity_recall.missed first, "
+        "autopsy refuted branches, and verify whether named new evidence exists. "
+        "Update the existing durable verdict/evidence artifacts only; do not "
+        "create a new knowledge index or candidate engine."
     ),
 }
 

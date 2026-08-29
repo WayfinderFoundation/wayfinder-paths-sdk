@@ -392,7 +392,7 @@ def test_resource_and_admissions_parity_are_reported_not_gating(
     }
 
 
-def test_non_incumbent_champion_requires_strict_forward_improvement(
+def test_operational_burn_in_does_not_rejudge_forward_edge(
     tmp_path: Path,
 ) -> None:
     started = datetime(2026, 8, 1, tzinfo=UTC)
@@ -435,10 +435,75 @@ def test_non_incumbent_champion_requires_strict_forward_improvement(
         coverage=1.0,
     )
 
-    assert tied["status"] == "rejected"
-    assert "strictly improve" in tied["reasons"][-1]
+    assert tied["status"] == "qualified"
     assert better["status"] == "qualified"
     assert first_challenger["status"] == "qualified"
+    assert tied["admission_basis"] == "operational_burn_in"
+    assert tied["reasons"] == []
+
+
+@pytest.mark.parametrize(
+    ("mature", "candidate_errors", "reference_errors", "drawdown", "reason"),
+    [
+        (False, 0, 0, 0.0, "insufficient common-bar coverage"),
+        (True, 1, 0, 0.0, "candidate raised during paper proposal"),
+        (True, 0, 1, 0.0, "reference raised during paper proposal"),
+        (True, 0, 0, 0.5, "candidate breached the owner drawdown ceiling"),
+    ],
+)
+def test_operational_burn_in_still_rejects_coverage_errors_and_safety(
+    tmp_path: Path,
+    mature: bool,
+    candidate_errors: int,
+    reference_errors: int,
+    drawdown: float,
+    reason: str,
+) -> None:
+    store, job_id, _ = _job(tmp_path, now=datetime(2026, 8, 1, tzinfo=UTC))
+    proposal = {
+        "arm": "evolution",
+        "candidate_id": "candidate-operational",
+        "revision": "revision-operational",
+        "candidate": {"error_count": candidate_errors},
+        "reference": {"error_count": reference_errors, "source": "incumbent"},
+    }
+    stats = {"closed_trades": 0, "net_return": 0.0, "max_drawdown_pct": drawdown}
+
+    verdict = _proposal_verdict(
+        store,
+        job_id,
+        proposal,
+        candidate_stats=stats,
+        reference_stats={**stats, "max_drawdown_pct": 0.0},
+        mature=mature,
+        coverage=0.5 if not mature else 1.0,
+    )
+
+    assert verdict["status"] == "rejected"
+    assert any(reason in item for item in verdict["reasons"])
+
+
+def test_restage_can_use_unique_runtime_id_without_losing_archive_lineage(
+    tmp_path: Path,
+) -> None:
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    store, job_id, _ = _job(tmp_path, now=started)
+    source, revision = _candidate_source(store, job_id)
+
+    proposal = stage_paper_proposal(
+        store,
+        job_id,
+        arm="evolution",
+        candidate_id="c03-restage-2",
+        source_candidate_id="original-c03",
+        candidate_root=source,
+        revision=revision,
+        source="evolution_campaign",
+        now=started + timedelta(hours=1),
+    )
+
+    assert proposal["candidate_id"].startswith("c03-restage-2-")
+    assert proposal["source_candidate_id"] == "original-c03"
 
 
 def test_wall_clock_expiry_closes_proposal_without_forward_bars(
@@ -529,9 +594,10 @@ def test_proposal_ignores_pre_queue_ticks_and_trades(tmp_path: Path) -> None:
         store, job_id, now=queued_at + timedelta(hours=24, minutes=5)
     )
 
-    assert outcomes[0]["status"] == "rejected"
+    assert outcomes[0]["status"] == "qualified"
     assert outcomes[0]["candidate"]["closed_trades"] == 0
-    assert "candidate produced no closed forward trade" in outcomes[0]["reasons"]
+    assert outcomes[0]["admission_basis"] == "operational_burn_in"
+    assert outcomes[0]["reasons"] == []
     history = experiment_status(store, job_id)["proposals"]["evolution"]["history"]
     assert (
         history[-1]["first_common_bar"]

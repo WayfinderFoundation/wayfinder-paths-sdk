@@ -680,6 +680,57 @@ def _build_worker_prompt_sections(
     from wayfinder_paths.jobs.improver.spec import ImproverSpec
 
     improver_spec = ImproverSpec.load(root)
+    evolution_enabled = improver_spec.evolution_enabled_for(job_id)
+    intervene_scope = (
+        "Intervene mode is the sensor/safety lane for this evolution-enabled "
+        "job. Ordinary alpha/parameter candidate authoring, signal-family "
+        "generation, and paper-probation admission belong exclusively to the "
+        "evolution campaign. This lane may still stage concrete risk reduction, "
+        "revert/kill, operational remediation, exact behavior-equivalence "
+        "maintenance, and owner-requested re-stage/application work. This rule "
+        "supersedes generic candidate/probation mandates below."
+        if evolution_enabled
+        else "Intervene mode may create candidate proposals under the job bundle, but cannot activate them."
+    )
+    verdict_matured_rule = (
+        "Treat a matured promotion verdict as sensing evidence: update the "
+        "existing verdict/archive artifacts and run the next diagnostic or "
+        "falsification. Do not author the next ordinary strategy candidate; "
+        "the evolution campaign consumes this evidence."
+        if evolution_enabled
+        else (
+            "Act on it THIS wake — propose the next candidate, run the next "
+            "experiment, or record in the report precisely why not. A neutral "
+            "verdict means the change did nothing: that is license to try the "
+            "next candidate, not to wait."
+        )
+    )
+    progress_rule = (
+        "- SENSOR PROGRESS CONSTITUTION: when research_staleness is true, this "
+        "evolution-enabled job's intervention wake must produce exactly ONE "
+        "bounded "
+        "deterministic diagnostic, falsification, or adjudication and record its "
+        "result in an existing archive/verdict/evidence artifact. It must not "
+        "open probation or author an ordinary alpha candidate merely to satisfy "
+        "staleness; evolution is the sole candidate factory.\n"
+        if evolution_enabled
+        else (
+            "- PROGRESS CONSTITUTION: `evolution.research_staleness` is "
+            "visible state. When the job is healthy, no verdict is pending, "
+            "and `research_staleness.stale` is true (no experiment in "
+            f">{improver_spec.staleness_experiment_days:g} days, or "
+            f">{improver_spec.staleness_wakes} wakes since the last "
+            "proposal), the wake MUST end in exactly ONE of: (a) a staged AND "
+            "executed experiment, (b) a new probation leg — the paper entry "
+            "tier accepts any candidate not clearly worse than baseline, no "
+            "owner approval needed (wayfinder_paths.jobs.probation."
+            "open_paper_probation_leg / `wayfinder job probation-open-paper`) "
+            "— or (c) an exhaustion claim FILED for mechanical coverage audit "
+            "(`wayfinder job exhaustion file ...`). Stating that research is "
+            "not warranted is NOT a legal outcome of a stale wake — prose "
+            "never satisfies the constitution.\n"
+        )
+    )
     memory_md = _read_text(root / "memory.md", max_chars=6000)
     # The research prior library: idea families, prior strengths, archetype
     # mapping, and test paths. Lives in the STABLE prefix so it prompt-caches
@@ -818,7 +869,7 @@ def _build_worker_prompt_sections(
         "rules, or lessons materially change.\n\n"
         "Rules:\n"
         "- Monitor mode is read-only except reports/memory.\n"
-        "- Intervene mode may create candidate proposals under the job bundle, but cannot activate them.\n"
+        f"- {intervene_scope}\n"
         "- Proposals stage ONLY `workspace/` + `job.yaml`; code outside `workspace/` "
         "cannot be versioned, proposed, or promoted. If the active script entrypoint "
         "resolves outside `workspace/`, your FIRST proposal must migrate it into "
@@ -884,10 +935,7 @@ def _build_worker_prompt_sections(
         "already fixed.\n"
         "- A `verdict_matured` trigger (or a fresh non-pending verdict in "
         "`evolution.promotion_reliability`) is a RESEARCH EVENT: the forward "
-        "window has judged the last promotion. Act on it THIS wake — propose "
-        "the next candidate, run the next experiment, or record in the "
-        "report precisely why not. A neutral verdict means the change did "
-        "nothing: that is license to try the next candidate, not to wait.\n"
+        f"window has judged the last promotion. {verdict_matured_rule}\n"
         "- Infrastructure failures are BOX conditions, not research "
         "verdicts: any claim that a lane is OOM-blocked, locked, or "
         "timed-out must cite the `compute_status` block from THIS wake — "
@@ -908,20 +956,7 @@ def _build_worker_prompt_sections(
         "down: verify backend health ONLY via a resident MCP tool result, "
         "and void any agenda/memory claim of 'backend DOWN' that is not "
         "backed by an MCP-tool failure observed THIS wake.\n"
-        "- PROGRESS CONSTITUTION: `evolution.research_staleness` is "
-        "visible state. When the job is healthy, no verdict is pending, "
-        "and `research_staleness.stale` is true (no experiment in "
-        f">{improver_spec.staleness_experiment_days:g} days, or "
-        f">{improver_spec.staleness_wakes} wakes since the last "
-        "proposal), the wake MUST end in exactly ONE of: (a) a staged AND "
-        "executed experiment, (b) a new probation leg — the paper entry "
-        "tier accepts any candidate not clearly worse than baseline, no "
-        "owner approval needed (wayfinder_paths.jobs.probation."
-        "open_paper_probation_leg / `wayfinder job probation-open-paper`) "
-        "— or (c) an exhaustion claim FILED for mechanical coverage audit "
-        "(`wayfinder job exhaustion file ...`). Stating that research is "
-        "not warranted is NOT a legal outcome of a stale wake — prose "
-        "never satisfies the constitution.\n"
+        f"{progress_rule}"
         "- Self-rejections are development evidence, never verdicts: a "
         "proposal YOU rejected cannot mark a lane settled in the agenda/"
         "dead map, and reopening bars ('requires named new evidence') may "
@@ -1013,6 +1048,35 @@ def _build_worker_prompt_sections(
         "immediately instead of running open-ended exploratory tests. If validation "
         "fails, complete the application as failed so runner loops resume cleanly.\n"
         if apply_proposal_id
+        else (
+            "- EVOLUTION SENSOR CONTRACT: inspect structured forward/live "
+            "results, attribution, counterfactuals, gate state, and completed "
+            "experiments. Produce one bounded deterministic diagnosis, "
+            "falsification, or adjudication and record it in an existing "
+            "archive/verdict/evidence artifact. Ordinary strategy/parameter "
+            "candidates, signal-family authoring, and paper probation belong "
+            "to the evolution campaign. The only proposals allowed here are "
+            "concrete risk reduction or revert/kill, operational remediation, "
+            "exact behavior-equivalence maintenance, and owner-requested "
+            "re-stage work. Forward results adjudicate changes; never fit to "
+            "the forward stream.\n"
+            "- Regime alarm triage: a standing_checks."
+            "portfolio_regime_health warning/critical OVERRIDES ordinary "
+            "sensor work: stop routine diagnosis, read the detector's named "
+            "signals, then cite the automatically refreshed `attribution` "
+            "block before choosing whether to revert, de-risk, gate a regime, "
+            "or re-validate. Never explain away a critical drawdown because "
+            "one entry signal still backtests.\n"
+            "- If an allowed propose returns a failed validation, read ALL "
+            "failed check names and fix them in ONE follow-up propose; after "
+            "2 failed propose attempts in a wake, stop and report the blocker "
+            "instead of retrying.\n"
+            "- A pending proposal whose candidate_report failed with "
+            "failure_kind 'infrastructure' is a box condition, not evidence: "
+            "run `wayfinder job revalidate <job_id> <proposal_id>` on the "
+            "same candidate instead of rejecting or re-proposing.\n"
+        )
+        if evolution_enabled
         else (
             "- Review the dynamic context against the stable job contract. "
             "When you want to RECOMMEND a strategy/params change, do not "
@@ -1268,7 +1332,18 @@ def _build_worker_prompt_sections(
     impasse_directive = ""
     impasse_marker = store.read_json(job_id, "state/research_impasse.json") or {}
     if impasse_marker.get("alerted_at"):
-        if impasse_marker.get("status") == "mandated_work":
+        if evolution_enabled:
+            mandate = impasse_marker.get("mandate") or {}
+            required = mandate.get("required_next_experiments") or []
+            impasse_directive = (
+                "RESEARCH IMPASSE — evolution owns candidate generation. This "
+                "sensor wake must execute one bounded deterministic diagnostic "
+                "or falsification and write its result to an existing archive/"
+                "verdict/evidence artifact. Do not open probation or build a "
+                "parallel candidate.\n"
+                f"REQUIRED_DIAGNOSTICS={json.dumps(required, default=str)}\n\n"
+            )
+        elif impasse_marker.get("status") == "mandated_work":
             mandate = impasse_marker.get("mandate") or {}
             required = mandate.get("required_next_experiments") or []
             impasse_directive = (

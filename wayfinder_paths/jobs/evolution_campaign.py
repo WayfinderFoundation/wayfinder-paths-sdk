@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import importlib
 import json
 import math
 import os
@@ -81,15 +82,41 @@ from wayfinder_paths.jobs.resource_envelope import (
 )
 from wayfinder_paths.jobs.robustness import _strategy_warmup_bars
 from wayfinder_paths.jobs.starter_casebook import select_starter_cases
+from wayfinder_paths.jobs.starters import (
+    STARTER_DEFINITIONS,
+    StarterDefinition,
+    starter_lookback_bars,
+    starter_warmup_bars,
+)
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.runner.monitor_state import atomic_write_json, atomic_write_text
 
 CAMPAIGN_STATE_PATH = "state/evolution_campaign.json"
 CAMPAIGN_ROOT = "research/evolution/campaigns"
+PARENT_BUNDLE_ROOT = "research/evolution/parents"
 CAMPAIGN_DATA_ROOT = "dataset"
 FORWARD_SNAPSHOT = "forward_experience.json"
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 _PARENT_SOURCES = ("incumbent", "qd_elite", "crossover", "de_novo")
+_EXECUTABLE_PARENT_STATUSES = {
+    "dev_frontier",
+    "paper_proposal",
+    "paper_experiment",
+    "incumbent",
+    "frontier",
+    "probation",
+}
+_TARGET_EXECUTION_PARAM_KEYS = {
+    "fee_bps",
+    "initial_capital",
+    "leverage",
+    "min_trade_notional",
+    "slippage_bps",
+    "stop_market_slippage_bps",
+    "symbols",
+    "venue",
+    "wallet_label",
+}
 CAMPAIGN_DRAIN = timedelta(minutes=30)
 _MAX_SEARCH_DIMENSIONS = 3
 _OPTUNA_SEED = 42
@@ -325,6 +352,9 @@ def _start_campaign(
     snapshots["source_bundle"]["revision"] = compute_workspace_revision(
         campaign_root / "source"
     )
+    parent_pool = _freeze_parent_pool(store, job_id, campaign_root)
+    starter_seeds = _snapshot_starter_seeds(store, job_id, campaign_root)
+    research_context = _freeze_research_context(store, job_id)
     campaign_policy = {
         **spec.evolution,
         "same_family_non_wins": spec.stuck_same_family_non_wins,
@@ -344,6 +374,9 @@ def _start_campaign(
         "execution_calibration": experience["live_execution"]["recommended"],
         "historical_lessons": historical_lessons,
         "casebook": cases,
+        "parent_pool": parent_pool,
+        "starter_seeds": starter_seeds,
+        "research_context": research_context,
         "policy": campaign_policy,
         **revision_stamp(root),
     }
@@ -406,7 +439,8 @@ def _prepare_candidate(
     state = _active_campaign(store, job_id)
     if _aware(now or datetime.now(UTC)) >= _parse(state["deadline_at"]):
         raise ValueError("evolution campaign generation deadline has elapsed")
-    policy = _campaign_policy(store, job_id, str(state["campaign_id"]))
+    manifest = _campaign_manifest(store, job_id, str(state["campaign_id"]))
+    policy = manifest["policy"]
     limit = int(policy["generated_programs"])
     slot = len(state["candidates"]) + 1
     if slot > limit:
@@ -415,7 +449,9 @@ def _prepare_candidate(
     forced_jump = _same_family_nonwins(
         state, family, int(policy["same_family_non_wins"])
     )
-    source = "de_novo" if forced_jump else _parent_source(slot, policy["parent_mix"])
+    requested_source = (
+        "de_novo" if forced_jump else _parent_source(slot, policy["parent_mix"])
+    )
     required_structural = math.ceil(
         limit * float(policy.get("min_structural_fraction") or 0.0)
     )
@@ -444,15 +480,25 @@ def _prepare_candidate(
     if forced_jump:
         chosen_mutation = "structural"
 
-    parents = _select_parents(store, job_id, source, slot)
+    parent_plan = _select_parent_plan(
+        manifest,
+        requested_source=requested_source,
+        slot=slot,
+        candidates=state["candidates"],
+    )
+    source = str(parent_plan["source"])
+    parents = [str(item["candidate_id"]) for item in parent_plan.get("parents") or []]
     candidate_id = f"{state['campaign_id']}-c{slot:02d}"
     relative = f"{CAMPAIGN_ROOT}/{state['campaign_id']}/candidates/{candidate_id}"
     candidate_root = store.job_dir(job_id) / relative
-    frozen_source = (
-        store.job_dir(job_id) / CAMPAIGN_ROOT / str(state["campaign_id"]) / "source"
+    seeded_window = _materialize_candidate_seed(
+        store,
+        job_id,
+        campaign_id=str(state["campaign_id"]),
+        candidate_root=candidate_root,
+        plan=parent_plan,
     )
-    _copy_active_bundle(frozen_source, candidate_root)
-    seeded_window = _seed_bundle_window(store, job_id, candidate_root)
+    seed_revision = compute_workspace_revision(candidate_root)
     candidate = {
         "candidate_id": candidate_id,
         "campaign_id": state["campaign_id"],
@@ -461,11 +507,16 @@ def _prepare_candidate(
         "summary": summary[:160],
         "status": "prepared",
         "parent_source": source,
+        "requested_parent_source": requested_source,
         "parent_candidate_ids": parents,
+        "starter_seed_id": (parent_plan.get("starter") or {}).get("starter_id"),
+        "secondary_parent_bundle": (parent_plan.get("secondary") or {}).get("bundle"),
         "mutation_kind": chosen_mutation,
         "forced_jump": forced_jump,
         "bundle": relative,
         "warmup_bars": seeded_window,
+        "seed_revision": seed_revision,
+        "evidence_reset": source == "starter_seed",
         "prepared_at": utc_now_iso(),
     }
     atomic_write_json(candidate_root / "candidate.json", candidate)
@@ -486,6 +537,10 @@ def _prepare_candidate(
             "bundle": relative,
             "mutation_kind": chosen_mutation,
             "parent_source": source,
+            "requested_parent_source": requested_source,
+            "starter_seed_id": candidate.get("starter_seed_id"),
+            "seed_revision": seed_revision,
+            "evidence_reset": candidate["evidence_reset"],
         },
     )
     # ``bundle`` stays durable and job-relative.  The tool response also gives
@@ -493,15 +548,30 @@ def _prepare_candidate(
     # does not spend context discovering the SDK's hosted symlink layout.
     result = dict(candidate)
     result["bundle_path"] = str(candidate_root.resolve())
+    secondary = parent_plan.get("secondary") or {}
+    if secondary.get("bundle"):
+        result["secondary_parent_bundle_path"] = str(
+            _resolve_frozen_parent_bundle(
+                store,
+                job_id,
+                str(state["campaign_id"]),
+                str(secondary["bundle"]),
+            )
+        )
     return result
 
 
-def _source_baseline_revision(manifest: dict[str, Any]) -> str:
-    """Revision an UNEDITED candidate carries: the frozen (window-seeded)
-    source bundle. Falls back to the active-root revision for campaigns
-    started before window seeding existed — the two were identical then."""
+def _source_baseline_revision(
+    manifest: dict[str, Any], candidate: dict[str, Any] | None = None
+) -> str:
+    """Revision an unedited candidate seed carries.
+
+    New campaigns stamp the actual incumbent/QD/starter/de-novo seed; legacy
+    campaigns fall back to their frozen incumbent source revision.
+    """
     return str(
-        (manifest.get("source_bundle") or {}).get("revision")
+        (candidate or {}).get("seed_revision")
+        or (manifest.get("source_bundle") or {}).get("revision")
         or manifest.get("source_revision")
         or ""
     )
@@ -647,7 +717,10 @@ def _evaluate_candidate(
         )
         or {}
     )
-    if revision == _source_baseline_revision(manifest) and search_space is None:
+    if (
+        revision == _source_baseline_revision(manifest, candidate)
+        and search_space is None
+    ):
         return {
             "status": "invalid",
             "evidence": {
@@ -1423,6 +1496,18 @@ def campaign_prompt_block(
     budget = int(policy.get("generated_programs") or 0)
     deadline_elapsed = current >= deadline
     draining = deadline - CAMPAIGN_DRAIN <= current < deadline
+    requested_next_source = _parent_source(
+        len(candidates) + 1, policy.get("parent_mix") or {}
+    )
+    next_parent_plan = _select_parent_plan(
+        manifest,
+        requested_source=requested_next_source,
+        slot=len(candidates) + 1,
+        candidates=candidates,
+    )
+    research_instruction = _research_context_instruction(
+        manifest.get("research_context") or {}
+    )
     prepare_call = (
         'Call wayfinder_core_jobs with action="evolution_prepare", '
         f'job_id="{job_id}", family="<specific strategy family>", and '
@@ -1443,8 +1528,12 @@ def campaign_prompt_block(
             if candidate.get("mutation_kind") == "parameter"
             else f"This is a structural candidate: {_STRUCTURAL_SEARCH_GUIDANCE} "
         )
+        seed_instruction = _candidate_seed_instruction(
+            store, job_id, str(state["campaign_id"]), candidate
+        )
         next_action = (
-            f"{mutation_instruction}Edit only files inside {candidate_root} "
+            f"{seed_instruction}{mutation_instruction}Edit only files inside "
+            f"{candidate_root} "
             "(workspace, job.yaml, "
             "and optional search_space.json), then launch "
             'wayfinder_core_jobs with action="evolution_evaluate", '
@@ -1468,7 +1557,10 @@ def campaign_prompt_block(
         }
     elif len(candidates) < budget:
         session_stage = f"candidate-{len(candidates) + 1:02d}"
+        preview = _parent_plan_handoff(next_parent_plan)
         next_action = (
+            f"Next source plan: {json.dumps(preview, sort_keys=True)}. "
+            f"{research_instruction} "
             f"{prepare_call} Then edit only the exact `bundle_path` returned by "
             "that call and "
             'launch wayfinder_core_jobs with action="evolution_evaluate", '
@@ -1496,16 +1588,87 @@ def campaign_prompt_block(
         "next_action": next_action,
         "candidate_outcomes": [_candidate_handoff(item) for item in candidates],
         "historical_lessons": manifest.get("historical_lessons") or {},
+        "research_context": manifest.get("research_context") or {},
+        "next_parent_plan": _parent_plan_handoff(next_parent_plan),
         "cases": manifest.get("casebook") or [],
         "forward_context_cutoff": state.get("forward_context_cutoff"),
         "constraints": {
             "paper_only": True,
             "live_requires_owner": True,
             "candidate_inputs_frozen_at_campaign_start": True,
-            "finalist_requires_24h_forward_proposal": True,
+            "finalist_requires_24h_operational_burn_in": True,
+            "starter_seed_evidence_resets": True,
+            "refuted_family_matching": "exact_free_form_family_v1",
         },
         "deadline_elapsed": deadline_elapsed,
     }
+
+
+def _parent_plan_handoff(plan: dict[str, Any]) -> dict[str, Any]:
+    starter = plan.get("starter") or {}
+    return {
+        "source": plan.get("source"),
+        "parent_candidate_ids": [
+            item.get("candidate_id") for item in plan.get("parents") or []
+        ],
+        "starter_seed_id": starter.get("starter_id"),
+        "starter_family": starter.get("family"),
+        "starter_timeframe": starter.get("timeframe"),
+        "starter_warmup_bars": starter.get("warmup_bars"),
+        "evidence_reset": bool(starter),
+    }
+
+
+def _research_context_instruction(context: dict[str, Any]) -> str:
+    refuted = [
+        str(item.get("family") or "")
+        for item in context.get("refuted_families") or []
+        if item.get("family")
+    ][:8]
+    positives = [
+        str(item.get("id") or "")
+        for item in context.get("validated_positives") or []
+        if item.get("id")
+    ][:8]
+    return (
+        "Research context is frozen for this campaign. Do not re-propose an "
+        f"exact refuted family without naming new evidence (refuted={refuted}); "
+        f"seed from validated wins when relevant (validated={positives}). A win "
+        "is named new evidence, not deletion of a refutation."
+    )
+
+
+def _candidate_seed_instruction(
+    store: JobStore, job_id: str, campaign_id: str, candidate: dict[str, Any]
+) -> str:
+    source = str(candidate.get("parent_source") or "")
+    if source == "starter_seed":
+        return (
+            f"The bundle contains audited starter `{candidate.get('starter_seed_id')}` "
+            "as an adaptation seed. Its own warmup/lookback is already set, but "
+            "its historical evidence was reset: adapt the tactic to this job's "
+            "target universe and make it re-earn every gate. "
+        )
+    if source == "crossover":
+        secondary = _resolve_frozen_parent_bundle(
+            store,
+            job_id,
+            campaign_id,
+            str(candidate.get("secondary_parent_bundle") or ""),
+        )
+        return (
+            "The candidate is seeded from the stronger executable parent. "
+            f"Use `{secondary}` as READ-ONLY secondary parent context; edit only "
+            "the candidate bundle and implement an explicit recombination. "
+        )
+    if source == "qd_elite":
+        return "The bundle is an executable QD elite, not an incumbent clone. "
+    if source == "de_novo":
+        return (
+            "The bundle is a clean target-compatible scaffold with no incumbent "
+            "alpha or research memory; author a genuinely new causal strategy. "
+        )
+    return "The bundle is the frozen incumbent baseline. "
 
 
 def _candidate_handoff(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -1516,6 +1679,9 @@ def _candidate_handoff(candidate: dict[str, Any]) -> dict[str, Any]:
         "family": candidate.get("family"),
         "mutation_kind": candidate.get("mutation_kind"),
         "parent_source": candidate.get("parent_source"),
+        "requested_parent_source": candidate.get("requested_parent_source"),
+        "parent_candidate_ids": candidate.get("parent_candidate_ids") or [],
+        "starter_seed_id": candidate.get("starter_seed_id"),
         "status": candidate.get("status"),
         "summary": str(candidate.get("summary") or "")[:240],
     }
@@ -1560,6 +1726,17 @@ def _archive_campaign_candidate(
 ) -> None:
     status = str(candidate.get("status") or "generated")
     archive_status = status if status in ARCHIVE_STATUSES else "generated"
+    executable_bundle: str | None = None
+    revision = str(candidate.get("revision") or "")
+    if status == "dev_frontier" and revision:
+        source = resolve_candidate_bundle(store, job_id, candidate)
+        executable_bundle, _ = _persist_executable_bundle(
+            store,
+            job_id,
+            candidate_id=str(candidate["candidate_id"]),
+            revision=revision,
+            source=source,
+        )
     metadata = {
         key: candidate[key]
         for key in (
@@ -1567,6 +1744,10 @@ def _archive_campaign_candidate(
             "bundle",
             "mutation_kind",
             "parent_source",
+            "requested_parent_source",
+            "starter_seed_id",
+            "seed_revision",
+            "evidence_reset",
             "quick",
             "dev",
             "tuning_eligible",
@@ -1578,6 +1759,8 @@ def _archive_campaign_candidate(
         )
         if candidate.get(key) is not None
     }
+    if executable_bundle is not None:
+        metadata["executable_bundle"] = executable_bundle
     record_candidate(
         store,
         job_id,
@@ -1705,7 +1888,7 @@ def _full_dev(
         )
         or {}
     )
-    if revision == _source_baseline_revision(manifest):
+    if revision == _source_baseline_revision(manifest, candidate):
         raise ValueError("candidate has no effective mutation after tuning")
     train_result, train_stats = _window_result(subject, 0.0, train_end, params)
     train_valid = bool(train_result.validation.get("execution_valid"))
@@ -1975,33 +2158,508 @@ def _candidate_validation_passed(report: dict[str, Any]) -> bool:
     )
 
 
-def _select_parents(store: JobStore, job_id: str, source: str, slot: int) -> list[str]:
+def _archive_entry_score(entry: dict[str, Any]) -> float:
+    return _candidate_score({"objective": entry.get("objective") or {}})
+
+
+def _freeze_parent_pool(
+    store: JobStore, job_id: str, campaign_root: Path
+) -> dict[str, Any]:
+    """Freeze executable QD/frontier parents for the campaign.
+
+    Legacy campaign bundles are lazily copied into the stable parent root
+    only when their archived revision still matches their bytes.
+    """
     archive = load_archive(store, job_id).get("candidates") or []
-    incumbents = [
-        str(item["candidate_id"])
+    qd_ids = list(
+        dict.fromkeys(
+            str(item["candidate_id"])
+            for entries in quality_diversity_snapshot(store, job_id).values()
+            for item in entries
+        )
+    )
+    selected_ids = set(qd_ids)
+    selected_ids.update(
+        str(item.get("candidate_id") or "")
         for item in archive
-        if item.get("status") == "incumbent"
-    ]
-    elites = [
-        str(item["candidate_id"])
-        for entries in quality_diversity_snapshot(store, job_id).values()
-        for item in entries
-    ]
-    frontier = [
-        str(item["candidate_id"]) for item in archive if item.get("on_frontier")
-    ]
-    active = f"active:{compute_workspace_revision(store.job_dir(job_id))}"
-    pool = list(dict.fromkeys(elites + frontier + incumbents + [active]))
-    if source == "de_novo":
-        return []
+        if item.get("status") in _EXECUTABLE_PARENT_STATUSES or item.get("on_frontier")
+    )
+    frozen: list[dict[str, Any]] = []
+    for entry in archive:
+        # Backfill all candidates that reached full development, even if a
+        # later proposal verdict made them ineligible for selection. This
+        # preserves the executable receipt without reviving a rejected branch.
+        metadata = entry.get("metadata") or {}
+        reached_development = bool(
+            entry.get("status") in _EXECUTABLE_PARENT_STATUSES or metadata.get("dev")
+        )
+        if not reached_development:
+            continue
+        stable = _ensure_executable_parent(store, job_id, entry)
+        candidate_id = str(entry.get("candidate_id") or "")
+        if stable is None or candidate_id not in selected_ids:
+            continue
+        destination = campaign_root / "parents" / candidate_id
+        _copy_active_bundle(stable, destination)
+        frozen.append(
+            {
+                "candidate_id": candidate_id,
+                "family": str(entry.get("family") or "unknown"),
+                "summary": str(entry.get("summary") or "")[:160],
+                "status": entry.get("status"),
+                "revision": entry.get("revision"),
+                "objective": entry.get("objective") or {},
+                "behavior": entry.get("behavior") or {},
+                "bundle": f"parents/{candidate_id}",
+            }
+        )
+    frozen.sort(key=_archive_entry_score, reverse=True)
+    frozen_ids = {str(item["candidate_id"]) for item in frozen}
+    return {
+        "candidates": frozen,
+        "qd_elite_ids": [
+            candidate_id for candidate_id in qd_ids if candidate_id in frozen_ids
+        ],
+        "frozen_at_campaign_start": True,
+    }
+
+
+def _ensure_executable_parent(
+    store: JobStore, job_id: str, entry: dict[str, Any]
+) -> Path | None:
+    candidate_id = str(entry.get("candidate_id") or "")
+    revision = str(entry.get("revision") or "")
+    if not candidate_id or not revision:
+        return None
+    metadata = entry.get("metadata") or {}
+    stable_relative = str(metadata.get("executable_bundle") or "")
+    if stable_relative:
+        try:
+            stable = _resolve_stable_parent_bundle(
+                store, job_id, candidate_id, revision, stable_relative
+            )
+            if compute_workspace_revision(stable) == revision:
+                return stable
+        except (OSError, ValueError):
+            pass
+    legacy_relative = str(metadata.get("bundle") or "")
+    campaign_id = str(metadata.get("campaign_id") or "")
+    if not legacy_relative or not campaign_id:
+        return None
+    try:
+        legacy = resolve_candidate_bundle(
+            store,
+            job_id,
+            {
+                "candidate_id": candidate_id,
+                "campaign_id": campaign_id,
+                "bundle": legacy_relative,
+            },
+        )
+        if compute_workspace_revision(legacy) != revision:
+            return None
+        stable_relative, stable = _persist_executable_bundle(
+            store,
+            job_id,
+            candidate_id=candidate_id,
+            revision=revision,
+            source=legacy,
+        )
+    except (OSError, ValueError):
+        return None
+    record_candidate(
+        store,
+        job_id,
+        candidate_id=candidate_id,
+        family=str(entry.get("family") or "unknown"),
+        summary=str(entry.get("summary") or "evolution candidate"),
+        status=str(entry.get("status") or "generated"),
+        objective=entry.get("objective"),
+        revision=revision,
+        parent_candidate_ids=list(entry.get("parent_candidate_ids") or []),
+        behavior=entry.get("behavior"),
+        evidence=entry.get("evidence"),
+        metadata={"executable_bundle": stable_relative},
+    )
+    return stable
+
+
+def _persist_executable_bundle(
+    store: JobStore,
+    job_id: str,
+    *,
+    candidate_id: str,
+    revision: str,
+    source: Path,
+) -> tuple[str, Path]:
+    _validate_parent_component(candidate_id, "candidate id")
+    _validate_parent_component(revision, "candidate revision")
+    if compute_workspace_revision(source) != revision:
+        raise ValueError("source executable parent revision mismatch")
+    relative = f"{PARENT_BUNDLE_ROOT}/{candidate_id}/{revision}"
+    destination = store.job_dir(job_id) / relative
+    if destination.exists():
+        if compute_workspace_revision(destination) != revision:
+            raise ValueError("stable executable parent revision mismatch")
+    else:
+        _copy_active_bundle(source, destination)
+    return relative, destination
+
+
+def _resolve_stable_parent_bundle(
+    store: JobStore,
+    job_id: str,
+    candidate_id: str,
+    revision: str,
+    relative: str,
+) -> Path:
+    _validate_parent_component(candidate_id, "candidate id")
+    _validate_parent_component(revision, "candidate revision")
+    expected = f"{PARENT_BUNDLE_ROOT}/{candidate_id}/{revision}"
+    if relative != expected:
+        raise ValueError("stable executable parent path does not match its lineage")
+    root = store.job_dir(job_id).resolve()
+    allowed = (root / PARENT_BUNDLE_ROOT).resolve()
+    resolved = (root / relative).resolve()
+    if not resolved.is_relative_to(allowed):
+        raise ValueError("stable executable parent escapes its root")
+    return resolved
+
+
+def _validate_parent_component(value: str, label: str) -> None:
+    if not value or value in {".", ".."} or Path(value).name != value:
+        raise ValueError(f"invalid evolution parent {label}")
+
+
+def _snapshot_starter_seeds(
+    store: JobStore, job_id: str, campaign_root: Path
+) -> list[dict[str, Any]]:
+    job_data = _load_job_yaml(campaign_root / "source")
+    target_params = dict(job_data.get("execution_params") or {})
+    target_symbols = {str(symbol) for symbol in target_params.get("symbols") or []}
+    spec_data, _ = resolve_execution_spec(campaign_root / "source", job_data)
+    target_timeframe = str(
+        ((spec_data or {}).get("data_contract") or {}).get("bar_interval") or ""
+    )
+
+    def relevance(definition: StarterDefinition) -> tuple[int, int, str]:
+        overlap = len(target_symbols & set(definition.symbols))
+        return (
+            int(definition.timeframe == target_timeframe),
+            overlap,
+            definition.id,
+        )
+
+    snapshots: list[dict[str, Any]] = []
+    for definition in sorted(STARTER_DEFINITIONS, key=relevance, reverse=True):
+        module = importlib.import_module(definition.module)
+        raw_source = getattr(module, "__file__", None)
+        if not raw_source:
+            continue
+        source = Path(raw_source)
+        relative = f"starters/{definition.id}/strategy.py"
+        destination = campaign_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(destination, source.read_text(encoding="utf-8"))
+        snapshots.append(
+            {
+                "starter_id": definition.id,
+                "family": definition.family,
+                "summary": definition.summary,
+                "timeframe": definition.timeframe,
+                "source_symbols": list(definition.symbols),
+                "target_symbols": sorted(target_symbols),
+                "params": {
+                    **definition.configured_params(),
+                    "symbols": list(definition.symbols),
+                    "venue": "hyperliquid",
+                },
+                "warmup_bars": starter_warmup_bars(definition),
+                "lookback_bars": starter_lookback_bars(definition),
+                "source": relative,
+                "source_sha256": _file_hash(destination),
+                "adaptation_required": True,
+                "research_evidence_reset": True,
+            }
+        )
+    return snapshots
+
+
+def _freeze_research_context(store: JobStore, job_id: str) -> dict[str, Any]:
+    """Two load-bearing lists, distilled from existing mechanical records."""
+    archive = load_archive(store, job_id).get("candidates") or []
+    refuted_by_family: dict[str, dict[str, Any]] = {}
+    for entry in archive:
+        if entry.get("status") != "refuted":
+            continue
+        family = str(entry.get("family") or "").strip()
+        if family and family not in refuted_by_family:
+            refuted_by_family[family] = {
+                "family": family,
+                "candidate_id": entry.get("candidate_id"),
+                "evidence": str(entry.get("evidence") or "")[:240],
+            }
+
+    positives: list[dict[str, Any]] = []
+    probation = store.read_json(job_id, "probation.json", default={}) or {}
+    for leg in probation.get("legs") or []:
+        if leg.get("status") == "graduated":
+            positives.append(
+                {
+                    "source": "probation_graduate",
+                    "id": leg.get("name"),
+                    "symbol": leg.get("symbol"),
+                    "evidence": str(
+                        (leg.get("graduate") or {}).get("progress")
+                        or leg.get("notes")
+                        or (leg.get("graduate") or {}).get("criterion")
+                        or ""
+                    )[:240],
+                    "recorded_at": leg.get("closed_at") or leg.get("updated_at"),
+                }
+            )
+    verdicts = (
+        store.read_json(job_id, "state/promotion_verdicts.json", default={}) or {}
+    )
+    for proposal_id, verdict in verdicts.items():
+        try:
+            strategy_effect = float(verdict.get("strategy_effect"))
+        except (TypeError, ValueError):
+            continue
+        if verdict.get("verdict") == "beat" and strategy_effect > 0:
+            positives.append(
+                {
+                    "source": "counterfactual_confirmed_treatment",
+                    "id": proposal_id,
+                    "strategy_effect": strategy_effect,
+                    "recorded_at": verdict.get("recorded_at"),
+                }
+            )
+    experiment = (
+        store.read_json(job_id, "state/evolution_experiment.json", default={}) or {}
+    )
+    if (
+        experiment.get("status") == "complete"
+        and (experiment.get("verdict") or {}).get("verdict") == "accrete"
+    ):
+        champion = ((experiment.get("arms") or {}).get("evolution") or {}).get(
+            "champion"
+        ) or {}
+        positives.append(
+            {
+                "source": "evolution_experiment_accrete",
+                "id": champion.get("candidate_id"),
+                "revision": champion.get("revision"),
+                "recorded_at": experiment.get("completed_at"),
+            }
+        )
+    positives.sort(key=lambda item: str(item.get("recorded_at") or ""), reverse=True)
+    return {
+        "refuted_families": list(refuted_by_family.values())[-20:],
+        "validated_positives": positives[:20],
+        "matching": "exact_free_form_family_v1",
+        "accepted_limitation": (
+            "near-duplicate free-form family names are not normalized; a validated "
+            "positive is named new evidence, not deletion of a refutation"
+        ),
+        "frozen_at_campaign_start": True,
+    }
+
+
+def _select_parent_plan(
+    manifest: dict[str, Any],
+    *,
+    requested_source: str,
+    slot: int,
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Resolve a requested source to material that actually exists.
+
+    Cold-start QD/crossover slots become distinct audited starter seeds; they
+    are never incumbent copies carrying a misleading lineage label.
+    """
+    pool = (manifest.get("parent_pool") or {}).get("candidates") or []
+    qd_ids = set((manifest.get("parent_pool") or {}).get("qd_elite_ids") or [])
+    qd = [item for item in pool if item.get("candidate_id") in qd_ids]
+    crossover_pool = [item for item in pool if item.get("status") != "incumbent"]
+    if requested_source == "incumbent":
+        return {"source": "incumbent", "parents": []}
+    if requested_source == "qd_elite" and qd:
+        parent = qd[(slot - 1) % len(qd)]
+        return {"source": "qd_elite", "parents": [parent], "primary": parent}
+    if requested_source == "crossover" and len(crossover_pool) >= 2:
+        first = (slot - 1) % len(crossover_pool)
+        pair = [
+            crossover_pool[first],
+            crossover_pool[(first + 1) % len(crossover_pool)],
+        ]
+        pair.sort(key=_archive_entry_score, reverse=True)
+        return {
+            "source": "crossover",
+            "parents": pair,
+            "primary": pair[0],
+            "secondary": pair[1],
+        }
+    if requested_source in {"qd_elite", "crossover"}:
+        used = {
+            str(item.get("starter_seed_id") or "")
+            for item in candidates
+            if item.get("starter_seed_id")
+        }
+        starter = next(
+            (
+                item
+                for item in manifest.get("starter_seeds") or []
+                if str(item.get("starter_id") or "") not in used
+            ),
+            None,
+        )
+        if starter is not None:
+            return {"source": "starter_seed", "parents": [], "starter": starter}
+    return {"source": "de_novo", "parents": []}
+
+
+def _materialize_candidate_seed(
+    store: JobStore,
+    job_id: str,
+    *,
+    campaign_id: str,
+    candidate_root: Path,
+    plan: dict[str, Any],
+) -> int:
+    campaign_root = store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id
+    frozen_source = campaign_root / "source"
+    source = str(plan["source"])
     if source == "incumbent":
-        return incumbents[:1] or [active]
-    if source == "qd_elite":
-        return [pool[(slot - 1) % len(pool)]] if pool else []
-    if source == "crossover" and pool:
-        first = (slot - 1) % len(pool)
-        return list(dict.fromkeys([pool[first], pool[(first + 1) % len(pool)]]))
-    return []
+        _copy_active_bundle(frozen_source, candidate_root)
+    elif source in {"qd_elite", "crossover"}:
+        primary = plan.get("primary") or {}
+        parent = _resolve_frozen_parent_bundle(
+            store, job_id, campaign_id, str(primary.get("bundle") or "")
+        )
+        if compute_workspace_revision(parent) != str(primary.get("revision") or ""):
+            raise ValueError("frozen executable parent revision mismatch")
+        _copy_active_bundle(parent, candidate_root)
+        job_data = _load_job_yaml(candidate_root)
+        params = dict(job_data.get("execution_params") or {})
+        for key in _TARGET_EXECUTION_PARAM_KEYS:
+            params.pop(key, None)
+        params.update(_target_execution_params(frozen_source))
+        job_data["execution_params"] = params
+        atomic_write_text(
+            candidate_root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
+        )
+    elif source == "starter_seed":
+        _copy_clean_scaffold(store, job_id, frozen_source, candidate_root)
+        _install_starter_seed(
+            store,
+            job_id,
+            campaign_id=campaign_id,
+            candidate_root=candidate_root,
+            starter=dict(plan.get("starter") or {}),
+        )
+    else:
+        _copy_clean_scaffold(store, job_id, frozen_source, candidate_root)
+    return _seed_bundle_window(store, job_id, candidate_root)
+
+
+def _copy_clean_scaffold(
+    store: JobStore,
+    job_id: str,
+    source_root: Path,
+    destination: Path,
+) -> None:
+    """Target job shell without incumbent alpha code or research memory."""
+    _copy_active_bundle(source_root, destination)
+    risk_path = destination / "workspace" / "risk_limits.json"
+    risk_limits = risk_path.read_bytes() if risk_path.exists() else None
+    shutil.rmtree(destination / "workspace")
+    (destination / "workspace").mkdir()
+    if risk_limits is not None:
+        (destination / "workspace" / "risk_limits.json").write_bytes(risk_limits)
+    job_data = _load_job_yaml(destination)
+    job_data["execution_params"] = _target_execution_params(source_root)
+    atomic_write_text(
+        destination / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
+    )
+    script = store.resolve_script_entrypoint(
+        job_id, job_data, candidate_dir=destination
+    )
+    if script is None or not script.resolve().is_relative_to(
+        (destination / "workspace").resolve()
+    ):
+        raise ValueError("evolution scaffold entrypoint must live inside workspace")
+    script.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(
+        script,
+        '"""Clean de-novo evolution scaffold."""\n\n'
+        "from __future__ import annotations\n\n"
+        "from typing import Any\n\n\n"
+        "def decide(ctx: Any) -> list[Any]:\n"
+        "    return []\n",
+    )
+
+
+def _install_starter_seed(
+    store: JobStore,
+    job_id: str,
+    *,
+    campaign_id: str,
+    candidate_root: Path,
+    starter: dict[str, Any],
+) -> None:
+    source = _resolve_starter_source(
+        store, job_id, campaign_id, str(starter.get("source") or "")
+    )
+    job_data = _load_job_yaml(candidate_root)
+    script = store.resolve_script_entrypoint(
+        job_id, job_data, candidate_dir=candidate_root
+    )
+    if script is None:
+        raise ValueError("starter seed candidate has no execution entrypoint")
+    atomic_write_text(script, source.read_text(encoding="utf-8"))
+    params = dict(starter.get("params") or {})
+    params.update(_target_execution_params(candidate_root))
+    params["warmup_bars"] = int(starter["warmup_bars"])
+    params["lookback_bars"] = int(starter["lookback_bars"])
+    params.pop("full_history", None)
+    job_data["execution_params"] = params
+    atomic_write_text(
+        candidate_root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
+    )
+
+
+def _target_execution_params(source_root: Path) -> dict[str, Any]:
+    params = dict(_load_job_yaml(source_root).get("execution_params") or {})
+    return {
+        key: params[key] for key in _TARGET_EXECUTION_PARAM_KEYS if key in params
+    }
+
+
+def _resolve_frozen_parent_bundle(
+    store: JobStore, job_id: str, campaign_id: str, relative: str
+) -> Path:
+    if not relative or Path(relative).is_absolute():
+        raise ValueError("frozen parent bundle must be campaign-relative")
+    campaign_root = (store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id).resolve()
+    allowed = (campaign_root / "parents").resolve()
+    resolved = (campaign_root / relative).resolve()
+    if not resolved.is_relative_to(allowed) or resolved.parent != allowed:
+        raise ValueError("frozen parent bundle escapes the campaign parent root")
+    return resolved
+
+
+def _resolve_starter_source(
+    store: JobStore, job_id: str, campaign_id: str, relative: str
+) -> Path:
+    if not relative or Path(relative).is_absolute():
+        raise ValueError("starter source must be campaign-relative")
+    campaign_root = (store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id).resolve()
+    allowed = (campaign_root / "starters").resolve()
+    resolved = (campaign_root / relative).resolve()
+    if not resolved.is_relative_to(allowed) or resolved.name != "strategy.py":
+        raise ValueError("starter source escapes the campaign starter root")
+    return resolved
 
 
 def _copy_active_bundle(source_root: Path, destination: Path) -> None:
@@ -2203,13 +2861,22 @@ def _row_timestamp(row: dict[str, Any]) -> pd.Timestamp | None:
     return stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
 
 
-def _campaign_policy(store: JobStore, job_id: str, campaign_id: str) -> dict[str, Any]:
+def _campaign_manifest(
+    store: JobStore, job_id: str, campaign_id: str
+) -> dict[str, Any]:
     manifest = (
         store.read_json(
             job_id, f"{CAMPAIGN_ROOT}/{campaign_id}/manifest.json", default={}
         )
         or {}
     )
+    if not isinstance(manifest, dict):
+        raise ValueError(f"evolution campaign {campaign_id!r} has no manifest")
+    return manifest
+
+
+def _campaign_policy(store: JobStore, job_id: str, campaign_id: str) -> dict[str, Any]:
+    manifest = _campaign_manifest(store, job_id, campaign_id)
     policy = manifest.get("policy")
     if not isinstance(policy, dict):
         raise ValueError(f"evolution campaign {campaign_id!r} has no policy")
