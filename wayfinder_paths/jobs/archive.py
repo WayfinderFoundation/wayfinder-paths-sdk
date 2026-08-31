@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from wayfinder_paths.jobs.compute_lock import job_state_lock
+from wayfinder_paths.jobs.evolution_diagnostics import participation_adjusted_score
 from wayfinder_paths.jobs.improver.spec import revision_stamp
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
@@ -233,7 +234,11 @@ def quality_diversity_snapshot(
     """Return up to two non-dominated candidates per occupied behavior cell."""
     cells: dict[str, list[dict[str, Any]]] = {}
     for entry in load_archive(store, job_id).get("candidates") or []:
-        if entry.get("status") in _NON_RANKED_STATUSES:
+        if entry.get("status") in _NON_RANKED_STATUSES or entry.get("status") == (
+            "incumbent"
+        ):
+            continue
+        if not elite_activity_eligible(entry):
             continue
         cell = behavior_cell(entry.get("behavior"))
         if cell is not None:
@@ -247,12 +252,7 @@ def quality_diversity_snapshot(
                 _dominates(other, entry) for other in entries if other is not entry
             )
         ]
-        nondominated.sort(
-            key=lambda entry: float(
-                (entry.get("objective") or {}).get("net_log_growth") or 0.0
-            ),
-            reverse=True,
-        )
+        nondominated.sort(key=participation_score, reverse=True)
         snapshot[cell] = nondominated[: max(1, int(per_cell))]
     return snapshot
 
@@ -385,6 +385,8 @@ def evolution_lessons_block(
         tuning = metadata.get("tuning") or {}
         if isinstance(tuning, dict) and tuning.get("trials") is not None:
             lesson["optuna_trials"] = tuning["trials"]
+        if isinstance(metadata.get("latest_postmortem"), dict):
+            lesson["postmortem"] = metadata["latest_postmortem"]
         if status in _EVOLUTION_REJECTION_STATUSES and entry.get("evidence"):
             lesson["rejection_reason"] = str(entry["evidence"])[:240]
         lessons.append(lesson)
@@ -462,6 +464,7 @@ def _refresh_frontier(doc: dict[str, Any]) -> None:
         for entry in doc.get("candidates") or []
         if isinstance(entry.get("objective"), dict)
         and entry.get("status") not in _NON_RANKED_STATUSES
+        and elite_activity_eligible(entry)
     ]
     for entry in doc.get("candidates") or []:
         entry["on_frontier"] = False
@@ -489,3 +492,52 @@ def _dominates(a: dict[str, Any], b: dict[str, Any]) -> bool:
                 return False
             better_somewhere = better_somewhere or a_value < b_value
     return better_somewhere
+
+
+def _validation_trade_count(entry: dict[str, Any]) -> int | None:
+    metadata = entry.get("metadata") or {}
+    activity = metadata.get("elite_activity") or {}
+    value = activity.get("validation_trades")
+    if value is None:
+        stats = ((metadata.get("dev") or {}).get("validation") or {}).get("stats")
+        value = (stats or {}).get("trade_count")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def elite_activity_eligible(entry: dict[str, Any]) -> bool:
+    if entry.get("status") == "incumbent":
+        return True
+    metadata = entry.get("metadata") or {}
+    if metadata.get("elite_eligible") is False:
+        return False
+    trades = _validation_trade_count(entry)
+    # Legacy developed candidates carry their validation receipt. Unknown
+    # activity is not sufficient evidence for a dev candidate to breed. The
+    # older explicit ``frontier`` status is already a curated admission.
+    if trades is None:
+        return entry.get("status") == "frontier" or not metadata.get("campaign_id")
+    minimum = int((metadata.get("elite_activity") or {}).get("minimum") or 8)
+    return trades >= minimum
+
+
+def participation_score(entry: dict[str, Any]) -> float:
+    objective = entry.get("objective") or {}
+    raw = (
+        float(objective.get("net_log_growth") or 0.0)
+        - float(objective.get("downside_deviation") or 0.0)
+        - float(objective.get("tail_loss") or 0.0)
+        - float(objective.get("max_drawdown_pct") or 0.0)
+    )
+    metadata = entry.get("metadata") or {}
+    trades = _validation_trade_count(entry)
+    if trades is None:
+        return raw
+    target = int((metadata.get("elite_activity") or {}).get("target") or 12)
+    return participation_adjusted_score(
+        raw,
+        trade_count=trades,
+        target_trades=target,
+    )

@@ -30,6 +30,8 @@ def summarize_evolution_funnel(state: dict[str, Any]) -> dict[str, Any]:
     quick_evaluated = _count(counts, "quick_evaluated")
     full_dev_evaluated = _count(counts, "full_dev")
     gate_evaluated = _count(counts, "proposed")
+    quick_attempts = _count(counts, "quick_attempts") or quick_evaluated
+    repairs = _count(counts, "repairs")
 
     # A quick rejection never receives a full-dev allocation.  Checking the
     # durable allocation marker also classifies campaigns completed before
@@ -58,7 +60,14 @@ def summarize_evolution_funnel(state: dict[str, Any]) -> dict[str, Any]:
         for candidate in candidates
     )
 
-    return {
+    funnel = {
+        "design": {
+            "hypotheses": _value((state.get("design") or {}).get("hypotheses")),
+            "wildcards": _value((state.get("design") or {}).get("wildcards")),
+            "falsified": len(
+                (state.get("design") or {}).get("falsified_hypotheses") or []
+            ),
+        },
         "generated": {
             "total": generated,
             "target": _optional_count(budgets, "generated"),
@@ -73,6 +82,9 @@ def summarize_evolution_funnel(state: dict[str, Any]) -> dict[str, Any]:
         },
         "quick_screen": {
             "evaluated": quick_evaluated,
+            "attempts": quick_attempts,
+            "attempt_cap": _optional_count(budgets, "quick_attempts"),
+            "repairs": repairs,
             "passed": max(quick_evaluated - quick_rejected, 0),
             "rejected": quick_rejected,
             "pending": max(generated - quick_evaluated, 0),
@@ -124,6 +136,11 @@ def summarize_evolution_funnel(state: dict[str, Any]) -> dict[str, Any]:
             ),
         },
     }
+    if "quick_attempts" not in counts and "quick_attempts" not in budgets:
+        funnel.pop("design", None)
+        for key in ("attempts", "attempt_cap", "repairs"):
+            funnel["quick_screen"].pop(key, None)
+    return funnel
 
 
 def format_evolution_funnel(funnel: dict[str, Any]) -> str:
@@ -133,6 +150,7 @@ def format_evolution_funnel(funnel: dict[str, Any]) -> str:
     full_dev = funnel.get("full_development") or {}
     optuna = funnel.get("optuna") or {}
     gate = funnel.get("finalist_gate") or {}
+    design = funnel.get("design") or {}
     generated_progress = _progress(generated.get("total"), generated.get("target"))
     full_dev_progress = _progress(full_dev.get("evaluated"), full_dev.get("target"))
     optuna_budget = optuna.get("budget")
@@ -146,11 +164,32 @@ def format_evolution_funnel(funnel: dict[str, Any]) -> str:
     if optuna_budget is not None:
         optuna_limits.append(f"budget {_value(optuna_budget)}")
     limits_suffix = f"; {', '.join(optuna_limits)}" if optuna_limits else ""
+    design_prefix = ""
+    if any(key in design for key in ("hypotheses", "wildcards", "falsified")) and (
+        _value(design.get("hypotheses"))
+        or _value(design.get("wildcards"))
+        or _value(design.get("falsified"))
+    ):
+        design_prefix = (
+            f"{_value(design.get('hypotheses'))} hypotheses, "
+            f"{_value(design.get('wildcards'))} wildcards, "
+            f"{_value(design.get('falsified'))} falsified → "
+        )
+    attempt_detail = ""
+    generated_noun = "generated"
+    if "attempts" in quick:
+        attempt_detail = (
+            f"{_value(quick.get('attempts'))} attempts, "
+            f"{_value(quick.get('repairs'))} repairs, "
+        )
+        generated_noun = "ideas"
     return (
-        f"{generated_progress} generated "
+        f"{design_prefix}"
+        f"{generated_progress} {generated_noun} "
         f"({_value(generated.get('structural'))} structural, "
         f"{_value(generated.get('parameter'))} parameter) → "
-        f"quick {_value(quick.get('passed'))} pass, "
+        f"quick {attempt_detail}"
+        f"{_value(quick.get('passed'))} pass, "
         f"{_value(quick.get('rejected'))} reject → "
         f"full dev {_value(full_dev.get('passed'))} pass, "
         f"{_value(full_dev.get('rejected'))} reject "

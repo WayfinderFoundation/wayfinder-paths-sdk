@@ -27,8 +27,10 @@ import yaml
 
 from wayfinder_paths.jobs.archive import (
     ARCHIVE_STATUSES,
+    elite_activity_eligible,
     evolution_lessons_block,
     load_archive,
+    participation_score,
     quality_diversity_snapshot,
     record_candidate,
     set_candidate_status,
@@ -41,6 +43,14 @@ from wayfinder_paths.jobs.compute_lock import (
     machine_state_lock,
 )
 from wayfinder_paths.jobs.evidence import verify_job_evidence_refs
+from wayfinder_paths.jobs.evolution_diagnostics import (
+    attempt_made_progress,
+    build_diagnostic_pack,
+    build_postmortem,
+    compact_postmortem,
+    resolve_json_pointer,
+    result_receipt,
+)
 from wayfinder_paths.jobs.evolution_funnel import summarize_evolution_funnel
 from wayfinder_paths.jobs.execution.features import parse_feature_specs
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
@@ -100,7 +110,9 @@ RESEARCH_SEED_ROOT = "research/evolution/research_seeds"
 RESEARCH_SEED_STATE_PATH = "state/evolution_research_seeds.json"
 CAMPAIGN_DATA_ROOT = "dataset"
 FORWARD_SNAPSHOT = "forward_experience.json"
-SCHEMA_VERSION = "1.1"
+DIAGNOSTIC_PACK = "diagnostic_pack.json"
+CAMPAIGN_DESIGN = "campaign_design.json"
+SCHEMA_VERSION = "2.0"
 _PARENT_SOURCES = ("incumbent", "qd_elite", "crossover", "de_novo")
 _EXECUTABLE_PARENT_STATUSES = {
     "dev_frontier",
@@ -404,8 +416,22 @@ def _start_campaign(
         **spec.evolution,
         "same_family_non_wins": spec.stuck_same_family_non_wins,
     }
+    campaign_policy.setdefault("max_attempts_per_idea", 3)
+    campaign_policy.setdefault(
+        "max_quick_attempts",
+        int(campaign_policy["generated_programs"])
+        * int(campaign_policy["max_attempts_per_idea"]),
+    )
+    campaign_policy.setdefault("wildcard_slots", 2)
+    campaign_policy.setdefault("elite_min_validation_trades", 8)
+    campaign_policy.setdefault("elite_participation_target_trades", 12)
+    campaign_schema = (
+        SCHEMA_VERSION
+        if campaign_policy.get("investigation_design_enabled", True)
+        else "1.1"
+    )
     manifest = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": campaign_schema,
         "campaign_id": campaign_id,
         "job_id": job_id,
         "started_at": current.isoformat(),
@@ -428,14 +454,35 @@ def _start_campaign(
     }
     manifest_path = campaign_root / "manifest.json"
     atomic_write_json(manifest_path, manifest)
+    # The design pack aggregates checked-in diagnostics only. Candidate
+    # evaluation owns fresh simulations; campaign start must stay a cheap
+    # control-plane operation rather than adding another incumbent backtest.
+    baseline = _existing_baseline_receipt(root)
+    diagnostic_pack = build_diagnostic_pack(
+        root,
+        campaign_id=campaign_id,
+        created_at=current.isoformat(),
+        baseline=baseline,
+        historical_lessons=historical_lessons,
+        research_context=research_context,
+    )
+    diagnostic_path = campaign_root / DIAGNOSTIC_PACK
+    atomic_write_json(diagnostic_path, diagnostic_pack)
+    manifest["diagnostic_pack"] = {
+        "path": f"{relative_root}/{DIAGNOSTIC_PACK}",
+        "sha256": _file_hash(diagnostic_path),
+    }
+    atomic_write_json(manifest_path, manifest)
     state = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": campaign_schema,
         "campaign_id": campaign_id,
         "status": "active",
-        "stage": "generate",
+        "stage": "design" if campaign_schema == SCHEMA_VERSION else "generate",
         "started_at": current.isoformat(),
         "deadline_at": deadline.isoformat(),
         "manifest": f"{relative_root}/manifest.json",
+        "diagnostic_pack": manifest["diagnostic_pack"]["path"],
+        "campaign_design": f"{relative_root}/{CAMPAIGN_DESIGN}",
         "forward_context_cutoff": manifest["forward_context_cutoff"],
         "candidates": [],
         "counts": {
@@ -443,22 +490,55 @@ def _start_campaign(
             "quick_evaluated": 0,
             "full_dev": 0,
             "proposed": 0,
+            **(
+                {"quick_attempts": 0, "repairs": 0}
+                if campaign_schema == SCHEMA_VERSION
+                else {}
+            ),
         },
         "budgets": _campaign_budgets(campaign_policy),
     }
     store.write_json(job_id, CAMPAIGN_STATE_PATH, state)
     store.append_journal(
-        job_id, {"type": "evolution_campaign_started", "campaign_id": campaign_id}
+        job_id,
+        {
+            "type": "evolution_campaign_started",
+            "campaign_id": campaign_id,
+            "stage": state["stage"],
+            "diagnostic_pack": manifest["diagnostic_pack"],
+        },
     )
     return state
+
+
+def _existing_baseline_receipt(root: Path) -> dict[str, Any]:
+    path = root / "results/backtest/baseline.json"
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"available": False, "reason": "baseline backtest unavailable"}
+    if not isinstance(document, dict):
+        return {"available": False, "reason": "baseline backtest is not an object"}
+    nested_result = document.get("result")
+    result = nested_result if isinstance(nested_result, dict) else document
+    return {
+        "available": True,
+        "run_id": result.get("run_id"),
+        "stats": result.get("stats") or {},
+        "validation": result.get("validation") or {},
+        "source": {
+            "path": "results/backtest/baseline.json",
+            "sha256": _file_hash(path),
+        },
+    }
 
 
 def prepare_candidate(
     store: JobStore,
     job_id: str,
     *,
-    family: str,
-    summary: str,
+    family: str | None = None,
+    summary: str | None = None,
     mutation_kind: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -471,6 +551,216 @@ def prepare_candidate(
             mutation_kind=mutation_kind,
             now=now,
         )
+
+
+def submit_campaign_design(
+    store: JobStore,
+    job_id: str,
+    *,
+    campaign_design: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate and freeze the one thinking turn before generation."""
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = _active_campaign(store, job_id)
+        if str(state.get("schema_version") or "") != SCHEMA_VERSION:
+            raise ValueError("legacy evolution campaigns do not accept a design")
+        campaign_id = str(state["campaign_id"])
+        manifest = _campaign_manifest(store, job_id, campaign_id)
+        root = store.job_dir(job_id)
+        pack = store.read_json(job_id, str(state["diagnostic_pack"]), default={}) or {}
+        normalized = _validate_campaign_design(
+            campaign_design, manifest=manifest, diagnostic_pack=pack
+        )
+        design_path = root / str(state["campaign_design"])
+        if design_path.exists():
+            existing = json.loads(design_path.read_text(encoding="utf-8"))
+            comparable_existing = {
+                key: value for key, value in existing.items() if key != "created_at"
+            }
+            comparable_normalized = {
+                key: value for key, value in normalized.items() if key != "created_at"
+            }
+            if comparable_existing != comparable_normalized:
+                raise ValueError("campaign design is immutable once accepted")
+            return existing
+        atomic_write_json(design_path, normalized)
+        state["stage"] = "generate"
+        state["design"] = {
+            "path": str(state["campaign_design"]),
+            "sha256": _file_hash(design_path),
+            "hypotheses": len(normalized["hypotheses"]),
+            "slots": len(normalized["slots"]),
+            "wildcards": sum(bool(slot["wildcard"]) for slot in normalized["slots"]),
+            "falsified_hypotheses": [],
+        }
+        _save_campaign(store, job_id, state)
+    store.append_journal(
+        job_id,
+        {
+            "type": "evolution_campaign_design_committed",
+            "campaign_id": campaign_id,
+            **state["design"],
+        },
+    )
+    return normalized
+
+
+def _validate_campaign_design(
+    raw: dict[str, Any], *, manifest: dict[str, Any], diagnostic_pack: dict[str, Any]
+) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError("campaign_design must be an object")
+    hypotheses = raw.get("hypotheses")
+    slots = raw.get("slots")
+    if not isinstance(hypotheses, list) or not 3 <= len(hypotheses) <= 5:
+        raise ValueError("campaign design requires 3-5 grounded hypotheses")
+    expected_slots = int(manifest["policy"]["generated_programs"])
+    if not isinstance(slots, list) or len(slots) != expected_slots:
+        raise ValueError(f"campaign design requires exactly {expected_slots} slots")
+    hypothesis_by_id: dict[str, dict[str, Any]] = {}
+    normalized_hypotheses: list[dict[str, Any]] = []
+    for index, hypothesis in enumerate(hypotheses, start=1):
+        if not isinstance(hypothesis, dict):
+            raise ValueError("every hypothesis must be an object")
+        hypothesis_id = str(hypothesis.get("id") or f"h{index:02d}").strip()
+        if hypothesis_id in hypothesis_by_id:
+            raise ValueError(f"duplicate hypothesis id: {hypothesis_id}")
+        family = str(hypothesis.get("family") or "").strip()
+        mechanism = str(hypothesis.get("causal_mechanism") or "").strip()
+        falsifier = str(hypothesis.get("falsifier") or "").strip()
+        raw_refs = hypothesis.get("evidence_refs")
+        if (
+            not isinstance(raw_refs, list)
+            or not raw_refs
+            or not all(isinstance(ref, str) and ref.strip() for ref in raw_refs)
+        ):
+            raise ValueError(
+                f"hypothesis {hypothesis_id} evidence_refs must be a non-empty "
+                "list of JSON pointers"
+            )
+        refs = [ref.strip() for ref in raw_refs]
+        if not family or not mechanism or not falsifier or not refs:
+            raise ValueError(
+                f"hypothesis {hypothesis_id} needs family, causal_mechanism, "
+                "falsifier, and evidence_refs"
+            )
+        for ref in refs:
+            resolve_json_pointer(diagnostic_pack, ref)
+        normalized = {
+            "id": hypothesis_id,
+            "family": family[:120],
+            "causal_mechanism": mechanism[:800],
+            "falsifier": falsifier[:500],
+            "evidence_refs": refs[:12],
+        }
+        hypothesis_by_id[hypothesis_id] = normalized
+        normalized_hypotheses.append(normalized)
+    allowed_sources = {
+        "incumbent",
+        "qd_elite",
+        "crossover",
+        "de_novo",
+        "starter_seed",
+        "research_seed",
+        "research_context",
+    }
+    normalized_slots: list[dict[str, Any]] = []
+    seen_slot_ids: set[str] = set()
+    for index, slot in enumerate(slots, start=1):
+        if not isinstance(slot, dict):
+            raise ValueError("every design slot must be an object")
+        slot_id = str(slot.get("slot_id") or f"s{index:02d}").strip()
+        if slot_id in seen_slot_ids:
+            raise ValueError(f"duplicate design slot id: {slot_id}")
+        seen_slot_ids.add(slot_id)
+        wildcard_value = slot.get("wildcard")
+        if not isinstance(wildcard_value, bool):
+            raise ValueError(f"slot {slot_id} wildcard must be true or false")
+        wildcard = wildcard_value
+        hypothesis_id = str(slot.get("hypothesis_id") or "").strip()
+        if wildcard and hypothesis_id:
+            raise ValueError(f"wildcard slot {slot_id} cannot cite a hypothesis")
+        if not wildcard and hypothesis_id not in hypothesis_by_id:
+            raise ValueError(f"grounded slot {slot_id} has an unknown hypothesis")
+        source = str(slot.get("parent_source") or "").strip()
+        if source not in allowed_sources:
+            raise ValueError(f"slot {slot_id} has unsupported parent_source {source!r}")
+        mutation = str(slot.get("mutation_kind") or "structural").strip()
+        if mutation not in {"structural", "parameter"}:
+            raise ValueError(
+                f"slot {slot_id} mutation_kind must be structural or parameter"
+            )
+        family = str(slot.get("family") or "").strip()
+        summary = str(slot.get("summary") or "").strip()
+        if not family or not summary:
+            raise ValueError(f"slot {slot_id} requires family and summary")
+        normalized_slots.append(
+            {
+                "slot_id": slot_id,
+                "wildcard": wildcard,
+                "hypothesis_id": hypothesis_id or None,
+                "parent_source": source,
+                "mutation_kind": mutation,
+                "family": family[:120],
+                "summary": summary[:240],
+            }
+        )
+    wildcard_count = sum(bool(slot["wildcard"]) for slot in normalized_slots)
+    if wildcard_count != int(manifest["policy"].get("wildcard_slots") or 0):
+        raise ValueError("campaign design has the wrong number of wildcard slots")
+    grounded = [slot for slot in normalized_slots if not slot["wildcard"]]
+    sources = {str(slot["parent_source"]) for slot in grounded}
+    if "starter_seed" not in sources:
+        raise ValueError("grounded design requires an explicit starter_seed slot")
+    if not sources & {"research_seed", "research_context"}:
+        raise ValueError("grounded design requires an explicit research slot")
+    if "de_novo" not in sources:
+        raise ValueError("grounded design requires an explicit de_novo slot")
+    available_parents = (manifest.get("parent_pool") or {}).get("candidates") or []
+    exploration_parents = [
+        parent
+        for parent in available_parents
+        if str(parent.get("status") or "") != "incumbent"
+    ]
+    if exploration_parents and not sources & {"qd_elite", "crossover"}:
+        raise ValueError(
+            "grounded design requires a qd_elite or crossover slot when parents exist"
+        )
+    if sum(slot["parent_source"] == "incumbent" for slot in grounded) > 1:
+        raise ValueError("grounded design permits at most one incumbent slot")
+    if sum(slot["mutation_kind"] == "parameter" for slot in normalized_slots) > 2:
+        raise ValueError("campaign design permits at most two parameter slots")
+    if not any(
+        slot["wildcard"] and slot["parent_source"] == "de_novo"
+        for slot in normalized_slots
+    ):
+        raise ValueError("one wildcard slot must be de_novo")
+    for slot in grounded:
+        if slot["parent_source"] != "research_context":
+            continue
+        hypothesis = hypothesis_by_id[str(slot["hypothesis_id"])]
+        if not any(
+            ref.startswith(
+                (
+                    "/baseline",
+                    "/attribution",
+                    "/trade_forensics",
+                    "/counterfactual",
+                    "/regime_health",
+                    "/research_context",
+                    "/prior_campaign_lessons",
+                )
+            )
+            for ref in hypothesis["evidence_refs"]
+        ):
+            raise ValueError("research_context slots must cite checked-in research")
+    return {
+        "schema_version": "1.0",
+        "campaign_id": manifest["campaign_id"],
+        "created_at": utc_now_iso(),
+        "hypotheses": normalized_hypotheses,
+        "slots": normalized_slots,
+    }
 
 
 def submit_research_seed(
@@ -581,8 +871,8 @@ def _prepare_candidate(
     store: JobStore,
     job_id: str,
     *,
-    family: str,
-    summary: str,
+    family: str | None,
+    summary: str | None,
     mutation_kind: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -596,42 +886,99 @@ def _prepare_candidate(
     if slot > limit:
         raise ValueError(f"campaign generated-program budget exhausted ({limit})")
 
-    forced_jump = _same_family_nonwins(
-        state, family, int(policy["same_family_non_wins"])
-    )
-    requested_source = (
-        "de_novo" if forced_jump else _parent_source(slot, policy["parent_mix"])
-    )
-    research_seed_slots = int(policy.get("research_seed_slots") or 0)
-    if slot <= research_seed_slots and manifest.get("research_seeds"):
-        requested_source = "research_seed"
-    required_structural = math.ceil(
-        limit * float(policy.get("min_structural_fraction") or 0.0)
-    )
-    allowed_parameter_slots = max(
-        0,
-        min(
-            int(limit * float(policy["max_parameter_fraction"])),
-            limit - required_structural,
-        ),
-    )
-    parameter_slots = (
-        {
-            max(1, round((index + 1) * limit / allowed_parameter_slots))
-            for index in range(allowed_parameter_slots)
-        }
-        if allowed_parameter_slots
-        else set()
-    )
-    chosen_mutation = mutation_kind or (
-        "parameter" if slot in parameter_slots else "structural"
-    )
-    if chosen_mutation not in {"structural", "parameter"}:
-        raise ValueError("mutation_kind must be structural or parameter")
-    if chosen_mutation == "parameter" and slot not in parameter_slots:
-        chosen_mutation = "structural"
-    if forced_jump:
-        chosen_mutation = "structural"
+    designed = str(state.get("schema_version") or "") == SCHEMA_VERSION
+    design_slot: dict[str, Any] = {}
+    hypothesis: dict[str, Any] = {}
+    if designed:
+        if state.get("stage") != "generate":
+            raise ValueError("campaign design must be accepted before preparation")
+        design = (
+            store.read_json(job_id, str(state["campaign_design"]), default={}) or {}
+        )
+        try:
+            design_slot = dict(design["slots"][slot - 1])
+        except (KeyError, IndexError, TypeError) as exc:
+            raise ValueError("campaign design has no next slot") from exc
+        falsified = set((state.get("design") or {}).get("falsified_hypotheses") or [])
+        if (
+            not design_slot.get("wildcard")
+            and design_slot.get("hypothesis_id") in falsified
+        ):
+            used = {
+                str(item.get("hypothesis_id") or "")
+                for item in state.get("candidates") or []
+            }
+            replacement = next(
+                (
+                    item
+                    for item in design.get("hypotheses") or []
+                    if item.get("id") not in falsified and item.get("id") not in used
+                ),
+                next(
+                    (
+                        item
+                        for item in design.get("hypotheses") or []
+                        if item.get("id") not in falsified
+                    ),
+                    None,
+                ),
+            )
+            if replacement is not None:
+                design_slot["hypothesis_id"] = replacement["id"]
+                design_slot["family"] = replacement["family"]
+                design_slot["summary"] = str(replacement["causal_mechanism"])[:240]
+        family = str(design_slot["family"])
+        summary = str(design_slot["summary"])
+        requested_source = str(design_slot["parent_source"])
+        chosen_mutation = str(design_slot["mutation_kind"])
+        hypothesis = next(
+            (
+                dict(item)
+                for item in design.get("hypotheses") or []
+                if item.get("id") == design_slot.get("hypothesis_id")
+            ),
+            {},
+        )
+        forced_jump = False
+    else:
+        if not family or not summary:
+            raise ValueError("legacy evolution_prepare requires family and summary")
+        forced_jump = _same_family_nonwins(
+            state, family, int(policy["same_family_non_wins"])
+        )
+        requested_source = (
+            "de_novo" if forced_jump else _parent_source(slot, policy["parent_mix"])
+        )
+        research_seed_slots = int(policy.get("research_seed_slots") or 0)
+        if slot <= research_seed_slots and manifest.get("research_seeds"):
+            requested_source = "research_seed"
+        required_structural = math.ceil(
+            limit * float(policy.get("min_structural_fraction") or 0.0)
+        )
+        allowed_parameter_slots = max(
+            0,
+            min(
+                int(limit * float(policy["max_parameter_fraction"])),
+                limit - required_structural,
+            ),
+        )
+        parameter_slots = (
+            {
+                max(1, round((index + 1) * limit / allowed_parameter_slots))
+                for index in range(allowed_parameter_slots)
+            }
+            if allowed_parameter_slots
+            else set()
+        )
+        chosen_mutation = mutation_kind or (
+            "parameter" if slot in parameter_slots else "structural"
+        )
+        if chosen_mutation not in {"structural", "parameter"}:
+            raise ValueError("mutation_kind must be structural or parameter")
+        if chosen_mutation == "parameter" and slot not in parameter_slots:
+            chosen_mutation = "structural"
+        if forced_jump:
+            chosen_mutation = "structural"
 
     parent_plan = _select_parent_plan(
         manifest,
@@ -652,12 +999,18 @@ def _prepare_candidate(
         plan=parent_plan,
     )
     seed_revision = compute_workspace_revision(candidate_root)
+    reference_relative = (
+        f"{CAMPAIGN_ROOT}/{state['campaign_id']}/references/{candidate_id}"
+    )
+    copy_job_bundle(
+        store.job_dir(job_id) / relative, store.job_dir(job_id) / reference_relative
+    )
     candidate = {
         "candidate_id": candidate_id,
         "campaign_id": state["campaign_id"],
         "slot": slot,
-        "family": family,
-        "summary": summary[:160],
+        "family": str(family),
+        "summary": str(summary)[:160],
         "status": "prepared",
         "parent_source": source,
         "requested_parent_source": requested_source,
@@ -670,7 +1023,16 @@ def _prepare_candidate(
         "bundle": relative,
         "warmup_bars": seeded_window,
         "seed_revision": seed_revision,
+        "reference_bundle": reference_relative,
         "evidence_reset": source in {"starter_seed", "research_seed"},
+        "design_slot_id": design_slot.get("slot_id"),
+        "hypothesis_id": design_slot.get("hypothesis_id"),
+        "wildcard": bool(design_slot.get("wildcard")),
+        "evidence_refs": list(hypothesis.get("evidence_refs") or []),
+        "causal_mechanism": hypothesis.get("causal_mechanism"),
+        "falsifier": hypothesis.get("falsifier"),
+        "attempt_count": 0,
+        "attempts": [],
         "prepared_at": utc_now_iso(),
     }
     atomic_write_json(candidate_root / "candidate.json", candidate)
@@ -681,8 +1043,8 @@ def _prepare_candidate(
         store,
         job_id,
         candidate_id=candidate_id,
-        family=family,
-        summary=summary,
+        family=str(family),
+        summary=str(summary),
         status="generated",
         objective=None,
         parent_candidate_ids=parents,
@@ -696,6 +1058,9 @@ def _prepare_candidate(
             "research_seed_id": candidate.get("research_seed_id"),
             "seed_revision": seed_revision,
             "evidence_reset": candidate["evidence_reset"],
+            "design_slot_id": candidate.get("design_slot_id"),
+            "hypothesis_id": candidate.get("hypothesis_id"),
+            "wildcard": candidate.get("wildcard"),
         },
     )
     # ``bundle`` stays durable and job-relative.  The tool response also gives
@@ -789,7 +1154,11 @@ def evaluate_candidate(
                 claim_age = timedelta.max
             if claim_age < timedelta(hours=2):
                 return candidate
-        elif candidate["status"] not in {"prepared", "quick_failed"}:
+        elif candidate["status"] not in {
+            "prepared",
+            "quick_failed",
+            "repair_pending",
+        }:
             return candidate
         campaign_id = str(state["campaign_id"])
         candidate.update(
@@ -834,11 +1203,20 @@ def evaluate_candidate(
         candidate = _candidate(state, candidate_id)
         if candidate.get("evaluation_claim_id") != claim_id:
             return candidate
-        candidate.update(outcome)
+        if str(state.get("schema_version") or "") != SCHEMA_VERSION:
+            candidate.update(outcome)
+            candidate["evaluated_at"] = utc_now_iso()
+            state["counts"]["quick_evaluated"] += 1
+        else:
+            _commit_designed_attempt(
+                store,
+                job_id,
+                state=state,
+                candidate=candidate,
+                outcome=outcome,
+            )
         candidate.pop("evaluation_claim_id", None)
         candidate.pop("evaluation_claimed_at", None)
-        candidate["evaluated_at"] = utc_now_iso()
-        state["counts"]["quick_evaluated"] += 1
         _save_campaign(store, job_id, state)
     _archive_campaign_candidate(store, job_id, candidate)
     return candidate
@@ -951,6 +1329,30 @@ def _evaluate_candidate(
         "execution_calibration": calibration,
         "tuning_eligible": search_space is not None,
     }
+    if candidate.get("reference_bundle"):
+        receipt = result_receipt(
+            result,
+            revision=revision,
+            objective=common["objective"],
+            behavior=common["behavior"],
+        )
+        reference = _candidate_reference_receipt(
+            store,
+            job_id,
+            candidate,
+            campaign_id=campaign_id,
+        )
+        previous = _latest_attempt_receipt(store, job_id, candidate)
+        common["attempt_receipt"] = receipt
+        common["postmortem"] = build_postmortem(
+            receipt,
+            reference,
+            previous=previous,
+            # The quick screen only establishes that the mechanism runs and
+            # changes behavior. The eight-trade participation floor belongs
+            # to independent validation, where elite eligibility is decided.
+            min_trades=1,
+        )
     if search_space is None:
         common["tuning_skip_reason"] = "no_typed_search_space"
     if tuning_preview is not None:
@@ -966,6 +1368,268 @@ def _evaluate_candidate(
         "status": "quick_complete",
         "evidence": "low-fidelity train screen passed",
     }
+
+
+def _candidate_reference_receipt(
+    store: JobStore,
+    job_id: str,
+    candidate: dict[str, Any],
+    *,
+    campaign_id: str,
+) -> dict[str, Any]:
+    relative = (
+        f"{CAMPAIGN_ROOT}/{campaign_id}/reference_results/"
+        f"{candidate['candidate_id']}.json"
+    )
+    cached = store.read_json(job_id, relative, default={}) or {}
+    if cached.get("revision") == candidate.get("seed_revision"):
+        return cached
+    root = store.job_dir(job_id).resolve()
+    reference = (root / str(candidate["reference_bundle"])).resolve()
+    allowed = (root / CAMPAIGN_ROOT / campaign_id / "references").resolve()
+    if (
+        not reference.is_relative_to(allowed)
+        or reference.parent != allowed
+        or reference.name != candidate["candidate_id"]
+    ):
+        raise ValueError("candidate reference bundle escapes its campaign root")
+    if compute_workspace_revision(reference) != candidate.get("seed_revision"):
+        raise ValueError("candidate reference bundle revision mismatch")
+    subject = _load_subject(store, job_id, reference, campaign_id=campaign_id)
+    train_end, validation_end = _split_bounds(store, job_id, campaign_id=campaign_id)
+    train, _, _ = _split_dataset(
+        subject["dataset"], train_end=train_end, validation_end=validation_end
+    )
+    quick = _tail(train, 10_000)
+    params, _, _ = _calibrated_params(store, job_id, subject)
+    result = simulate_execution(subject["script"], quick, subject["spec"], params)
+    receipt = result_receipt(
+        result,
+        revision=compute_workspace_revision(reference),
+        objective=_objective(result.stats, params),
+        behavior=_behavior(result, quick, subject["spec"]),
+    )
+    atomic_write_json(root / relative, receipt)
+    return receipt
+
+
+def _latest_attempt_receipt(
+    store: JobStore, job_id: str, candidate: dict[str, Any]
+) -> dict[str, Any] | None:
+    attempts = candidate.get("attempts") or []
+    if not attempts:
+        return None
+    relative = str(attempts[-1].get("receipt_path") or "")
+    if not relative:
+        return None
+    receipt = store.read_json(job_id, relative, default={}) or {}
+    return receipt if isinstance(receipt, dict) and receipt else None
+
+
+def _commit_designed_attempt(
+    store: JobStore,
+    job_id: str,
+    *,
+    state: dict[str, Any],
+    candidate: dict[str, Any],
+    outcome: dict[str, Any],
+) -> None:
+    campaign_id = str(state["campaign_id"])
+    policy = _campaign_policy(store, job_id, campaign_id)
+    attempt_index = int(candidate.get("attempt_count") or 0) + 1
+    candidate_root = resolve_candidate_bundle(
+        store, job_id, candidate, campaign_id=campaign_id
+    )
+    attempt_relative = (
+        f"{CAMPAIGN_ROOT}/{campaign_id}/attempts/{candidate['candidate_id']}/"
+        f"a{attempt_index:02d}"
+    )
+    attempt_root = store.job_dir(job_id) / attempt_relative
+    bundle_revision = compute_workspace_revision(candidate_root)
+    attempt_bundle = attempt_root / "bundle"
+    if attempt_bundle.exists():
+        if compute_workspace_revision(attempt_bundle) != bundle_revision:
+            raise ValueError("attempt snapshot revision mismatch")
+    else:
+        _copy_attempt_bundle(candidate_root, attempt_bundle)
+    receipt = outcome.pop("attempt_receipt", None)
+    if not isinstance(receipt, dict):
+        receipt = {
+            "revision": bundle_revision,
+            "execution_valid": False,
+            "stats": {},
+            "objective": {},
+            "behavior": {},
+            "trades": [],
+        }
+    elif receipt.get("revision") != bundle_revision:
+        outcome = {
+            "status": "invalid",
+            "evidence": {"error": "candidate changed during quick evaluation"},
+        }
+        receipt = {
+            "revision": bundle_revision,
+            "execution_valid": False,
+            "stats": {},
+            "objective": {},
+            "behavior": {},
+            "trades": [],
+        }
+    postmortem = outcome.pop("postmortem", None)
+    if not isinstance(postmortem, dict):
+        postmortem = {
+            "viable": False,
+            "primary_failure": "invalid_execution",
+            "failure_codes": ["invalid_execution"],
+            "behavior_diff": {"material_change": False},
+        }
+    receipt_relative = f"{attempt_relative}/receipt.json"
+    postmortem_relative = f"{attempt_relative}/postmortem.json"
+    atomic_write_json(store.job_dir(job_id) / receipt_relative, receipt)
+    atomic_write_json(store.job_dir(job_id) / postmortem_relative, postmortem)
+    stored_outcome = {
+        key: value
+        for key, value in outcome.items()
+        if key not in {"status", "evidence"}
+    }
+    attempt = {
+        "attempt": attempt_index,
+        "evaluated_at": utc_now_iso(),
+        "status": outcome.get("status"),
+        "revision": receipt.get("revision"),
+        "execution_valid": bool(receipt.get("execution_valid")),
+        "bundle": f"{attempt_relative}/bundle",
+        "receipt_path": receipt_relative,
+        "postmortem_path": postmortem_relative,
+        "postmortem": postmortem,
+        "outcome": stored_outcome,
+        "evidence": _compact_evidence(outcome.get("evidence") or postmortem),
+    }
+    candidate.setdefault("attempts", []).append(attempt)
+    candidate["attempt_count"] = attempt_index
+    candidate["latest_postmortem_path"] = postmortem_relative
+    candidate["evaluated_at"] = attempt["evaluated_at"]
+    counts = state.setdefault("counts", {})
+    counts["quick_attempts"] = int(counts.get("quick_attempts") or 0) + 1
+    max_attempts = int(policy.get("max_attempts_per_idea") or 3)
+    global_cap = int(
+        policy.get("max_quick_attempts")
+        or int(policy["generated_programs"]) * max_attempts
+    )
+    before_drain = datetime.now(UTC) < _parse(state["deadline_at"]) - CAMPAIGN_DRAIN
+    room = attempt_index < max_attempts and counts["quick_attempts"] < global_cap
+    repair = bool(
+        before_drain
+        and room
+        and not bool(postmortem.get("viable"))
+        and (attempt_index == 1 or attempt_made_progress(postmortem))
+    )
+    if repair:
+        candidate["status"] = "repair_pending"
+        candidate["evidence"] = postmortem
+        counts["repairs"] = int(counts.get("repairs") or 0) + 1
+        atomic_write_json(candidate_root / "candidate.json", candidate)
+        return
+    _close_designed_candidate(store, job_id, state=state, candidate=candidate)
+
+
+def _close_designed_candidate(
+    store: JobStore,
+    job_id: str,
+    *,
+    state: dict[str, Any],
+    candidate: dict[str, Any],
+) -> None:
+    campaign_id = str(state["campaign_id"])
+    candidate_root = resolve_candidate_bundle(
+        store, job_id, candidate, campaign_id=campaign_id
+    )
+    viable = [
+        item
+        for item in candidate["attempts"]
+        if bool((item.get("postmortem") or {}).get("viable"))
+    ]
+    pool = viable or list(candidate["attempts"])
+    best = max(
+        pool,
+        key=lambda item: (
+            bool(item.get("execution_valid")),
+            bool(
+                (item.get("postmortem") or {})
+                .get("behavior_diff", {})
+                .get("material_change")
+            ),
+            _candidate_score(item.get("outcome") or {}),
+            int(item.get("attempt") or 0),
+        ),
+    )
+    best_bundle = store.job_dir(job_id) / str(best["bundle"])
+    if compute_workspace_revision(candidate_root) != best.get("revision"):
+        _replace_candidate_bundle(best_bundle, candidate_root)
+    selected = dict(best.get("outcome") or {})
+    candidate.update(selected)
+    candidate["revision"] = best.get("revision")
+    candidate["best_attempt"] = best.get("attempt")
+    candidate["status"] = "quick_complete" if viable else "low_fidelity_rejected"
+    candidate["evidence"] = (
+        "best postmortem-qualified attempt selected"
+        if viable
+        else (best.get("postmortem") or {})
+    )
+    counts = state.setdefault("counts", {})
+    counts["quick_evaluated"] = int(counts.get("quick_evaluated") or 0) + 1
+    _update_hypothesis_adjudication(state, candidate)
+    atomic_write_json(candidate_root / "candidate.json", candidate)
+
+
+def _update_hypothesis_adjudication(
+    state: dict[str, Any], candidate: dict[str, Any]
+) -> None:
+    hypothesis_id = str(candidate.get("hypothesis_id") or "")
+    if not hypothesis_id or candidate.get("status") == "quick_complete":
+        return
+    related = [
+        item
+        for item in state.get("candidates") or []
+        if item.get("hypothesis_id") == hypothesis_id
+    ]
+    exhausted = sum(item.get("status") == "low_fidelity_rejected" for item in related)
+    failures: dict[str, int] = {}
+    for item in related:
+        for attempt in item.get("attempts") or []:
+            code = str((attempt.get("postmortem") or {}).get("primary_failure") or "")
+            if code:
+                failures[code] = failures.get(code, 0) + 1
+    repeated = max(failures.values(), default=0)
+    if exhausted < 2 and repeated < 4:
+        return
+    design_state = state.setdefault("design", {})
+    falsified = design_state.setdefault("falsified_hypotheses", [])
+    if hypothesis_id not in falsified:
+        falsified.append(hypothesis_id)
+
+
+def _copy_attempt_bundle(source: Path, destination: Path) -> None:
+    copy_job_bundle(source, destination)
+    search_space = source / "search_space.json"
+    if search_space.is_file():
+        shutil.copy2(search_space, destination / "search_space.json")
+
+
+def _replace_candidate_bundle(source: Path, destination: Path) -> None:
+    temporary = destination.with_name(f".{destination.name}.restore-{uuid.uuid4().hex}")
+    backup = destination.with_name(f".{destination.name}.backup-{uuid.uuid4().hex}")
+    _copy_attempt_bundle(source, temporary)
+    try:
+        os.replace(destination, backup)
+        os.replace(temporary, destination)
+    except Exception:
+        if backup.exists() and not destination.exists():
+            os.replace(backup, destination)
+        raise
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+        shutil.rmtree(backup, ignore_errors=True)
 
 
 def _parameter_tuning_preview(
@@ -1062,10 +1726,22 @@ def finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
 def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
     with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
         state = campaign_status(store, job_id)
+        for candidate in state.get("candidates") or []:
+            if candidate.get("status") == "repair_pending" and candidate.get(
+                "attempts"
+            ):
+                _close_designed_candidate(
+                    store,
+                    job_id,
+                    state=state,
+                    candidate=candidate,
+                )
+        _save_campaign(store, job_id, state)
         pending = [
             str(candidate.get("candidate_id") or "")
             for candidate in state.get("candidates") or []
-            if candidate.get("status") in {"prepared", "quick_failed", "quick_running"}
+            if candidate.get("status")
+            in {"prepared", "quick_failed", "quick_running", "repair_pending"}
         ]
     if pending:
         raise TransientInfrastructureError(
@@ -1239,13 +1915,20 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
 
 
 def _campaign_budgets(policy: dict[str, Any]) -> dict[str, int]:
-    return {
+    budgets = {
         "generated": int(policy["generated_programs"]),
         "full_development": int(policy["full_dev_survivors"]),
         "optuna": int(policy["inner_optuna_finalists"]),
         "optuna_minimum": int(policy.get("inner_optuna_min_finalists") or 0),
         "finalist_gate": int(policy["proposal_finalists"]),
     }
+    if policy.get("investigation_design_enabled") is True:
+        budgets["quick_attempts"] = int(
+            policy.get("max_quick_attempts")
+            or int(policy["generated_programs"])
+            * int(policy.get("max_attempts_per_idea") or 1)
+        )
+    return budgets
 
 
 def _claim_full_dev(
@@ -1645,18 +2328,83 @@ def campaign_prompt_block(
                 f"candidate {running[0].get('candidate_id')} evaluation is running"
             ),
         }
+    if state.get("stage") == "design":
+        if current >= deadline:
+            return {
+                "job_id": job_id,
+                "campaign_id": state["campaign_id"],
+                "stage": "design",
+                "session_stage": "finalize",
+                "agent_name": "wayfinder-evolution-worker",
+                "deadline_at": state["deadline_at"],
+                "counts": state["counts"],
+                "next_action": (
+                    'Call wayfinder_core_jobs with action="evolution_finalize", '
+                    f'job_id="{job_id}", background=true, then end this stage. '
+                    "The design deadline elapsed without candidate generation."
+                ),
+                "deadline_elapsed": True,
+            }
+        pack_path = (store.job_dir(job_id) / str(state["diagnostic_pack"])).resolve()
+        manifest_path = (store.job_dir(job_id) / str(state["manifest"])).resolve()
+        policy = manifest.get("policy") or {}
+        slots = int(policy.get("generated_programs") or 8)
+        wildcards = int(policy.get("wildcard_slots") or 2)
+        return {
+            "job_id": job_id,
+            "campaign_id": state["campaign_id"],
+            "stage": "design",
+            "session_stage": "design",
+            "agent_name": "wayfinder-evolution-designer",
+            "deadline_at": state["deadline_at"],
+            "counts": state["counts"],
+            "next_action": (
+                f"Read `{pack_path}` and `{manifest_path}`. Design 3-5 grounded "
+                f"causal hypotheses and exactly {slots} idea slots, including "
+                f"exactly {wildcards} explicit wildcards. Grounded slots must "
+                "cite existing JSON pointers from the diagnostic pack. Include "
+                "at least one starter_seed, one research_seed or research_context, "
+                "and one grounded de_novo slot; use at most one incumbent slot and "
+                "at most two parameter slots. One wildcard must be de_novo. "
+                'Call wayfinder_core_jobs with action="evolution_design", '
+                f'job_id="{job_id}", and campaign_design={{"hypotheses": [...], '
+                '"slots": [...]}}, background=true. Each hypothesis needs id, family, '
+                "causal_mechanism, falsifier, evidence_refs. Each slot needs "
+                "slot_id, wildcard, hypothesis_id (null for wildcard), "
+                "parent_source, mutation_kind, family, summary. Do not wait for "
+                "the detached result; end immediately after launch."
+            ),
+            "diagnostic_pack": str(pack_path),
+            "constraints": {
+                "paper_only": True,
+                "facts_constrain_claims_not_mechanisms": True,
+                "wildcards": wildcards,
+                "idea_slots": slots,
+            },
+            "deadline_elapsed": current >= deadline,
+        }
     awaiting_evaluation = [
         item
         for item in candidates
-        if item.get("status") in {"prepared", "quick_failed"}
+        if item.get("status") in {"prepared", "quick_failed", "repair_pending"}
     ]
     policy = manifest.get("policy") or {}
     budget = int(policy.get("generated_programs") or 0)
     deadline_elapsed = current >= deadline
     draining = deadline - CAMPAIGN_DRAIN <= current < deadline
-    requested_next_source = _parent_source(
-        len(candidates) + 1, policy.get("parent_mix") or {}
+    designed = str(state.get("schema_version") or "") == SCHEMA_VERSION
+    design = (
+        store.read_json(job_id, str(state.get("campaign_design") or ""), default={})
+        or {}
+        if designed
+        else {}
     )
+    try:
+        requested_next_source = str(design["slots"][len(candidates)]["parent_source"])
+    except (KeyError, IndexError, TypeError):
+        requested_next_source = _parent_source(
+            len(candidates) + 1, policy.get("parent_mix") or {}
+        )
     next_parent_plan = _select_parent_plan(
         manifest,
         requested_source=requested_next_source,
@@ -1668,9 +2416,15 @@ def campaign_prompt_block(
     )
     prepare_call = (
         'Call wayfinder_core_jobs with action="evolution_prepare", '
-        f'job_id="{job_id}", family="<specific strategy family>", and '
-        'summary="<concise testable hypothesis>". Do not pass mutation_kind; '
-        "the campaign policy assigns structural and parameter slots."
+        f'job_id="{job_id}". The accepted campaign design supplies the family, '
+        "hypothesis, source, and mutation kind."
+        if designed
+        else (
+            'Call wayfinder_core_jobs with action="evolution_prepare", '
+            f'job_id="{job_id}", family="<specific strategy family>", and '
+            'summary="<concise testable hypothesis>". Do not pass mutation_kind; '
+            "the campaign policy assigns structural and parameter slots."
+        )
     )
     if awaiting_evaluation:
         candidate = awaiting_evaluation[0]
@@ -1689,8 +2443,19 @@ def campaign_prompt_block(
         seed_instruction = _candidate_seed_instruction(
             store, job_id, str(state["campaign_id"]), candidate
         )
+        repair_instruction = ""
+        if candidate.get("status") == "repair_pending":
+            latest_attempt = (candidate.get("attempts") or [])[-1]
+            repair_instruction = (
+                f"This is repair {int(candidate.get('attempt_count') or 0)} of "
+                f"at most {int(policy.get('max_attempts_per_idea') or 3)}. Read "
+                f"the deterministic postmortem at "
+                f"`{store.job_dir(job_id) / str(latest_attempt.get('postmortem_path') or '')}`. "
+                "Change the named causal mechanism in response to that evidence; "
+                "do not rename the family or substitute a generic new idea. "
+            )
         next_action = (
-            f"{seed_instruction}{mutation_instruction}Edit only files inside "
+            f"{seed_instruction}{mutation_instruction}{repair_instruction}Edit only files inside "
             f"{candidate_root} "
             "(workspace, job.yaml, "
             "and optional search_space.json), then launch "
@@ -1698,7 +2463,8 @@ def campaign_prompt_block(
             f'job_id="{job_id}", candidate_id="{candidate["candidate_id"]}", '
             "and background=true. Do not wait for the detached result. END THIS "
             "STAGE immediately after launch; do not prepare another candidate. "
-            "A fresh stage session will receive the persisted outcome."
+            "The same bounded idea session will receive the compact postmortem "
+            "if a repair is warranted."
         )
     elif deadline_elapsed:
         session_stage = "finalize"
@@ -1718,8 +2484,8 @@ def campaign_prompt_block(
         preview = _parent_plan_handoff(next_parent_plan)
         next_action = (
             f"Next source plan: {json.dumps(preview, sort_keys=True)}. "
-            f"{research_instruction} "
-            f"{prepare_call} Then edit only the exact `bundle_path` returned by "
+            f"{research_instruction} {prepare_call} Then follow the returned "
+            "design assignment and edit only the exact `bundle_path` returned by "
             "that call and "
             'launch wayfinder_core_jobs with action="evolution_evaluate", '
             f'job_id="{job_id}", candidate_id="<returned candidate_id>", '
@@ -1744,6 +2510,7 @@ def campaign_prompt_block(
         "deadline_at": state["deadline_at"],
         "counts": state["counts"],
         "next_action": next_action,
+        "agent_name": "wayfinder-evolution-worker",
         "candidate_outcomes": [_candidate_handoff(item) for item in candidates],
         "historical_lessons": manifest.get("historical_lessons") or {},
         "research_context": manifest.get("research_context") or {},
@@ -1814,6 +2581,11 @@ def _candidate_seed_instruction(
             "starting point only: its prior evidence was reset and it must re-earn "
             "every campaign gate. Preserve the current job's operational contract."
         )
+    if source == "research_context":
+        return (
+            "The bundle is a clean scaffold for the assigned checked-in research "
+            "hypothesis. Implement the named mechanism; do not copy incumbent alpha. "
+        )
     if source == "crossover":
         secondary = _resolve_frozen_parent_bundle(
             store,
@@ -1850,6 +2622,11 @@ def _candidate_handoff(candidate: dict[str, Any]) -> dict[str, Any]:
         "research_seed_id": candidate.get("research_seed_id"),
         "status": candidate.get("status"),
         "summary": str(candidate.get("summary") or "")[:240],
+        "design_slot_id": candidate.get("design_slot_id"),
+        "hypothesis_id": candidate.get("hypothesis_id"),
+        "wildcard": bool(candidate.get("wildcard")),
+        "attempt_count": int(candidate.get("attempt_count") or 0),
+        "best_attempt": candidate.get("best_attempt"),
     }
     for key in ("objective", "behavior"):
         value = candidate.get(key)
@@ -1878,6 +2655,14 @@ def _candidate_handoff(candidate: dict[str, Any]) -> dict[str, Any]:
     recovery_reason = candidate.get("evaluation_recovery_reason")
     if recovery_reason:
         handoff["evaluation_recovery_reason"] = str(recovery_reason)[:240]
+    attempts = candidate.get("attempts") or []
+    if attempts:
+        latest = attempts[-1]
+        handoff["latest_postmortem"] = {
+            "attempt": latest.get("attempt"),
+            "path": latest.get("postmortem_path"),
+            **compact_postmortem(latest.get("postmortem") or {}),
+        }
     return handoff
 
 
@@ -1923,11 +2708,25 @@ def _archive_campaign_candidate(
             "full_dev_tune",
             "full_dev_selection_reason",
             "tuning",
+            "elite_eligible",
+            "elite_activity",
+            "design_slot_id",
+            "hypothesis_id",
+            "wildcard",
+            "evidence_refs",
+            "attempt_count",
+            "best_attempt",
+            "latest_postmortem_path",
         )
         if candidate.get(key) is not None
     }
     if executable_bundle is not None:
         metadata["executable_bundle"] = executable_bundle
+    attempts = candidate.get("attempts") or []
+    if attempts:
+        metadata["latest_postmortem"] = compact_postmortem(
+            attempts[-1].get("postmortem") or {}
+        )
     record_candidate(
         store,
         job_id,
@@ -2084,11 +2883,16 @@ def _full_dev(
     compact_stress = _compact_result(stress_result, stats=stress_stats)
     del stress_result
     gc.collect()
+    minimum_validation_trades = (
+        int((manifest.get("policy") or {}).get("elite_min_validation_trades") or 8)
+        if str(manifest.get("schema_version") or "") == SCHEMA_VERSION
+        else 1
+    )
     passed = (
         train_valid
         and validation_valid
         and stress_valid
-        and int(validation_stats.get("trade_count") or 0) > 0
+        and int(validation_stats.get("trade_count") or 0) >= minimum_validation_trades
         and float(validation_stats.get("net_return") or 0.0) > 0.0
         and float(stress_stats.get("net_return") or 0.0) > 0.0
         and bool(calibration["audit_passed"])
@@ -2106,9 +2910,22 @@ def _full_dev(
         },
         "objective": objective,
         "behavior": behavior,
-        "evidence": "positive independent validation"
+        "elite_eligible": passed,
+        "elite_activity": {
+            "validation_trades": int(validation_stats.get("trade_count") or 0),
+            "minimum": minimum_validation_trades,
+            "target": int(
+                (manifest.get("policy") or {}).get("elite_participation_target_trades")
+                or 12
+            ),
+        },
+        "evidence": "positive independent validation with sufficient activity"
         if passed
-        else "failed independent validation",
+        else (
+            "failed independent validation: activity below elite floor"
+            if int(validation_stats.get("trade_count") or 0) < minimum_validation_trades
+            else "failed independent validation"
+        ),
     }
 
 
@@ -2325,10 +3142,6 @@ def _candidate_validation_passed(report: dict[str, Any]) -> bool:
     )
 
 
-def _archive_entry_score(entry: dict[str, Any]) -> float:
-    return _candidate_score({"objective": entry.get("objective") or {}})
-
-
 def _freeze_parent_pool(
     store: JobStore, job_id: str, campaign_root: Path
 ) -> dict[str, Any]:
@@ -2349,7 +3162,16 @@ def _freeze_parent_pool(
     selected_ids.update(
         str(item.get("candidate_id") or "")
         for item in archive
-        if item.get("status") in _EXECUTABLE_PARENT_STATUSES or item.get("on_frontier")
+        if (
+            item.get("status") == "incumbent"
+            or (
+                (
+                    item.get("on_frontier")
+                    or item.get("status") in _EXECUTABLE_PARENT_STATUSES
+                )
+                and elite_activity_eligible(item)
+            )
+        )
     )
     frozen: list[dict[str, Any]] = []
     for entry in archive:
@@ -2380,7 +3202,7 @@ def _freeze_parent_pool(
                 "bundle": f"parents/{candidate_id}",
             }
         )
-    frozen.sort(key=_archive_entry_score, reverse=True)
+    frozen.sort(key=participation_score, reverse=True)
     frozen_ids = {str(item["candidate_id"]) for item in frozen}
     return {
         "candidates": frozen,
@@ -2715,7 +3537,26 @@ def _select_parent_plan(
                 "parents": [],
                 "research_seed": seed,
             }
-        requested_source = _parent_source(slot, manifest["policy"]["parent_mix"])
+        requested_source = "research_context"
+    if requested_source == "starter_seed":
+        used = {
+            str(item.get("starter_seed_id") or "")
+            for item in candidates
+            if item.get("starter_seed_id")
+        }
+        starter = next(
+            (
+                item
+                for item in manifest.get("starter_seeds") or []
+                if str(item.get("starter_id") or "") not in used
+            ),
+            None,
+        )
+        if starter is not None:
+            return {"source": "starter_seed", "parents": [], "starter": starter}
+        return {"source": "de_novo", "parents": [], "fallback_from": "starter_seed"}
+    if requested_source == "research_context":
+        return {"source": "research_context", "parents": []}
     qd_ids = set((manifest.get("parent_pool") or {}).get("qd_elite_ids") or [])
     qd = [item for item in pool if item.get("candidate_id") in qd_ids]
     crossover_pool = [item for item in pool if item.get("status") != "incumbent"]
@@ -2730,7 +3571,7 @@ def _select_parent_plan(
             crossover_pool[first],
             crossover_pool[(first + 1) % len(crossover_pool)],
         ]
-        pair.sort(key=_archive_entry_score, reverse=True)
+        pair.sort(key=participation_score, reverse=True)
         return {
             "source": "crossover",
             "parents": pair,

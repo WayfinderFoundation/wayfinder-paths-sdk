@@ -281,6 +281,25 @@ def test_evolution_worker_has_minimal_vault_access_and_denies_audit() -> None:
         assert _evaluate(denied, "*", ruleset)["action"] == "deny"
 
 
+def test_evolution_designer_is_read_only_and_job_scoped() -> None:
+    path = ".opencode/agents/wayfinder-evolution-designer.md"
+    frontmatter = yaml.safe_load(Path(path).read_text().split("---\n")[1])
+    permission = frontmatter["permission"]
+
+    assert frontmatter["temperature"] == 0.5
+    assert permission["read"] == {
+        "*": "deny",
+        ".wayfinder/jobs/**": "allow",
+        "/wf/user_vault/wayfinder/jobs/**": "allow",
+        "wf/sdk/.wayfinder/jobs/**": "allow",
+        "wf/user_vault/wayfinder/jobs/**": "allow",
+    }
+    assert permission["write"] == "deny"
+    assert permission["edit"] == "deny"
+    assert permission["bash"] == "deny"
+    assert permission["wayfinder_core_jobs"] == "allow"
+
+
 def test_evolution_worker_can_mutate_candidate_from_global_project() -> None:
     """The production image has no git metadata, so opencode's worktree is `/`.
 

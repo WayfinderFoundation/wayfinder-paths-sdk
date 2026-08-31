@@ -82,6 +82,7 @@ JobAction = Literal[
     "robustness_check",
     "evolution_start",
     "evolution_status",
+    "evolution_design",
     "evolution_prepare",
     "evolution_submit_seed",
     "evolution_evaluate",
@@ -361,6 +362,7 @@ async def core_jobs(
     candidate_id: str | None = None,
     family: str | None = None,
     hypothesis: str | None = None,
+    campaign_design: dict[str, Any] | None = None,
     base_revision: str | None = None,
     evidence_refs: list[str] | None = None,
     wake_id: str | None = None,
@@ -897,11 +899,22 @@ async def core_jobs(
 
         return ok(campaign_status(store, job_id))
 
-    if action == "evolution_prepare":
-        if not job_id or not family or not summary:
+    if action == "evolution_design":
+        if not job_id or not campaign_design:
             return err(
                 "invalid_request",
-                "evolution_prepare requires job_id, family, and summary",
+                "evolution_design requires job_id and campaign_design",
+            )
+        kwargs = {"job_id": job_id, "campaign_design": campaign_design}
+        if background:
+            return await _start_background_op(store, job_id, "evolution_design", kwargs)
+        return await _run_job_op("evolution_design", kwargs)
+
+    if action == "evolution_prepare":
+        if not job_id:
+            return err(
+                "invalid_request",
+                "evolution_prepare requires job_id",
             )
         return await _run_job_op(
             "evolution_prepare",

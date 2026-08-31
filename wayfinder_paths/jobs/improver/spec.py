@@ -104,7 +104,16 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # Backward-compatible fallback for job-local policies written before
         # start_interval_hours was introduced.
         "cooldown_hours": 12,
-        "generated_programs": 12,
+        # Investigation-first evolution: eight distinct ideas, each with a
+        # bounded local repair loop.  ``generated_programs`` remains the
+        # compatibility name consumed by v1 campaign manifests and activity.
+        "generated_programs": 8,
+        "investigation_design_enabled": True,
+        "max_attempts_per_idea": 3,
+        "max_quick_attempts": 24,
+        "wildcard_slots": 2,
+        "elite_min_validation_trades": 8,
+        "elite_participation_target_trades": 12,
         "full_dev_survivors": 4,
         "inner_optuna_min_finalists": 1,
         "inner_optuna_finalists": 2,

@@ -22,6 +22,7 @@ from wayfinder_paths.jobs.models import (
     EVOLUTION_SESSION_ARCHIVE_PATH,
     EVOLUTION_SESSION_PATH,
     JOB_AUTO_WORKER_AGENT_NAME,
+    JOB_EVOLUTION_DESIGNER_AGENT_NAME,
     JOB_EVOLUTION_WORKER_AGENT_NAME,
     JOB_WORKER_AGENT_NAME,
     AgentMode,
@@ -2013,6 +2014,12 @@ def _prompt_evolution_session(
         "OPENCODE_SESSIONID"
     )
     title = f"job/{job_id}/evolution/{campaign_id}/{session_stage}"
+    agent_name = str(campaign_payload.pop("agent_name", "") or "")
+    if agent_name not in {
+        JOB_EVOLUTION_DESIGNER_AGENT_NAME,
+        JOB_EVOLUTION_WORKER_AGENT_NAME,
+    }:
+        agent_name = JOB_EVOLUTION_WORKER_AGENT_NAME
     prompt = (
         f"Run PAPER-ONLY evolution stage `{session_stage}`. Use the persisted "
         "candidate outcomes and prior-stage handoff; do not reload the retired "
@@ -2045,7 +2052,7 @@ def _prompt_evolution_session(
                     OPENCODE_CLIENT.create_session(
                         parent_id=controller_session_id,
                         title=title,
-                        agent=JOB_EVOLUTION_WORKER_AGENT_NAME,
+                        agent=agent_name,
                     )
                     or ""
                 )
@@ -2069,7 +2076,7 @@ def _prompt_evolution_session(
             queued = OPENCODE_CLIENT.prompt_async(
                 session_id=session_id,
                 text=prompt,
-                agent=JOB_EVOLUTION_WORKER_AGENT_NAME,
+                agent=agent_name,
             )
             if queued:
                 session.update(
