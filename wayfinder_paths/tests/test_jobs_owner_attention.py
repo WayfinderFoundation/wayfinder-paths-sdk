@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 from pathlib import Path
 
 from wayfinder_paths.jobs import sync as sync_mod
@@ -89,6 +90,40 @@ def _kinds(items: list[dict]) -> list[str]:
     return [item["kind"] for item in items]
 
 
+# Tone lint: a needs_you summary is a sentence for the owner, not machine
+# text (the imx-short incident shipped "decision gate gate-31f22e28 ...
+# pre-registered response is retire_and_pivot ... (wayfinder job
+# decision-gate resolve/reopen)" and the owner clicked wrong). Machine detail
+# belongs in structured item fields; prose must carry none of: CLI
+# invocations, flag syntax, machine gate ids, snake_case policy tokens.
+_BANNED_SUMMARY_PATTERNS = (
+    re.compile(r"\bwayfinder\s"),
+    re.compile(r"(?:^|\s)--[A-Za-z]"),
+    re.compile(r"\bgate-[0-9a-f]{6,}\b"),
+    re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b"),
+)
+
+
+def assert_owner_readable(items: list[dict]) -> None:
+    for item in items:
+        summary = str(item["summary"])
+        assert len(summary) <= 300, (item["kind"], len(summary))
+        for pattern in _BANNED_SUMMARY_PATTERNS:
+            assert not pattern.search(summary), (
+                item["kind"],
+                pattern.pattern,
+                summary,
+            )
+
+
+def _needs_you(store: JobStore, job_id: str) -> list[dict]:
+    """Every needs_you read in these tests goes through the tone lint, so a
+    future kind (or a reworded summary) inherits the rule automatically."""
+    items = build_owner_attention(store, job_id)["needs_you"]
+    assert_owner_readable(items)
+    return items
+
+
 # ── needs_you routing ────────────────────────────────────────────────────
 
 
@@ -108,9 +143,8 @@ def test_pending_proposal_on_live_capable_job_needs_owner(tmp_path: Path) -> Non
     _write_pending_proposal(store, job_id, "prop-live")
     _journal(store, job_id, {"type": "proposal_created", "proposal_id": "prop-live"})
 
-    attention = build_owner_attention(store, job_id)
+    items = _needs_you(store, job_id)
 
-    items = attention["needs_you"]
     assert _kinds(items) == ["live_proposal_approval"]
     assert items[0]["ref_id"] == "prop-live"
     assert items[0]["evidence_ref"] == "proposals/prop-live.json"
@@ -121,21 +155,23 @@ def test_pending_proposal_on_pure_paper_job_is_mechanical(tmp_path: Path) -> Non
     store, job_id = _store(tmp_path)  # paper, no wallet
     _write_pending_proposal(store, job_id, "prop-paper")
 
-    attention = build_owner_attention(store, job_id)
-
-    assert attention["needs_you"] == []
+    assert _needs_you(store, job_id) == []
 
 
 def test_risk_latched_halt_needs_owner_but_manual_does_not(tmp_path: Path) -> None:
     store, job_id = _store(tmp_path)
     request_halt(store, job_id, reason="dd breach", source="risk_limits")
-    items = build_owner_attention(store, job_id)["needs_you"]
+    items = _needs_you(store, job_id)
     assert _kinds(items) == ["halt_awaiting_owner_clear"]
     assert items[0]["ref_id"] == "risk_limits"
+    # Prose, not machine text: the latch source reads as words and the
+    # summary carries no CLI hint (ref_id keeps the machine token).
+    assert "risk limits" in items[0]["summary"]
+    assert "dd breach" in items[0]["summary"]
 
     store2, job2 = _store(tmp_path / "b", job_id="attn-manual")
     request_halt(store2, job2, reason="pause please", source="manual")
-    assert build_owner_attention(store2, job2)["needs_you"] == []
+    assert _needs_you(store2, job2) == []
 
 
 def test_owner_review_markers_surface_and_resolve(tmp_path: Path) -> None:
@@ -172,14 +208,14 @@ def test_owner_review_markers_surface_and_resolve(tmp_path: Path) -> None:
         },
     )
 
-    kinds = _kinds(build_owner_attention(store, job_id)["needs_you"])
+    kinds = _kinds(_needs_you(store, job_id))
     assert sorted(kinds) == ["proposal_reject_refused", "successor_abandoned"]
 
     # Once the restage flag clears, the reject-refusal marker resolves.
     proposal = store.load_proposal(job_id, "prop-stuck")
     proposal["application"]["restage_requested"] = False
     store.write_proposal(job_id, proposal)
-    kinds = _kinds(build_owner_attention(store, job_id)["needs_you"])
+    kinds = _kinds(_needs_you(store, job_id))
     assert kinds == ["successor_abandoned"]
 
 
@@ -221,7 +257,7 @@ def test_pending_claims_emit_one_item_per_claim(tmp_path: Path) -> None:
         },
     )
 
-    items = build_owner_attention(store, job_id)["needs_you"]
+    items = _needs_you(store, job_id)
 
     assert _kinds(items) == ["exhaustion_claim_unauditable"] * 3
     by_ref = {item["ref_id"]: item for item in items}
@@ -316,7 +352,7 @@ def test_every_emitted_needs_you_kind_is_in_the_fe_union(tmp_path: Path) -> None
         },
     )
 
-    kinds = set(_kinds(build_owner_attention(store, job_id)["needs_you"]))
+    kinds = set(_kinds(_needs_you(store, job_id)))
 
     assert kinds == WAYFINDER_NEEDS_YOU_KINDS
 
@@ -348,7 +384,7 @@ def test_unauditable_pending_claim_needs_owner(tmp_path: Path) -> None:
             {"claim_id": claim_id, **claim},
         )
 
-    items = build_owner_attention(store, job_id)["needs_you"]
+    items = _needs_you(store, job_id)
     assert _kinds(items) == ["exhaustion_claim_unauditable"]
     assert items[0]["ref_id"] == "claim-stuck"
 
@@ -361,9 +397,18 @@ def test_tripped_decision_gate_needs_owner(tmp_path: Path) -> None:
         {
             "gates": [
                 {
-                    "gate_id": "gate-imx",
+                    "gate_id": "gate-31f22e28",
                     "status": "tripped_needs_owner",
                     "on_met": "retire_and_pivot",
+                    "criteria": {"min_trades": 20, "max_win_rate": 0.4},
+                    "measured": {
+                        "closed_trades": 23,
+                        "win_rate": 0.26,
+                        "net_pnl": -41.07,
+                        "runs": 90,
+                    },
+                    "successor_ref": "explore the funding-skew entry on HYPE",
+                    "pre_registered_ts": "2026-08-10T09:00:00+00:00",
                     "tripped_at": "2026-08-24T00:00:00+00:00",
                 },
                 {"gate_id": "gate-armed", "status": "armed"},
@@ -371,9 +416,64 @@ def test_tripped_decision_gate_needs_owner(tmp_path: Path) -> None:
         },
     )
 
-    items = build_owner_attention(store, job_id)["needs_you"]
+    items = _needs_you(store, job_id)
+
     assert _kinds(items) == ["decision_gate_tripped"]
-    assert items[0]["ref_id"] == "gate-imx"
+    item = items[0]
+    assert item["ref_id"] == "gate-31f22e28"
+    # Plain language carrying the measured numbers, the pre-registered plan,
+    # and the choice...
+    summary = item["summary"]
+    assert "Attn Demo hit its pre-agreed checkpoint" in summary
+    assert "after 23 trades" in summary
+    assert "winning 26%" in summary
+    assert "down $41.07" in summary
+    assert "registered 2026-08-10" in summary
+    assert "funding-skew" in summary
+    assert summary.endswith("Choose: retire and pivot, or keep it running.")
+    # ...and none of the machine text the incident summary leaked (the tone
+    # lint in _needs_you enforces the classes; pin the incident offenders).
+    assert "gate-31f22e28" not in summary
+    assert "retire_and_pivot" not in summary
+    assert "wayfinder" not in summary
+    # Machine detail rides structured fields for the FE.
+    assert item["measured"]["closed_trades"] == 23
+    assert item["criteria"] == {"min_trades": 20, "max_win_rate": 0.4}
+    assert item["successor_ref"] == "explore the funding-skew entry on HYPE"
+    assert item["on_met"] == "retire_and_pivot"
+
+
+def test_tripped_gate_summary_trims_long_successor_to_budget(
+    tmp_path: Path,
+) -> None:
+    store, job_id = _store(tmp_path, wallet_label="main")
+    store.write_json(
+        job_id,
+        "research/decision_gates.json",
+        {
+            "gates": [
+                {
+                    "gate_id": "gate-long",
+                    "status": "tripped_needs_owner",
+                    "on_met": "retire_and_pivot",
+                    "measured": {
+                        "closed_trades": 20,
+                        "win_rate": 0.3,
+                        "net_pnl": -12.5,
+                        "runs": 40,
+                    },
+                    "successor_ref": "a very long successor description " * 20,
+                    "pre_registered_ts": "2026-08-10T09:00:00+00:00",
+                }
+            ]
+        },
+    )
+
+    summary = _needs_you(store, job_id)[0]["summary"]
+
+    assert len(summary) <= 300  # trimmed gracefully, not chopped mid-choice
+    assert summary.endswith("Choose: retire and pivot, or keep it running.")
+    assert "after 20 trades" in summary
 
 
 # ── decided_autonomously feed ────────────────────────────────────────────
@@ -543,6 +643,7 @@ def test_snapshot_ships_owner_attention_top_level(tmp_path: Path, monkeypatch) -
 
     attention = snapshot["owner_attention"]
     assert _kinds(attention["needs_you"]) == ["live_proposal_approval"]
+    assert_owner_readable(attention["needs_you"])
     assert attention["decided_autonomously"] == []
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -201,7 +202,21 @@ def test_live_capable_job_trips_to_needs_you(
     assert gate["status"] == "tripped_needs_owner"
     needs_you = build_owner_attention(store, job.id)["needs_you"]
     assert [item["kind"] for item in needs_you] == ["decision_gate_tripped"]
-    assert needs_you[0]["ref_id"] == "gate-imx"
+    item = needs_you[0]
+    assert item["ref_id"] == "gate-imx"
+    # The owner reads prose with the measured numbers — the machine detail
+    # (id, criteria, measured, successor, response) rides structured fields.
+    summary = item["summary"]
+    assert "20 trades" in summary
+    assert "winning 30%" in summary
+    assert "down $12.50" in summary
+    assert "gate-imx" not in summary
+    assert "retire_and_pivot" not in summary
+    assert "wayfinder" not in summary
+    assert item["measured"]["closed_trades"] == 20
+    assert item["criteria"] == CRITERIA
+    assert item["successor_ref"] == "lane-b"
+    assert item["on_met"] == "retire_and_pivot"
     # A tripped gate does not re-trip on the next watchdog pass.
     assert evaluate_decision_gates(store, job) == []
 
@@ -246,6 +261,128 @@ def test_owner_resolves_a_tripped_gate(tmp_path: Path, compiled: list[str]) -> N
     # Acknowledged, not executed: the loop keeps running.
     assert store.load(job.id).script_loop.enabled is True
     assert compiled == []
+
+
+def test_execute_after_acknowledge_runs_the_retirement(
+    tmp_path: Path, compiled: list[str]
+) -> None:
+    """The incident path: an FE resolve click that landed acknowledge-only
+    must not strand the gate — a later --execute runs the pre-registered
+    response and records both the acknowledgment and the execution."""
+    store, job = _store(tmp_path, wallet_label="main")
+    register_decision_gate(
+        store, job.id, criteria=CRITERIA, successor_ref="lane-b", gate_id="gate-imx"
+    )
+    store.write_json(job.id, "results/forward/summary.json", FAILING_SUMMARY)
+    evaluate_decision_gates(store, job)
+    resolve_decision_gate(store, job.id, "gate-imx", by="owner", note="agreed")
+    assert store.load(job.id).script_loop.enabled is True
+    # A second acknowledge-only click reads as already done, not failure.
+    retry = resolve_decision_gate(store, job.id, "gate-imx", by="owner")
+    assert retry["noop"] is True
+
+    gate = resolve_decision_gate(store, job.id, "gate-imx", by="owner", execute=True)
+
+    assert "noop" not in gate
+    assert gate["status"] == "resolved"
+    resolution = gate["resolution"]
+    assert resolution["action"] == "retire_and_pivot"
+    assert resolution["by"] == "owner"
+    # The earlier acknowledgment is evidence, recorded beside the execution.
+    assert resolution["acknowledged"]["by"] == "owner"
+    assert resolution["acknowledged"]["note"] == "agreed"
+    assert resolution["acknowledged"]["at"]
+    # The retirement actually ran: loop disabled + recompiled, workspace kept.
+    assert store.load(job.id).script_loop.enabled is False
+    assert compiled == [job.id]
+    archived = store.job_dir(job.id) / resolution["archived_workspace"] / "workspace"
+    assert (archived / "src" / "strategy.py").exists()
+    assert "decision_gate_executed" in _journal_types(store, job.id)
+    persisted = load_decision_gates(store, job.id)["gates"][0]
+    assert persisted["resolution"]["acknowledged"]["note"] == "agreed"
+    # Reopen still reverses the executed retirement.
+    reopen_decision_gate(store, job.id, "gate-imx", by="owner")
+    assert store.load(job.id).script_loop.enabled is True
+
+
+def test_settled_gate_retries_read_as_already_done(
+    tmp_path: Path, compiled: list[str]
+) -> None:
+    store, job = _store(tmp_path)
+    register_decision_gate(
+        store, job.id, criteria=CRITERIA, successor_ref="lane-b", gate_id="gate-imx"
+    )
+    store.write_json(job.id, "results/forward/summary.json", FAILING_SUMMARY)
+    evaluate_decision_gates(store, job)  # paper: retirement already executed
+    journal_before = _journal_types(store, job.id)
+
+    for execute in (False, True):
+        gate = resolve_decision_gate(
+            store, job.id, "gate-imx", by="owner", execute=execute
+        )
+        assert gate["noop"] is True
+        assert gate["status"] == "resolved"
+        assert gate["resolution"]["action"] == "retire_and_pivot"
+    # No journal spam, no re-run, and the marker is response-only.
+    assert _journal_types(store, job.id) == journal_before
+    assert compiled == [job.id]
+    assert "noop" not in load_decision_gates(store, job.id)["gates"][0]
+
+    reopen_decision_gate(store, job.id, "gate-imx", by="owner")
+    again = reopen_decision_gate(store, job.id, "gate-imx", by="owner")
+    assert again["noop"] is True
+    assert compiled == [job.id, job.id]  # reopen recompiled once, retry did not
+    assert _journal_types(store, job.id).count("decision_gate_reopened") == 1
+    # A reopened gate is settled by the owner's undo — resolve is a no-op too.
+    gate = resolve_decision_gate(store, job.id, "gate-imx", by="owner", execute=True)
+    assert gate["noop"] is True
+    assert store.load(job.id).script_loop.enabled is True
+
+
+def test_cli_resolve_and_reopen_retries_exit_zero_with_noop(
+    tmp_path: Path, compiled: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from click.testing import CliRunner
+
+    from wayfinder_paths.jobs import cli as cli_module
+
+    store, job = _store(tmp_path, wallet_label="main")
+    register_decision_gate(
+        store, job.id, criteria=CRITERIA, successor_ref="lane-b", gate_id="gate-imx"
+    )
+    store.write_json(job.id, "results/forward/summary.json", FAILING_SUMMARY)
+    evaluate_decision_gates(store, job)
+    monkeypatch.setattr(cli_module, "JobStore", lambda: store)
+    runner = CliRunner()
+
+    first = runner.invoke(
+        cli_module.job_cli,
+        ["decision-gate", "resolve", job.id, "gate-imx", "--execute"],
+    )
+    assert first.exit_code == 0, first.output
+    body = json.loads(first.output)
+    assert body["ok"] is True and body["noop"] is False
+    assert body["result"]["resolution"]["action"] == "retire_and_pivot"
+
+    retry = runner.invoke(
+        cli_module.job_cli,
+        ["decision-gate", "resolve", job.id, "gate-imx", "--execute"],
+    )
+    assert retry.exit_code == 0, retry.output
+    body = json.loads(retry.output)
+    assert body["ok"] is True and body["noop"] is True
+    assert "noop" not in body["result"]
+
+    reopened = runner.invoke(
+        cli_module.job_cli, ["decision-gate", "reopen", job.id, "gate-imx"]
+    )
+    assert reopened.exit_code == 0, reopened.output
+    assert json.loads(reopened.output)["noop"] is False
+    again = runner.invoke(
+        cli_module.job_cli, ["decision-gate", "reopen", job.id, "gate-imx"]
+    )
+    assert again.exit_code == 0, again.output
+    assert json.loads(again.output)["noop"] is True
 
 
 # ── watchdog integration ─────────────────────────────────────────────────
