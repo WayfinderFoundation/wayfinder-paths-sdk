@@ -15,6 +15,7 @@ from wayfinder_paths.jobs.execution import (
     OrderIntent,
     PurityViolation,
     RestingOrder,
+    StateSnapshot,
     TradeCapacity,
     VenueCapabilities,
     VenueState,
@@ -182,6 +183,36 @@ async def test_auto_limits_block_oversized_and_off_list_intents() -> None:
     reasons = [event["reason"] for event in result.guard_events]
     assert any("max_notional_per_decision" in reason for reason in reasons)
     assert any("allowed_symbols" in reason for reason in reasons)
+
+
+async def test_symbol_block_and_risk_halt_preserve_semantic_close() -> None:
+    broker = FakeBroker()
+    state = EngineState()
+    state.ledger.positions["SNX"] = PositionRecord(
+        symbol="SNX", side="long", size=1.0, avg_price=10.0
+    )
+    close = OrderIntent(
+        action="CLOSE",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="short",
+        size=1.0,
+        reduce_only=False,
+    )
+
+    result = await _tick(
+        _strategy([close]),
+        _view([10.0, 10.5]),
+        brokers={"hyperliquid": broker},
+        state=state,
+        snapshot=StateSnapshot(status="risk_halt", reason="test"),
+        blocked_entry_symbols={"SNX"},
+        auto_limits={"max_notional_per_decision": 1.0},
+    )
+
+    assert broker.placed == [close]
+    assert result.intents == [close]
+    assert not any(event["kind"] == "intent_rejected" for event in result.guard_events)
 
 
 async def test_daily_notional_cap_accumulates_across_ticks() -> None:

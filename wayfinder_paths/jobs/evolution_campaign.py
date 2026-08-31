@@ -16,7 +16,6 @@ import json
 import math
 import os
 import shutil
-import tempfile
 import uuid
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
@@ -34,11 +33,14 @@ from wayfinder_paths.jobs.archive import (
     record_candidate,
     set_candidate_status,
 )
+from wayfinder_paths.jobs.bundles import copy_job_bundle
 from wayfinder_paths.jobs.compute_lock import (
     ComputeLockBusy,
     experiment_compute_lock,
     job_state_lock,
+    machine_state_lock,
 )
+from wayfinder_paths.jobs.evidence import verify_job_evidence_refs
 from wayfinder_paths.jobs.evolution_funnel import summarize_evolution_funnel
 from wayfinder_paths.jobs.execution.features import parse_feature_specs
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
@@ -94,6 +96,8 @@ from wayfinder_paths.runner.monitor_state import atomic_write_json, atomic_write
 CAMPAIGN_STATE_PATH = "state/evolution_campaign.json"
 CAMPAIGN_ROOT = "research/evolution/campaigns"
 PARENT_BUNDLE_ROOT = "research/evolution/parents"
+RESEARCH_SEED_ROOT = "research/evolution/research_seeds"
+RESEARCH_SEED_STATE_PATH = "state/evolution_research_seeds.json"
 CAMPAIGN_DATA_ROOT = "dataset"
 FORWARD_SNAPSHOT = "forward_experience.json"
 SCHEMA_VERSION = "1.1"
@@ -136,6 +140,49 @@ _STRUCTURAL_SEARCH_GUIDANCE = (
 
 def campaign_status(store: JobStore, job_id: str) -> dict[str, Any]:
     return store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
+
+
+def _fleet_campaign_turn(
+    store: JobStore,
+    job_id: str,
+    *,
+    now: datetime,
+) -> bool:
+    """One campaign per box; oldest due eligible job wins deterministically."""
+    jobs = sorted(store.list_jobs(), key=lambda item: item.id)
+    for job in jobs:
+        state = campaign_status(store, job.id)
+        if state.get("status") in {"active", "finalizing"}:
+            return job.id == job_id
+    due: list[tuple[datetime, str]] = []
+    for job in jobs:
+        try:
+            spec = ImproverSpec.load(store.job_dir(job.id))
+            if not spec.evolution_eligibility(store.job_dir(job.id), job.id)[
+                "eligible"
+            ]:
+                continue
+            state = campaign_status(store, job.id)
+            anchor = state.get("started_at")
+            anchor_time = _parse(anchor) if anchor else datetime.min.replace(tzinfo=UTC)
+            cadence = timedelta(
+                hours=float(
+                    spec.evolution.get("start_interval_hours")
+                    or spec.evolution.get("cooldown_hours")
+                    or 24
+                )
+            )
+            if anchor and now - anchor_time < cadence:
+                continue
+            if not evolution_compute_window_open(
+                store, job.id, now=now, reserve_campaign=True
+            ):
+                continue
+            due.append((anchor_time, job.id))
+        except (OSError, TypeError, ValueError):
+            continue
+    due.sort(key=lambda item: (item[0], item[1]))
+    return bool(due and due[0][1] == job_id)
 
 
 def evolution_compute_window_open(
@@ -196,7 +243,7 @@ def _parse_utc_clock(value: Any) -> time:
 def campaign_due(store: JobStore, job_id: str, *, now: datetime | None = None) -> bool:
     """Cheap, read-only cadence check used before spawning campaign setup."""
     spec = ImproverSpec.load(store.job_dir(job_id))
-    if not spec.evolution_enabled_for(job_id):
+    if not spec.evolution_eligibility(store.job_dir(job_id), job_id)["eligible"]:
         return False
     existing = campaign_status(store, job_id)
     if existing.get("status") in {"active", "finalizing"}:
@@ -206,9 +253,7 @@ def campaign_due(store: JobStore, job_id: str, *, now: datetime | None = None) -
         store, job_id, now=current, reserve_campaign=True
     ):
         return False
-    from wayfinder_paths.jobs.paper_experiment import experiment_status
-
-    if experiment_status(store, job_id).get("status") == "complete":
+    if not _fleet_campaign_turn(store, job_id, now=current):
         return False
     anchor = existing.get("started_at")
     if not anchor:
@@ -226,34 +271,32 @@ def maybe_start_campaign(
     store: JobStore, job_id: str, *, now: datetime | None = None
 ) -> dict[str, Any] | None:
     """Start the due rollout campaign; return None outside its feature gate."""
-    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
-        spec = ImproverSpec.load(store.job_dir(job_id))
-        if not spec.evolution_enabled_for(job_id):
-            return None
-        existing = campaign_status(store, job_id)
-        from wayfinder_paths.jobs.paper_experiment import experiment_status
-
-        experiment = experiment_status(store, job_id)
-        if experiment.get("status") == "complete":
-            return existing or None
-        if existing.get("status") in {"active", "finalizing"}:
-            return existing
-        cadence_anchor = existing.get("started_at")
-        if cadence_anchor:
-            elapsed = _aware(now or datetime.now(UTC)) - _parse(cadence_anchor)
-            cadence = timedelta(
-                hours=float(
-                    spec.evolution.get("start_interval_hours")
-                    or spec.evolution["cooldown_hours"]
-                )
-            )
-            if elapsed < cadence:
+    with machine_state_lock(store.repo_root, name="evolution_campaign_slot"):
+        with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+            spec = ImproverSpec.load(store.job_dir(job_id))
+            if not spec.evolution_eligibility(store.job_dir(job_id), job_id)[
+                "eligible"
+            ]:
+                return None
+            existing = campaign_status(store, job_id)
+            if existing.get("status") in {"active", "finalizing"}:
                 return existing
-        if not evolution_compute_window_open(
-            store, job_id, now=now, reserve_campaign=True
-        ):
-            return existing or None
-        return start_campaign(store, job_id, now=now)
+            cadence_anchor = existing.get("started_at")
+            if cadence_anchor:
+                elapsed = _aware(now or datetime.now(UTC)) - _parse(cadence_anchor)
+                cadence = timedelta(
+                    hours=float(
+                        spec.evolution.get("start_interval_hours")
+                        or spec.evolution["cooldown_hours"]
+                    )
+                )
+                if elapsed < cadence:
+                    return existing
+            if not evolution_compute_window_open(
+                store, job_id, now=now, reserve_campaign=True
+            ):
+                return existing or None
+            return _start_campaign(store, job_id, now=now)
 
 
 def start_campaign(
@@ -263,8 +306,9 @@ def start_campaign(
     now: datetime | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
-    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
-        return _start_campaign(store, job_id, now=now, force=force)
+    with machine_state_lock(store.repo_root, name="evolution_campaign_slot"):
+        with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+            return _start_campaign(store, job_id, now=now, force=force)
 
 
 def _start_campaign(
@@ -275,8 +319,12 @@ def _start_campaign(
     force: bool = False,
 ) -> dict[str, Any]:
     spec = ImproverSpec.load(store.job_dir(job_id))
-    if not spec.evolution_enabled_for(job_id):
-        raise ValueError(f"open evolution is not enabled for job {job_id!r}")
+    eligibility = spec.evolution_eligibility(store.job_dir(job_id), job_id)
+    if not eligibility["eligible"]:
+        raise ValueError(
+            f"open evolution is not eligible for job {job_id!r}: "
+            + ", ".join(eligibility["reasons"])
+        )
     existing = campaign_status(store, job_id)
     current = _aware(now or datetime.now(UTC))
     if existing.get("status") in {"active", "finalizing"} and not force:
@@ -296,6 +344,10 @@ def _start_campaign(
         store, job_id, now=current, reserve_campaign=True
     ):
         raise ValueError("evolution campaign does not fit outside peak pricing")
+    if not _fleet_campaign_turn(store, job_id, now=current):
+        raise TransientInfrastructureError(
+            "another eligible job owns the machine evolution campaign slot"
+        )
     require_evolution_launch_headroom()
     from wayfinder_paths.jobs.worker import job_worker_session_busy
 
@@ -309,17 +361,9 @@ def _start_campaign(
     if not dataset_path.exists():
         raise FileNotFoundError("evolution needs the job's canonical backtest dataset")
     source_revision = compute_workspace_revision(root)
-    from wayfinder_paths.jobs.paper_experiment import ensure_paper_experiment
+    from wayfinder_paths.jobs.probation import ensure_unified_probation
 
-    experiment = ensure_paper_experiment(store, job_id, now=current)
-    if experiment and (
-        experiment.get("status") not in {"qualifying", "active"}
-        or (
-            experiment.get("status") == "active"
-            and current >= _parse(experiment.get("ends_at"))
-        )
-    ):
-        raise ValueError("the fixed-horizon paper experiment has ended")
+    ensure_unified_probation(store, job_id, now=current)
     campaign_stem = f"{current.strftime('%Y%m%dT%H%M%SZ')}-{source_revision[:8]}"
     campaign_id = campaign_stem
     suffix = 2
@@ -353,6 +397,7 @@ def _start_campaign(
         campaign_root / "source"
     )
     parent_pool = _freeze_parent_pool(store, job_id, campaign_root)
+    research_seeds = _freeze_research_seeds(store, job_id, campaign_root)
     starter_seeds = _snapshot_starter_seeds(store, job_id, campaign_root)
     research_context = _freeze_research_context(store, job_id)
     campaign_policy = {
@@ -375,6 +420,7 @@ def _start_campaign(
         "historical_lessons": historical_lessons,
         "casebook": cases,
         "parent_pool": parent_pool,
+        "research_seeds": research_seeds,
         "starter_seeds": starter_seeds,
         "research_context": research_context,
         "policy": campaign_policy,
@@ -427,6 +473,110 @@ def prepare_candidate(
         )
 
 
+def submit_research_seed(
+    store: JobStore,
+    job_id: str,
+    *,
+    candidate_root: Path,
+    family: str,
+    hypothesis: str,
+    base_revision: str,
+    evidence_refs: list[str] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Freeze a sensor-authored executable seed for the next campaign.
+
+    Submission confers no evidence or deployment authority.  The seed is a
+    source-aware parent only and must re-earn every evolution/probation gate.
+    """
+    current = _aware(now or datetime.now(UTC))
+    root = store.job_dir(job_id).resolve()
+    source = candidate_root.resolve()
+    if not source.is_relative_to(root):
+        raise ValueError("research seed must be authored inside its job root")
+    current_revision = compute_workspace_revision(root)
+    if str(base_revision) != current_revision:
+        raise ValueError(
+            "research seed base revision is stale; rebase it on the current job"
+        )
+    validation = validate_execution_job(job_id, candidate_dir=source, store=store)
+    if not _candidate_validation_passed(validation):
+        raise ValueError("research seed does not satisfy the executable job contract")
+    revision = compute_workspace_revision(source)
+    if revision == current_revision:
+        raise ValueError("research seed is byte-identical to the incumbent")
+    seed_raw = f"{family}|{revision}"
+    seed_id = f"seed-{hashlib.sha256(seed_raw.encode()).hexdigest()[:12]}"
+    seed_family = str(family).strip() or "research"
+    seed_hypothesis = str(hypothesis).strip()[:500]
+    seed_evidence = verify_job_evidence_refs(
+        root,
+        list(evidence_refs or [])[:20],
+        allowed_roots=("results/research",),
+        now=current,
+    )
+    if not seed_evidence:
+        raise ValueError("research seed requires a checked-in research result")
+    relative = f"{RESEARCH_SEED_ROOT}/{seed_id}/{revision}"
+    destination = root / relative
+    with job_state_lock(store.repo_root, job_id, name="evolution_research_seeds"):
+        state = store.read_json(job_id, RESEARCH_SEED_STATE_PATH, default={}) or {}
+        seeds = list(state.get("seeds") or [])
+        duplicate = next(
+            (item for item in seeds if item.get("revision") == revision), None
+        )
+        if duplicate is not None:
+            return {
+                "status": "duplicate",
+                "seed_id": duplicate.get("seed_id"),
+                "revision": duplicate.get("revision"),
+                "seed_status": duplicate.get("status"),
+            }
+        copy_job_bundle(source, destination)
+        if compute_workspace_revision(destination) != revision:
+            raise ValueError("research seed revision changed during freeze")
+        seed = {
+            "seed_id": seed_id,
+            "family": seed_family,
+            "hypothesis": seed_hypothesis,
+            "base_revision": current_revision,
+            "revision": revision,
+            "bundle": relative,
+            "status": "pending",
+            "submitted_at": current.isoformat(),
+            "evidence_refs": seed_evidence,
+            **revision_stamp(root),
+        }
+        seeds.append(seed)
+        atomic_write_json(
+            root / RESEARCH_SEED_STATE_PATH,
+            {"schema_version": "1.0", "seeds": seeds},
+        )
+    record_candidate(
+        store,
+        job_id,
+        candidate_id=seed_id,
+        family=seed_family,
+        summary=seed_hypothesis,
+        status="research_seed",
+        objective=None,
+        revision=revision,
+        parent_id=current_revision,
+        evidence="; ".join(seed_evidence)[:300],
+        metadata={"executable_bundle": relative, "source": "research_sensor"},
+    )
+    store.append_journal(
+        job_id,
+        {
+            "type": "evolution_research_seed_submitted",
+            "seed_id": seed_id,
+            "family": seed_family,
+            "revision": revision,
+        },
+    )
+    return seed
+
+
 def _prepare_candidate(
     store: JobStore,
     job_id: str,
@@ -452,6 +602,9 @@ def _prepare_candidate(
     requested_source = (
         "de_novo" if forced_jump else _parent_source(slot, policy["parent_mix"])
     )
+    research_seed_slots = int(policy.get("research_seed_slots") or 0)
+    if slot <= research_seed_slots and manifest.get("research_seeds"):
+        requested_source = "research_seed"
     required_structural = math.ceil(
         limit * float(policy.get("min_structural_fraction") or 0.0)
     )
@@ -510,13 +663,14 @@ def _prepare_candidate(
         "requested_parent_source": requested_source,
         "parent_candidate_ids": parents,
         "starter_seed_id": (parent_plan.get("starter") or {}).get("starter_id"),
+        "research_seed_id": (parent_plan.get("research_seed") or {}).get("seed_id"),
         "secondary_parent_bundle": (parent_plan.get("secondary") or {}).get("bundle"),
         "mutation_kind": chosen_mutation,
         "forced_jump": forced_jump,
         "bundle": relative,
         "warmup_bars": seeded_window,
         "seed_revision": seed_revision,
-        "evidence_reset": source == "starter_seed",
+        "evidence_reset": source in {"starter_seed", "research_seed"},
         "prepared_at": utc_now_iso(),
     }
     atomic_write_json(candidate_root / "candidate.json", candidate)
@@ -539,6 +693,7 @@ def _prepare_candidate(
             "parent_source": source,
             "requested_parent_source": requested_source,
             "starter_seed_id": candidate.get("starter_seed_id"),
+            "research_seed_id": candidate.get("research_seed_id"),
             "seed_revision": seed_revision,
             "evidence_reset": candidate["evidence_reset"],
         },
@@ -928,6 +1083,7 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
                 store,
                 job_id,
                 label=f"evolution-full-dev:{job_id}:{candidate['candidate_id']}",
+                completion_reserve=True,
             ):
                 outcome = _isolated_full_dev(store, job_id, candidate, tune=tune)
         except (ComputeLockBusy, TransientInfrastructureError):
@@ -971,6 +1127,7 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
                 store,
                 job_id,
                 label=f"evolution-proposal-gate:{job_id}:{candidate['candidate_id']}",
+                completion_reserve=True,
             ):
                 candidate_root = resolve_candidate_bundle(
                     store, job_id, candidate, campaign_id=campaign_id
@@ -990,32 +1147,33 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
                         "economic": economic,
                     }
                 else:
-                    from wayfinder_paths.jobs.paper_experiment import (
-                        stage_paper_proposal,
+                    from wayfinder_paths.jobs.probation import (
+                        stage_evolution_probation,
                     )
 
-                    staged = stage_paper_proposal(
+                    staged = stage_evolution_probation(
                         store,
                         job_id,
-                        arm="evolution",
                         candidate_id=str(candidate["candidate_id"]),
                         candidate_root=candidate_root,
                         revision=str(candidate.get("revision") or ""),
                         source="evolution_campaign",
+                        family=str(candidate.get("family") or "evolution"),
+                        campaign_id=campaign_id,
                         evidence=economic,
                     )
                     status = str(staged.get("status") or "queued")
                     outcome = {
                         "status": (
-                            "proposal_deferred"
+                            "probation_deferred"
                             if status == "deferred"
-                            else "paper_proposal"
+                            else "probation"
                         ),
                         "proposal": staged,
                         "economic": economic,
                         "evidence": (
                             staged.get("reason")
-                            or "staged for one immutable forward paper day"
+                            or "staged for immutable burn-in and paired probation"
                         ),
                     }
         except (ComputeLockBusy, TransientInfrastructureError):
@@ -1071,8 +1229,8 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
             "campaign_id": state["campaign_id"],
             "counts": state["counts"],
             "funnel": summarize_evolution_funnel(state),
-            "paper_proposals": sum(
-                candidate.get("status") == "paper_proposal"
+            "probation_trials": sum(
+                candidate.get("status") == "probation"
                 for candidate in state.get("candidates") or []
             ),
         },
@@ -1310,7 +1468,7 @@ def _claim_proposal(
                 "proposal_claimed_at": utc_now_iso(),
             }
         )
-        state["stage"] = "paper_proposal"
+        state["stage"] = "probation"
         _save_campaign(store, job_id, state)
         return campaign_id, claim_id, dict(candidate)
 
@@ -1649,6 +1807,13 @@ def _candidate_seed_instruction(
             "its historical evidence was reset: adapt the tactic to this job's "
             "target universe and make it re-earn every gate. "
         )
+    if source == "research_seed":
+        return (
+            f"The bundle contains sensor-authored research seed "
+            f"`{candidate.get('research_seed_id')}`. Treat its hypothesis as a "
+            "starting point only: its prior evidence was reset and it must re-earn "
+            "every campaign gate. Preserve the current job's operational contract."
+        )
     if source == "crossover":
         secondary = _resolve_frozen_parent_bundle(
             store,
@@ -1682,6 +1847,7 @@ def _candidate_handoff(candidate: dict[str, Any]) -> dict[str, Any]:
         "requested_parent_source": candidate.get("requested_parent_source"),
         "parent_candidate_ids": candidate.get("parent_candidate_ids") or [],
         "starter_seed_id": candidate.get("starter_seed_id"),
+        "research_seed_id": candidate.get("research_seed_id"),
         "status": candidate.get("status"),
         "summary": str(candidate.get("summary") or "")[:240],
     }
@@ -1746,6 +1912,7 @@ def _archive_campaign_candidate(
             "parent_source",
             "requested_parent_source",
             "starter_seed_id",
+            "research_seed_id",
             "seed_revision",
             "evidence_reset",
             "quick",
@@ -2200,7 +2367,7 @@ def _freeze_parent_pool(
         if stable is None or candidate_id not in selected_ids:
             continue
         destination = campaign_root / "parents" / candidate_id
-        _copy_active_bundle(stable, destination)
+        copy_job_bundle(stable, destination)
         frozen.append(
             {
                 "candidate_id": candidate_id,
@@ -2302,7 +2469,7 @@ def _persist_executable_bundle(
         if compute_workspace_revision(destination) != revision:
             raise ValueError("stable executable parent revision mismatch")
     else:
-        _copy_active_bundle(source, destination)
+        copy_job_bundle(source, destination)
     return relative, destination
 
 
@@ -2385,6 +2552,37 @@ def _snapshot_starter_seeds(
     return snapshots
 
 
+def _freeze_research_seeds(
+    store: JobStore, job_id: str, campaign_root: Path
+) -> list[dict[str, Any]]:
+    state = store.read_json(job_id, RESEARCH_SEED_STATE_PATH, default={}) or {}
+    frozen: list[dict[str, Any]] = []
+    for seed in state.get("seeds") or []:
+        if seed.get("status") != "pending":
+            continue
+        relative = str(seed.get("bundle") or "")
+        source = (store.job_dir(job_id) / relative).resolve()
+        allowed = (store.job_dir(job_id) / RESEARCH_SEED_ROOT).resolve()
+        revision = str(seed.get("revision") or "")
+        if (
+            not source.is_relative_to(allowed)
+            or compute_workspace_revision(source) != revision
+        ):
+            continue
+        destination = campaign_root / "research_seeds" / str(seed["seed_id"])
+        copy_job_bundle(source, destination)
+        if compute_workspace_revision(destination) != revision:
+            raise ValueError("campaign research-seed copy revision mismatch")
+        frozen.append(
+            {
+                **seed,
+                "bundle": f"research_seeds/{seed['seed_id']}",
+                "evidence_reset": True,
+            }
+        )
+    return frozen
+
+
 def _freeze_research_context(store: JobStore, job_id: str) -> dict[str, Any]:
     """Two load-bearing lists, distilled from existing mechanical records."""
     archive = load_archive(store, job_id).get("candidates") or []
@@ -2418,6 +2616,24 @@ def _freeze_research_context(store: JobStore, job_id: str) -> dict[str, Any]:
                     "recorded_at": leg.get("closed_at") or leg.get("updated_at"),
                 }
             )
+    for trial in probation.get("trials") or []:
+        if trial.get("status") != "graduated":
+            continue
+        metrics = (trial.get("forward") or {}).get("metrics") or {}
+        positives.append(
+            {
+                "source": "evolution_probation_graduate",
+                "id": trial.get("candidate_id") or trial.get("trial_id"),
+                "family": trial.get("family"),
+                "evidence": (
+                    f"paired_days={metrics.get('paired_days')}; "
+                    f"lcb={metrics.get('lcb')}; "
+                    f"net_delta="
+                    f"{float(metrics.get('candidate_net_pnl') or 0.0) - float(metrics.get('reference_net_pnl') or 0.0):.4f}"
+                )[:240],
+                "recorded_at": trial.get("closed_at") or trial.get("updated_at"),
+            }
+        )
     verdicts = (
         store.read_json(job_id, "state/promotion_verdicts.json", default={}) or {}
     )
@@ -2479,6 +2695,27 @@ def _select_parent_plan(
     are never incumbent copies carrying a misleading lineage label.
     """
     pool = (manifest.get("parent_pool") or {}).get("candidates") or []
+    if requested_source == "research_seed":
+        used = {
+            str(item.get("research_seed_id") or "")
+            for item in candidates
+            if item.get("research_seed_id")
+        }
+        seed = next(
+            (
+                item
+                for item in manifest.get("research_seeds") or []
+                if str(item.get("seed_id") or "") not in used
+            ),
+            None,
+        )
+        if seed is not None:
+            return {
+                "source": "research_seed",
+                "parents": [],
+                "research_seed": seed,
+            }
+        requested_source = _parent_source(slot, manifest["policy"]["parent_mix"])
     qd_ids = set((manifest.get("parent_pool") or {}).get("qd_elite_ids") or [])
     qd = [item for item in pool if item.get("candidate_id") in qd_ids]
     crossover_pool = [item for item in pool if item.get("status") != "incumbent"]
@@ -2531,7 +2768,7 @@ def _materialize_candidate_seed(
     frozen_source = campaign_root / "source"
     source = str(plan["source"])
     if source == "incumbent":
-        _copy_active_bundle(frozen_source, candidate_root)
+        copy_job_bundle(frozen_source, candidate_root)
     elif source in {"qd_elite", "crossover"}:
         primary = plan.get("primary") or {}
         parent = _resolve_frozen_parent_bundle(
@@ -2539,7 +2776,7 @@ def _materialize_candidate_seed(
         )
         if compute_workspace_revision(parent) != str(primary.get("revision") or ""):
             raise ValueError("frozen executable parent revision mismatch")
-        _copy_active_bundle(parent, candidate_root)
+        copy_job_bundle(parent, candidate_root)
         job_data = _load_job_yaml(candidate_root)
         params = dict(job_data.get("execution_params") or {})
         for key in _TARGET_EXECUTION_PARAM_KEYS:
@@ -2548,6 +2785,26 @@ def _materialize_candidate_seed(
         job_data["execution_params"] = params
         atomic_write_text(
             candidate_root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
+        )
+    elif source == "research_seed":
+        seed = dict(plan.get("research_seed") or {})
+        parent = _resolve_research_seed_source(
+            store, job_id, campaign_id, str(seed.get("bundle") or "")
+        )
+        if compute_workspace_revision(parent) != str(seed.get("revision") or ""):
+            raise ValueError("frozen research seed revision mismatch")
+        copy_job_bundle(parent, candidate_root)
+        job_data = _load_job_yaml(candidate_root)
+        params = dict(job_data.get("execution_params") or {})
+        for key in _TARGET_EXECUTION_PARAM_KEYS:
+            params.pop(key, None)
+        params.update(_target_execution_params(frozen_source))
+        job_data["execution_params"] = params
+        atomic_write_text(
+            candidate_root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
+        )
+        _consume_research_seed(
+            store, job_id, str(seed.get("seed_id") or ""), campaign_id
         )
     elif source == "starter_seed":
         _copy_clean_scaffold(store, job_id, frozen_source, candidate_root)
@@ -2570,7 +2827,7 @@ def _copy_clean_scaffold(
     destination: Path,
 ) -> None:
     """Target job shell without incumbent alpha code or research memory."""
-    _copy_active_bundle(source_root, destination)
+    copy_job_bundle(source_root, destination)
     risk_path = destination / "workspace" / "risk_limits.json"
     risk_limits = risk_path.read_bytes() if risk_path.exists() else None
     shutil.rmtree(destination / "workspace")
@@ -2631,9 +2888,7 @@ def _install_starter_seed(
 
 def _target_execution_params(source_root: Path) -> dict[str, Any]:
     params = dict(_load_job_yaml(source_root).get("execution_params") or {})
-    return {
-        key: params[key] for key in _TARGET_EXECUTION_PARAM_KEYS if key in params
-    }
+    return {key: params[key] for key in _TARGET_EXECUTION_PARAM_KEYS if key in params}
 
 
 def _resolve_frozen_parent_bundle(
@@ -2662,21 +2917,35 @@ def _resolve_starter_source(
     return resolved
 
 
-def _copy_active_bundle(source_root: Path, destination: Path) -> None:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = Path(
-        tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent)
-    )
-    try:
-        shutil.copy2(source_root / "job.yaml", temporary / "job.yaml")
-        shutil.copytree(source_root / "workspace", temporary / "workspace")
-        spec = source_root / "execution_spec.json"
-        if spec.exists():
-            shutil.copy2(spec, temporary / "execution_spec.json")
-        os.replace(temporary, destination)
-    except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
-        raise
+def _resolve_research_seed_source(
+    store: JobStore, job_id: str, campaign_id: str, relative: str
+) -> Path:
+    if not relative or Path(relative).is_absolute():
+        raise ValueError("research seed source must be campaign-relative")
+    campaign_root = (store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id).resolve()
+    allowed = (campaign_root / "research_seeds").resolve()
+    resolved = (campaign_root / relative).resolve()
+    if not resolved.is_relative_to(allowed) or resolved.parent != allowed:
+        raise ValueError("research seed source escapes its campaign root")
+    return resolved
+
+
+def _consume_research_seed(
+    store: JobStore, job_id: str, seed_id: str, campaign_id: str
+) -> None:
+    with job_state_lock(store.repo_root, job_id, name="evolution_research_seeds"):
+        state = store.read_json(job_id, RESEARCH_SEED_STATE_PATH, default={}) or {}
+        for seed in state.get("seeds") or []:
+            if seed.get("seed_id") == seed_id and seed.get("status") == "pending":
+                seed.update(
+                    {
+                        "status": "consumed",
+                        "consumed_by_campaign": campaign_id,
+                        "consumed_at": utc_now_iso(),
+                    }
+                )
+                store.write_json(job_id, RESEARCH_SEED_STATE_PATH, state)
+                return
 
 
 def _snapshot_campaign_inputs(
@@ -2690,7 +2959,7 @@ def _snapshot_campaign_inputs(
     """Freeze every input known when candidate generation begins."""
     campaign_root.mkdir(parents=True, exist_ok=False)
     source_bundle = campaign_root / "source"
-    _copy_active_bundle(active_root, source_bundle)
+    copy_job_bundle(active_root, source_bundle)
     data_root = campaign_root / CAMPAIGN_DATA_ROOT
     bars_path = data_root / "results" / "backtest" / "input_bars.json"
     bars_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2911,7 +3180,9 @@ def _same_family_nonwins(state: dict[str, Any], family: str, streak: int) -> boo
             "low_fidelity_rejected",
             "proposal_rejected",
             "proposal_deferred",
+            "probation_deferred",
             "dev_frontier",
+            "probation",
             "paper_proposal",
             "paper_experiment",
         }
@@ -2921,6 +3192,7 @@ def _same_family_nonwins(state: dict[str, Any], family: str, streak: int) -> boo
         "low_fidelity_rejected",
         "proposal_rejected",
         "proposal_deferred",
+        "probation_deferred",
     }
     return len(outcomes) >= streak and all(
         item.get("status") in failures for item in outcomes[:streak]

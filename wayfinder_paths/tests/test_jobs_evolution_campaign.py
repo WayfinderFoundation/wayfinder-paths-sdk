@@ -42,6 +42,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     recover_lost_candidate_evaluations,
     resolve_candidate_bundle,
     start_campaign,
+    submit_research_seed,
 )
 from wayfinder_paths.jobs.execution.op_process import op_runner_command
 from wayfinder_paths.jobs.execution.primitives import DEFAULT_WARMUP_BARS
@@ -107,7 +108,13 @@ def _prepare_campaign_candidates(
 
 def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
     other_store, other_id = _job(tmp_path / "other", "other-job")
-    assert maybe_start_campaign(other_store, other_id) is None
+    with pytest.raises(ValueError, match="disabled_or_excluded"):
+        start_campaign(
+            other_store,
+            other_id,
+            now=datetime(2026, 8, 25, 12, tzinfo=UTC),
+            force=True,
+        )
 
     store, job_id = _job(tmp_path / "target", "majors-5m-lab")
     now = datetime(2026, 8, 25, 12, tzinfo=UTC)
@@ -158,6 +165,87 @@ def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
     assert len(load_starter_casebook()) > len(block["cases"])
 
 
+def test_sensor_research_seed_is_frozen_then_consumed_as_real_parent(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    root = store.job_dir(job_id)
+    source_revision = compute_workspace_revision(root)
+    seed_root = root / "research" / "sensor_candidates" / "regime-break"
+    (seed_root / "workspace/src").mkdir(parents=True)
+    (seed_root / "workspace/src/strategy.py").write_text(
+        "# sensor hypothesis\ndef decide(ctx):\n    return []\n", encoding="utf-8"
+    )
+    (seed_root / "job.yaml").write_bytes((root / "job.yaml").read_bytes())
+    store.write_json(job_id, "results/research/regime_health.json", {"ready": True})
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.validate_execution_job",
+        lambda *args, **kwargs: {"checks": []},
+    )
+
+    seed = submit_research_seed(
+        store,
+        job_id,
+        candidate_root=seed_root,
+        family="regime-break",
+        hypothesis="remove HYPE entries after a structural regime alarm",
+        base_revision=source_revision,
+        evidence_refs=["results/research/regime_health.json"],
+        now=datetime(2026, 8, 25, 11, tzinfo=UTC),
+    )
+    campaign = start_campaign(
+        store,
+        job_id,
+        now=datetime(2026, 8, 25, 12, tzinfo=UTC),
+        force=True,
+    )
+    manifest = json.loads((root / campaign["manifest"]).read_text(encoding="utf-8"))
+    assert manifest["research_seeds"][0]["seed_id"] == seed["seed_id"]
+    assert manifest["research_seeds"][0]["evidence_reset"] is True
+
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="regime-break",
+        summary="materialize the sensor seed",
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+
+    assert candidate["parent_source"] == "research_seed"
+    assert candidate["research_seed_id"] == seed["seed_id"]
+    assert candidate["evidence_reset"] is True
+    seed_state = store.read_json(job_id, "state/evolution_research_seeds.json")
+    assert seed_state["seeds"][0]["status"] == "consumed"
+
+
+def test_sensor_research_seed_requires_checked_in_research_result(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    root = store.job_dir(job_id)
+    seed_root = root / "research" / "sensor_candidates" / "unsupported"
+    (seed_root / "workspace/src").mkdir(parents=True)
+    (seed_root / "workspace/src/strategy.py").write_text(
+        "# unsupported\ndef decide(ctx):\n    return []\n", encoding="utf-8"
+    )
+    (seed_root / "job.yaml").write_bytes((root / "job.yaml").read_bytes())
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.validate_execution_job",
+        lambda *args, **kwargs: {"checks": []},
+    )
+
+    with pytest.raises(ValueError, match="checked-in research result"):
+        submit_research_seed(
+            store,
+            job_id,
+            candidate_root=seed_root,
+            family="unsupported",
+            hypothesis="no evidence",
+            base_revision=compute_workspace_revision(root),
+            evidence_refs=["results/research/missing.json"],
+        )
+
+
 def test_campaign_start_defers_while_intervention_worker_is_busy(
     tmp_path, monkeypatch
 ) -> None:
@@ -172,8 +260,27 @@ def test_campaign_start_defers_while_intervention_worker_is_busy(
 
     with pytest.raises(TransientInfrastructureError, match="intervention worker"):
         start_campaign(store, job_id, now=datetime(2026, 8, 25, 19, tzinfo=UTC))
-
     assert campaign_status(store, job_id) == {}
+
+
+def test_only_one_automatic_campaign_owns_a_machine(tmp_path) -> None:
+    store, first = _job(tmp_path, "first-lab")
+    _, second = _job(tmp_path, "second-lab")
+    for job_id in (first, second):
+        (store.job_dir(job_id) / "improver.yaml").write_text(
+            yaml.safe_dump(
+                {"evolution": {"allowed_job_ids": ["first-lab", "second-lab"]}}
+            ),
+            encoding="utf-8",
+        )
+    now = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, first, now=now)
+
+    assert campaign_due(store, second, now=now) is False
+    with pytest.raises(TransientInfrastructureError, match="machine evolution"):
+        start_campaign(store, second, now=now)
+    with pytest.raises(TransientInfrastructureError, match="machine evolution"):
+        start_campaign(store, second, now=now, force=True)
 
 
 def test_runner_command_declares_control_and_heavy_resource_tiers() -> None:
@@ -251,6 +358,9 @@ def test_evolution_enabled_intervention_prompt_is_sensor_and_safety_only(
     assert "exact behavior-equivalence maintenance" in prefix
     assert "EVOLUTION SENSOR CONTRACT" in prompt
     assert "Regime alarm triage" in prompt
+    assert "action='risk_block_symbol'" in prompt
+    assert "wake_id=<wake.id>" in prompt
+    assert "action='evolution_submit_seed'" in prompt
     assert "read ALL failed check names" in prompt
     assert "wayfinder job revalidate <job_id> <proposal_id>" in prompt
     assert "open_paper_probation_leg" not in prompt
@@ -1101,7 +1211,7 @@ def test_finalize_enforces_stage_budgets_and_isolates_candidate_failure(
         "wayfinder_paths.jobs.evolution_campaign._isolated_economic_gate", fake_gate
     )
     monkeypatch.setattr(
-        "wayfinder_paths.jobs.paper_experiment.stage_paper_proposal", fake_stage
+        "wayfinder_paths.jobs.probation.stage_evolution_probation", fake_stage
     )
     result = finalize_campaign(store, job_id)
     assert result["status"] == "complete"

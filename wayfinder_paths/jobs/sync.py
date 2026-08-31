@@ -224,6 +224,12 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         "agent_mode_actual": str(job.agent_loop.mode),
         "agent_mode_source": "job_yaml",
     }
+    from wayfinder_paths.jobs.compute_lock import evolution_compute_budget_status
+    from wayfinder_paths.jobs.risk_overrides import active_symbol_blocks
+
+    scorecard["evolution_compute"] = evolution_compute_budget_status(store.repo_root)
+    blocks = active_symbol_blocks(store, job_id)
+    scorecard["risk_symbol_blocks"] = sorted(blocks)
     dataset_fetch = _dataset_fetch_state(store, job_id)
     if dataset_fetch is not None:
         scorecard = {**scorecard, "dataset_fetch": dataset_fetch}
@@ -257,6 +263,9 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         "runner_links": runner_links,
         "proposals": store.proposals(job_id),
         "probation": store.read_json(job_id, "probation.json", default={"legs": []}),
+        "risk_overrides": store.read_json(
+            job_id, "state/risk_overrides.json", default={"symbols": {}}
+        ),
         "post_apply_shadow": _shadow_topline(store, job_id),
         "regime_health": regime_health,
         "decision_log": _decision_log(store, job_id),

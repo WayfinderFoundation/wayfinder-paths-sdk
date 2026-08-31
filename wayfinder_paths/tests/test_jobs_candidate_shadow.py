@@ -8,10 +8,11 @@ import yaml
 
 from wayfinder_paths.jobs.candidate_shadow import run_candidate_shadows
 from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import WayfinderJob
-from wayfinder_paths.jobs.paper_experiment import (
-    ensure_paper_experiment,
-    stage_paper_proposal,
+from wayfinder_paths.jobs.probation import (
+    load_probation,
+    stage_evolution_probation,
 )
 from wayfinder_paths.jobs.store import JobStore
 
@@ -61,17 +62,15 @@ def test_candidate_shadow_uses_separate_paper_state_and_stream(tmp_path) -> None
         ),
         encoding="utf-8",
     )
-    experiment = ensure_paper_experiment(store, job.id, now=started.to_pydatetime())
-    assert experiment is not None
-    revision = experiment["initial_revision"]
-    stage_paper_proposal(
+    revision = compute_workspace_revision(root)
+    staged = stage_evolution_probation(
         store,
         job.id,
-        arm="evolution",
         candidate_id="candidate-1",
         candidate_root=root,
         revision=revision,
         source="evolution_campaign",
+        family="test-candidate",
         evidence={
             "objective": {"candidate": {"trade_count": 12}},
         },
@@ -99,27 +98,17 @@ def test_candidate_shadow_uses_separate_paper_state_and_stream(tmp_path) -> None
             now=pd.Timestamp("2026-08-25T12:00:00Z"),
         )
     )
-    assert {row["role"] for row in first} == {
-        "proposal_candidate",
-        "proposal_reference",
-    }
-    updated = store.read_json(job.id, "state/evolution_experiment.json")
+    assert {row["role"] for row in first} == {"candidate", "reference"}
+    updated = load_probation(store, job.id)["trials"][0]
+    assert updated["trial_id"] == staged["trial_id"]
     assert updated["status"] == "active"
-    assert updated["admissions"]["evolution"] == 1
-    assert updated["proposals"]["evolution"]["active"] is None
-    assert updated["proposals"]["evolution"]["history"][0]["status"] == "qualified"
-    for role in ("proposal_candidate", "proposal_reference"):
-        assert (
-            root
-            / "state"
-            / "evolution_shadows"
-            / "evolution"
-            / role
-            / revision
-            / "engine_state.json"
-        ).exists()
+    assert updated["burn_in"]["status"] == "passed"
+    assert (
+        len(list((root / "state" / "probation_shadows").rglob("engine_state.json")))
+        >= 2
+    )
     ticks_paths = list(
-        (root / "results" / "forward" / "experiment" / "proposals").rglob("ticks.jsonl")
+        (root / "results" / "forward" / "probation").rglob("ticks.jsonl")
     )
     assert ticks_paths
     # Shadow replays hand candidates the SAME bounded window the simulator and

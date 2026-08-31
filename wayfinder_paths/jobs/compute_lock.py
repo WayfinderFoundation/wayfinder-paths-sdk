@@ -19,6 +19,7 @@ exceptions.
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 import threading
 import time
@@ -29,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 LOCK_RELATIVE = ".wayfinder/compute.lock"
+EVOLUTION_BUDGET_RELATIVE = ".wayfinder/evolution_compute_budget.json"
 DEFAULT_TIMEOUT_S = 600.0
 _POLL_S = 2.0
 _local = threading.local()
@@ -136,36 +138,74 @@ def job_state_lock(
 
 
 @contextmanager
+def machine_state_lock(
+    repo_root: Path,
+    *,
+    name: str,
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+) -> Iterator[None]:
+    """Serialize one machine-wide read/modify/write state funnel."""
+    path = Path(repo_root) / ".wayfinder" / f"{name}.lock"
+    with _exclusive_file_lock(
+        path,
+        label=f"machine:{name}",
+        timeout_s=timeout_s,
+    ):
+        yield
+
+
+@contextmanager
 def experiment_compute_lock(
     store: Any,
     job_id: str,
     *,
     label: str,
     duty_fraction: float = 0.20,
+    completion_duty_fraction: float = 0.25,
     window_hours: float = 12.0,
-) -> Iterator[None]:
-    """Serialize evolution work and enforce its rolling compute-duty budget."""
-    relative = "state/evolution_compute_budget.json"
+    completion_reserve: bool = False,
+) -> Iterator[dict[str, Any]]:
+    """Serialize evolution work under a machine-wide rolling duty budget.
+
+    Routine work stops at the 20% soft cap.  Only an already-started
+    finalist/full-development step may consume the small completion reserve
+    up to 25%; generation and new campaigns can never spend it.
+    """
+    if not 0 < duty_fraction <= completion_duty_fraction <= 1:
+        raise ValueError("evolution duty fractions must satisfy 0 < soft <= hard <= 1")
+    path = Path(store.repo_root) / EVOLUTION_BUDGET_RELATIVE
     now = datetime.now(UTC)
     cutoff = now - timedelta(hours=window_hours)
-    with job_state_lock(store.repo_root, job_id, name="evolution_compute_budget"):
-        budget = store.read_json(job_id, relative, default={}) or {}
+    with machine_state_lock(store.repo_root, name="evolution_compute_budget"):
+        try:
+            budget = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            budget = {}
         events = [
             event
             for event in budget.get("events") or []
             if _event_time(event) >= cutoff
         ]
         used = sum(float(event.get("wall_seconds") or 0.0) for event in events)
-        limit = float(duty_fraction) * float(window_hours) * 3600.0
+        soft_limit = float(duty_fraction) * float(window_hours) * 3600.0
+        hard_limit = float(completion_duty_fraction) * float(window_hours) * 3600.0
+        limit = hard_limit if completion_reserve else soft_limit
         if used >= limit:
             raise ComputeLockBusy(
-                f"evolution compute duty exhausted ({used:.1f}/{limit:.1f}s "
-                f"over {window_hours:g}h); retry in the next budget window"
+                f"evolution {'completion' if completion_reserve else 'routine'} "
+                f"compute duty exhausted ({used:.1f}/{limit:.1f}s over "
+                f"{window_hours:g}h); retry after rolling debt clears"
             )
         with heavy_compute_lock(repo_root=store.repo_root, label=label):
             started = time.monotonic()
             try:
-                yield
+                yield {
+                    "used_seconds": round(used, 3),
+                    "soft_limit_seconds": round(soft_limit, 3),
+                    "hard_limit_seconds": round(hard_limit, 3),
+                    "completion_reserve": completion_reserve,
+                    "remaining_seconds": round(max(0.0, limit - used), 3),
+                }
             finally:
                 elapsed = max(0.0, time.monotonic() - started)
                 current = datetime.now(UTC)
@@ -178,16 +218,21 @@ def experiment_compute_lock(
                 events.append(
                     {
                         "ts": current.isoformat(),
+                        "job_id": job_id,
                         "label": label,
                         "wall_seconds": round(elapsed, 3),
+                        "class": "completion" if completion_reserve else "routine",
                     }
                 )
-                store.write_json(
-                    job_id,
-                    relative,
+                from wayfinder_paths.runner.monitor_state import atomic_write_json
+
+                atomic_write_json(
+                    path,
                     {
+                        "schema_version": "2.0",
                         "window_hours": window_hours,
-                        "duty_fraction": duty_fraction,
+                        "soft_duty_fraction": duty_fraction,
+                        "hard_duty_fraction": completion_duty_fraction,
                         "total_wall_seconds": round(
                             float(budget.get("total_wall_seconds") or 0.0) + elapsed,
                             3,
@@ -195,6 +240,48 @@ def experiment_compute_lock(
                         "events": events,
                     },
                 )
+
+
+def evolution_compute_budget_status(
+    repo_root: Path,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Compact UI/reporting view of the shared evolution duty ledger."""
+    path = Path(repo_root) / EVOLUTION_BUDGET_RELATIVE
+    try:
+        budget = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        budget = {}
+    window_hours = float(budget.get("window_hours") or 12.0)
+    soft_fraction = float(budget.get("soft_duty_fraction") or 0.20)
+    hard_fraction = float(budget.get("hard_duty_fraction") or 0.25)
+    cutoff = (now or datetime.now(UTC)) - timedelta(hours=window_hours)
+    events = [
+        event for event in budget.get("events") or [] if _event_time(event) >= cutoff
+    ]
+    routine = sum(
+        float(event.get("wall_seconds") or 0.0)
+        for event in events
+        if event.get("class") != "completion"
+    )
+    completion = sum(
+        float(event.get("wall_seconds") or 0.0)
+        for event in events
+        if event.get("class") == "completion"
+    )
+    used = routine + completion
+    window_seconds = window_hours * 3600.0
+    return {
+        "window_hours": window_hours,
+        "routine_seconds": round(routine, 3),
+        "completion_seconds": round(completion, 3),
+        "used_seconds": round(used, 3),
+        "soft_limit_seconds": round(soft_fraction * window_seconds, 3),
+        "hard_limit_seconds": round(hard_fraction * window_seconds, 3),
+        "debt_paused": used >= soft_fraction * window_seconds,
+        "hard_exhausted": used >= hard_fraction * window_seconds,
+    }
 
 
 def _event_time(event: dict[str, Any]) -> datetime:

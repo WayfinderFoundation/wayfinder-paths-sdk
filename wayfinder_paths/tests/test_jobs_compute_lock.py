@@ -3,16 +3,22 @@ reentrancy, clear busy errors, and heavy entrypoints actually holding it."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import textwrap
+from datetime import UTC, datetime
 
 import pytest
 
 from wayfinder_paths.jobs.compute_lock import (
+    EVOLUTION_BUDGET_RELATIVE,
     ComputeLockBusy,
+    evolution_compute_budget_status,
+    experiment_compute_lock,
     heavy_compute_lock,
 )
+from wayfinder_paths.jobs.store import JobStore
 
 
 def test_reentrant_within_process(tmp_path) -> None:
@@ -135,3 +141,68 @@ def test_wake_monitors_skip_fast_when_lock_held(tmp_path, monkeypatch) -> None:
     finally:
         holder.kill()
         holder.wait()
+
+
+def _write_evolution_usage(tmp_path, *, wall_seconds: float) -> None:
+    path = tmp_path / EVOLUTION_BUDGET_RELATIVE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "2.0",
+                "window_hours": 12,
+                "soft_duty_fraction": 0.20,
+                "hard_duty_fraction": 0.25,
+                "events": [
+                    {
+                        "ts": datetime.now(UTC).isoformat(),
+                        "job_id": "first-job",
+                        "class": "routine",
+                        "wall_seconds": wall_seconds,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_evolution_completion_has_a_small_machine_wide_priority_reserve(
+    tmp_path,
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    soft_limit = 0.20 * 12 * 3600
+    _write_evolution_usage(tmp_path, wall_seconds=soft_limit + 1)
+
+    # Usage from another job exhausts routine generation/evaluation globally.
+    with pytest.raises(ComputeLockBusy, match="routine compute duty exhausted"):
+        with experiment_compute_lock(store, "second-job", label="quick-screen"):
+            pass
+
+    # An already-started finalize/gate may use the modest 20%-to-25% reserve.
+    with experiment_compute_lock(
+        store,
+        "second-job",
+        label="finalist-gate",
+        completion_reserve=True,
+    ) as budget:
+        assert budget["soft_limit_seconds"] < budget["hard_limit_seconds"]
+
+    status = evolution_compute_budget_status(tmp_path)
+    assert status["debt_paused"] is True
+    assert status["hard_exhausted"] is False
+
+
+def test_evolution_completion_reserve_stops_at_hard_cap(tmp_path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    hard_limit = 0.25 * 12 * 3600
+    _write_evolution_usage(tmp_path, wall_seconds=hard_limit)
+
+    with pytest.raises(ComputeLockBusy, match="completion compute duty exhausted"):
+        with experiment_compute_lock(
+            store,
+            "second-job",
+            label="finalist-gate",
+            completion_reserve=True,
+        ):
+            pass

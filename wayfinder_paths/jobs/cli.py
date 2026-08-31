@@ -33,6 +33,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     campaign_status,
     prepare_candidate,
     start_campaign,
+    submit_research_seed,
 )
 from wayfinder_paths.jobs.execution.driver import tick_job
 from wayfinder_paths.jobs.execution.experiments import (
@@ -89,6 +90,7 @@ from wayfinder_paths.jobs.research import (
     signal_check_job,
     signal_scan_job,
 )
+from wayfinder_paths.jobs.risk_overrides import risk_block_symbol, risk_unblock_symbol
 from wayfinder_paths.jobs.robustness import robustness_check_job
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.starters import create_starter_job, starter_catalog
@@ -1183,6 +1185,83 @@ def evolution_prepare_cmd(
             family=family,
             summary=summary,
             mutation_kind=mutation_kind,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="evolution-submit-seed",
+    help="Freeze a sensor-authored executable candidate for the next campaign.",
+)
+@click.argument("job_id")
+@click.argument("candidate_dir", type=click.Path(path_type=Path, exists=True))
+@click.option("--family", required=True)
+@click.option("--hypothesis", required=True)
+@click.option("--base-revision", required=True)
+@click.option("--evidence-ref", "evidence_refs", multiple=True)
+def evolution_submit_seed_cmd(
+    job_id: str,
+    candidate_dir: Path,
+    family: str,
+    hypothesis: str,
+    base_revision: str,
+    evidence_refs: tuple[str, ...],
+) -> None:
+    try:
+        result = submit_research_seed(
+            JobStore(),
+            job_id,
+            candidate_root=candidate_dir,
+            family=family,
+            hypothesis=hypothesis,
+            base_revision=base_revision,
+            evidence_refs=list(evidence_refs),
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(name="risk-block-symbol", help="Block new entries for one symbol.")
+@click.argument("job_id")
+@click.argument("symbol")
+@click.option("--reason", required=True)
+@click.option("--evidence-ref", "evidence_refs", multiple=True, required=True)
+@click.option("--wake-id", default=None)
+def risk_block_symbol_cmd(
+    job_id: str,
+    symbol: str,
+    reason: str,
+    evidence_refs: tuple[str, ...],
+    wake_id: str | None,
+) -> None:
+    try:
+        result = risk_block_symbol(
+            JobStore(),
+            job_id,
+            symbol=symbol,
+            reason=reason,
+            evidence_refs=list(evidence_refs),
+            wake_id=wake_id,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(name="risk-unblock-symbol", help="Owner-only symbol re-arm.")
+@click.argument("job_id")
+@click.argument("symbol")
+@click.option("--by", type=click.Choice(["owner"]), required=True)
+@click.option("--reason", default=None)
+def risk_unblock_symbol_cmd(
+    job_id: str, symbol: str, by: str, reason: str | None
+) -> None:
+    try:
+        result = risk_unblock_symbol(
+            JobStore(), job_id, symbol=symbol, by=by, reason=reason
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc

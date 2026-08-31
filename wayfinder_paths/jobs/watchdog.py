@@ -1804,31 +1804,18 @@ def _run_evolution_campaign_pass(
     }
 
 
-def _run_paper_experiment_pass(
+def _run_probation_pass(
     store: JobStore, job_id: str, now: datetime
 ) -> dict[str, Any] | None:
-    from wayfinder_paths.jobs.paper_experiment import (
-        harvest_hourly_control_candidates,
-        maybe_adjudicate_proposals,
-        maybe_finalize_experiment,
+    from wayfinder_paths.jobs.probation import (
+        ensure_unified_probation,
+        maybe_adjudicate_probation,
     )
 
-    adjudicated = maybe_adjudicate_proposals(store, job_id, now=now)
-    if adjudicated:
-        return {
-            "action": "evolution_proposal_adjudicated",
-            "outcomes": adjudicated,
-        }
-    verdict = maybe_finalize_experiment(store, job_id, now=now)
-    if verdict is not None:
-        return {"action": "evolution_experiment_completed", **verdict}
-    staged = harvest_hourly_control_candidates(store, job_id, now=now)
-    if staged is not None:
-        return {
-            "action": "evolution_control_proposal_staged",
-            "candidate_id": staged.get("candidate_id"),
-            "revision": staged.get("revision"),
-        }
+    ensure_unified_probation(store, job_id, now=now)
+    outcomes = maybe_adjudicate_probation(store, job_id, now=now)
+    if outcomes:
+        return {"action": "probation_adjudicated", "outcomes": outcomes}
     return None
 
 
@@ -2087,9 +2074,9 @@ def recover_stalled_applications(
         if campaign_event is not None:
             recovered.append({"job_id": job.id, **campaign_event})
         try:
-            experiment_event = _run_paper_experiment_pass(store, job.id, now)
+            experiment_event = _run_probation_pass(store, job.id, now)
         except Exception as exc:  # noqa: BLE001
-            errors.append({"job_id": job.id, "error": f"paper_experiment: {exc}"})
+            errors.append({"job_id": job.id, "error": f"probation: {exc}"})
             experiment_event = None
         if experiment_event is not None:
             recovered.append({"job_id": job.id, **experiment_event})

@@ -84,11 +84,12 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         },
         "exploration_floor": 0.25,
     },
-    # Isolated open-ended code evolution. The rollout is deliberately limited
-    # to the named lab job; other jobs see no campaign state or extra work.
+    # Isolated open-ended code evolution. Keep the default canary-scoped;
+    # fleet rollout is an explicit job-local policy change after canary health.
     "evolution": {
         "enabled": True,
         "allowed_job_ids": ["majors-5m-lab"],
+        "excluded_job_ids": [],
         "campaign_hours": 4,
         "start_interval_hours": 24,
         # DeepSeek has announced 2x pricing during 09:00-12:00 and
@@ -130,8 +131,18 @@ DEFAULT_IMPROVER: dict[str, Any] = {
             "qualification_days": 7,
             "proposal_hours": 24,
             "compute_duty_fraction": 0.20,
+            "completion_duty_fraction": 0.25,
             "confidence": 0.90,
         },
+        "probation": {
+            "max_active": 3,
+            "max_queued": 3,
+            "burn_in_hours": 24,
+            "min_paired_days": 7,
+            "max_paired_days": 14,
+            "confidence": 0.90,
+        },
+        "research_seed_slots": 2,
     },
 }
 
@@ -228,7 +239,40 @@ class ImproverSpec:
     def evolution_enabled_for(self, job_id: str) -> bool:
         evolution = self.policy["evolution"]
         allowed = {str(item) for item in evolution.get("allowed_job_ids") or []}
-        return bool(evolution.get("enabled")) and job_id in allowed
+        excluded = {str(item) for item in evolution.get("excluded_job_ids") or []}
+        if not evolution.get("enabled") or job_id in excluded:
+            return False
+        if allowed and job_id not in allowed:
+            return False
+        return True
+
+    def evolution_eligibility(self, root: Path, job_id: str) -> dict[str, Any]:
+        """Cheap fleet gate for runnable jobs with a canonical local dataset."""
+        if not self.evolution_enabled_for(job_id):
+            return {"eligible": False, "reasons": ["disabled_or_excluded"]}
+        reasons: list[str] = []
+        try:
+            raw = yaml.safe_load((Path(root) / "job.yaml").read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            raw = None
+        if not isinstance(raw, dict):
+            return {"eligible": False, "reasons": ["job_yaml_unreadable"]}
+        if raw.get("execution_contract") != "jobs_v1":
+            reasons.append("execution_contract_not_jobs_v1")
+        script_loop = raw.get("script_loop") or {}
+        agent_loop = raw.get("agent_loop") or {}
+        if not isinstance(script_loop, dict) or not script_loop.get("enabled"):
+            reasons.append("script_loop_disabled")
+        if (
+            not isinstance(agent_loop, dict)
+            or not agent_loop.get("enabled")
+            or str(agent_loop.get("mode") or "off") not in {"intervene", "auto"}
+        ):
+            reasons.append("agent_loop_not_intervene_or_auto")
+        dataset = Path(root) / "results" / "backtest" / "input_bars.json"
+        if not dataset.is_file():
+            reasons.append("canonical_dataset_missing")
+        return {"eligible": not reasons, "reasons": reasons}
 
     def tier(self, name: str) -> dict[str, Any]:
         return dict(self.policy["tiers"][name])

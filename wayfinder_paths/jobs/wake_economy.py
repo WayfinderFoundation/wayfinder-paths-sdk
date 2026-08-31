@@ -120,6 +120,21 @@ def saturation_watermark(
             if isinstance(leg, Mapping)
         ]
     )
+    probation_trials = sorted(
+        [
+            (
+                str(trial.get("trial_id")),
+                str(trial.get("status") or ""),
+                str(trial.get("phase") or ""),
+                str((trial.get("promotion") or {}).get("status") or ""),
+            )
+            for trial in load_probation(store, job_id).get("trials") or []
+            if isinstance(trial, Mapping)
+        ]
+    )
+    risk_overrides = (
+        store.read_json(job_id, "state/risk_overrides.json", default={}) or {}
+    )
     remediation = load_remediation(store, job_id) or {}
     remediation_progress = (remediation.get("progress") or {}).get("watermark")
     experiment_watermark = None
@@ -180,6 +195,10 @@ def saturation_watermark(
             "count": len(probation_legs),
             "fingerprint": _fingerprint({"legs": probation_legs}),
         },
+        "probation_trials": {
+            "count": len(probation_trials),
+            "fingerprint": _fingerprint({"trials": probation_trials}),
+        },
         "pending_proposals": sorted(
             str(proposal.get("proposal_id"))
             for proposal in store.proposals(job_id)
@@ -213,6 +232,11 @@ def saturation_watermark(
         else None,
         "evolution_experiment": experiment_watermark,
         "halt": {"source": halt.get("source"), "ts": halt.get("ts")} if halt else None,
+        "risk_symbol_blocks": sorted(
+            symbol
+            for symbol, block in (risk_overrides.get("symbols") or {}).items()
+            if isinstance(block, Mapping) and block.get("status") == "blocked"
+        ),
     }
 
 

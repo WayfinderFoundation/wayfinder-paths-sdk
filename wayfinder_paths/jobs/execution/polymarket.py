@@ -12,6 +12,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     FillEvent,
     OrderIntent,
     PositionRecord,
+    RestingOrder,
     TradeCapacity,
     _float_or_none,
     bar_interval_seconds,
@@ -385,6 +386,40 @@ class PolymarketBroker:
             symbol="",
             side="",
             client_order_id=client_order_id,
+            order_id=order_id,
+            error=None if ok else str(resp),
+        )
+
+    async def cancel_resting_order(self, order: RestingOrder) -> FillEvent:
+        client_order_id = str(order.intent.client_order_id or "")
+        order_id = order.order_id or self._order_ids.get(client_order_id)
+        if not order_id:
+            return FillEvent(
+                status="rejected",
+                venue="polymarket",
+                symbol=order.intent.symbol,
+                side=order.intent.side,
+                client_order_id=client_order_id or None,
+                error="resting order has no exchange order id",
+            )
+        try:
+            ok, resp = await self.adapter.cancel_order(order_id=order_id)
+        except Exception as exc:
+            return FillEvent(
+                status="ambiguous",
+                venue="polymarket",
+                symbol=order.intent.symbol,
+                side=order.intent.side,
+                client_order_id=client_order_id or None,
+                order_id=order_id,
+                error=str(exc),
+            )
+        return FillEvent(
+            status="filled" if ok else "rejected",
+            venue="polymarket",
+            symbol=order.intent.symbol,
+            side=order.intent.side,
+            client_order_id=client_order_id or None,
             order_id=order_id,
             error=None if ok else str(resp),
         )

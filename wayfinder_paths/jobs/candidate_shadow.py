@@ -28,29 +28,22 @@ from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.forward import ForwardRecorder
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import utc_now_iso
-from wayfinder_paths.jobs.paper_experiment import (
-    EXPERIMENT_ARMS,
-    EXPERIMENT_FORWARD_ROOT,
-    EXPERIMENT_STATE_PATH,
-    EXPERIMENT_VIEW_PATH,
-    enqueue_experiment_view,
-    experiment_status,
-    maybe_adjudicate_proposals,
-    maybe_finalize_experiment,
-    resolve_experiment_bundle,
+from wayfinder_paths.jobs.probation import (
+    PROBATION_FORWARD_ROOT,
+    PROBATION_VIEW_PATH,
+    active_probation_trials,
+    enqueue_probation_view,
+    maybe_adjudicate_probation,
+    probation_targets,
+    resolve_probation_bundle,
+    update_probation_target,
 )
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 
 def active_candidate_shadows(store: JobStore, job_id: str) -> bool:
-    state = experiment_status(store, job_id)
-    if state.get("status") == "active":
-        return True
-    return state.get("status") == "qualifying" and any(
-        (((state.get("proposals") or {}).get(arm) or {}).get("active"))
-        for arm in EXPERIMENT_ARMS
-    )
+    return active_probation_trials(store, job_id)
 
 
 async def run_candidate_shadows(
@@ -60,8 +53,8 @@ async def run_candidate_shadows(
     view: CompletedBarsView | None = None,
     now: pd.Timestamp | None = None,
 ) -> list[dict[str, Any]]:
-    """Catch both paper arms up to every unseen completed five-minute bar."""
-    with job_state_lock(store.repo_root, job_id, name="evolution_shadow_runner"):
+    """Catch every probation pair up to each unseen completed bar."""
+    with job_state_lock(store.repo_root, job_id, name="probation_shadow_runner"):
         return await _run_candidate_shadows(store, job_id, view=view, now=now)
 
 
@@ -74,7 +67,7 @@ async def _run_candidate_shadows(
 ) -> list[dict[str, Any]]:
     if view is not None:
         captured_at = now or pd.Timestamp.now(tz="UTC")
-        enqueue_experiment_view(
+        enqueue_probation_view(
             store,
             job_id,
             rows=[
@@ -86,40 +79,32 @@ async def _run_candidate_shadows(
             ],
             now=captured_at,
         )
-    payload = store.read_json(job_id, EXPERIMENT_VIEW_PATH, default={}) or {}
+    payload = store.read_json(job_id, PROBATION_VIEW_PATH, default={}) or {}
     rows = payload.get("rows") or []
     if not rows:
         return []
     full_view = CompletedBarsView.from_rows(rows)
-    state = experiment_status(store, job_id)
-    if state.get("status") not in {"qualifying", "active"}:
+    if not active_probation_trials(store, job_id):
         return []
     results: list[dict[str, Any]] = []
+    targets = probation_targets(store, job_id)
     for stamp in full_view.timestamps:
-        loop_state = experiment_status(store, job_id)
-        if loop_state.get("status") == "active" and stamp >= pd.Timestamp(
-            loop_state["ends_at"]
-        ):
-            maybe_finalize_experiment(
-                store, job_id, now=pd.Timestamp(loop_state["ends_at"]).to_pydatetime()
-            )
-            break
         replay_view = full_view.through(stamp)
-        for target in _paper_targets(experiment_status(store, job_id)):
-            state = experiment_status(store, job_id)
+        advanced = False
+        for target in targets:
             last = target.get("last_processed_bar")
             if last and stamp <= pd.Timestamp(last):
                 continue
+            advanced = True
             try:
                 row = await _run_target(
                     store,
                     job_id,
-                    state=state,
                     target=target,
                     view=replay_view,
                     timestamp=stamp,
                 )
-            except Exception as exc:  # noqa: BLE001 - one arm cannot stop its peer
+            except Exception as exc:  # noqa: BLE001 - one trial cannot stop its peers
                 row = _record_error(
                     store,
                     job_id,
@@ -128,58 +113,44 @@ async def _run_candidate_shadows(
                     error=str(exc)[:300],
                 )
             results.append(row)
-        maybe_adjudicate_proposals(store, job_id, now=stamp.to_pydatetime())
-    maybe_finalize_experiment(store, job_id)
-    return results
-
-
-def _paper_targets(state: dict[str, Any]) -> list[dict[str, Any]]:
-    targets: list[dict[str, Any]] = []
-    if state.get("status") == "active":
-        for arm in EXPERIMENT_ARMS:
-            champion = dict(state["arms"][arm]["champion"])
-            champion.update(
-                {
-                    "arm": arm,
-                    "role": "champion",
-                    "last_processed_bar": state["arms"][arm].get("last_processed_bar"),
-                }
+        if advanced:
+            outcomes = maybe_adjudicate_probation(
+                store, job_id, now=stamp.to_pydatetime()
             )
-            targets.append(champion)
-    if state.get("status") in {"qualifying", "active"}:
-        for arm in EXPERIMENT_ARMS:
-            proposal = ((state.get("proposals") or {}).get(arm) or {}).get("active")
-            if not isinstance(proposal, dict):
-                continue
-            for key in ("candidate", "reference"):
-                target = dict(proposal[key])
-                target["arm"] = arm
-                targets.append(target)
-    return targets
+            if outcomes:
+                targets = probation_targets(store, job_id)
+    maybe_adjudicate_probation(store, job_id)
+    return results
 
 
 async def _run_target(
     store: JobStore,
     job_id: str,
     *,
-    state: dict[str, Any],
     target: dict[str, Any],
     view: CompletedBarsView,
     timestamp: pd.Timestamp,
 ) -> dict[str, Any]:
     root = store.job_dir(job_id).resolve()
-    candidate_root = resolve_experiment_bundle(store, job_id, state, target)
+    candidate_root = resolve_probation_bundle(store, job_id, target)
     if compute_workspace_revision(candidate_root) != str(target["revision"]):
         raise ValueError("paper candidate revision changed after freeze")
     stream_root = (root / str(target["stream"])).resolve()
-    allowed_streams = (root / EXPERIMENT_FORWARD_ROOT).resolve()
-    if not stream_root.is_relative_to(allowed_streams):
-        raise ValueError("experiment stream escapes its paper root")
+    allowed_streams = (root / PROBATION_FORWARD_ROOT).resolve()
+    legacy_streams = (root / "results/forward/experiment").resolve()
+    if not (
+        stream_root.is_relative_to(allowed_streams)
+        or (
+            target.get("bundle_scope") == "legacy_experiment"
+            and stream_root.is_relative_to(legacy_streams)
+        )
+    ):
+        raise ValueError("probation stream escapes its paper root")
     bar_iso = timestamp.isoformat()
     if _stream_has_bar(stream_root / "ticks.jsonl", bar_iso):
         _advance_cursor(store, job_id, target, bar_iso)
         return {
-            "arm": target["arm"],
+            "trial_id": target["trial_id"],
             "role": target["role"],
             "bar_timestamp": bar_iso,
             "reused": True,
@@ -203,12 +174,7 @@ async def _run_target(
     window = resolve_compute_window(params, strategy)
     view = window.slice_view(view, len(view.timestamps) - 1)
     candidate_view = apply_precompute(strategy, view)
-    shadow_root = _shadow_state_root(
-        root,
-        arm=str(target["arm"]),
-        role=str(target["role"]),
-        revision=str(target["revision"]),
-    )
+    shadow_root = _target_shadow_state_root(root, target)
     engine_state = EngineState.load(shadow_root / "engine_state.json")
     engine_state.mode = "paper"
     engine_state.revision = str(target["revision"])
@@ -228,7 +194,12 @@ async def _run_target(
         timestamp=timestamp,
         snapshot=StateSnapshot(status="valid"),
         client_order_prefix=(
-            f"paper-ab-{target['arm']}-{target['role']}-{target['revision'][:8]}"
+            f"paper-ab-{target['legacy_shadow_arm']}-champion-{target['revision'][:8]}"
+            if target.get("bundle_scope") == "legacy_experiment"
+            else (
+                f"probation-{target['trial_id'][:12]}-{target['role']}-"
+                f"{target['revision'][:8]}"
+            )
         ),
     )
     engine_state.save(shadow_root / "engine_state.json")
@@ -251,7 +222,7 @@ async def _run_target(
     _advance_cursor(store, job_id, target, bar_iso)
     (shadow_root / "last_error.json").unlink(missing_ok=True)
     return {
-        "arm": target["arm"],
+        "trial_id": target["trial_id"],
         "role": target["role"],
         "candidate_id": target["candidate_id"],
         "bar_timestamp": bar_iso,
@@ -264,21 +235,7 @@ async def _run_target(
 def _advance_cursor(
     store: JobStore, job_id: str, target: dict[str, Any], bar_iso: str
 ) -> None:
-    with job_state_lock(store.repo_root, job_id, name="evolution_experiment"):
-        state = experiment_status(store, job_id)
-        arm = str(target["arm"])
-        if target["role"] == "champion":
-            champion = state["arms"][arm]["champion"]
-            if champion.get("revision") == target.get("revision"):
-                state["arms"][arm]["last_processed_bar"] = bar_iso
-        else:
-            active = state["proposals"][arm].get("active")
-            key = "candidate" if target["role"] == "proposal_candidate" else "reference"
-            if isinstance(active, dict) and (active.get(key) or {}).get(
-                "revision"
-            ) == target.get("revision"):
-                active[key]["last_processed_bar"] = bar_iso
-        store.write_json(job_id, EXPERIMENT_STATE_PATH, state)
+    update_probation_target(store, job_id, target, bar_iso=bar_iso)
 
 
 def _stream_has_bar(path: Path, bar_iso: str) -> bool:
@@ -304,12 +261,7 @@ def _record_error(
     error: str,
 ) -> dict[str, Any]:
     root = store.job_dir(job_id).resolve()
-    error_root = _shadow_state_root(
-        root,
-        arm=str(target["arm"]),
-        role=str(target["role"]),
-        revision=str(target.get("revision") or "invalid"),
-    )
+    error_root = _target_shadow_state_root(root, target)
     error_path = error_root / "last_error.json"
     try:
         previous = json.loads(error_path.read_text(encoding="utf-8"))
@@ -319,7 +271,7 @@ def _record_error(
     atomic_write_json(
         error_path,
         {
-            "arm": target["arm"],
+            "trial_id": target["trial_id"],
             "role": target["role"],
             "candidate_id": target.get("candidate_id"),
             "error": error,
@@ -329,7 +281,7 @@ def _record_error(
     )
     _increment_error(store, job_id, target, timestamp.isoformat())
     return {
-        "arm": target["arm"],
+        "trial_id": target["trial_id"],
         "role": target["role"],
         "error": error,
         "notify": notify,
@@ -339,26 +291,40 @@ def _record_error(
 def _increment_error(
     store: JobStore, job_id: str, target: dict[str, Any], bar_iso: str
 ) -> None:
-    with job_state_lock(store.repo_root, job_id, name="evolution_experiment"):
-        state = experiment_status(store, job_id)
-        arm = str(target["arm"])
-        if target["role"] == "champion":
-            if state["arms"][arm]["champion"].get("revision") == target.get("revision"):
-                state["arms"][arm]["last_processed_bar"] = bar_iso
-        else:
-            active = state["proposals"][arm].get("active")
-            key = "candidate" if target["role"] == "proposal_candidate" else "reference"
-            if isinstance(active, dict):
-                selected = active.get(key) or {}
-                if selected.get("revision") == target.get("revision"):
-                    selected["last_processed_bar"] = bar_iso
-                    selected["error_count"] = int(selected.get("error_count") or 0) + 1
-        store.write_json(job_id, EXPERIMENT_STATE_PATH, state)
+    update_probation_target(store, job_id, target, bar_iso=bar_iso, error=True)
 
 
-def _shadow_state_root(root: Path, *, arm: str, role: str, revision: str) -> Path:
-    base = (root / "state" / "evolution_shadows").resolve()
-    candidate = (base / arm / role / revision).resolve()
+def _shadow_state_root(
+    root: Path,
+    *,
+    trial_id: str,
+    phase: str,
+    role: str,
+    revision: str,
+) -> Path:
+    base = (root / "state" / "probation_shadows").resolve()
+    candidate = (base / trial_id / phase / role / revision).resolve()
     if not candidate.is_relative_to(base):
-        raise ValueError("paper arm state escapes the shadow state root")
+        raise ValueError("probation state escapes the shadow state root")
+    return candidate
+
+
+def _target_shadow_state_root(root: Path, target: dict[str, Any]) -> Path:
+    """Preserve legacy champion engine state when migrating a live A/B."""
+    if target.get("bundle_scope") != "legacy_experiment":
+        return _shadow_state_root(
+            root,
+            trial_id=str(target["trial_id"]),
+            phase=str(target["phase"]),
+            role=str(target["role"]),
+            revision=str(target.get("revision") or "invalid"),
+        )
+    arm = str(target.get("legacy_shadow_arm") or "")
+    role = str(target.get("legacy_shadow_role") or "")
+    if arm not in {"control", "evolution"} or role != "champion":
+        raise ValueError("legacy probation target has an invalid shadow state key")
+    base = (root / "state" / "evolution_shadows").resolve()
+    candidate = (base / arm / role / str(target["revision"])).resolve()
+    if not candidate.is_relative_to(base):
+        raise ValueError("legacy probation state escapes the shadow state root")
     return candidate

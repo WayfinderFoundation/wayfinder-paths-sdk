@@ -10,6 +10,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     FillEvent,
     OrderIntent,
     PositionRecord,
+    RestingOrder,
     TradeCapacity,
 )
 
@@ -141,6 +142,17 @@ class NativeProtectionBroker(Protocol):
     async def cancel_stop_loss(
         self, *, symbol: str, client_order_id: str
     ) -> NativeProtectionResult: ...
+
+
+@runtime_checkable
+class RestingOrderCancelBroker(Protocol):
+    """Optional live-broker extension with the context needed to cancel.
+
+    The base Broker API only carries a client order id. Some venues also need
+    the asset or exchange order id, both of which live in RestingOrder.
+    """
+
+    async def cancel_resting_order(self, order: RestingOrder) -> FillEvent: ...
 
 
 @runtime_checkable

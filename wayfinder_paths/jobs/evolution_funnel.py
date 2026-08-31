@@ -12,6 +12,8 @@ _FULL_DEV_PASS_STATUSES = {
     "proposal_deferred",
     "paper_proposal",
     "paper_experiment",
+    "probation",
+    "probation_deferred",
 }
 
 
@@ -51,8 +53,8 @@ def summarize_evolution_funnel(state: dict[str, Any]) -> dict[str, Any]:
         and candidate.get("status") == "full_dev_running"
         for candidate in candidates
     )
-    paper_admitted = sum(
-        candidate.get("status") in {"paper_proposal", "paper_experiment"}
+    probation_admitted = sum(
+        candidate.get("status") in {"paper_proposal", "paper_experiment", "probation"}
         for candidate in candidates
     )
 
@@ -104,13 +106,16 @@ def summarize_evolution_funnel(state: dict[str, Any]) -> dict[str, Any]:
         "finalist_gate": {
             "evaluated": gate_evaluated,
             "target": _optional_count(budgets, "finalist_gate"),
-            "advanced_to_paper": paper_admitted,
+            # Keep the historical key for older frontend clients while adding
+            # the permanent lifecycle name used by new snapshots.
+            "advanced_to_paper": probation_admitted,
+            "advanced_to_probation": probation_admitted,
             "rejected": sum(
                 candidate.get("status") == "proposal_rejected"
                 for candidate in candidates
             ),
             "deferred": sum(
-                candidate.get("status") == "proposal_deferred"
+                candidate.get("status") in {"proposal_deferred", "probation_deferred"}
                 for candidate in candidates
             ),
             "running": sum(
@@ -155,7 +160,8 @@ def format_evolution_funnel(funnel: dict[str, Any]) -> str:
         f"{_value(optuna.get('previewed'))} previewed, "
         f"{_value(optuna.get('selected'))} selected"
         f"{limits_suffix}{optuna_suffix})) → "
-        f"gate {gate_progress}; paper {_value(gate.get('advanced_to_paper'))}"
+        f"gate {gate_progress}; probation "
+        f"{_value(gate.get('advanced_to_probation', gate.get('advanced_to_paper')))}"
     )
 
 

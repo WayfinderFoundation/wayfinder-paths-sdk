@@ -137,6 +137,68 @@ def _journal_entries(
                     proposal_id=str(event.get("proposal_id") or "") or None,
                 )
             )
+        elif kind in {
+            "evolution_probation_queued",
+            "evolution_probation_burn_in_started",
+            "probation_forward_started",
+            "probation_checkpoint_inconclusive",
+            "probation_graduated",
+            "probation_killed",
+            "probation_inconclusive",
+            "evolution_experiment_migrated_to_probation",
+        }:
+            title_by_kind = {
+                "evolution_probation_queued": "Evolution candidate queued for probation",
+                "evolution_probation_burn_in_started": "Probation burn-in started",
+                "probation_forward_started": "Probation advanced to paired forward testing",
+                "probation_checkpoint_inconclusive": (
+                    "Probation remains active after a scheduled checkpoint"
+                ),
+                "probation_graduated": "Probation candidate graduated",
+                "probation_killed": "Probation candidate retired",
+                "probation_inconclusive": "Probation ended inconclusive",
+                "evolution_experiment_migrated_to_probation": (
+                    "Existing evolution test moved to permanent probation"
+                ),
+            }
+            entries.append(
+                _entry(
+                    ts,
+                    "probation",
+                    title_by_kind[kind],
+                    str(event.get("reason") or event.get("candidate_id") or ""),
+                    "info",
+                    actor="harness",
+                )
+            )
+        elif kind in {"risk_symbol_blocked", "risk_symbol_unblocked"}:
+            blocked = kind == "risk_symbol_blocked"
+            entries.append(
+                _entry(
+                    ts,
+                    "halt",
+                    (
+                        f"New {event.get('symbol')} entries blocked"
+                        if blocked
+                        else f"{event.get('symbol')} entries re-armed by owner"
+                    ),
+                    str(event.get("reason") or ""),
+                    "info",
+                    actor="system" if blocked else "owner",
+                )
+            )
+        elif kind == "evolution_research_seed_submitted":
+            entries.append(
+                _entry(
+                    ts,
+                    "research",
+                    "Research sensor submitted an executable evolution seed",
+                    str(event.get("family") or event.get("seed_id") or ""),
+                    "info",
+                    actor="agent",
+                    family=str(event.get("family") or "") or None,
+                )
+            )
         elif kind == "application_watchdog_recovered":
             entries.append(
                 _entry(
@@ -302,12 +364,15 @@ def _journal_entries(
         elif kind == "evolution_campaign_completed":
             counts = event.get("counts") or {}
             funnel = event.get("funnel")
+            probation_trials = _count(event, "probation_trials")
             paper_proposals = _count(event, "paper_proposals")
             title = "Evolution campaign completed"
-            if paper_proposals:
-                title += (
-                    f" — {paper_proposals} advanced to forward paper testing"
-                )
+            if probation_trials:
+                title += f" — {probation_trials} advanced to probation"
+            elif "probation_trials" in event:
+                title += " — no candidate advanced"
+            elif paper_proposals:
+                title += f" — {paper_proposals} advanced to forward paper testing"
             elif "paper_proposals" in event:
                 title += " — no candidate advanced"
             entries.append(
@@ -401,6 +466,7 @@ def _active_evolution_entry(root: Path) -> dict[str, Any] | None:
         "draining": "Evolution campaign preparing full development",
         "full_dev": "Evolution campaign running full development",
         "paper_proposal": "Evolution campaign checking finalists",
+        "probation": "Evolution campaign checking finalists",
     }.get(stage, "Evolution campaign in progress")
     funnel = summarize_evolution_funnel(state)
     return _entry(
