@@ -2326,7 +2326,8 @@ def decision_gate_register_cmd(
 @decision_gate_group.command(
     name="resolve",
     help="Owner resolution of a tripped/armed gate; --execute runs the same "
-    "bounded retire flow the paper auto path uses.",
+    "bounded retire flow the paper auto path uses (also on a gate previously "
+    "resolved as acknowledge-only). Retries of a settled gate are a no-op.",
 )
 @click.argument("job_id")
 @click.argument("gate_id")
@@ -2343,13 +2344,14 @@ def decision_gate_resolve_cmd(
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    _echo_json({"ok": True, "result": gate})
+    _echo_json({"ok": True, "noop": bool(gate.pop("noop", False)), "result": gate})
 
 
 @decision_gate_group.command(
     name="reopen",
     help="Undo an auto-resolution (re-enables the script loop) or dismiss a "
-    "trip. The gate stays reopened until explicitly re-registered.",
+    "trip. The gate stays reopened until explicitly re-registered; reopening "
+    "an already-reopened gate is a no-op.",
 )
 @click.argument("job_id")
 @click.argument("gate_id")
@@ -2360,7 +2362,7 @@ def decision_gate_reopen_cmd(job_id: str, gate_id: str, reopened_by: str) -> Non
         gate = reopen_decision_gate(store, job_id, gate_id, by=reopened_by)
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    _echo_json({"ok": True, "result": gate})
+    _echo_json({"ok": True, "noop": bool(gate.pop("noop", False)), "result": gate})
 
 
 @decision_gate_group.command(name="list", help="List registered decision gates.")

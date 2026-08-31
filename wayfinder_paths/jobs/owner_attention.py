@@ -167,7 +167,7 @@ def _needs_you(
 
     items.extend(_unauditable_claims(store, job_id, now))
     items.extend(_owner_review_markers(job_id, journal, proposals_by_id, now))
-    items.extend(_tripped_gates(store, job_id))
+    items.extend(_tripped_gates(store, job_id, job))
 
     halt = read_halt(store.job_dir(job_id))
     if halt and str(halt.get("source") or "") in RISK_LATCH_SOURCES:
@@ -178,8 +178,9 @@ def _needs_you(
                 job_id=job_id,
                 ref_id=source,
                 summary=(
-                    f"risk-latched halt ({source}): {halt.get('reason')} — "
-                    "clearing requires the owner (wayfinder job resume-from-halt)"
+                    f"Trading is halted by a safety latch "
+                    f"({source.replace('_', ' ')}): {halt.get('reason')}. "
+                    "It stays paused until you clear it."
                 )[:300],
                 evidence_ref="state/halt.json",
                 since_ts=halt.get("ts"),
@@ -278,7 +279,9 @@ def _owner_review_markers(
     return items
 
 
-def _tripped_gates(store: JobStore, job_id: str) -> list[dict[str, Any]]:
+def _tripped_gates(
+    store: JobStore, job_id: str, job: WayfinderJob
+) -> list[dict[str, Any]]:
     from wayfinder_paths.jobs.decision_gates import (
         DECISION_GATES_PATH,
         load_decision_gates,
@@ -288,23 +291,63 @@ def _tripped_gates(store: JobStore, job_id: str) -> list[dict[str, Any]]:
     for gate in load_decision_gates(store, job_id).get("gates") or []:
         if gate.get("status") != "tripped_needs_owner":
             continue
-        gate_id = str(gate.get("gate_id"))
-        items.append(
-            _item(
-                kind="decision_gate_tripped",
-                job_id=job_id,
-                ref_id=gate_id,
-                summary=(
-                    f"decision gate {gate_id} criteria met on a live-capable "
-                    "job — pre-registered response is "
-                    f"{gate.get('on_met')}; owner resolves or re-arms "
-                    "(wayfinder job decision-gate resolve/reopen)"
-                )[:300],
-                evidence_ref=DECISION_GATES_PATH,
-                since_ts=gate.get("tripped_at"),
-            )
+        item = _item(
+            kind="decision_gate_tripped",
+            job_id=job_id,
+            ref_id=str(gate.get("gate_id")),
+            summary=_tripped_gate_summary(job, gate),
+            evidence_ref=DECISION_GATES_PATH,
+            since_ts=gate.get("tripped_at"),
         )
+        # Machine detail rides structured fields; the summary stays prose.
+        item.update(
+            {
+                "criteria": gate.get("criteria"),
+                "measured": gate.get("measured"),
+                "successor_ref": gate.get("successor_ref"),
+                "on_met": gate.get("on_met"),
+            }
+        )
+        items.append(item)
     return items
+
+
+def _tripped_gate_summary(job: WayfinderJob, gate: dict[str, Any]) -> str:
+    """Owner prose for a tripped gate: what happened, what the pre-registered
+    plan says, and the choice. No gate ids, no CLI commands, no policy tokens
+    — those live in the item's structured fields, not in the sentence the
+    owner reads."""
+    title = str(job.name or job.id).replace("_", " ")
+    measured = gate.get("measured") or {}
+    performance = ""
+    if measured.get("closed_trades") is not None:
+        net_pnl = float(measured.get("net_pnl") or 0.0)
+        direction = "down" if net_pnl < 0 else "up"
+        win_rate = measured.get("win_rate")
+        win_clause = (
+            f"winning {round(float(win_rate) * 100)}% and "
+            if win_rate is not None
+            else ""
+        )
+        performance = (
+            f": after {int(measured['closed_trades'])} trades it's "
+            f"{win_clause}{direction} ${abs(net_pnl):,.2f}"
+        )
+    head = f"{title} hit its pre-agreed checkpoint{performance}. "
+    registered = str(gate.get("pre_registered_ts") or "")[:10]
+    plan = f"The plan registered {registered}" if registered else "The registered plan"
+    closing = ". Choose: retire and pivot, or keep it running."
+    pivot = " ".join(str(gate.get("successor_ref") or "").split())
+    if pivot:
+        middle = f"{plan} calls for retiring this strategy and pivoting research to: "
+        budget = 300 - len(head) - len(middle) - len(closing)
+        summary = f"{head}{middle}{pivot[: max(budget, 0)]}{closing}"
+    else:
+        summary = (
+            f"{head}{plan} calls for retiring this strategy and pivoting "
+            f"research{closing}"
+        )
+    return summary[:300]
 
 
 def _decided_autonomously(

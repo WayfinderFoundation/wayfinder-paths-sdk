@@ -250,18 +250,45 @@ def resolve_decision_gate(
     execute: bool = False,
 ) -> dict[str, Any]:
     """Manual resolution — the owner acting on a tripped (or armed) gate.
-    ``execute=True`` runs the same bounded retire flow the paper path uses."""
+    ``execute=True`` runs the same bounded retire flow the paper path uses.
+
+    Acknowledge-only is completable: ``execute=True`` on a gate already
+    resolved as ``acknowledged`` runs the pre-registered response now (an FE
+    resolve click that landed without execute must not strand the gate).
+    Anything else that is already settled — executed, acknowledged again
+    without execute, or reopened — returns the gate with ``noop=True`` and
+    changes nothing: double-clicks and timeout retries read as "already
+    done", never as failure."""
     doc = load_decision_gates(store, job_id)
     gate = _find_gate(doc, gate_id)
-    if gate.get("status") not in {"armed", "tripped_needs_owner"}:
-        raise ValueError(f"gate {gate_id} is {gate.get('status')}; nothing to resolve")
+    status = str(gate.get("status"))
+    resolution = gate.get("resolution") or {}
+    acknowledged_only = (
+        status == "resolved" and resolution.get("action") == "acknowledged"
+    )
+    if status not in {"armed", "tripped_needs_owner"} and not (
+        acknowledged_only and execute
+    ):
+        return dict(gate, noop=True)
     if execute:
+        prior_ack = (
+            {
+                "by": resolution.get("by"),
+                "note": resolution.get("note"),
+                "at": gate.get("resolved_at"),
+            }
+            if acknowledged_only
+            else None
+        )
         job = store.load(job_id)
         summary = store.read_json(job_id, "results/forward/summary.json") or {}
         _, measured = evaluate_gate_criteria(gate.get("criteria") or {}, summary)
         event = _auto_resolve(store, job, gate, measured, dt.datetime.now(dt.UTC))
         event["resolved_by"] = by
         gate["resolution"]["by"] = by
+        if prior_ack is not None:
+            event["type"] = "decision_gate_executed"
+            gate["resolution"]["acknowledged"] = prior_ack
     else:
         gate.update(
             {
@@ -287,10 +314,13 @@ def reopen_decision_gate(
     """Undo: reverse an auto-resolution (re-enable the script loop; the active
     workspace was never destroyed) or dismiss a trip. The gate lands in
     ``reopened`` — terminal until explicitly re-registered, so it cannot
-    re-trip on the very next watchdog pass."""
+    re-trip on the very next watchdog pass. Reopening an already-reopened
+    gate is a retry, not a failure: it returns the gate with ``noop=True``."""
     doc = load_decision_gates(store, job_id)
     gate = _find_gate(doc, gate_id)
     status = str(gate.get("status"))
+    if status == "reopened":
+        return dict(gate, noop=True)
     if status not in {"resolved", "tripped_needs_owner"}:
         raise ValueError(f"gate {gate_id} is {status}; nothing to reopen")
     was_retired = (gate.get("resolution") or {}).get("action") == "retire_and_pivot"
