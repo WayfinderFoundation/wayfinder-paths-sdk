@@ -160,4 +160,4 @@ class GorlamiTestnetClient(WayfinderClient):
         return True
 
     async def close(self) -> None:
-        await self.client.aclose()
+        await self.aclose()

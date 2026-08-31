@@ -30,11 +30,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-from collections.abc import Sequence
-from typing import Literal
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
+from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
+from wayfinder_paths.core.clients.WayfinderClient import close_async_clients
 from wayfinder_paths.core.config import is_opencode_instance
 from wayfinder_paths.mcp.tools.alpha_lab import (
     research_get_alpha_types,
@@ -149,12 +151,20 @@ from wayfinder_paths.paths.heartbeat import maybe_heartbeat_installed_paths
 MCPTransport = Literal["stdio", "sse", "streamable-http"]
 
 
+@asynccontextmanager
+async def _client_lifespan(_mcp: FastMCP) -> AsyncIterator[dict[str, Any]]:
+    try:
+        yield {}
+    finally:
+        await close_async_clients()
+
+
 def build_mcp(
     *,
     host: str = "127.0.0.1",
     port: int = 8000,
 ) -> FastMCP:
-    mcp = FastMCP("wayfinder", host=host, port=port)
+    mcp = FastMCP("wayfinder", host=host, port=port, lifespan=_client_lifespan)
 
     # ─── contracts_* ───────────────────────────────────────────────────
     mcp.tool()(contracts_list)

@@ -4,15 +4,19 @@ from typing import Any
 
 import httpx
 
+from wayfinder_paths.core.clients.WayfinderClient import AsyncClientOwner
 from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
 
 MERKL_API_BASE_URL = "https://api.merkl.xyz"
 
 
-class MerklClient:
+class MerklClient(AsyncClientOwner):
     def __init__(self, *, base_url: str = MERKL_API_BASE_URL) -> None:
+        super().__init__()
         self.base_url = str(base_url).rstrip("/")
-        self.client = httpx.AsyncClient(timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT))
+
+    def _create_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT))
 
     async def get_user_rewards(
         self,

@@ -4,15 +4,19 @@ from typing import Any
 
 import httpx
 
+from wayfinder_paths.core.clients.WayfinderClient import AsyncClientOwner
 from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
 
 MORPHO_REWARDS_API_BASE_URL = "https://rewards.morpho.org"
 
 
-class MorphoRewardsClient:
+class MorphoRewardsClient(AsyncClientOwner):
     def __init__(self, *, base_url: str = MORPHO_REWARDS_API_BASE_URL) -> None:
+        super().__init__()
         self.base_url = str(base_url).rstrip("/")
-        self.client = httpx.AsyncClient(timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT))
+
+    def _create_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=httpx.Timeout(DEFAULT_HTTP_TIMEOUT))
 
     async def _get_json(
         self, *, path: str, params: dict[str, Any] | None = None

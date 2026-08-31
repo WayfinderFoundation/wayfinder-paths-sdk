@@ -4,7 +4,6 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from importlib import metadata as importlib_metadata
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -17,6 +16,7 @@ from wayfinder_paths.paths.pipeline import (
     default_pipeline_graph,
     get_pipeline_archetype,
 )
+from wayfinder_paths.paths.runtime_registry import published_runtime_package_version
 
 
 class PathScaffoldError(Exception):
@@ -55,13 +55,6 @@ def _read_template(relative_path: str) -> str:
     root = resources.files("wayfinder_paths.paths")
     template_path = root.joinpath("templates").joinpath(relative_path)
     return template_path.read_text(encoding="utf-8")
-
-
-def _runtime_package_version(package: str = "wayfinder-paths") -> str:
-    try:
-        return importlib_metadata.version(package)
-    except importlib_metadata.PackageNotFoundError:
-        return "0.0.0"
 
 
 @dataclass(frozen=True)
@@ -135,7 +128,7 @@ def _build_wfpath_yaml(
         lines.append("  runtime:")
         lines.append("    mode: thin")
         lines.append('    package: "wayfinder-paths"')
-        lines.append(f'    version: "{_runtime_package_version()}"')
+        lines.append(f'    version: "{published_runtime_package_version()}"')
         lines.append('    python: ">=3.12,<3.13"')
         lines.append('    component: "main"')
         lines.append("    bootstrap: uv")
