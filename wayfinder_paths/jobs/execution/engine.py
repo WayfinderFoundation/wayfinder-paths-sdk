@@ -840,7 +840,7 @@ def _record_fill(
         position = state.ledger.positions.get(fill.symbol)
         if intent is not None and intent.bracket and not intent.reduce_only:
             if position is not None:
-                state.brackets[fill.symbol] = _resolve_fill_bracket(
+                state.brackets[fill.symbol] = resolve_fill_bracket(
                     intent.bracket,
                     position.side,
                     position.avg_price,
@@ -883,7 +883,7 @@ async def _record_fill_and_protect(
         return
 
     if intent.reduce_only:
-        await _sync_native_protection(
+        await sync_native_protection(
             brokers=brokers,
             state=state,
             symbol=fill.symbol,
@@ -895,7 +895,7 @@ async def _record_fill_and_protect(
     bracket = state.brackets.get(fill.symbol) or {}
     if not bracket.get("native_required"):
         return
-    installed = await _sync_native_protection(
+    installed = await sync_native_protection(
         brokers=brokers,
         state=state,
         symbol=fill.symbol,
@@ -935,10 +935,16 @@ async def _record_fill_and_protect(
                 trace=trace,
                 result=result,
             )
-    if previous_bracket is None:
-        state.brackets.pop(fill.symbol, None)
-    else:
+    # Restore the pre-entry contract only after the new risk is actually gone.
+    # If the fail-closed unwind is rejected or ambiguous, keep the resolved
+    # bracket: monitor_native_protection uses it as the durable invariant that
+    # catches and retries an unprotected position on the next monitor tick.
+    # Dropping it unconditionally made a failed unwind permanently invisible.
+    remaining_position = state.ledger.positions.get(fill.symbol)
+    if previous_bracket is not None:
         state.brackets[fill.symbol] = previous_bracket
+    elif remaining_position is None:
+        state.brackets.pop(fill.symbol, None)
     result.guard_events.append(
         {
             "kind": "native_protection_failed",
@@ -952,7 +958,7 @@ async def _record_fill_and_protect(
     )
 
 
-def _resolve_fill_bracket(
+def resolve_fill_bracket(
     policy: Mapping[str, Any],
     side: str,
     entry_price: float,
@@ -974,7 +980,7 @@ def _resolve_fill_bracket(
     return resolved
 
 
-async def _sync_native_protection(
+async def sync_native_protection(
     *,
     brokers: Mapping[str, Broker],
     state: EngineState,

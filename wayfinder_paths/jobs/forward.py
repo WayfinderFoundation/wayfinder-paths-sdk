@@ -20,6 +20,10 @@ from wayfinder_paths.jobs.models import (
 from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 FORWARD_SCHEMA_VERSION = "0.1"
+TRADE_METRICS_VERSION = 2
+OPERATIONAL_SAFETY_EXIT_REASONS = frozenset(
+    {"native_protection_unconfirmed", "native_protection_breach"}
+)
 FORWARD_FILES = {
     "run": DEFAULT_FORWARD_RUNS,
     "trade": DEFAULT_FORWARD_TRADES,
@@ -28,6 +32,160 @@ FORWARD_FILES = {
     "funding": DEFAULT_FORWARD_FUNDING,
     "tick": DEFAULT_FORWARD_TICKS,
 }
+
+
+def forward_exit_category(row: Mapping[str, Any]) -> str:
+    """Separate execution containment from strategy-authored exits.
+
+    Operational closes remain in total net PnL because they cost real money,
+    but they must not manufacture strategy losses, loss streaks, or evidence
+    that a strategy completed another intentional trade.
+    """
+    explicit = str(row.get("exit_category") or "")
+    if explicit:
+        return explicit
+    reason = str(row.get("exit_reason") or "")
+    if not reason:
+        raw = row.get("raw") or {}
+        metadata = raw.get("intent_metadata") or {}
+        reason = str(metadata.get("exit_reason") or "")
+    return (
+        "operational_safety"
+        if reason in OPERATIONAL_SAFETY_EXIT_REASONS
+        else "strategy"
+    )
+
+
+def _new_trade_summary() -> dict[str, Any]:
+    return {
+        "trade_metrics_version": TRADE_METRICS_VERSION,
+        "closed_count": 0,
+        "strategy_closed_count": 0,
+        "operational_closed_count": 0,
+        "wins": 0,
+        "losses": 0,
+        "win_rate": None,
+        "net_pnl": 0,
+        "operational_net_pnl": 0,
+        "current_loss_streak": 0,
+    }
+
+
+def _trade_net_pnl(row: Mapping[str, Any]) -> float | None:
+    match row.get("pnl"):
+        case Mapping() as pnl:
+            raw_pnl = pnl.get("net_usd")
+            if raw_pnl is None:
+                raw_pnl = pnl.get("net")
+        case other:
+            raw_pnl = other
+    if raw_pnl is None:
+        raw_pnl = row.get("net_pnl")
+    return float(raw_pnl) if raw_pnl is not None else None
+
+
+def _apply_trade_summary_row(trades: dict[str, Any], row: Mapping[str, Any]) -> None:
+    trades["closed_count"] = int(trades.get("closed_count") or 0) + 1
+    net_pnl = _trade_net_pnl(row)
+    if net_pnl is not None:
+        trades["net_pnl"] = float(trades.get("net_pnl") or 0) + net_pnl
+
+    if forward_exit_category(row) == "operational_safety":
+        trades["operational_closed_count"] = (
+            int(trades.get("operational_closed_count") or 0) + 1
+        )
+        if net_pnl is not None:
+            trades["operational_net_pnl"] = (
+                float(trades.get("operational_net_pnl") or 0) + net_pnl
+            )
+    else:
+        trades["strategy_closed_count"] = (
+            int(trades.get("strategy_closed_count") or 0) + 1
+        )
+        if net_pnl is not None:
+            if net_pnl >= 0:
+                trades["wins"] = int(trades.get("wins") or 0) + 1
+                trades["current_loss_streak"] = 0
+            else:
+                trades["losses"] = int(trades.get("losses") or 0) + 1
+                trades["current_loss_streak"] = (
+                    int(trades.get("current_loss_streak") or 0) + 1
+                )
+        strategy_closed = int(trades.get("strategy_closed_count") or 0)
+        trades["win_rate"] = (
+            int(trades.get("wins") or 0) / strategy_closed if strategy_closed else None
+        )
+    trades["last_trade_at"] = row.get("closed_at") or row.get("ts")
+
+
+def _legacy_safety_unwind_keys(forward_dir: Path) -> set[tuple[str, str]]:
+    """Recover pre-reason safety exits from their durable guard events."""
+    path = forward_dir / Path(DEFAULT_FORWARD_TICKS).name
+    keys: set[tuple[str, str]] = set()
+    if not path.exists():
+        return keys
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                tick = json.loads(line)
+            except ValueError:
+                continue
+            for event in tick.get("guard_events") or []:
+                if (
+                    event.get("kind") == "native_protection_failed"
+                    and event.get("unwind_status") == "filled"
+                    and event.get("symbol")
+                    and event.get("timestamp")
+                ):
+                    keys.add((str(event["symbol"]), str(event["timestamp"])))
+    return keys
+
+
+def _upgrade_trade_summary(summary: dict[str, Any], trades_path: Path) -> bool:
+    """Rebuild legacy counters once so existing jobs gain honest categories."""
+    current = summary.setdefault("trades", {})
+    if current.get("trade_metrics_version") == TRADE_METRICS_VERSION:
+        return False
+    rebuilt = _new_trade_summary()
+    rebuilt_from_rows = False
+    legacy_safety_unwinds = _legacy_safety_unwind_keys(trades_path.parent)
+    if trades_path.exists():
+        with trades_path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict):
+                    key = (
+                        str(row.get("symbol") or ""),
+                        str(row.get("closed_at") or row.get("timestamp") or ""),
+                    )
+                    if (
+                        forward_exit_category(row) == "strategy"
+                        and key in legacy_safety_unwinds
+                    ):
+                        row["exit_category"] = "operational_safety"
+                    _apply_trade_summary_row(rebuilt, row)
+                    rebuilt_from_rows = True
+    if not rebuilt_from_rows:
+        # Compatibility for callers that persisted only summary.json before
+        # the recorder owned detailed rows: absent evidence of an operational
+        # close, preserve the old counters as strategy outcomes.
+        rebuilt.update(
+            {
+                "closed_count": int(current.get("closed_count") or 0),
+                "strategy_closed_count": int(current.get("closed_count") or 0),
+                "wins": int(current.get("wins") or 0),
+                "losses": int(current.get("losses") or 0),
+                "win_rate": current.get("win_rate"),
+                "net_pnl": float(current.get("net_pnl") or 0),
+                "current_loss_streak": int(current.get("current_loss_streak") or 0),
+                "last_trade_at": current.get("last_trade_at"),
+            }
+        )
+    summary["trades"] = {**current, **rebuilt}
+    return True
 
 
 def default_forward_summary(
@@ -46,14 +204,7 @@ def default_forward_summary(
             "last_reason": None,
             "error_count": 0,
         },
-        "trades": {
-            "closed_count": 0,
-            "wins": 0,
-            "losses": 0,
-            "win_rate": None,
-            "net_pnl": 0,
-            "current_loss_streak": 0,
-        },
+        "trades": _new_trade_summary(),
         "orders": {"count": 0, "last_order_at": None, "pending_count": 0},
         "fills": {"count": 0, "last_fill_at": None, "fees_total": 0.0},
         # Signed usd funding payments (negative = paid) — real PnL that never
@@ -103,11 +254,33 @@ def render_forward_recap(summary: dict[str, Any] | None) -> str:
     wins = int(trades.get("wins") or 0)
     losses = int(trades.get("losses") or 0)
     # Stored win_rate is a fraction (wins/closed); render as a whole percent.
+    operational = int(trades.get("operational_closed_count") or 0)
+    raw_strategy_closed = trades.get("strategy_closed_count")
+    strategy_closed = (
+        int(raw_strategy_closed) if raw_strategy_closed is not None else closed
+    )
     win_rate = trades.get("win_rate")
+    win_rate_denominator = strategy_closed if operational else closed
     win_rate_pct = (
-        (float(win_rate) * 100.0) if win_rate is not None else (wins / closed * 100.0)
+        (float(win_rate) * 100.0)
+        if win_rate is not None
+        else (wins / win_rate_denominator * 100.0)
+        if win_rate_denominator
+        else 0.0
     )
     net_pnl = float(trades.get("net_pnl") or 0.0)
+    if operational:
+        safety_label = "safety exit" if operational == 1 else "safety exits"
+        if strategy_closed <= 0:
+            return (
+                f"Forward: 0 strategy closed · {operational} {safety_label} · "
+                f"{net_pnl:+g} total net"
+            )
+        return (
+            f"Forward: {strategy_closed} strategy closed · {wins}W/{losses}L · "
+            f"{win_rate_pct:.0f}% WR · {operational} {safety_label} · "
+            f"{net_pnl:+g} total net"
+        )
     return (
         f"Forward: {closed} closed · {wins}W/{losses}L · "
         f"{win_rate_pct:.0f}% WR · {net_pnl:+g} net"
@@ -280,6 +453,9 @@ class ForwardRecorder:
         )
         summary["job_id"] = summary.get("job_id") or self.job_id
         summary["updated_at"] = utc_now_iso()
+        trade_summary_rebuilt = _upgrade_trade_summary(
+            summary, self.forward_dir / Path(DEFAULT_FORWARD_TRADES).name
+        )
         if kind == "run":
             runs = summary.setdefault("runs", {})
             runs["count"] = int(runs.get("count") or 0) + 1
@@ -296,34 +472,10 @@ class ForwardRecorder:
                 runs["error_count"] = int(runs.get("error_count") or 0) + 1
         elif kind == "trade":
             trades = summary.setdefault("trades", {})
-            trades["closed_count"] = int(trades.get("closed_count") or 0) + 1
-            match row.get("pnl"):
-                case Mapping() as pnl:
-                    raw_pnl = pnl.get("net_usd")
-                    if raw_pnl is None:
-                        raw_pnl = pnl.get("net")
-                case other:
-                    raw_pnl = other
-            if raw_pnl is None:
-                raw_pnl = row.get("net_pnl")
-            net_pnl = float(raw_pnl) if raw_pnl is not None else None
-            if net_pnl is not None:
-                trades["net_pnl"] = float(trades.get("net_pnl") or 0) + net_pnl
-                if net_pnl >= 0:
-                    trades["wins"] = int(trades.get("wins") or 0) + 1
-                    trades["current_loss_streak"] = 0
-                else:
-                    trades["losses"] = int(trades.get("losses") or 0) + 1
-                    trades["current_loss_streak"] = (
-                        int(trades.get("current_loss_streak") or 0) + 1
-                    )
-                closed_count = int(trades.get("closed_count") or 0)
-                trades["win_rate"] = (
-                    int(trades.get("wins") or 0) / closed_count
-                    if closed_count
-                    else None
-                )
-            trades["last_trade_at"] = row.get("closed_at") or row.get("ts")
+            # A legacy rebuild reads the row that append() just wrote, so do
+            # not count it a second time.
+            if not trade_summary_rebuilt:
+                _apply_trade_summary_row(trades, row)
         elif kind == "order":
             orders = summary.setdefault("orders", {})
             orders["count"] = int(orders.get("count") or 0) + 1

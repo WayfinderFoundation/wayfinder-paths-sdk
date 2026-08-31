@@ -265,6 +265,85 @@ def test_reconciliation_block_identity(tmp_path) -> None:
     )
 
 
+def test_reconciliation_recovers_first_funded_tick_from_zero_seed(tmp_path) -> None:
+    from wayfinder_paths.jobs.execution.driver import _reconciliation_block
+
+    recorder = ForwardRecorder(job_id="j", job_dir=tmp_path, mode="live")
+    recon_path = tmp_path / "state" / "equity_recon.json"
+    recon_path.parent.mkdir(parents=True)
+    recon_path.write_text(
+        json.dumps(
+            {
+                "venue_equity_start": 0.0,
+                "ledger_realized_at_seed": 0.0,
+                "seeded_at": "2026-08-25T14:35:00+00:00",
+            }
+        )
+    )
+    ticks_path = tmp_path / "results" / "forward" / "ticks.jsonl"
+    ticks_path.parent.mkdir(parents=True, exist_ok=True)
+    ticks_path.write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {
+                    "mode": "live",
+                    "ts": "2026-08-25T14:35:00+00:00",
+                    "snapshot": {"data": {"account_value": 0.0}},
+                    "ledger": {"realized_pnl": 0.0},
+                },
+                {
+                    "mode": "live",
+                    "ts": "2026-08-25T16:39:00+00:00",
+                    "snapshot": {"data": {"account_value": 52.8}},
+                    "ledger": {"realized_pnl": 0.0},
+                },
+            )
+        )
+        + "\n"
+    )
+
+    tick = SimpleNamespace(
+        snapshot=SimpleNamespace(data={"account_value": 50.8}),
+        ledger_snapshot={"realized_pnl": -2.0, "positions": {}},
+        guard_events=[],
+    )
+    block = _reconciliation_block(
+        tick,
+        root=tmp_path,
+        recorder=recorder,
+        mode="live",
+        view=SimpleNamespace(latest=lambda _symbol: None),
+    )
+
+    assert block["venue_equity_start"] == 52.8
+    assert block["expected_equity"] == 50.8
+    assert block["drift"] == 0.0
+    recovered = json.loads(recon_path.read_text())
+    assert recovered["seed_source"] == "first_positive_live_tick"
+
+
+def test_reconciliation_does_not_pin_provisional_zero_equity(tmp_path) -> None:
+    from wayfinder_paths.jobs.execution.driver import _reconciliation_block
+
+    recorder = ForwardRecorder(job_id="j", job_dir=tmp_path, mode="live")
+    tick = SimpleNamespace(
+        snapshot=SimpleNamespace(data={"account_value": 0.0}),
+        ledger_snapshot={"realized_pnl": 0.0, "positions": {}},
+        guard_events=[],
+    )
+    block = _reconciliation_block(
+        tick,
+        root=tmp_path,
+        recorder=recorder,
+        mode="live",
+        view=SimpleNamespace(latest=lambda _symbol: None),
+    )
+
+    assert block is None
+    assert not (tmp_path / "state" / "equity_recon.json").exists()
+
+
 def test_risk_equity_includes_funding(tmp_path) -> None:
     import wayfinder_paths.jobs.execution.risk as risk_module
 

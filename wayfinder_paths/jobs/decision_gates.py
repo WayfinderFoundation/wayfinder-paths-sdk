@@ -107,7 +107,12 @@ def evaluate_gate_criteria(
 ) -> tuple[bool, dict[str, Any]]:
     trades = forward_summary.get("trades") or {}
     runs = forward_summary.get("runs") or {}
-    closed_trades = int(trades.get("closed_count") or 0)
+    strategy_closed = trades.get("strategy_closed_count")
+    closed_trades = int(
+        strategy_closed
+        if strategy_closed is not None
+        else (trades.get("closed_count") or 0)
+    )
     win_rate = trades.get("win_rate")
     net_pnl = float(trades.get("net_pnl") or 0.0)
     run_count = int(runs.get("count") or 0)
