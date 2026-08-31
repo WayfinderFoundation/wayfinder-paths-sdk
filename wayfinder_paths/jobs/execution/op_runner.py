@@ -137,6 +137,14 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
         from wayfinder_paths.jobs.store import JobStore
 
         return prepare_candidate(JobStore(), kwargs.pop("job_id"), **kwargs)
+    if op == "evolution_submit_seed":
+        from pathlib import Path
+
+        from wayfinder_paths.jobs.evolution_campaign import submit_research_seed
+        from wayfinder_paths.jobs.store import JobStore
+
+        kwargs["candidate_root"] = Path(kwargs["candidate_root"])
+        return submit_research_seed(JobStore(), kwargs.pop("job_id"), **kwargs)
     if op == "evolution_evaluate":
         from wayfinder_paths.jobs.evolution_campaign import evaluate_candidate
         from wayfinder_paths.jobs.store import JobStore

@@ -20,7 +20,9 @@ if TYPE_CHECKING:
     from wayfinder_paths.jobs.store import JobStore
 
 _RUNNER_MODULE = "wayfinder_paths.jobs.execution.op_runner"
-_CONTROL_PLANE_OPS = frozenset({"evolution_start", "evolution_prepare"})
+_CONTROL_PLANE_OPS = frozenset(
+    {"evolution_start", "evolution_prepare", "evolution_submit_seed"}
+)
 _CAMPAIGN_OWNED_OPS = frozenset(
     {"evolution_prepare", "evolution_evaluate", "evolution_finalize"}
 )

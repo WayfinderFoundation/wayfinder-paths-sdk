@@ -339,7 +339,7 @@ def test_active_evolution_campaign_is_one_compact_progress_row(tmp_path) -> None
             "0 reject → full dev 0 pass, 0 reject "
             "(0/4 complete; Optuna 0 complete "
             "(1 eligible, 1 previewed, 0 selected; min 1, budget 2)) "
-            "→ gate 0/1; paper 0"
+            "→ gate 0/1; probation 0"
         ),
         "outcome": "info",
         "actor": "harness",
@@ -378,6 +378,7 @@ def test_active_evolution_campaign_is_one_compact_progress_row(tmp_path) -> None
                     "evaluated": 0,
                     "target": 1,
                     "advanced_to_paper": 0,
+                    "advanced_to_probation": 0,
                     "rejected": 0,
                     "deferred": 0,
                     "running": 0,
@@ -483,6 +484,56 @@ def test_terminal_evolution_campaigns_show_outcomes_without_live_duplicate(
     assert entries[1]["title"] == "Evolution campaign stopped before completion"
     assert entries[1]["kind"] == "recovery"
     assert entries[1]["detail"].endswith("3 finalization attempt(s)")
+
+
+def test_unified_probation_and_fast_risk_events_are_visible_in_activity(
+    tmp_path,
+) -> None:
+    store, job_id = _mk(tmp_path)
+    root = store.job_dir(job_id)
+    journal = [
+        {
+            "ts": _ts(5),
+            "type": "evolution_research_seed_submitted",
+            "seed_id": "seed-1",
+            "family": "regime-break",
+        },
+        {
+            "ts": _ts(4),
+            "type": "evolution_probation_burn_in_started",
+            "trial_id": "trial-1",
+            "candidate_id": "candidate-1",
+        },
+        {
+            "ts": _ts(3),
+            "type": "probation_forward_started",
+            "trial_id": "trial-1",
+        },
+        {
+            "ts": _ts(2),
+            "type": "risk_symbol_blocked",
+            "symbol": "HYPE",
+            "reason": "deterministic regime break",
+        },
+        {
+            "ts": _ts(1),
+            "type": "probation_graduated",
+            "trial_id": "trial-1",
+        },
+    ]
+    (root / "journal.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in journal) + "\n", encoding="utf-8"
+    )
+
+    entries = build_decision_log(store, job_id)["entries"]
+
+    assert any(entry["title"] == "Probation candidate graduated" for entry in entries)
+    blocked = next(
+        entry for entry in entries if "HYPE entries blocked" in entry["title"]
+    )
+    assert blocked["kind"] == "halt"
+    assert blocked["detail"] == "deterministic regime break"
+    assert any("executable evolution seed" in entry["title"] for entry in entries)
 
 
 def test_apply_lifecycle_events(tmp_path) -> None:

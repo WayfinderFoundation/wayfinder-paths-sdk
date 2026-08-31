@@ -38,6 +38,7 @@ from wayfinder_paths.jobs.execution.risk import RISK_STATE_PATH, check_risk_halt
 from wayfinder_paths.jobs.execution.simulator import _load_strategy
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.execution.venues import (
+    RestingOrderCancelBroker,
     VenueAdapter,
     VenueState,
     build_adapter,
@@ -368,6 +369,34 @@ async def tick_job(
         venue_states=venue_states,
         now=now,
     )
+    from wayfinder_paths.jobs.risk_overrides import active_symbol_blocks
+
+    symbol_blocks = active_symbol_blocks(store, job.id)
+    symbol_block_notes = await _apply_symbol_entry_blocks(
+        state=state,
+        brokers=brokers,
+        blocked_symbols=set(symbol_blocks),
+        now=now,
+    )
+    failed_block_cancels = [
+        note
+        for note in symbol_block_notes
+        if note.get("kind") == "resting_entry_cancel_failed_by_symbol_block"
+    ]
+    if failed_block_cancels:
+        failed_symbols = sorted(
+            {str(note.get("symbol") or "unknown") for note in failed_block_cancels}
+        )
+        request_halt(
+            store,
+            job.id,
+            reason=(
+                "symbol risk block could not confirm cancellation of resting "
+                f"entry orders for {', '.join(failed_symbols)}"
+            ),
+            flatten=False,
+            source="symbol_risk_override",
+        )
     if protection_halt:
         request_halt(
             store,
@@ -493,11 +522,13 @@ async def tick_job(
             events=events,
             auto_limits=dict(job.agent_loop.auto_limits or {}) or None,
             client_order_prefix=job.id,
+            blocked_entry_symbols=set(symbol_blocks),
         )
     tick.guard_events.extend(mode_notes)
     tick.guard_events.extend(leverage_notes)
     tick.guard_events.extend(reconcile_notes)
     tick.guard_events.extend(protection_notes)
+    tick.guard_events.extend(symbol_block_notes)
     tick.guard_events.extend(risk_notes)
     tick.guard_events.extend(feature_guards)
     tick.fills = protection_fills + tick.fills
@@ -585,14 +616,14 @@ async def tick_job(
     try:
         from wayfinder_paths.jobs.background import spawn_detached_op
         from wayfinder_paths.jobs.candidate_shadow import active_candidate_shadows
-        from wayfinder_paths.jobs.paper_experiment import enqueue_experiment_view
+        from wayfinder_paths.jobs.probation import enqueue_probation_view
 
         if active_candidate_shadows(store, job.id):
             rows = [
                 {**row, "timestamp": row["timestamp"].isoformat()}
                 for row in shadow_view.to_rows()
             ]
-            enqueue_experiment_view(store, job.id, rows=rows, now=now)
+            enqueue_probation_view(store, job.id, rows=rows, now=now)
             spawn_detached_op(
                 store,
                 job.id,
@@ -1017,6 +1048,68 @@ def _trade_close_payload(
             }
         )
     return payload
+
+
+async def _apply_symbol_entry_blocks(
+    *,
+    state: EngineState,
+    brokers: Mapping[str, Any],
+    blocked_symbols: set[str],
+    now: pd.Timestamp,
+) -> list[dict[str, Any]]:
+    """Cancel already-queued entry exposure while preserving exits."""
+    if not blocked_symbols:
+        return []
+    events: list[dict[str, Any]] = []
+    kept = []
+    for intent in state.pending_intents:
+        if intent.symbol not in blocked_symbols or intent.reduce_only:
+            kept.append(intent)
+            continue
+        events.append(
+            {
+                "kind": "pending_entry_canceled_by_symbol_block",
+                "symbol": intent.symbol,
+                "intent": intent.to_dict(),
+                "timestamp": now.isoformat(),
+            }
+        )
+    state.pending_intents = kept
+    for client_order_id, order in list(state.resting_orders.items()):
+        intent = order.intent
+        if intent.symbol not in blocked_symbols or intent.reduce_only:
+            continue
+        broker = brokers.get(intent.venue) or brokers.get("*")
+        cancel_confirmed = state.mode != "live"
+        error: str | None = "no broker for resting entry"
+        if state.mode == "live" and broker is not None:
+            try:
+                if isinstance(broker, RestingOrderCancelBroker):
+                    fill = await broker.cancel_resting_order(order)
+                else:
+                    fill = await broker.cancel(client_order_id)
+                cancel_confirmed = fill.status == "filled"
+                error = fill.error or (
+                    None if cancel_confirmed else f"cancel status: {fill.status}"
+                )
+            except Exception as exc:  # noqa: BLE001 - failure must preserve state
+                error = str(exc)[:300]
+        if cancel_confirmed:
+            state.resting_orders.pop(client_order_id, None)
+        events.append(
+            {
+                "kind": (
+                    "resting_entry_canceled_by_symbol_block"
+                    if cancel_confirmed
+                    else "resting_entry_cancel_failed_by_symbol_block"
+                ),
+                "symbol": intent.symbol,
+                "client_order_id": client_order_id,
+                "timestamp": now.isoformat(),
+                **({"cancel_error": error} if error else {}),
+            }
+        )
+    return events
 
 
 def view_hash(view: CompletedBarsView) -> str:

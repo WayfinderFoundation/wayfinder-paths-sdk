@@ -20,6 +20,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     FillEvent,
     OrderIntent,
     PositionRecord,
+    RestingOrder,
     StateSnapshot,
     TradeCapacity,
     _float_or_none,
@@ -388,6 +389,13 @@ class HyperliquidPerpBroker:
     async def cancel(self, client_order_id: str) -> FillEvent:
         return _cancel_needs_asset_context("hyperliquid", client_order_id)
 
+    async def cancel_resting_order(self, order: RestingOrder) -> FillEvent:
+        return await _cancel_hyperliquid_resting_order(
+            wallet_label=self.wallet_label,
+            venue="hyperliquid",
+            order=order,
+        )
+
     async def place_stop_loss(
         self,
         *,
@@ -745,6 +753,58 @@ def _cancel_needs_asset_context(venue: str, client_order_id: str) -> FillEvent:
         side="",
         error="cancel by cloid requires asset context; use hyperliquid_cancel_order",
         client_order_id=client_order_id,
+    )
+
+
+async def _cancel_hyperliquid_resting_order(
+    *, wallet_label: str, venue: str, order: RestingOrder
+) -> FillEvent:
+    from wayfinder_paths.mcp.tools.hyperliquid import hyperliquid_cancel_order
+
+    intent = order.intent
+    client_order_id = str(intent.client_order_id or "")
+    kwargs: dict[str, Any] = {
+        "wallet_label": wallet_label,
+        "asset_name": intent.symbol,
+    }
+    if order.order_id and str(order.order_id).isdigit():
+        kwargs["order_id"] = int(order.order_id)
+    elif client_order_id:
+        kwargs["cancel_cloid"] = client_order_id
+    else:
+        return FillEvent(
+            status="rejected",
+            venue=venue,
+            symbol=intent.symbol,
+            side=intent.side,
+            order_id=order.order_id,
+            error="resting order has no exchange or client order id",
+        )
+    try:
+        outcome = await hyperliquid_cancel_order(**kwargs)
+    except Exception as exc:
+        return FillEvent(
+            status="ambiguous",
+            venue=venue,
+            symbol=intent.symbol,
+            side=intent.side,
+            order_id=order.order_id,
+            client_order_id=client_order_id or None,
+            error=str(exc),
+        )
+    confirmed = (
+        outcome.get("ok") is True
+        and (outcome.get("result") or {}).get("status") == "confirmed"
+    )
+    return FillEvent(
+        status="filled" if confirmed else "rejected",
+        venue=venue,
+        symbol=intent.symbol,
+        side=intent.side,
+        order_id=order.order_id,
+        client_order_id=client_order_id or None,
+        error=None if confirmed else str(_mcp_error(outcome) or "cancellation failed"),
+        raw=outcome.get("result") or {},
     )
 
 

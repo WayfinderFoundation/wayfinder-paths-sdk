@@ -8,19 +8,46 @@ journaled events, not prose."""
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
+from wayfinder_paths.jobs.bundles import copy_job_bundle
+from wayfinder_paths.jobs.compute_lock import job_state_lock
+from wayfinder_paths.jobs.economics import block_bootstrap_lcb
+from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
+from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.improver.spec import ImproverSpec, revision_stamp
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 PROBATION_PATH = "probation.json"
 PROBATION_STATUSES = {"active", "graduated", "killed"}
 PAPER_TIER = "paper"
+PROBATION_SCHEMA_VERSION = "2.0"
+PROBATION_BUNDLE_ROOT = "research/evolution/probation/bundles"
+PROBATION_FORWARD_ROOT = "results/forward/probation"
+PROBATION_VIEW_PATH = "state/probation_view.json"
+TRIAL_ACTIVE_STATUSES = frozenset({"burn_in", "active"})
+TRIAL_TERMINAL_STATUSES = frozenset(
+    {"graduated", "killed", "inconclusive", "superseded"}
+)
 
 
 def load_probation(store: JobStore, job_id: str) -> dict[str, Any]:
-    return store.read_json(job_id, PROBATION_PATH, default={"legs": []}) or {"legs": []}
+    doc = store.read_json(job_id, PROBATION_PATH, default={"legs": []}) or {"legs": []}
+    if not isinstance(doc, dict):
+        doc = {"legs": []}
+    doc.setdefault("legs", [])
+    doc.setdefault("trials", [])
+    doc.setdefault("schema_version", PROBATION_SCHEMA_VERSION)
+    return doc
 
 
 def record_probation_leg(
@@ -324,3 +351,846 @@ def update_probation_leg(
     leg["updated_at"] = utc_now_iso()
     store.write_json(job_id, PROBATION_PATH, doc)
     return leg
+
+
+def ensure_unified_probation(
+    store: JobStore,
+    job_id: str,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Normalize the registry and migrate an active legacy evolution A/B.
+
+    Migration is byte/clock preserving: existing c03-style bundles, streams,
+    cursors, admission time, and deadline are referenced in place.  The old
+    experiment remains as an archived receipt and can no longer stop future
+    campaigns.
+    """
+    current = _aware(now or datetime.now(UTC))
+    with job_state_lock(store.repo_root, job_id, name="probation"):
+        persisted = store.read_json(job_id, PROBATION_PATH, default={})
+        doc = load_probation(store, job_id)
+        changed = (
+            not isinstance(persisted, dict)
+            or persisted.get("schema_version") != PROBATION_SCHEMA_VERSION
+            or not isinstance(persisted.get("trials"), list)
+        )
+        doc["schema_version"] = PROBATION_SCHEMA_VERSION
+        experiment = (
+            store.read_json(job_id, "state/evolution_experiment.json", default={}) or {}
+        )
+        if (
+            isinstance(experiment, dict)
+            and experiment.get("status") == "active"
+            and not experiment.get("migrated_to_probation")
+        ):
+            evolution = (experiment.get("arms") or {}).get("evolution") or {}
+            control = (experiment.get("arms") or {}).get("control") or {}
+            candidate = evolution.get("champion") or {}
+            reference = control.get("champion") or {}
+            if candidate.get("source") != "incumbent" and candidate.get("revision"):
+                trial_id = _safe_trial_id(
+                    str(candidate.get("candidate_id") or candidate["revision"])
+                )
+                if not any(
+                    trial.get("legacy_experiment_id") == experiment.get("experiment_id")
+                    for trial in doc["trials"]
+                ):
+                    trial = {
+                        "trial_id": trial_id,
+                        "candidate_id": candidate.get("candidate_id"),
+                        "candidate_revision": candidate.get("revision"),
+                        "family": "evolution",
+                        "source": candidate.get("source") or "evolution_campaign",
+                        "status": "active",
+                        "phase": "forward",
+                        "queued_at": candidate.get("admitted_at"),
+                        "burn_in": {
+                            "status": "passed",
+                            "completed_at": experiment.get("started_at"),
+                            "basis": "legacy_24h_operational_burn_in",
+                        },
+                        "forward": {
+                            "started_at": experiment.get("started_at"),
+                            "deadline_at": experiment.get("ends_at"),
+                            "min_paired_days": 7,
+                            "max_paired_days": 14,
+                            "decision_days": [7, 14],
+                            "last_decision_day": 0,
+                            "confidence": float(experiment.get("confidence") or 0.90),
+                            "metrics": None,
+                        },
+                        "candidate": {
+                            "role": "candidate",
+                            "candidate_id": candidate.get("candidate_id"),
+                            "revision": candidate.get("revision"),
+                            "bundle": candidate.get("bundle"),
+                            "bundle_scope": "legacy_experiment",
+                            "legacy_shadow_arm": "evolution",
+                            "legacy_shadow_role": "champion",
+                            "stream": candidate.get("stream"),
+                            "last_processed_bar": evolution.get("last_processed_bar"),
+                            "error_count": 0,
+                        },
+                        "reference": {
+                            "role": "reference",
+                            "candidate_id": reference.get("candidate_id"),
+                            "revision": reference.get("revision"),
+                            "bundle": reference.get("bundle"),
+                            "bundle_scope": "legacy_experiment",
+                            "legacy_shadow_arm": "control",
+                            "legacy_shadow_role": "champion",
+                            "stream": reference.get("stream"),
+                            "last_processed_bar": control.get("last_processed_bar"),
+                            "error_count": 0,
+                        },
+                        "evidence": {"legacy_protocol": experiment.get("protocol")},
+                        "promotion": {"status": "not_ready", "proposal_id": None},
+                        "legacy_experiment_id": experiment.get("experiment_id"),
+                        "migrated_at": current.isoformat(),
+                        **revision_stamp(store.job_dir(job_id)),
+                    }
+                    doc["trials"].append(trial)
+                    changed = True
+                    experiment["status"] = "migrated"
+                    experiment["migrated_at"] = current.isoformat()
+                    experiment["migrated_to_probation"] = trial_id
+                    store.write_json(
+                        job_id, "state/evolution_experiment.json", experiment
+                    )
+                    store.append_journal(
+                        job_id,
+                        {
+                            "type": "evolution_experiment_migrated_to_probation",
+                            "experiment_id": experiment.get("experiment_id"),
+                            "trial_id": trial_id,
+                            "candidate_id": candidate.get("candidate_id"),
+                        },
+                    )
+        if changed or not (store.job_dir(job_id) / PROBATION_PATH).exists():
+            store.write_json(job_id, PROBATION_PATH, doc)
+        return doc
+
+
+def stage_evolution_probation(
+    store: JobStore,
+    job_id: str,
+    *,
+    candidate_id: str,
+    candidate_root: Path,
+    revision: str,
+    source: str,
+    family: str,
+    campaign_id: str | None = None,
+    evidence: dict[str, Any] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Freeze a gate-green candidate into the permanent paper probation rail."""
+    current = _aware(now or datetime.now(UTC))
+    spec = ImproverSpec.load(store.job_dir(job_id))
+    policy = spec.evolution.get("probation") or {}
+    max_active = int(policy.get("max_active") or 3)
+    max_queued = int(policy.get("max_queued") or 3)
+    min_paired_days = int(policy.get("min_paired_days") or 7)
+    max_paired_days = int(policy.get("max_paired_days") or 14)
+    safe_revision = _safe_component(revision, "candidate revision")
+    trial_id = _safe_trial_id(f"{candidate_id}-{safe_revision}")
+    root = store.job_dir(job_id).resolve()
+    source_root = candidate_root.resolve()
+    if not source_root.is_relative_to(root):
+        raise ValueError("probation candidate must be inside its job root")
+    if compute_workspace_revision(source_root) != safe_revision:
+        raise ValueError("probation candidate revision does not match its bundle")
+    with job_state_lock(store.repo_root, job_id, name="probation"):
+        doc = load_probation(store, job_id)
+        duplicate = next(
+            (
+                trial
+                for trial in doc["trials"]
+                if trial.get("candidate_revision") == safe_revision
+            ),
+            None,
+        )
+        if duplicate is not None:
+            return {
+                "status": "duplicate",
+                "trial_id": duplicate.get("trial_id"),
+                "candidate_id": duplicate.get("candidate_id"),
+                "candidate_revision": duplicate.get("candidate_revision"),
+                "trial_status": duplicate.get("status"),
+            }
+        active = [
+            trial
+            for trial in doc["trials"]
+            if trial.get("status") in TRIAL_ACTIVE_STATUSES
+        ]
+        queued = [trial for trial in doc["trials"] if trial.get("status") == "queued"]
+        if len(active) >= max_active and len(queued) >= max_queued:
+            return {
+                "status": "deferred",
+                "reason": (
+                    f"probation capacity full ({max_active} active, "
+                    f"{max_queued} queued)"
+                ),
+                "candidate_id": candidate_id,
+            }
+        bundle_relative = f"{PROBATION_BUNDLE_ROOT}/{trial_id}/candidate"
+        reference_relative = f"{PROBATION_BUNDLE_ROOT}/{trial_id}/reference"
+        copy_job_bundle(source_root, root / bundle_relative, existing_ok=True)
+        copy_job_bundle(root, root / reference_relative, existing_ok=True)
+        reference_revision = compute_workspace_revision(root / reference_relative)
+        status = "burn_in" if len(active) < max_active else "queued"
+        trial = {
+            "trial_id": trial_id,
+            "candidate_id": candidate_id,
+            "candidate_revision": safe_revision,
+            "reference_revision": reference_revision,
+            "campaign_id": campaign_id,
+            "family": family,
+            "source": source,
+            "status": status,
+            "phase": "burn_in" if status == "burn_in" else "queued",
+            "queued_at": current.isoformat(),
+            "burn_in": {
+                "status": "running" if status == "burn_in" else "queued",
+                "started_at": current.isoformat() if status == "burn_in" else None,
+                "duration_hours": float(policy.get("burn_in_hours") or 24),
+                "bar_interval_seconds": _probation_bar_interval_seconds(store, job_id),
+                "expires_at": (
+                    current
+                    + timedelta(hours=float(policy.get("burn_in_hours") or 24) + 12)
+                ).isoformat()
+                if status == "burn_in"
+                else None,
+                "coverage": 0.0,
+                "first_common_bar": None,
+                "last_common_bar": None,
+            },
+            "forward": {
+                "started_at": None,
+                "deadline_at": None,
+                "min_paired_days": min_paired_days,
+                "max_paired_days": max_paired_days,
+                "decision_days": sorted({min_paired_days, max_paired_days}),
+                "last_decision_day": 0,
+                "confidence": float(policy.get("confidence") or 0.90),
+                "metrics": None,
+            },
+            "candidate": {
+                "role": "candidate",
+                "candidate_id": candidate_id,
+                "revision": safe_revision,
+                "bundle": bundle_relative,
+                "bundle_scope": "probation",
+                "stream": f"{PROBATION_FORWARD_ROOT}/{trial_id}/burn_in/candidate",
+                "last_processed_bar": current.isoformat(),
+                "error_count": 0,
+            },
+            "reference": {
+                "role": "reference",
+                "candidate_id": f"incumbent-{reference_revision[:12]}",
+                "revision": reference_revision,
+                "bundle": reference_relative,
+                "bundle_scope": "probation",
+                "stream": f"{PROBATION_FORWARD_ROOT}/{trial_id}/burn_in/reference",
+                "last_processed_bar": current.isoformat(),
+                "error_count": 0,
+            },
+            "evidence": dict(evidence or {}),
+            "promotion": {"status": "not_ready", "proposal_id": None},
+            **revision_stamp(root),
+        }
+        doc["trials"].append(trial)
+        store.write_json(job_id, PROBATION_PATH, doc)
+        store.append_journal(
+            job_id,
+            {
+                "type": "evolution_probation_queued"
+                if status == "queued"
+                else "evolution_probation_burn_in_started",
+                "trial_id": trial_id,
+                "candidate_id": candidate_id,
+                "revision": safe_revision,
+                "source": source,
+            },
+        )
+        return trial
+
+
+def active_probation_trials(store: JobStore, job_id: str) -> bool:
+    doc = ensure_unified_probation(store, job_id)
+    return any(
+        trial.get("status") in TRIAL_ACTIVE_STATUSES
+        for trial in doc.get("trials") or []
+    )
+
+
+def enqueue_probation_view(
+    store: JobStore,
+    job_id: str,
+    *,
+    rows: list[dict[str, Any]],
+    now: pd.Timestamp,
+) -> bool:
+    if not rows or not active_probation_trials(store, job_id):
+        return False
+    latest = max(pd.Timestamp(row["timestamp"]) for row in rows)
+    atomic_write_json(
+        store.job_dir(job_id) / PROBATION_VIEW_PATH,
+        {
+            "schema_version": "1.0",
+            "captured_at": now.isoformat(),
+            "latest_bar": latest.isoformat(),
+            "rows": rows,
+        },
+    )
+    return True
+
+
+def probation_targets(store: JobStore, job_id: str) -> list[dict[str, Any]]:
+    doc = ensure_unified_probation(store, job_id)
+    targets: list[dict[str, Any]] = []
+    for trial in doc.get("trials") or []:
+        if trial.get("status") not in TRIAL_ACTIVE_STATUSES:
+            continue
+        for key in ("candidate", "reference"):
+            target = dict(trial[key])
+            target.update({"trial_id": trial["trial_id"], "phase": trial["phase"]})
+            targets.append(target)
+    return targets
+
+
+def resolve_probation_bundle(
+    store: JobStore,
+    job_id: str,
+    target: dict[str, Any],
+) -> Path:
+    relative = str(target.get("bundle") or "")
+    if not relative or Path(relative).is_absolute():
+        raise ValueError("probation bundle must be a non-empty relative path")
+    root = store.job_dir(job_id).resolve()
+    resolved = (root / relative).resolve()
+    scope = target.get("bundle_scope")
+    allowed = (
+        (root / "research/evolution/experiment").resolve()
+        if scope == "legacy_experiment"
+        else (root / PROBATION_BUNDLE_ROOT).resolve()
+    )
+    if not resolved.is_relative_to(allowed):
+        raise ValueError("probation bundle escapes its immutable root")
+    return resolved
+
+
+def update_probation_target(
+    store: JobStore,
+    job_id: str,
+    target: dict[str, Any],
+    *,
+    bar_iso: str,
+    error: bool = False,
+) -> None:
+    with job_state_lock(store.repo_root, job_id, name="probation"):
+        doc = load_probation(store, job_id)
+        trial = next(
+            (
+                item
+                for item in doc["trials"]
+                if item.get("trial_id") == target.get("trial_id")
+            ),
+            None,
+        )
+        if trial is None or trial.get("phase") != target.get("phase"):
+            return
+        key = str(target.get("role"))
+        selected = trial.get(key) or {}
+        if selected.get("revision") != target.get("revision"):
+            return
+        selected["last_processed_bar"] = bar_iso
+        if error:
+            selected["error_count"] = int(selected.get("error_count") or 0) + 1
+        store.write_json(job_id, PROBATION_PATH, doc)
+
+
+def maybe_adjudicate_probation(
+    store: JobStore,
+    job_id: str,
+    *,
+    now: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Advance burn-in/forward trials and retry owner-proposal staging."""
+    current = _aware(now or datetime.now(UTC))
+    outcomes: list[dict[str, Any]] = []
+    promotions: list[str] = []
+    spec = ImproverSpec.load(store.job_dir(job_id))
+    policy = spec.evolution.get("probation") or {}
+    max_active = int(policy.get("max_active") or 3)
+    with job_state_lock(store.repo_root, job_id, name="probation"):
+        doc = load_probation(store, job_id)
+        for trial in doc.get("trials") or []:
+            if trial.get("status") == "burn_in":
+                outcome = _adjudicate_burn_in(store, job_id, trial, current=current)
+            elif trial.get("status") == "active":
+                outcome = _adjudicate_forward(store, job_id, trial, current=current)
+            else:
+                outcome = None
+            if outcome:
+                outcomes.append(outcome)
+            promotion = trial.get("promotion") or {}
+            promotion_status = promotion.get("status")
+            stale_staging = promotion_status == "staging" and _stale_promotion_staging(
+                promotion, current=current
+            )
+            if trial.get("status") == "graduated" and (
+                promotion_status in {"pending", "retry"} or stale_staging
+            ):
+                promotions.append(str(trial["trial_id"]))
+        outcomes.extend(
+            _activate_queued_trials(
+                doc,
+                current=current,
+                max_active=max_active,
+            )
+        )
+        store.write_json(job_id, PROBATION_PATH, doc)
+    for outcome in outcomes:
+        _sync_trial_archive(store, job_id, outcome)
+        store.append_journal(
+            job_id,
+            {
+                "type": str(outcome.get("action") or "probation_updated"),
+                **outcome,
+            },
+        )
+    for trial_id in promotions[:1]:
+        promotion = _stage_trial_promotion(store, job_id, trial_id)
+        outcomes.append(promotion)
+    return outcomes
+
+
+def _adjudicate_burn_in(
+    store: JobStore,
+    job_id: str,
+    trial: dict[str, Any],
+    *,
+    current: datetime,
+) -> dict[str, Any] | None:
+    common = _common_ticks(store, job_id, trial)
+    burn = trial["burn_in"]
+    if common:
+        burn["first_common_bar"] = common[0].isoformat()
+        burn["last_common_bar"] = common[-1].isoformat()
+    span = common[-1] - common[0] if len(common) >= 2 else pd.Timedelta(0)
+    interval_s = max(int(burn.get("bar_interval_seconds") or 300), 1)
+    expected = int(span.total_seconds() // interval_s) + 1
+    coverage = len(common) / expected if expected else 0.0
+    burn["coverage"] = round(coverage, 4)
+    errors = int(trial["candidate"].get("error_count") or 0)
+    expired = current >= _parse(burn["expires_at"])
+    mature = (
+        span >= pd.Timedelta(hours=float(burn["duration_hours"])) and coverage >= 0.95
+    )
+    if not mature and not expired and not errors:
+        return None
+    if errors or not mature:
+        reason = "candidate execution error" if errors else "burn-in coverage expired"
+        _close_trial(trial, "killed", reason=reason, current=current)
+        return {
+            "action": "probation_killed",
+            "trial_id": trial["trial_id"],
+            "candidate_id": trial.get("candidate_id"),
+            "reason": reason,
+        }
+    burn.update({"status": "passed", "completed_at": common[-1].isoformat()})
+    started = common[-1].to_pydatetime()
+    trial["status"] = "active"
+    trial["phase"] = "forward"
+    trial["forward"]["started_at"] = started.isoformat()
+    trial["forward"]["deadline_at"] = (
+        started + timedelta(days=int(trial["forward"]["max_paired_days"]))
+    ).isoformat()
+    for key in ("candidate", "reference"):
+        trial[key]["stream"] = (
+            f"{PROBATION_FORWARD_ROOT}/{trial['trial_id']}/forward/{key}"
+        )
+        trial[key]["last_processed_bar"] = common[-1].isoformat()
+        trial[key]["error_count"] = 0
+    trial["updated_at"] = current.isoformat()
+    return {"action": "probation_forward_started", "trial_id": trial["trial_id"]}
+
+
+def _adjudicate_forward(
+    store: JobStore,
+    job_id: str,
+    trial: dict[str, Any],
+    *,
+    current: datetime,
+) -> dict[str, Any] | None:
+    metrics = _paired_forward_metrics(store, job_id, trial, current=current)
+    trial["forward"]["metrics"] = metrics
+    trial["updated_at"] = current.isoformat()
+    paired_days = int(metrics["paired_days"])
+    min_days = int(trial["forward"]["min_paired_days"])
+    max_days = int(trial["forward"]["max_paired_days"])
+    last_decision = int(trial["forward"].get("last_decision_day") or 0)
+    checkpoint = None
+    if paired_days >= max_days and last_decision < max_days:
+        checkpoint = max_days
+    elif paired_days >= min_days and last_decision < min_days:
+        checkpoint = min_days
+    if int(trial["candidate"].get("error_count") or 0) > 0:
+        _close_trial(
+            trial, "killed", reason="candidate execution error", current=current
+        )
+    elif metrics["hard_constraint_breach"]:
+        _close_trial(trial, "killed", reason="hard safety breach", current=current)
+    elif checkpoint is not None and metrics["lcb"] is not None and metrics["lcb"] > 0:
+        _close_trial(
+            trial, "graduated", reason="paired utility LCB > 0", current=current
+        )
+        trial["promotion"] = {"status": "pending", "proposal_id": None}
+    elif checkpoint is not None and metrics["ucb"] is not None and metrics["ucb"] < 0:
+        _close_trial(trial, "killed", reason="paired utility UCB < 0", current=current)
+    elif checkpoint == max_days:
+        _close_trial(
+            trial,
+            "inconclusive",
+            reason="14-day endpoint inconclusive",
+            current=current,
+        )
+    elif checkpoint is not None:
+        trial["forward"]["last_decision_day"] = checkpoint
+        return {
+            "action": "probation_checkpoint_inconclusive",
+            "trial_id": trial["trial_id"],
+            "candidate_id": trial.get("candidate_id"),
+            "checkpoint_day": checkpoint,
+            "metrics": metrics,
+        }
+    elif current >= _parse(trial["forward"]["deadline_at"]):
+        _close_trial(
+            trial,
+            "inconclusive",
+            reason="14-day endpoint inconclusive",
+            current=current,
+        )
+    else:
+        return None
+    return {
+        "action": f"probation_{trial['status']}",
+        "trial_id": trial["trial_id"],
+        "candidate_id": trial.get("candidate_id"),
+        "reason": trial.get("verdict_reason"),
+        "metrics": metrics,
+    }
+
+
+def _paired_forward_metrics(
+    store: JobStore,
+    job_id: str,
+    trial: dict[str, Any],
+    *,
+    current: datetime,
+) -> dict[str, Any]:
+    from wayfinder_paths.jobs.constitution import load_constitution
+    from wayfinder_paths.jobs.paper_experiment import (
+        _daily_pnl_for_stream,
+        _max_drawdown,
+    )
+
+    started = _parse(trial["forward"]["started_at"])
+    candidate = _daily_pnl_for_stream(
+        store.job_dir(job_id) / trial["candidate"]["stream"],
+        since=started,
+        until=current,
+    )
+    reference = _daily_pnl_for_stream(
+        store.job_dir(job_id) / trial["reference"]["stream"],
+        since=started,
+        until=current,
+    )
+    complete_days = sorted(
+        day
+        for day in set(candidate) & set(reference)
+        if day < current.date().isoformat()
+    )
+    capital = 10_000.0
+    deltas = [
+        math.log1p(candidate[day] / capital) - math.log1p(reference[day] / capital)
+        for day in complete_days
+        if candidate[day] > -capital and reference[day] > -capital
+    ]
+    confidence = float(trial["forward"].get("confidence") or 0.90)
+    lcb = block_bootstrap_lcb(
+        deltas, block_len=5, iterations=500, confidence=confidence
+    )
+    reverse = block_bootstrap_lcb(
+        [-value for value in deltas], block_len=5, iterations=500, confidence=confidence
+    )
+    ucb = -reverse if reverse is not None else None
+    max_drawdown = float(
+        load_constitution(store.job_dir(job_id))["hard_constraints"]["max_drawdown_pct"]
+    )
+    drawdown = _max_drawdown(candidate, capital)
+    return {
+        "paired_days": len(deltas),
+        "estimate": round(sum(deltas), 8),
+        "lcb": lcb,
+        "ucb": ucb,
+        "confidence": confidence,
+        "candidate_net_pnl": round(sum(candidate.values()), 6),
+        "reference_net_pnl": round(sum(reference.values()), 6),
+        "candidate_max_drawdown_pct": round(drawdown, 8),
+        "hard_constraint_breach": drawdown > max_drawdown,
+        "updated_at": current.isoformat(),
+    }
+
+
+def _stage_trial_promotion(
+    store: JobStore, job_id: str, trial_id: str
+) -> dict[str, Any]:
+    with job_state_lock(store.repo_root, job_id, name="probation"):
+        doc = load_probation(store, job_id)
+        trial = next(item for item in doc["trials"] if item["trial_id"] == trial_id)
+        promotion = trial.setdefault("promotion", {})
+        if promotion.get("proposal_id"):
+            return {"action": "probation_promotion_exists", "trial_id": trial_id}
+        promotion.update({"status": "staging", "updated_at": utc_now_iso()})
+        store.write_json(job_id, PROBATION_PATH, doc)
+        candidate_root = resolve_probation_bundle(store, job_id, trial["candidate"])
+    try:
+        from wayfinder_paths.jobs.proposals import propose_change
+
+        proposal_id = f"prop-probation-{trial_id[:36]}"
+        existing = next(
+            (
+                item
+                for item in store.proposals(job_id)
+                if item.get("proposal_id") == proposal_id
+            ),
+            None,
+        )
+        if existing is not None:
+            return _record_existing_promotion(
+                store, job_id, trial_id, proposal=existing
+            )
+        proposal = propose_change(
+            store,
+            job_id,
+            kind="code_change",
+            summary=f"Promote probation graduate {trial.get('candidate_id')}",
+            intent_contract={
+                "goal": "promote the mechanically graduated probation candidate",
+                "invariants": [
+                    "preserve execution safety constraints",
+                    "preserve paper/live operator-owned settings",
+                ],
+            },
+            candidate_source=candidate_root,
+            proposal_id=proposal_id,
+            memo=(
+                "This candidate cleared the historical economic gate, a 24-hour "
+                "operational burn-in, and the paired forward probation rule. "
+                "Owner approval is still required before application."
+            ),
+            allow_auto_apply=False,
+        )
+    except Exception as exc:  # retry infrastructure; evidence failures supersede
+        from wayfinder_paths.jobs.failures import classify_failure
+
+        status = (
+            "retry" if classify_failure(str(exc)) == "infrastructure" else "superseded"
+        )
+        with job_state_lock(store.repo_root, job_id, name="probation"):
+            doc = load_probation(store, job_id)
+            trial = next(item for item in doc["trials"] if item["trial_id"] == trial_id)
+            trial["promotion"] = {
+                "status": status,
+                "proposal_id": None,
+                "last_error": str(exc)[:300],
+                "updated_at": utc_now_iso(),
+            }
+            store.write_json(job_id, PROBATION_PATH, doc)
+        return {"action": f"probation_promotion_{status}", "trial_id": trial_id}
+    with job_state_lock(store.repo_root, job_id, name="probation"):
+        doc = load_probation(store, job_id)
+        trial = next(item for item in doc["trials"] if item["trial_id"] == trial_id)
+        trial["promotion"] = {
+            "status": "owner_review",
+            "proposal_id": proposal["proposal_id"],
+            "created_at": utc_now_iso(),
+        }
+        store.write_json(job_id, PROBATION_PATH, doc)
+    store.append_journal(
+        job_id,
+        {
+            "type": "probation_promotion_proposed",
+            "trial_id": trial_id,
+            "proposal_id": proposal["proposal_id"],
+        },
+    )
+    return {
+        "action": "probation_promotion_proposed",
+        "trial_id": trial_id,
+        "proposal_id": proposal["proposal_id"],
+    }
+
+
+def _activate_queued_trials(
+    doc: dict[str, Any],
+    *,
+    current: datetime,
+    max_active: int,
+) -> list[dict[str, Any]]:
+    active = [
+        trial for trial in doc["trials"] if trial.get("status") in TRIAL_ACTIVE_STATUSES
+    ]
+    activated: list[dict[str, Any]] = []
+    for trial in sorted(
+        doc["trials"], key=lambda item: str(item.get("queued_at") or "")
+    ):
+        if len(active) >= max_active or trial.get("status") != "queued":
+            continue
+        trial["status"] = "burn_in"
+        trial["phase"] = "burn_in"
+        trial["burn_in"].update(
+            {
+                "status": "running",
+                "started_at": current.isoformat(),
+                "expires_at": (
+                    current
+                    + timedelta(hours=float(trial["burn_in"]["duration_hours"]) + 12)
+                ).isoformat(),
+            }
+        )
+        for key in ("candidate", "reference"):
+            trial[key]["last_processed_bar"] = current.isoformat()
+        active.append(trial)
+        activated.append(
+            {
+                "action": "evolution_probation_burn_in_started",
+                "trial_id": trial["trial_id"],
+                "candidate_id": trial.get("candidate_id"),
+                "source": "probation_queue",
+            }
+        )
+    return activated
+
+
+def _sync_trial_archive(store: JobStore, job_id: str, outcome: dict[str, Any]) -> None:
+    status_by_action = {
+        "probation_graduated": "paper_experiment",
+        "probation_killed": "refuted",
+        "probation_inconclusive": "archived",
+    }
+    status = status_by_action.get(str(outcome.get("action") or ""))
+    candidate_id = str(outcome.get("candidate_id") or "")
+    if not status or not candidate_id:
+        return
+    from wayfinder_paths.jobs.archive import set_candidate_status
+
+    try:
+        set_candidate_status(
+            store,
+            job_id,
+            candidate_id,
+            status,
+            evidence=str(outcome.get("reason") or "forward probation verdict")[:300],
+        )
+    except ValueError:
+        # Legacy experiments can predate the archive. Their immutable trial
+        # remains the authoritative receipt and must still finish.
+        return
+
+
+def _stale_promotion_staging(promotion: dict[str, Any], *, current: datetime) -> bool:
+    try:
+        updated = _parse(promotion.get("updated_at"))
+    except (TypeError, ValueError):
+        return True
+    return current - updated >= timedelta(minutes=30)
+
+
+def _record_existing_promotion(
+    store: JobStore,
+    job_id: str,
+    trial_id: str,
+    *,
+    proposal: dict[str, Any],
+) -> dict[str, Any]:
+    proposal_id = str(proposal["proposal_id"])
+    with job_state_lock(store.repo_root, job_id, name="probation"):
+        doc = load_probation(store, job_id)
+        trial = next(item for item in doc["trials"] if item["trial_id"] == trial_id)
+        trial["promotion"] = {
+            "status": "owner_review",
+            "proposal_id": proposal_id,
+            "created_at": proposal.get("created_at") or utc_now_iso(),
+        }
+        store.write_json(job_id, PROBATION_PATH, doc)
+    return {
+        "action": "probation_promotion_proposed",
+        "trial_id": trial_id,
+        "proposal_id": proposal_id,
+        "recovered": True,
+    }
+
+
+def _common_ticks(
+    store: JobStore, job_id: str, trial: dict[str, Any]
+) -> list[pd.Timestamp]:
+    sets: list[set[pd.Timestamp]] = []
+    for key in ("candidate", "reference"):
+        path = store.job_dir(job_id) / trial[key]["stream"] / "ticks.jsonl"
+        stamps: set[pd.Timestamp] = set()
+        if path.exists():
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                try:
+                    row = json.loads(line)
+                    stamp = pd.Timestamp(row.get("bar_ts") or row.get("ts"))
+                    if not pd.isna(stamp):
+                        stamps.add(stamp)
+                except (TypeError, ValueError):
+                    continue
+        sets.append(stamps)
+    return sorted(sets[0] & sets[1])
+
+
+def _close_trial(
+    trial: dict[str, Any], status: str, *, reason: str, current: datetime
+) -> None:
+    trial["status"] = status
+    trial["phase"] = "complete"
+    trial["closed_at"] = current.isoformat()
+    trial["verdict_reason"] = reason
+    trial["updated_at"] = current.isoformat()
+
+
+def _safe_trial_id(value: str) -> str:
+    raw = str(value or "").strip()
+    safe = "".join(char if char.isalnum() or char in "-_" else "-" for char in raw)
+    if not safe:
+        raise ValueError("probation trial id is required")
+    return f"{safe[:48]}-{hashlib.sha256(raw.encode()).hexdigest()[:8]}"
+
+
+def _safe_component(value: str, label: str) -> str:
+    raw = str(value or "").strip()
+    if not raw or Path(raw).name != raw or raw in {".", ".."}:
+        raise ValueError(f"invalid {label}")
+    return raw
+
+
+def _probation_bar_interval_seconds(store: JobStore, job_id: str) -> int:
+    job = store.load(job_id)
+    data_contract = (job.execution_spec or {}).get("data_contract") or {}
+    declared = bar_interval_seconds(data_contract.get("bar_interval"))
+    return max(int(declared or job.script_loop.interval_seconds or 300), 1)
+
+
+def _parse(value: Any) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return _aware(parsed)
+
+
+def _aware(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

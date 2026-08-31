@@ -377,6 +377,7 @@ def propose_change(
     memo: str | None = None,
     robustness_warnings_acknowledged: list[str] | None = None,
     acceptance_policy: str = ECONOMIC_IMPROVEMENT_POLICY,
+    allow_auto_apply: bool = True,
 ) -> dict[str, Any]:
     """Create a pending proposal backed by a validated pre-approval candidate.
 
@@ -666,7 +667,7 @@ def propose_change(
     except Exception:  # noqa: BLE001 — archive bookkeeping never breaks propose
         pass
     maintenance_auto: dict[str, Any] | None = None
-    if acceptance_policy == BEHAVIOR_EQUIVALENCE_POLICY:
+    if acceptance_policy == BEHAVIOR_EQUIVALENCE_POLICY and allow_auto_apply:
         try:
             maintenance_auto = maybe_auto_apply_maintenance_proposal(store, job_id, pid)
         except Exception as exc:
@@ -681,7 +682,7 @@ def propose_change(
                 kind="process",
             )
             raise
-    else:
+    elif allow_auto_apply:
         try:
             maybe_auto_apply_paper_proposal(store, job_id, pid)
         except Exception as exc:  # noqa: BLE001 — pending owner path intact

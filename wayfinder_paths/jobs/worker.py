@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -675,17 +676,21 @@ def _build_worker_prompt_sections(
     apply_proposal_id: str | None = None,
     wake_source: str = "scheduled_timer",
     wake_triggers: list[str] | None = None,
+    wake_id: str | None = None,
 ) -> dict[str, str]:
     root = store.job_dir(job_id)
     from wayfinder_paths.jobs.improver.spec import ImproverSpec
 
     improver_spec = ImproverSpec.load(root)
-    evolution_enabled = improver_spec.evolution_enabled_for(job_id)
+    evolution_enabled = improver_spec.evolution_eligibility(root, job_id)["eligible"]
     intervene_scope = (
         "Intervene mode is the sensor/safety lane for this evolution-enabled "
         "job. Ordinary alpha/parameter candidate authoring, signal-family "
         "generation, and paper-probation admission belong exclusively to the "
-        "evolution campaign. This lane may still stage concrete risk reduction, "
+        "evolution campaign. When deterministic research produces executable "
+        "code, submit it as an evolution research seed instead of proposing it "
+        "directly (`wayfinder job evolution-submit-seed`). This lane may still "
+        "stage concrete risk reduction, "
         "revert/kill, operational remediation, exact behavior-equivalence "
         "maintenance, and owner-requested re-stage/application work. This rule "
         "supersedes generic candidate/probation mandates below."
@@ -852,6 +857,7 @@ def _build_worker_prompt_sections(
         "restage_tasks": restage_tasks,
         "search_assignment": search_assignment,
         "wake": {
+            "id": wake_id,
             "source": wake_source,
             "triggers": sorted(set(wake_triggers or [])),
         },
@@ -1058,14 +1064,25 @@ def _build_worker_prompt_sections(
             "to the evolution campaign. The only proposals allowed here are "
             "concrete risk reduction or revert/kill, operational remediation, "
             "exact behavior-equivalence maintenance, and owner-requested "
-            "re-stage work. Forward results adjudicate changes; never fit to "
+            "re-stage work. A reproducible executable hypothesis may be checked "
+            "in only through `core_jobs(action='evolution_submit_seed', "
+            "job_id=..., candidate_dir=..., family=..., hypothesis=..., "
+            "base_revision=..., evidence_refs=[...])`; it receives no inherited "
+            "evidence and must pass the one evolution funnel. Forward results "
+            "adjudicate changes; never fit to "
             "the forward stream.\n"
             "- Regime alarm triage: a standing_checks."
             "portfolio_regime_health warning/critical OVERRIDES ordinary "
             "sensor work: stop routine diagnosis, read the detector's named "
             "signals, then cite the automatically refreshed `attribution` "
             "block before choosing whether to revert, de-risk, gate a regime, "
-            "or re-validate. Never explain away a critical drawdown because "
+            "or re-validate. For a symbol-specific break, immediately call "
+            "`core_jobs(action='risk_block_symbol', job_id=..., symbol=..., "
+            "reason=..., evidence_refs=[...], wake_id=<wake.id>)`: it can only "
+            "block new entries, "
+            "leaves reduce-only exits available, permits one new symbol per "
+            "wake, and only the owner can re-arm. Never explain away a critical "
+            "drawdown because "
             "one entry signal still backtests.\n"
             "- If an allowed propose returns a failed validation, read ALL "
             "failed check names and fix them in ONE follow-up propose; after "
@@ -1472,6 +1489,7 @@ def _build_worker_prompt_sections(
         f"{restage_priority}"
         f"{impasse_directive}"
         f"{ideation_directive}"
+        f"Current wake id (pass verbatim to risk_block_symbol): {wake_id}\n"
         "Current snapshot:\n"
         f"{_canonical_json(dynamic_payload, max_chars=12000)}\n\n"
         "Research agenda (research/agenda.md — cumulative exploration "
@@ -1505,6 +1523,7 @@ def prepare_job_worker_prompt(
     apply_proposal_id: str | None = None,
     wake_source: str = "scheduled_timer",
     wake_triggers: list[str] | None = None,
+    wake_id: str | None = None,
 ) -> dict[str, Any]:
     """Prepare the exact prompt payload used for a job worker wakeup.
 
@@ -1565,6 +1584,7 @@ def prepare_job_worker_prompt(
         apply_proposal_id=apply_proposal_id,
         wake_source=wake_source,
         wake_triggers=wake_triggers,
+        wake_id=wake_id or f"wake-{uuid.uuid4().hex}",
     )
     return {
         **prompt_sections,
@@ -1638,14 +1658,34 @@ def run_job_worker(
     # coherent context without running two LLM sessions against one CPU pool.
     evolution_wake: dict[str, Any] | None = None
     if mode_typed == "intervene" and apply_proposal_id is None:
-        evolution_wake = _queue_evolution_worker(store, job.id)
         from wayfinder_paths.jobs.evolution_campaign import campaign_status
 
-        evolution_status = campaign_status(store, job.id).get("status")
+        campaign = campaign_status(store, job.id)
+        evolution_status = campaign.get("status")
+        risk_preempt = bool(
+            set(wake_triggers or [])
+            & {"risk_halt", "regime_shift", "regime_remediation_due"}
+        )
+        if risk_preempt and evolution_status in {"active", "finalizing"}:
+            retire_evolution_session(
+                store, job.id, str(campaign.get("campaign_id") or "")
+            )
+            store.append_journal(
+                job.id,
+                {
+                    "type": "evolution_paused_for_risk",
+                    "campaign_id": campaign.get("campaign_id"),
+                    "triggers": sorted(set(wake_triggers or [])),
+                },
+            )
+        if not risk_preempt:
+            evolution_wake = _queue_evolution_worker(store, job.id)
         evolution_claimed_lane = bool(
             evolution_wake is not None and not evolution_wake.get("error")
         )
-        if evolution_claimed_lane or evolution_status in {"active", "finalizing"}:
+        if not risk_preempt and (
+            evolution_claimed_lane or evolution_status in {"active", "finalizing"}
+        ):
             session_id = str((evolution_wake or {}).get("session_id") or "") or None
             reason = str((evolution_wake or {}).get("reason") or "").strip()
             return _write_report(
@@ -1793,7 +1833,8 @@ def job_worker_session_busy(job_id: str, mode: str) -> bool:
 def _queue_evolution_worker(store: JobStore, job_id: str) -> dict[str, Any] | None:
     from wayfinder_paths.jobs.improver.spec import ImproverSpec
 
-    if not ImproverSpec.load(store.job_dir(job_id)).evolution_enabled_for(job_id):
+    spec = ImproverSpec.load(store.job_dir(job_id))
+    if not spec.evolution_eligibility(store.job_dir(job_id), job_id)["eligible"]:
         return None
     if not OPENCODE_CLIENT.healthy():
         return None

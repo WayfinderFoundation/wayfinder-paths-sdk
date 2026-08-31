@@ -83,8 +83,10 @@ JobAction = Literal[
     "evolution_start",
     "evolution_status",
     "evolution_prepare",
+    "evolution_submit_seed",
     "evolution_evaluate",
     "evolution_finalize",
+    "risk_block_symbol",
     "forward_experience",
     "promote_params",
     "proposals",
@@ -358,6 +360,10 @@ async def core_jobs(
     candidate_dir: str | None = None,
     candidate_id: str | None = None,
     family: str | None = None,
+    hypothesis: str | None = None,
+    base_revision: str | None = None,
+    evidence_refs: list[str] | None = None,
+    wake_id: str | None = None,
     mutation_kind: Literal["structural", "parameter"] | None = None,
     scenario_plan: dict[str, Any] | None = None,
     improver: dict[str, Any] | None = None,
@@ -907,6 +913,31 @@ async def core_jobs(
             },
         )
 
+    if action == "evolution_submit_seed":
+        if (
+            not job_id
+            or not candidate_dir
+            or not family
+            or not hypothesis
+            or not base_revision
+        ):
+            return err(
+                "invalid_request",
+                "evolution_submit_seed requires job_id, candidate_dir, family, "
+                "hypothesis, and base_revision",
+            )
+        return await _run_job_op(
+            "evolution_submit_seed",
+            {
+                "job_id": job_id,
+                "candidate_root": candidate_dir,
+                "family": family,
+                "hypothesis": hypothesis,
+                "base_revision": base_revision,
+                "evidence_refs": evidence_refs or [],
+            },
+        )
+
     if action == "evolution_evaluate":
         if not job_id or not candidate_id:
             return err(
@@ -928,6 +959,26 @@ async def core_jobs(
                 store, job_id, "evolution_finalize", kwargs
             )
         return await _run_job_op("evolution_finalize", kwargs)
+
+    if action == "risk_block_symbol":
+        if not job_id or not symbol or not reason or not evidence_refs or not wake_id:
+            return err(
+                "invalid_request",
+                "risk_block_symbol requires job_id, symbol, reason, evidence_refs, "
+                "and the current dynamic wake_id",
+            )
+        from wayfinder_paths.jobs.risk_overrides import risk_block_symbol
+
+        return ok(
+            risk_block_symbol(
+                store,
+                job_id,
+                symbol=symbol,
+                reason=reason,
+                evidence_refs=evidence_refs,
+                wake_id=wake_id,
+            )
+        )
 
     if action == "forward_experience":
         if not job_id:

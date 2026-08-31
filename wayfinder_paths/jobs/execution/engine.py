@@ -202,6 +202,7 @@ async def run_tick(
     trace: ExecutionTrace | None = None,
     enforce_purity: bool = True,
     client_order_prefix: str | None = None,
+    blocked_entry_symbols: set[str] | None = None,
     liquidation: LiquidationConfig | None = None,
 ) -> TickResult:
     """One engine tick, identical across backtest, paper, and live.
@@ -233,6 +234,7 @@ async def run_tick(
             trace=trace,
             enforce_purity=enforce_purity,
             client_order_prefix=client_order_prefix,
+            blocked_entry_symbols=blocked_entry_symbols,
             liquidation=liquidation,
             result=result,
         )
@@ -256,6 +258,7 @@ async def _run_tick_inner(
     trace: ExecutionTrace,
     enforce_purity: bool,
     client_order_prefix: str | None,
+    blocked_entry_symbols: set[str] | None,
     liquidation: LiquidationConfig | None,
     result: TickResult,
 ) -> TickResult:
@@ -322,6 +325,7 @@ async def _run_tick_inner(
         trace=trace,
         result=result,
         reduce_only=False,
+        blocked_entry_symbols=blocked_entry_symbols,
     )
 
     # A symbol absent from this timestamp's bars has no market to fill against.
@@ -331,6 +335,16 @@ async def _run_tick_inner(
     # dropped and the strategy re-emits when it can be priced honestly.
     deferred_intents: list[OrderIntent] = []
     for intent in state.pending_intents:
+        if intent.symbol in (blocked_entry_symbols or set()) and not intent.reduce_only:
+            result.guard_events.append(
+                {
+                    "kind": "pending_entry_canceled_by_symbol_block",
+                    "symbol": intent.symbol,
+                    "intent": intent.to_dict(),
+                    "timestamp": bar_iso,
+                }
+            )
+            continue
         bar = bars_by_symbol.get(intent.symbol)
         if bar is None:
             deferred_intents.append(intent)
@@ -388,6 +402,7 @@ async def _run_tick_inner(
         trace=trace,
         result=result,
         reduce_only=True,
+        blocked_entry_symbols=blocked_entry_symbols,
     )
 
     if liquidation is not None and state.ledger.positions:
@@ -473,6 +488,19 @@ async def _run_tick_inner(
             digest = hashlib.sha256(seed.encode()).hexdigest()
             intent.client_order_id = f"0x{digest[:32]}"
         trace.intents.append({"timestamp": bar_iso, **intent.to_dict()})
+        if intent.symbol in (blocked_entry_symbols or set()) and not intent.reduce_only:
+            result.guard_events.append(
+                {
+                    "kind": "intent_rejected",
+                    "reason": (
+                        f"new entries for {intent.symbol} are blocked by a "
+                        "durable symbol risk override"
+                    ),
+                    "intent": intent.to_dict(),
+                    "timestamp": bar_iso,
+                }
+            )
+            continue
         if snapshot.status != "valid" and not intent.reduce_only:
             # Reduce-only mode: never add risk against stale/ambiguous state.
             result.guard_events.append(
@@ -627,6 +655,7 @@ async def _settle_resting_orders(
     trace: ExecutionTrace,
     result: TickResult,
     reduce_only: bool,
+    blocked_entry_symbols: set[str] | None,
 ) -> None:
     """Resolve paper/backtest limit orders against the next completed OHLC bar.
 
@@ -645,6 +674,16 @@ async def _settle_resting_orders(
             continue
         intent = order.intent
         if intent.reduce_only != reduce_only:
+            continue
+        if intent.symbol in (blocked_entry_symbols or set()) and not intent.reduce_only:
+            result.guard_events.append(
+                {
+                    "kind": "resting_entry_held_by_symbol_block",
+                    "symbol": intent.symbol,
+                    "client_order_id": client_order_id,
+                    "timestamp": timestamp,
+                }
+            )
             continue
         bar = bars_by_symbol.get(intent.symbol)
         if bar is None:

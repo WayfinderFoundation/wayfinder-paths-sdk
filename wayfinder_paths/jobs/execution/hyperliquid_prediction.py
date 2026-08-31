@@ -9,6 +9,7 @@ import httpx
 
 from wayfinder_paths.jobs.execution.hyperliquid import (
     SafeHyperliquidMarketClient,
+    _cancel_hyperliquid_resting_order,
     _cancel_needs_asset_context,
     _hl_state_result,
     _lookback_hours,
@@ -21,6 +22,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     FillEvent,
     OrderIntent,
     PositionRecord,
+    RestingOrder,
     StateSnapshot,
     TradeCapacity,
     _float_or_none,
@@ -318,6 +320,13 @@ class HyperliquidPredictionBroker:
 
     async def cancel(self, client_order_id: str) -> FillEvent:
         return _cancel_needs_asset_context("hyperliquid_prediction", client_order_id)
+
+    async def cancel_resting_order(self, order: RestingOrder) -> FillEvent:
+        return await _cancel_hyperliquid_resting_order(
+            wallet_label=self.wallet_label,
+            venue="hyperliquid_prediction",
+            order=order,
+        )
 
     def _reject(self, intent: OrderIntent, timestamp: str, error: str) -> FillEvent:
         return FillEvent(

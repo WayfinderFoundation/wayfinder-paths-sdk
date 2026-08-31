@@ -19,6 +19,7 @@ from wayfinder_paths.jobs.store import JobStore
 ARCHIVE_PATH = "state/archive.json"
 ARCHIVE_STATUSES = {
     "generated",
+    "research_seed",
     "quick_complete",
     "invalid",
     "low_fidelity_rejected",
@@ -27,6 +28,7 @@ ARCHIVE_STATUSES = {
     "paper_probation",
     "proposal_rejected",
     "proposal_deferred",
+    "probation_deferred",
     "paper_proposal",
     "paper_experiment",
     "incumbent",
@@ -41,12 +43,14 @@ _MAXIMIZE = ("net_log_growth",)
 _MINIMIZE = ("downside_deviation", "tail_loss", "max_drawdown_pct")
 _NON_RANKED_STATUSES = {
     "generated",
+    "research_seed",
     "quick_complete",
     "invalid",
     "low_fidelity_rejected",
     "audit_rejected",
     "proposal_rejected",
     "proposal_deferred",
+    "probation_deferred",
     "refuted",
     "retired",
 }
@@ -59,6 +63,7 @@ _EVOLUTION_LESSON_STATUSES = {
     "audit_rejected",
     "proposal_rejected",
     "proposal_deferred",
+    "probation_deferred",
     "paper_proposal",
     "paper_experiment",
     "refuted",
@@ -69,6 +74,7 @@ _EVOLUTION_REJECTION_STATUSES = {
     "audit_rejected",
     "proposal_rejected",
     "proposal_deferred",
+    "probation_deferred",
     "refuted",
 }
 _LESSON_STAT_KEYS = (
