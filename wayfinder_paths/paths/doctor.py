@@ -23,6 +23,7 @@ from wayfinder_paths.paths.pipeline import (
     validate_pipeline_graph,
 )
 from wayfinder_paths.paths.renderer import PathSkillRenderError, render_skill_exports
+from wayfinder_paths.paths.runtime_registry import published_package
 from wayfinder_paths.paths.scaffold import slugify
 
 _ROOT_ASSET_RE = re.compile(r"""(?:src|href)=["']/(assets|_next)/""")
@@ -439,6 +440,31 @@ def _validate_runtime_skill_contract(
             path=path_dir / "wfpath.yaml",
         )
         return
+
+    explicit_runtime_version = skill.runtime.version if skill.runtime else None
+    if runtime.package and explicit_runtime_version:
+        published = published_package(runtime.package)
+        if published is None:
+            _record_issue(
+                warnings,
+                level="warning",
+                message=(
+                    "Could not verify the skill runtime against the package index; "
+                    "check the package and version before publishing"
+                ),
+                path=path_dir / "wfpath.yaml",
+            )
+        elif explicit_runtime_version not in published.versions:
+            _record_issue(
+                errors,
+                level="error",
+                message=(
+                    "Unpublished skill runtime: "
+                    f"{runtime.package}=={explicit_runtime_version}. "
+                    f"Latest published version is {published.latest}"
+                ),
+                path=path_dir / "wfpath.yaml",
+            )
 
     if skill.uses_portable_alias:
         _record_issue(

@@ -8,6 +8,7 @@ from typing import Any, Required, TypedDict
 import httpx
 from loguru import logger
 
+from wayfinder_paths.core.clients.WayfinderClient import AsyncClientOwner
 from wayfinder_paths.core.constants.base import DEFAULT_HTTP_TIMEOUT
 
 MORPHO_GRAPHQL_URL = "https://api.morpho.org/graphql"
@@ -28,27 +29,32 @@ class PublicAllocatorItem(TypedDict):
     morphoBlue: Required[MorphoBlueDeployment]
 
 
-class MorphoClient:
+class MorphoClient(AsyncClientOwner):
     def __init__(self, *, graphql_url: str = MORPHO_GRAPHQL_URL) -> None:
+        super().__init__()
         self.graphql_url = str(graphql_url)
         self._timeout = httpx.Timeout(DEFAULT_HTTP_TIMEOUT)
-        self.client = httpx.AsyncClient(timeout=self._timeout)
         self.headers = {"Content-Type": "application/json"}
         self._client_loop: asyncio.AbstractEventLoop | None = None
 
+    def _create_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=self._timeout)
+
+    async def aclose(self) -> None:
+        self._client_loop = None
+        await super().aclose()
+
     async def _reset_client(self) -> None:
-        try:
-            await self.client.aclose()
-        except Exception:  # noqa: BLE001
-            pass
-        self.client = httpx.AsyncClient(timeout=self._timeout)
+        await self.aclose()
 
     async def _ensure_client(self) -> None:
         loop = asyncio.get_running_loop()
         if self._client_loop is None:
             self._client_loop = loop
             return
-        if self._client_loop is not loop or getattr(self.client, "is_closed", False):
+        if self._client_loop is not loop or (
+            self._client is not None and self._client.is_closed is True
+        ):
             await self._reset_client()
             self._client_loop = loop
 

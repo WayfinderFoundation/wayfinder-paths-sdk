@@ -17,6 +17,7 @@ from typing import Any
 from loguru import logger
 
 from wayfinder_paths.core.clients.TokenClient import TOKEN_CLIENT
+from wayfinder_paths.core.clients.WayfinderClient import with_async_client_cleanup
 from wayfinder_paths.core.config import CONFIG, load_config
 from wayfinder_paths.core.engine.strategy_loader import load_strategy_module
 from wayfinder_paths.core.strategies.Strategy import Strategy
@@ -410,23 +411,25 @@ def main():
         raise SystemExit(str(exc)) from exc
 
     asyncio.run(
-        run_strategy(
-            str(strategy_name),
-            args.action,
-            amount=args.amount,
-            main_token_amount=args.main_token_amount,
-            gas_token_amount=args.gas_token_amount,
-            interval=args.interval,
-            max_wait_s=args.max_wait_s,
-            poll_interval_s=args.poll_interval_s,
-            wallet_id=args.wallet_id,
-            wallet_label=args.wallet_label,
-            main_wallet_label=args.main_wallet_label,
-            gorlami=args.gorlami,
-            gorlami_chain_id=args.gorlami_chain_id,
-            gorlami_fund_native_eth=args.gorlami_fund_native_eth,
-            gorlami_fund_erc20=args.gorlami_fund_erc20,
-            gorlami_no_default_gas=args.gorlami_no_default_gas,
+        with_async_client_cleanup(
+            run_strategy(
+                str(strategy_name),
+                args.action,
+                amount=args.amount,
+                main_token_amount=args.main_token_amount,
+                gas_token_amount=args.gas_token_amount,
+                interval=args.interval,
+                max_wait_s=args.max_wait_s,
+                poll_interval_s=args.poll_interval_s,
+                wallet_id=args.wallet_id,
+                wallet_label=args.wallet_label,
+                main_wallet_label=args.main_wallet_label,
+                gorlami=args.gorlami,
+                gorlami_chain_id=args.gorlami_chain_id,
+                gorlami_fund_native_eth=args.gorlami_fund_native_eth,
+                gorlami_fund_erc20=args.gorlami_fund_erc20,
+                gorlami_no_default_gas=args.gorlami_no_default_gas,
+            )
         )
     )
 

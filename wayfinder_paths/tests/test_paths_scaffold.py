@@ -13,10 +13,13 @@ from wayfinder_paths.paths.builder import PathBuilder
 from wayfinder_paths.paths.doctor import run_doctor
 from wayfinder_paths.paths.evaluator import run_path_eval
 from wayfinder_paths.paths.hooks import install_path_hooks
-from wayfinder_paths.paths.manifest import PathManifest
+from wayfinder_paths.paths.manifest import PathManifest, resolve_skill_runtime
 from wayfinder_paths.paths.preview import inspect_preview_path
 from wayfinder_paths.paths.renderer import render_skill_exports
+from wayfinder_paths.paths.runtime_registry import PublishedPackage
 from wayfinder_paths.paths.scaffold import init_path
+
+pytestmark = pytest.mark.usefixtures("published_installed_runtime")
 
 
 @pytest.mark.smoke
@@ -53,6 +56,21 @@ def test_path_init_creates_expected_files(tmp_path: Path):
     assert manifest.skill.runtime is not None
     assert manifest.skill.runtime.mode == "thin"
     assert manifest.skill.runtime.component == "main"
+
+
+def test_path_init_pins_the_installed_runtime(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.scaffold.installed_runtime_package_version",
+        lambda: "0.11.1",
+    )
+    path_dir = tmp_path / "published-runtime"
+
+    init_path(path_dir=path_dir, slug="published-runtime", with_applet=False)
+
+    manifest = PathManifest.load(path_dir / "wfpath.yaml")
+    assert manifest.skill is not None
+    assert manifest.skill.runtime is not None
+    assert manifest.skill.runtime.version == "0.11.1"
 
 
 def test_path_init_defaults_to_applet(tmp_path: Path):
@@ -162,6 +180,65 @@ def test_path_doctor_ok_on_pipeline_path(tmp_path: Path):
     )
 
     report = run_doctor(path_dir=path_dir, fix=False)
+    assert report.ok is True
+
+
+def test_path_doctor_rejects_unpublished_runtime(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.scaffold.installed_runtime_package_version",
+        lambda: "0.11.0",
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.doctor.published_package",
+        lambda package: PublishedPackage(
+            latest="0.11.0", versions=frozenset({"0.11.0"})
+        ),
+    )
+    path_dir = tmp_path / "unpublished-runtime"
+    init_path(path_dir=path_dir, slug="unpublished-runtime", with_applet=False)
+    manifest_path = path_dir / "wfpath.yaml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            '    version: "0.11.0"', '    version: "0.11.1"'
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_doctor(path_dir=path_dir)
+
+    assert report.ok is False
+    assert any("Unpublished skill runtime" in issue.message for issue in report.errors)
+
+
+def test_versionless_historical_runtime_keeps_installed_sdk(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.scaffold.installed_runtime_package_version",
+        lambda: "0.11.0",
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.manifest.installed_runtime_package_version",
+        lambda package: "0.11.1",
+    )
+    path_dir = tmp_path / "historical-runtime"
+    init_path(path_dir=path_dir, slug="historical-runtime", with_applet=False)
+    manifest_path = path_dir / "wfpath.yaml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            '    version: "0.11.0"\n', ""
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.doctor.published_package",
+        lambda package: pytest.fail("versionless runtimes must not query the index"),
+    )
+
+    manifest = PathManifest.load(manifest_path)
+    report = run_doctor(path_dir=path_dir)
+
+    assert resolve_skill_runtime(manifest).version == "0.11.1"
     assert report.ok is True
 
 

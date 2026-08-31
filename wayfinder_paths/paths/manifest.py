@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +13,7 @@ from wayfinder_paths.paths.pipeline import (
     DEFAULT_PRIMARY_HOSTS,
     get_pipeline_archetype,
 )
+from wayfinder_paths.paths.runtime_registry import installed_runtime_package_version
 
 
 class PathManifestError(Exception):
@@ -841,13 +841,6 @@ class PathManifest:
         )
 
 
-def _package_version_or_default(package: str) -> str:
-    try:
-        return importlib_metadata.version(package)
-    except importlib_metadata.PackageNotFoundError:
-        return "0.0.0"
-
-
 def resolve_skill_runtime(manifest: PathManifest) -> PathSkillRuntimeConfig:
     skill = manifest.skill
     runtime = skill.runtime if skill else None
@@ -859,7 +852,7 @@ def resolve_skill_runtime(manifest: PathManifest) -> PathSkillRuntimeConfig:
         package=package,
         version=runtime.version
         if runtime and runtime.version
-        else _package_version_or_default(package),
+        else installed_runtime_package_version(package),
         python=runtime.python
         if runtime and runtime.python
         else _DEFAULT_RUNTIME_PYTHON,

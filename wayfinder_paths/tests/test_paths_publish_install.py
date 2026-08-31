@@ -18,6 +18,8 @@ from wayfinder_paths.paths.client import PathsApiClient
 from wayfinder_paths.paths.doctor import DoctorIssue, PathDoctorReport
 from wayfinder_paths.paths.scaffold import init_path
 
+pytestmark = pytest.mark.usefixtures("published_installed_runtime")
+
 
 def test_path_publish_uploads_rendered_skill_exports_and_bond_metadata(
     tmp_path: Path, monkeypatch

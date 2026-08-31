@@ -13,6 +13,8 @@ from typing import Any, Protocol
 
 import click
 
+from wayfinder_paths.core.clients.WayfinderClient import with_async_client_cleanup
+
 TYPE_MAP = {"string": str, "integer": int, "number": float, "boolean": bool}
 
 
@@ -144,7 +146,9 @@ def build_tool_command(tool, mcp: MCPInterface) -> click.Command:
                 for k, v in kwargs.items()
                 if v is not None
             }
-            result = asyncio.run(mcp.call_tool(tool_name, args))
+            result = asyncio.run(
+                with_async_client_cleanup(mcp.call_tool(tool_name, args))
+            )
             echo_result(result)
 
         return callback
