@@ -32,6 +32,7 @@ from wayfinder_paths.jobs.risk_overrides import (
     risk_unblock_symbol,
 )
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.sync import snapshot_job
 
 
 def _job(tmp_path: Path) -> tuple[JobStore, str]:
@@ -611,6 +612,23 @@ def test_unreadable_symbol_overrides_fail_closed_and_latch_once(tmp_path: Path) 
         risk_unblock_symbol(store, job_id, symbol="HYPE", by="owner")
     journal = (store.job_dir(job_id) / "journal.jsonl").read_text(encoding="utf-8")
     assert journal.count("risk_overrides_unreadable") == 1
+
+
+def test_unreadable_symbol_overrides_sync_as_fail_closed(tmp_path: Path) -> None:
+    store, job_id = _job(tmp_path)
+    path = store.job_dir(job_id) / "state/risk_overrides.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{not json", encoding="utf-8")
+
+    snapshot = snapshot_job(job_id, store=store)["risk_overrides"]
+
+    assert snapshot["unreadable"] is True
+    assert "JSONDecodeError" in snapshot["reason"]
+    assert set(snapshot["symbols"]) == {"BTC", "HYPE"}
+    assert all(
+        block["status"] == "blocked" and block["blocked_by"] == "fail_closed"
+        for block in snapshot["symbols"].values()
+    )
 
 
 @pytest.mark.asyncio

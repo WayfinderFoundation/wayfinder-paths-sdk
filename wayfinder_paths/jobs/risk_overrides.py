@@ -54,6 +54,20 @@ def active_symbol_blocks(store: JobStore, job_id: str) -> dict[str, dict[str, An
     return _active_blocks_from_doc(doc)
 
 
+def risk_overrides_snapshot(store: JobStore, job_id: str) -> dict[str, Any]:
+    """Return the same fail-closed override state enforced by execution."""
+    doc = load_risk_overrides(store, job_id)
+    if not doc.get(_UNREADABLE_KEY):
+        return doc
+    reason = str(doc.get("reason") or "unreadable risk override file")
+    return {
+        "schema_version": "1.0",
+        "symbols": _fail_closed_blocks(store, job_id, reason=reason),
+        "unreadable": True,
+        "reason": reason,
+    }
+
+
 def enforced_symbol_blocks(store: JobStore, job_id: str) -> dict[str, dict[str, Any]]:
     """Resolve blocks for execution and latch unreadable state as a halt."""
     doc = load_risk_overrides(store, job_id)
