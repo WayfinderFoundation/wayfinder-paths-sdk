@@ -19,6 +19,8 @@ from wayfinder_paths.paths.renderer import render_skill_exports
 from wayfinder_paths.paths.runtime_registry import PublishedPackage
 from wayfinder_paths.paths.scaffold import init_path
 
+pytestmark = pytest.mark.usefixtures("published_installed_runtime")
+
 
 @pytest.mark.smoke
 def test_path_init_creates_expected_files(tmp_path: Path):
@@ -56,10 +58,10 @@ def test_path_init_creates_expected_files(tmp_path: Path):
     assert manifest.skill.runtime.component == "main"
 
 
-def test_path_init_pins_a_published_runtime(tmp_path: Path, monkeypatch) -> None:
+def test_path_init_pins_the_installed_runtime(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
-        "wayfinder_paths.paths.scaffold.published_runtime_package_version",
-        lambda: "0.11.0",
+        "wayfinder_paths.paths.scaffold.installed_runtime_package_version",
+        lambda: "0.11.1",
     )
     path_dir = tmp_path / "published-runtime"
 
@@ -68,7 +70,7 @@ def test_path_init_pins_a_published_runtime(tmp_path: Path, monkeypatch) -> None
     manifest = PathManifest.load(path_dir / "wfpath.yaml")
     assert manifest.skill is not None
     assert manifest.skill.runtime is not None
-    assert manifest.skill.runtime.version == "0.11.0"
+    assert manifest.skill.runtime.version == "0.11.1"
 
 
 def test_path_init_defaults_to_applet(tmp_path: Path):
@@ -183,7 +185,7 @@ def test_path_doctor_ok_on_pipeline_path(tmp_path: Path):
 
 def test_path_doctor_rejects_unpublished_runtime(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
-        "wayfinder_paths.paths.scaffold.published_runtime_package_version",
+        "wayfinder_paths.paths.scaffold.installed_runtime_package_version",
         lambda: "0.11.0",
     )
     monkeypatch.setattr(
@@ -212,7 +214,7 @@ def test_versionless_historical_runtime_keeps_installed_sdk(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(
-        "wayfinder_paths.paths.scaffold.published_runtime_package_version",
+        "wayfinder_paths.paths.scaffold.installed_runtime_package_version",
         lambda: "0.11.0",
     )
     monkeypatch.setattr(

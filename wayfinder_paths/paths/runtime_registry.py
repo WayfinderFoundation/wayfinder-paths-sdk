@@ -9,7 +9,6 @@ from urllib import error, parse, request
 
 _PYPI_PROJECT_URL = "https://pypi.org/pypi/{package}/json"
 _PYPI_TIMEOUT_SECONDS = 2.0
-_KNOWN_PUBLISHED_VERSIONS = {"wayfinder-paths": "0.11.0"}
 
 
 @dataclass(frozen=True)
@@ -55,17 +54,3 @@ def installed_package_version(package: str) -> str | None:
 
 def installed_runtime_package_version(package: str = "wayfinder-paths") -> str:
     return installed_package_version(package) or "0.0.0"
-
-
-def published_runtime_package_version(package: str = "wayfinder-paths") -> str:
-    installed = installed_package_version(package)
-    published = published_package(package)
-    if published is not None:
-        if installed in published.versions:
-            return installed
-        return published.latest
-
-    known_published = _KNOWN_PUBLISHED_VERSIONS.get(package)
-    if known_published is not None:
-        return known_published
-    return installed or "0.0.0"

@@ -3,11 +3,29 @@ from pathlib import Path
 
 import pytest
 
+from wayfinder_paths.paths.runtime_registry import (
+    PublishedPackage,
+    installed_runtime_package_version,
+)
+
 pytest_plugins = ["wayfinder_paths.testing.gorlami"]
 
 # Add repo root to path so tests.test_utils can be imported
 _repo_root = Path(__file__).parent.parent
 _repo_root_str = str(_repo_root)
+
+
+@pytest.fixture
+def published_installed_runtime(monkeypatch) -> None:
+    """Treat the checked-out SDK as published in tests of unrelated path flows."""
+    version = installed_runtime_package_version()
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.doctor.published_package",
+        lambda package: PublishedPackage(
+            latest=version,
+            versions=frozenset({version}),
+        ),
+    )
 
 
 def pytest_configure(config):
