@@ -84,12 +84,11 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         },
         "exploration_floor": 0.25,
     },
-    # Isolated open-ended code evolution. Eligibility is mechanical and jobs
-    # may opt out; a legacy non-empty allowlist remains supported for local
-    # policy files written before fleet rollout.
+    # Isolated open-ended code evolution. Keep the default canary-scoped;
+    # fleet rollout is an explicit job-local policy change after canary health.
     "evolution": {
         "enabled": True,
-        "allowed_job_ids": [],
+        "allowed_job_ids": ["majors-5m-lab"],
         "excluded_job_ids": [],
         "campaign_hours": 4,
         "start_interval_hours": 24,

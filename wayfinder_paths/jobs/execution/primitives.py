@@ -505,6 +505,11 @@ class OrderIntent:
         }
 
 
+def is_risk_reducing_intent(intent: OrderIntent) -> bool:
+    """Recognize semantic exits even when a strategy omits `reduce_only`."""
+    return intent.reduce_only or str(intent.action).upper() in REDUCE_ONLY_ACTIONS
+
+
 @dataclass
 class RestingOrder:
     """Durable state for a submitted limit order awaiting fills or expiry."""

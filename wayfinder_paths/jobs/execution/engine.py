@@ -28,6 +28,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     TradeCapacity,
     _float_or_none,
     bar_interval_seconds,
+    is_risk_reducing_intent,
 )
 from wayfinder_paths.jobs.execution.purity import purity_sandbox
 from wayfinder_paths.jobs.execution.venues import (
@@ -335,7 +336,9 @@ async def _run_tick_inner(
     # dropped and the strategy re-emits when it can be priced honestly.
     deferred_intents: list[OrderIntent] = []
     for intent in state.pending_intents:
-        if intent.symbol in (blocked_entry_symbols or set()) and not intent.reduce_only:
+        if intent.symbol in (blocked_entry_symbols or set()) and not (
+            is_risk_reducing_intent(intent)
+        ):
             result.guard_events.append(
                 {
                     "kind": "pending_entry_canceled_by_symbol_block",
@@ -488,7 +491,9 @@ async def _run_tick_inner(
             digest = hashlib.sha256(seed.encode()).hexdigest()
             intent.client_order_id = f"0x{digest[:32]}"
         trace.intents.append({"timestamp": bar_iso, **intent.to_dict()})
-        if intent.symbol in (blocked_entry_symbols or set()) and not intent.reduce_only:
+        if intent.symbol in (blocked_entry_symbols or set()) and not (
+            is_risk_reducing_intent(intent)
+        ):
             result.guard_events.append(
                 {
                     "kind": "intent_rejected",
@@ -501,7 +506,7 @@ async def _run_tick_inner(
                 }
             )
             continue
-        if snapshot.status != "valid" and not intent.reduce_only:
+        if snapshot.status != "valid" and not is_risk_reducing_intent(intent):
             # Reduce-only mode: never add risk against stale/ambiguous state.
             result.guard_events.append(
                 {
@@ -560,7 +565,7 @@ async def _run_tick_inner(
         result.intents.append(intent)
         if intent.reduce_only and intent.limit_price is None:
             _drop_resting_orders(state, symbol=intent.symbol, reduce_only=True)
-        if not intent.reduce_only:
+        if not is_risk_reducing_intent(intent):
             notional = _intent_notional(intent, ref_price)
             if notional is not None:
                 day = bar_iso[:10]
@@ -675,7 +680,9 @@ async def _settle_resting_orders(
         intent = order.intent
         if intent.reduce_only != reduce_only:
             continue
-        if intent.symbol in (blocked_entry_symbols or set()) and not intent.reduce_only:
+        if intent.symbol in (blocked_entry_symbols or set()) and not (
+            is_risk_reducing_intent(intent)
+        ):
             result.guard_events.append(
                 {
                     "kind": "resting_entry_held_by_symbol_block",
@@ -1486,12 +1493,16 @@ def _validate_intent(
     if (
         max_per_decision is not None
         and notional is not None
-        and not intent.reduce_only
+        and not is_risk_reducing_intent(intent)
         and notional > max_per_decision
     ):
         return f"notional {notional:.2f} exceeds max_notional_per_decision"
     max_daily = _float_or_none(auto_limits.get("max_daily_notional"))
-    if max_daily is not None and notional is not None and not intent.reduce_only:
+    if (
+        max_daily is not None
+        and notional is not None
+        and not is_risk_reducing_intent(intent)
+    ):
         day = bar_iso[:10]
         if state.daily_notional.get(day, 0.0) + notional > max_daily:
             return f"daily notional cap {max_daily:.2f} reached"

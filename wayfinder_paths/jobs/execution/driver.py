@@ -31,6 +31,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     ExecutionTrace,
     StateSnapshot,
     bar_interval_seconds,
+    is_risk_reducing_intent,
     resolve_compute_window,
 )
 from wayfinder_paths.jobs.execution.protection import monitor_native_protection
@@ -369,9 +370,9 @@ async def tick_job(
         venue_states=venue_states,
         now=now,
     )
-    from wayfinder_paths.jobs.risk_overrides import active_symbol_blocks
+    from wayfinder_paths.jobs.risk_overrides import enforced_symbol_blocks
 
-    symbol_blocks = active_symbol_blocks(store, job.id)
+    symbol_blocks = enforced_symbol_blocks(store, job.id)
     symbol_block_notes = await _apply_symbol_entry_blocks(
         state=state,
         brokers=brokers,
@@ -449,7 +450,7 @@ async def tick_job(
         )
         kept_intents = []
         for intent in state.pending_intents:
-            if intent.reduce_only:
+            if is_risk_reducing_intent(intent):
                 kept_intents.append(intent)
                 continue
             risk_notes.append(
@@ -1063,7 +1064,7 @@ async def _apply_symbol_entry_blocks(
     events: list[dict[str, Any]] = []
     kept = []
     for intent in state.pending_intents:
-        if intent.symbol not in blocked_symbols or intent.reduce_only:
+        if intent.symbol not in blocked_symbols or is_risk_reducing_intent(intent):
             kept.append(intent)
             continue
         events.append(
@@ -1077,7 +1078,7 @@ async def _apply_symbol_entry_blocks(
     state.pending_intents = kept
     for client_order_id, order in list(state.resting_orders.items()):
         intent = order.intent
-        if intent.symbol not in blocked_symbols or intent.reduce_only:
+        if intent.symbol not in blocked_symbols or is_risk_reducing_intent(intent):
             continue
         broker = brokers.get(intent.venue) or brokers.get("*")
         cancel_confirmed = state.mode != "live"

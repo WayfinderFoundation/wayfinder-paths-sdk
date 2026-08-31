@@ -108,17 +108,13 @@ def _prepare_campaign_candidates(
 
 def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
     other_store, other_id = _job(tmp_path / "other", "other-job")
-    # Fleet rollout is eligibility-driven; it is no longer hard-coded to the
-    # original majors canary.
-    assert (
+    with pytest.raises(ValueError, match="disabled_or_excluded"):
         start_campaign(
             other_store,
             other_id,
             now=datetime(2026, 8, 25, 12, tzinfo=UTC),
             force=True,
-        )["status"]
-        == "active"
-    )
+        )
 
     store, job_id = _job(tmp_path / "target", "majors-5m-lab")
     now = datetime(2026, 8, 25, 12, tzinfo=UTC)
@@ -181,6 +177,7 @@ def test_sensor_research_seed_is_frozen_then_consumed_as_real_parent(
         "# sensor hypothesis\ndef decide(ctx):\n    return []\n", encoding="utf-8"
     )
     (seed_root / "job.yaml").write_bytes((root / "job.yaml").read_bytes())
+    store.write_json(job_id, "results/research/regime_health.json", {"ready": True})
     monkeypatch.setattr(
         "wayfinder_paths.jobs.evolution_campaign.validate_execution_job",
         lambda *args, **kwargs: {"checks": []},
@@ -221,6 +218,34 @@ def test_sensor_research_seed_is_frozen_then_consumed_as_real_parent(
     assert seed_state["seeds"][0]["status"] == "consumed"
 
 
+def test_sensor_research_seed_requires_checked_in_research_result(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    root = store.job_dir(job_id)
+    seed_root = root / "research" / "sensor_candidates" / "unsupported"
+    (seed_root / "workspace/src").mkdir(parents=True)
+    (seed_root / "workspace/src/strategy.py").write_text(
+        "# unsupported\ndef decide(ctx):\n    return []\n", encoding="utf-8"
+    )
+    (seed_root / "job.yaml").write_bytes((root / "job.yaml").read_bytes())
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.validate_execution_job",
+        lambda *args, **kwargs: {"checks": []},
+    )
+
+    with pytest.raises(ValueError, match="checked-in research result"):
+        submit_research_seed(
+            store,
+            job_id,
+            candidate_root=seed_root,
+            family="unsupported",
+            hypothesis="no evidence",
+            base_revision=compute_workspace_revision(root),
+            evidence_refs=["results/research/missing.json"],
+        )
+
+
 def test_campaign_start_defers_while_intervention_worker_is_busy(
     tmp_path, monkeypatch
 ) -> None:
@@ -241,6 +266,13 @@ def test_campaign_start_defers_while_intervention_worker_is_busy(
 def test_only_one_automatic_campaign_owns_a_machine(tmp_path) -> None:
     store, first = _job(tmp_path, "first-lab")
     _, second = _job(tmp_path, "second-lab")
+    for job_id in (first, second):
+        (store.job_dir(job_id) / "improver.yaml").write_text(
+            yaml.safe_dump(
+                {"evolution": {"allowed_job_ids": ["first-lab", "second-lab"]}}
+            ),
+            encoding="utf-8",
+        )
     now = datetime(2026, 8, 25, 12, tzinfo=UTC)
     start_campaign(store, first, now=now)
 

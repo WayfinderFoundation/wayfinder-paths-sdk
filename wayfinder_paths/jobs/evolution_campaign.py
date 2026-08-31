@@ -40,6 +40,7 @@ from wayfinder_paths.jobs.compute_lock import (
     job_state_lock,
     machine_state_lock,
 )
+from wayfinder_paths.jobs.evidence import verify_job_evidence_refs
 from wayfinder_paths.jobs.evolution_funnel import summarize_evolution_funnel
 from wayfinder_paths.jobs.execution.features import parse_feature_specs
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
@@ -508,7 +509,14 @@ def submit_research_seed(
     seed_id = f"seed-{hashlib.sha256(seed_raw.encode()).hexdigest()[:12]}"
     seed_family = str(family).strip() or "research"
     seed_hypothesis = str(hypothesis).strip()[:500]
-    seed_evidence = [str(item) for item in evidence_refs or []][:20]
+    seed_evidence = verify_job_evidence_refs(
+        root,
+        list(evidence_refs or [])[:20],
+        allowed_roots=("results/research",),
+        now=current,
+    )
+    if not seed_evidence:
+        raise ValueError("research seed requires a checked-in research result")
     relative = f"{RESEARCH_SEED_ROOT}/{seed_id}/{revision}"
     destination = root / relative
     with job_state_lock(store.repo_root, job_id, name="evolution_research_seeds"):

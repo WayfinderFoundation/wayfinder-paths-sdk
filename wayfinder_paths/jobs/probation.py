@@ -392,10 +392,16 @@ def ensure_unified_probation(
                 trial_id = _safe_trial_id(
                     str(candidate.get("candidate_id") or candidate["revision"])
                 )
-                if not any(
-                    trial.get("legacy_experiment_id") == experiment.get("experiment_id")
-                    for trial in doc["trials"]
-                ):
+                migrated_trial = next(
+                    (
+                        trial
+                        for trial in doc["trials"]
+                        if trial.get("legacy_experiment_id")
+                        == experiment.get("experiment_id")
+                    ),
+                    None,
+                )
+                if migrated_trial is None:
                     trial = {
                         "trial_id": trial_id,
                         "candidate_id": candidate.get("candidate_id"),
@@ -452,21 +458,25 @@ def ensure_unified_probation(
                     }
                     doc["trials"].append(trial)
                     changed = True
-                    experiment["status"] = "migrated"
-                    experiment["migrated_at"] = current.isoformat()
-                    experiment["migrated_to_probation"] = trial_id
-                    store.write_json(
-                        job_id, "state/evolution_experiment.json", experiment
-                    )
-                    store.append_journal(
-                        job_id,
-                        {
-                            "type": "evolution_experiment_migrated_to_probation",
-                            "experiment_id": experiment.get("experiment_id"),
-                            "trial_id": trial_id,
-                            "candidate_id": candidate.get("candidate_id"),
-                        },
-                    )
+                    # Persist the live trial before retiring the legacy owner.
+                    # If the second write fails, the next call finds this trial
+                    # and finishes the migration without duplicating it.
+                    store.write_json(job_id, PROBATION_PATH, doc)
+                    changed = False
+                    migrated_trial = trial
+                experiment["status"] = "migrated"
+                experiment["migrated_at"] = current.isoformat()
+                experiment["migrated_to_probation"] = migrated_trial["trial_id"]
+                store.write_json(job_id, "state/evolution_experiment.json", experiment)
+                store.append_journal(
+                    job_id,
+                    {
+                        "type": "evolution_experiment_migrated_to_probation",
+                        "experiment_id": experiment.get("experiment_id"),
+                        "trial_id": migrated_trial["trial_id"],
+                        "candidate_id": candidate.get("candidate_id"),
+                    },
+                )
         if changed or not (store.job_dir(job_id) / PROBATION_PATH).exists():
             store.write_json(job_id, PROBATION_PATH, doc)
         return doc
@@ -785,14 +795,28 @@ def _adjudicate_burn_in(
     coverage = len(common) / expected if expected else 0.0
     burn["coverage"] = round(coverage, 4)
     errors = int(trial["candidate"].get("error_count") or 0)
+    safety = _stream_hard_constraint_metrics(
+        store,
+        job_id,
+        stream=str(trial["candidate"]["stream"]),
+        started=_parse(burn["started_at"]),
+        current=current,
+    )
+    burn.update(safety)
+    hard_breach = bool(safety["hard_constraint_breach"])
     expired = current >= _parse(burn["expires_at"])
     mature = (
         span >= pd.Timedelta(hours=float(burn["duration_hours"])) and coverage >= 0.95
     )
-    if not mature and not expired and not errors:
+    if not mature and not expired and not errors and not hard_breach:
         return None
-    if errors or not mature:
-        reason = "candidate execution error" if errors else "burn-in coverage expired"
+    if errors or hard_breach or not mature:
+        if errors:
+            reason = "candidate execution error"
+        elif hard_breach:
+            reason = "hard safety breach"
+        else:
+            reason = "burn-in coverage expired"
         _close_trial(trial, "killed", reason=reason, current=current)
         return {
             "action": "probation_killed",
@@ -891,10 +915,8 @@ def _paired_forward_metrics(
     *,
     current: datetime,
 ) -> dict[str, Any]:
-    from wayfinder_paths.jobs.constitution import load_constitution
     from wayfinder_paths.jobs.paper_experiment import (
         _daily_pnl_for_stream,
-        _max_drawdown,
     )
 
     started = _parse(trial["forward"]["started_at"])
@@ -927,10 +949,7 @@ def _paired_forward_metrics(
         [-value for value in deltas], block_len=5, iterations=500, confidence=confidence
     )
     ucb = -reverse if reverse is not None else None
-    max_drawdown = float(
-        load_constitution(store.job_dir(job_id))["hard_constraints"]["max_drawdown_pct"]
-    )
-    drawdown = _max_drawdown(candidate, capital)
+    safety = _hard_constraint_metrics(store, job_id, candidate)
     return {
         "paired_days": len(deltas),
         "estimate": round(sum(deltas), 8),
@@ -939,9 +958,42 @@ def _paired_forward_metrics(
         "confidence": confidence,
         "candidate_net_pnl": round(sum(candidate.values()), 6),
         "reference_net_pnl": round(sum(reference.values()), 6),
+        **safety,
+        "updated_at": current.isoformat(),
+    }
+
+
+def _stream_hard_constraint_metrics(
+    store: JobStore,
+    job_id: str,
+    *,
+    stream: str,
+    started: datetime,
+    current: datetime,
+) -> dict[str, Any]:
+    from wayfinder_paths.jobs.paper_experiment import _daily_pnl_for_stream
+
+    daily = _daily_pnl_for_stream(
+        store.job_dir(job_id) / stream,
+        since=started,
+        until=current,
+    )
+    return _hard_constraint_metrics(store, job_id, daily)
+
+
+def _hard_constraint_metrics(
+    store: JobStore, job_id: str, daily: dict[str, float]
+) -> dict[str, Any]:
+    from wayfinder_paths.jobs.constitution import load_constitution
+    from wayfinder_paths.jobs.paper_experiment import _max_drawdown
+
+    drawdown = _max_drawdown(daily, 10_000.0)
+    max_drawdown = float(
+        load_constitution(store.job_dir(job_id))["hard_constraints"]["max_drawdown_pct"]
+    )
+    return {
         "candidate_max_drawdown_pct": round(drawdown, 8),
         "hard_constraint_breach": drawdown > max_drawdown,
-        "updated_at": current.isoformat(),
     }
 
 
