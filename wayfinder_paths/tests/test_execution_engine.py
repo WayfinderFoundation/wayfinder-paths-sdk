@@ -697,6 +697,57 @@ async def test_unconfirmed_live_stop_unwinds_new_risk_and_requests_halt() -> Non
     assert failure["halt_required"] is True
 
 
+async def test_failed_unwind_preserves_required_protection_contract() -> None:
+    class RejectingUnwindBroker(FakeNativeBroker):
+        async def place(
+            self, intent: OrderIntent, *, timestamp: str, price: float | None = None
+        ) -> FillEvent:
+            if intent.reduce_only:
+                self.placed.append(intent)
+                return FillEvent(
+                    status="rejected",
+                    venue=intent.venue,
+                    symbol=intent.symbol,
+                    side=intent.side,
+                    reduce_only=True,
+                    error="reduce_only_no_position",
+                    raw={
+                        "intent_action": intent.action,
+                        "intent_metadata": intent.metadata,
+                    },
+                    timestamp=timestamp,
+                )
+            return await super().place(intent, timestamp=timestamp, price=price)
+
+    broker = RejectingUnwindBroker(confirm=False)
+    state = EngineState(mode="live")
+    intent = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        size=1.0,
+        bracket={"stop_loss_pct": 0.05, "native_required": True},
+    )
+
+    result = await _tick(
+        _strategy([intent]),
+        _view([10.0, 10.5]),
+        state=state,
+        brokers={"hyperliquid": broker},
+    )
+
+    assert "SNX" in state.ledger.positions
+    assert state.brackets["SNX"]["native_required"] is True
+    assert state.brackets["SNX"]["stop_loss"] == pytest.approx(9.975)
+    failure = next(
+        event
+        for event in result.guard_events
+        if event["kind"] == "native_protection_failed"
+    )
+    assert failure["unwind_status"] == "rejected"
+
+
 async def test_unconfirmed_replaced_stop_cancel_requests_halt() -> None:
     broker = FakeNativeBroker(cancel_confirm=False)
     state = EngineState(mode="live")

@@ -124,6 +124,22 @@ def test_criteria_need_the_full_evidence_window(tmp_path: Path) -> None:
     )
     assert met is False
 
+    # Fail-closed execution churn costs real PnL but is not evidence that the
+    # strategy intentionally completed the pre-registered trade window.
+    met, measured = evaluate_gate_criteria(
+        CRITERIA,
+        {
+            "trades": {
+                "closed_count": 25,
+                "strategy_closed_count": 5,
+                "operational_closed_count": 20,
+                "win_rate": 0.0,
+                "net_pnl": -50.0,
+            }
+        },
+    )
+    assert met is False and measured["closed_trades"] == 5
+
 
 # ── paper auto-resolution ────────────────────────────────────────────────
 

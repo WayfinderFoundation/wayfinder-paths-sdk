@@ -15,7 +15,9 @@ from wayfinder_paths.jobs.execution.engine import (
     EngineState,
     TickResult,
     flatten_positions,
+    resolve_fill_bracket,
     run_tick,
+    sync_native_protection,
 )
 from wayfinder_paths.jobs.execution.features import (
     apply_precompute,
@@ -44,12 +46,17 @@ from wayfinder_paths.jobs.execution.venues import (
     VenueState,
     build_adapter,
 )
-from wayfinder_paths.jobs.forward import ForwardRecorder
+from wayfinder_paths.jobs.forward import ForwardRecorder, forward_exit_category
 from wayfinder_paths.jobs.gating import clamp_leverage, governance_hard_constraints
 from wayfinder_paths.jobs.halt import read_halt, request_halt
-from wayfinder_paths.jobs.models import WayfinderJob
+from wayfinder_paths.jobs.models import (
+    DEFAULT_FORWARD_FILLS,
+    DEFAULT_FORWARD_TICKS,
+    WayfinderJob,
+)
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.triggers import fire_triggers
+from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 ENGINE_STATE_PATH = "state/engine_state.json"
 SIZE_TOLERANCE = 1e-6
@@ -358,6 +365,28 @@ async def tick_job(
         venue_state_sink=venue_states,
     )
 
+    protection_recovery_notes: list[dict[str, Any]] = []
+    if mode == "live" and snapshot.status == "valid":
+        for recovery in _recover_missing_native_brackets(root, state):
+            sync_result = TickResult()
+            installed = await sync_native_protection(
+                brokers=brokers,
+                state=state,
+                symbol=str(recovery["symbol"]),
+                venue=str(recovery["venue"]),
+                result=sync_result,
+            )
+            recovery["installed"] = installed
+            protection_recovery_notes.extend(sync_result.guard_events)
+            protection_recovery_notes.append(recovery)
+            if installed:
+                protection = state.native_protections[str(recovery["symbol"])]
+                venue_state = venue_states.get(str(recovery["venue"]))
+                if venue_state is not None:
+                    venue_state.open_orders.append(
+                        {"cloid": protection["client_order_id"]}
+                    )
+
     (
         protection_notes,
         protection_fills,
@@ -528,6 +557,7 @@ async def tick_job(
     tick.guard_events.extend(mode_notes)
     tick.guard_events.extend(leverage_notes)
     tick.guard_events.extend(reconcile_notes)
+    tick.guard_events.extend(protection_recovery_notes)
     tick.guard_events.extend(protection_notes)
     tick.guard_events.extend(symbol_block_notes)
     tick.guard_events.extend(risk_notes)
@@ -797,6 +827,135 @@ _FUNDING_STATE_PATH = "state/funding_state.json"
 _EQUITY_RECON_PATH = "state/equity_recon.json"
 
 
+def _recover_missing_native_brackets(
+    root: Path, state: EngineState
+) -> list[dict[str, Any]]:
+    """Rebuild a lost bracket only from a matching, successfully filled intent."""
+    missing = {
+        symbol: position
+        for symbol, position in state.ledger.positions.items()
+        if symbol not in state.brackets and symbol not in state.native_protections
+    }
+    if not missing:
+        return []
+
+    entry_cloids: dict[str, str] = {}
+    fills_path = root / DEFAULT_FORWARD_FILLS
+    if not fills_path.exists():
+        return []
+    with fills_path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                fill = json.loads(line)
+            except ValueError:
+                continue
+            symbol = str(fill.get("symbol") or "")
+            position = missing.get(symbol)
+            if (
+                position is None
+                or fill.get("mode") != "live"
+                or fill.get("status") != "filled"
+                or fill.get("reduce_only")
+                or str(fill.get("timestamp") or "") != str(position.opened_at or "")
+                or not fill.get("client_order_id")
+            ):
+                continue
+            entry_cloids[symbol] = str(fill["client_order_id"])
+    if not entry_cloids:
+        return []
+
+    intents_by_cloid: dict[str, dict[str, Any]] = {}
+    ticks_path = root / DEFAULT_FORWARD_TICKS
+    if not ticks_path.exists():
+        return []
+    wanted_cloids = set(entry_cloids.values())
+    with ticks_path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                tick = json.loads(line)
+            except ValueError:
+                continue
+            if tick.get("mode") != "live":
+                continue
+            for intent in tick.get("intents") or []:
+                cloid = str(intent.get("client_order_id") or "")
+                if cloid in wanted_cloids:
+                    intents_by_cloid[cloid] = intent
+
+    recovered: list[dict[str, Any]] = []
+    for symbol, cloid in entry_cloids.items():
+        intent = intents_by_cloid.get(cloid) or {}
+        policy = intent.get("bracket") or {}
+        position = missing[symbol]
+        if intent.get("action") != "OPEN" or not policy.get("native_required"):
+            continue
+        venue = str(intent.get("venue") or "")
+        if not venue:
+            continue
+        state.brackets[symbol] = resolve_fill_bracket(
+            policy,
+            position.side,
+            position.avg_price,
+            venue,
+            cloid,
+        )
+        recovered.append(
+            {
+                "kind": "native_protection_contract_recovered",
+                "symbol": symbol,
+                "venue": venue,
+                "entry_client_order_id": cloid,
+            }
+        )
+    return recovered
+
+
+def _first_positive_live_equity_seed(
+    root: Path, *, not_before: str | None = None
+) -> dict[str, Any] | None:
+    """Recover the funded inception snapshot for a legacy zero seed.
+
+    Early live ticks can validly report a zero balance while the user is still
+    funding the wallet. Older code made that provisional zero permanent. The
+    recorded tick stream is the authoritative migration source and lets us
+    repair an existing job without rebasing it at today's already-drawn-down
+    equity.
+    """
+    path = root / DEFAULT_FORWARD_TICKS
+    if not path.exists():
+        return None
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or row.get("mode") != "live":
+                continue
+            row_ts = str(row.get("ts") or "")
+            if not_before and row_ts and row_ts < not_before:
+                continue
+            snapshot = row.get("snapshot") or {}
+            data = snapshot.get("data") or {}
+            raw_account_value = data.get("account_value")
+            if raw_account_value is None:
+                continue
+            try:
+                account_value = float(raw_account_value)
+            except (TypeError, ValueError):
+                continue
+            if account_value <= 0:
+                continue
+            ledger = row.get("ledger") or {}
+            return {
+                "venue_equity_start": account_value,
+                "ledger_realized_at_seed": float(ledger.get("realized_pnl") or 0.0),
+                "seeded_at": row_ts or pd.Timestamp.now(tz="UTC").isoformat(),
+                "seed_source": "first_positive_live_tick",
+            }
+    return None
+
+
 async def _collect_funding(
     brokers: Mapping[str, Any],
     root: Path,
@@ -872,16 +1031,36 @@ def _reconciliation_block(
             seed = json.loads(recon_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             seed = {}
-        if reset_fired or "venue_equity_start" not in seed:
+        if reset_fired:
+            seed = {}
+        try:
+            seeded_equity = float(seed.get("venue_equity_start"))
+        except (TypeError, ValueError):
+            seeded_equity = 0.0
+        if seeded_equity <= 0:
+            # Zero before funding is provisional, not a useful inception
+            # baseline. Wait for capital rather than pinning a permanent
+            # +deposit-sized drift. Existing zero-seeded jobs recover the
+            # first funded snapshot from their durable tick history.
+            if float(account_value) <= 0:
+                return None
+            recovered = (
+                None
+                if reset_fired
+                else _first_positive_live_equity_seed(
+                    root, not_before=str(seed.get("seeded_at") or "") or None
+                )
+            )
             # Mode flips archive the engine state — the realized baseline
             # restarts with it.
-            seed = {
+            seed = recovered or {
                 "venue_equity_start": float(account_value),
                 "ledger_realized_at_seed": realized,
                 "seeded_at": pd.Timestamp.now(tz="UTC").isoformat(),
+                "seed_source": "current_positive_live_tick",
             }
             recon_path.parent.mkdir(parents=True, exist_ok=True)
-            recon_path.write_text(json.dumps(seed), encoding="utf-8")
+            atomic_write_json(recon_path, seed)
 
         unrealized = 0.0
         for symbol, position in (ledger.get("positions") or {}).items():
@@ -1033,6 +1212,7 @@ def _trade_close_payload(
         "exit_reason": exit_reason,
         "effective_leverage": params.get("leverage") or 1.0,
     }
+    payload["exit_category"] = forward_exit_category(payload)
     if action == "STOP_LOSS":
         payload.update(
             {

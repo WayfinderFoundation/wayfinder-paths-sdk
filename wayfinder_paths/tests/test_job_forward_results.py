@@ -149,6 +149,95 @@ def test_forward_recorder_uses_env_and_preserves_loose_rows(
     assert summary["trades"]["losses"] == 1
 
 
+def test_operational_safety_exit_does_not_manufacture_strategy_loss(
+    tmp_path: Path,
+) -> None:
+    recorder = ForwardRecorder(job_id="safety-job", job_dir=tmp_path, mode="live")
+    recorder.record_trade_close(
+        net_pnl=-0.23,
+        exit_reason="native_protection_unconfirmed",
+    )
+
+    summary = recorder.summary()
+    trades = summary["trades"]
+    assert trades["closed_count"] == 1
+    assert trades["strategy_closed_count"] == 0
+    assert trades["operational_closed_count"] == 1
+    assert trades["losses"] == 0
+    assert trades["current_loss_streak"] == 0
+    assert trades["net_pnl"] == -0.23
+    assert trades["operational_net_pnl"] == -0.23
+    assert (
+        render_forward_recap(summary)
+        == "Forward: 0 strategy closed · 1 safety exit · -0.23 total net"
+    )
+
+
+def test_legacy_summary_rebuilds_operational_exit_categories(tmp_path: Path) -> None:
+    forward_dir = tmp_path / "results" / "forward"
+    forward_dir.mkdir(parents=True)
+    (forward_dir / "trades.jsonl").write_text(
+        "\n".join(
+            json.dumps(row)
+            for row in (
+                {
+                    "ts": "2026-08-25T18:00:00+00:00",
+                    "closed_at": "2026-08-25T18:00:00+00:00",
+                    "symbol": "BTC",
+                    "net_pnl": -0.23,
+                },
+                {
+                    "ts": "2026-08-26T18:00:00+00:00",
+                    "closed_at": "2026-08-26T18:00:00+00:00",
+                    "symbol": "BTC",
+                    "net_pnl": -0.5,
+                    "exit_reason": "signal_rebalance",
+                },
+            )
+        )
+        + "\n"
+    )
+    (forward_dir / "ticks.jsonl").write_text(
+        json.dumps(
+            {
+                "guard_events": [
+                    {
+                        "kind": "native_protection_failed",
+                        "symbol": "BTC",
+                        "timestamp": "2026-08-25T18:00:00+00:00",
+                        "unwind_status": "filled",
+                    }
+                ]
+            }
+        )
+        + "\n"
+    )
+    (forward_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "trades": {
+                    "closed_count": 2,
+                    "wins": 0,
+                    "losses": 2,
+                    "net_pnl": -0.73,
+                    "current_loss_streak": 2,
+                }
+            }
+        )
+    )
+
+    recorder = ForwardRecorder(job_id="legacy-job", job_dir=tmp_path, mode="live")
+    recorder.record_run(decision="hold")
+    trades = recorder.summary()["trades"]
+
+    assert trades["closed_count"] == 2
+    assert trades["strategy_closed_count"] == 1
+    assert trades["operational_closed_count"] == 1
+    assert trades["losses"] == 1
+    assert trades["current_loss_streak"] == 1
+    assert trades["net_pnl"] == -0.73
+
+
 def test_forward_snapshot_is_capped_and_accepts_missing_files(tmp_path: Path) -> None:
     store = JobStore(repo_root=tmp_path)
     job = WayfinderJob.new(
