@@ -21,6 +21,7 @@ from wayfinder_paths.jobs.forward import load_forward_snapshot
 from wayfinder_paths.jobs.gating import evaluate_live_gate
 from wayfinder_paths.jobs.halt import read_halt
 from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.probation import probation_sync_payload
 from wayfinder_paths.jobs.runner_bridge import RunnerBridge
 from wayfinder_paths.jobs.store import JobStore
 
@@ -265,7 +266,9 @@ def snapshot_job(job_id: str, *, store: JobStore | None = None) -> dict[str, Any
         "forward": load_forward_snapshot(job_id, store=store, limit=25),
         "runner_links": runner_links,
         "proposals": store.proposals(job_id),
-        "probation": store.read_json(job_id, "probation.json", default={"legs": []}),
+        # probation.json enriched with each trial's paired equity curve —
+        # curve points live in per-trial sidecars, never in probation.json.
+        "probation": probation_sync_payload(store, job_id),
         "risk_overrides": risk_overrides_snapshot(store, job_id),
         "post_apply_shadow": _shadow_topline(store, job_id),
         "regime_health": regime_health,

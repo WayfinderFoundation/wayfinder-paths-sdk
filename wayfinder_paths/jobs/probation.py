@@ -48,6 +48,12 @@ PLACEHOLDER_TRIAL_FAMILIES = frozenset({"", "evolution", GENERIC_TRIAL_FAMILY})
 # Below this many paired days every resample is the full (rotated) sample, so
 # the "interval" collapses to the point estimate — report no bounds instead.
 FORWARD_BOOTSTRAP_BLOCK_LEN = 5
+# Paired equity curve (candidate vs frozen incumbent) on forward trials:
+# hourly cumulative realized net PnL buckets since admission, capped so the
+# synced payload stays a few KB (14d x 24h = 336 buckets + the seed point).
+EQUITY_CURVE_BASIS = "realized"
+EQUITY_CURVE_BUCKET_SECONDS = 3600
+EQUITY_CURVE_MAX_POINTS = 400
 
 
 def load_probation(store: JobStore, job_id: str) -> dict[str, Any]:
@@ -58,6 +64,43 @@ def load_probation(store: JobStore, job_id: str) -> dict[str, Any]:
     doc.setdefault("trials", [])
     doc.setdefault("schema_version", PROBATION_SCHEMA_VERSION)
     return doc
+
+
+def probation_sync_payload(store: JobStore, job_id: str) -> dict[str, Any]:
+    """The synced probation document: probation.json with each trial's paired
+    equity curve attached from its sidecar. Trials without a curve (legacy,
+    pre-forward, absent streams) simply omit the field — the FE handles it."""
+    doc = store.read_json(job_id, PROBATION_PATH, default={"legs": []}) or {"legs": []}
+    if not isinstance(doc, dict):
+        return {"legs": []}
+    for trial in doc.get("trials") or []:
+        curve = trial_equity_curve_payload(
+            store, job_id, str(trial.get("trial_id") or "")
+        )
+        if curve is not None:
+            trial["equity_curve"] = curve
+    return doc
+
+
+def trial_equity_curve_payload(
+    store: JobStore, job_id: str, trial_id: str
+) -> dict[str, Any] | None:
+    """Wire shape of a trial's equity curve: points/updated_at/basis only —
+    the sidecar's byte-offset cursor is producer-internal."""
+    if not trial_id or Path(trial_id).name != trial_id:
+        return None
+    doc = store.read_json(job_id, _equity_curve_relative(trial_id), default=None)
+    if not isinstance(doc, dict) or not doc.get("points"):
+        return None
+    return {
+        "points": list(doc["points"])[:EQUITY_CURVE_MAX_POINTS],
+        "updated_at": doc.get("updated_at"),
+        "basis": doc.get("basis"),
+    }
+
+
+def _equity_curve_relative(trial_id: str) -> str:
+    return f"{PROBATION_FORWARD_ROOT}/{trial_id}/equity_curve.json"
 
 
 def record_probation_leg(
@@ -836,6 +879,12 @@ def maybe_adjudicate_probation(
             if trial.get("status") == "burn_in":
                 outcome = _adjudicate_burn_in(store, job_id, trial, current=current)
             elif trial.get("status") == "active":
+                # Display artifact — a curve bug must never stall the
+                # graduation/kill adjudication it rides along with.
+                try:
+                    _update_trial_equity_curve(store, job_id, trial, current=current)
+                except Exception:  # noqa: BLE001
+                    pass
                 outcome = _adjudicate_forward(store, job_id, trial, current=current)
             else:
                 outcome = None
@@ -1073,6 +1122,143 @@ def _paired_forward_metrics(
         **safety,
         "updated_at": current.isoformat(),
     }
+
+
+def _update_trial_equity_curve(
+    store: JobStore,
+    job_id: str,
+    trial: dict[str, Any],
+    *,
+    current: datetime,
+) -> None:
+    """Append newly completed hourly buckets to the trial's paired cumulative
+    equity curve (candidate vs frozen incumbent reference, zeroed at forward
+    admission), stored as a per-trial sidecar next to the streams.
+
+    Basis is REALIZED net PnL from each stream's trades.jsonl — the exact
+    series the forward adjudicator sums — attributed to the trade's close bar
+    time, so the curve endpoint matches the candidate/reference net PnL on
+    the trial card. Tick rows carry no mark price, so an unrealized basis
+    would need market fetches. Incremental by construction: a bucket only
+    finalizes once BOTH stream cursors have processed past its end, emitted
+    points never change, and each pass reads only bytes past the stored
+    per-stream offsets.
+    """
+    started_at = (trial.get("forward") or {}).get("started_at")
+    if not started_at:
+        return
+    started = int(_parse(started_at).timestamp())
+    root = store.job_dir(job_id)
+    streams: dict[str, Path] = {}
+    watermark: float | None = None
+    for role in ("candidate", "reference"):
+        target = trial.get(role) or {}
+        stream = str(target.get("stream") or "")
+        last_bar = target.get("last_processed_bar")
+        if not stream or not last_bar:
+            return
+        path = root / stream
+        if not path.is_dir():
+            return
+        streams[role] = path
+        bar_epoch = _parse(str(last_bar)).timestamp()
+        watermark = bar_epoch if watermark is None else min(watermark, bar_epoch)
+    assert watermark is not None
+    relative = _equity_curve_relative(str(trial["trial_id"]))
+    doc = store.read_json(job_id, relative, default=None)
+    if not isinstance(doc, dict) or doc.get("basis") != EQUITY_CURVE_BASIS:
+        doc = {
+            "basis": EQUITY_CURVE_BASIS,
+            "started_at": started_at,
+            "updated_at": None,
+            "points": [[started, 0.0, 0.0]],
+            "cursor": {
+                "candidate": {"offset": 0, "cum": 0.0},
+                "reference": {"offset": 0, "cum": 0.0},
+            },
+        }
+    points: list[list[float]] = [list(point) for point in doc["points"]]
+    if len(points) >= EQUITY_CURVE_MAX_POINTS:
+        return
+    # Largest emittable bucket end: hour-aligned to admission, bounded by the
+    # slower stream's cursor AND the point cap (so consumed bytes always land
+    # in an emitted bucket — nothing is read and then dropped).
+    complete_hours = int(watermark - started) // EQUITY_CURVE_BUCKET_SECONDS
+    cap_hours = (int(points[-1][0]) - started) // EQUITY_CURVE_BUCKET_SECONDS + (
+        EQUITY_CURVE_MAX_POINTS - len(points)
+    )
+    boundary = started + min(complete_hours, cap_hours) * EQUITY_CURVE_BUCKET_SECONDS
+    cursor = doc["cursor"]
+    changed = False
+    pending: dict[str, list[tuple[float, float]]] = {}
+    for role, path in streams.items():
+        rows, consumed = _consume_stream_trades(
+            path, offset=int(cursor[role]["offset"]), boundary=float(boundary)
+        )
+        pending[role] = rows
+        if consumed != int(cursor[role]["offset"]):
+            cursor[role]["offset"] = consumed
+            changed = True
+    next_end = int(points[-1][0]) + EQUITY_CURVE_BUCKET_SECONDS
+    while next_end <= boundary and len(points) < EQUITY_CURVE_MAX_POINTS:
+        values: list[float] = []
+        for role in ("candidate", "reference"):
+            cum = float(cursor[role]["cum"]) + sum(
+                pnl for close, pnl in pending[role] if close < next_end
+            )
+            pending[role] = [
+                (close, pnl) for close, pnl in pending[role] if close >= next_end
+            ]
+            cursor[role]["cum"] = cum
+            values.append(round(cum, 4))
+        points.append([next_end, values[0], values[1]])
+        changed = True
+        next_end += EQUITY_CURVE_BUCKET_SECONDS
+    if not changed and doc.get("updated_at") is not None:
+        return
+    doc["points"] = points
+    doc["updated_at"] = current.isoformat()
+    atomic_write_json(root / relative, doc)
+
+
+def _consume_stream_trades(
+    stream: Path, *, offset: int, boundary: float
+) -> tuple[list[tuple[float, float]], int]:
+    """Parse complete trades.jsonl lines from `offset` as (close_epoch, pnl),
+    stopping BEFORE the first close at/after `boundary` — its bucket is not
+    final yet, so those bytes are re-read once the watermark passes. Rows are
+    appended in bar order, which makes the early stop safe."""
+    path = stream / "trades.jsonl"
+    if not path.exists() or offset >= path.stat().st_size:
+        return [], offset
+    with path.open("rb") as handle:
+        handle.seek(offset)
+        blob = handle.read()
+    rows: list[tuple[float, float]] = []
+    consumed = offset
+    for line in blob.splitlines(keepends=True):
+        if not line.endswith(b"\n"):
+            break  # partially flushed tail — retry next pass
+        try:
+            row = json.loads(line.decode("utf-8", errors="replace"))
+            stamp = pd.Timestamp(
+                row.get("closed_at") or row.get("timestamp") or row.get("ts")
+            )
+            if pd.isna(stamp):
+                raise ValueError(line.decode("utf-8", errors="replace"))
+            close_epoch = stamp.timestamp()
+        except (TypeError, ValueError):
+            consumed += len(line)
+            continue
+        if close_epoch >= boundary:
+            break
+        try:
+            pnl = float(row.get("net_pnl") or row.get("realized_pnl_delta") or 0.0)
+        except (TypeError, ValueError):
+            pnl = 0.0
+        rows.append((close_epoch, pnl))
+        consumed += len(line)
+    return rows, consumed
 
 
 def _stream_hard_constraint_metrics(
