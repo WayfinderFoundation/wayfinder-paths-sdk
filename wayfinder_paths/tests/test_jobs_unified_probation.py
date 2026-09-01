@@ -697,6 +697,175 @@ def test_probation_capacity_is_three_active_and_three_queued(tmp_path: Path) -> 
     assert statuses == ["burn_in"] * 3 + ["queued"] * 3 + ["deferred"]
 
 
+def _forward_trial(store: JobStore, job_id: str, name: str, started: datetime) -> dict:
+    candidate, revision = _candidate(store, job_id, name)
+    stage_evolution_probation(
+        store,
+        job_id,
+        candidate_id=f"{name}-candidate",
+        candidate_root=candidate,
+        revision=revision,
+        source="evolution_campaign",
+        family=f"{name}-family",
+        now=started,
+    )
+    doc = load_probation(store, job_id)
+    trial = doc["trials"][0]
+    trial["status"] = "active"
+    trial["phase"] = "forward"
+    trial["burn_in"]["status"] = "passed"
+    trial["forward"]["started_at"] = started.isoformat()
+    trial["forward"]["deadline_at"] = (started + timedelta(days=14)).isoformat()
+    for role in ("candidate", "reference"):
+        trial[role]["stream"] = (
+            f"results/forward/probation/{trial['trial_id']}/forward/{role}"
+        )
+    store.write_json(job_id, "probation.json", doc)
+    return trial
+
+
+def _advance_cursors(store: JobStore, job_id: str, bar: datetime) -> None:
+    doc = load_probation(store, job_id)
+    for role in ("candidate", "reference"):
+        doc["trials"][0][role]["last_processed_bar"] = bar.isoformat()
+    store.write_json(job_id, "probation.json", doc)
+
+
+def _curve_sidecar(store: JobStore, job_id: str) -> dict | None:
+    trial = load_probation(store, job_id)["trials"][0]
+    return store.read_json(
+        job_id,
+        f"results/forward/probation/{trial['trial_id']}/equity_curve.json",
+        default=None,
+    )
+
+
+def test_equity_curve_builds_paired_hourly_points_zeroed_at_admission(
+    tmp_path: Path,
+) -> None:
+    store, job_id = _job(tmp_path)
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    trial = _forward_trial(store, job_id, "curve", started)
+    root = store.job_dir(job_id)
+    candidate_stream = root / trial["candidate"]["stream"]
+    reference_stream = root / trial["reference"]["stream"]
+    candidate_stream.mkdir(parents=True, exist_ok=True)
+    reference_stream.mkdir(parents=True, exist_ok=True)
+    _write_trade(candidate_stream, started + timedelta(minutes=10), 5.0)
+    _write_trade(candidate_stream, started + timedelta(minutes=40), 2.5)
+    _write_trade(candidate_stream, started + timedelta(hours=3, minutes=10), -1.0)
+    _write_trade(reference_stream, started + timedelta(hours=1, minutes=30), -2.0)
+    _advance_cursors(store, job_id, started + timedelta(hours=5))
+
+    maybe_adjudicate_probation(store, job_id, now=started + timedelta(hours=5))
+
+    curve = _curve_sidecar(store, job_id)
+    assert curve is not None
+    assert curve["basis"] == "realized"
+    epoch = int(started.timestamp())
+    assert curve["points"] == [
+        [epoch, 0.0, 0.0],
+        [epoch + 3600, 7.5, 0.0],
+        [epoch + 7200, 7.5, -2.0],
+        [epoch + 10800, 7.5, -2.0],
+        [epoch + 14400, 6.5, -2.0],
+        [epoch + 18000, 6.5, -2.0],
+    ]
+
+
+def test_equity_curve_appends_only_new_buckets_incrementally(tmp_path: Path) -> None:
+    store, job_id = _job(tmp_path)
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    trial = _forward_trial(store, job_id, "incremental", started)
+    root = store.job_dir(job_id)
+    candidate_stream = root / trial["candidate"]["stream"]
+    reference_stream = root / trial["reference"]["stream"]
+    candidate_stream.mkdir(parents=True, exist_ok=True)
+    reference_stream.mkdir(parents=True, exist_ok=True)
+    _write_trade(candidate_stream, started + timedelta(minutes=30), 111.5)
+    _advance_cursors(store, job_id, started + timedelta(hours=2))
+    maybe_adjudicate_probation(store, job_id, now=started + timedelta(hours=2))
+    first = _curve_sidecar(store, job_id)
+    assert first is not None
+    epoch = int(started.timestamp())
+    assert first["points"] == [
+        [epoch, 0.0, 0.0],
+        [epoch + 3600, 111.5, 0.0],
+        [epoch + 7200, 111.5, 0.0],
+    ]
+
+    # Mutate the already-consumed first trade IN PLACE (same byte length): an
+    # incremental producer never re-reads behind its offsets, so the emitted
+    # points must not change — only new buckets from the appended trade.
+    trades = candidate_stream / "trades.jsonl"
+    trades.write_bytes(trades.read_bytes().replace(b"111.5", b"999.9"))
+    _write_trade(candidate_stream, started + timedelta(hours=2, minutes=15), 3.0)
+    _advance_cursors(store, job_id, started + timedelta(hours=4))
+    maybe_adjudicate_probation(store, job_id, now=started + timedelta(hours=4))
+
+    second = _curve_sidecar(store, job_id)
+    assert second is not None
+    assert second["points"][:3] == first["points"]
+    assert second["points"][3:] == [
+        [epoch + 10800, 114.5, 0.0],
+        [epoch + 14400, 114.5, 0.0],
+    ]
+
+
+def test_equity_curve_hard_caps_at_400_points(tmp_path: Path) -> None:
+    store, job_id = _job(tmp_path)
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    trial = _forward_trial(store, job_id, "cap", started)
+    root = store.job_dir(job_id)
+    for role in ("candidate", "reference"):
+        (root / trial[role]["stream"]).mkdir(parents=True, exist_ok=True)
+    _advance_cursors(store, job_id, started + timedelta(hours=500))
+
+    maybe_adjudicate_probation(store, job_id, now=started + timedelta(hours=500))
+
+    curve = _curve_sidecar(store, job_id)
+    assert curve is not None
+    assert len(curve["points"]) == 400
+    assert curve["points"][-1][0] == int(started.timestamp()) + 399 * 3600
+
+
+def test_equity_curve_absent_streams_no_curve_no_crash(tmp_path: Path) -> None:
+    store, job_id = _job(tmp_path)
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    _forward_trial(store, job_id, "absent", started)
+    _advance_cursors(store, job_id, started + timedelta(hours=6))
+
+    maybe_adjudicate_probation(store, job_id, now=started + timedelta(hours=6))
+
+    assert _curve_sidecar(store, job_id) is None
+    synced = snapshot_job(job_id, store=store)["probation"]["trials"][0]
+    assert "equity_curve" not in synced
+
+
+def test_sync_ships_equity_curve_points_on_the_trial_payload(tmp_path: Path) -> None:
+    store, job_id = _job(tmp_path)
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    trial = _forward_trial(store, job_id, "wire", started)
+    root = store.job_dir(job_id)
+    candidate_stream = root / trial["candidate"]["stream"]
+    reference_stream = root / trial["reference"]["stream"]
+    candidate_stream.mkdir(parents=True, exist_ok=True)
+    reference_stream.mkdir(parents=True, exist_ok=True)
+    _write_trade(candidate_stream, started + timedelta(minutes=5), 4.0)
+    _advance_cursors(store, job_id, started + timedelta(hours=1))
+    maybe_adjudicate_probation(store, job_id, now=started + timedelta(hours=1))
+
+    synced = snapshot_job(job_id, store=store)["probation"]["trials"][0]
+    curve = synced["equity_curve"]
+    epoch = int(started.timestamp())
+    assert curve["basis"] == "realized"
+    assert curve["points"] == [[epoch, 0.0, 0.0], [epoch + 3600, 4.0, 0.0]]
+    assert curve["updated_at"] == (started + timedelta(hours=1)).isoformat()
+    assert "cursor" not in curve
+    # The on-disk registry never carries the points — sidecar only.
+    assert "equity_curve" not in load_probation(store, job_id)["trials"][0]
+
+
 @pytest.mark.asyncio
 async def test_symbol_block_removes_entries_but_preserves_reduce_only(
     tmp_path: Path,
