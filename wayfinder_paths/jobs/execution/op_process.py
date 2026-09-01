@@ -21,10 +21,20 @@ if TYPE_CHECKING:
 
 _RUNNER_MODULE = "wayfinder_paths.jobs.execution.op_runner"
 _CONTROL_PLANE_OPS = frozenset(
-    {"evolution_start", "evolution_prepare", "evolution_submit_seed"}
+    {
+        "evolution_start",
+        "evolution_design",
+        "evolution_prepare",
+        "evolution_submit_seed",
+    }
 )
 _CAMPAIGN_OWNED_OPS = frozenset(
-    {"evolution_prepare", "evolution_evaluate", "evolution_finalize"}
+    {
+        "evolution_design",
+        "evolution_prepare",
+        "evolution_evaluate",
+        "evolution_finalize",
+    }
 )
 
 

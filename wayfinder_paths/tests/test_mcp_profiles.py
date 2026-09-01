@@ -668,6 +668,7 @@ def test_job_workers_are_hidden_primary_agents_for_headless_runs() -> None:
     for agent in (
         "wayfinder-job-worker",
         "wayfinder-job-auto-worker",
+        "wayfinder-evolution-designer",
         "wayfinder-evolution-worker",
     ):
         frontmatter = _agent_frontmatter(agent)

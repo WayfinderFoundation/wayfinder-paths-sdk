@@ -302,3 +302,59 @@ async def test_evolution_heavy_stages_default_to_background(
         ("evolution_finalize", {"job_id": "majors-5m-lab"}),
         ("forward_experience", {"job_id": "majors-5m-lab"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_evolution_design_is_a_bounded_synchronous_control_op(
+    tmp_path, monkeypatch
+) -> None:
+    captured: dict = {}
+
+    async def fake_sync(op, kwargs):
+        captured.update({"op": op, "kwargs": kwargs})
+        return {"ok": True, "result": {"accepted": True}}
+
+    monkeypatch.setattr(jobs_module, "_run_job_op", fake_sync)
+    monkeypatch.setattr(jobs_module, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    design = {"hypotheses": [{"id": "h1"}], "slots": [{"slot_id": "s1"}]}
+
+    result = await core_jobs(
+        action="evolution_design",
+        job_id="majors-5m-lab",
+        campaign_design=design,
+    )
+
+    assert result["result"]["accepted"] is True
+    assert captured == {
+        "op": "evolution_design",
+        "kwargs": {"job_id": "majors-5m-lab", "campaign_design": design},
+    }
+
+
+@pytest.mark.asyncio
+async def test_evolution_designer_can_launch_then_end_before_stage_nudge(
+    tmp_path, monkeypatch
+) -> None:
+    captured: dict = {}
+
+    async def fake_start(store, job_id, op, kwargs):
+        captured.update({"job_id": job_id, "op": op, "kwargs": kwargs})
+        return {"ok": True, "result": {"started": True}}
+
+    monkeypatch.setattr(jobs_module, "_start_background_op", fake_start)
+    monkeypatch.setattr(jobs_module, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    design = {"hypotheses": [{"id": "h1"}], "slots": [{"slot_id": "s1"}]}
+
+    result = await core_jobs(
+        action="evolution_design",
+        job_id="majors-5m-lab",
+        campaign_design=design,
+        background=True,
+    )
+
+    assert result["result"]["started"] is True
+    assert captured == {
+        "job_id": "majors-5m-lab",
+        "op": "evolution_design",
+        "kwargs": {"job_id": "majors-5m-lab", "campaign_design": design},
+    }

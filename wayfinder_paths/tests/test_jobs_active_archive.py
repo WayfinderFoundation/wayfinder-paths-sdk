@@ -8,6 +8,7 @@ from __future__ import annotations
 from wayfinder_paths.jobs.archive import (
     lineage_of,
     load_archive,
+    quality_diversity_snapshot,
     record_candidate,
     set_candidate_status,
     set_incumbent,
@@ -30,12 +31,12 @@ def _job(tmp_path):
 
 
 def _record(store, job_id, cid, **kwargs):
-    defaults = dict(
-        family="params",
-        summary=f"candidate {cid}",
-        status="archived",
-        objective={"net_log_growth": 0.01},
-    )
+    defaults = {
+        "family": "params",
+        "summary": f"candidate {cid}",
+        "status": "archived",
+        "objective": {"net_log_growth": 0.01},
+    }
     defaults.update(kwargs)
     return record_candidate(store, job_id, candidate_id=cid, **defaults)
 
@@ -149,3 +150,63 @@ def test_opportunity_recall_is_constraint_aware(tmp_path) -> None:
     assert recall["best_candidate_id"] == "cand-better"
     assert recall["utility_gap"] > 0
     assert "constraint-passing" in recall["basis"]
+
+
+def test_sparse_developed_candidates_cannot_become_qd_elites(tmp_path) -> None:
+    store, job_id = _job(tmp_path)
+    behavior = {
+        "direction_bias": 0.5,
+        "average_hold_bars": 24,
+        "trades_per_asset_30d": 10,
+    }
+    objective = {
+        "net_log_growth": 0.05,
+        "downside_deviation": 0.01,
+        "tail_loss": 0.01,
+        "max_drawdown_pct": 0.02,
+    }
+    _record(
+        store,
+        job_id,
+        "cand-sparse",
+        status="dev_frontier",
+        objective=objective,
+        behavior=behavior,
+        metadata={
+            "campaign_id": "campaign-1",
+            "elite_eligible": False,
+            "elite_activity": {
+                "validation_trades": 2,
+                "minimum": 8,
+                "target": 12,
+            },
+        },
+    )
+    _record(
+        store,
+        job_id,
+        "cand-participating",
+        status="dev_frontier",
+        objective={**objective, "net_log_growth": 0.04},
+        behavior=behavior,
+        metadata={
+            "campaign_id": "campaign-1",
+            "elite_eligible": True,
+            "elite_activity": {
+                "validation_trades": 9,
+                "minimum": 8,
+                "target": 12,
+            },
+        },
+    )
+
+    snapshot = quality_diversity_snapshot(store, job_id)
+    candidates = [entry for entries in snapshot.values() for entry in entries]
+
+    assert [entry["candidate_id"] for entry in candidates] == ["cand-participating"]
+    archived = {
+        entry["candidate_id"]: entry
+        for entry in load_archive(store, job_id)["candidates"]
+    }
+    assert archived["cand-sparse"]["on_frontier"] is False
+    assert archived["cand-participating"]["on_frontier"] is True

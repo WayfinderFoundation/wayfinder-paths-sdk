@@ -13,6 +13,7 @@ import yaml
 
 from wayfinder_paths.jobs.archive import (
     behavior_cell,
+    evolution_lessons_block,
     load_archive,
     quality_diversity_snapshot,
     record_candidate,
@@ -21,6 +22,7 @@ from wayfinder_paths.jobs.compute_lock import ComputeLockBusy
 from wayfinder_paths.jobs.evolution_campaign import (
     _archive_campaign_candidate,
     _claim_full_dev,
+    _commit_designed_attempt,
     _commit_full_dev,
     _isolated_full_dev,
     _materialize_candidate_seed,
@@ -42,9 +44,11 @@ from wayfinder_paths.jobs.evolution_campaign import (
     recover_lost_candidate_evaluations,
     resolve_candidate_bundle,
     start_campaign,
+    submit_campaign_design,
     submit_research_seed,
 )
 from wayfinder_paths.jobs.execution.op_process import op_runner_command
+from wayfinder_paths.jobs.execution.op_runner import _nudge_evolution
 from wayfinder_paths.jobs.execution.primitives import DEFAULT_WARMUP_BARS
 from wayfinder_paths.jobs.failures import TransientInfrastructureError
 from wayfinder_paths.jobs.gating import compute_workspace_revision
@@ -88,6 +92,20 @@ def _job(tmp_path, job_id: str) -> tuple[JobStore, str]:
     bars = root / "results" / "backtest" / "input_bars.json"
     bars.parent.mkdir(parents=True, exist_ok=True)
     bars.write_text('{"metadata":{"days":120},"bars":[]}\n', encoding="utf-8")
+    # Most tests below pin the pre-design schema so they remain compatibility
+    # coverage for campaigns that were already active during a roll. New
+    # investigation/design behavior has dedicated tests at the end of this file.
+    (root / "improver.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "evolution": {
+                    "generated_programs": 12,
+                    "investigation_design_enabled": False,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     return store, job.id
 
 
@@ -104,6 +122,63 @@ def _prepare_campaign_candidates(
         )
         for index in range(1, 5)
     ]
+
+
+def _investigative_job(tmp_path) -> tuple[JobStore, str]:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    (store.job_dir(job_id) / "improver.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "evolution": {
+                    "generated_programs": 8,
+                    "investigation_design_enabled": True,
+                    "max_attempts_per_idea": 3,
+                    "max_quick_attempts": 24,
+                    "wildcard_slots": 2,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return store, job_id
+
+
+def _campaign_design() -> dict[str, Any]:
+    hypotheses = [
+        {
+            "id": f"h{index}",
+            "family": f"measured-family-{index}",
+            "causal_mechanism": f"repair measured failure {index}",
+            "falsifier": f"same-window behavior does not improve for {index}",
+            "evidence_refs": ["/baseline/reason"],
+        }
+        for index in range(1, 4)
+    ]
+    sources = (
+        "starter_seed",
+        "research_context",
+        "de_novo",
+        "incumbent",
+        "starter_seed",
+        "de_novo",
+        "de_novo",
+        "starter_seed",
+    )
+    slots = []
+    for index, source in enumerate(sources, start=1):
+        wildcard = index >= 7
+        slots.append(
+            {
+                "slot_id": f"s{index:02d}",
+                "wildcard": wildcard,
+                "hypothesis_id": None if wildcard else f"h{((index - 1) % 3) + 1}",
+                "parent_source": source,
+                "mutation_kind": "parameter" if index in {4, 5} else "structural",
+                "family": f"idea-{index}",
+                "summary": f"test mechanism {index}",
+            }
+        )
+    return {"hypotheses": hypotheses, "slots": slots}
 
 
 def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
@@ -163,6 +238,169 @@ def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
         "refuted_family_matching": "exact_free_form_family_v1",
     }
     assert len(load_starter_casebook()) > len(block["cases"])
+
+
+def test_investigative_campaign_requires_and_freezes_one_design_turn(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+
+    state = start_campaign(store, job_id, now=started)
+
+    assert state["schema_version"] == "2.0"
+    assert state["stage"] == "design"
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt and prompt["agent_name"] == "wayfinder-evolution-designer"
+    assert prompt["constraints"]["idea_slots"] == 8
+    assert prompt["constraints"]["wildcards"] == 2
+    with pytest.raises(ValueError, match="design must be accepted"):
+        prepare_candidate(store, job_id, now=started + timedelta(minutes=2))
+
+    design = _campaign_design()
+    malformed = json.loads(json.dumps(design))
+    malformed["hypotheses"][0]["evidence_refs"] = "/baseline/reason"
+    with pytest.raises(ValueError, match="non-empty list of JSON pointers"):
+        submit_campaign_design(store, job_id, campaign_design=malformed)
+    malformed = json.loads(json.dumps(design))
+    malformed["slots"][0]["wildcard"] = "false"
+    with pytest.raises(ValueError, match="wildcard must be true or false"):
+        submit_campaign_design(store, job_id, campaign_design=malformed)
+
+    accepted = submit_campaign_design(store, job_id, campaign_design=design)
+    repeated = submit_campaign_design(store, job_id, campaign_design=design)
+    current = campaign_status(store, job_id)
+
+    assert accepted == repeated
+    assert current["stage"] == "generate"
+    assert current["design"]["hypotheses"] == 3
+    assert current["design"]["slots"] == 8
+    assert current["design"]["wildcards"] == 2
+    candidate = prepare_candidate(store, job_id, now=started + timedelta(minutes=3))
+    assert candidate["design_slot_id"] == "s01"
+    assert candidate["hypothesis_id"] == "h1"
+    assert candidate["parent_source"] == "starter_seed"
+    assert candidate["evidence_refs"] == ["/baseline/reason"]
+    assert candidate["reference_bundle"]
+
+
+def test_investigative_attempts_repair_failures_but_close_viable_ideas(
+    tmp_path,
+) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    submit_campaign_design(store, job_id, campaign_design=_campaign_design())
+    prepared = prepare_candidate(store, job_id, now=started + timedelta(minutes=1))
+    candidate_root = store.job_dir(job_id) / prepared["bundle"]
+    script = candidate_root / "workspace" / "src" / "strategy.py"
+
+    def outcome(
+        *,
+        net: float,
+        viable: bool,
+        progress: bool = False,
+    ) -> dict[str, Any]:
+        revision = compute_workspace_revision(candidate_root)
+        return {
+            "status": "quick_complete" if viable else "low_fidelity_rejected",
+            "evidence": "attempt receipt",
+            "revision": revision,
+            "quick": {"stats": {"trade_count": 4, "net_return": net}},
+            "objective": {
+                "net_log_growth": net,
+                "downside_deviation": 0.0,
+                "tail_loss": 0.0,
+                "max_drawdown_pct": 0.0,
+            },
+            "attempt_receipt": {
+                "revision": revision,
+                "execution_valid": True,
+                "stats": {"trade_count": 4, "net_return": net},
+                "objective": {"net_log_growth": net},
+                "behavior": {},
+                "trades": [],
+            },
+            "postmortem": {
+                "viable": viable,
+                "primary_failure": None if viable else "negative_after_costs",
+                "failure_codes": [] if viable else ["negative_after_costs"],
+                "behavior_diff": {"material_change": True},
+                **(
+                    {"progress_from_previous": {"net_return_delta": 0.01}}
+                    if progress
+                    else {}
+                ),
+            },
+        }
+
+    state = campaign_status(store, job_id)
+    candidate = state["candidates"][0]
+    script.write_text(script.read_text() + "\nATTEMPT_1 = True\n")
+    _commit_designed_attempt(
+        store,
+        job_id,
+        state=state,
+        candidate=candidate,
+        outcome=outcome(net=-0.02, viable=False),
+    )
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    assert candidate["status"] == "repair_pending"
+    assert state["counts"]["quick_evaluated"] == 0
+
+    script.write_text(script.read_text() + "\nATTEMPT_2 = True\n")
+    _commit_designed_attempt(
+        store,
+        job_id,
+        state=state,
+        candidate=candidate,
+        outcome=outcome(net=-0.01, viable=False, progress=True),
+    )
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    assert candidate["status"] == "repair_pending"
+
+    script.write_text(script.read_text() + "\nATTEMPT_3 = True\n")
+    _commit_designed_attempt(
+        store,
+        job_id,
+        state=state,
+        candidate=candidate,
+        outcome=outcome(net=0.03, viable=True, progress=True),
+    )
+
+    assert candidate["status"] == "quick_complete"
+    assert candidate["attempt_count"] == 3
+    assert candidate["best_attempt"] == 3
+    assert state["counts"] == {
+        "generated": 1,
+        "quick_evaluated": 1,
+        "full_dev": 0,
+        "proposed": 0,
+        "quick_attempts": 3,
+        "repairs": 2,
+    }
+    _archive_campaign_candidate(store, job_id, candidate)
+    lessons = evolution_lessons_block(store, job_id)["outcomes"]
+    assert lessons[0]["postmortem"]["viable"] is True
+    assert lessons[0]["postmortem"]["behavior_diff"]["material_change"] is True
+
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    prepared_two = prepare_candidate(store, job_id, now=started + timedelta(minutes=2))
+    state = campaign_status(store, job_id)
+    candidate_two = state["candidates"][1]
+    candidate_root = store.job_dir(job_id) / prepared_two["bundle"]
+    script = candidate_root / "workspace" / "src" / "strategy.py"
+    script.write_text(script.read_text() + "\nFIRST_PASS = True\n")
+    _commit_designed_attempt(
+        store,
+        job_id,
+        state=state,
+        candidate=candidate_two,
+        outcome=outcome(net=0.04, viable=True),
+    )
+    assert candidate_two["status"] == "quick_complete"
+    assert candidate_two["attempt_count"] == 1
+    assert state["counts"]["quick_evaluated"] == 2
+    assert state["counts"]["quick_attempts"] == 4
+    assert state["counts"]["repairs"] == 2
 
 
 def test_sensor_research_seed_is_frozen_then_consumed_as_real_parent(
@@ -285,6 +523,7 @@ def test_only_one_automatic_campaign_owns_a_machine(tmp_path) -> None:
 
 def test_runner_command_declares_control_and_heavy_resource_tiers() -> None:
     assert "--resource-tier=control" in op_runner_command("evolution_prepare")
+    assert "--resource-tier=control" in op_runner_command("evolution_design")
     assert "--resource-tier=control" in op_runner_command("evolution_start")
     assert "--resource-tier=heavy" in op_runner_command("evolution_evaluate")
     assert "--resource-tier=heavy" in op_runner_command("backtest_job")
@@ -624,6 +863,12 @@ def test_next_campaign_materializes_real_qd_parent_bytes(tmp_path) -> None:
                 "trades_per_asset_30d": 10,
             },
             "dev": {"validation": {"stats": {"net_return": 0.1}}},
+            "elite_eligible": True,
+            "elite_activity": {
+                "validation_trades": 12,
+                "minimum": 8,
+                "target": 12,
+            },
         }
     )
     state["status"] = "complete"
@@ -1631,6 +1876,61 @@ def test_evolution_uses_a_dedicated_stage_session(tmp_path, monkeypatch) -> None
     assert session["session_stage"] == "candidate-01"
 
 
+def test_evolution_design_stage_uses_the_normal_temperature_designer(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    store.write_json(
+        job_id,
+        "state/evolution_campaign.json",
+        {"campaign_id": "campaign-1", "status": "active"},
+    )
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.created: list[dict[str, Any]] = []
+            self.prompts: list[tuple[str, str]] = []
+
+        def healthy(self):
+            return True
+
+        def session_exists(self, session_id):
+            return False
+
+        def session_statuses(self):
+            return {}
+
+        def find_child_session(self, *, parent_id, title):
+            assert title == f"job/{job_id}/evolution/campaign-1/design"
+            return None
+
+        def create_session(self, **kwargs):
+            self.created.append(kwargs)
+            return "designer-session"
+
+        def prompt_async(self, *, session_id, text, agent):
+            self.prompts.append((session_id, agent))
+            return True
+
+    client = FakeClient()
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.OPENCODE_CLIENT", client)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.campaign_prompt_block",
+        lambda store, job_id: {
+            "campaign_id": "campaign-1",
+            "session_stage": "design",
+            "agent_name": "wayfinder-evolution-designer",
+            "next_action": "submit the grounded design",
+        },
+    )
+
+    result = _queue_evolution_worker(store, job_id)
+
+    assert result == {"queued": True, "session_id": "designer-session"}
+    assert client.created[0]["agent"] == "wayfinder-evolution-designer"
+    assert client.prompts == [("designer-session", "wayfinder-evolution-designer")]
+
+
 class _FakeEvolutionClient:
     def __init__(self, job_id: str) -> None:
         self.job_id = job_id
@@ -1708,6 +2008,29 @@ def test_op_completion_nudge_reuses_session_and_respects_kill_switch(
     monkeypatch.setenv("WAYFINDER_EVOLUTION_NUDGE", "0")
     assert nudge_evolution_session(store, job_id) is None
     assert len(client.prompts) == 1
+
+
+def test_design_completion_retries_only_while_stage_transition_is_busy(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    sleeps: list[int] = []
+
+    def nudge(store, job_id):
+        calls.append(job_id)
+        if len(calls) == 1:
+            return {"transition_pending": True}
+        return {"queued": True}
+
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.nudge_evolution_session", nudge)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.execution.op_runner.time.sleep", sleeps.append
+    )
+
+    _nudge_evolution("evolution_design", {"job_id": "majors-5m-lab"})
+
+    assert calls == ["majors-5m-lab", "majors-5m-lab"]
+    assert sleeps == [1]
 
 
 def test_parentless_evolution_nudges_reuse_persisted_campaign_session(
@@ -2245,6 +2568,17 @@ def _evaluatable_job(
     bars.parent.mkdir(parents=True, exist_ok=True)
     bars.write_text(
         json.dumps({"metadata": {"days": 120}, "bars": _hourly_bars(60)}),
+        encoding="utf-8",
+    )
+    (root / "improver.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "evolution": {
+                    "generated_programs": 12,
+                    "investigation_design_enabled": False,
+                }
+            }
+        ),
         encoding="utf-8",
     )
     return store, job.id
