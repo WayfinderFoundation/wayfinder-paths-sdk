@@ -133,7 +133,7 @@ async def _tick(strategy, view, *, spec=None, timestamp=None, **kwargs):
         brokers=kwargs.pop("brokers", {"*": FakeBroker()}),
         state=kwargs.pop("state", EngineState()),
         spec=spec,
-        params={},
+        params=kwargs.pop("params", {}),
         timestamp=timestamp or view.timestamps[-1],
         **kwargs,
     )
@@ -213,6 +213,85 @@ async def test_symbol_block_and_risk_halt_preserve_semantic_close() -> None:
     assert broker.placed == [close]
     assert result.intents == [close]
     assert not any(event["kind"] == "intent_rejected" for event in result.guard_events)
+
+
+async def test_regime_gate_blocks_entries_but_preserves_semantic_close() -> None:
+    broker = FakeBroker()
+    state = EngineState()
+    state.ledger.positions["SNX"] = PositionRecord(
+        symbol="SNX", side="long", size=1.0, avg_price=10.0
+    )
+    view = _view([10.0, 10.5])
+    frame = view.to_frame()
+    frame["__wf_portfolio_regime"] = "down_highvol"
+    entry = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        size=1.0,
+    )
+    close = OrderIntent(
+        action="CLOSE",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="short",
+        size=1.0,
+        reduce_only=False,
+    )
+
+    result = await _tick(
+        _strategy([entry, close]),
+        CompletedBarsView(frame),
+        brokers={"hyperliquid": broker},
+        state=state,
+        params={"symbols": ["SNX"], "enabled_regimes": ["up_lowvol"]},
+    )
+
+    assert broker.placed == [close]
+    assert result.gates["portfolio_regime"] == {
+        "current": "down_highvol",
+        "allowed": ["up_lowvol"],
+        "entry_open": False,
+    }
+    assert any(event["kind"] == "intent_rejected" for event in result.guard_events)
+
+
+async def test_ood_overlay_scales_entries_but_preserves_semantic_close() -> None:
+    broker = FakeBroker()
+    state = EngineState()
+    state.ledger.positions["SNX"] = PositionRecord(
+        symbol="SNX", side="long", size=2.0, avg_price=10.0
+    )
+    view = _view([10.0, 10.5])
+    frame = view.to_frame()
+    frame["__wf_ood_entry_scale"] = 0.25
+    entry = OrderIntent(
+        action="OPEN",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="long",
+        notional=100.0,
+    )
+    close = OrderIntent(
+        action="STOP_LOSS",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="short",
+        size=2.0,
+        reduce_only=False,
+    )
+
+    await _tick(
+        _strategy([entry, close]),
+        CompletedBarsView(frame),
+        brokers={"hyperliquid": broker},
+        state=state,
+        params={"defense_overlay": {}},
+    )
+
+    assert broker.placed[0].notional == pytest.approx(25.0)
+    assert broker.placed[1].size == pytest.approx(2.0)
 
 
 async def test_daily_notional_cap_accumulates_across_ticks() -> None:

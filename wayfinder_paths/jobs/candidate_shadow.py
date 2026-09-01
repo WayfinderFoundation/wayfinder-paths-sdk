@@ -9,6 +9,11 @@ from typing import Any
 import pandas as pd
 
 from wayfinder_paths.jobs.compute_lock import job_state_lock
+from wayfinder_paths.jobs.defense import (
+    add_defense_features,
+    defense_feature_warmup_bars,
+    defense_policy,
+)
 from wayfinder_paths.jobs.execution.engine import EngineState, run_tick
 from wayfinder_paths.jobs.execution.features import apply_precompute
 from wayfinder_paths.jobs.execution.job import _load_job_yaml
@@ -17,6 +22,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     ExecutionSpec,
     StateSnapshot,
+    bar_interval_seconds,
     resolve_compute_window,
 )
 from wayfinder_paths.jobs.execution.simulator import (
@@ -38,12 +44,52 @@ from wayfinder_paths.jobs.probation import (
     resolve_probation_bundle,
     update_probation_target,
 )
+from wayfinder_paths.jobs.regime import (
+    REGIME_FEATURE_WARMUP_BARS,
+    add_portfolio_regime_feature,
+    enabled_regimes,
+)
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.runner.monitor_state import atomic_write_json
 
 
 def active_candidate_shadows(store: JobStore, job_id: str) -> bool:
     return active_probation_trials(store, job_id)
+
+
+def candidate_shadow_lookback_bars(store: JobStore, job_id: str) -> int:
+    """Deepest input window needed by an active paper A/B participant.
+
+    The live feed is shared with the incumbent, but every strategy is sliced
+    back to its own declared window before decide(). This only prevents a
+    short-lookback incumbent from starving a candidate's engine-owned feature
+    calculation of history.
+    """
+    required = 0
+    for target in probation_targets(store, job_id):
+        candidate_root = resolve_probation_bundle(store, job_id, target)
+        job_data = _load_job_yaml(candidate_root)
+        params = dict(job_data.get("execution_params") or {})
+        script = store.resolve_script_entrypoint(
+            job_id, job_data, candidate_dir=candidate_root
+        )
+        if script is None or not script.exists():
+            raise FileNotFoundError("candidate execution script missing")
+        strategy = _load_strategy(script, params)
+        interval = (
+            (job_data.get("execution_spec") or {}).get("data_contract") or {}
+        ).get("bar_interval")
+        required = max(
+            required,
+            resolve_compute_window(params, strategy).live_depth,
+            REGIME_FEATURE_WARMUP_BARS if enabled_regimes(params) else 0,
+            (
+                defense_feature_warmup_bars(bar_interval_seconds(interval))
+                if defense_policy(params)["enabled"]
+                else 0
+            ),
+        )
+    return required
 
 
 async def run_candidate_shadows(
@@ -172,6 +218,8 @@ async def _run_target(
         raise FileNotFoundError("candidate execution script missing")
     params = dict(job_data.get("execution_params") or {})
     strategy = _load_strategy(script, params)
+    view = add_defense_features(view, params)
+    view = add_portfolio_regime_feature(view, params)
     # Same bounded window the simulator replays with and the live driver
     # fetches — the shadow lane must not hand candidates deeper history than
     # production would.

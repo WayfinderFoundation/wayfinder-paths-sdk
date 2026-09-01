@@ -52,6 +52,7 @@ def result_receipt(
         },
         "objective": dict(objective or {}),
         "behavior": dict(behavior or {}),
+        "regime": dict(result.stats.get("regime") or {}),
         "trades": [_trade_view(row) for row in result.trades],
     }
 
@@ -64,6 +65,7 @@ def build_diagnostic_pack(
     baseline: Mapping[str, Any],
     historical_lessons: Mapping[str, Any],
     research_context: Mapping[str, Any],
+    regime_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Freeze compact existing diagnostics with explicit plane/provenance."""
     artifacts: dict[str, Any] = {}
@@ -136,6 +138,11 @@ def build_diagnostic_pack(
         **artifacts,
         "prior_campaign_lessons": dict(historical_lessons),
         "research_context": dict(research_context),
+        **(
+            {"campaign_regime": dict(regime_context)}
+            if regime_context and regime_context.get("available")
+            else {}
+        ),
     }
     return _fit_pack(pack)
 
@@ -205,6 +212,7 @@ def build_postmortem(
     *,
     previous: Mapping[str, Any] | None = None,
     min_trades: int = 8,
+    max_outside_loss_pct: float = 0.02,
 ) -> dict[str, Any]:
     """Explain what changed and why an attempt did or did not qualify."""
     candidate_trades = list(candidate.get("trades") or [])
@@ -215,10 +223,25 @@ def build_postmortem(
     removed = reference_signatures - candidate_signatures
     stats = candidate.get("stats") or {}
     ref_stats = reference.get("stats") or {}
-    trade_count = _integer(stats.get("trade_count"))
-    net_return = _number(stats.get("net_return"))
-    ref_count = _integer(ref_stats.get("trade_count"))
-    ref_net = _number(ref_stats.get("net_return"))
+    regime = candidate.get("regime") or {}
+    reference_regime = reference.get("regime") or {}
+    specialized = bool(regime.get("target_regimes"))
+    trade_count = _integer(
+        regime.get("target_trade_count") if specialized else stats.get("trade_count")
+    )
+    net_return = _number(
+        regime.get("target_net_return") if specialized else stats.get("net_return")
+    )
+    ref_count = _integer(
+        reference_regime.get("target_trade_count")
+        if specialized
+        else ref_stats.get("trade_count")
+    )
+    ref_net = _number(
+        reference_regime.get("target_net_return")
+        if specialized
+        else ref_stats.get("net_return")
+    )
     fee_delta = _number(stats.get("total_fees")) - _number(ref_stats.get("total_fees"))
     turnover_delta = _number(stats.get("total_turnover_usd")) - _number(
         ref_stats.get("total_turnover_usd")
@@ -239,7 +262,11 @@ def build_postmortem(
     elif trade_count < min_trades:
         failure_codes.append("activity_below_floor")
     if net_return <= 0:
-        failure_codes.append("negative_after_costs")
+        failure_codes.append(
+            "negative_in_target_regime" if specialized else "negative_after_costs"
+        )
+    if specialized and _number(regime.get("outside_loss_pct")) > max_outside_loss_pct:
+        failure_codes.append("out_of_regime_loss_budget")
     if ref_count and trade_count < max(1, int(ref_count * 0.5)):
         failure_codes.append("activity_collapse")
     realized = sum(_number(row.get("realized_pnl_delta")) for row in candidate_trades)
@@ -251,6 +278,10 @@ def build_postmortem(
         and material_change
         and trade_count >= min_trades
         and net_return > 0
+        and (
+            not specialized
+            or _number(regime.get("outside_loss_pct")) <= max_outside_loss_pct
+        )
     )
     postmortem: dict[str, Any] = {
         "viable": viable,

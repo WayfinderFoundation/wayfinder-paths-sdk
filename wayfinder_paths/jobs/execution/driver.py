@@ -11,6 +11,11 @@ from typing import Any
 import pandas as pd
 from loguru import logger
 
+from wayfinder_paths.jobs.defense import (
+    add_defense_features,
+    defense_feature_warmup_bars,
+    defense_policy,
+)
 from wayfinder_paths.jobs.execution.engine import (
     EngineState,
     TickResult,
@@ -53,6 +58,11 @@ from wayfinder_paths.jobs.models import (
     DEFAULT_FORWARD_FILLS,
     DEFAULT_FORWARD_TICKS,
     WayfinderJob,
+)
+from wayfinder_paths.jobs.regime import (
+    REGIME_FEATURE_WARMUP_BARS,
+    add_portfolio_regime_feature,
+    enabled_regimes,
 )
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.triggers import fire_triggers
@@ -340,7 +350,27 @@ async def tick_job(
     # One window contract with the backtest simulator: a declared warmup_bars
     # (or legacy lookback_bars) sizes the live fetch exactly like the replay
     # slice, so decide() sees the same bounded history in both.
-    lookback_bars = resolve_compute_window(params, strategy).live_depth
+    strategy_lookback_bars = resolve_compute_window(params, strategy).live_depth
+    feature_warmup = max(
+        REGIME_FEATURE_WARMUP_BARS if enabled_regimes(params) else 0,
+        (
+            defense_feature_warmup_bars(bar_interval_seconds(bar_interval))
+            if defense_policy(params)["enabled"]
+            else 0
+        ),
+    )
+    shadow_lookback_bars = 0
+    try:
+        from wayfinder_paths.jobs.candidate_shadow import (
+            active_candidate_shadows,
+            candidate_shadow_lookback_bars,
+        )
+
+        if active_candidate_shadows(store, job.id):
+            shadow_lookback_bars = candidate_shadow_lookback_bars(store, job.id)
+    except Exception as exc:  # noqa: BLE001 - incumbent execution remains primary
+        logger.debug(f"candidate shadow lookback unavailable: {exc}")
+    lookback_bars = max(strategy_lookback_bars, feature_warmup, shadow_lookback_bars)
     rows: list[dict[str, Any]] = []
     for adapter in adapters.values():
         view = await adapter.feed.get_completed_bars(
@@ -511,10 +541,15 @@ async def tick_job(
         if not feature_skip:
             view = merge_features(view, feature_frames, feature_specs)
 
-    # Candidate shadows receive the same completed bars and exogenous feature
-    # snapshot, but apply their own precompute hook below in an isolated paper
-    # engine. Keep this reference before the incumbent adds derived columns.
+    # Candidate shadows receive the full shared fetch and exogenous feature
+    # snapshot, but apply their own engine-owned features and bounded strategy
+    # window in an isolated paper engine.
     shadow_view = view
+
+    view = add_defense_features(view, params)
+    view = add_portfolio_regime_feature(view, params)
+    if lookback_bars > strategy_lookback_bars:
+        view = view.window(len(view.timestamps) - 1, strategy_lookback_bars)
 
     # Strategy-precomputed indicator columns (optional `precompute` hook): one
     # vectorized pass over the bounded window, after the exogenous feature

@@ -42,6 +42,7 @@ from wayfinder_paths.jobs.compute_lock import (
     job_state_lock,
     machine_state_lock,
 )
+from wayfinder_paths.jobs.constitution import load_constitution
 from wayfinder_paths.jobs.evidence import verify_job_evidence_refs
 from wayfinder_paths.jobs.evolution_diagnostics import (
     attempt_made_progress,
@@ -91,8 +92,17 @@ from wayfinder_paths.jobs.gating import (
     evaluate_economic_gate,
 )
 from wayfinder_paths.jobs.improver.spec import ImproverSpec, revision_stamp
+from wayfinder_paths.jobs.indicators import REGIME_LABELS
 from wayfinder_paths.jobs.isolated_phase import run_isolated_phase
 from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.regime import (
+    MIXED_REGIME,
+    PORTFOLIO_REGIME_CLASSIFIER,
+    classify_portfolio_regimes,
+    enabled_regimes,
+    opposite_regime,
+    regime_universe,
+)
 from wayfinder_paths.jobs.resource_envelope import (
     evolution_resource_phase,
     require_evolution_headroom,
@@ -431,6 +441,11 @@ def _start_campaign(
     campaign_policy.setdefault("wildcard_slots", 2)
     campaign_policy.setdefault("elite_min_validation_trades", 8)
     campaign_policy.setdefault("elite_participation_target_trades", 12)
+    regime_context = _campaign_regime_context(
+        campaign_root / str(snapshots["dataset"]["path"]),
+        campaign_root / "source",
+        enabled=bool(campaign_policy.get("regime_specialist_enabled")),
+    )
     campaign_schema = (
         SCHEMA_VERSION
         if campaign_policy.get("investigation_design_enabled", True)
@@ -455,6 +470,7 @@ def _start_campaign(
         "research_seeds": research_seeds,
         "starter_seeds": starter_seeds,
         "research_context": research_context,
+        "regime_context": regime_context,
         "policy": campaign_policy,
         **revision_stamp(root),
     }
@@ -471,6 +487,7 @@ def _start_campaign(
         baseline=baseline,
         historical_lessons=historical_lessons,
         research_context=research_context,
+        regime_context=regime_context,
     )
     diagnostic_path = campaign_root / DIAGNOSTIC_PACK
     atomic_write_json(diagnostic_path, diagnostic_pack)
@@ -515,6 +532,53 @@ def _start_campaign(
         },
     )
     return state
+
+
+def _campaign_regime_context(
+    dataset_path: Path, source_root: Path, *, enabled: bool
+) -> dict[str, Any]:
+    """Freeze the causal market cell that campaign design must diversify from."""
+    if not enabled:
+        return {"enabled": False, "available": False}
+    try:
+        payload = json.loads(dataset_path.read_text(encoding="utf-8"))
+        rows = payload.get("bars") if isinstance(payload, dict) else None
+        params = dict(_load_job_yaml(source_root).get("execution_params") or {})
+        if not isinstance(rows, list) or not rows:
+            raise ValueError("campaign dataset has no bars")
+        frame = pd.DataFrame(rows)
+        available_symbols = tuple(str(value) for value in frame["symbol"].unique())
+        universe = regime_universe(params, available_symbols)
+        labels = classify_portfolio_regimes(frame, universe=universe)
+        usable = labels[labels != MIXED_REGIME]
+        if usable.empty:
+            raise ValueError("campaign dataset has no classifiable regime bars")
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        return {
+            "enabled": True,
+            "available": False,
+            "reason": str(exc)[:240],
+        }
+    recent_cutoff = usable.index[-1] - pd.Timedelta(days=7)
+    recent = usable[usable.index >= recent_cutoff]
+    counts = recent.value_counts().to_dict()
+    primary = str(
+        max(
+            counts,
+            key=lambda label: (int(counts[label]), label == str(recent.iloc[-1])),
+        )
+    )
+    return {
+        "enabled": True,
+        "available": True,
+        "classifier": PORTFOLIO_REGIME_CLASSIFIER,
+        "universe": list(universe),
+        "primary_regime": primary,
+        "counter_regime": opposite_regime(primary),
+        "recent_window_days": 7,
+        "recent_counts": {str(key): int(value) for key, value in counts.items()},
+        "as_of": pd.Timestamp(usable.index[-1]).isoformat(),
+    }
 
 
 def _existing_baseline_receipt(root: Path) -> dict[str, Any]:
@@ -634,6 +698,14 @@ def _validate_campaign_design(
     expected_slots = int(manifest["policy"]["generated_programs"])
     if not isinstance(slots, list) or len(slots) != expected_slots:
         raise ValueError(f"campaign design requires exactly {expected_slots} slots")
+    refuted_families = {
+        str(item.get("family") or "").strip()
+        for item in (
+            (diagnostic_pack.get("research_context") or {}).get("refuted_families")
+            or []
+        )
+        if item.get("family")
+    }
     hypothesis_by_id: dict[str, dict[str, Any]] = {}
     normalized_hypotheses: list[dict[str, Any]] = []
     for index, hypothesis in enumerate(hypotheses, start=1):
@@ -663,12 +735,39 @@ def _validate_campaign_design(
             )
         for ref in refs:
             resolve_json_pointer(diagnostic_pack, ref)
+        addresses_refutation = str(hypothesis.get("addresses_refutation") or "").strip()
+        raw_new_refs = hypothesis.get("new_evidence_refs") or []
+        if family in refuted_families:
+            if not addresses_refutation:
+                raise ValueError(
+                    f"hypothesis {hypothesis_id} re-proposes refuted family "
+                    "without addresses_refutation"
+                )
+            if (
+                not isinstance(raw_new_refs, list)
+                or not raw_new_refs
+                or not all(
+                    isinstance(ref, str) and ref.strip() in refs for ref in raw_new_refs
+                )
+            ):
+                raise ValueError(
+                    f"hypothesis {hypothesis_id} must name new_evidence_refs "
+                    "already present in evidence_refs"
+                )
         normalized = {
             "id": hypothesis_id,
             "family": family[:120],
             "causal_mechanism": mechanism[:800],
             "falsifier": falsifier[:500],
             "evidence_refs": refs[:12],
+            **(
+                {
+                    "addresses_refutation": addresses_refutation[:500],
+                    "new_evidence_refs": [str(ref).strip() for ref in raw_new_refs[:6]],
+                }
+                if addresses_refutation
+                else {}
+            ),
         }
         hypothesis_by_id[hypothesis_id] = normalized
         normalized_hypotheses.append(normalized)
@@ -692,6 +791,11 @@ def _validate_campaign_design(
         if item.get("seed_id")
     }
     normalized_slots: list[dict[str, Any]] = []
+    regime_context = manifest.get("regime_context") or {}
+    specialist_design = bool(
+        manifest["policy"].get("regime_specialist_enabled")
+        and regime_context.get("available")
+    )
     seen_slot_ids: set[str] = set()
     for index, slot in enumerate(slots, start=1):
         if not isinstance(slot, dict):
@@ -754,6 +858,24 @@ def _validate_campaign_design(
             "family": family[:120],
             "summary": summary[:240],
         }
+        raw_regimes = slot.get("target_regimes")
+        if specialist_design:
+            if (
+                not isinstance(raw_regimes, list)
+                or isinstance(raw_regimes, str)
+                or not 1 <= len(raw_regimes) <= 2
+            ):
+                raise ValueError(f"slot {slot_id} requires one or two target_regimes")
+            target_regimes = list(
+                dict.fromkeys(str(value).strip() for value in raw_regimes)
+            )
+            invalid_regimes = sorted(set(target_regimes) - set(REGIME_LABELS))
+            if invalid_regimes:
+                raise ValueError(
+                    f"slot {slot_id} has unknown target_regimes: "
+                    + ", ".join(invalid_regimes)
+                )
+            normalized_slot["target_regimes"] = target_regimes
         if starter_seed_id:
             normalized_slot["starter_seed_id"] = starter_seed_id
         if research_seed_id:
@@ -792,6 +914,19 @@ def _validate_campaign_design(
         for slot in normalized_slots
     ):
         raise ValueError("one wildcard slot must be de_novo")
+    if specialist_design:
+        represented = {
+            regime
+            for slot in normalized_slots
+            for regime in slot.get("target_regimes") or []
+        }
+        if len(represented) < 2:
+            raise ValueError("campaign design must span at least two regime cells")
+        counter = str(regime_context["counter_regime"])
+        if counter not in represented:
+            raise ValueError(
+                f"campaign design requires a counter-regime slot for {counter}"
+            )
     for slot in grounded:
         if slot["parent_source"] != "research_context":
             continue
@@ -1059,6 +1194,15 @@ def _prepare_candidate(
         candidate_root=candidate_root,
         plan=parent_plan,
     )
+    target_regimes = list(design_slot.get("target_regimes") or [])
+    if target_regimes:
+        job_data = _load_job_yaml(candidate_root)
+        params = dict(job_data.get("execution_params") or {})
+        params["enabled_regimes"] = target_regimes
+        job_data["execution_params"] = params
+        atomic_write_text(
+            candidate_root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
+        )
     seed_revision = compute_workspace_revision(candidate_root)
     reference_relative = (
         f"{CAMPAIGN_ROOT}/{state['campaign_id']}/references/{candidate_id}"
@@ -1089,6 +1233,7 @@ def _prepare_candidate(
         "design_slot_id": design_slot.get("slot_id"),
         "hypothesis_id": design_slot.get("hypothesis_id"),
         "wildcard": bool(design_slot.get("wildcard")),
+        "target_regimes": target_regimes,
         "evidence_refs": list(hypothesis.get("evidence_refs") or []),
         "causal_mechanism": hypothesis.get("causal_mechanism"),
         "falsifier": hypothesis.get("falsifier"),
@@ -1122,6 +1267,7 @@ def _prepare_candidate(
             "design_slot_id": candidate.get("design_slot_id"),
             "hypothesis_id": candidate.get("hypothesis_id"),
             "wildcard": candidate.get("wildcard"),
+            "target_regimes": candidate.get("target_regimes"),
         },
     )
     # ``bundle`` stays durable and job-relative.  The tool response also gives
@@ -1393,7 +1539,7 @@ def _evaluate_candidate(
             candidate.get("mutation_kind") == "parameter"
             and search_space is not None
             and result.validation.get("execution_valid")
-            and int(result.stats.get("trade_count") or 0) > 0
+            and _decision_trade_count(result.stats) > 0
         ):
             tuning_preview = _parameter_tuning_preview(
                 subject,
@@ -1453,6 +1599,13 @@ def _evaluate_candidate(
             # changes behavior. The eight-trade participation floor belongs
             # to independent validation, where elite eligibility is decided.
             min_trades=1,
+            max_outside_loss_pct=float(
+                (
+                    load_constitution(candidate_root)
+                    .get("evaluation", {})
+                    .get("regime", {})
+                ).get("max_out_of_regime_loss_pct", 0.02)
+            ),
         )
     if search_space is None:
         common["tuning_skip_reason"] = "no_typed_search_space"
@@ -1460,7 +1613,7 @@ def _evaluate_candidate(
         common["tuning_preview"] = tuning_preview
     if behavior_preview is not None:
         common["behavior_preview"] = behavior_preview
-    if int(result.stats.get("trade_count") or 0) <= 0:
+    if _decision_trade_count(result.stats) <= 0:
         return {
             **common,
             "status": "low_fidelity_rejected",
@@ -1795,16 +1948,18 @@ def _run_evolution_optuna(
 ) -> tuple[ExecutionGridResult, dict[str, Any]]:
     search_data = _tail(dataset, bars) if bars > 0 else dataset
     started = perf_counter()
+    specialized = bool(enabled_regimes(search_space))
+    rank_by = "regime_score" if specialized else "net_return"
     grid = run_optuna_search(
         subject["script"],
         search_data,
         subject["spec"],
         search_space,
-        rank_by="net_return",
+        rank_by=rank_by,
         n_trials=trials,
         seed=_OPTUNA_SEED,
         timeout=timeout,
-        objectives=["net_return", "max_drawdown_pct"],
+        objectives=[] if specialized else ["net_return", "max_drawdown_pct"],
     )
     return grid, {
         "status": "complete" if grid.ranked else "no_valid_trials",
@@ -2486,6 +2641,19 @@ def campaign_prompt_block(
             for item in manifest.get("research_seeds") or []
             if item.get("seed_id")
         ]
+        regime_context = manifest.get("regime_context") or {}
+        specialist_design = bool(
+            policy.get("regime_specialist_enabled") and regime_context.get("available")
+        )
+        regime_instruction = (
+            "Every slot must declare target_regimes as a list of one or two "
+            f"cells from {list(REGIME_LABELS)}. Span at least two cells and "
+            "include at least one slot for the measured counter-regime "
+            f"{regime_context.get('counter_regime')!r}; the recent primary is "
+            f"{regime_context.get('primary_regime')!r}. "
+            if specialist_design
+            else ""
+        )
         return {
             "job_id": job_id,
             "campaign_id": state["campaign_id"],
@@ -2501,14 +2669,16 @@ def campaign_prompt_block(
                 f"exactly {wildcards} explicit wildcards. Grounded slots must "
                 "cite existing JSON pointers from the diagnostic pack. Include "
                 "at least one starter_seed and one grounded de_novo slot. "
-                f"{research_instruction}Use at most one incumbent slot and at "
+                f"{research_instruction}{regime_instruction}Use at most one "
+                "incumbent slot and at "
                 "most two parameter slots. One wildcard must be de_novo. "
                 'Call wayfinder_core_jobs with action="evolution_design", '
                 f'job_id="{job_id}", and campaign_design={{"hypotheses": [...], '
                 '"slots": [...]}}, background=true. Each hypothesis needs id, family, '
                 "causal_mechanism, falsifier, evidence_refs. Each slot needs "
                 "slot_id, wildcard, hypothesis_id (null for wildcard), "
-                "parent_source, mutation_kind, family, summary. parent_source "
+                "parent_source, mutation_kind, family, summary"
+                f"{', target_regimes' if specialist_design else ''}. parent_source "
                 "must be exactly one of incumbent, qd_elite, crossover, de_novo, "
                 "starter_seed, research_seed, research_context; it is an enum, "
                 "so do not append a starter id or other qualifier. mutation_kind "
@@ -2517,8 +2687,12 @@ def campaign_prompt_block(
                 "optional starter_seed_id to one of "
                 f"{starter_ids}; this structured id, not summary prose, selects "
                 "the executable seed. For a research_seed slot, set optional "
-                f"research_seed_id to one of {research_seed_ids}. Do not wait "
-                "for the detached result; end immediately after launch."
+                f"research_seed_id to one of {research_seed_ids}. "
+                "If a hypothesis uses an exact family listed under "
+                "research_context.refuted_families, it must also include "
+                "addresses_refutation and new_evidence_refs (a non-empty "
+                "subset of evidence_refs). "
+                "Do not wait for the detached result; end immediately after launch."
             ),
             "diagnostic_pack": str(pack_path),
             "manifest_path": str(manifest_path),
@@ -2529,6 +2703,8 @@ def campaign_prompt_block(
                 "wildcards": wildcards,
                 "idea_slots": slots,
                 "research_parent_required": research_parent_required,
+                "regime_specialist_design": specialist_design,
+                "regime_context": regime_context if specialist_design else None,
             },
             "deadline_elapsed": current >= deadline,
         }
@@ -2798,6 +2974,7 @@ def _candidate_handoff(candidate: dict[str, Any]) -> dict[str, Any]:
         "design_slot_id": candidate.get("design_slot_id"),
         "hypothesis_id": candidate.get("hypothesis_id"),
         "wildcard": bool(candidate.get("wildcard")),
+        "target_regimes": list(candidate.get("target_regimes") or []),
         "attempt_count": int(candidate.get("attempt_count") or 0),
         "best_attempt": candidate.get("best_attempt"),
     }
@@ -2890,6 +3067,7 @@ def _archive_campaign_candidate(
             "attempt_count",
             "best_attempt",
             "latest_postmortem_path",
+            "target_regimes",
         )
         if candidate.get(key) is not None
     }
@@ -3061,13 +3239,43 @@ def _full_dev(
         if str(manifest.get("schema_version") or "") == SCHEMA_VERSION
         else 1
     )
+    validation_regime = validation_stats.get("regime") or {}
+    stress_regime = stress_stats.get("regime") or {}
+    specialized = bool(validation_regime.get("target_regimes"))
+    validation_trades = _decision_trade_count(validation_stats)
+    validation_return = float(
+        (
+            validation_regime.get("target_net_return")
+            if specialized
+            else validation_stats.get("net_return")
+        )
+        or 0.0
+    )
+    stress_return = float(
+        (
+            stress_regime.get("target_net_return")
+            if specialized
+            else stress_stats.get("net_return")
+        )
+        or 0.0
+    )
+    outside_loss_budget = float(
+        (load_constitution(root).get("evaluation", {}).get("regime", {})).get(
+            "max_out_of_regime_loss_pct", 0.02
+        )
+    )
+    outside_loss_ok = not specialized or (
+        float(validation_regime.get("outside_loss_pct") or 0.0) <= outside_loss_budget
+        and float(stress_regime.get("outside_loss_pct") or 0.0) <= outside_loss_budget
+    )
     passed = (
         train_valid
         and validation_valid
         and stress_valid
-        and int(validation_stats.get("trade_count") or 0) >= minimum_validation_trades
-        and float(validation_stats.get("net_return") or 0.0) > 0.0
-        and float(stress_stats.get("net_return") or 0.0) > 0.0
+        and validation_trades >= minimum_validation_trades
+        and validation_return > 0.0
+        and stress_return > 0.0
+        and outside_loss_ok
         and bool(calibration["audit_passed"])
     )
     return {
@@ -3085,7 +3293,7 @@ def _full_dev(
         "behavior": behavior,
         "elite_eligible": passed,
         "elite_activity": {
-            "validation_trades": int(validation_stats.get("trade_count") or 0),
+            "validation_trades": validation_trades,
             "minimum": minimum_validation_trades,
             "target": int(
                 (manifest.get("policy") or {}).get("elite_participation_target_trades")
@@ -3096,7 +3304,7 @@ def _full_dev(
         if passed
         else (
             "failed independent validation: activity below elite floor"
-            if int(validation_stats.get("trade_count") or 0) < minimum_validation_trades
+            if validation_trades < minimum_validation_trades
             else "failed independent validation"
         ),
     }
@@ -3240,6 +3448,29 @@ def _compact_result(
 
 
 def _objective(stats: dict[str, Any], params: dict[str, Any]) -> dict[str, float]:
+    regime = stats.get("regime") or {}
+    if regime.get("target_regimes"):
+        target_daily = [float(value) for _, value in regime.get("target_daily") or []]
+        downside = (
+            math.sqrt(
+                sum(value * value for value in target_daily if value < 0)
+                / len(target_daily)
+            )
+            if target_daily
+            else 0.0
+        )
+        outside_loss = float(regime.get("outside_loss_pct") or 0.0)
+        return {
+            "net_log_growth": round(
+                float(regime.get("target_net_log_growth") or 0.0), 8
+            ),
+            "downside_deviation": round(downside, 8),
+            "tail_loss": 0.0,
+            "max_drawdown_pct": round(
+                abs(float(stats.get("max_drawdown_pct") or 0.0)), 8
+            ),
+            "out_of_regime_loss_pct": round(outside_loss, 8),
+        }
     net = max(float(stats.get("net_return") or 0.0), -0.999999)
     capital = float(params.get("initial_capital") or 10_000.0)
     worst = min(float(stats.get("worst_trade_pnl") or 0.0), 0.0)
@@ -3249,6 +3480,13 @@ def _objective(stats: dict[str, Any], params: dict[str, Any]) -> dict[str, float
         "tail_loss": round(abs(worst) / max(capital, 1.0), 8),
         "max_drawdown_pct": round(abs(float(stats.get("max_drawdown_pct") or 0.0)), 8),
     }
+
+
+def _decision_trade_count(stats: dict[str, Any]) -> int:
+    regime = stats.get("regime") or {}
+    if regime.get("target_regimes"):
+        return int(regime.get("target_trade_count") or 0)
+    return int(stats.get("trade_count") or 0)
 
 
 def _behavior(
@@ -3298,6 +3536,7 @@ def _candidate_score(candidate: dict[str, Any]) -> float:
         - float(objective.get("downside_deviation") or 0.0)
         - float(objective.get("tail_loss") or 0.0)
         - float(objective.get("max_drawdown_pct") or 0.0)
+        - float(objective.get("out_of_regime_loss_pct") or 0.0)
     )
 
 
@@ -3583,15 +3822,36 @@ def _freeze_research_context(store: JobStore, job_id: str) -> dict[str, Any]:
     archive = load_archive(store, job_id).get("candidates") or []
     refuted_by_family: dict[str, dict[str, Any]] = {}
     for entry in archive:
-        if entry.get("status") != "refuted":
+        metadata = entry.get("metadata") or {}
+        postmortem = metadata.get("latest_postmortem") or {}
+        failure_codes = list(postmortem.get("failure_codes") or [])
+        rejected = entry.get("status") in {
+            "invalid",
+            "low_fidelity_rejected",
+            "audit_rejected",
+            "proposal_rejected",
+        }
+        if entry.get("status") != "refuted" and not rejected:
             continue
         family = str(entry.get("family") or "").strip()
         if family and family not in refuted_by_family:
-            refuted_by_family[family] = {
+            refutation = {
                 "family": family,
                 "candidate_id": entry.get("candidate_id"),
                 "evidence": str(entry.get("evidence") or "")[:240],
             }
+            if entry.get("status") != "refuted":
+                refutation.update(
+                    {
+                        "failure_codes": failure_codes[:8],
+                        "strength": (
+                            "regime_inversion"
+                            if "out_of_regime_loss_budget" in failure_codes
+                            else "rejected"
+                        ),
+                    }
+                )
+            refuted_by_family[family] = refutation
 
     positives: list[dict[str, Any]] = []
     probation = store.read_json(job_id, "probation.json", default={}) or {}

@@ -20,11 +20,14 @@ import pandas as pd
 from wayfinder_paths.jobs.archive import find_candidate
 from wayfinder_paths.jobs.bundles import copy_job_bundle
 from wayfinder_paths.jobs.compute_lock import job_state_lock
+from wayfinder_paths.jobs.constitution import load_constitution
 from wayfinder_paths.jobs.economics import block_bootstrap_lcb
+from wayfinder_paths.jobs.execution.job import _load_job_yaml
 from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.improver.spec import ImproverSpec, revision_stamp
 from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.regime import PORTFOLIO_REGIME_CLASSIFIER, enabled_regimes
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.runner.monitor_state import atomic_write_json
 
@@ -646,6 +649,14 @@ def stage_evolution_probation(
         raise ValueError("probation candidate must be inside its job root")
     if compute_workspace_revision(source_root) != safe_revision:
         raise ValueError("probation candidate revision does not match its bundle")
+    target_regimes = enabled_regimes(
+        dict(_load_job_yaml(source_root).get("execution_params") or {})
+    )
+    outside_loss_budget = float(
+        (load_constitution(source_root).get("evaluation", {}).get("regime", {})).get(
+            "max_out_of_regime_loss_pct", 0.02
+        )
+    )
     with job_state_lock(store.repo_root, job_id, name="probation"):
         doc = load_probation(store, job_id)
         duplicate = next(
@@ -743,6 +754,18 @@ def stage_evolution_probation(
                 "error_count": 0,
             },
             "evidence": dict(evidence or {}),
+            **(
+                {
+                    "regime_contract": {
+                        "classifier": PORTFOLIO_REGIME_CLASSIFIER,
+                        "target_regimes": list(target_regimes),
+                        "outside_loss_budget_pct": outside_loss_budget,
+                        "forward_basis": "realized_daily_pnl_by_tick_regime",
+                    }
+                }
+                if target_regimes
+                else {}
+            ),
             "promotion": {"status": "not_ready", "proposal_id": None},
             **revision_stamp(root),
         }
@@ -1012,6 +1035,13 @@ def _adjudicate_forward(
         )
     elif metrics["hard_constraint_breach"]:
         _close_trial(trial, "killed", reason="hard safety breach", current=current)
+    elif metrics.get("outside_loss_breach"):
+        _close_trial(
+            trial,
+            "killed",
+            reason="out-of-regime loss budget exceeded",
+            current=current,
+        )
     elif checkpoint is not None and metrics["lcb"] is not None and metrics["lcb"] > 0:
         _close_trial(
             trial, "graduated", reason="paired utility LCB > 0", current=current
@@ -1080,10 +1110,25 @@ def _paired_forward_metrics(
         for day in set(candidate) & set(reference)
         if day < current.date().isoformat()
     )
+    regime_contract = trial.get("regime_contract") or {}
+    target_regimes = set(regime_contract.get("target_regimes") or [])
+    daily_regimes = (
+        _daily_regimes_for_stream(
+            store.job_dir(job_id) / trial["candidate"]["stream"],
+            since=started,
+            until=current,
+        )
+        if target_regimes
+        else {}
+    )
+    target_days = [
+        day for day in complete_days if daily_regimes.get(day) in target_regimes
+    ]
+    decision_days = target_days if target_regimes else complete_days
     capital = 10_000.0
     deltas = [
         math.log1p(candidate[day] / capital) - math.log1p(reference[day] / capital)
-        for day in complete_days
+        for day in decision_days
         if candidate[day] > -capital and reference[day] > -capital
     ]
     confidence = float(trial["forward"].get("confidence") or 0.90)
@@ -1111,6 +1156,10 @@ def _paired_forward_metrics(
         )
         ucb = -reverse if reverse is not None else None
     safety = _hard_constraint_metrics(store, job_id, candidate)
+    outside_days = [day for day in complete_days if day not in set(target_days)]
+    outside_pnl = sum(float(candidate[day]) for day in outside_days)
+    outside_loss_pct = max(0.0, -outside_pnl / capital)
+    outside_budget = float(regime_contract.get("outside_loss_budget_pct") or 0.02)
     return {
         "paired_days": len(deltas),
         "daily_deltas": deltas,
@@ -1120,8 +1169,54 @@ def _paired_forward_metrics(
         "confidence": confidence,
         "candidate_net_pnl": round(sum(candidate.values()), 6),
         "reference_net_pnl": round(sum(reference.values()), 6),
+        **(
+            {
+                "regime_contract": dict(regime_contract),
+                "target_days": len(target_days),
+                "outside_days": len(outside_days),
+                "outside_net_pnl": round(outside_pnl, 6),
+                "outside_loss_pct": round(outside_loss_pct, 8),
+                "outside_loss_budget_pct": outside_budget,
+                "outside_loss_breach": outside_loss_pct > outside_budget,
+            }
+            if target_regimes
+            else {"outside_loss_breach": False}
+        ),
         **safety,
         "updated_at": current.isoformat(),
+    }
+
+
+def _daily_regimes_for_stream(
+    stream: Path, *, since: datetime, until: datetime
+) -> dict[str, str]:
+    """Majority engine-owned regime label for each completed forward day."""
+    path = stream / "ticks.jsonl"
+    counts: dict[str, dict[str, int]] = {}
+    if not path.exists():
+        return {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            row = json.loads(line)
+            stamp = _parse(row.get("bar_ts") or row.get("ts"))
+            regime = str(
+                (
+                    ((row.get("gates") or {}).get("portfolio_regime") or {}).get(
+                        "current"
+                    )
+                )
+                or "mixed"
+            )
+        except (TypeError, ValueError):
+            continue
+        if stamp < since or stamp >= until:
+            continue
+        day_counts = counts.setdefault(stamp.date().isoformat(), {})
+        day_counts[regime] = day_counts.get(regime, 0) + 1
+    return {
+        day: max(day_counts, key=lambda label: (day_counts[label], label))
+        for day, day_counts in counts.items()
+        if day_counts
     }
 
 

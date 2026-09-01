@@ -32,6 +32,15 @@ from wayfinder_paths.jobs.execution.simulator import (
     simulate_execution,
 )
 from wayfinder_paths.jobs.execution.walk_forward import _slice
+from wayfinder_paths.jobs.regime import (
+    PORTFOLIO_REGIME_CLASSIFIER,
+    REGIME_FEATURE_WARMUP_BARS,
+    classify_portfolio_regimes,
+    enabled_regimes,
+    partition_regime_returns,
+    regime_universe,
+    utc_timestamp,
+)
 
 
 def objective_vector(
@@ -116,6 +125,83 @@ def paired_daily_deltas(
     return [value - base_map[day] for day, value in candidate if day in base_map]
 
 
+def regime_conditioned_objective(
+    equity_curve: Sequence[Mapping[str, Any]],
+    trades: Sequence[Mapping[str, Any]],
+    *,
+    labels: Mapping[pd.Timestamp, str],
+    target_regimes: Sequence[str],
+    weights: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Marked-equity objective partitioned by the regime of each return bar.
+
+    Positions held through a flip contribute to the new cell immediately;
+    attributing a whole trade to entry or exit would hide exactly the regime
+    transition loss this contract is intended to bound.
+    """
+    partition = partition_regime_returns(
+        equity_curve,
+        trades,
+        labels=labels,
+        target_regimes=target_regimes,
+    )
+    target_daily = list(partition["target_daily"])
+    outside_daily = list(partition["outside_daily"])
+    target_returns = [value for _, value in target_daily]
+    outside_returns = [value for _, value in outside_daily]
+    target_vector = _conditional_vector(
+        target_returns, int(partition["target_trade_count"])
+    )
+    outside_vector = _conditional_vector(
+        outside_returns, int(partition["outside_trade_count"])
+    )
+    return {
+        "target": target_vector,
+        "outside": {
+            **outside_vector,
+            "loss_pct": max(
+                0.0, 1.0 - math.exp(float(outside_vector["net_log_growth"]))
+            ),
+        },
+        "target_daily": target_daily,
+        "outside_daily": outside_daily,
+        "target_utility": utility(target_vector, weights),
+        "outside_utility": utility(outside_vector, weights),
+    }
+
+
+def _conditional_vector(returns: Sequence[float], trade_count: int) -> dict[str, Any]:
+    negatives = [value for value in returns if value < 0]
+    downside = (
+        math.sqrt(sum(value * value for value in negatives) / len(returns))
+        if returns
+        else 0.0
+    )
+    # Tail/fee allocation remains in the whole-book hard constraints.  These
+    # fields keep the owner utility shape identical without pretending a
+    # closing trade's entire tail loss belongs to one intrabar market cell.
+    return {
+        "net_log_growth": sum(returns),
+        "downside_deviation": downside,
+        "tail_loss": 0.0,
+        "fee_load": 0.0,
+        "max_drawdown_pct": _max_drawdown_from_returns(returns),
+        "trade_count": int(trade_count),
+        "day_count": len(returns),
+    }
+
+
+def _max_drawdown_from_returns(returns: Sequence[float]) -> float:
+    value = 1.0
+    peak = 1.0
+    worst = 0.0
+    for change in returns:
+        value *= math.exp(float(change))
+        peak = max(peak, value)
+        worst = max(worst, (peak - value) / peak)
+    return worst
+
+
 def block_bootstrap_lcb(
     deltas: list[float],
     *,
@@ -186,6 +272,19 @@ def paired_fold_evaluation(
     slice; return the paired evidence the economic gate decides on."""
     evaluation = constitution["evaluation"]
     weights = constitution["objective"]["weights"]
+    target_regimes = enabled_regimes(candidate_params)
+    effective_warmup = max(
+        int(warmup_bars), REGIME_FEATURE_WARMUP_BARS if target_regimes else 0
+    )
+    regime_labels: dict[pd.Timestamp, str] = {}
+    if target_regimes:
+        classified = classify_portfolio_regimes(
+            dataset.bars.to_frame(),
+            universe=regime_universe(candidate_params, dataset.bars.symbols),
+        )
+        regime_labels = {
+            utc_timestamp(stamp): str(label) for stamp, label in classified.items()
+        }
     folds = int(evaluation["folds"])
     timestamps = dataset.bars.timestamps
     total = len(timestamps)
@@ -196,7 +295,7 @@ def paired_fold_evaluation(
     # Fold the most recent THIRD of development history: recent regime is what
     # promotion risks money on, and bounded test windows keep this affordable.
     test_bars = max(1, min(dev_total // (folds * 3), dev_total // folds))
-    min_history = warmup_bars + folds * test_bars
+    min_history = effective_warmup + folds * test_bars
     if dev_total <= min_history or test_bars < 8:
         return {
             "status": "insufficient_history",
@@ -211,17 +310,33 @@ def paired_fold_evaluation(
     candidate_daily: list[tuple[str, float]] = []
     baseline_pool: dict[str, list[Any]] = defaultdict(list)
     candidate_pool: dict[str, list[Any]] = defaultdict(list)
+    regime_pools: dict[str, dict[str, Any]] = {
+        side: {
+            "target_daily": [],
+            "outside_daily": [],
+            "target_entries": 0,
+            "outside_entries": 0,
+        }
+        for side in ("baseline", "candidate")
+    }
     for index in range(folds):
         test_end = dev_total - (folds - 1 - index) * test_bars
         test_start = test_end - test_bars
-        side_rows = {}
+        side_rows: dict[str, dict[str, Any]] = {}
+        side_regime: dict[str, dict[str, Any]] = {}
         for side, script, params in (
             ("baseline", baseline_script, baseline_params),
             ("candidate", candidate_script, candidate_params),
         ):
             equity, trades = _oos_window(
-                script, dataset, spec, params, timestamps, test_start, test_end,
-                warmup_bars,
+                script,
+                dataset,
+                spec,
+                params,
+                timestamps,
+                test_start,
+                test_end,
+                effective_warmup,
             )
             vector = objective_vector(equity, trades)
             side_rows[side] = vector
@@ -230,6 +345,36 @@ def paired_fold_evaluation(
             pool["trades"].extend(trades)
             daily = daily_log_returns(equity)
             (baseline_daily if side == "baseline" else candidate_daily).extend(daily)
+            if target_regimes:
+                conditioned = regime_conditioned_objective(
+                    equity,
+                    trades,
+                    labels=regime_labels,
+                    target_regimes=target_regimes,
+                    weights=weights,
+                )
+                side_regime[side] = {
+                    key: value
+                    for key, value in conditioned.items()
+                    if not key.endswith("_daily")
+                }
+                regime_pools[side]["target_daily"].extend(conditioned["target_daily"])
+                regime_pools[side]["outside_daily"].extend(conditioned["outside_daily"])
+                regime_pools[side]["target_entries"] = int(
+                    regime_pools[side]["target_entries"]
+                ) + int(conditioned["target"]["trade_count"])
+                regime_pools[side]["outside_entries"] = int(
+                    regime_pools[side]["outside_entries"]
+                ) + int(conditioned["outside"]["trade_count"])
+        overall_delta = utility(side_rows["candidate"], weights) - utility(
+            side_rows["baseline"], weights
+        )
+        decision_delta = (
+            float(side_regime["candidate"]["target_utility"])
+            - float(side_regime["baseline"]["target_utility"])
+            if target_regimes
+            else overall_delta
+        )
         fold_rows.append(
             {
                 "fold": index,
@@ -240,14 +385,13 @@ def paired_fold_evaluation(
                 },
                 "baseline": side_rows["baseline"],
                 "candidate": side_rows["candidate"],
-                "delta_utility": utility(side_rows["candidate"], weights)
-                - utility(side_rows["baseline"], weights),
+                "delta_utility": decision_delta,
+                "overall_delta_utility": overall_delta,
+                **({"regime": side_regime} if target_regimes else {}),
             }
         )
 
-    baseline_vector = objective_vector(
-        baseline_pool["equity"], baseline_pool["trades"]
-    )
+    baseline_vector = objective_vector(baseline_pool["equity"], baseline_pool["trades"])
     candidate_vector = objective_vector(
         candidate_pool["equity"], candidate_pool["trades"]
     )
@@ -276,20 +420,41 @@ def paired_fold_evaluation(
         )
         delta_lcb = growth_lcb + risk_delta
 
-    audit_rows = {}
+    audit_rows: dict[str, dict[str, Any]] = {}
+    audit_regime: dict[str, dict[str, Any]] = {}
     for side, script, params in (
         ("baseline", baseline_script, baseline_params),
         ("candidate", candidate_script, candidate_params),
     ):
         equity, trades = _oos_window(
-            script, dataset, spec, params, timestamps, dev_total, total, warmup_bars
+            script,
+            dataset,
+            spec,
+            params,
+            timestamps,
+            dev_total,
+            total,
+            effective_warmup,
         )
         audit_rows[side] = objective_vector(equity, trades)
+        if target_regimes:
+            conditioned = regime_conditioned_objective(
+                equity,
+                trades,
+                labels=regime_labels,
+                target_regimes=target_regimes,
+                weights=weights,
+            )
+            audit_regime[side] = {
+                key: value
+                for key, value in conditioned.items()
+                if not key.endswith("_daily")
+            }
     audit_delta = utility(audit_rows["candidate"], weights) - utility(
         audit_rows["baseline"], weights
     )
 
-    return {
+    report = {
         "status": "ok",
         "folds": fold_rows,
         "fold_count": folds,
@@ -311,6 +476,68 @@ def paired_fold_evaluation(
             "delta_utility": audit_delta,
         },
     }
+    if target_regimes:
+        regime_config = evaluation.get("regime") or {}
+        pooled: dict[str, dict[str, Any]] = {}
+        for side in ("baseline", "candidate"):
+            target_daily = list(regime_pools[side]["target_daily"])
+            outside_daily = list(regime_pools[side]["outside_daily"])
+            target_vector = _conditional_vector(
+                [float(value) for _, value in target_daily],
+                int(regime_pools[side]["target_entries"]),
+            )
+            outside_vector = _conditional_vector(
+                [float(value) for _, value in outside_daily],
+                int(regime_pools[side]["outside_entries"]),
+            )
+            pooled[side] = {
+                "target": target_vector,
+                "outside": {
+                    **outside_vector,
+                    "loss_pct": max(
+                        0.0,
+                        1.0 - math.exp(float(outside_vector["net_log_growth"])),
+                    ),
+                },
+                "target_utility": utility(target_vector, weights),
+                "outside_utility": utility(outside_vector, weights),
+                "target_daily": target_daily,
+            }
+        target_deltas = paired_daily_deltas(
+            list(pooled["baseline"]["target_daily"]),
+            list(pooled["candidate"]["target_daily"]),
+        )
+        regime_block = int(regime_config.get("bootstrap_block_days") or 2)
+        target_lcb = block_bootstrap_lcb(
+            target_deltas,
+            block_len=regime_block,
+            iterations=int(evaluation["bootstrap_iterations"]),
+            confidence=float(evaluation["confidence"]),
+        )
+        target_estimate = float(pooled["candidate"]["target_utility"]) - float(
+            pooled["baseline"]["target_utility"]
+        )
+        audit_target_delta = float(audit_regime["candidate"]["target_utility"]) - float(
+            audit_regime["baseline"]["target_utility"]
+        )
+        report["regime_contract"] = {
+            "enabled": True,
+            "classifier": PORTFOLIO_REGIME_CLASSIFIER,
+            "target_regimes": list(target_regimes),
+            "objective": pooled,
+            "paired_target_delta": {
+                "estimate": target_estimate,
+                "lcb": target_lcb,
+                "confidence": float(evaluation["confidence"]),
+                "paired_days": len(target_deltas),
+            },
+            "audit": {
+                "baseline": audit_regime["baseline"],
+                "candidate": audit_regime["candidate"],
+                "delta_utility": audit_target_delta,
+            },
+        }
+    return report
 
 
 def evaluate_economic_readiness(
@@ -329,6 +556,12 @@ def evaluate_economic_readiness(
         return {"ready": False, "reasons": reasons, "probation": probation}
 
     candidate = report["objective"]["candidate"]
+    regime = report.get("regime_contract") or {}
+    specialized = bool(regime.get("enabled"))
+    target_candidate = ((regime.get("objective") or {}).get("candidate") or {}).get(
+        "target"
+    ) or {}
+    decision_candidate = target_candidate if specialized else candidate
     if float(candidate["max_drawdown_pct"]) > float(hard["max_drawdown_pct"]):
         reasons.append(
             f"OOS max drawdown {candidate['max_drawdown_pct']:.3f} exceeds "
@@ -339,17 +572,61 @@ def evaluate_economic_readiness(
             f"OOS tail loss {candidate['tail_loss']:.3f} exceeds ceiling "
             f"{hard['max_tail_loss']}"
         )
-    if int(candidate["trade_count"]) < int(promotion["min_oos_trades"]):
+    if int(decision_candidate.get("trade_count") or 0) < int(
+        promotion["min_oos_trades"]
+    ):
         reasons.append(
-            f"OOS trade count {candidate['trade_count']} below minimum "
+            f"OOS {'target-regime ' if specialized else ''}trade count "
+            f"{decision_candidate.get('trade_count') or 0} below minimum "
             f"{promotion['min_oos_trades']}"
         )
+    if specialized:
+        regime_config = constitution["evaluation"].get("regime") or {}
+        min_days = int(regime_config.get("min_target_days") or 5)
+        target_days = int(decision_candidate.get("day_count") or 0)
+        if target_days < min_days:
+            reasons.append(
+                f"target-regime paired days {target_days} below minimum {min_days}"
+            )
+        target_utility = float(
+            (
+                ((regime.get("objective") or {}).get("candidate") or {}).get(
+                    "target_utility"
+                )
+            )
+            or 0.0
+        )
+        if target_utility <= 0:
+            reasons.append(
+                f"absolute target-regime utility {target_utility:.4f} not > 0"
+            )
+        outside_loss = float(
+            (
+                (
+                    ((regime.get("objective") or {}).get("candidate") or {}).get(
+                        "outside"
+                    )
+                    or {}
+                ).get("loss_pct")
+            )
+            or 0.0
+        )
+        outside_budget = float(regime_config.get("max_out_of_regime_loss_pct") or 0.02)
+        if outside_loss > outside_budget:
+            reasons.append(
+                f"out-of-regime loss {outside_loss:.4f} exceeds budget "
+                f"{outside_budget:.4f}"
+            )
     if int(report["positive_folds"]) < int(promotion["required_positive_folds"]):
         reasons.append(
             f"positive OOS folds {report['positive_folds']}/{report['fold_count']} "
             f"below required {promotion['required_positive_folds']}"
         )
-    delta = report["paired_incumbent_delta"]
+    delta = (
+        regime["paired_target_delta"]
+        if specialized
+        else report["paired_incumbent_delta"]
+    )
     require_lcb = not probation or bool(promotion["probation_requires_lcb"])
     if require_lcb:
         if delta["lcb"] is None:
@@ -364,7 +641,32 @@ def evaluate_economic_readiness(
             f"paired utility delta estimate {delta['estimate']:.4f} not > 0 "
             "(probation bar)"
         )
-    audit_delta = float(report["audit_slice"]["delta_utility"])
+    audit_delta = float(
+        ((regime.get("audit") or {}).get("delta_utility") or 0.0)
+        if specialized
+        else report["audit_slice"]["delta_utility"]
+    )
+    if specialized:
+        audit_candidate = (regime.get("audit") or {}).get("candidate") or {}
+        audit_target_utility = float(audit_candidate.get("target_utility") or 0.0)
+        if audit_target_utility <= 0:
+            reasons.append(
+                f"audit target-regime utility {audit_target_utility:.4f} not > 0"
+            )
+        audit_outside_loss = float(
+            ((audit_candidate.get("outside") or {}).get("loss_pct")) or 0.0
+        )
+        outside_budget = float(
+            (constitution["evaluation"].get("regime") or {}).get(
+                "max_out_of_regime_loss_pct"
+            )
+            or 0.02
+        )
+        if audit_outside_loss > outside_budget:
+            reasons.append(
+                f"audit out-of-regime loss {audit_outside_loss:.4f} exceeds "
+                f"budget {outside_budget:.4f}"
+            )
     if audit_delta < float(promotion["audit_min_delta_utility"]):
         reasons.append(
             f"audit-slice utility delta {audit_delta:.4f} below floor "
@@ -399,7 +701,10 @@ def _oos_window(
 def _bar_seconds(spec: ExecutionSpec) -> int:
     from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
 
-    return bar_interval_seconds(spec.data_contract.get("bar_interval"))
+    seconds = bar_interval_seconds(spec.data_contract.get("bar_interval"))
+    if seconds is None:
+        raise ValueError("execution spec requires a positive bar_interval")
+    return seconds
 
 
 def _max_drawdown(equity_curve: Sequence[Mapping[str, Any]]) -> float:

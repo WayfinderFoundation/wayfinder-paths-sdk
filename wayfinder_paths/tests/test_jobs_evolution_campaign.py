@@ -181,6 +181,26 @@ def _campaign_design() -> dict[str, Any]:
     return {"hypotheses": hypotheses, "slots": slots}
 
 
+def _regime_bars(count: int = 560) -> list[dict[str, Any]]:
+    started = datetime(2026, 7, 1, tzinfo=UTC)
+    rows: list[dict[str, Any]] = []
+    for index in range(count):
+        for symbol_index, symbol in enumerate(("SOL", "XRP", "POL", "HYPE")):
+            close = 100.0 + symbol_index * 10 + index * 0.05
+            rows.append(
+                {
+                    "timestamp": (started + timedelta(minutes=5 * index)).isoformat(),
+                    "symbol": symbol,
+                    "open": close - 0.02,
+                    "high": close + 0.1,
+                    "low": close - 0.1,
+                    "close": close,
+                    "volume": 1_000.0,
+                }
+            )
+    return rows
+
+
 def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
     other_store, other_id = _job(tmp_path / "other", "other-job")
     with pytest.raises(ValueError, match="disabled_or_excluded"):
@@ -310,6 +330,46 @@ def test_investigative_campaign_requires_and_freezes_one_design_turn(tmp_path) -
     assert candidate["starter_seed_id"] == selected_starter
     assert candidate["evidence_refs"] == ["/baseline/reason"]
     assert candidate["reference_bundle"]
+
+
+def test_regime_design_requires_counter_cell_and_stamps_candidate(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    root = store.job_dir(job_id)
+    (root / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 2}, "bars": _regime_bars()}),
+        encoding="utf-8",
+    )
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    regime = manifest["regime_context"]
+
+    assert regime["available"] is True
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt and prompt["constraints"]["regime_specialist_design"] is True
+    assert "target_regimes" in prompt["next_action"]
+
+    design = _campaign_design()
+    for slot in design["slots"]:
+        slot["target_regimes"] = [regime["primary_regime"]]
+    alternate = next(
+        cell
+        for cell in ("up_lowvol", "up_highvol", "down_lowvol", "down_highvol")
+        if cell not in {regime["primary_regime"], regime["counter_regime"]}
+    )
+    design["slots"][-1]["target_regimes"] = [alternate]
+    with pytest.raises(ValueError, match="counter-regime slot"):
+        submit_campaign_design(store, job_id, campaign_design=design)
+
+    design["slots"][0]["target_regimes"] = [regime["counter_regime"]]
+    submit_campaign_design(store, job_id, campaign_design=design)
+    candidate = prepare_candidate(store, job_id, now=started + timedelta(minutes=2))
+    job_data = yaml.safe_load(
+        (root / candidate["bundle"] / "job.yaml").read_text(encoding="utf-8")
+    )
+
+    assert candidate["target_regimes"] == [regime["counter_regime"]]
+    assert job_data["execution_params"]["enabled_regimes"] == [regime["counter_regime"]]
 
 
 def test_investigative_attempts_repair_failures_but_close_viable_ideas(

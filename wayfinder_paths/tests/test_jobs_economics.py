@@ -148,6 +148,41 @@ def test_readiness_passes_and_each_reason_blocks() -> None:
     assert evaluate_economic_readiness(unavailable, constitution)["ready"] is False
 
 
+def test_regime_specialist_gate_uses_target_edge_and_bounds_outside_loss() -> None:
+    constitution = json.loads(json.dumps(DEFAULT_CONSTITUTION))
+    report = _ok_report(
+        regime_contract={
+            "enabled": True,
+            "target_regimes": ["up_highvol"],
+            "objective": {
+                "candidate": {
+                    "target": {"trade_count": 20, "day_count": 8},
+                    "target_utility": 0.04,
+                    "outside": {"loss_pct": 0.01},
+                }
+            },
+            "paired_target_delta": {
+                "estimate": 0.03,
+                "lcb": 0.005,
+                "confidence": 0.9,
+            },
+            "audit": {
+                "candidate": {
+                    "target_utility": 0.01,
+                    "outside": {"loss_pct": 0.005},
+                },
+                "delta_utility": 0.002,
+            },
+        }
+    )
+
+    assert evaluate_economic_readiness(report, constitution)["ready"] is True
+    report["regime_contract"]["objective"]["candidate"]["outside"]["loss_pct"] = 0.03
+    result = evaluate_economic_readiness(report, constitution)
+    assert result["ready"] is False
+    assert any("out-of-regime loss" in reason for reason in result["reasons"])
+
+
 def test_constitution_defaults_file_and_broken(tmp_path: Path) -> None:
     defaults = load_constitution(tmp_path)
     assert defaults["enforcement"] == "advisory" and defaults["source"] == "defaults"

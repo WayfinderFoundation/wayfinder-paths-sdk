@@ -109,6 +109,10 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # compatibility name consumed by v1 campaign manifests and activity.
         "generated_programs": 8,
         "investigation_design_enabled": True,
+        # Candidates may declare one or two engine-owned portfolio regime
+        # cells.  Campaign design must include the current cell's opposite so
+        # a development-window specialist cannot monopolize the population.
+        "regime_specialist_enabled": True,
         "max_attempts_per_idea": 3,
         "max_quick_attempts": 24,
         "wildcard_slots": 2,

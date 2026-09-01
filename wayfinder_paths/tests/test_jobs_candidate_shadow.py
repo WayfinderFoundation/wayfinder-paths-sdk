@@ -6,7 +6,10 @@ import json
 import pandas as pd
 import yaml
 
-from wayfinder_paths.jobs.candidate_shadow import run_candidate_shadows
+from wayfinder_paths.jobs.candidate_shadow import (
+    candidate_shadow_lookback_bars,
+    run_candidate_shadows,
+)
 from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import WayfinderJob
@@ -122,3 +125,50 @@ def test_candidate_shadow_uses_separate_paper_state_and_stream(tmp_path) -> None
         assert rows and max(row["view_window"]["rows"] for row in rows) <= 20
         assert min(pd.Timestamp(row["bar_ts"]) for row in rows) > queued_at
     assert asyncio.run(run_candidate_shadows(store, job.id)) == []
+
+
+def test_regime_shadow_requests_classifier_history_from_shared_feed(tmp_path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("shadow-regime-depth", script="workspace/strategy.py")
+    store.save(job)
+    root = store.job_dir(job.id)
+    script = root / "workspace/strategy.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("def decide(ctx):\n    return []\n", encoding="utf-8")
+    (root / "job.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "id": job.id,
+                "execution_contract": "jobs_v1",
+                "script_loop": {
+                    "enabled": True,
+                    "entrypoint": "workspace/strategy.py",
+                },
+                "execution_spec": {
+                    "data_contract": {
+                        "bar_interval": "5m",
+                        "symbols": ["BTC"],
+                    }
+                },
+                "execution_params": {
+                    "symbols": ["BTC"],
+                    "warmup_bars": 20,
+                    "enabled_regimes": ["up_lowvol"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    revision = compute_workspace_revision(root)
+    stage_evolution_probation(
+        store,
+        job.id,
+        candidate_id="specialist",
+        candidate_root=root,
+        revision=revision,
+        source="evolution_campaign",
+        family="regime-specialist",
+        now=pd.Timestamp("2026-08-24T12:00:00Z").to_pydatetime(),
+    )
+
+    assert candidate_shadow_lookback_bars(store, job.id) == 450
