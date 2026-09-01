@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 
-from wayfinder_paths.jobs.bench.env import git_sha, sha256_file, sha256_json
+from wayfinder_paths.jobs.bench.env import sha256_file, sha256_json
 
 IDENTITY_SCHEMA_VERSION = "1.0"
 
@@ -47,7 +47,7 @@ def ensure_model_declared(config_path: Path, model: str) -> bool:
 
 def runtime_identity(
     *,
-    sdk_root: Path,
+    sdk_ref: str,
     sandbox: Path,
     model: str,
     variant: str | None,
@@ -68,7 +68,7 @@ def runtime_identity(
     )
     return {
         "schema_version": IDENTITY_SCHEMA_VERSION,
-        "sdk_ref": git_sha(sdk_root),
+        "sdk_ref": sdk_ref,
         "world_id": world_manifest["world_id"],
         "data": dict(world_manifest["dataset"]),
         "source_revision": world_manifest["source_revision"],

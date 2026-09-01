@@ -404,7 +404,7 @@ def run_arm(
         cost=cost,
     )
     identity = runtime_identity(
-        sdk_root=sdk_root,
+        sdk_ref=_arm_runtime_pin(config, arm)["sdk_ref"],
         sandbox=run_root,
         model=model,
         variant=variant,
@@ -1087,11 +1087,8 @@ def _verify_runtime_pins(
     runtime_opencode_config: Path | None,
 ) -> None:
     pins = dict(config.get("_runtime_pins") or {})
-    arm_pin = next(
-        (row for row in pins.get("arms") or [] if row.get("name") == arm.get("name")),
-        None,
-    )
-    if not arm_pin or arm_pin.get("sdk_ref") != git_sha(sdk_root):
+    arm_pin = _arm_runtime_pin(config, arm)
+    if arm_pin.get("sdk_ref") != git_sha(sdk_root):
         raise ValueError("arm SDK changed after experiment registration")
     if arm_pin.get("campaign_sha256") != sha256_json(dict(arm.get("campaign") or {})):
         raise ValueError("arm campaign parameters changed after registration")
@@ -1124,6 +1121,17 @@ def _verify_runtime_pins(
         or config_pin.get("sha256") != sha256_file(runtime_opencode_config)
     ):
         raise ValueError("OpenCode runtime config changed after registration")
+
+
+def _arm_runtime_pin(config: dict[str, Any], arm: dict[str, Any]) -> dict[str, Any]:
+    pins = dict(config.get("_runtime_pins") or {})
+    arm_pin = next(
+        (row for row in pins.get("arms") or [] if row.get("name") == arm.get("name")),
+        None,
+    )
+    if not isinstance(arm_pin, dict) or not arm_pin.get("sdk_ref"):
+        raise ValueError("arm SDK runtime pin is missing")
+    return arm_pin
 
 
 def _overlay_bench_package(root: Path) -> None:

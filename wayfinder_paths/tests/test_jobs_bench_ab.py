@@ -19,6 +19,7 @@ from wayfinder_paths.jobs.bench.forward_replay import race_bundles, replay_proba
 from wayfinder_paths.jobs.bench.identity import (
     compare_identities,
     ensure_model_declared,
+    runtime_identity,
 )
 from wayfinder_paths.jobs.bench.mcp_server import core_jobs as bench_core_jobs
 from wayfinder_paths.jobs.bench.runner import (
@@ -543,6 +544,32 @@ def test_identity_allows_only_pre_registered_model_difference() -> None:
     assert not compare_identities(base, other, allowed={"model", "variant"})[
         "comparable"
     ]
+
+
+def test_runtime_identity_uses_the_frozen_sdk_ref(tmp_path: Path) -> None:
+    agents = tmp_path / ".opencode" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "worker.md").write_text("---\ntemperature: 0.1\n---\n", encoding="utf-8")
+    (tmp_path / ".opencode" / "opencode.json").write_text("{}\n", encoding="utf-8")
+
+    identity = runtime_identity(
+        sdk_ref="registered-before-run",
+        sandbox=tmp_path,
+        model="wayfinder/model",
+        variant=None,
+        repeat_seed=101,
+        world_manifest={
+            "world_id": "world",
+            "dataset": {},
+            "source_revision": "source",
+        },
+        prompt_hashes=[],
+        declared_differences=["model"],
+        arm_parameters={},
+        opencode=Path("/usr/bin/true"),
+    )
+
+    assert identity["sdk_ref"] == "registered-before-run"
 
 
 def test_flash_max_is_declared_as_model_plus_variant(tmp_path: Path) -> None:
