@@ -8,7 +8,9 @@ packages = [
     { include = "wayfinder_paths", from = "." },
 ]
 include = [
+    { path = "PATTERN_MATCH_UNIVERSE.md", format = ["sdist"] },
     { path = "wayfinder_paths/paths/templates", format = ["sdist", "wheel"] },
+    { path = "wayfinder_paths/jobs/strategies/pattern_match_universe_calibration.json", format = ["sdist", "wheel"] },
 ]
 
 [tool.poetry.dependencies]

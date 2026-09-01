@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 from wayfinder_paths.adapters.hyperliquid_adapter.adapter import HyperliquidAdapter
@@ -21,7 +22,10 @@ from wayfinder_paths.jobs.execution import (
     get_trade_capacity,
     summarize_trade_capacity,
 )
-from wayfinder_paths.jobs.execution.hyperliquid import HyperliquidPerpBroker
+from wayfinder_paths.jobs.execution.hyperliquid import (
+    HyperliquidMarketFeed,
+    HyperliquidPerpBroker,
+)
 from wayfinder_paths.jobs.execution.job import backtest_execution_job
 from wayfinder_paths.jobs.execution.simulator import (
     PreparedExecutionDataset,
@@ -382,6 +386,59 @@ async def test_hyperliquid_data_client_accepts_lookback_hours(monkeypatch) -> No
     assert params["coin"] == "SNX"
     assert params["interval"] == "5m"
     assert params["end_ms"] > params["start_ms"]
+
+
+@pytest.mark.asyncio
+async def test_hyperliquid_feed_can_align_funding_context() -> None:
+    class Client:
+        async def get_candles(self, *_args, **_kwargs):
+            return [
+                {
+                    "t": 1_767_225_600_000,
+                    "T": 1_767_226_500_000,
+                    "o": "100",
+                    "h": "102",
+                    "l": "99",
+                    "c": "101",
+                    "v": "10",
+                },
+                {
+                    "t": 1_767_226_500_000,
+                    "T": 1_767_227_400_000,
+                    "o": "101",
+                    "h": "103",
+                    "l": "100",
+                    "c": "102",
+                    "v": "11",
+                },
+            ]
+
+        async def get_funding_history_response(self, *_args, **_kwargs):
+            return {
+                "rows": [
+                    {
+                        "time": 1_767_225_600_000,
+                        "fundingRate": "0.00001",
+                        "premium": "0.0001",
+                    },
+                    {
+                        "time": 1_767_227_400_000,
+                        "fundingRate": "0.00002",
+                        "premium": "0.0002",
+                    },
+                ]
+            }
+
+    feed = HyperliquidMarketFeed(Client(), include_funding_context=True, concurrency=2)
+    view = await feed.get_completed_bars(["BTC"], "15m", lookback_bars=2)
+    frame = view.to_frame()
+    assert frame["funding_rate"].tolist() == [0.00001, 0.00002]
+    assert frame["premium"].tolist() == [0.0001, 0.0002]
+    assert frame["funding_payment_rate"].tolist() == [0.0, 0.00002]
+    assert frame["funding_observed_at"].tolist() == [
+        pd.Timestamp(1_767_225_600_000, unit="ms", tz="UTC"),
+        pd.Timestamp(1_767_227_400_000, unit="ms", tz="UTC"),
+    ]
 
 
 def test_trade_capacity_uses_active_asset_data_available_to_trade() -> None:

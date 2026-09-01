@@ -37,6 +37,7 @@ def _feed_error(exc: httpx.HTTPStatusError) -> DataFeedError:
 class FundingHistoryEntry(TypedDict):
     time: Required[int]
     fundingRate: Required[str]
+    premium: NotRequired[str]
 
 
 class CandleEntry(TypedDict):

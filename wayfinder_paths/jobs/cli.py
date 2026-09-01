@@ -75,6 +75,9 @@ from wayfinder_paths.jobs.models import (
     infer_job_kind,
     normalize_agent_mode,
 )
+from wayfinder_paths.jobs.pattern_match_universe import (
+    create_pattern_match_universe_job,
+)
 from wayfinder_paths.jobs.probation import open_paper_probation_leg
 from wayfinder_paths.jobs.proposals import (
     propose_change,
@@ -301,6 +304,39 @@ def create_starter_cmd(
         job_id=job_id,
         initializer_session_id=initializer_session_id,
         leverage=leverage,
+        agent_mode=agent_mode,
+        compile_job=not no_compile,
+    )
+    _echo_json({"ok": True, "result": result})
+
+
+@job_cli.command(
+    name="create-pattern-universe",
+    help=(
+        "Create the shadow-first 15m Pattern Match job over liquid native "
+        "and HIP-3 perps."
+    ),
+)
+@click.option("--job-id", default="pattern-match-universe-15m", show_default=True)
+@click.option(
+    "--minimum-volume-usd", type=float, default=5_000_000.0, show_default=True
+)
+@click.option(
+    "--agent-mode",
+    type=click.Choice(["off", "monitor", "intervene", "auto", "improve", "decide"]),
+    default="intervene",
+    show_default=True,
+)
+@click.option("--no-compile", is_flag=True, default=False)
+def create_pattern_universe_cmd(
+    job_id: str,
+    minimum_volume_usd: float,
+    agent_mode: str,
+    no_compile: bool,
+) -> None:
+    result = create_pattern_match_universe_job(
+        job_id=job_id,
+        minimum_volume_usd=minimum_volume_usd,
         agent_mode=agent_mode,
         compile_job=not no_compile,
     )

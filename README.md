@@ -22,9 +22,13 @@ Think of it as programmable DeFi infrastructure that connects your wallets to yi
 - `wayfinder_paths/core`: shared config, clients, constants, and utilities
 - `wayfinder_paths/adapters`: protocol integrations (Moonwell, Hyperliquid, etc.)
 - `wayfinder_paths/strategies`: strategy implementations and metadata
+- `wayfinder_paths/jobs`: scheduled `jobs_v1` strategies and execution runtime
 - `wayfinder_paths/mcp`: MCP server and tools for Claude Code/OpenCode
 - `scripts/`: setup, wallet generation, and scaffolding helpers
 - `tests/` and `wayfinder_paths/tests`: test suites
+
+The shadow-first 15-minute liquid-perp model is documented in
+[PATTERN_MATCH_UNIVERSE.md](PATTERN_MATCH_UNIVERSE.md).
 
 ## Requirements
 
