@@ -14,7 +14,14 @@ from wayfinder_paths.jobs.bundles import copy_job_bundle
 from wayfinder_paths.jobs.execution.features import parse_feature_specs
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
-from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+from wayfinder_paths.jobs.execution.simulator import (
+    PreparedExecutionDataset,
+    simulate_execution,
+)
+from wayfinder_paths.jobs.execution.validation import (
+    resolve_execution_spec,
+    window_invariance_probe,
+)
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 
 WORLD_SCHEMA_VERSION = "1.0"
@@ -98,6 +105,13 @@ def prepare_world(
     }
     atomic_json(world_dir / "bars.json", development_payload)
     atomic_json(sealed_dir / "holdout.json", holdout_payload)
+    baseline = _freeze_development_baseline(
+        incumbent,
+        development_payload=development_payload,
+        spec=spec,
+        params=execution_params,
+        world_id=resolved_world_id,
+    )
     features = _freeze_feature_prefixes(
         source_job,
         world_dir=world_dir,
@@ -132,6 +146,7 @@ def prepare_world(
             "path": "incumbent",
             "revision": compute_workspace_revision(incumbent),
         },
+        "baseline": baseline,
         "features": features,
         # The runner receives sealed_dir separately. No owner path or holdout
         # bytes are written into the agent-visible world.
@@ -149,6 +164,11 @@ def load_world(world_dir: Path, sealed_dir: Path) -> dict[str, Any]:
         raise ValueError("development world bytes changed after freeze")
     if sha256_json(holdout) != manifest["dataset"]["holdout_commitment"]:
         raise ValueError("sealed holdout bytes do not match the commitment")
+    baseline = manifest.get("baseline")
+    if baseline:
+        baseline_path = world_dir / str(baseline["path"])
+        if sha256_file(baseline_path) != baseline["sha256"]:
+            raise ValueError("development baseline bytes changed after freeze")
     return {"manifest": manifest, "development": development, "holdout": holdout}
 
 
@@ -162,6 +182,14 @@ def install_development_world(
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(payload)
     manifest = json.loads((world_dir / "world.json").read_text(encoding="utf-8"))
+    baseline = manifest.get("baseline")
+    if baseline:
+        source = world_dir / str(baseline["path"])
+        if sha256_file(source) != baseline["sha256"]:
+            raise ValueError("development baseline bytes changed after freeze")
+        destination = destination_job / "results" / "backtest" / "baseline.json"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
     for feature in manifest.get("features") or []:
         source = world_dir / str(feature["path"])
         if sha256_file(source) != feature["sha256"]:
@@ -172,6 +200,67 @@ def install_development_world(
         destination = destination_job / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(source.read_bytes())
+
+
+def _freeze_development_baseline(
+    incumbent: Path,
+    *,
+    development_payload: dict[str, Any],
+    spec: ExecutionSpec,
+    params: dict[str, Any],
+    world_id: str,
+) -> dict[str, Any]:
+    """Run the incumbent once on the exact agent-visible development prefix."""
+    job_data = _load_job_yaml(incumbent)
+    script = _bundle_script(incumbent, job_data)
+    rows = list(development_payload.get("bars") or [])
+    metadata = dict(development_payload.get("metadata") or {})
+    dataset = PreparedExecutionDataset.from_rows(rows, metadata)
+    probe = window_invariance_probe(script, dataset.bars, spec, params)
+    result = simulate_execution(script, dataset, spec, params)
+    timestamps = dataset.bars.timestamps
+    scope: dict[str, Any] = {
+        "partition": "development",
+        "bars": len(timestamps),
+        "start": timestamps[0].isoformat() if timestamps else None,
+        "end": timestamps[-1].isoformat() if timestamps else None,
+    }
+    payload: dict[str, Any] = {
+        "schema_version": "1.0",
+        "world_id": world_id,
+        "scope": scope,
+        "result": {
+            "params": result.params,
+            "stats": result.stats,
+            "validation": result.validation,
+            "window_invariance": {
+                key: value
+                for key, value in probe.items()
+                if not key.endswith("_intents")
+            },
+        },
+    }
+    path = incumbent.parent / "baseline.json"
+    atomic_json(path, payload)
+    return {
+        "path": str(path.relative_to(incumbent.parent)),
+        "sha256": sha256_file(path),
+        "revision": compute_workspace_revision(incumbent),
+        **scope,
+    }
+
+
+def _bundle_script(bundle: Path, job_data: dict[str, Any]) -> Path:
+    raw = str((job_data.get("script_loop") or {}).get("entrypoint") or "")
+    if not raw:
+        raise FileNotFoundError("bundle script_loop.entrypoint is missing")
+    path = Path(raw)
+    if not path.is_absolute():
+        return bundle / path
+    if "workspace" in path.parts:
+        index = path.parts.index("workspace")
+        return bundle / "workspace" / Path(*path.parts[index + 1 :])
+    raise ValueError("absolute bundle entrypoint is outside workspace")
 
 
 def _row_timestamp(row: dict[str, Any]) -> datetime:

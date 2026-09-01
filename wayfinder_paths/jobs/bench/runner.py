@@ -26,6 +26,7 @@ from wayfinder_paths.jobs.bench.env import (
     load_json,
     sandbox_relative,
     sha256_file,
+    sha256_json,
 )
 from wayfinder_paths.jobs.bench.forward_replay import race_bundles, replay_probation
 from wayfinder_paths.jobs.bench.identity import (
@@ -225,10 +226,11 @@ def run_arm(
     if base_url := str(config.get("wayfinder_base_url") or "").strip():
         _set_provider_base_url(config_path, provider="wayfinder", base_url=base_url)
     ensure_model_declared(config_path, model)
+    arm_campaign = dict(arm.get("campaign") or {})
     store, job_id = _install_job(
         run_root,
         world_dir=world_dir,
-        policy=dict(config.get("campaign") or {}),
+        policy={**dict(config.get("campaign") or {}), **arm_campaign},
         # The stores are physically isolated, so arms can share the same job
         # id. This keeps the production prompt bytes identical across a pair.
         job_id_override=f"bench-{_safe_name(world['manifest']['world_id'])}-s{seed}",
@@ -395,6 +397,7 @@ def run_arm(
         declared_differences=list(
             config.get("allowed_identity_differences") or ["model", "variant"]
         ),
+        arm_parameters={"campaign": arm_campaign},
         opencode=opencode,
     )
     return {
@@ -909,6 +912,7 @@ def _validate_config(config: dict[str, Any]) -> None:
         "agent_hashes",
         "agent_temperatures",
         "initial_prompt_sha256",
+        "arm_parameters",
     }
     unsupported = allowed_identity - supported_identity
     if unsupported:
@@ -989,6 +993,7 @@ def _runtime_pins(config_path: Path, config: dict[str, Any]) -> dict[str, Any]:
             "name": str(arm["name"]),
             "sdk_root": str(_resolve_sdk_root(runtime, arm)),
             "sdk_ref": git_sha(_resolve_sdk_root(runtime, arm)),
+            "campaign_sha256": sha256_json(dict(arm.get("campaign") or {})),
         }
         for arm in config["arms"]
     ]
@@ -1022,6 +1027,8 @@ def _verify_runtime_pins(
     )
     if not arm_pin or arm_pin.get("sdk_ref") != git_sha(sdk_root):
         raise ValueError("arm SDK changed after experiment registration")
+    if arm_pin.get("campaign_sha256") != sha256_json(dict(arm.get("campaign") or {})):
+        raise ValueError("arm campaign parameters changed after registration")
     world_pin = next(
         (
             row

@@ -55,6 +55,7 @@ def runtime_identity(
     world_manifest: dict[str, Any],
     prompt_hashes: list[str],
     declared_differences: list[str],
+    arm_parameters: dict[str, Any],
     opencode: Path,
 ) -> dict[str, Any]:
     agents = sandbox / ".opencode" / "agents"
@@ -84,6 +85,7 @@ def runtime_identity(
         },
         "prompt_hashes": list(prompt_hashes),
         "initial_prompt_sha256": prompt_hashes[0] if prompt_hashes else None,
+        "arm_parameters": dict(arm_parameters),
         "declared_differences": sorted(set(declared_differences)),
     }
 

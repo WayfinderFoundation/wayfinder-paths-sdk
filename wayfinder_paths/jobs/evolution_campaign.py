@@ -55,7 +55,11 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
 from wayfinder_paths.jobs.evolution_funnel import summarize_evolution_funnel
 from wayfinder_paths.jobs.execution.features import parse_feature_specs
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
-from wayfinder_paths.jobs.execution.optimize import is_search_space, run_optuna_search
+from wayfinder_paths.jobs.execution.optimize import (
+    is_search_space,
+    run_optuna_search,
+    search_space_probe_variants,
+)
 from wayfinder_paths.jobs.execution.primitives import (
     DEFAULT_WARMUP_BARS,
     ExecutionSpec,
@@ -70,6 +74,7 @@ from wayfinder_paths.jobs.execution.simulator import (
 )
 from wayfinder_paths.jobs.execution.validation import (
     BOUNDED_WINDOW_HINT,
+    parameter_behavior_probe,
     resolve_execution_spec,
     validate_execution_job,
     window_invariance_probe,
@@ -1261,6 +1266,7 @@ def _evaluate_candidate(
         }
     policy = manifest.get("policy") or {}
     tuning_preview: dict[str, Any] | None = None
+    behavior_preview: dict[str, Any] | None = None
     try:
         subject = _load_subject(store, job_id, candidate_root, campaign_id=campaign_id)
         train_end, validation_end = _split_bounds(
@@ -1291,6 +1297,41 @@ def _evaluate_candidate(
                     },
                 },
             }
+        if (
+            bool(policy.get("behavior_preview_enabled"))
+            and candidate.get("mutation_kind") == "parameter"
+            and search_space is not None
+        ):
+            behavior_preview = parameter_behavior_probe(
+                subject["script"],
+                quick.bars,
+                subject["spec"],
+                params,
+                search_space_probe_variants(search_space),
+            )
+            if behavior_preview["status"] == "unchanged":
+                bars_probed = int(behavior_preview.get("bars_probed") or 0)
+                variants = int(behavior_preview.get("variants_declared") or 0)
+                error = (
+                    "Declared parameter endpoints changed no material order "
+                    f"intents across {bars_probed} sampled bars and {variants} "
+                    "bounded variants; change the search space or mechanism "
+                    "before simulation."
+                )
+                return {
+                    "status": "low_fidelity_rejected",
+                    "evidence": (
+                        "parameter behavior preview found no material intent change"
+                    ),
+                    "behavior_preview": behavior_preview,
+                    "postmortem": {
+                        "viable": False,
+                        "primary_failure": "no_behavior_change",
+                        "failure_codes": ["no_behavior_change"],
+                        "behavior_diff": {"material_change": False},
+                        "repair_context": {"error": error},
+                    },
+                }
         result = simulate_execution(subject["script"], quick, subject["spec"], params)
         if (
             candidate.get("mutation_kind") == "parameter"
@@ -1320,7 +1361,7 @@ def _evaluate_candidate(
     compact = _compact_result(result)
     if not result.validation.get("execution_valid"):
         return {"status": "low_fidelity_rejected", "evidence": compact}
-    common = {
+    common: dict[str, Any] = {
         "revision": revision,
         "quick": compact,
         "objective": _objective(result.stats, params),
@@ -1356,6 +1397,8 @@ def _evaluate_candidate(
         common["tuning_skip_reason"] = "no_typed_search_space"
     if tuning_preview is not None:
         common["tuning_preview"] = tuning_preview
+    if behavior_preview is not None:
+        common["behavior_preview"] = behavior_preview
     if int(result.stats.get("trade_count") or 0) <= 0:
         return {
             **common,

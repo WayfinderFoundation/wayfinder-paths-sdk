@@ -2887,6 +2887,44 @@ def test_evaluate_rejects_oversized_candidate_search_space(tmp_path) -> None:
     assert "three-dimension evolution budget" in json.dumps(result["evidence"])
 
 
+def test_behavior_preview_rejects_noop_parameter_before_simulation(
+    tmp_path, monkeypatch
+) -> None:
+    import wayfinder_paths.jobs.evolution_campaign as campaign_module
+
+    store, job_id = _evaluatable_job(tmp_path, source_params={"warmup_bars": 20})
+    improver = store.job_dir(job_id) / "improver.yaml"
+    policy = yaml.safe_load(improver.read_text(encoding="utf-8"))
+    policy["evolution"]["behavior_preview_enabled"] = True
+    improver.write_text(yaml.safe_dump(policy), encoding="utf-8")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    parameter = _prepare_campaign_candidates(store, job_id, started)[-1]
+    assert parameter["mutation_kind"] == "parameter"
+    bundle = store.job_dir(job_id) / parameter["bundle"]
+    job_yaml = yaml.safe_load((bundle / "job.yaml").read_text(encoding="utf-8"))
+    job_yaml["execution_params"]["warmup_bars"] = 20
+    (bundle / "job.yaml").write_text(
+        yaml.safe_dump(job_yaml, sort_keys=False), encoding="utf-8"
+    )
+    (bundle / "search_space.json").write_text(
+        json.dumps({"unused_knob": {"type": "int", "low": 1, "high": 2}}),
+        encoding="utf-8",
+    )
+
+    def simulation_must_not_run(*args, **kwargs):
+        raise AssertionError("full quick simulation ran before behavior preview")
+
+    monkeypatch.setattr(campaign_module, "simulate_execution", simulation_must_not_run)
+
+    result = evaluate_candidate(store, job_id, parameter["candidate_id"])
+
+    assert result["status"] == "low_fidelity_rejected", json.dumps(result, indent=2)
+    assert result["behavior_preview"]["status"] == "unchanged"
+    assert result["postmortem"]["primary_failure"] == "no_behavior_change"
+    assert result["postmortem"]["behavior_diff"]["material_change"] is False
+
+
 def test_evaluate_releases_claim_when_compute_is_transiently_busy(
     tmp_path, monkeypatch
 ) -> None:

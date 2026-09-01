@@ -516,6 +516,23 @@ def _build_full_frame_strategy(params: dict[str, Any]) -> Any:
     return types.SimpleNamespace(decide=decide)
 
 
+def _build_parameterized_strategy(params: dict[str, Any]) -> Any:
+    size = float(params.get("order_size") or 1.0)
+
+    def decide(ctx: Any) -> list[OrderIntent]:
+        return [
+            OrderIntent(
+                action="OPEN",
+                venue="hyperliquid",
+                symbol="SNX",
+                side="long",
+                size=size,
+            )
+        ]
+
+    return types.SimpleNamespace(decide=decide)
+
+
 _PROBE_SPEC = {
     "market_kind": "perp",
     "data_contract": {"bar_interval": "5m", "symbols": ["SNX"]},
@@ -551,6 +568,34 @@ def test_window_invariance_probe_reds_full_frame_recompute() -> None:
     assert result["window"] == 30
     assert result["bar"]  # the differing bar is named
     assert result["base_intents"] != result["wide_intents"]
+
+
+def test_parameter_behavior_probe_distinguishes_material_and_noop_knobs() -> None:
+    from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+    from wayfinder_paths.jobs.execution.validation import parameter_behavior_probe
+
+    bars = CompletedBarsView.from_rows(_bars(140))
+    changed = parameter_behavior_probe(
+        _build_parameterized_strategy,
+        bars,
+        _PROBE_SPEC,
+        {"warmup_bars": 30, "order_size": 1.0},
+        [{"order_size": 1.0}, {"order_size": 2.0}],
+    )
+    unchanged = parameter_behavior_probe(
+        _build_parameterized_strategy,
+        bars,
+        _PROBE_SPEC,
+        {"warmup_bars": 30, "order_size": 1.0},
+        [{"unused_knob": 0.0}, {"unused_knob": 1.0}],
+    )
+
+    assert changed["status"] == "changed"
+    assert changed["changed_params"] == {"order_size": 2.0}
+    assert changed["ticks_evaluated"] < 8 * 3
+    assert unchanged["status"] == "unchanged"
+    assert unchanged["bars_probed"] == 8
+    assert unchanged["ticks_evaluated"] == 8 * 3
 
 
 def test_window_invariance_check_reds_validation_with_hint(tmp_path: Path) -> None:

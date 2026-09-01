@@ -111,6 +111,10 @@ def test_world_split_is_chronological_and_sealed(tmp_path: Path) -> None:
     manifest_text = (world_dir / "world.json").read_text(encoding="utf-8")
     assert str(sealed_dir) not in manifest_text
     assert not sealed_dir.is_relative_to(world_dir)
+    baseline = world["manifest"]["baseline"]
+    assert baseline["bars"] == 72
+    assert baseline["partition"] == "development"
+    assert baseline["sha256"]
 
 
 def test_world_truncates_features_and_installs_only_development_prefix(
@@ -165,6 +169,13 @@ def test_world_truncates_features_and_installs_only_development_prefix(
         )
     )
     assert len(installed_bars["bars"]) == 72
+    installed_baseline = json.loads(
+        (arm_store.job_dir(arm_job_id) / "results/backtest/baseline.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert installed_baseline["scope"]["partition"] == "development"
+    assert installed_baseline["scope"]["bars"] == 72
 
 
 def test_race_is_deterministic_and_does_not_mutate_bundles(tmp_path: Path) -> None:
@@ -371,6 +382,19 @@ def test_identity_allows_only_pre_registered_model_difference() -> None:
     assert not compare_identities(base, other, allowed={"model", "variant"})[
         "comparable"
     ]
+
+    preview = {
+        **base,
+        "arm_parameters": {"campaign": {"behavior_preview_enabled": True}},
+    }
+    control = {
+        **base,
+        "arm_parameters": {"campaign": {"behavior_preview_enabled": False}},
+    }
+    assert compare_identities(control, preview, allowed={"arm_parameters"})[
+        "comparable"
+    ]
+    assert not compare_identities(control, preview, allowed=set())["comparable"]
     other["data"] = base["data"]
     other["initial_prompt_sha256"] = "different-prompt"
     assert not compare_identities(base, other, allowed={"model", "variant"})[
@@ -585,3 +609,25 @@ def test_single_seed_pilot_is_directional_only() -> None:
     assert report["primary"]["pairs"] == 1
     assert report["pilot"] is True
     assert report["decision"] == "pilot_directional_only"
+
+
+def test_behavior_preview_is_an_allowed_pre_registered_arm_parameter() -> None:
+    config = {
+        "schema_version": "1.0",
+        "pilot": True,
+        "arms": [
+            {
+                "name": "control",
+                "campaign": {"behavior_preview_enabled": False},
+            },
+            {
+                "name": "preview",
+                "campaign": {"behavior_preview_enabled": True},
+            },
+        ],
+        "allowed_identity_differences": ["arm_parameters"],
+        "worlds": [{"world_dir": "w", "sealed_dir": "s"}],
+        "seeds": [1],
+    }
+
+    _validate_config(config)
