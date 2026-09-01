@@ -19,11 +19,12 @@
   ],
   "worlds": [
     {
-      "world_dir": "../../.wayfinder_runs/bench/worlds/majors-losing",
-      "sealed_dir": "../../.wayfinder_runs/bench/sealed/majors-losing"
+      "world_dir": "../../.wayfinder_runs/bench/worlds/majors-losing-grounded",
+      "sealed_dir": "../../.wayfinder_runs/bench/sealed/majors-losing-grounded"
     }
   ],
   "seeds": [101],
+  "max_parallel_arms": 2,
   "campaign": {
     "generated_programs": 4,
     "full_dev_survivors": 1,
