@@ -10,7 +10,10 @@ from typing import Any
 import pandas as pd
 
 from wayfinder_paths.jobs.bench.env import atomic_json, sha256_file, sha256_json
-from wayfinder_paths.jobs.bundles import copy_job_bundle
+from wayfinder_paths.jobs.bundles import (
+    copy_job_bundle,
+    resolve_bundle_script_entrypoint,
+)
 from wayfinder_paths.jobs.execution.features import parse_feature_specs
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
@@ -212,7 +215,7 @@ def _freeze_development_baseline(
 ) -> dict[str, Any]:
     """Run the incumbent once on the exact agent-visible development prefix."""
     job_data = _load_job_yaml(incumbent)
-    script = _bundle_script(incumbent, job_data)
+    script = resolve_bundle_script_entrypoint(incumbent, job_data)
     rows = list(development_payload.get("bars") or [])
     metadata = dict(development_payload.get("metadata") or {})
     dataset = PreparedExecutionDataset.from_rows(rows, metadata)
@@ -248,19 +251,6 @@ def _freeze_development_baseline(
         "revision": compute_workspace_revision(incumbent),
         **scope,
     }
-
-
-def _bundle_script(bundle: Path, job_data: dict[str, Any]) -> Path:
-    raw = str((job_data.get("script_loop") or {}).get("entrypoint") or "")
-    if not raw:
-        raise FileNotFoundError("bundle script_loop.entrypoint is missing")
-    path = Path(raw)
-    if not path.is_absolute():
-        return bundle / path
-    if "workspace" in path.parts:
-        index = path.parts.index("workspace")
-        return bundle / "workspace" / Path(*path.parts[index + 1 :])
-    raise ValueError("absolute bundle entrypoint is outside workspace")
 
 
 def _row_timestamp(row: dict[str, Any]) -> datetime:

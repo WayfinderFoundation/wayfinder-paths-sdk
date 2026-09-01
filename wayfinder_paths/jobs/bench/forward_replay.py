@@ -13,6 +13,7 @@ import pandas as pd
 
 from wayfinder_paths.jobs.bench.env import atomic_json, git_sha, sha256_json
 from wayfinder_paths.jobs.bench.world import load_world
+from wayfinder_paths.jobs.bundles import resolve_bundle_script_entrypoint
 from wayfinder_paths.jobs.candidate_shadow import run_candidate_shadows
 from wayfinder_paths.jobs.economics import block_bootstrap_lcb
 from wayfinder_paths.jobs.execution.job import _load_job_yaml
@@ -147,7 +148,7 @@ def evaluate_bundle(
     expected_spec = environment.get("spec_sha256")
     spec_matches = not expected_spec or sha256_json(spec.to_dict()) == expected_spec
     params.update(dict(environment.get("params") or {}))
-    script = _bundle_script(bundle, job_data)
+    script = resolve_bundle_script_entrypoint(bundle, job_data)
     dataset = PreparedExecutionDataset.from_rows(
         rows, {"source": "sealed_benchmark_world"}
     )
@@ -260,20 +261,6 @@ def _rebase_trial(trial: dict[str, Any], *, cutoff: datetime) -> None:
     for role in ("candidate", "reference"):
         trial[role]["last_processed_bar"] = cutoff.isoformat()
         trial[role]["error_count"] = 0
-
-
-def _bundle_script(bundle: Path, job_data: dict[str, Any]) -> Path:
-    raw = str((job_data.get("script_loop") or {}).get("entrypoint") or "")
-    if not raw:
-        raise FileNotFoundError("bundle script_loop.entrypoint is missing")
-    path = Path(raw)
-    if not path.is_absolute():
-        return bundle / path
-    parts = path.parts
-    if "workspace" in parts:
-        index = parts.index("workspace")
-        return bundle / "workspace" / Path(*parts[index + 1 :])
-    raise ValueError("absolute bundle entrypoint is outside workspace")
 
 
 def _daily_pnl(

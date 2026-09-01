@@ -31,6 +31,7 @@ from wayfinder_paths.jobs.bench.runner import (
 )
 from wayfinder_paths.jobs.bench.world import load_world, prepare_world
 from wayfinder_paths.jobs.benchmarks.agent_adapter import install_agent_workspace
+from wayfinder_paths.jobs.bundles import resolve_bundle_script_entrypoint
 from wayfinder_paths.jobs.evolution_campaign import _campaign_now
 from wayfinder_paths.jobs.execution import ExecutionSpec
 from wayfinder_paths.jobs.gating import compute_workspace_revision
@@ -118,6 +119,24 @@ def test_world_split_is_chronological_and_sealed(tmp_path: Path) -> None:
     assert baseline["bars"] == 72
     assert baseline["partition"] == "development"
     assert baseline["sha256"]
+
+
+def test_bundle_entrypoint_rebinds_repo_relative_live_job_path(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    expected = bundle / "workspace/src/strategy.py"
+
+    resolved = resolve_bundle_script_entrypoint(
+        bundle,
+        {
+            "script_loop": {
+                "entrypoint": (
+                    ".wayfinder/jobs/majors-5m-lab/workspace/src/strategy.py"
+                )
+            }
+        },
+    )
+
+    assert resolved == expected
 
 
 def test_world_truncates_features_and_installs_only_development_prefix(
