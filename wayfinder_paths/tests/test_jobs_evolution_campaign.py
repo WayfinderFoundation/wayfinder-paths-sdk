@@ -257,6 +257,20 @@ def test_investigative_campaign_requires_and_freezes_one_design_turn(tmp_path) -
     )
     assert prompt["constraints"]["idea_slots"] == 8
     assert prompt["constraints"]["wildcards"] == 2
+    assert prompt["constraints"]["research_parent_required"] is False
+    assert (
+        "Do not allocate a decorative research_seed/research_context"
+        in prompt["next_action"]
+    )
+    assert (
+        "parent_source must be exactly one of incumbent, qd_elite, crossover, "
+        "de_novo, starter_seed, research_seed, research_context"
+        in prompt["next_action"]
+    )
+    assert "it is an enum" in prompt["next_action"]
+    assert (
+        "mutation_kind must be exactly structural or parameter" in prompt["next_action"]
+    )
     with pytest.raises(ValueError, match="design must be accepted"):
         prepare_candidate(store, job_id, now=started + timedelta(minutes=2))
 
@@ -269,6 +283,14 @@ def test_investigative_campaign_requires_and_freezes_one_design_turn(tmp_path) -
     malformed["slots"][0]["wildcard"] = "false"
     with pytest.raises(ValueError, match="wildcard must be true or false"):
         submit_campaign_design(store, job_id, campaign_design=malformed)
+    malformed = json.loads(json.dumps(design))
+    malformed["slots"][0]["starter_seed_id"] = "missing-starter"
+    with pytest.raises(ValueError, match="unavailable starter_seed_id"):
+        submit_campaign_design(store, job_id, campaign_design=malformed)
+
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    selected_starter = manifest["starter_seeds"][3]["starter_id"]
+    design["slots"][0]["starter_seed_id"] = selected_starter
 
     accepted = submit_campaign_design(store, job_id, campaign_design=design)
     repeated = submit_campaign_design(store, job_id, campaign_design=design)
@@ -279,10 +301,13 @@ def test_investigative_campaign_requires_and_freezes_one_design_turn(tmp_path) -
     assert current["design"]["hypotheses"] == 3
     assert current["design"]["slots"] == 8
     assert current["design"]["wildcards"] == 2
+    assert "starter_seed_id" not in accepted["slots"][1]
+    assert "research_seed_id" not in accepted["slots"][1]
     candidate = prepare_candidate(store, job_id, now=started + timedelta(minutes=3))
     assert candidate["design_slot_id"] == "s01"
     assert candidate["hypothesis_id"] == "h1"
     assert candidate["parent_source"] == "starter_seed"
+    assert candidate["starter_seed_id"] == selected_starter
     assert candidate["evidence_refs"] == ["/baseline/reason"]
     assert candidate["reference_bundle"]
 
