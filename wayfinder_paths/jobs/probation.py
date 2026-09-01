@@ -17,6 +17,7 @@ from typing import Any
 
 import pandas as pd
 
+from wayfinder_paths.jobs.archive import find_candidate
 from wayfinder_paths.jobs.bundles import copy_job_bundle
 from wayfinder_paths.jobs.compute_lock import job_state_lock
 from wayfinder_paths.jobs.economics import block_bootstrap_lcb
@@ -38,6 +39,15 @@ TRIAL_ACTIVE_STATUSES = frozenset({"burn_in", "active"})
 TRIAL_TERMINAL_STATUSES = frozenset(
     {"graduated", "killed", "inconclusive", "superseded"}
 )
+# Owner-facing trial identity: a trial card names the STRATEGY, not the
+# plumbing that delivered it. "evolution" is the pipeline, never a family.
+GENERIC_TRIAL_FAMILY = "unknown-strategy"
+TRIAL_SUMMARY_MAX_CHARS = 200
+PLACEHOLDER_TRIAL_FAMILIES = frozenset({"", "evolution", GENERIC_TRIAL_FAMILY})
+# Circular moving-block bootstrap block length for paired forward deltas.
+# Below this many paired days every resample is the full (rotated) sample, so
+# the "interval" collapses to the point estimate — report no bounds instead.
+FORWARD_BOOTSTRAP_BLOCK_LEN = 5
 
 
 def load_probation(store: JobStore, job_id: str) -> dict[str, Any]:
@@ -402,11 +412,21 @@ def ensure_unified_probation(
                     None,
                 )
                 if migrated_trial is None:
+                    family, summary = _resolve_trial_identity(
+                        store,
+                        job_id,
+                        candidate_id=str(
+                            candidate.get("candidate_id") or candidate["revision"]
+                        ),
+                        fallback_family=None,
+                        fallback_summary=None,
+                    )
                     trial = {
                         "trial_id": trial_id,
                         "candidate_id": candidate.get("candidate_id"),
                         "candidate_revision": candidate.get("revision"),
-                        "family": "evolution",
+                        "family": family,
+                        "summary": summary,
                         "source": candidate.get("source") or "evolution_campaign",
                         "status": "active",
                         "phase": "forward",
@@ -482,6 +502,70 @@ def ensure_unified_probation(
         return doc
 
 
+def _resolve_trial_identity(
+    store: JobStore,
+    job_id: str,
+    *,
+    candidate_id: str,
+    fallback_family: str | None,
+    fallback_summary: str | None,
+) -> tuple[str, str | None]:
+    """The candidate's real strategy identity for the owner-facing trial card.
+
+    Archive entry first (authoritative family + hypothesis summary), then the
+    campaign candidate record, then an honest generic placeholder — never the
+    literal pipeline name "evolution"."""
+    entry = find_candidate(store, job_id, candidate_id) or {}
+    archive_family = str(entry.get("family") or "").strip()
+    archive_summary = str(entry.get("summary") or "").strip()
+    family = next(
+        (
+            value
+            for value in (archive_family, str(fallback_family or "").strip())
+            if value.lower() not in PLACEHOLDER_TRIAL_FAMILIES
+        ),
+        GENERIC_TRIAL_FAMILY,
+    )
+    summary = (archive_summary or str(fallback_summary or "").strip())[
+        :TRIAL_SUMMARY_MAX_CHARS
+    ]
+    return family, summary or None
+
+
+def _repair_trial_identity(
+    store: JobStore, job_id: str, trial: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Patch a legacy placeholder identity in place once the archive knows the
+    candidate — live trials get fixed on the next adjudication pass, no manual
+    migration."""
+    if str(trial.get("family") or "").strip().lower() not in (
+        PLACEHOLDER_TRIAL_FAMILIES
+    ):
+        return None
+    entry = (
+        find_candidate(
+            store,
+            job_id,
+            str(trial.get("candidate_id") or trial.get("candidate_revision") or ""),
+        )
+        or {}
+    )
+    family = str(entry.get("family") or "").strip()
+    if family.lower() in PLACEHOLDER_TRIAL_FAMILIES:
+        return None
+    trial["family"] = family
+    summary = str(entry.get("summary") or "").strip()[:TRIAL_SUMMARY_MAX_CHARS]
+    if summary:
+        trial["summary"] = summary
+    trial["updated_at"] = utc_now_iso()
+    return {
+        "action": "probation_trial_identity_repaired",
+        "trial_id": trial.get("trial_id"),
+        "candidate_id": trial.get("candidate_id"),
+        "family": family,
+    }
+
+
 def stage_evolution_probation(
     store: JobStore,
     job_id: str,
@@ -491,12 +575,20 @@ def stage_evolution_probation(
     revision: str,
     source: str,
     family: str,
+    summary: str | None = None,
     campaign_id: str | None = None,
     evidence: dict[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Freeze a gate-green candidate into the permanent paper probation rail."""
     current = _aware(now or datetime.now(UTC))
+    family, summary = _resolve_trial_identity(
+        store,
+        job_id,
+        candidate_id=candidate_id,
+        fallback_family=family,
+        fallback_summary=summary,
+    )
     spec = ImproverSpec.load(store.job_dir(job_id))
     policy = spec.evolution.get("probation") or {}
     max_active = int(policy.get("max_active") or 3)
@@ -557,6 +649,7 @@ def stage_evolution_probation(
             "reference_revision": reference_revision,
             "campaign_id": campaign_id,
             "family": family,
+            "summary": summary,
             "source": source,
             "status": status,
             "phase": "burn_in" if status == "burn_in" else "queued",
@@ -737,6 +830,9 @@ def maybe_adjudicate_probation(
     with job_state_lock(store.repo_root, job_id, name="probation"):
         doc = load_probation(store, job_id)
         for trial in doc.get("trials") or []:
+            repair = _repair_trial_identity(store, job_id, trial)
+            if repair:
+                outcomes.append(repair)
             if trial.get("status") == "burn_in":
                 outcome = _adjudicate_burn_in(store, job_id, trial, current=current)
             elif trial.get("status") == "active":
@@ -942,13 +1038,29 @@ def _paired_forward_metrics(
         if candidate[day] > -capital and reference[day] > -capital
     ]
     confidence = float(trial["forward"].get("confidence") or 0.90)
-    lcb = block_bootstrap_lcb(
-        deltas, block_len=5, iterations=500, confidence=confidence
-    )
-    reverse = block_bootstrap_lcb(
-        [-value for value in deltas], block_len=5, iterations=500, confidence=confidence
-    )
-    ucb = -reverse if reverse is not None else None
+    lcb: float | None
+    ucb: float | None
+    if len(deltas) < FORWARD_BOOTSTRAP_BLOCK_LEN:
+        # Degenerate bootstrap: fewer paired days than one block makes every
+        # resample identical, rendering lcb == ucb == estimate as false
+        # precision. Decision checkpoints are unaffected — the day-7/14
+        # peeks have >= block-length days, and verdicts null-guard the bounds.
+        lcb = None
+        ucb = None
+    else:
+        lcb = block_bootstrap_lcb(
+            deltas,
+            block_len=FORWARD_BOOTSTRAP_BLOCK_LEN,
+            iterations=500,
+            confidence=confidence,
+        )
+        reverse = block_bootstrap_lcb(
+            [-value for value in deltas],
+            block_len=FORWARD_BOOTSTRAP_BLOCK_LEN,
+            iterations=500,
+            confidence=confidence,
+        )
+        ucb = -reverse if reverse is not None else None
     safety = _hard_constraint_metrics(store, job_id, candidate)
     return {
         "paired_days": len(deltas),

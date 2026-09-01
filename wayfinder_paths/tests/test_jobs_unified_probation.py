@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from wayfinder_paths.jobs.archive import record_candidate
 from wayfinder_paths.jobs.candidate_shadow import _target_shadow_state_root
 from wayfinder_paths.jobs.execution.driver import _apply_symbol_entry_blocks
 from wayfinder_paths.jobs.execution.engine import EngineState
@@ -20,6 +21,7 @@ from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.halt import clear_halt, read_halt
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.probation import (
+    GENERIC_TRIAL_FAMILY,
     ensure_unified_probation,
     load_probation,
     maybe_adjudicate_probation,
@@ -131,6 +133,11 @@ def test_active_c03_experiment_migrates_without_resetting_clock_or_cursors(
     assert len(doc["trials"]) == 1
     trial = doc["trials"][0]
     assert trial["candidate_id"] == "20260828T160925Z-bbd5e625-c03-30411dca"
+    # No archive entry in this fixture: the trial gets an honest generic
+    # identity, never the pipeline name "evolution".
+    assert trial["family"] == GENERIC_TRIAL_FAMILY
+    assert trial["summary"] is None
+    assert trial["source"] == "evolution_campaign"
     assert trial["status"] == "active"
     assert trial["phase"] == "forward"
     assert trial["forward"]["started_at"] == started.isoformat()
@@ -207,6 +214,185 @@ def test_legacy_migration_recovers_between_writes_without_duplicate_trial(
     assert archived["status"] == "migrated"
     journal = (store.job_dir(job_id) / "journal.jsonl").read_text(encoding="utf-8")
     assert journal.count("evolution_experiment_migrated_to_probation") == 1
+
+
+def test_staged_trial_carries_the_candidates_real_archive_identity(
+    tmp_path: Path,
+) -> None:
+    store, job_id = _job(tmp_path)
+    candidate, revision = _candidate(store, job_id, "identity")
+    record_candidate(
+        store,
+        job_id,
+        candidate_id="20260828T160925Z-bbd5e625-c03-30411dca",
+        family="momentum-alignment-entry-gate",
+        summary=(
+            "Gate new entries on bounded-window momentum alignment: open long "
+            "legs only when short-window realized return is positive and short "
+            "legs only when negative."
+        ),
+        status="dev_frontier",
+        objective=None,
+    )
+
+    staged = stage_evolution_probation(
+        store,
+        job_id,
+        candidate_id="20260828T160925Z-bbd5e625-c03-30411dca",
+        candidate_root=candidate,
+        revision=revision,
+        source="evolution_campaign",
+        family="evolution",
+        now=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+
+    assert staged["family"] == "momentum-alignment-entry-gate"
+    assert staged["summary"].startswith(
+        "Gate new entries on bounded-window momentum alignment"
+    )
+    assert len(staged["summary"]) <= 200
+    assert staged["source"] == "evolution_campaign"
+
+
+def test_trial_identity_falls_back_to_campaign_record_then_generic(
+    tmp_path: Path,
+) -> None:
+    store, job_id = _job(tmp_path)
+    campaign_backed, campaign_revision = _candidate(store, job_id, "campaign-backed")
+    staged = stage_evolution_probation(
+        store,
+        job_id,
+        candidate_id="no-archive-entry",
+        candidate_root=campaign_backed,
+        revision=campaign_revision,
+        source="evolution_campaign",
+        family="short-window-momentum",
+        summary="Campaign candidate record summary line.",
+        now=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    assert staged["family"] == "short-window-momentum"
+    assert staged["summary"] == "Campaign candidate record summary line."
+
+    orphan, orphan_revision = _candidate(store, job_id, "orphan")
+    generic = stage_evolution_probation(
+        store,
+        job_id,
+        candidate_id="no-identity-anywhere",
+        candidate_root=orphan,
+        revision=orphan_revision,
+        source="evolution_campaign",
+        family="evolution",
+        now=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+    assert generic["family"] == GENERIC_TRIAL_FAMILY
+    assert generic["family"] != "evolution"
+    assert generic["summary"] is None
+
+
+def test_lazy_repair_patches_placeholder_trial_identity_once(tmp_path: Path) -> None:
+    store, job_id = _job(tmp_path)
+    candidate, revision = _candidate(store, job_id, "repair")
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    stage_evolution_probation(
+        store,
+        job_id,
+        candidate_id="c03-repair",
+        candidate_root=candidate,
+        revision=revision,
+        source="evolution_campaign",
+        family="staged-family",
+        now=started,
+    )
+    doc = load_probation(store, job_id)
+    doc["trials"][0]["family"] = "evolution"  # legacy placeholder on disk
+    doc["trials"][0].pop("summary", None)
+    store.write_json(job_id, "probation.json", doc)
+    record_candidate(
+        store,
+        job_id,
+        candidate_id="c03-repair",
+        family="momentum-alignment-entry-gate",
+        summary="Gate new entries on bounded-window momentum alignment.",
+        status="dev_frontier",
+        objective=None,
+    )
+
+    outcomes = maybe_adjudicate_probation(
+        store, job_id, now=started + timedelta(minutes=5)
+    )
+    repeat = maybe_adjudicate_probation(
+        store, job_id, now=started + timedelta(minutes=10)
+    )
+
+    updated = load_probation(store, job_id)["trials"][0]
+    assert updated["family"] == "momentum-alignment-entry-gate"
+    assert (
+        updated["summary"] == "Gate new entries on bounded-window momentum alignment."
+    )
+    assert [row["action"] for row in outcomes] == ["probation_trial_identity_repaired"]
+    assert repeat == []
+    repaired_rows = [
+        row
+        for row in store.read_jsonl(job_id, "journal.jsonl")
+        if row.get("type") == "probation_trial_identity_repaired"
+    ]
+    assert len(repaired_rows) == 1
+    assert repaired_rows[0]["family"] == "momentum-alignment-entry-gate"
+
+
+def test_two_paired_days_emit_no_interval_bounds_but_keep_estimate(
+    tmp_path: Path,
+) -> None:
+    store, job_id = _job(tmp_path)
+    candidate, revision = _candidate(store, job_id, "degenerate")
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    stage_evolution_probation(
+        store,
+        job_id,
+        candidate_id="degenerate-candidate",
+        candidate_root=candidate,
+        revision=revision,
+        source="evolution_campaign",
+        family="degenerate-family",
+        now=started,
+    )
+    doc = load_probation(store, job_id)
+    trial = doc["trials"][0]
+    trial["status"] = "active"
+    trial["phase"] = "forward"
+    trial["burn_in"]["status"] = "passed"
+    trial["forward"]["started_at"] = started.isoformat()
+    trial["forward"]["deadline_at"] = (started + timedelta(days=14)).isoformat()
+    for role in ("candidate", "reference"):
+        trial[role]["stream"] = (
+            f"results/forward/probation/{trial['trial_id']}/forward/{role}"
+        )
+    store.write_json(job_id, "probation.json", doc)
+    stamps = [started + timedelta(days=offset) for offset in range(3)]
+    for role in ("candidate", "reference"):
+        stream = store.job_dir(job_id) / trial[role]["stream"]
+        _write_ticks(stream, stamps)
+        if role == "candidate":
+            for stamp in stamps:
+                _write_trade(stream, stamp, 5.0)
+
+    outcomes = maybe_adjudicate_probation(
+        store, job_id, now=started + timedelta(days=2, hours=6)
+    )
+
+    updated = load_probation(store, job_id)["trials"][0]
+    metrics = updated["forward"]["metrics"]
+    assert outcomes == []
+    assert updated["status"] == "active"
+    assert metrics["paired_days"] == 2
+    assert metrics["lcb"] is None
+    assert metrics["ucb"] is None
+    assert metrics["estimate"] > 0
+    assert metrics["candidate_net_pnl"] == 15.0
+    assert metrics["reference_net_pnl"] == 0.0
+    synced = snapshot_job(job_id, store=store)["probation"]["trials"][0]
+    assert synced["forward"]["metrics"]["lcb"] is None
+    assert synced["forward"]["metrics"]["ucb"] is None
 
 
 def test_zero_trade_burn_in_advances_to_forward_on_identical_covered_bars(
@@ -435,9 +621,12 @@ def test_positive_paired_forward_lcb_graduates_to_owner_only_proposal(
     )
 
     updated = load_probation(store, job_id)["trials"][0]
+    metrics = updated["forward"]["metrics"]
     assert updated["status"] == "graduated"
-    assert updated["forward"]["metrics"]["paired_days"] >= 7
-    assert updated["forward"]["metrics"]["lcb"] > 0
+    assert metrics["paired_days"] >= 7
+    # Day-7 checkpoint always has >= block-length paired days: real bounds.
+    assert metrics["lcb"] is not None and metrics["lcb"] > 0
+    assert metrics["ucb"] is not None and metrics["ucb"] >= metrics["lcb"]
     assert updated["promotion"]["status"] == "owner_review"
     assert captured["allow_auto_apply"] is False
     assert any(row["action"] == "probation_promotion_proposed" for row in outcomes)
