@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import sqlite3
 import subprocess
 import threading
 import time
@@ -23,6 +24,7 @@ from wayfinder_paths.jobs.bench.mcp_server import core_jobs as bench_core_jobs
 from wayfinder_paths.jobs.bench.runner import (
     _arm_env,
     _assert_bench_root,
+    _audit_session_isolation,
     _install_job,
     _resolve_runtime_opencode_config,
     _scorecard,
@@ -278,6 +280,92 @@ def test_world_and_tool_isolation_fail_closed(tmp_path: Path) -> None:
         )
     with pytest.raises(ValueError, match="cannot live inside"):
         _assert_bench_root(tmp_path / ".wayfinder/jobs/a-bench")
+
+
+def test_session_isolation_separates_denied_attempts_from_breaches(
+    tmp_path: Path,
+) -> None:
+    sandbox = tmp_path / "arm"
+    sandbox.mkdir()
+    database = tmp_path / "opencode.db"
+    connection = sqlite3.connect(database)
+    connection.execute("CREATE TABLE part (session_id TEXT, data TEXT)")
+
+    def tool_part(*, path: Path, status: str, error: str | None = None) -> str:
+        return json.dumps(
+            {
+                "type": "tool",
+                "tool": "read",
+                "state": {
+                    "status": status,
+                    "input": {"filePath": str(path)},
+                    "error": error,
+                },
+            }
+        )
+
+    denied_path = tmp_path / "denied" / "future.json"
+    escaped_path = tmp_path / "escaped" / "future.json"
+    connection.executemany(
+        "INSERT INTO part(session_id, data) VALUES (?, ?)",
+        [
+            (
+                "session-denied",
+                tool_part(
+                    path=denied_path,
+                    status="error",
+                    error=(
+                        "The user has specified a rule which prevents you from "
+                        "using this specific tool call."
+                    ),
+                ),
+            ),
+            (
+                "session-breach",
+                tool_part(path=escaped_path, status="completed"),
+            ),
+        ],
+    )
+    connection.commit()
+    connection.close()
+
+    denied_result = _audit_session_isolation(
+        ["session-denied"],
+        session_db=database,
+        sandbox=sandbox,
+        protected_roots=[],
+        missing_transcripts=[],
+    )
+
+    assert denied_result["passed"] is True
+    assert denied_result["breaches"] == []
+    assert denied_result["denied_attempts"] == [
+        {
+            "type": "denied_filesystem_escape",
+            "session_id": "session-denied",
+            "tool": "read",
+            "path": str(denied_path),
+        }
+    ]
+
+    result = _audit_session_isolation(
+        ["session-breach"],
+        session_db=database,
+        sandbox=sandbox,
+        protected_roots=[],
+        missing_transcripts=[],
+    )
+
+    assert result["passed"] is False
+    assert result["breaches"] == [
+        {
+            "type": "filesystem_escape",
+            "session_id": "session-breach",
+            "tool": "read",
+            "path": str(escaped_path),
+        }
+    ]
+    assert result["denied_attempts"] == []
 
 
 def test_benchmark_design_validation_is_inline(
@@ -591,6 +679,9 @@ def test_budget_parity_is_explicit_and_four_seeds_are_required_by_config() -> No
             "cost": {"tokens_in": 100, "tokens_out": 10},
             "funnel": {},
             "forward": {},
+            "isolation": {
+                "denied_attempts": ([{"type": "denied"}] if arm == "a" else [])
+            },
         }
         for seed in config["seeds"]
         for arm in ("a", "b")
@@ -601,6 +692,8 @@ def test_budget_parity_is_explicit_and_four_seeds_are_required_by_config() -> No
     assert report["primary"]["pairs"] == 4
     assert report["cost_parity"]["matched"] is True
     assert report["decision"] == "a_wins"
+    assert report["by_arm"]["a"]["process"]["policy_denied_attempts"] == 4
+    assert report["by_arm"]["b"]["process"]["policy_denied_attempts"] == 0
 
 
 def test_single_seed_pilot_is_directional_only() -> None:

@@ -693,23 +693,30 @@ def _audit_session_isolation(
     protected_roots: list[Path],
     missing_transcripts: list[str],
 ) -> dict[str, Any]:
-    """Detect future/sibling/network access in persisted tool inputs."""
+    """Detect successful future/sibling/network access in persisted tool calls."""
     breaches: list[dict[str, Any]] = [
         {"type": "missing_transcript", "title": title} for title in missing_transcripts
     ]
     if not session_db.exists():
         if session_ids:
             breaches.append({"type": "missing_session_database"})
-        return {"passed": not breaches, "breaches": breaches}
+        return {
+            "passed": not breaches,
+            "breaches": breaches,
+            "denied_attempts": [],
+        }
     sandbox = sandbox.resolve()
     protected = [path.resolve() for path in protected_roots]
+    denied_attempts: list[dict[str, Any]] = []
     connection = sqlite3.connect(str(session_db))
     try:
         for session_id in dict.fromkeys(session_ids):
             try:
                 rows = connection.execute(
                     "SELECT json_extract(data,'$.tool'), "
-                    "json_extract(data,'$.state.input') FROM part "
+                    "json_extract(data,'$.state.input'), "
+                    "json_extract(data,'$.state.status'), "
+                    "json_extract(data,'$.state.error') FROM part "
                     "WHERE session_id=? AND json_extract(data,'$.type')='tool'",
                     (session_id,),
                 )
@@ -718,16 +725,28 @@ def _audit_session_isolation(
                     {"type": "unreadable_transcript", "session_id": session_id}
                 )
                 continue
-            for tool, raw_input in rows:
+            for tool, raw_input, status, raw_error in rows:
                 tool_name = str(tool or "unknown")
                 lowered = tool_name.lower()
+                policy_denied = str(status or "") == "error" and any(
+                    marker in str(raw_error or "").lower()
+                    for marker in (
+                        "prevents you from using this specific tool call",
+                        "permission denied",
+                    )
+                )
                 if any(
                     marker in lowered
                     for marker in ("bash", "shell", "fetch", "http", "browser", "web")
                 ):
-                    breaches.append(
+                    target = denied_attempts if policy_denied else breaches
+                    target.append(
                         {
-                            "type": "network_or_shell_tool",
+                            "type": (
+                                "denied_network_or_shell_tool"
+                                if policy_denied
+                                else "network_or_shell_tool"
+                            ),
                             "session_id": session_id,
                             "tool": tool_name,
                         }
@@ -758,9 +777,14 @@ def _audit_session_isolation(
                         if root != sandbox
                     )
                     if outside or protected_access:
-                        breaches.append(
+                        target = denied_attempts if policy_denied else breaches
+                        target.append(
                             {
-                                "type": "filesystem_escape",
+                                "type": (
+                                    "denied_filesystem_escape"
+                                    if policy_denied
+                                    else "filesystem_escape"
+                                ),
                                 "session_id": session_id,
                                 "tool": tool_name,
                                 "path": value[:300],
@@ -768,7 +792,11 @@ def _audit_session_isolation(
                         )
     finally:
         connection.close()
-    return {"passed": not breaches, "breaches": breaches}
+    return {
+        "passed": not breaches,
+        "breaches": breaches,
+        "denied_attempts": denied_attempts,
+    }
 
 
 def _input_strings(value: Any, key: str = "") -> list[tuple[str, str]]:

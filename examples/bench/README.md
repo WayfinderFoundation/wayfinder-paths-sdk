@@ -89,6 +89,11 @@ report. If runtime identity differs outside the declared model/variant fields or
 token cost differs by more than the registered ratio, the result is invalid—not
 a win for either arm.
 
+Isolation is audited from persisted tool-call state. A successful access outside
+the private arm (or to the protected world/holdout roots) invalidates the run.
+A policy-denied attempt transfers no data, remains valid, and is reported as the
+secondary `policy_denied_attempts` process metric.
+
 If a campaign stages no candidate, that run keeps the incumbent and contributes
 an exact zero candidate-minus-incumbent endpoint. A staged but invalid holdout
 (including the 10-trade participation floor or invariance failure) invalidates

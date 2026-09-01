@@ -161,6 +161,22 @@ def _arm_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         float((row.get("diversity") or {}).get("mean_elite_trade_count") or 0.0)
         for row in rows
     ]
+    process = {
+        key: sum(int((row.get("process") or {}).get(key) or 0) for row in rows)
+        for key in (
+            "fact_citations",
+            "wildcards_used",
+            "postmortems_consumed",
+            "behavior_changed_attempts",
+            "behavior_unchanged_attempts",
+            "quick_simulations",
+            "behavior_preview_rejections",
+            "behavior_preview_ticks",
+        )
+    }
+    process["policy_denied_attempts"] = sum(
+        len((row.get("isolation") or {}).get("denied_attempts") or []) for row in rows
+    )
     return {
         "runs": len(rows),
         "invalid_runs": sum(bool(row.get("invalid_reason")) for row in rows),
@@ -175,19 +191,7 @@ def _arm_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 round(sum(elite_counts) / len(elite_counts), 3) if elite_counts else 0.0
             ),
         },
-        "process": {
-            key: sum(int((row.get("process") or {}).get(key) or 0) for row in rows)
-            for key in (
-                "fact_citations",
-                "wildcards_used",
-                "postmortems_consumed",
-                "behavior_changed_attempts",
-                "behavior_unchanged_attempts",
-                "quick_simulations",
-                "behavior_preview_rejections",
-                "behavior_preview_ticks",
-            )
-        },
+        "process": process,
         "tokens_total": tokens,
         "tokens_per_staged_candidate": round(tokens / staged, 2) if staged else None,
         "tool_calls": sum(
