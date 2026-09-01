@@ -47,14 +47,19 @@ class WayfinderJobsClient:
             headers["X-API-KEY"] = api_key
         return headers
 
-    def sync(self, jobs: list[dict[str, Any]]) -> None:
+    def sync(
+        self,
+        jobs: list[dict[str, Any]],
+        *,
+        starters: dict[str, Any],
+    ) -> None:
         base_url = self._base_url()
         if not base_url:
             return
         try:
             resp = self._client.post(
                 f"{base_url}/sync/",
-                json={"jobs": jobs},
+                json={"jobs": jobs, "starters": starters},
                 headers=self._headers(),
             )
             resp.raise_for_status()
@@ -320,9 +325,21 @@ def _owner_attention(store: JobStore, job_id: str, job: Any) -> dict[str, Any]:
 
 
 def sync_all_jobs(*, store: JobStore | None = None) -> None:
+    from wayfinder_paths.jobs.starters import (
+        STARTER_CATALOG_VERSION,
+        starter_catalog,
+    )
+
     store = store or JobStore()
     snapshots = [snapshot_job(job.id, store=store) for job in store.list_jobs()]
-    WAYFINDER_JOBS_CLIENT.sync(snapshots)
+    WAYFINDER_JOBS_CLIENT.sync(
+        snapshots,
+        starters={
+            "items": starter_catalog(),
+            "catalog_version": STARTER_CATALOG_VERSION,
+            "cached_at": utc_now_iso(),
+        },
+    )
 
 
 OPERATOR_STATE_PATH = "state/operator.json"

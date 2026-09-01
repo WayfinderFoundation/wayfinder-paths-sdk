@@ -218,6 +218,7 @@ def test_starters_route_serves_the_bare_catalog_list(server: RunnerViewServer) -
     assert body["ok"] is True
     assert isinstance(body["result"], list)
     assert body["result"] == json.loads(json.dumps(starter_catalog(), default=str))
+    assert body["result"][0]["id"] == "crypto-momentum-persistence-4h"
 
 
 def test_backtest_view_parity_with_direct_loader(

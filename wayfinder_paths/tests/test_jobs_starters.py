@@ -213,6 +213,12 @@ def dataset_fetch_spawns(monkeypatch) -> list[dict[str, Any]]:
 def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
     catalog = starter_catalog()
     assert len(catalog) == 12
+    assert catalog[0]["id"] == "crypto-momentum-persistence-4h"
+    assert [item["id"] for item in catalog[1:]] == [
+        definition.id
+        for definition in STARTER_DEFINITIONS
+        if definition.id != "crypto-momentum-persistence-4h"
+    ]
     assert {item["timeframe"] for item in catalog} == {
         "5m",
         "15m",
