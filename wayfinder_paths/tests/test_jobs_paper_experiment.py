@@ -9,6 +9,7 @@ import pytest
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.paper_experiment import (
+    _daily_pnl_for_stream,
     _normalize_control_revision,
     _proposal_verdict,
     _resource_cost,
@@ -112,6 +113,34 @@ def _write_days(
             (stream / "trades.jsonl").write_text(
                 "\n".join(trades) + "\n", encoding="utf-8"
             )
+
+
+def test_daily_pnl_prefers_trade_close_time_over_write_time(tmp_path: Path) -> None:
+    stream = tmp_path / "stream"
+    stream.mkdir()
+    (stream / "ticks.jsonl").write_text(
+        json.dumps({"bar_ts": "2026-08-12T00:00:00+00:00"}) + "\n",
+        encoding="utf-8",
+    )
+    (stream / "trades.jsonl").write_text(
+        json.dumps(
+            {
+                "closed_at": "2026-08-12T12:00:00+00:00",
+                "ts": "2026-09-01T13:00:00+00:00",
+                "net_pnl": -3.5,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    daily = _daily_pnl_for_stream(
+        stream,
+        since=datetime(2026, 8, 11, tzinfo=UTC),
+        until=datetime(2026, 8, 13, tzinfo=UTC),
+    )
+
+    assert daily == {"2026-08-12": -3.5}
 
 
 @pytest.mark.parametrize(

@@ -388,6 +388,8 @@ def test_two_paired_days_emit_no_interval_bounds_but_keep_estimate(
     assert metrics["lcb"] is None
     assert metrics["ucb"] is None
     assert metrics["estimate"] > 0
+    assert len(metrics["daily_deltas"]) == 2
+    assert all(delta > 0 for delta in metrics["daily_deltas"])
     assert metrics["candidate_net_pnl"] == 15.0
     assert metrics["reference_net_pnl"] == 0.0
     synced = snapshot_job(job_id, store=store)["probation"]["trials"][0]
