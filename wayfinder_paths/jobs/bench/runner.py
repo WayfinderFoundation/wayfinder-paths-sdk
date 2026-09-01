@@ -243,9 +243,13 @@ def run_arm(
     invalid_reason: str | None = None
     try:
         if bool(config.get("interface_smoke", True)):
+            smoke_path = (store.job_dir(job_id) / "job.yaml").resolve()
             smoke = run_agent_prompt(
                 sandbox=run_root,
-                prompt="Reply with exactly BENCH_READY and do not call tools.",
+                prompt=(
+                    f"Read exactly `{smoke_path}` with the read tool, then reply "
+                    "with exactly BENCH_READY. Do not call any other tool."
+                ),
                 model=model,
                 variant=variant,
                 title=f"bench-smoke-{_safe_name(run_id)}",

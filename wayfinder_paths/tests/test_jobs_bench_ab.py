@@ -409,6 +409,20 @@ def test_shell_runtime_config_is_copied_and_dev_endpoint_is_explicit(
 ) -> None:
     repo = tmp_path / "sdk"
     (repo / ".opencode/agents").mkdir(parents=True)
+    relative_rule = '    ".wayfinder/jobs/**": allow\n'
+    (repo / ".opencode/agents/wayfinder-evolution-designer.md").write_text(
+        "read:\n" + relative_rule,
+        encoding="utf-8",
+    )
+    (repo / ".opencode/agents/wayfinder-evolution-worker.md").write_text(
+        "read:\n"
+        + relative_rule
+        + "write:\n"
+        + relative_rule
+        + "edit:\n"
+        + relative_rule,
+        encoding="utf-8",
+    )
     (repo / ".opencode/opencode.json").write_text(
         json.dumps({"provider": {"wayfinder": {"models": {}}}}), encoding="utf-8"
     )
@@ -463,6 +477,14 @@ def test_shell_runtime_config_is_copied_and_dev_endpoint_is_explicit(
         == "https://llm-dev.wayfinder.ai/v1"
     )
     assert loaded["mcp"]["wayfinder"]["url"] == "http://127.0.0.1:4321/mcp"
+    normalized_rule = '    "**/.wayfinder/jobs/**": allow\n'
+    installed_agents = sandbox / ".opencode/agents"
+    assert (installed_agents / "wayfinder-evolution-designer.md").read_text().count(
+        normalized_rule
+    ) == 1
+    assert (installed_agents / "wayfinder-evolution-worker.md").read_text().count(
+        normalized_rule
+    ) == 3
     project_root = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
         cwd=sandbox,

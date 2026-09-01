@@ -142,6 +142,34 @@ def build_world_bundle(
     return job.id
 
 
+def _allow_benchmark_job_paths(opencode_root: Path) -> None:
+    """Keep production job permissions valid after local path normalization.
+
+    OpenCode's read result echoes a project-relative input as an absolute path.
+    A later model turn may reuse that exact path, so benchmark copies of the
+    evolution agents need an equivalent recursive job-path rule. The rule is
+    confined to ``.wayfinder/jobs`` and never changes the source agent files.
+    """
+    relative_rule = '    ".wayfinder/jobs/**": allow\n'
+    normalized_rule = '    "**/.wayfinder/jobs/**": allow\n'
+    for name in (
+        "wayfinder-evolution-designer.md",
+        "wayfinder-evolution-worker.md",
+    ):
+        path = opencode_root / "agents" / name
+        if not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8")
+        if normalized_rule in content:
+            continue
+        if relative_rule not in content:
+            raise ValueError(f"benchmark agent is missing job-path permission: {path}")
+        path.write_text(
+            content.replace(relative_rule, relative_rule + normalized_rule),
+            encoding="utf-8",
+        )
+
+
 def install_agent_workspace(
     *,
     sandbox: Path,
@@ -181,6 +209,7 @@ def install_agent_workspace(
             ignore=shutil.ignore_patterns("node_modules"),
             symlinks=False,
         )
+    _allow_benchmark_job_paths(target)
     # The benchmark may pin the exact Shells runtime config. Otherwise the
     # untracked local provider config falls back to the primary checkout;
     # agents and plugins still stay pinned to the declared SDK ref.
