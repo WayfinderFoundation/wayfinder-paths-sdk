@@ -183,6 +183,9 @@ def _arm_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 "postmortems_consumed",
                 "behavior_changed_attempts",
                 "behavior_unchanged_attempts",
+                "quick_simulations",
+                "behavior_preview_rejections",
+                "behavior_preview_ticks",
             )
         },
         "tokens_total": tokens,

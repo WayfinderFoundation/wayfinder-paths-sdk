@@ -818,6 +818,11 @@ def _scorecard(
             bool,
         )
     ]
+    attempt_outcomes = [
+        attempt.get("outcome") or {}
+        for row in candidates
+        for attempt in row.get("attempts") or []
+    ]
     return {
         "funnel": {
             "candidates_generated": int(funnel_counts.get("generated") or 0),
@@ -875,6 +880,18 @@ def _scorecard(
             "behavior_changed_attempts": sum(value is True for value in behavior_flags),
             "behavior_unchanged_attempts": sum(
                 value is False for value in behavior_flags
+            ),
+            "quick_simulations": sum(
+                outcome.get("quick_simulation_ran") is True
+                for outcome in attempt_outcomes
+            ),
+            "behavior_preview_rejections": sum(
+                ((outcome.get("behavior_preview") or {}).get("status") == "unchanged")
+                for outcome in attempt_outcomes
+            ),
+            "behavior_preview_ticks": sum(
+                int((outcome.get("behavior_preview") or {}).get("ticks_evaluated") or 0)
+                for outcome in attempt_outcomes
             ),
             "holdout_verdict": holdout.get("verdict"),
         },

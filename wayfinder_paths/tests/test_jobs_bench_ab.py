@@ -25,6 +25,7 @@ from wayfinder_paths.jobs.bench.runner import (
     _assert_bench_root,
     _install_job,
     _resolve_runtime_opencode_config,
+    _scorecard,
     _set_provider_base_url,
     _validate_config,
     run_experiment,
@@ -659,6 +660,40 @@ def test_behavior_preview_is_an_allowed_pre_registered_arm_parameter() -> None:
     config["max_parallel_arms"] = 9
     with pytest.raises(ValueError, match="max_parallel_arms"):
         _validate_config(config)
+
+
+def test_scorecard_counts_preview_ticks_and_avoided_quick_simulation() -> None:
+    scorecard = _scorecard(
+        state={
+            "counts": {},
+            "candidates": [
+                {
+                    "attempts": [
+                        {
+                            "postmortem": {"behavior_diff": {"material_change": False}},
+                            "outcome": {
+                                "quick_simulation_ran": False,
+                                "behavior_preview": {
+                                    "status": "unchanged",
+                                    "ticks_evaluated": 24,
+                                },
+                            },
+                        }
+                    ]
+                }
+            ],
+        },
+        funnel={},
+        forward={},
+        holdout={},
+        sessions=[],
+        cost={},
+    )
+
+    assert scorecard["process"]["behavior_unchanged_attempts"] == 1
+    assert scorecard["process"]["quick_simulations"] == 0
+    assert scorecard["process"]["behavior_preview_rejections"] == 1
+    assert scorecard["process"]["behavior_preview_ticks"] == 24
 
 
 def test_experiment_runs_isolated_arms_concurrently_and_preserves_order(

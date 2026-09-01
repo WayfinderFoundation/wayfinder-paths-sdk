@@ -1323,6 +1323,7 @@ def _evaluate_candidate(
                     "evidence": (
                         "parameter behavior preview found no material intent change"
                     ),
+                    "quick_simulation_ran": False,
                     "behavior_preview": behavior_preview,
                     "postmortem": {
                         "viable": False,
@@ -1360,7 +1361,11 @@ def _evaluate_candidate(
         return {"status": "invalid", "evidence": {"error": str(exc)[:500]}}
     compact = _compact_result(result)
     if not result.validation.get("execution_valid"):
-        return {"status": "low_fidelity_rejected", "evidence": compact}
+        return {
+            "status": "low_fidelity_rejected",
+            "evidence": compact,
+            "quick_simulation_ran": True,
+        }
     common: dict[str, Any] = {
         "revision": revision,
         "quick": compact,
@@ -1368,6 +1373,7 @@ def _evaluate_candidate(
         "behavior": _behavior(result, quick, subject["spec"]),
         "execution_calibration": calibration,
         "tuning_eligible": search_space is not None,
+        "quick_simulation_ran": True,
     }
     if candidate.get("reference_bundle"):
         receipt = result_receipt(

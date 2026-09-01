@@ -2920,6 +2920,7 @@ def test_behavior_preview_rejects_noop_parameter_before_simulation(
     result = evaluate_candidate(store, job_id, parameter["candidate_id"])
 
     assert result["status"] == "low_fidelity_rejected", json.dumps(result, indent=2)
+    assert result["quick_simulation_ran"] is False
     assert result["behavior_preview"]["status"] == "unchanged"
     assert result["postmortem"]["primary_failure"] == "no_behavior_change"
     assert result["postmortem"]["behavior_diff"]["material_change"] is False
