@@ -15,7 +15,6 @@ from wayfinder_paths.jobs.defense import (
     active_stand_down_symbols,
     current_ood_entry_scale,
     defense_policy,
-    is_stop_loss_fill,
     record_stop_loss_result,
     scale_entry_intents,
 )
@@ -332,25 +331,36 @@ async def _run_tick_inner(
     result.gates = latest_gate_state(view)
     defense_config = defense_policy(params)
     state.defense_state["policy"] = defense_config
+    defense_enabled = bool(defense_config["enabled"])
+    # Shadow mode measures every would-have-fired decision without acting, so
+    # fleet-wide trigger rates exist before any job gets automatic action.
+    defense_active = defense_enabled and defense_config["mode"] == "active"
     defense_blocked_symbols = (
         active_stand_down_symbols(state.defense_state, now=bar_ts)
-        if defense_config["enabled"]
+        if defense_enabled
         else set()
     )
-    ood_entry_scale = (
-        current_ood_entry_scale(view) if defense_config["enabled"] else 1.0
-    )
+    ood_entry_scale = current_ood_entry_scale(view) if defense_enabled else 1.0
     target_regimes = declared_regimes(params)
     current_regime = current_portfolio_regime(view) if target_regimes else None
-    effective_blocked_symbols = (
-        set(blocked_entry_symbols or set())
-        | defense_blocked_symbols
+    effective_blocked_symbols = set(blocked_entry_symbols or set()) | (
+        defense_blocked_symbols if defense_active else set()
     )
-    if defense_config["enabled"]:
+    if defense_enabled:
         result.gates["defense_overlay"] = {
+            "mode": defense_config["mode"],
             "ood_entry_scale": ood_entry_scale,
             "stand_down_symbols": sorted(defense_blocked_symbols),
         }
+        if not defense_active and (ood_entry_scale < 1.0 or defense_blocked_symbols):
+            result.guard_events.append(
+                {
+                    "kind": "defense_shadow_would_fire",
+                    "ood_entry_scale": ood_entry_scale,
+                    "stand_down_symbols": sorted(defense_blocked_symbols),
+                    "timestamp": bar_iso,
+                }
+            )
     if target_regimes:
         result.gates["portfolio_regime"] = {
             "current": current_regime,
@@ -522,7 +532,9 @@ async def _run_tick_inner(
             decided = list(decided)
     intents = [OrderIntent.from_any(item) for item in decided]
     _apply_engine_leverage(intents, params)
-    scaled_intents = scale_entry_intents(intents, ood_entry_scale)
+    scaled_intents = (
+        scale_entry_intents(intents, ood_entry_scale) if defense_active else 0
+    )
     if scaled_intents:
         result.guard_events.append(
             {
@@ -537,11 +549,12 @@ async def _run_tick_inner(
     # before decide() emits the next entry.
     defense_blocked_symbols = (
         active_stand_down_symbols(state.defense_state, now=bar_ts)
-        if defense_config["enabled"]
+        if defense_enabled
         else set()
     )
-    effective_blocked_symbols |= defense_blocked_symbols
-    if defense_config["enabled"]:
+    if defense_active:
+        effective_blocked_symbols |= defense_blocked_symbols
+    if defense_enabled:
         result.gates["defense_overlay"]["stand_down_symbols"] = sorted(
             defense_blocked_symbols
         )
@@ -909,16 +922,13 @@ def _record_fill(
         row = fill.to_dict()
         row["realized_pnl_delta"] = state.ledger.realized_pnl - realized_before
         result.trade_rows.append(row)
-        if fill.reduce_only or (
-            intent is not None and is_risk_reducing_intent(intent)
-        ):
+        if fill.reduce_only or (intent is not None and is_risk_reducing_intent(intent)):
             event = record_stop_loss_result(
                 state.defense_state,
                 symbol=fill.symbol,
                 direction=direction_before,
                 realized_pnl=float(row["realized_pnl_delta"]),
                 timestamp=fill.timestamp,
-                stopped_out=is_stop_loss_fill(row),
             )
             if event is not None:
                 result.guard_events.append(event)

@@ -24,6 +24,7 @@ ARCHIVE_STATUSES = {
     "quick_complete",
     "invalid",
     "low_fidelity_rejected",
+    "awaiting_regime",
     "dev_frontier",
     "audit_rejected",
     "paper_probation",

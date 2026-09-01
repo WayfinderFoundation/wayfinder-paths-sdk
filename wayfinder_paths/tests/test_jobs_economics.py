@@ -158,7 +158,7 @@ def test_regime_specialist_gate_uses_target_edge_and_bounds_outside_loss() -> No
                 "candidate": {
                     # A transition strategy can enter before the target cell;
                     # whole-strategy activity, not in-cell entries, is binding.
-                    "target": {"trade_count": 0, "day_count": 8},
+                    "target": {"trade_count": 0, "day_count": 12},
                     "target_utility": 0.04,
                     "outside": {"loss_pct": 0.01},
                 }
@@ -183,6 +183,16 @@ def test_regime_specialist_gate_uses_target_edge_and_bounds_outside_loss() -> No
     result = evaluate_economic_readiness(report, constitution)
     assert result["ready"] is False
     assert any("out-of-regime loss" in reason for reason in result["reasons"])
+
+    # In-regime edge never licenses replacing a better whole-strategy incumbent.
+    inferior = _ok_report(
+        regime_contract=report["regime_contract"],
+        paired_incumbent_delta={"estimate": -0.01, "lcb": -0.02, "confidence": 0.9},
+    )
+    inferior["regime_contract"]["objective"]["candidate"]["outside"]["loss_pct"] = 0.01
+    result = evaluate_economic_readiness(inferior, constitution)
+    assert result["ready"] is False
+    assert any("inferior overall" in reason for reason in result["reasons"])
 
 
 def test_constitution_defaults_file_and_broken(tmp_path: Path) -> None:

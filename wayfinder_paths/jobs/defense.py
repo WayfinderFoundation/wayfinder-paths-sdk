@@ -2,9 +2,12 @@
 
 The explicitly enabled overlay is deliberately small and engine-owned. It
 neither promotes a strategy nor asks an agent for judgment: a same-direction
-stop-loss streak temporarily blocks new entries for that symbol, while a
+losing-close streak temporarily blocks new entries for that symbol, while a
 synchronized cross-sectional shock scales newly proposed exposure until breadth
-normalizes. Protective exits are never scaled or blocked.
+normalizes and a cooldown has elapsed. Protective exits are never scaled or
+blocked. ``mode: shadow`` records every decision the overlay would have made
+without acting on it, so trigger rates can be measured fleet-wide before any
+job receives automatic action.
 """
 
 from __future__ import annotations
@@ -44,6 +47,12 @@ def defense_policy(params: Mapping[str, Any]) -> dict[str, Any]:
     config = dict(raw) if isinstance(raw, Mapping) else {}
     return {
         "enabled": bool(config.get("enabled", True)),
+        "mode": "shadow"
+        if str(config.get("mode") or "active") == "shadow"
+        else "active",
+        # Consecutive losing closes in one direction, whatever the exit
+        # mechanism: a TTL exit at a loss is a loss.  Counting only stop
+        # fills left the breaker inert for time-capped strategies.
         "stop_loss_streak": max(1, int(config.get("stop_loss_streak", 3))),
         "stand_down_hours": max(1.0, float(config.get("stand_down_hours", 12))),
         # Three sigma was inert even during the Aug-19 cross-major break: the
@@ -57,6 +66,9 @@ def defense_policy(params: Mapping[str, Any]) -> dict[str, Any]:
         "ood_entry_scale": min(
             1.0, max(0.0, float(config.get("ood_entry_scale", 0.25)))
         ),
+        # A 24h-horizon detector releases the moment the trailing return
+        # normalizes, which is exactly when the post-break chop begins.
+        "ood_cooldown_hours": max(0.0, float(config.get("ood_cooldown_hours", 48))),
     }
 
 
@@ -100,7 +112,16 @@ def add_defense_features(
         (zscore.ge(policy["ood_sigma"]).sum(axis=1) >= required)
         | (zscore.le(-policy["ood_sigma"]).sum(axis=1) >= required)
     )
-    active_by_stamp = synchronized.to_dict()
+    ordered = pd.Series(
+        pd.to_datetime(pd.Index(synchronized.index), utc=True),
+        index=synchronized.index,
+    )
+    last_trigger = ordered.where(synchronized.to_numpy()).ffill()
+    cooldown = pd.Timedelta(hours=policy["ood_cooldown_hours"])
+    active = synchronized | (
+        last_trigger.notna() & ((ordered - last_trigger) <= cooldown)
+    )
+    active_by_stamp = active.to_dict()
     frame[OOD_ACTIVE_COLUMN] = frame["timestamp"].map(active_by_stamp).fillna(False)
     frame[OOD_ENTRY_SCALE_COLUMN] = np.where(
         frame[OOD_ACTIVE_COLUMN], policy["ood_entry_scale"], 1.0
@@ -140,16 +161,18 @@ def record_stop_loss_result(
     direction: str | None,
     realized_pnl: float,
     timestamp: Any,
-    stopped_out: bool = True,
 ) -> dict[str, Any] | None:
+    """Track consecutive losing closes per symbol/direction; arm a stand-down.
+
+    Every reduce-only close counts: stop fills, TTL exits, and explicit
+    closes alike.  A profitable close breaks the streak.
+    """
     policy = defense_state.get("policy") or {}
     if not policy.get("enabled") or not direction:
         return None
     streaks = defense_state.setdefault("stop_loss_streaks", {})
     key = f"{symbol}:{direction}"
-    # Consecutive means consecutive closed outcomes in this direction. A
-    # profitable close or an ordinary (non-stop) exit breaks the streak.
-    if not stopped_out or realized_pnl >= 0:
+    if realized_pnl >= 0:
         streaks[key] = 0
         return None
     streak = int(streaks.get(key) or 0) + 1
@@ -161,21 +184,17 @@ def record_stop_loss_result(
         hours=float(policy.get("stand_down_hours") or 12)
     )
     defense_state.setdefault("stand_downs", {})[symbol] = until.isoformat()
+    # Every guard event carries the bar stamp: walk-forward and replay stats
+    # window guard events by timestamp.
     return {
         "kind": "loss_streak_symbol_stand_down",
+        "timestamp": _utc_timestamp(timestamp).isoformat(),
+        "mode": str(policy.get("mode") or "active"),
         "symbol": symbol,
         "direction": direction,
         "streak": streak,
         "blocked_until": until.isoformat(),
     }
-
-
-def is_stop_loss_fill(row: Mapping[str, Any]) -> bool:
-    raw = row.get("raw") or {}
-    metadata = raw.get("intent_metadata") or {}
-    action = str(raw.get("intent_action") or metadata.get("action") or "").upper()
-    reason = str(metadata.get("exit_reason") or "")
-    return action == "STOP_LOSS" or reason in {"bracket_stop", "stop_loss"}
 
 
 def scale_entry_intents(intents: Sequence[OrderIntent], scale: float) -> int:

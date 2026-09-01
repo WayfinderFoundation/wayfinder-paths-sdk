@@ -129,6 +129,16 @@ FORWARD_SNAPSHOT = "forward_experience.json"
 DIAGNOSTIC_PACK = "diagnostic_pack.json"
 CAMPAIGN_DESIGN = "campaign_design.json"
 SCHEMA_VERSION = "2.0"
+# Failure codes that are evidence against a hypothesis family.  Infrastructure
+# errors, activity floors, and windows without the declared regime are not.
+_REFUTING_FAILURE_CODES = frozenset(
+    {
+        "negative_after_costs",
+        "negative_in_target_regime",
+        "out_of_regime_loss_budget",
+        "screen_inversion",
+    }
+)
 _PARENT_SOURCES = ("incumbent", "qd_elite", "crossover", "de_novo")
 _EXECUTABLE_PARENT_STATUSES = {
     "dev_frontier",
@@ -3068,6 +3078,7 @@ def _archive_campaign_candidate(
             "best_attempt",
             "latest_postmortem_path",
             "target_regimes",
+            "full_dev_failure_codes",
         )
         if candidate.get(key) is not None
     }
@@ -3259,27 +3270,38 @@ def _full_dev(
         )
         or 0.0
     )
-    outside_loss_budget = float(
-        (load_constitution(root).get("evaluation", {}).get("regime", {})).get(
-            "max_out_of_regime_loss_pct", 0.02
-        )
-    )
+    regime_config = load_constitution(root).get("evaluation", {}).get("regime", {})
+    outside_loss_budget = float(regime_config.get("max_out_of_regime_loss_pct", 0.02))
     outside_loss_ok = not specialized or (
         float(validation_regime.get("outside_loss_pct") or 0.0) <= outside_loss_budget
         and float(stress_regime.get("outside_loss_pct") or 0.0) <= outside_loss_budget
     )
-    passed = (
-        train_valid
-        and validation_valid
-        and stress_valid
-        and validation_trades >= minimum_validation_trades
-        and validation_return > 0.0
-        and stress_return > 0.0
-        and outside_loss_ok
-        and bool(calibration["audit_passed"])
+    train_regime = train_stats.get("regime") or {}
+    train_return = float(
+        (
+            train_regime.get("target_net_return")
+            if specialized
+            else train_stats.get("net_return")
+        )
+        or 0.0
     )
+    verdict = _full_dev_verdict(
+        specialized=specialized,
+        valid=train_valid and validation_valid and stress_valid,
+        validation_trades=validation_trades,
+        minimum_validation_trades=minimum_validation_trades,
+        train_return=train_return,
+        validation_return=validation_return,
+        stress_return=stress_return,
+        outside_loss_ok=outside_loss_ok,
+        target_days=len(validation_regime.get("target_daily") or []),
+        min_target_days=int(regime_config.get("min_target_days") or 10),
+        audit_passed=bool(calibration["audit_passed"]),
+    )
+    passed = bool(verdict["passed"])
     return {
-        "status": "dev_frontier" if passed else "low_fidelity_rejected",
+        "status": verdict["status"],
+        "full_dev_failure_codes": verdict["failure_codes"],
         "revision": revision,
         "params": params,
         "tuning": tuning,
@@ -3300,13 +3322,72 @@ def _full_dev(
                 or 12
             ),
         },
-        "evidence": "positive independent validation with sufficient activity"
-        if passed
-        else (
+        "evidence": verdict["evidence"],
+    }
+
+
+def _full_dev_verdict(
+    *,
+    specialized: bool,
+    valid: bool,
+    validation_trades: int,
+    minimum_validation_trades: int,
+    train_return: float,
+    validation_return: float,
+    stress_return: float,
+    outside_loss_ok: bool,
+    target_days: int,
+    min_target_days: int,
+    audit_passed: bool,
+) -> dict[str, Any]:
+    """Status, evidence, and failure codes for one full-development result.
+
+    A specialist whose validation window never contained enough of its
+    declared regime is not refuted by that window; it waits for the regime.
+    """
+    awaiting = specialized and valid and target_days < min_target_days
+    passed = (
+        valid
+        and not awaiting
+        and validation_trades >= minimum_validation_trades
+        and validation_return > 0.0
+        and stress_return > 0.0
+        and outside_loss_ok
+        and audit_passed
+    )
+    failure_codes: list[str] = []
+    if not passed and not awaiting:
+        if validation_trades < minimum_validation_trades:
+            failure_codes.append("activity_below_floor")
+        if validation_return <= 0.0:
+            failure_codes.append(
+                "negative_in_target_regime" if specialized else "negative_after_costs"
+            )
+        if train_return > 0.0 and validation_return < 0.0:
+            failure_codes.append("screen_inversion")
+        if not outside_loss_ok:
+            failure_codes.append("out_of_regime_loss_budget")
+    if passed:
+        status = "dev_frontier"
+        evidence = "positive independent validation with sufficient activity"
+    elif awaiting:
+        status = "awaiting_regime"
+        evidence = (
+            f"validation window held {target_days} target-regime days, below "
+            f"{min_target_days}; not evidence against the idea"
+        )
+    else:
+        status = "low_fidelity_rejected"
+        evidence = (
             "failed independent validation: activity below elite floor"
             if validation_trades < minimum_validation_trades
             else "failed independent validation"
-        ),
+        )
+    return {
+        "status": status,
+        "passed": passed,
+        "evidence": evidence,
+        "failure_codes": failure_codes,
     }
 
 
@@ -3823,14 +3904,20 @@ def _freeze_research_context(store: JobStore, job_id: str) -> dict[str, Any]:
     for entry in archive:
         metadata = entry.get("metadata") or {}
         postmortem = metadata.get("latest_postmortem") or {}
-        failure_codes = list(postmortem.get("failure_codes") or [])
-        rejected = entry.get("status") in {
-            "invalid",
-            "low_fidelity_rejected",
-            "audit_rejected",
-            "proposal_rejected",
-        }
-        if entry.get("status") != "refuted" and not rejected:
+        failure_codes = list(
+            dict.fromkeys(
+                [
+                    *(postmortem.get("failure_codes") or []),
+                    *(metadata.get("full_dev_failure_codes") or []),
+                ]
+            )
+        )
+        status = entry.get("status")
+        rejected = status in {"audit_rejected", "proposal_rejected"} or (
+            status == "low_fidelity_rejected"
+            and bool(_REFUTING_FAILURE_CODES.intersection(failure_codes))
+        )
+        if status != "refuted" and not rejected:
             continue
         family = str(entry.get("family") or "").strip()
         if family and family not in refuted_by_family:
@@ -3844,7 +3931,9 @@ def _freeze_research_context(store: JobStore, job_id: str) -> dict[str, Any]:
                     {
                         "failure_codes": failure_codes[:8],
                         "strength": (
-                            "regime_inversion"
+                            "screen_inversion"
+                            if "screen_inversion" in failure_codes
+                            else "out_of_regime_loss"
                             if "out_of_regime_loss_budget" in failure_codes
                             else "rejected"
                         ),

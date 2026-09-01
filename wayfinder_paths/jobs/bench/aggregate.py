@@ -140,6 +140,7 @@ def _arm_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "full_dev",
         "gate_passed",
         "staged",
+        "awaiting_regime",
     )
     funnel = {
         key: sum(int((row.get("funnel") or {}).get(key) or 0) for row in rows)

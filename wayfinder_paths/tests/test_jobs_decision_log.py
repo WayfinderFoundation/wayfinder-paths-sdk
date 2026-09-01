@@ -90,6 +90,7 @@ def test_evolution_funnel_does_not_count_full_dev_failures_as_quick_rejects() ->
         "target": 4,
         "passed": 1,
         "rejected": 2,
+        "awaiting_regime": 0,
         "running": 0,
     }
     assert funnel["optuna"] == {
@@ -363,6 +364,7 @@ def test_active_evolution_campaign_is_one_compact_progress_row(tmp_path) -> None
                     "target": 4,
                     "passed": 0,
                     "rejected": 0,
+                    "awaiting_regime": 0,
                     "running": 0,
                 },
                 "optuna": {

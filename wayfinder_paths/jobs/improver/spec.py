@@ -110,9 +110,10 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "generated_programs": 8,
         "investigation_design_enabled": True,
         # Candidates may declare one or two engine-owned portfolio regime
-        # cells.  Campaign design must include the current cell's opposite so
-        # a development-window specialist cannot monopolize the population.
-        "regime_specialist_enabled": True,
+        # cells, and campaign design must then include the current cell's
+        # opposite.  Off until the bench A/B certifies it; the canary job
+        # enables it through its own improver policy.
+        "regime_specialist_enabled": False,
         "max_attempts_per_idea": 3,
         "max_quick_attempts": 24,
         "wildcard_slots": 2,

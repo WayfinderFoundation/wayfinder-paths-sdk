@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 import yaml
 
+from wayfinder_paths.jobs.archive import record_candidate
 from wayfinder_paths.jobs.defense import (
     OOD_ACTIVE_COLUMN,
     active_stand_down_symbols,
@@ -17,7 +18,11 @@ from wayfinder_paths.jobs.defense import (
     record_stop_loss_result,
     scale_entry_intents,
 )
-from wayfinder_paths.jobs.evolution_campaign import _campaign_regime_context
+from wayfinder_paths.jobs.evolution_campaign import (
+    _campaign_regime_context,
+    _freeze_research_context,
+    _full_dev_verdict,
+)
 from wayfinder_paths.jobs.execution.primitives import CompletedBarsView, OrderIntent
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.probation import _paired_forward_metrics
@@ -158,7 +163,9 @@ def test_stop_loss_streak_persists_a_bounded_symbol_stand_down() -> None:
     assert not active_stand_down_symbols(state, now=started + pd.Timedelta(hours=15))
 
 
-def test_non_stop_close_breaks_the_stop_loss_streak() -> None:
+def test_profitable_close_breaks_the_loss_streak_but_ttl_losses_count() -> None:
+    # TTL and explicit closes at a loss arm the breaker exactly like stops:
+    # counting stop fills alone left it inert for time-capped strategies.
     state = {"policy": defense_policy({"defense_overlay": {}})}
     started = pd.Timestamp("2026-08-19T12:00:00Z")
     for offset in range(2):
@@ -175,7 +182,6 @@ def test_non_stop_close_breaks_the_stop_loss_streak() -> None:
         direction="short",
         realized_pnl=2.0,
         timestamp=started + pd.Timedelta(hours=2),
-        stopped_out=False,
     )
 
     assert (
@@ -188,6 +194,112 @@ def test_non_stop_close_breaks_the_stop_loss_streak() -> None:
         )
         is None
     )
+    event = None
+    for offset in range(4, 6):
+        event = record_stop_loss_result(
+            state,
+            symbol="HYPE",
+            direction="short",
+            realized_pnl=-1.0,
+            timestamp=started + pd.Timedelta(hours=offset),
+        )
+    assert event and event["streak"] == 3 and event["mode"] == "active"
+
+
+def test_breadth_shock_stays_active_through_the_cooldown() -> None:
+    # 720 calm 5m bars, then a level shift held flat for 30h: the 24h return
+    # normalizes after a day, so only the cooldown keeps the scale reduced.
+    rows = _panel_rows(count=720 + 360, interval=timedelta(minutes=5))
+    for row in rows[720 * len(SYMBOLS) :]:
+        row["close"] *= 1.5
+        row["high"] = row["close"] * 1.001
+        row["low"] = row["close"] * 0.999
+    params = {"symbols": list(SYMBOLS), "defense_overlay": {}}
+
+    assert bool(
+        add_defense_features(CompletedBarsView.from_rows(rows), params).feature(
+            OOD_ACTIVE_COLUMN
+        )
+    )
+    params["defense_overlay"] = {"ood_cooldown_hours": 1}
+    assert not bool(
+        add_defense_features(CompletedBarsView.from_rows(rows), params).feature(
+            OOD_ACTIVE_COLUMN
+        )
+    )
+
+
+def test_full_dev_verdict_waits_for_absent_regime_and_codes_inversions() -> None:
+    base = {
+        "specialized": True,
+        "valid": True,
+        "validation_trades": 12,
+        "minimum_validation_trades": 8,
+        "train_return": 0.02,
+        "validation_return": 0.01,
+        "stress_return": 0.005,
+        "outside_loss_ok": True,
+        "target_days": 12,
+        "min_target_days": 10,
+        "audit_passed": True,
+    }
+    assert _full_dev_verdict(**base)["status"] == "dev_frontier"
+
+    absent = _full_dev_verdict(**{**base, "target_days": 3})
+    assert absent["status"] == "awaiting_regime"
+    assert absent["failure_codes"] == []
+    assert "not evidence against the idea" in absent["evidence"]
+
+    inverted = _full_dev_verdict(
+        **{**base, "validation_return": -0.01, "outside_loss_ok": False}
+    )
+    assert inverted["status"] == "low_fidelity_rejected"
+    assert inverted["failure_codes"] == [
+        "negative_in_target_regime",
+        "screen_inversion",
+        "out_of_regime_loss_budget",
+    ]
+    plain = _full_dev_verdict(**{**base, "specialized": False, "valid": False})
+    assert plain["status"] == "low_fidelity_rejected"
+    assert plain["failure_codes"] == []
+
+
+def test_refutation_ledger_requires_evidence_against_the_family(tmp_path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("regime-ledger", script="workspace/strategy.py")
+    store.save(job)
+    for candidate_id, family, status, metadata in (
+        ("infra", "trend-breakout", "invalid", {}),
+        ("floor", "trend-breakout", "low_fidelity_rejected", {}),
+        ("parked", "trend-breakout", "awaiting_regime", {}),
+        (
+            "flip",
+            "volatility-fade",
+            "low_fidelity_rejected",
+            {
+                "full_dev_failure_codes": [
+                    "negative_in_target_regime",
+                    "screen_inversion",
+                ]
+            },
+        ),
+    ):
+        record_candidate(
+            store,
+            job.id,
+            candidate_id=candidate_id,
+            family=family,
+            summary=candidate_id,
+            status=status,
+            objective=None,
+            evidence=candidate_id,
+            metadata=metadata,
+        )
+
+    refuted = _freeze_research_context(store, job.id)["refuted_families"]
+
+    assert [item["family"] for item in refuted] == ["volatility-fade"]
+    assert refuted[0]["strength"] == "screen_inversion"
 
 
 def test_campaign_regime_context_freezes_primary_and_counter(tmp_path) -> None:
@@ -268,3 +380,5 @@ def test_forward_probation_uses_target_days_and_outside_loss_budget(tmp_path) ->
     assert metrics["outside_days"] == 1
     assert metrics["outside_loss_pct"] == pytest.approx(0.03)
     assert metrics["outside_loss_breach"] is True
+    assert metrics["overall_estimate"] < 0
+    assert metrics["target_days_short"] is True

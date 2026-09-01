@@ -575,9 +575,7 @@ def evaluate_economic_readiness(
     # Participation is a whole-strategy requirement.  A transition strategy
     # may enter before its target cell and realize marked gains after the flip;
     # requiring the entry itself to occur in-target selects inert gate stacks.
-    if int(candidate.get("trade_count") or 0) < int(
-        promotion["min_oos_trades"]
-    ):
+    if int(candidate.get("trade_count") or 0) < int(promotion["min_oos_trades"]):
         reasons.append(
             f"OOS whole-strategy trade count "
             f"{candidate.get('trade_count') or 0} below minimum "
@@ -669,6 +667,22 @@ def evaluate_economic_readiness(
             reasons.append(
                 f"audit out-of-regime loss {audit_outside_loss:.4f} exceeds "
                 f"budget {outside_budget:.4f}"
+            )
+    if specialized:
+        # Until a portfolio allocator exists, a promoted specialist replaces
+        # the incumbent in every regime, so in-regime edge must not come at
+        # the price of being the worse strategy overall.
+        overall = report["paired_incumbent_delta"]
+        if float(overall["estimate"]) < 0:
+            reasons.append(
+                f"whole-strategy paired utility delta {overall['estimate']:.4f} "
+                "below the incumbent; a specialist must not be inferior overall"
+            )
+        overall_audit = float(report["audit_slice"]["delta_utility"])
+        if overall_audit < float(promotion["audit_min_delta_utility"]):
+            reasons.append(
+                f"whole-strategy audit-slice utility delta {overall_audit:.4f} "
+                f"below floor {promotion['audit_min_delta_utility']}"
             )
     if audit_delta < float(promotion["audit_min_delta_utility"]):
         reasons.append(

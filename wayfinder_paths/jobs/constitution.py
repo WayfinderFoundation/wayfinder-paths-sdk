@@ -36,7 +36,7 @@ DEFAULT_CONSTITUTION: dict[str, Any] = {
         "block_days": 5,
         "audit_days": 7,
         "regime": {
-            "min_target_days": 5,
+            "min_target_days": 10,
             "bootstrap_block_days": 2,
             "max_out_of_regime_loss_pct": 0.02,
         },

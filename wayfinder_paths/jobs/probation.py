@@ -655,11 +655,11 @@ def stage_evolution_probation(
     target_regimes = declared_regimes(
         dict(_load_job_yaml(source_root).get("execution_params") or {})
     )
-    outside_loss_budget = float(
-        (load_constitution(source_root).get("evaluation", {}).get("regime", {})).get(
-            "max_out_of_regime_loss_pct", 0.02
-        )
+    regime_config = (
+        load_constitution(source_root).get("evaluation", {}).get("regime", {})
     )
+    outside_loss_budget = float(regime_config.get("max_out_of_regime_loss_pct", 0.02))
+    min_target_days = int(regime_config.get("min_target_days") or 10)
     with job_state_lock(store.repo_root, job_id, name="probation"):
         doc = load_probation(store, job_id)
         duplicate = next(
@@ -763,6 +763,7 @@ def stage_evolution_probation(
                         "classifier": PORTFOLIO_REGIME_CLASSIFIER,
                         "target_regimes": list(target_regimes),
                         "outside_loss_budget_pct": outside_loss_budget,
+                        "min_target_days": min_target_days,
                         "forward_basis": "realized_daily_pnl_by_tick_regime",
                     }
                 }
@@ -1045,13 +1046,33 @@ def _adjudicate_forward(
             reason="out-of-regime loss budget exceeded",
             current=current,
         )
-    elif checkpoint is not None and metrics["lcb"] is not None and metrics["lcb"] > 0:
+    elif (
+        checkpoint is not None
+        and metrics["lcb"] is not None
+        and metrics["lcb"] > 0
+        and float(metrics.get("overall_estimate") or 0.0) >= 0
+    ):
         _close_trial(
             trial, "graduated", reason="paired utility LCB > 0", current=current
         )
         trial["promotion"] = {"status": "pending", "proposal_id": None}
     elif checkpoint is not None and metrics["ucb"] is not None and metrics["ucb"] < 0:
         _close_trial(trial, "killed", reason="paired utility UCB < 0", current=current)
+    elif checkpoint == max_days and metrics.get("target_days_short"):
+        # The declared regime never showed up; that is silence, not evidence.
+        _close_trial(
+            trial,
+            "inconclusive",
+            reason="target regime did not occur during probation",
+            current=current,
+        )
+    elif checkpoint == max_days and metrics["lcb"] is not None and metrics["lcb"] > 0:
+        _close_trial(
+            trial,
+            "inconclusive",
+            reason="in-regime edge but whole-strategy result below the incumbent",
+            current=current,
+        )
     elif checkpoint == max_days:
         _close_trial(
             trial,
@@ -1134,6 +1155,12 @@ def _paired_forward_metrics(
         for day in decision_days
         if candidate[day] > -capital and reference[day] > -capital
     ]
+    overall_deltas = [
+        math.log1p(candidate[day] / capital) - math.log1p(reference[day] / capital)
+        for day in complete_days
+        if candidate[day] > -capital and reference[day] > -capital
+    ]
+    min_target_days = int(regime_contract.get("min_target_days") or 10)
     confidence = float(trial["forward"].get("confidence") or 0.90)
     lcb: float | None
     ucb: float | None
@@ -1181,6 +1208,8 @@ def _paired_forward_metrics(
                 "outside_loss_pct": round(outside_loss_pct, 8),
                 "outside_loss_budget_pct": outside_budget,
                 "outside_loss_breach": outside_loss_pct > outside_budget,
+                "overall_estimate": round(sum(overall_deltas), 8),
+                "target_days_short": len(target_days) < min_target_days,
             }
             if target_regimes
             else {"outside_loss_breach": False}

@@ -335,6 +335,10 @@ def test_investigative_campaign_requires_and_freezes_one_design_turn(tmp_path) -
 def test_regime_design_requires_counter_cell_and_stamps_candidate(tmp_path) -> None:
     store, job_id = _investigative_job(tmp_path)
     root = store.job_dir(job_id)
+    improver_path = root / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"]["regime_specialist_enabled"] = True
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
     (root / "results/backtest/input_bars.json").write_text(
         json.dumps({"metadata": {"days": 2}, "bars": _regime_bars()}),
         encoding="utf-8",
@@ -1610,6 +1614,7 @@ def test_finalize_enforces_stage_budgets_and_isolates_candidate_failure(
         "passed": 3,
         "rejected": 1,
         "running": 0,
+        "awaiting_regime": 0,
     }
     assert completed["funnel"]["finalist_gate"]["advanced_to_paper"] == 1
 

@@ -868,6 +868,9 @@ def _scorecard(
                 or 0
             ),
             "staged": 1 if forward.get("available") else 0,
+            "awaiting_regime": sum(
+                1 for row in candidates if row.get("status") == "awaiting_regime"
+            ),
             "production_summary": funnel,
         },
         "verdicts": {
