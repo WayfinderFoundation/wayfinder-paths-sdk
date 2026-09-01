@@ -94,6 +94,15 @@ def load_archive(store: JobStore, job_id: str) -> dict[str, Any]:
     return doc
 
 
+def find_candidate(
+    store: JobStore, job_id: str, candidate_id: str
+) -> dict[str, Any] | None:
+    """Resolve an archive entry by content id, proposal UUID, or revision."""
+    if not candidate_id:
+        return None
+    return _resolve(load_archive(store, job_id), candidate_id)
+
+
 def record_candidate(
     store: JobStore,
     job_id: str,

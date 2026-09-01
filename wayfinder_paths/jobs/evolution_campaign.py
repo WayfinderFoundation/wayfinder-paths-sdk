@@ -1834,7 +1834,8 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
                         candidate_root=candidate_root,
                         revision=str(candidate.get("revision") or ""),
                         source="evolution_campaign",
-                        family=str(candidate.get("family") or "evolution"),
+                        family=str(candidate.get("family") or ""),
+                        summary=str(candidate.get("summary") or "") or None,
                         campaign_id=campaign_id,
                         evidence=economic,
                     )
