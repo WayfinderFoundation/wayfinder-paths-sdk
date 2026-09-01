@@ -26,9 +26,12 @@ wayfinder-bench prepare-world \
   --world-id majors-losing
 ```
 
-`world.json`, `bars.json`, the incumbent bundle, and truncated feature stores
-are agent-visible. The holdout bytes remain only in the owner-supplied sealed
-directory; `world.json` contains their commitment, never their path or values.
+`world.json`, `bars.json`, the incumbent bundle, a one-time incumbent baseline
+on that exact development prefix, and truncated feature stores are
+agent-visible. The baseline is hash-pinned in the world manifest and installed
+into every arm; it never includes holdout rows. The holdout bytes remain only
+in the owner-supplied sealed directory; `world.json` contains their commitment,
+never their path or values.
 
 ## 2. Get a fast side-by-side bundle scorecard
 
@@ -65,6 +68,16 @@ The first arm is `wayfinder/deepseek-v4-pro`. “DeepSeek Flash Max” is expres
 using model `wayfinder/deepseek-v4-flash` with OpenCode variant `max`; both
 interfaces are preflighted before campaign work starts. Four repeats per
 arm/world are mandatory for a decision-grade aggregate.
+
+Set `max_parallel_arms` to a bounded value (1–8) to run isolated arm processes
+concurrently. This changes wall time, not the registered runs or their output
+ordering; each arm retains its own MCP server, OpenCode data directory, and job
+store.
+
+An arm may override campaign policy under its own `campaign` mapping. These
+parameters are hash-pinned and must be declared through `arm_parameters` in
+`allowed_identity_differences`, which supports process A/Bs such as a
+default-off parameter behavior preview versus an explicit enabled treatment.
 
 Each race stores copied bundles beside a `results/` directory containing both
 full side outputs, `compare.json`, and `report.txt`.

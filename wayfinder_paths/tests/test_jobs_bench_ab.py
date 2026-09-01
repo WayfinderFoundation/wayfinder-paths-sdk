@@ -4,6 +4,8 @@ import asyncio
 import json
 import shutil
 import subprocess
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -25,6 +27,7 @@ from wayfinder_paths.jobs.bench.runner import (
     _resolve_runtime_opencode_config,
     _set_provider_base_url,
     _validate_config,
+    run_experiment,
 )
 from wayfinder_paths.jobs.bench.world import load_world, prepare_world
 from wayfinder_paths.jobs.benchmarks.agent_adapter import install_agent_workspace
@@ -631,3 +634,72 @@ def test_behavior_preview_is_an_allowed_pre_registered_arm_parameter() -> None:
     }
 
     _validate_config(config)
+
+    config["max_parallel_arms"] = 4
+    _validate_config(config)
+    config["max_parallel_arms"] = 9
+    with pytest.raises(ValueError, match="max_parallel_arms"):
+        _validate_config(config)
+
+
+def test_experiment_runs_isolated_arms_concurrently_and_preserves_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import wayfinder_paths.jobs.bench.runner as runner_module
+
+    output = tmp_path / "experiment"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "pilot": True,
+                "output_dir": str(output),
+                "arms": [{"name": "a"}, {"name": "b"}],
+                "worlds": [{"world_dir": "world", "sealed_dir": "sealed"}],
+                "seeds": [1, 2],
+                "max_parallel_arms": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
+    guard = threading.Lock()
+    active = 0
+    peak = 0
+
+    def fake_arm(*, arm, seed, **kwargs):
+        nonlocal active, peak
+        with guard:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.03 if arm["name"] == "a" else 0.01)
+        with guard:
+            active -= 1
+        name = str(arm["name"])
+        return {
+            "run_id": f"world-{seed}-{name}",
+            "world_id": "world",
+            "seed": seed,
+            "arm": name,
+            "identity": {"same": True},
+            "invalid_reason": None,
+            "holdout": {
+                "paired_daily_utility_delta": {"estimate": 0.01 if name == "a" else 0}
+            },
+            "cost": {"tokens_in": 10, "tokens_out": 1},
+        }
+
+    monkeypatch.setattr(runner_module, "_runtime_pins", lambda *args: {})
+    monkeypatch.setattr(runner_module, "_run_arm_in_declared_sdk", fake_arm)
+
+    result = run_experiment(config_path)
+
+    assert peak == 2
+    assert result["pilot"] is True
+    assert result["primary"]["pairs"] == 2
+    assert sorted(path.name for path in (output / "runs").glob("*.json")) == [
+        "world-1-a.json",
+        "world-1-b.json",
+        "world-2-a.json",
+        "world-2-b.json",
+    ]

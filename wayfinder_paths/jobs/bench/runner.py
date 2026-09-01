@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -77,24 +78,40 @@ def run_experiment(config_path: Path) -> dict[str, Any]:
         "_config_dir": str(config_path.parent),
         "_runtime_pins": pins,
     }
-    rows: list[dict[str, Any]] = []
+    registered_runs = [
+        (
+            _from_config(config_path, world_config["world_dir"]),
+            _from_config(config_path, world_config["sealed_dir"]),
+            int(seed),
+            arm,
+        )
+        for world_config in config["worlds"]
+        for seed in config["seeds"]
+        for arm in config["arms"]
+    ]
+    ordered_rows: list[dict[str, Any] | None] = [None] * len(registered_runs)
     identities: dict[tuple[str, int, str], dict[str, Any]] = {}
-    for world_config in config["worlds"]:
-        world_dir = _from_config(config_path, world_config["world_dir"])
-        sealed_dir = _from_config(config_path, world_config["sealed_dir"])
-        for seed in config["seeds"]:
-            for arm in config["arms"]:
-                row = _run_arm_in_declared_sdk(
-                    config=runtime_config,
-                    arm=arm,
-                    seed=int(seed),
-                    world_dir=world_dir,
-                    sealed_dir=sealed_dir,
-                    output_dir=output_dir,
-                )
-                rows.append(row)
-                identities[(row["world_id"], row["seed"], row["arm"])] = row["identity"]
-                atomic_json(output_dir / "runs" / f"{row['run_id']}.json", row)
+    max_parallel = int(config.get("max_parallel_arms") or 1)
+    with ThreadPoolExecutor(max_workers=max_parallel) as pool:
+        futures = {
+            pool.submit(
+                _run_arm_in_declared_sdk,
+                config=runtime_config,
+                arm=arm,
+                seed=seed,
+                world_dir=world_dir,
+                sealed_dir=sealed_dir,
+                output_dir=output_dir,
+            ): index
+            for index, (world_dir, sealed_dir, seed, arm) in enumerate(registered_runs)
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            row = future.result()
+            ordered_rows[index] = row
+            identities[(row["world_id"], row["seed"], row["arm"])] = row["identity"]
+            atomic_json(output_dir / "runs" / f"{row['run_id']}.json", row)
+    rows = [row for row in ordered_rows if row is not None]
     parity = _identity_parity(config, identities)
     atomic_json(output_dir / "identity_parity.json", parity)
     if not parity["comparable"]:
@@ -899,6 +916,9 @@ def _validate_config(config: dict[str, Any]) -> None:
         raise ValueError("experiments require worlds and seeds")
     if not config.get("pilot") and len(config["seeds"]) < 4:
         raise ValueError("experiments require at least four seeds per arm/world")
+    max_parallel = int(config.get("max_parallel_arms") or 1)
+    if not 1 <= max_parallel <= 8:
+        raise ValueError("max_parallel_arms must be between 1 and 8")
     names = [str(arm.get("name") or "") for arm in config["arms"]]
     if not all(names) or len(set(names)) != 2:
         raise ValueError("arm names must be non-empty and unique")

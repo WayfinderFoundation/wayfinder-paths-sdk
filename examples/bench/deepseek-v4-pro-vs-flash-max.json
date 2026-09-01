@@ -23,6 +23,7 @@
     }
   ],
   "seeds": [101, 202, 303, 404],
+  "max_parallel_arms": 4,
   "campaign": {
     "generated_programs": 8,
     "full_dev_survivors": 3,
