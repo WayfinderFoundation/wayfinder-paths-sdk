@@ -654,6 +654,34 @@ def test_process_efficiency_classifies_learning_activity_and_waste(
     assert build_evolution_report(store, job_id)["process_efficiency"] == efficiency
     assert evolution_snapshot_block(store, job_id)["process_efficiency"] == efficiency
 
+    store.append_journal(
+        job_id,
+        {
+            "type": "evolution_session_retired",
+            "metrics": {
+                "wall_seconds": 12.0,
+                "model_seconds": 8.0,
+                "tool_seconds": 3.0,
+                "other_seconds": 1.0,
+                "tool_calls": 4,
+                "tool_output_bytes": 512,
+            },
+            "behavior_changed": True,
+        },
+    )
+    evolution_efficiency = build_process_efficiency(store, job_id)["evolution_agent"]
+    assert evolution_efficiency == {
+        "sessions": 1,
+        "wall_seconds": 12.0,
+        "model_seconds": 8.0,
+        "tool_seconds": 3.0,
+        "other_seconds": 1.0,
+        "tool_calls": 4,
+        "tool_output_bytes": 512,
+        "behavior_changed_attempts": 1,
+        "behavior_unchanged_attempts": 0,
+    }
+
     from click.testing import CliRunner
 
     import wayfinder_paths.jobs.cli as cli_module

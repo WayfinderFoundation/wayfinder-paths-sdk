@@ -7,7 +7,7 @@ import math
 import py_compile
 import re
 import tokenize
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -511,6 +511,151 @@ def _probe_values_match(left: Any, right: Any) -> bool:
             return left == right
 
 
+def _probe_indices(timestamps: Any, *, first: int, samples: int) -> list[int]:
+    span = len(timestamps) - 1 - first
+    count = max(1, min(samples, span + 1))
+    step = span / max(count - 1, 1)
+    return sorted({first + round(index * step) for index in range(count)})
+
+
+async def _probe_decided_intents(
+    script_entrypoint: str | Path | Callable[..., Any],
+    bars: CompletedBarsView,
+    spec: ExecutionSpec,
+    params: Mapping[str, Any],
+    *,
+    index: int,
+    lookback: int,
+) -> list[dict[str, Any]]:
+    from wayfinder_paths.jobs.execution.engine import (  # circular import
+        EngineState,
+        run_tick,
+    )
+    from wayfinder_paths.jobs.execution.simulator import (  # circular import
+        BacktestBroker,
+        _load_strategy,
+    )
+
+    params_data = dict(params)
+    strategy = _load_strategy(script_entrypoint, dict(params_data))
+    view = apply_precompute(strategy, bars.window(index, lookback))
+    trace = ExecutionTrace(execution_spec=spec.to_dict())
+    await run_tick(
+        strategy,
+        view=view,
+        brokers={"*": BacktestBroker()},
+        state=EngineState(),
+        spec=spec,
+        params=params_data,
+        timestamp=bars.timestamps[index],
+        snapshot=StateSnapshot(status="valid"),
+        trace=trace,
+    )
+    return trace.intents
+
+
+_MATERIAL_INTENT_KEYS = (
+    "action",
+    "venue",
+    "symbol",
+    "side",
+    "size",
+    "notional",
+    "reduce_only",
+    "bracket",
+    "limit_price",
+    "time_in_force",
+    "expires_after_bars",
+)
+
+
+def _material_intents(intents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {key: intent.get(key) for key in _MATERIAL_INTENT_KEYS} for intent in intents
+    ]
+
+
+def parameter_behavior_probe(
+    script_entrypoint: str | Path | Callable[..., Any],
+    bars: CompletedBarsView,
+    execution_spec: ExecutionSpec | Mapping[str, Any] | None,
+    params: Mapping[str, Any],
+    variants: Sequence[Mapping[str, Any]],
+    *,
+    samples: int = 8,
+) -> dict[str, Any]:
+    """Check sampled material intents before paying for a full simulation."""
+    from wayfinder_paths.jobs.execution.simulator import _load_strategy
+
+    params_data = dict(params)
+    spec = ExecutionSpec.coerce(execution_spec)
+    window = resolve_compute_window(
+        params_data, _load_strategy(script_entrypoint, dict(params_data))
+    )
+    if not window.declared or window.size is None:
+        return {
+            "status": "skipped",
+            "reason": f"compute window is {window.source}, not declared",
+        }
+    if not variants:
+        return {"status": "skipped", "reason": "no parameter variants"}
+    timestamps = bars.timestamps
+    window_size = window.size
+    first = window_size - 1
+    if len(timestamps) - 1 < first:
+        return {
+            "status": "skipped",
+            "reason": "dataset does not cover the declared window",
+        }
+    indices = _probe_indices(timestamps, first=first, samples=samples)
+
+    async def probe() -> dict[str, Any]:
+        ticks = 0
+        for index in indices:
+            baseline = _material_intents(
+                await _probe_decided_intents(
+                    script_entrypoint,
+                    bars,
+                    spec,
+                    params_data,
+                    index=index,
+                    lookback=window_size,
+                )
+            )
+            ticks += 1
+            for variant in variants:
+                candidate = _material_intents(
+                    await _probe_decided_intents(
+                        script_entrypoint,
+                        bars,
+                        spec,
+                        {**params_data, **dict(variant)},
+                        index=index,
+                        lookback=window_size,
+                    )
+                )
+                ticks += 1
+                if not _probe_values_match(baseline, candidate):
+                    return {
+                        "status": "changed",
+                        "bar": timestamps[index].isoformat(),
+                        "window": window_size,
+                        "bars_probed": len(indices),
+                        "variants_declared": len(variants),
+                        "ticks_evaluated": ticks,
+                        "changed_params": dict(variant),
+                    }
+        return {
+            "status": "unchanged",
+            "window": window_size,
+            "bars_probed": len(indices),
+            "variants_declared": len(variants),
+            "ticks_evaluated": ticks,
+        }
+
+    return asyncio.run(probe())
+
+
 def window_invariance_probe(
     script_entrypoint: str | Path | Callable[..., Any],
     bars: CompletedBarsView,
@@ -523,14 +668,7 @@ def window_invariance_probe(
     min(available, W + WINDOW_PROBE_EXTRA_BARS) — from identical fresh state
     and require identical intents. A mismatch means decide() consumed history
     beyond its declared window: its backtest inputs are not its live inputs."""
-    from wayfinder_paths.jobs.execution.engine import (  # circular import
-        EngineState,
-        run_tick,
-    )
-    from wayfinder_paths.jobs.execution.simulator import (  # circular import
-        BacktestBroker,
-        _load_strategy,
-    )
+    from wayfinder_paths.jobs.execution.simulator import _load_strategy
 
     params_data = dict(params)
     spec = ExecutionSpec.coerce(execution_spec)
@@ -550,34 +688,27 @@ def window_invariance_probe(
             "status": "skipped",
             "reason": "dataset does not extend beyond the declared window",
         }
-    span = len(timestamps) - 1 - first
-    count = max(1, min(samples, span + 1))
-    step = span / max(count - 1, 1)
-    indices = sorted({first + round(k * step) for k in range(count)})
-
-    async def decided_intents(index: int, lookback: int) -> list[dict[str, Any]]:
-        # Fresh strategy + fresh engine state per replay: the two runs differ
-        # ONLY in view depth, so any intent difference is window dependence.
-        strategy = _load_strategy(script_entrypoint, dict(params_data))
-        view = apply_precompute(strategy, bars.window(index, lookback))
-        trace = ExecutionTrace(execution_spec=spec.to_dict())
-        await run_tick(
-            strategy,
-            view=view,
-            brokers={"*": BacktestBroker()},
-            state=EngineState(),
-            spec=spec,
-            params=params_data,
-            timestamp=timestamps[index],
-            snapshot=StateSnapshot(status="valid"),
-            trace=trace,
-        )
-        return trace.intents
+    indices = _probe_indices(timestamps, first=first, samples=samples)
 
     async def probe() -> dict[str, Any]:
         for index in indices:
-            base = await decided_intents(index, size)
-            wide = await decided_intents(index, size + WINDOW_PROBE_EXTRA_BARS)
+            # Fresh strategy + state per replay: view depth is the only delta.
+            base = await _probe_decided_intents(
+                script_entrypoint,
+                bars,
+                spec,
+                params_data,
+                index=index,
+                lookback=size,
+            )
+            wide = await _probe_decided_intents(
+                script_entrypoint,
+                bars,
+                spec,
+                params_data,
+                index=index,
+                lookback=size + WINDOW_PROBE_EXTRA_BARS,
+            )
             if not _probe_values_match(base, wide):
                 return {
                     "status": "failed",

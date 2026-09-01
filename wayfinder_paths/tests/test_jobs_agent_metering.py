@@ -70,6 +70,73 @@ def test_session_meter_includes_cache_tokens_and_tool_payload_bytes(tmp_path) ->
     assert totals["tool_calls"] == 1
     assert totals["tool_result_bytes"] == len(tool_data)
     assert totals["tool_result_bytes_by_tool"] == {"read": len(tool_data)}
+    assert totals["tool_output_bytes"] == 50
+    assert totals["tool_output_bytes_by_tool"] == {"read": 50}
+    assert totals["wall_seconds"] == 0.0
+
+
+def test_session_meter_splits_model_tool_and_other_wall_time(tmp_path) -> None:
+    session_db = tmp_path / "opencode.db"
+    connection = sqlite3.connect(session_db)
+    connection.executescript(
+        """
+        CREATE TABLE session (id TEXT PRIMARY KEY);
+        CREATE TABLE message (
+          id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT
+        );
+        CREATE TABLE part (
+          id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+          time_created INTEGER, data TEXT
+        );
+        """
+    )
+    connection.execute("INSERT INTO session VALUES (?)", ("session-1",))
+    connection.execute(
+        "INSERT INTO message VALUES (?,?,?,?)",
+        (
+            "message-1",
+            "session-1",
+            1_000,
+            json.dumps(
+                {
+                    "role": "assistant",
+                    "time": {"created": 1_000, "completed": 2_750},
+                    "tokens": {},
+                }
+            ),
+        ),
+    )
+    connection.execute(
+        "INSERT INTO part VALUES (?,?,?,?,?)",
+        (
+            "tool-1",
+            "message-1",
+            "session-1",
+            2_250,
+            json.dumps(
+                {
+                    "type": "tool",
+                    "tool": "read",
+                    "state": {
+                        "output": "hello",
+                        "time": {"start": 2_250, "end": 2_750},
+                    },
+                }
+            ),
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    totals = meter_session_ids(["session-1"], session_db=session_db)
+
+    assert totals["wall_seconds"] == 1.75
+    # OpenCode assistant intervals contain their tool calls. The split removes
+    # that overlap rather than billing the same 500ms as both model and tool.
+    assert totals["model_seconds"] == 1.25
+    assert totals["tool_seconds"] == 0.5
+    assert totals["other_seconds"] == 0.0
+    assert totals["tool_output_bytes"] == 5
 
 
 def test_session_meter_does_not_count_unknown_session(tmp_path) -> None:

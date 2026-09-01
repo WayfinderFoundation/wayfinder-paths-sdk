@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "pilot": true,
+  "output_dir": "../../.wayfinder_runs/bench/deepseek-v4-pro-vs-flash-max-pilot",
+  "sdk_root": "../..",
+  "runtime_opencode_config": "{env:WAYFINDER_BENCH_OPENCODE_CONFIG}",
+  "wayfinder_base_url": "https://llm-dev.wayfinder.ai/v1",
+  "allowed_identity_differences": ["model", "variant"],
+  "arms": [
+    {
+      "name": "deepseek-v4-pro",
+      "model": "wayfinder/deepseek-v4-pro"
+    },
+    {
+      "name": "deepseek-v4-flash-max",
+      "model": "wayfinder/deepseek-v4-flash",
+      "variant": "max"
+    }
+  ],
+  "worlds": [
+    {
+      "world_dir": "../../.wayfinder_runs/bench/worlds/majors-losing-grounded",
+      "sealed_dir": "../../.wayfinder_runs/bench/sealed/majors-losing-grounded"
+    }
+  ],
+  "seeds": [101],
+  "max_parallel_arms": 2,
+  "campaign": {
+    "generated_programs": 4,
+    "full_dev_survivors": 1,
+    "finalist_gate_candidates": 1,
+    "investigation_design_enabled": true,
+    "wildcard_slots": 1
+  },
+  "interface_smoke": true,
+  "max_turns": 16,
+  "turn_timeout_seconds": 1200,
+  "settle_timeout_seconds": 1800,
+  "confidence": 0.9,
+  "max_cost_ratio": 1.25
+}

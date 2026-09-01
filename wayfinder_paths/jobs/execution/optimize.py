@@ -58,6 +58,53 @@ def is_search_space(payload: Any) -> bool:
             return False
 
 
+def search_space_probe_variants(
+    search_space: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Return bounded deterministic endpoint variants for a behavior probe.
+
+    This is deliberately not a sampler or optimizer. It asks the cheaper
+    prerequisite question: can any declared dimension change a material order
+    intent at all? Constants are included exactly as they are in every Optuna
+    trial, and at most ``2 * dimensions + 2`` variants are returned.
+    """
+    dimensions = {
+        name: dict(value)
+        for name, value in sorted(search_space.items())
+        if _is_typed_dimension(value)
+    }
+    constants = {
+        name: value for name, value in search_space.items() if name not in dimensions
+    }
+    endpoints: dict[str, list[Any]] = {}
+    for name, dimension in dimensions.items():
+        match str(dimension.get("type") or ""):
+            case "float":
+                values = [float(dimension["low"]), float(dimension["high"])]
+            case "int":
+                values = [int(dimension["low"]), int(dimension["high"])]
+            case "categorical":
+                choices = list(dimension.get("choices") or [])
+                values = choices[:1] + choices[-1:] if choices else []
+            case _:
+                values = []
+        endpoints[name] = list(dict.fromkeys(values))
+    variants = [
+        {**constants, name: value}
+        for name, values in endpoints.items()
+        for value in values
+    ]
+    lows = {name: values[0] for name, values in endpoints.items() if values}
+    highs = {name: values[-1] for name, values in endpoints.items() if values}
+    if len(endpoints) > 1:
+        variants.extend(({**constants, **lows}, {**constants, **highs}))
+    unique: dict[str, dict[str, Any]] = {}
+    for variant in variants:
+        key = repr(sorted(variant.items()))
+        unique.setdefault(key, variant)
+    return list(unique.values())
+
+
 # Grid-row axes where smaller is better; every other rank key maximizes.
 _MINIMIZE_AXES = frozenset({"max_drawdown_pct"})
 
@@ -130,6 +177,8 @@ def run_optuna_search(
         return float(row[rank_by] or 0)  # same coercion as grid ranking
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
+    sampler_name: str
+    sampler_impl: Any
     if objectives:
         # NSGA-II handles mixed int/float/categorical spaces; an explicit
         # sampler="motpe" opts into optuna's multi-objective TPE instead.

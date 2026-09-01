@@ -121,6 +121,10 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "inner_optuna_preview_trials": 3,
         "inner_optuna_preview_bars": 2_000,
         "inner_optuna_preview_timeout_seconds": 300,
+        # Experimental cheap preflight for parameter candidates. Keep off in
+        # production until its full-process A/B measures both compute saved
+        # and any false rejection of useful sparse behavior.
+        "behavior_preview_enabled": False,
         "inner_optuna_train_bars": 10_000,
         "inner_optuna_timeout_seconds": 1_800,
         "proposal_finalists": 1,

@@ -1240,7 +1240,9 @@ def _daily_pnl_for_stream(
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             row = json.loads(line)
-            stamp = pd.Timestamp(row.get("ts") or row.get("timestamp"))
+            stamp = pd.Timestamp(
+                row.get("closed_at") or row.get("timestamp") or row.get("ts")
+            )
             if since is not None and stamp < pd.Timestamp(since):
                 continue
             if until is not None and stamp >= pd.Timestamp(until):

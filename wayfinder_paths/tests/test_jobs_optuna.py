@@ -17,7 +17,11 @@ import pytest
 from wayfinder_paths.jobs.execution import ExecutionSpec
 from wayfinder_paths.jobs.execution import optimize as optimize_module
 from wayfinder_paths.jobs.execution.experiments import promote_params, run_experiment
-from wayfinder_paths.jobs.execution.optimize import is_search_space, run_optuna_search
+from wayfinder_paths.jobs.execution.optimize import (
+    is_search_space,
+    run_optuna_search,
+    search_space_probe_variants,
+)
 from wayfinder_paths.jobs.execution.simulator import (
     ExecutionBacktestResult,
     PreparedExecutionDataset,
@@ -100,6 +104,30 @@ def test_is_search_space_distinguishes_formats() -> None:
     assert not is_search_space({"x": [1, 2, 3]})
     assert not is_search_space({"x": 5, "y": "SNX"})
     assert not is_search_space([{"x": 1}])
+
+
+def test_search_space_probe_variants_are_bounded_endpoints() -> None:
+    variants = search_space_probe_variants(
+        {
+            "lookback": {"type": "int", "low": 12, "high": 96},
+            "threshold": {"type": "float", "low": 0.1, "high": 0.8},
+            "side": {"type": "categorical", "choices": ["long", "short"]},
+            "initial_capital": 1_000.0,
+        }
+    )
+
+    assert len(variants) <= 8
+    assert all(row["initial_capital"] == 1_000.0 for row in variants)
+    assert {row["lookback"] for row in variants if "lookback" in row} == {12, 96}
+    assert {row["threshold"] for row in variants if "threshold" in row} == {
+        0.1,
+        0.8,
+    }
+    assert {row["side"] for row in variants if "side" in row} == {
+        "long",
+        "short",
+    }
+    assert len({repr(sorted(row.items())) for row in variants}) == len(variants)
 
 
 def test_missing_optuna_error_mentions_ml_group(

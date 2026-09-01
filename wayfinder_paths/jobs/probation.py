@@ -1113,6 +1113,7 @@ def _paired_forward_metrics(
     safety = _hard_constraint_metrics(store, job_id, candidate)
     return {
         "paired_days": len(deltas),
+        "daily_deltas": deltas,
         "estimate": round(sum(deltas), 8),
         "lcb": lcb,
         "ucb": ucb,

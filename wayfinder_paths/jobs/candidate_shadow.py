@@ -119,7 +119,11 @@ async def _run_candidate_shadows(
             )
             if outcomes:
                 targets = probation_targets(store, job_id)
-    maybe_adjudicate_probation(store, job_id)
+    maybe_adjudicate_probation(
+        store,
+        job_id,
+        now=now.to_pydatetime() if now is not None else None,
+    )
     return results
 
 

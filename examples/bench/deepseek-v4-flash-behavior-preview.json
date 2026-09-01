@@ -1,0 +1,47 @@
+{
+  "schema_version": "1.0",
+  "output_dir": "../../.wayfinder_runs/bench/deepseek-v4-flash-behavior-preview",
+  "sdk_root": "../..",
+  "runtime_opencode_config": "{env:WAYFINDER_BENCH_OPENCODE_CONFIG}",
+  "wayfinder_base_url": "https://llm-dev.wayfinder.ai/v1",
+  "allowed_identity_differences": ["arm_parameters"],
+  "arms": [
+    {
+      "name": "behavior-preview-off",
+      "model": "wayfinder/deepseek-v4-flash",
+      "variant": "max",
+      "campaign": {
+        "behavior_preview_enabled": false
+      }
+    },
+    {
+      "name": "behavior-preview-on",
+      "model": "wayfinder/deepseek-v4-flash",
+      "variant": "max",
+      "campaign": {
+        "behavior_preview_enabled": true
+      }
+    }
+  ],
+  "worlds": [
+    {
+      "world_dir": "../../.wayfinder_runs/bench/worlds/majors-losing-grounded",
+      "sealed_dir": "../../.wayfinder_runs/bench/sealed/majors-losing-grounded"
+    }
+  ],
+  "seeds": [101, 202, 303, 404],
+  "max_parallel_arms": 8,
+  "campaign": {
+    "generated_programs": 8,
+    "full_dev_survivors": 3,
+    "finalist_gate_candidates": 1,
+    "investigation_design_enabled": true,
+    "wildcard_slots": 2
+  },
+  "interface_smoke": true,
+  "max_turns": 40,
+  "turn_timeout_seconds": 1800,
+  "settle_timeout_seconds": 3600,
+  "confidence": 0.9,
+  "max_cost_ratio": 1.25
+}

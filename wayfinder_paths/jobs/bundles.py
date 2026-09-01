@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 
 def copy_job_bundle(
@@ -37,3 +39,24 @@ def copy_job_bundle(
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise
+
+
+def resolve_bundle_script_entrypoint(bundle: Path, job_data: Mapping[str, Any]) -> Path:
+    """Resolve an entrypoint after its workspace was copied into a bundle.
+
+    Job YAML may retain a repo-relative ``.wayfinder/jobs/.../workspace`` path
+    or an absolute path from the source box. Both name the copied workspace,
+    not a path that should still exist in the benchmark controller.
+    """
+    raw = str((job_data.get("script_loop") or {}).get("entrypoint") or "").strip()
+    if not raw:
+        raise FileNotFoundError("bundle script_loop.entrypoint is missing")
+    path = Path(raw)
+    if "workspace" in path.parts:
+        index = max(
+            position for position, part in enumerate(path.parts) if part == "workspace"
+        )
+        return bundle / "workspace" / Path(*path.parts[index + 1 :])
+    if not path.is_absolute():
+        return bundle / path
+    raise ValueError("absolute bundle entrypoint is outside workspace")

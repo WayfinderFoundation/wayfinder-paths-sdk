@@ -164,6 +164,41 @@ def resolve_json_pointer(document: Mapping[str, Any], pointer: str) -> Any:
     return current
 
 
+def valid_evidence_pointers(
+    document: Mapping[str, Any], *, limit: int = 96
+) -> list[str]:
+    """Return a bounded, deterministic menu of citeable non-empty leaves.
+
+    The campaign pack remains the authority.  This is only a prompt-time index
+    over that pack so the designer does not spend model turns guessing paths
+    that are absent or present-but-empty.
+    """
+
+    pointers: list[str] = []
+
+    def escaped(value: Any) -> str:
+        return str(value).replace("~", "~0").replace("/", "~1")
+
+    def visit(value: Any, pointer: str) -> None:
+        if len(pointers) >= max(int(limit), 0):
+            return
+        if isinstance(value, Mapping):
+            for key in sorted(value, key=str):
+                visit(value[key], f"{pointer}/{escaped(key)}")
+            return
+        if isinstance(value, Sequence) and not isinstance(
+            value, (str, bytes, bytearray)
+        ):
+            for index, item in enumerate(value):
+                visit(item, f"{pointer}/{index}")
+            return
+        if value is not None and value != "":
+            pointers.append(pointer)
+
+    visit(document, "")
+    return pointers
+
+
 def build_postmortem(
     candidate: Mapping[str, Any],
     reference: Mapping[str, Any],
@@ -253,7 +288,7 @@ def attempt_made_progress(postmortem: Mapping[str, Any]) -> bool:
 
 def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
     behavior = postmortem.get("behavior_diff") or {}
-    return {
+    compact = {
         "viable": bool(postmortem.get("viable")),
         "primary_failure": postmortem.get("primary_failure"),
         "failure_codes": list(postmortem.get("failure_codes") or [])[:6],
@@ -272,6 +307,12 @@ def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
             if behavior.get(key) is not None
         },
     }
+    repair_error = str(
+        (postmortem.get("repair_context") or {}).get("error") or ""
+    ).strip()
+    if repair_error:
+        compact["repair_context"] = {"error": repair_error[:500]}
+    return compact
 
 
 def participation_adjusted_score(

@@ -121,7 +121,7 @@ def build_process_efficiency(store: JobStore, job_id: str) -> dict[str, Any]:
 
     wakes_with_learning = len(learning_wakes)
     activity_only = len(activity_wakes - learning_wakes)
-    return {
+    result: dict[str, Any] = {
         "wakes_total": len(wakes),
         "wakes_with_valid_learning": wakes_with_learning,
         "activity_only_wakes": activity_only,
@@ -134,6 +134,41 @@ def build_process_efficiency(store: JobStore, job_id: str) -> dict[str, Any]:
             round(len(wakes) / wakes_with_learning, 3) if wakes_with_learning else None
         ),
     }
+    evolution_sessions = [
+        row for row in journal if row.get("type") == "evolution_session_retired"
+    ]
+    if evolution_sessions:
+        metric_keys = (
+            "wall_seconds",
+            "model_seconds",
+            "tool_seconds",
+            "other_seconds",
+            "tool_calls",
+            "tool_output_bytes",
+        )
+        agent_summary: dict[str, Any] = {
+            "sessions": len(evolution_sessions),
+            **{
+                key: round(
+                    sum(
+                        float((row.get("metrics") or {}).get(key) or 0)
+                        for row in evolution_sessions
+                    ),
+                    3,
+                )
+                for key in metric_keys
+            },
+            "behavior_changed_attempts": sum(
+                row.get("behavior_changed") is True for row in evolution_sessions
+            ),
+            "behavior_unchanged_attempts": sum(
+                row.get("behavior_changed") is False for row in evolution_sessions
+            ),
+        }
+        agent_summary["tool_calls"] = int(agent_summary["tool_calls"])
+        agent_summary["tool_output_bytes"] = int(agent_summary["tool_output_bytes"])
+        result["evolution_agent"] = agent_summary
+    return result
 
 
 def build_evolution_report(store: JobStore, job_id: str) -> dict[str, Any]:

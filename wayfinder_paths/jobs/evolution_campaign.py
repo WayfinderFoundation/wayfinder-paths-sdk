@@ -50,11 +50,16 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
     compact_postmortem,
     resolve_json_pointer,
     result_receipt,
+    valid_evidence_pointers,
 )
 from wayfinder_paths.jobs.evolution_funnel import summarize_evolution_funnel
 from wayfinder_paths.jobs.execution.features import parse_feature_specs
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
-from wayfinder_paths.jobs.execution.optimize import is_search_space, run_optuna_search
+from wayfinder_paths.jobs.execution.optimize import (
+    is_search_space,
+    run_optuna_search,
+    search_space_probe_variants,
+)
 from wayfinder_paths.jobs.execution.primitives import (
     DEFAULT_WARMUP_BARS,
     ExecutionSpec,
@@ -69,6 +74,7 @@ from wayfinder_paths.jobs.execution.simulator import (
 )
 from wayfinder_paths.jobs.execution.validation import (
     BOUNDED_WINDOW_HINT,
+    parameter_behavior_probe,
     resolve_execution_spec,
     validate_execution_job,
     window_invariance_probe,
@@ -210,7 +216,7 @@ def evolution_compute_window_open(
     windows = schedule.get("blocked_windows_utc") or []
     if not windows:
         return True
-    current = _aware(now or datetime.now(UTC))
+    current = _campaign_now(now)
     duration = timedelta(microseconds=1)
     if reserve_campaign:
         duration = timedelta(
@@ -260,7 +266,7 @@ def campaign_due(store: JobStore, job_id: str, *, now: datetime | None = None) -
     existing = campaign_status(store, job_id)
     if existing.get("status") in {"active", "finalizing"}:
         return False
-    current = _aware(now or datetime.now(UTC))
+    current = _campaign_now(now)
     if not evolution_compute_window_open(
         store, job_id, now=current, reserve_campaign=True
     ):
@@ -295,7 +301,7 @@ def maybe_start_campaign(
                 return existing
             cadence_anchor = existing.get("started_at")
             if cadence_anchor:
-                elapsed = _aware(now or datetime.now(UTC)) - _parse(cadence_anchor)
+                elapsed = _campaign_now(now) - _parse(cadence_anchor)
                 cadence = timedelta(
                     hours=float(
                         spec.evolution.get("start_interval_hours")
@@ -338,7 +344,7 @@ def _start_campaign(
             + ", ".join(eligibility["reasons"])
         )
     existing = campaign_status(store, job_id)
-    current = _aware(now or datetime.now(UTC))
+    current = _campaign_now(now)
     if existing.get("status") in {"active", "finalizing"} and not force:
         return existing
     cadence_anchor = existing.get("started_at")
@@ -779,7 +785,7 @@ def submit_research_seed(
     Submission confers no evidence or deployment authority.  The seed is a
     source-aware parent only and must re-earn every evolution/probation gate.
     """
-    current = _aware(now or datetime.now(UTC))
+    current = _campaign_now(now)
     root = store.job_dir(job_id).resolve()
     source = candidate_root.resolve()
     if not source.is_relative_to(root):
@@ -877,7 +883,7 @@ def _prepare_candidate(
     now: datetime | None = None,
 ) -> dict[str, Any]:
     state = _active_campaign(store, job_id)
-    if _aware(now or datetime.now(UTC)) >= _parse(state["deadline_at"]):
+    if _campaign_now(now) >= _parse(state["deadline_at"]):
         raise ValueError("evolution campaign generation deadline has elapsed")
     manifest = _campaign_manifest(store, job_id, str(state["campaign_id"]))
     policy = manifest["policy"]
@@ -1147,9 +1153,7 @@ def evaluate_candidate(
         candidate = _candidate(state, candidate_id)
         if candidate["status"] == "quick_running":
             try:
-                claim_age = datetime.now(UTC) - _parse(
-                    candidate["evaluation_claimed_at"]
-                )
+                claim_age = _campaign_now() - _parse(candidate["evaluation_claimed_at"])
             except (KeyError, TypeError, ValueError):
                 claim_age = timedelta.max
             if claim_age < timedelta(hours=2):
@@ -1262,6 +1266,7 @@ def _evaluate_candidate(
         }
     policy = manifest.get("policy") or {}
     tuning_preview: dict[str, Any] | None = None
+    behavior_preview: dict[str, Any] | None = None
     try:
         subject = _load_subject(store, job_id, candidate_root, campaign_id=campaign_id)
         train_end, validation_end = _split_bounds(
@@ -1292,6 +1297,42 @@ def _evaluate_candidate(
                     },
                 },
             }
+        if (
+            bool(policy.get("behavior_preview_enabled"))
+            and candidate.get("mutation_kind") == "parameter"
+            and search_space is not None
+        ):
+            behavior_preview = parameter_behavior_probe(
+                subject["script"],
+                quick.bars,
+                subject["spec"],
+                params,
+                search_space_probe_variants(search_space),
+            )
+            if behavior_preview["status"] == "unchanged":
+                bars_probed = int(behavior_preview.get("bars_probed") or 0)
+                variants = int(behavior_preview.get("variants_declared") or 0)
+                error = (
+                    "Declared parameter endpoints changed no material order "
+                    f"intents across {bars_probed} sampled bars and {variants} "
+                    "bounded variants; change the search space or mechanism "
+                    "before simulation."
+                )
+                return {
+                    "status": "low_fidelity_rejected",
+                    "evidence": (
+                        "parameter behavior preview found no material intent change"
+                    ),
+                    "quick_simulation_ran": False,
+                    "behavior_preview": behavior_preview,
+                    "postmortem": {
+                        "viable": False,
+                        "primary_failure": "no_behavior_change",
+                        "failure_codes": ["no_behavior_change"],
+                        "behavior_diff": {"material_change": False},
+                        "repair_context": {"error": error},
+                    },
+                }
         result = simulate_execution(subject["script"], quick, subject["spec"], params)
         if (
             candidate.get("mutation_kind") == "parameter"
@@ -1320,14 +1361,19 @@ def _evaluate_candidate(
         return {"status": "invalid", "evidence": {"error": str(exc)[:500]}}
     compact = _compact_result(result)
     if not result.validation.get("execution_valid"):
-        return {"status": "low_fidelity_rejected", "evidence": compact}
-    common = {
+        return {
+            "status": "low_fidelity_rejected",
+            "evidence": compact,
+            "quick_simulation_ran": True,
+        }
+    common: dict[str, Any] = {
         "revision": revision,
         "quick": compact,
         "objective": _objective(result.stats, params),
         "behavior": _behavior(result, quick, subject["spec"]),
         "execution_calibration": calibration,
         "tuning_eligible": search_space is not None,
+        "quick_simulation_ran": True,
     }
     if candidate.get("reference_bundle"):
         receipt = result_receipt(
@@ -1357,6 +1403,8 @@ def _evaluate_candidate(
         common["tuning_skip_reason"] = "no_typed_search_space"
     if tuning_preview is not None:
         common["tuning_preview"] = tuning_preview
+    if behavior_preview is not None:
+        common["behavior_preview"] = behavior_preview
     if int(result.stats.get("trade_count") or 0) <= 0:
         return {
             **common,
@@ -1477,12 +1525,22 @@ def _commit_designed_attempt(
         }
     postmortem = outcome.pop("postmortem", None)
     if not isinstance(postmortem, dict):
+        evidence = outcome.get("evidence")
+        if isinstance(evidence, dict):
+            error = str(evidence.get("error") or "").strip()
+        else:
+            error = str(evidence or "").strip()
         postmortem = {
             "viable": False,
             "primary_failure": "invalid_execution",
             "failure_codes": ["invalid_execution"],
             "behavior_diff": {"material_change": False},
         }
+        if error:
+            # The repair worker reads only this bounded artifact. Preserve the
+            # deterministic validator cause so it does not have to rediscover
+            # the failure through broad reads or forbidden tool discovery.
+            postmortem["repair_context"] = {"error": error[:500]}
     receipt_relative = f"{attempt_relative}/receipt.json"
     postmortem_relative = f"{attempt_relative}/postmortem.json"
     atomic_write_json(store.job_dir(job_id) / receipt_relative, receipt)
@@ -1516,7 +1574,7 @@ def _commit_designed_attempt(
         policy.get("max_quick_attempts")
         or int(policy["generated_programs"]) * max_attempts
     )
-    before_drain = datetime.now(UTC) < _parse(state["deadline_at"]) - CAMPAIGN_DRAIN
+    before_drain = _campaign_now() < _parse(state["deadline_at"]) - CAMPAIGN_DRAIN
     room = attempt_index < max_attempts and counts["quick_attempts"] < global_cap
     repair = bool(
         before_drain
@@ -2266,7 +2324,7 @@ def recover_lost_candidate_evaluations(
     proving that no evaluator process is running.
     """
     recovered: list[str] = []
-    recovered_at = _aware(now or datetime.now(UTC)).isoformat()
+    recovered_at = _campaign_now(now).isoformat()
     with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
         state = campaign_status(store, job_id)
         if state.get("status") not in {"active", "finalizing"}:
@@ -2316,7 +2374,7 @@ def campaign_prompt_block(
             "status": "blocked",
             "reason": "evolution worker paused during peak model pricing",
         }
-    current = _aware(now or datetime.now(UTC))
+    current = _campaign_now(now)
     deadline = _parse(state["deadline_at"])
     manifest = store.read_json(job_id, str(state["manifest"]), default={}) or {}
     candidates = state.get("candidates") or []
@@ -2336,6 +2394,7 @@ def campaign_prompt_block(
                 "campaign_id": state["campaign_id"],
                 "stage": "design",
                 "session_stage": "finalize",
+                "artifact_key": "finalize",
                 "agent_name": "wayfinder-evolution-worker",
                 "deadline_at": state["deadline_at"],
                 "counts": state["counts"],
@@ -2349,6 +2408,9 @@ def campaign_prompt_block(
         pack_path = (store.job_dir(job_id) / str(state["diagnostic_pack"])).resolve()
         manifest_path = (store.job_dir(job_id) / str(state["manifest"])).resolve()
         policy = manifest.get("policy") or {}
+        diagnostic_pack = (
+            store.read_json(job_id, str(state["diagnostic_pack"]), default={}) or {}
+        )
         slots = int(policy.get("generated_programs") or 8)
         wildcards = int(policy.get("wildcard_slots") or 2)
         return {
@@ -2356,6 +2418,7 @@ def campaign_prompt_block(
             "campaign_id": state["campaign_id"],
             "stage": "design",
             "session_stage": "design",
+            "artifact_key": "design",
             "agent_name": "wayfinder-evolution-designer",
             "deadline_at": state["deadline_at"],
             "counts": state["counts"],
@@ -2376,6 +2439,8 @@ def campaign_prompt_block(
                 "the detached result; end immediately after launch."
             ),
             "diagnostic_pack": str(pack_path),
+            "manifest_path": str(manifest_path),
+            "valid_evidence_pointers": valid_evidence_pointers(diagnostic_pack),
             "constraints": {
                 "paper_only": True,
                 "facts_constrain_claims_not_mechanisms": True,
@@ -2427,6 +2492,11 @@ def campaign_prompt_block(
             "the campaign policy assigns structural and parameter slots."
         )
     )
+    artifact_key = "finalize"
+    work_inputs: list[str] = []
+    editable_paths: list[str] = []
+    candidate_id: str | None = None
+    postmortem_path: str | None = None
     if awaiting_evaluation:
         candidate = awaiting_evaluation[0]
         candidate_root = resolve_candidate_bundle(
@@ -2436,6 +2506,13 @@ def campaign_prompt_block(
             campaign_id=str(state["campaign_id"]),
         )
         session_stage = f"candidate-{int(candidate.get('slot') or 0):02d}"
+        artifact_key = (
+            f"{session_stage}-attempt-"
+            f"{int(candidate.get('attempt_count') or 0) + 1:02d}"
+        )
+        candidate_id = str(candidate["candidate_id"])
+        work_inputs = [str(candidate_root / "candidate.json")]
+        editable_paths = [str(candidate_root)]
         mutation_instruction = (
             f"This is a parameter candidate: {_PARAMETER_SEARCH_GUIDANCE} "
             if candidate.get("mutation_kind") == "parameter"
@@ -2447,6 +2524,10 @@ def campaign_prompt_block(
         repair_instruction = ""
         if candidate.get("status") == "repair_pending":
             latest_attempt = (candidate.get("attempts") or [])[-1]
+            postmortem_path = str(
+                store.job_dir(job_id) / str(latest_attempt.get("postmortem_path") or "")
+            )
+            work_inputs.append(postmortem_path)
             repair_instruction = (
                 f"This is repair {int(candidate.get('attempt_count') or 0)} of "
                 f"at most {int(policy.get('max_attempts_per_idea') or 3)}. Read "
@@ -2464,11 +2545,12 @@ def campaign_prompt_block(
             f'job_id="{job_id}", candidate_id="{candidate["candidate_id"]}", '
             "and background=true. Do not wait for the detached result. END THIS "
             "STAGE immediately after launch; do not prepare another candidate. "
-            "The same bounded idea session will receive the compact postmortem "
+            "A fresh bounded attempt session will receive the compact postmortem "
             "if a repair is warranted."
         )
     elif deadline_elapsed:
         session_stage = "finalize"
+        artifact_key = "finalize"
         next_action = (
             "Generation deadline elapsed. Call wayfinder_core_jobs with "
             f'action="evolution_finalize", job_id="{job_id}", background=true, '
@@ -2482,6 +2564,7 @@ def campaign_prompt_block(
         }
     elif len(candidates) < budget:
         session_stage = f"candidate-{len(candidates) + 1:02d}"
+        artifact_key = f"{session_stage}-attempt-01"
         preview = _parent_plan_handoff(next_parent_plan)
         next_action = (
             f"Next source plan: {json.dumps(preview, sort_keys=True)}. "
@@ -2498,6 +2581,7 @@ def campaign_prompt_block(
         )
     else:
         session_stage = "finalize"
+        artifact_key = "finalize"
         next_action = (
             'Call wayfinder_core_jobs with action="evolution_finalize", '
             f'job_id="{job_id}", background=true, then END THIS STAGE. '
@@ -2508,10 +2592,15 @@ def campaign_prompt_block(
         "campaign_id": state["campaign_id"],
         "stage": state["stage"],
         "session_stage": session_stage,
+        "artifact_key": artifact_key,
         "deadline_at": state["deadline_at"],
         "counts": state["counts"],
         "next_action": next_action,
         "agent_name": "wayfinder-evolution-worker",
+        "candidate_id": candidate_id,
+        "work_inputs": work_inputs,
+        "editable_paths": editable_paths,
+        "postmortem_path": postmortem_path,
         "candidate_outcomes": [_candidate_handoff(item) for item in candidates],
         "historical_lessons": manifest.get("historical_lessons") or {},
         "research_context": manifest.get("research_context") or {},
@@ -4136,3 +4225,13 @@ def _parse(value: Any) -> datetime:
 
 def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _campaign_now(value: datetime | None = None) -> datetime:
+    if value is not None:
+        return _aware(value)
+    if os.getenv("WAYFINDER_BENCHMARK") == "1":
+        frozen = str(os.getenv("WAYFINDER_BENCHMARK_NOW") or "").strip()
+        if frozen:
+            return _parse(frozen)
+    return datetime.now(UTC)

@@ -63,6 +63,7 @@ mypy = "^1.19.1"
 
 [tool.poetry.scripts]
 wayfinder = "wayfinder_paths.mcp.cli:main"
+wayfinder-bench = "wayfinder_paths.jobs.bench.cli:main"
 
 [tool.ruff]
 target-version = "py312"
