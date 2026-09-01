@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0",
+  "output_dir": "../../.wayfinder_runs/bench/deepseek-v4-pro-vs-flash-max",
+  "sdk_root": "../..",
+  "allowed_identity_differences": ["model", "variant"],
+  "arms": [
+    {
+      "name": "deepseek-v4-pro",
+      "model": "wayfinder/deepseek-v4-pro"
+    },
+    {
+      "name": "deepseek-v4-flash-max",
+      "model": "wayfinder/deepseek-v4-flash",
+      "variant": "max"
+    }
+  ],
+  "worlds": [
+    {
+      "world_dir": "../../.wayfinder_runs/bench/worlds/majors-losing",
+      "sealed_dir": "../../.wayfinder_runs/bench/sealed/majors-losing"
+    }
+  ],
+  "seeds": [101, 202, 303, 404],
+  "campaign": {
+    "generated_programs": 8,
+    "full_dev_survivors": 3,
+    "finalist_gate_candidates": 1,
+    "investigation_design_enabled": true,
+    "wildcard_slots": 2
+  },
+  "interface_smoke": true,
+  "max_turns": 40,
+  "turn_timeout_seconds": 1800,
+  "settle_timeout_seconds": 3600,
+  "confidence": 0.9,
+  "max_cost_ratio": 1.25
+}

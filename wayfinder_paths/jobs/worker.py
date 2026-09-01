@@ -1954,6 +1954,58 @@ def recover_evolution_stage_session(
     )
 
 
+def build_evolution_stage_prompt(
+    job_id: str,
+    campaign: dict[str, Any],
+    *,
+    prior_handoff: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    """Render the production evolution stage prompt and its agent identity.
+
+    The benchmark harness calls this same pure formatter. Keeping prompt
+    construction here makes prompt hashes meaningful: an A/B cannot quietly
+    compare a simplified benchmark instruction against the live worker.
+    """
+    campaign_id = str(campaign.get("campaign_id") or "").strip()
+    if not campaign_id:
+        raise ValueError("evolution campaign id missing")
+    session_stage = str(campaign.get("session_stage") or "").strip()
+    if not session_stage:
+        raise ValueError("evolution session stage missing")
+    campaign_payload = dict(campaign)
+    prior_stage_text = (
+        _canonical_json(prior_handoff, max_chars=2_200) if prior_handoff else "null"
+    )
+    candidate_outcomes = list(reversed(campaign_payload.pop("candidate_outcomes", [])))
+    outcomes_text = _canonical_json(
+        {"order": "newest_first", "candidates": candidate_outcomes}, max_chars=4_000
+    )
+    title = f"job/{job_id}/evolution/{campaign_id}/{session_stage}"
+    agent_name = str(campaign_payload.pop("agent_name", "") or "")
+    if agent_name not in {
+        JOB_EVOLUTION_DESIGNER_AGENT_NAME,
+        JOB_EVOLUTION_WORKER_AGENT_NAME,
+    }:
+        agent_name = JOB_EVOLUTION_WORKER_AGENT_NAME
+    prompt = (
+        f"Run PAPER-ONLY evolution stage `{session_stage}`. Use the persisted "
+        "candidate outcomes and prior-stage handoff; do not reload the retired "
+        "session or its raw tool results. Perform exactly this next action, then "
+        "end the stage:\n"
+        f"{campaign_payload.get('next_action')}\n\n"
+        f"Prior stage handoff:\n{prior_stage_text}\n\n"
+        f"Persisted candidate outcomes:\n{outcomes_text}\n\n"
+        "Campaign control state:\n" + _canonical_json(campaign_payload, max_chars=3_500)
+    )
+    return {
+        "campaign_id": campaign_id,
+        "session_stage": session_stage,
+        "title": title,
+        "agent_name": agent_name,
+        "prompt": prompt,
+    }
+
+
 def _prompt_evolution_session(
     store: JobStore, job_id: str, campaign: dict[str, Any], *, source: str
 ) -> dict[str, Any] | None:
@@ -1965,7 +2017,6 @@ def _prompt_evolution_session(
     session_stage = str(campaign.get("session_stage") or "").strip()
     if not session_stage:
         return {"queued": False, "error": "evolution session stage missing"}
-    campaign_payload = dict(campaign)
     prior_handoff = _latest_evolution_stage_handoff(store, job_id, campaign_id)
     existing = store.read_json(job_id, EVOLUTION_SESSION_PATH, default={}) or {}
     existing_id = str(existing.get("session_id") or "")
@@ -2003,32 +2054,14 @@ def _prompt_evolution_session(
             }
         if existing_campaign == campaign_id:
             prior_handoff = retired.get("handoff") or prior_handoff
-    prior_stage_text = (
-        _canonical_json(prior_handoff, max_chars=2_200) if prior_handoff else "null"
+    rendered = build_evolution_stage_prompt(
+        job_id, campaign, prior_handoff=prior_handoff
     )
-    candidate_outcomes = list(reversed(campaign_payload.pop("candidate_outcomes", [])))
-    outcomes_text = _canonical_json(
-        {"order": "newest_first", "candidates": candidate_outcomes}, max_chars=4_000
-    )
+    title = rendered["title"]
+    agent_name = rendered["agent_name"]
+    prompt = rendered["prompt"]
     controller_session_id = os.environ.get("OPENCODE_SESSION_ID") or os.environ.get(
         "OPENCODE_SESSIONID"
-    )
-    title = f"job/{job_id}/evolution/{campaign_id}/{session_stage}"
-    agent_name = str(campaign_payload.pop("agent_name", "") or "")
-    if agent_name not in {
-        JOB_EVOLUTION_DESIGNER_AGENT_NAME,
-        JOB_EVOLUTION_WORKER_AGENT_NAME,
-    }:
-        agent_name = JOB_EVOLUTION_WORKER_AGENT_NAME
-    prompt = (
-        f"Run PAPER-ONLY evolution stage `{session_stage}`. Use the persisted "
-        "candidate outcomes and prior-stage handoff; do not reload the retired "
-        "session or its raw tool results. Perform exactly this next action, then "
-        "end the stage:\n"
-        f"{campaign_payload.get('next_action')}\n\n"
-        f"Prior stage handoff:\n{prior_stage_text}\n\n"
-        f"Persisted candidate outcomes:\n{outcomes_text}\n\n"
-        "Campaign control state:\n" + _canonical_json(campaign_payload, max_chars=3_500)
     )
     fingerprint = hashlib.sha256(prompt.encode()).hexdigest()
     created_at = utc_now_iso()

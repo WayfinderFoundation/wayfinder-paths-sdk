@@ -48,15 +48,29 @@ DEFAULT_AGENT = "wayfinder-job-worker"
 _DIAGNOSTIC_TOOL_LIMIT = 25
 _DIAGNOSTIC_ERROR_LIMIT = 300
 _DIAGNOSTIC_TEXT_LIMIT = 1_500
-# opencode.json (provider config) is untracked; worktrees lack it. Fall back
-# to the primary checkout when the given repo_root is a bare worktree.
-PRIMARY_CHECKOUT = Path("/Users/adrianhaldenby/Documents/wayfinder-paths-sdk")
 
 
 def _config_source(repo_root: Path) -> Path:
     if (repo_root / ".opencode" / "opencode.json").exists():
         return repo_root
-    return PRIMARY_CHECKOUT
+    override = os.environ.get("WAYFINDER_OPENCODE_CONFIG_ROOT")
+    candidates = [Path(override).expanduser()] if override else []
+    common = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if common.returncode == 0:
+        candidates.append(Path(common.stdout.strip()).resolve().parent)
+    for candidate in candidates:
+        if (candidate / ".opencode" / "opencode.json").exists():
+            return candidate
+    raise FileNotFoundError(
+        "opencode.json is untracked and was not found in the SDK checkout, "
+        "its primary worktree, or WAYFINDER_OPENCODE_CONFIG_ROOT"
+    )
 
 
 def build_world_bundle(
@@ -72,44 +86,9 @@ def build_world_bundle(
     from wayfinder_paths.jobs.models import WayfinderJob
     from wayfinder_paths.jobs.store import JobStore
 
-    sandbox.mkdir(parents=True, exist_ok=True)
-    # The sandbox must BE an opencode-able SDK workspace: agent definitions
-    # + provider config (opencode.json is UNTRACKED — source it from a real
-    # checkout, not a bare worktree), the venv + package symlinked so the
-    # `wayfinder job` CLI works, and MCP servers disabled (file-based
-    # worlds; the worker falls back to the CLI — eval-harness pattern).
-    config_source = _config_source(repo_root)
-    target = sandbox / ".opencode"
-    if not target.exists():
-        shutil.copytree(
-            config_source / ".opencode", target,
-            ignore=shutil.ignore_patterns("node_modules"),
-            symlinks=False,
-        )
-    opencode_json = target / "opencode.json"
-    if opencode_json.exists():
-        config = json.loads(opencode_json.read_text())
-        for server in (config.get("mcp") or {}).values():
-            if isinstance(server, dict):
-                server["enabled"] = False
-        opencode_json.write_text(json.dumps(config, indent=2) + "\n")
-    # Code must be INSIDE the sandbox (symlinks trip opencode's
-    # external_directory permission wall — found live on pilot wake 0);
-    # the venv stays a symlink, agents execute it but rarely read it.
-    for name in ("pyproject.toml", "poetry.lock"):
-        source = config_source / name
-        if source.exists() and not (sandbox / name).exists():
-            shutil.copy(source, sandbox / name)
-    package = sandbox / "wayfinder_paths"
-    if not package.exists():
-        shutil.copytree(
-            config_source / "wayfinder_paths", package,
-            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests"),
-        )
-    venv_source = config_source / ".venv"
-    if venv_source.exists() and not (sandbox / ".venv").exists():
-        (sandbox / ".venv").symlink_to(venv_source)
-
+    install_agent_workspace(sandbox=sandbox, repo_root=repo_root, disable_mcp=True)
+    # The file-based WOB worker falls back to the CLI, so MCP stays disabled.
+    # Campaign A/B uses the same helper with a lifecycle-only MCP URL.
     store = JobStore(repo_root=sandbox)
     job = WayfinderJob.new(
         f"wob-{world.world_id}",
@@ -130,7 +109,7 @@ def build_world_bundle(
     interpreter = write_interpreter(src_dir)
     interpreter.rename(src_dir / "strategy.py")
 
-    import yaml
+    import yaml  # type: ignore[import-untyped]
 
     job_yaml_path = root / "job.yaml"
     job_yaml = yaml.safe_load(job_yaml_path.read_text()) or {}
@@ -138,7 +117,10 @@ def build_world_bundle(
         "genome_spec": initial_genome.to_dict(),
         "fee_bps": world.mechanism.fee_bps,
     }
-    job_yaml["script_loop"] = {"enabled": True, "entrypoint": "workspace/src/strategy.py"}
+    job_yaml["script_loop"] = {
+        "enabled": True,
+        "entrypoint": "workspace/src/strategy.py",
+    }
     job_yaml_path.write_text(yaml.safe_dump(job_yaml, sort_keys=False))
 
     dataset_dir = root / "results" / "backtest"
@@ -158,6 +140,77 @@ def build_world_bundle(
         )
     )
     return job.id
+
+
+def install_agent_workspace(
+    *,
+    sandbox: Path,
+    repo_root: Path,
+    disable_mcp: bool = False,
+    mcp_url: str | None = None,
+) -> None:
+    """Make an isolated directory runnable by the real OpenCode agents."""
+    sandbox.mkdir(parents=True, exist_ok=True)
+    config_source = _config_source(repo_root)
+    target = sandbox / ".opencode"
+    if not target.exists():
+        workspace_source = (
+            repo_root / ".opencode"
+            if (repo_root / ".opencode").is_dir()
+            else config_source / ".opencode"
+        )
+        shutil.copytree(
+            workspace_source,
+            target,
+            ignore=shutil.ignore_patterns("node_modules"),
+            symlinks=False,
+        )
+    # opencode.json carries local provider credentials/settings and is
+    # intentionally untracked. Only this file falls back to the primary
+    # checkout; agents and plugins stay pinned to the declared SDK ref.
+    if not (target / "opencode.json").exists():
+        shutil.copy(config_source / ".opencode" / "opencode.json", target)
+    opencode_json = target / "opencode.json"
+    if opencode_json.exists():
+        config = json.loads(opencode_json.read_text())
+        for server in (config.get("mcp") or {}).values():
+            if isinstance(server, dict):
+                if disable_mcp:
+                    server["enabled"] = False
+                elif mcp_url:
+                    server.update(
+                        {
+                            "type": "remote",
+                            "url": mcp_url,
+                            "enabled": True,
+                            "timeout": 300_000,
+                        }
+                    )
+        opencode_json.write_text(json.dumps(config, indent=2) + "\n")
+    # Code must be INSIDE the sandbox (symlinks trip opencode's
+    # external_directory permission wall — found live on pilot wake 0);
+    # the venv stays a symlink, agents execute it but rarely read it.
+    code_source = repo_root
+    if not (code_source / "wayfinder_paths").is_dir():
+        raise FileNotFoundError(f"SDK package is missing: {code_source}")
+    for name in ("pyproject.toml", "poetry.lock"):
+        source = code_source / name
+        if source.exists() and not (sandbox / name).exists():
+            shutil.copy(source, sandbox / name)
+    package = sandbox / "wayfinder_paths"
+    if not package.exists():
+        shutil.copytree(
+            code_source / "wayfinder_paths",
+            package,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests"),
+        )
+    venv_source = (
+        repo_root / ".venv"
+        if (repo_root / ".venv").exists()
+        else config_source / ".venv"
+    )
+    if venv_source.exists() and not (sandbox / ".venv").exists():
+        (sandbox / ".venv").symlink_to(venv_source)
 
 
 def run_agent_wakes(
@@ -182,25 +235,71 @@ def run_agent_wakes(
         prepared = prepare_job_worker_prompt(
             store=store, job_id=job_id, mode="intervene"
         )
-        title = f"wob-{job_id}-wake-{wake}"
-        command = [
-            str(opencode), "run", "--agent", agent, "-m", model,
-            "--dir", str(sandbox), "--title", title, prepared["prompt"],
-        ]
-        result = subprocess.run(
-            command, capture_output=True, text=True, timeout=timeout_s,
-            cwd=sandbox, check=False,
+        session = run_agent_prompt(
+            sandbox=sandbox,
+            prompt=prepared["prompt"],
+            model=model,
+            title=f"wob-{job_id}-wake-{wake}",
+            opencode=opencode,
+            agent=agent,
+            timeout_s=timeout_s,
         )
-        sessions.append(
-            {
-                "wake": wake,
-                "title": title,
-                "exit_code": result.returncode,
-                "stdout_tail": result.stdout[-800:],
-                "stderr_tail": result.stderr[-500:],
-            }
-        )
+        sessions.append({"wake": wake, **session})
     return sessions
+
+
+def run_agent_prompt(
+    *,
+    sandbox: Path,
+    prompt: str,
+    model: str,
+    variant: str | None = None,
+    title: str,
+    session_id: str | None = None,
+    opencode: Path = DEFAULT_OPENCODE,
+    agent: str = DEFAULT_AGENT,
+    timeout_s: int = 1800,
+    env: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Run one bounded prompt through the real OpenCode harness.
+
+    Campaign benchmarks and synthetic optimizer wakes intentionally share this
+    seam: model, agent definition, working directory, timeout behavior, and
+    session-title metering must not drift between benchmark lanes.
+    """
+    command = [
+        str(opencode),
+        "run",
+        "--agent",
+        agent,
+        "-m",
+        model,
+        "--dir",
+        str(sandbox),
+    ]
+    if variant:
+        command.extend(["--variant", variant])
+    if session_id:
+        command.extend(["--session", session_id])
+    else:
+        command.extend(["--title", title])
+    command.append(prompt)
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        cwd=sandbox,
+        check=False,
+        env=env,
+    )
+    return {
+        "title": title,
+        "session_id": session_id,
+        "exit_code": result.returncode,
+        "stdout_tail": result.stdout[-1_500:],
+        "stderr_tail": result.stderr[-800:],
+    }
 
 
 def meter_sessions(
@@ -417,5 +516,8 @@ def harvest_lineage(*, sandbox: Path, job_id: str) -> dict[str, Any]:
             selected = Genome.from_dict(active_spec)
         except (KeyError, TypeError):
             selected = None
-    return {"lineage": [(g, 0.0) for g in lineage], "selected": selected,
-            "optimizer": "agent"}
+    return {
+        "lineage": [(g, 0.0) for g in lineage],
+        "selected": selected,
+        "optimizer": "agent",
+    }
