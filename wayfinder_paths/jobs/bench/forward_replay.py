@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -132,7 +133,7 @@ def race_bundles(
 def evaluate_bundle(
     bundle: Path,
     *,
-    rows: list[dict[str, Any]],
+    rows: Sequence[Mapping[str, Any]],
     cutoff: datetime,
     environment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -150,7 +151,7 @@ def evaluate_bundle(
     params.update(dict(environment.get("params") or {}))
     script = resolve_bundle_script_entrypoint(bundle, job_data)
     dataset = PreparedExecutionDataset.from_rows(
-        rows, {"source": "sealed_benchmark_world"}
+        list(rows), {"source": "sealed_benchmark_world"}
     )
     probe = window_invariance_probe(script, dataset.bars, spec, params)
     result = simulate_execution(script, dataset, spec, params)
@@ -212,7 +213,7 @@ def replay_probation(
     warmup_rows = [
         row for row in development_rows if _row_timestamp(row) <= pd.Timestamp(cutoff)
     ][-2_000:]
-    replay_rows = [*warmup_rows, *holdout_rows]
+    replay_rows: list[Mapping[str, Any]] = [*warmup_rows, *holdout_rows]
     view = CompletedBarsView.from_rows(replay_rows)
     end = max(view.timestamps)
     asyncio.run(run_candidate_shadows(store, job_id, view=view, now=end))
