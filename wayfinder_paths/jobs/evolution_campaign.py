@@ -611,6 +611,17 @@ def submit_campaign_design(
     return normalized
 
 
+def _research_parent_available(
+    manifest: dict[str, Any], diagnostic_pack: dict[str, Any]
+) -> bool:
+    context = diagnostic_pack.get("research_context") or {}
+    return bool(
+        manifest.get("research_seeds")
+        or context.get("validated_positives")
+        or context.get("refuted_families")
+    )
+
+
 def _validate_campaign_design(
     raw: dict[str, Any], *, manifest: dict[str, Any], diagnostic_pack: dict[str, Any]
 ) -> dict[str, Any]:
@@ -670,6 +681,16 @@ def _validate_campaign_design(
         "research_seed",
         "research_context",
     }
+    available_starter_ids = {
+        str(item.get("starter_id") or "")
+        for item in manifest.get("starter_seeds") or []
+        if item.get("starter_id")
+    }
+    available_research_seed_ids = {
+        str(item.get("seed_id") or "")
+        for item in manifest.get("research_seeds") or []
+        if item.get("seed_id")
+    }
     normalized_slots: list[dict[str, Any]] = []
     seen_slot_ids: set[str] = set()
     for index, slot in enumerate(slots, start=1):
@@ -691,6 +712,30 @@ def _validate_campaign_design(
         source = str(slot.get("parent_source") or "").strip()
         if source not in allowed_sources:
             raise ValueError(f"slot {slot_id} has unsupported parent_source {source!r}")
+        starter_seed_id = str(slot.get("starter_seed_id") or "").strip()
+        research_seed_id = str(slot.get("research_seed_id") or "").strip()
+        if starter_seed_id:
+            if source != "starter_seed":
+                raise ValueError(
+                    f"slot {slot_id} starter_seed_id requires parent_source "
+                    "starter_seed"
+                )
+            if starter_seed_id not in available_starter_ids:
+                raise ValueError(
+                    f"slot {slot_id} names unavailable starter_seed_id "
+                    f"{starter_seed_id!r}"
+                )
+        if research_seed_id:
+            if source != "research_seed":
+                raise ValueError(
+                    f"slot {slot_id} research_seed_id requires parent_source "
+                    "research_seed"
+                )
+            if research_seed_id not in available_research_seed_ids:
+                raise ValueError(
+                    f"slot {slot_id} names unavailable research_seed_id "
+                    f"{research_seed_id!r}"
+                )
         mutation = str(slot.get("mutation_kind") or "structural").strip()
         if mutation not in {"structural", "parameter"}:
             raise ValueError(
@@ -700,17 +745,20 @@ def _validate_campaign_design(
         summary = str(slot.get("summary") or "").strip()
         if not family or not summary:
             raise ValueError(f"slot {slot_id} requires family and summary")
-        normalized_slots.append(
-            {
-                "slot_id": slot_id,
-                "wildcard": wildcard,
-                "hypothesis_id": hypothesis_id or None,
-                "parent_source": source,
-                "mutation_kind": mutation,
-                "family": family[:120],
-                "summary": summary[:240],
-            }
-        )
+        normalized_slot = {
+            "slot_id": slot_id,
+            "wildcard": wildcard,
+            "hypothesis_id": hypothesis_id or None,
+            "parent_source": source,
+            "mutation_kind": mutation,
+            "family": family[:120],
+            "summary": summary[:240],
+        }
+        if starter_seed_id:
+            normalized_slot["starter_seed_id"] = starter_seed_id
+        if research_seed_id:
+            normalized_slot["research_seed_id"] = research_seed_id
+        normalized_slots.append(normalized_slot)
     wildcard_count = sum(bool(slot["wildcard"]) for slot in normalized_slots)
     if wildcard_count != int(manifest["policy"].get("wildcard_slots") or 0):
         raise ValueError("campaign design has the wrong number of wildcard slots")
@@ -718,7 +766,10 @@ def _validate_campaign_design(
     sources = {str(slot["parent_source"]) for slot in grounded}
     if "starter_seed" not in sources:
         raise ValueError("grounded design requires an explicit starter_seed slot")
-    if not sources & {"research_seed", "research_context"}:
+    if _research_parent_available(manifest, diagnostic_pack) and not sources & {
+        "research_seed",
+        "research_context",
+    }:
         raise ValueError("grounded design requires an explicit research slot")
     if "de_novo" not in sources:
         raise ValueError("grounded design requires an explicit de_novo slot")
@@ -989,6 +1040,10 @@ def _prepare_candidate(
     parent_plan = _select_parent_plan(
         manifest,
         requested_source=requested_source,
+        requested_starter_id=str(design_slot.get("starter_seed_id") or "") or None,
+        requested_research_seed_id=(
+            str(design_slot.get("research_seed_id") or "") or None
+        ),
         slot=slot,
         candidates=state["candidates"],
     )
@@ -2413,6 +2468,24 @@ def campaign_prompt_block(
         )
         slots = int(policy.get("generated_programs") or 8)
         wildcards = int(policy.get("wildcard_slots") or 2)
+        research_parent_required = _research_parent_available(manifest, diagnostic_pack)
+        research_instruction = (
+            "Include at least one research_seed or research_context slot. "
+            if research_parent_required
+            else "Do not allocate a decorative research_seed/research_context "
+            "slot: this campaign has no executable research seed or prior "
+            "research outcome. "
+        )
+        starter_ids = [
+            str(item.get("starter_id"))
+            for item in manifest.get("starter_seeds") or []
+            if item.get("starter_id")
+        ]
+        research_seed_ids = [
+            str(item.get("seed_id"))
+            for item in manifest.get("research_seeds") or []
+            if item.get("seed_id")
+        ]
         return {
             "job_id": job_id,
             "campaign_id": state["campaign_id"],
@@ -2427,16 +2500,25 @@ def campaign_prompt_block(
                 f"causal hypotheses and exactly {slots} idea slots, including "
                 f"exactly {wildcards} explicit wildcards. Grounded slots must "
                 "cite existing JSON pointers from the diagnostic pack. Include "
-                "at least one starter_seed, one research_seed or research_context, "
-                "and one grounded de_novo slot; use at most one incumbent slot and "
-                "at most two parameter slots. One wildcard must be de_novo. "
+                "at least one starter_seed and one grounded de_novo slot. "
+                f"{research_instruction}Use at most one incumbent slot and at "
+                "most two parameter slots. One wildcard must be de_novo. "
                 'Call wayfinder_core_jobs with action="evolution_design", '
                 f'job_id="{job_id}", and campaign_design={{"hypotheses": [...], '
                 '"slots": [...]}}, background=true. Each hypothesis needs id, family, '
                 "causal_mechanism, falsifier, evidence_refs. Each slot needs "
                 "slot_id, wildcard, hypothesis_id (null for wildcard), "
-                "parent_source, mutation_kind, family, summary. Do not wait for "
-                "the detached result; end immediately after launch."
+                "parent_source, mutation_kind, family, summary. parent_source "
+                "must be exactly one of incumbent, qd_elite, crossover, de_novo, "
+                "starter_seed, research_seed, research_context; it is an enum, "
+                "so do not append a starter id or other qualifier. mutation_kind "
+                "must be exactly structural or parameter. For a starter_seed "
+                "slot, set "
+                "optional starter_seed_id to one of "
+                f"{starter_ids}; this structured id, not summary prose, selects "
+                "the executable seed. For a research_seed slot, set optional "
+                f"research_seed_id to one of {research_seed_ids}. Do not wait "
+                "for the detached result; end immediately after launch."
             ),
             "diagnostic_pack": str(pack_path),
             "manifest_path": str(manifest_path),
@@ -2446,6 +2528,7 @@ def campaign_prompt_block(
                 "facts_constrain_claims_not_mechanisms": True,
                 "wildcards": wildcards,
                 "idea_slots": slots,
+                "research_parent_required": research_parent_required,
             },
             "deadline_elapsed": current >= deadline,
         }
@@ -3598,6 +3681,8 @@ def _select_parent_plan(
     manifest: dict[str, Any],
     *,
     requested_source: str,
+    requested_starter_id: str | None = None,
+    requested_research_seed_id: str | None = None,
     slot: int,
     candidates: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -3613,13 +3698,21 @@ def _select_parent_plan(
             for item in candidates
             if item.get("research_seed_id")
         }
-        seed = next(
-            (
-                item
-                for item in manifest.get("research_seeds") or []
-                if str(item.get("seed_id") or "") not in used
-            ),
-            None,
+        seeds = list(manifest.get("research_seeds") or [])
+        seed = (
+            next(
+                (
+                    item
+                    for item in seeds
+                    if str(item.get("seed_id") or "") == requested_research_seed_id
+                ),
+                None,
+            )
+            if requested_research_seed_id
+            else next(
+                (item for item in seeds if str(item.get("seed_id") or "") not in used),
+                None,
+            )
         )
         if seed is not None:
             return {
@@ -3634,13 +3727,25 @@ def _select_parent_plan(
             for item in candidates
             if item.get("starter_seed_id")
         }
-        starter = next(
-            (
-                item
-                for item in manifest.get("starter_seeds") or []
-                if str(item.get("starter_id") or "") not in used
-            ),
-            None,
+        starters = list(manifest.get("starter_seeds") or [])
+        starter = (
+            next(
+                (
+                    item
+                    for item in starters
+                    if str(item.get("starter_id") or "") == requested_starter_id
+                ),
+                None,
+            )
+            if requested_starter_id
+            else next(
+                (
+                    item
+                    for item in starters
+                    if str(item.get("starter_id") or "") not in used
+                ),
+                None,
+            )
         )
         if starter is not None:
             return {"source": "starter_seed", "parents": [], "starter": starter}
