@@ -250,6 +250,11 @@ def test_investigative_campaign_requires_and_freezes_one_design_turn(tmp_path) -
     assert state["stage"] == "design"
     prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
     assert prompt and prompt["agent_name"] == "wayfinder-evolution-designer"
+    assert prompt["artifact_key"] == "design"
+    assert "/baseline/reason" in prompt["valid_evidence_pointers"]
+    assert (
+        "/research_context/validated_positives" not in prompt["valid_evidence_pointers"]
+    )
     assert prompt["constraints"]["idea_slots"] == 8
     assert prompt["constraints"]["wildcards"] == 2
     with pytest.raises(ValueError, match="design must be accepted"):
@@ -345,6 +350,13 @@ def test_investigative_attempts_repair_failures_but_close_viable_ideas(
     store.write_json(job_id, "state/evolution_campaign.json", state)
     assert candidate["status"] == "repair_pending"
     assert state["counts"]["quick_evaluated"] == 0
+    repair_prompt = campaign_prompt_block(
+        store, job_id, now=started + timedelta(minutes=2)
+    )
+    assert repair_prompt and repair_prompt["artifact_key"] == (
+        "candidate-01-attempt-02"
+    )
+    assert repair_prompt["postmortem_path"].endswith("a01/postmortem.json")
 
     script.write_text(script.read_text() + "\nATTEMPT_2 = True\n")
     _commit_designed_attempt(
@@ -2101,6 +2113,103 @@ def test_parentless_evolution_nudges_reuse_persisted_campaign_session(
     assert client.prompts == ["session-1", "session-1"]
 
 
+def test_evolution_repair_rotates_to_a_fresh_attempt_session(
+    tmp_path, monkeypatch
+) -> None:
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    store.write_json(
+        job_id,
+        "state/evolution_campaign.json",
+        {
+            "campaign_id": "campaign-1",
+            "status": "active",
+            "candidates": [
+                {
+                    "slot": 1,
+                    "attempts": [
+                        {"postmortem": {"behavior_diff": {"material_change": True}}}
+                    ],
+                }
+            ],
+        },
+    )
+    store.write_json(
+        job_id,
+        "reports/evolution/session.json",
+        {
+            "schema_version": "1.2",
+            "campaign_id": "campaign-1",
+            "session_stage": "candidate-01",
+            "artifact_key": "candidate-01-attempt-01",
+            "session_id": "session-1",
+        },
+    )
+
+    class RepairClient:
+        def __init__(self) -> None:
+            self.sessions = {"session-1"}
+            self.deleted: list[str] = []
+
+        def healthy(self) -> bool:
+            return True
+
+        def session_exists(self, session_id: str) -> bool:
+            return session_id in self.sessions
+
+        def session_statuses(self) -> dict[str, Any]:
+            return {}
+
+        def delete_session(self, session_id: str) -> bool:
+            self.deleted.append(session_id)
+            self.sessions.discard(session_id)
+            return True
+
+        def find_child_session(self, *, parent_id: Any, title: str) -> None:
+            assert title.endswith("/candidate-01-attempt-02")
+            return None
+
+        def create_session(self, **kwargs: Any) -> str:
+            self.sessions.add("session-2")
+            return "session-2"
+
+        def prompt_async(self, **kwargs: Any) -> bool:
+            return True
+
+    client = RepairClient()
+    monkeypatch.setattr("wayfinder_paths.jobs.worker.OPENCODE_CLIENT", client)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.evolution_campaign.campaign_prompt_block",
+        lambda store, job_id: {
+            "campaign_id": "campaign-1",
+            "session_stage": "candidate-01",
+            "artifact_key": "candidate-01-attempt-02",
+            "next_action": "repair candidate one",
+            "postmortem_path": "attempts/c01/a01/postmortem.json",
+        },
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.benchmarks.agent_adapter.meter_session_ids",
+        lambda session_ids: {"sessions": 1, "tool_calls": 2},
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.benchmarks.agent_adapter.session_diagnostic_summary",
+        lambda session_id: {
+            "tool_calls": [],
+            "final_assistant_text": "attempt one evaluated",
+        },
+    )
+
+    result = nudge_evolution_session(store, job_id)
+
+    assert result == {"queued": True, "session_id": "session-2"}
+    assert client.deleted == ["session-1"]
+    current = store.read_json(job_id, "reports/evolution/session.json")
+    assert current["artifact_key"] == "candidate-01-attempt-02"
+    retired = store.read_json(job_id, "reports/evolution/sessions.json")["sessions"]
+    assert retired[0]["artifact_key"] == "candidate-01-attempt-01"
+    assert retired[0]["behavior_changed"] is True
+
+
 def test_evaluation_completion_rotates_stage_and_passes_bounded_handoff(
     tmp_path, monkeypatch
 ) -> None:
@@ -2208,7 +2317,7 @@ def test_evaluation_completion_rotates_stage_and_passes_bounded_handoff(
     assert "candidate-02" in prompt
     assert "candidate one improved drawdown" in prompt
     assert "candidate one authored and evaluation launched" in prompt
-    assert "tool_result_bytes" in prompt
+    assert "tool_result_bytes" not in prompt
     assert "raw result must never enter the next prompt" not in prompt
     current = store.read_json(job_id, "reports/evolution/session.json")
     assert current["session_id"] == "session-2"

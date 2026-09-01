@@ -77,6 +77,130 @@ def _canonical_json(data: Any, *, max_chars: int | None = None) -> str:
     return text
 
 
+def _work_order(
+    *,
+    lane: str,
+    action: str,
+    objective: str,
+    inputs: list[str],
+    editable_paths: list[str],
+    exclusions: list[str],
+    completion: str,
+) -> dict[str, Any]:
+    """Build a prompt-context contract, never a durable workflow artifact."""
+    return {
+        "schema_version": "1.0",
+        "lane": lane,
+        "action": action,
+        "objective": objective,
+        "inputs": list(dict.fromkeys(item for item in inputs if item)),
+        "editable_paths": list(dict.fromkeys(item for item in editable_paths if item)),
+        "exclusions": list(dict.fromkeys(item for item in exclusions if item)),
+        "completion": completion,
+    }
+
+
+def _render_work_order(order: dict[str, Any]) -> str:
+    return "COMPILED WORK ORDER (one action):\n" + _canonical_json(
+        order, max_chars=4_500
+    )
+
+
+def _worker_work_order(
+    *,
+    job_id: str,
+    mode: str,
+    apply_proposal_id: str | None,
+    maintenance_ready: bool,
+    remediation_overrides: bool,
+    restage_tasks: list[dict[str, Any]],
+    ideation_due: bool,
+    gate_red: bool,
+) -> dict[str, Any]:
+    base = f".wayfinder/jobs/{job_id}"
+    if apply_proposal_id:
+        lane = "maintenance" if maintenance_ready else "application"
+        return _work_order(
+            lane=lane,
+            action="validate_and_complete_application",
+            objective=(
+                f"Validate and complete approved proposal {apply_proposal_id} "
+                "using its existing candidate bundle."
+            ),
+            inputs=[
+                f"{base}/proposals/{apply_proposal_id}.json",
+                f"{base}/job.yaml",
+                f"{base}/workspace",
+            ],
+            editable_paths=["the proposal application candidate only"],
+            exclusions=[
+                "active workspace until deterministic promotion",
+                "new strategy research",
+                "new proposal creation",
+            ],
+            completion=(
+                "Call validate_application after material edits, then call "
+                "complete_application exactly once with applied or failed."
+            ),
+        )
+    if remediation_overrides:
+        return _work_order(
+            lane="remediation",
+            action="advance_regime_remediation",
+            objective="Advance the open regime-remediation case by one accountable outcome.",
+            inputs=[
+                f"{base}/state/regime_remediation.json",
+                f"{base}/results/research/regime_health.json",
+                f"{base}/results/research/attribution.json",
+                f"{base}/results/forward/summary.json",
+            ],
+            editable_paths=[
+                f"{base}/reports/intervene",
+                "an isolated proposal candidate when the evidence supports treatment",
+            ],
+            exclusions=[
+                "routine island search",
+                "replacement-alpha mining",
+                "owner provenance",
+                "blocking reduce-only exits",
+            ],
+            completion=(
+                "Produce one linked green proposal, one bounded evaluation plus "
+                "remediation_progress, or one structured blocker."
+            ),
+        )
+    if restage_tasks:
+        objective = "Complete the already-approved re-stage task without opening a new proposal."
+        action = "restage_approved_candidate"
+    elif ideation_due and mode == "intervene":
+        objective = "Complete one bounded external-research expedition and persist its artifact."
+        action = "complete_research_expedition"
+    elif gate_red:
+        objective = "Diagnose and advance the currently red deterministic gate."
+        action = "advance_red_gate"
+    else:
+        objective = "Perform the single highest-priority sensing or intervention action for this wake."
+        action = "run_intervention_wake" if mode == "intervene" else f"run_{mode}_wake"
+    return _work_order(
+        lane="intervention" if mode == "intervene" else mode,
+        action=action,
+        objective=objective,
+        inputs=[
+            f"{base}/job.yaml",
+            f"{base}/reports",
+            f"{base}/results/forward",
+            f"{base}/results/research",
+        ],
+        editable_paths=[f"{base}/reports/{mode}", f"{base}/research"],
+        exclusions=[
+            "ordinary alpha candidate generation when evolution is enabled",
+            "owner provenance",
+            "live-mode changes outside a proposal",
+        ],
+        completion="Write the lane report and finish after one accountable outcome.",
+    )
+
+
 def _trade_forensics_block(root: Path) -> dict[str, Any]:
     """Compact exit-quality context: per-trade path metrics the agent cannot
     read off PnL rows (MAE/MFE during the hold, post-exit excursion, stop
@@ -678,7 +802,7 @@ def _build_worker_prompt_sections(
     wake_source: str = "scheduled_timer",
     wake_triggers: list[str] | None = None,
     wake_id: str | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     root = store.job_dir(job_id)
     from wayfinder_paths.jobs.improver.spec import ImproverSpec
 
@@ -1482,8 +1606,73 @@ def _build_worker_prompt_sections(
             "ledgers, memory, the research agenda/island agenda, or remediation "
             "reaffirmations.\n"
         )
+    apply_proposal: dict[str, Any] = next(
+        (
+            proposal
+            for proposal in snapshot.get("proposals") or []
+            if str(proposal.get("proposal_id") or proposal.get("id") or "")
+            == str(apply_proposal_id or "")
+        ),
+        {},
+    )
+    maintenance_ready = bool(
+        ((apply_proposal.get("candidate_report") or {}).get("maintenance") or {}).get(
+            "ready"
+        )
+        is True
+    )
+    work_order = _worker_work_order(
+        job_id=job_id,
+        mode=mode,
+        apply_proposal_id=apply_proposal_id,
+        maintenance_ready=maintenance_ready,
+        remediation_overrides=bool(remediation_overrides),
+        restage_tasks=list(restage_tasks or []),
+        ideation_due=bool(ideation_due),
+        gate_red=bool(gate_state and gate_state.get("live_ready") is False),
+    )
+    lane = str(work_order["lane"])
+    if lane == "remediation":
+        prompt_payload = {
+            key: dynamic_payload.get(key)
+            for key in (
+                "scorecard",
+                "forward",
+                "runner_links",
+                "proposals",
+                "proposal_queue",
+                "gate",
+                "trade_forensics",
+                "attribution",
+                "standing_checks",
+                "compute_status",
+                "wake",
+                "portfolio",
+            )
+            if dynamic_payload.get(key) not in (None, {}, [])
+        }
+    elif lane in {"maintenance", "application"}:
+        prompt_payload = {
+            key: dynamic_payload.get(key)
+            for key in (
+                "scorecard",
+                "runner_links",
+                "proposals",
+                "proposal_queue",
+                "reports",
+                "gate",
+                "standing_checks",
+                "compute_status",
+                "restage_tasks",
+                "wake",
+            )
+            if dynamic_payload.get(key) not in (None, {}, [])
+        }
+    else:
+        prompt_payload = dynamic_payload
     dynamic_context = (
         f"{DYNAMIC_CONTEXT_MARKER}\n"
+        f"{_render_work_order(work_order)}\n\n"
         f"{gate_alert}"
         f"{bootstrap_alert}"
         f"{remediation_directive}"
@@ -1492,7 +1681,7 @@ def _build_worker_prompt_sections(
         f"{ideation_directive}"
         f"Current wake id (pass verbatim to risk_block_symbol): {wake_id}\n"
         "Current snapshot:\n"
-        f"{_canonical_json(dynamic_payload, max_chars=12000)}\n\n"
+        f"{_canonical_json(prompt_payload, max_chars=12000)}\n\n"
         "Research agenda (research/agenda.md — cumulative exploration "
         "state; maintain it, do not restart it):\n"
         f"{research_agenda or '(none yet — bootstrap it on the next healthy ideation wake)'}\n\n"
@@ -1513,6 +1702,7 @@ def _build_worker_prompt_sections(
         "dynamic_context": dynamic_context,
         "stable_prefix_hash": hashlib.sha256(stable_prefix.encode()).hexdigest(),
         "dynamic_context_hash": hashlib.sha256(dynamic_context.encode()).hexdigest(),
+        "work_order": work_order,
     }
 
 
@@ -1919,6 +2109,7 @@ def recover_evolution_stage_session(
     if not campaign or campaign.get("status") == "blocked":
         return None
     desired_stage = str(campaign.get("session_stage") or "")
+    desired_artifact = str(campaign.get("artifact_key") or desired_stage)
     session = store.read_json(job_id, EVOLUTION_SESSION_PATH, default={}) or {}
     session_id = str(session.get("session_id") or "")
     if session_id and OPENCODE_CLIENT.session_statuses().get(session_id):
@@ -1928,7 +2119,9 @@ def recover_evolution_stage_session(
         or session.get("retired_at")
         or OPENCODE_CLIENT.session_exists(session_id) is False
     )
-    stage_changed = str(session.get("session_stage") or "") != desired_stage
+    stored_stage = str(session.get("session_stage") or "")
+    stored_artifact = str(session.get("artifact_key") or stored_stage)
+    artifact_changed = stored_artifact != desired_artifact
     stale = False
     try:
         prompted_at = dt.datetime.fromisoformat(str(session["last_prompt_at"]))
@@ -1937,7 +2130,7 @@ def recover_evolution_stage_session(
         stale = now - prompted_at >= EVOLUTION_STAGE_RETRY_AFTER
     except (KeyError, TypeError, ValueError):
         stale = bool(session_id)
-    if not (missing or stage_changed or stale):
+    if not (missing or artifact_changed or stale):
         return None
     if session_id and not session.get("retired_at") and not missing:
         retired = retire_evolution_session(
@@ -1959,7 +2152,7 @@ def build_evolution_stage_prompt(
     campaign: dict[str, Any],
     *,
     prior_handoff: dict[str, Any] | None = None,
-) -> dict[str, str]:
+) -> dict[str, Any]:
     """Render the production evolution stage prompt and its agent identity.
 
     The benchmark harness calls this same pure formatter. Keeping prompt
@@ -1972,37 +2165,110 @@ def build_evolution_stage_prompt(
     session_stage = str(campaign.get("session_stage") or "").strip()
     if not session_stage:
         raise ValueError("evolution session stage missing")
+    artifact_key = str(campaign.get("artifact_key") or session_stage).strip()
     campaign_payload = dict(campaign)
     prior_stage_text = (
-        _canonical_json(prior_handoff, max_chars=2_200) if prior_handoff else "null"
+        _canonical_json(prior_handoff, max_chars=1_500) if prior_handoff else "null"
     )
     candidate_outcomes = list(reversed(campaign_payload.pop("candidate_outcomes", [])))
     outcomes_text = _canonical_json(
-        {"order": "newest_first", "candidates": candidate_outcomes}, max_chars=4_000
+        {"order": "newest_first", "candidates": candidate_outcomes[:3]},
+        max_chars=3_000,
     )
-    title = f"job/{job_id}/evolution/{campaign_id}/{session_stage}"
+    lane = (
+        "evolution_design"
+        if session_stage == "design"
+        else "evolution_finalize"
+        if session_stage == "finalize"
+        else "evolution_repair"
+        if campaign_payload.get("postmortem_path")
+        else "evolution_candidate"
+    )
+    action = (
+        "submit_campaign_design"
+        if session_stage == "design"
+        else "launch_finalize"
+        if session_stage == "finalize"
+        else "repair_and_launch_evaluation"
+        if campaign_payload.get("postmortem_path")
+        else "prepare_edit_and_launch_evaluation"
+    )
+    inputs = list(campaign_payload.get("work_inputs") or [])
+    for key in ("diagnostic_pack", "manifest_path", "postmortem_path"):
+        if campaign_payload.get(key):
+            inputs.append(str(campaign_payload[key]))
+    editable_paths = list(campaign_payload.get("editable_paths") or [])
+    work_order = _work_order(
+        lane=lane,
+        action=action,
+        objective=(
+            "Design and submit the campaign's bounded hypothesis/slot allocation."
+            if session_stage == "design"
+            else "Launch deterministic campaign finalization and end the stage."
+            if session_stage == "finalize"
+            else "Change the assigned candidate mechanism and launch exactly one detached evaluation."
+        ),
+        inputs=inputs,
+        editable_paths=editable_paths,
+        exclusions=[
+            "active incumbent workspace",
+            "live trading or owner provenance",
+            "future or sealed holdout data",
+            "another candidate in the same stage",
+        ],
+        completion=(
+            "Call evolution_design once and end."
+            if session_stage == "design"
+            else "Call evolution_finalize with background=true and end."
+            if session_stage == "finalize"
+            else "Call evolution_evaluate with background=true and end without waiting."
+        ),
+    )
+    evidence_pointers = list(campaign_payload.get("valid_evidence_pointers") or [])
+    if evidence_pointers:
+        work_order["valid_evidence_pointers"] = evidence_pointers
+    title = f"job/{job_id}/evolution/{campaign_id}/{artifact_key}"
     agent_name = str(campaign_payload.pop("agent_name", "") or "")
     if agent_name not in {
         JOB_EVOLUTION_DESIGNER_AGENT_NAME,
         JOB_EVOLUTION_WORKER_AGENT_NAME,
     }:
         agent_name = JOB_EVOLUTION_WORKER_AGENT_NAME
+    control_keys = (
+        "campaign_id",
+        "stage",
+        "session_stage",
+        "artifact_key",
+        "deadline_at",
+        "deadline_elapsed",
+        "counts",
+        "constraints",
+        "forward_context_cutoff",
+    )
+    control_state = {
+        key: campaign_payload[key]
+        for key in control_keys
+        if campaign_payload.get(key) is not None
+    }
     prompt = (
         f"Run PAPER-ONLY evolution stage `{session_stage}`. Use the persisted "
         "candidate outcomes and prior-stage handoff; do not reload the retired "
-        "session or its raw tool results. Perform exactly this next action, then "
-        "end the stage:\n"
+        "session or its raw tool results.\n\n"
+        f"{_render_work_order(work_order)}\n\n"
+        "Perform exactly this next action, then end the stage:\n"
         f"{campaign_payload.get('next_action')}\n\n"
         f"Prior stage handoff:\n{prior_stage_text}\n\n"
         f"Persisted candidate outcomes:\n{outcomes_text}\n\n"
-        "Campaign control state:\n" + _canonical_json(campaign_payload, max_chars=3_500)
+        "Campaign control state:\n" + _canonical_json(control_state, max_chars=2_000)
     )
     return {
         "campaign_id": campaign_id,
         "session_stage": session_stage,
+        "artifact_key": artifact_key,
         "title": title,
         "agent_name": agent_name,
         "prompt": prompt,
+        "work_order": work_order,
     }
 
 
@@ -2017,11 +2283,13 @@ def _prompt_evolution_session(
     session_stage = str(campaign.get("session_stage") or "").strip()
     if not session_stage:
         return {"queued": False, "error": "evolution session stage missing"}
+    artifact_key = str(campaign.get("artifact_key") or session_stage).strip()
     prior_handoff = _latest_evolution_stage_handoff(store, job_id, campaign_id)
     existing = store.read_json(job_id, EVOLUTION_SESSION_PATH, default={}) or {}
     existing_id = str(existing.get("session_id") or "")
     existing_campaign = str(existing.get("campaign_id") or "")
     existing_stage = str(existing.get("session_stage") or "")
+    existing_artifact = str(existing.get("artifact_key") or existing_stage)
     existing_gone = bool(
         existing_id and OPENCODE_CLIENT.session_exists(existing_id) is False
     )
@@ -2030,7 +2298,7 @@ def _prompt_evolution_session(
         and not existing.get("retired_at")
         and (
             existing_campaign != campaign_id
-            or existing_stage != session_stage
+            or existing_artifact != artifact_key
             or existing_gone
         )
     )
@@ -2071,10 +2339,11 @@ def _prompt_evolution_session(
             session_id = str(session.get("session_id") or "")
             stored_campaign = str(session.get("campaign_id") or "")
             stored_stage = str(session.get("session_stage") or "")
+            stored_artifact = str(session.get("artifact_key") or stored_stage)
             reusable = bool(
                 session_id
                 and stored_campaign == campaign_id
-                and stored_stage == session_stage
+                and stored_artifact == artifact_key
                 and not session.get("retired_at")
                 and OPENCODE_CLIENT.session_exists(session_id) is not False
             )
@@ -2090,9 +2359,10 @@ def _prompt_evolution_session(
                     or ""
                 )
                 session = {
-                    "schema_version": "1.1",
+                    "schema_version": "1.2",
                     "campaign_id": campaign_id,
                     "session_stage": session_stage,
+                    "artifact_key": artifact_key,
                     "session_id": session_id,
                     "created_at": created_at,
                 }
@@ -2116,6 +2386,7 @@ def _prompt_evolution_session(
                     {
                         "campaign_id": campaign_id,
                         "session_stage": session_stage,
+                        "artifact_key": artifact_key,
                         "last_prompt_at": created_at,
                         "last_prompt_fingerprint": fingerprint,
                         "last_source": source,
@@ -2136,6 +2407,7 @@ def _prompt_evolution_session(
             else "Dedicated evolution wake could not be queued",
             "session_id": session_id,
             "session_stage": session_stage,
+            "artifact_key": artifact_key,
             "queued": queued,
             "source": source,
             "created_at": created_at,
@@ -2147,6 +2419,7 @@ def _prompt_evolution_session(
             "type": "evolution_worker_wakeup",
             "campaign_id": campaign.get("campaign_id"),
             "session_stage": session_stage,
+            "artifact_key": artifact_key,
             "session_id": session_id,
             "queued": queued,
             "source": source,
@@ -2157,32 +2430,10 @@ def _prompt_evolution_session(
 
 def _evolution_stage_handoff(entry: dict[str, Any]) -> dict[str, Any]:
     diagnostics = entry.get("diagnostics") or {}
-    metrics = entry.get("metrics") or {}
-    tool_calls = diagnostics.get("tool_calls") or []
     return {
         "from_stage": entry.get("session_stage"),
-        "retired_at": entry.get("retired_at") or entry.get("exported_at"),
-        "final_summary": str(diagnostics.get("final_assistant_text") or "")[-1_500:],
-        "tool_calls": [
-            {
-                key: call.get(key)
-                for key in ("tool", "action", "status", "error")
-                if call.get(key)
-            }
-            for call in tool_calls[-8:]
-            if isinstance(call, dict)
-        ],
-        "resource_usage": {
-            key: metrics.get(key)
-            for key in (
-                "tokens_in",
-                "tokens_out",
-                "tokens_reasoning",
-                "tool_calls",
-                "tool_result_bytes",
-            )
-            if metrics.get(key) is not None
-        },
+        "from_artifact": entry.get("artifact_key") or entry.get("session_stage"),
+        "final_summary": str(diagnostics.get("final_assistant_text") or "")[-1_200:],
     }
 
 
@@ -2194,6 +2445,39 @@ def _latest_evolution_stage_handoff(
         if str(entry.get("campaign_id") or "") == campaign_id:
             return _evolution_stage_handoff(entry)
     return None
+
+
+def _evolution_artifact_behavior_changed(
+    store: JobStore, job_id: str, session: dict[str, Any]
+) -> bool | None:
+    artifact_key = str(
+        session.get("artifact_key") or session.get("session_stage") or ""
+    )
+    parts = artifact_key.split("-")
+    if len(parts) != 4 or parts[0] != "candidate" or parts[2] != "attempt":
+        return None
+    try:
+        slot = int(parts[1])
+        attempt_index = int(parts[3])
+    except ValueError:
+        return None
+    state = store.read_json(job_id, "state/evolution_campaign.json", default={}) or {}
+    candidate = next(
+        (
+            item
+            for item in state.get("candidates") or []
+            if int(item.get("slot") or 0) == slot
+        ),
+        None,
+    )
+    if not candidate:
+        return None
+    attempts = list(candidate.get("attempts") or [])
+    if attempt_index < 1 or attempt_index > len(attempts):
+        return None
+    postmortem = attempts[attempt_index - 1].get("postmortem") or {}
+    value = (postmortem.get("behavior_diff") or {}).get("material_change")
+    return value if isinstance(value, bool) else None
 
 
 def retire_evolution_session(
@@ -2260,11 +2544,15 @@ def retire_evolution_session(
         exported = {
             "campaign_id": str(campaign_id),
             "session_stage": session.get("session_stage"),
+            "artifact_key": session.get("artifact_key") or session.get("session_stage"),
             "session_id": session_id,
             "created_at": session.get("created_at"),
             "exported_at": utc_now_iso(),
             "metrics": metrics,
             "diagnostics": diagnostics,
+            "behavior_changed": _evolution_artifact_behavior_changed(
+                store, job_id, session
+            ),
         }
         entries = [
             item
@@ -2303,7 +2591,11 @@ def retire_evolution_session(
                 "type": "evolution_session_retired",
                 "campaign_id": str(campaign_id),
                 "session_id": session_id,
+                "session_stage": session.get("session_stage"),
+                "artifact_key": session.get("artifact_key")
+                or session.get("session_stage"),
                 "metrics": metrics,
+                "behavior_changed": entries[-1].get("behavior_changed"),
             },
         )
         return {

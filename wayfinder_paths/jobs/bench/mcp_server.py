@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 from typing import Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 
+from wayfinder_paths.jobs.bench.env import sandbox_relative
 from wayfinder_paths.mcp.tools.jobs import core_jobs as _production_core_jobs
 
 BenchAction = Literal[
@@ -45,7 +47,11 @@ async def core_jobs(
     """Production evolution lifecycle with all data/live actions absent."""
     if action not in _ALLOWED_ACTIONS:
         raise ValueError(f"action {action!r} is unavailable in benchmark mode")
-    return await _production_core_jobs(
+    # Design validation is lightweight. Keep it inline so a malformed design
+    # returns its exact validator error to the same model turn instead of
+    # depending on a future scheduler wake to discover a detached failure.
+    effective_background = False if action == "evolution_design" else background
+    result = await _production_core_jobs(
         action,
         job_id=job_id,
         campaign_design=campaign_design,
@@ -57,8 +63,9 @@ async def core_jobs(
         hypothesis=hypothesis,
         base_revision=base_revision,
         evidence_refs=evidence_refs,
-        background=background,
+        background=effective_background,
     )
+    return sandbox_relative(result, root=Path.cwd())
 
 
 def build_bench_mcp(*, host: str, port: int) -> FastMCP:

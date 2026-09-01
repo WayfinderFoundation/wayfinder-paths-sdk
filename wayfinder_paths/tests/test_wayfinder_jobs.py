@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 
 from wayfinder_paths.jobs.application import (
@@ -423,6 +424,60 @@ def test_worker_prompt_includes_apply_lifecycle(tmp_path: Path) -> None:
     assert 'core_jobs(action="validate_application"' in prompt
     assert 'core_jobs(action="complete_application"' in prompt
     assert "runner loops pause only after the apply worker claims" in prompt
+
+
+def test_worker_prompt_compiles_maintenance_work_order(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("maintenance-prompt", agent_mode="intervene")
+    store.save(job)
+    proposal = {
+        "proposal_id": "prop_eq",
+        "candidate_report": {"maintenance": {"ready": True}},
+    }
+
+    sections = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job, proposals=[proposal]),
+        apply_proposal_id="prop_eq",
+    )
+
+    assert sections["work_order"]["lane"] == "maintenance"
+    assert sections["work_order"]["action"] == "validate_and_complete_application"
+    assert sections["work_order"]["editable_paths"] == [
+        "the proposal application candidate only"
+    ]
+    assert "COMPILED WORK ORDER (one action)" in sections["dynamic_context"]
+
+
+def test_worker_prompt_compiles_focused_remediation_work_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("remediation-prompt", agent_mode="intervene")
+    store.save(job)
+    store.write_json(
+        job.id,
+        "state/regime_remediation.json",
+        {"case_id": "rem-1", "state": "open", "attempts": 0},
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.remediation_backed_off",
+        lambda store, job_id, case: False,
+    )
+
+    sections = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job),
+    )
+
+    assert sections["work_order"]["lane"] == "remediation"
+    assert sections["work_order"]["action"] == "advance_regime_remediation"
+    assert "state/regime_remediation.json" in json.dumps(sections["work_order"])
+    assert '"research_substrate"' not in sections["dynamic_context"]
 
 
 def test_worker_report_includes_cache_metadata(tmp_path: Path, monkeypatch) -> None:

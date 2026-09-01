@@ -43,6 +43,19 @@ def load_json(path: Path) -> dict[str, Any]:
     return loaded
 
 
+def sandbox_relative(value: Any, *, root: Path) -> Any:
+    """Rewrite sandbox-absolute paths to the production-style relative form."""
+    resolved = str(root.resolve())
+    prefix = f"{resolved}/"
+    if isinstance(value, dict):
+        return {key: sandbox_relative(child, root=root) for key, child in value.items()}
+    if isinstance(value, list):
+        return [sandbox_relative(child, root=root) for child in value]
+    if isinstance(value, str):
+        return value.replace(prefix, "").replace(resolved, ".")
+    return value
+
+
 def git_sha(root: Path) -> str:
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],

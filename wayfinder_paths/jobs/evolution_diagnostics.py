@@ -164,6 +164,41 @@ def resolve_json_pointer(document: Mapping[str, Any], pointer: str) -> Any:
     return current
 
 
+def valid_evidence_pointers(
+    document: Mapping[str, Any], *, limit: int = 96
+) -> list[str]:
+    """Return a bounded, deterministic menu of citeable non-empty leaves.
+
+    The campaign pack remains the authority.  This is only a prompt-time index
+    over that pack so the designer does not spend model turns guessing paths
+    that are absent or present-but-empty.
+    """
+
+    pointers: list[str] = []
+
+    def escaped(value: Any) -> str:
+        return str(value).replace("~", "~0").replace("/", "~1")
+
+    def visit(value: Any, pointer: str) -> None:
+        if len(pointers) >= max(int(limit), 0):
+            return
+        if isinstance(value, Mapping):
+            for key in sorted(value, key=str):
+                visit(value[key], f"{pointer}/{escaped(key)}")
+            return
+        if isinstance(value, Sequence) and not isinstance(
+            value, (str, bytes, bytearray)
+        ):
+            for index, item in enumerate(value):
+                visit(item, f"{pointer}/{index}")
+            return
+        if value is not None and value != "":
+            pointers.append(pointer)
+
+    visit(document, "")
+    return pointers
+
+
 def build_postmortem(
     candidate: Mapping[str, Any],
     reference: Mapping[str, Any],

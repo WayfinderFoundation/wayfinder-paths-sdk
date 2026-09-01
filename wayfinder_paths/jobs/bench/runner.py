@@ -24,6 +24,7 @@ from wayfinder_paths.jobs.bench.env import (
     free_port,
     git_sha,
     load_json,
+    sandbox_relative,
     sha256_file,
 )
 from wayfinder_paths.jobs.bench.forward_replay import race_bundles, replay_probation
@@ -110,6 +111,7 @@ def run_experiment(config_path: Path) -> dict[str, Any]:
         output_dir=output_dir,
         confidence=float(config.get("confidence") or 0.90),
         max_cost_ratio=float(config.get("max_cost_ratio") or 1.25),
+        pilot=bool(config.get("pilot")),
     )
 
 
@@ -199,12 +201,14 @@ def run_arm(
     assert_isolation(sandbox=run_root, sealed_dir=sealed_dir)
     assert_isolation(sandbox=run_root, sealed_dir=world_dir)
     sdk_root = _resolve_sdk_root(config, arm)
+    runtime_opencode_config = _resolve_runtime_opencode_config(config)
     _verify_runtime_pins(
         config,
         arm=arm,
         sdk_root=sdk_root,
         world_dir=world_dir,
         sealed_dir=sealed_dir,
+        runtime_opencode_config=runtime_opencode_config,
     )
     model = str(arm["model"])
     variant = str(arm.get("variant") or "") or None
@@ -214,9 +218,12 @@ def run_arm(
         sandbox=run_root,
         repo_root=sdk_root,
         mcp_url=f"http://127.0.0.1:{port}/mcp",
+        runtime_config=runtime_opencode_config,
     )
     _overlay_bench_package(run_root)
     config_path = run_root / ".opencode" / "opencode.json"
+    if base_url := str(config.get("wayfinder_base_url") or "").strip():
+        _set_provider_base_url(config_path, provider="wayfinder", base_url=base_url)
     ensure_model_declared(config_path, model)
     store, job_id = _install_job(
         run_root,
@@ -230,7 +237,7 @@ def run_arm(
     prompt_hashes: list[str] = []
     sessions: list[dict[str, Any]] = []
     stage_sessions: dict[str, str] = {}
-    env = _arm_env(run_root)
+    env = _arm_env(run_root, virtual_now=generation_cutoff)
     server = _start_mcp(run_root, port=port, env=env)
     started = time.monotonic()
     invalid_reason: str | None = None
@@ -342,7 +349,18 @@ def run_arm(
         else:
             missing_transcripts.append(str(row["title"]))
     cost = meter_session_ids(session_ids, session_db=session_db)
-    cost["wall_seconds"] = round(time.monotonic() - started, 3)
+    elapsed_seconds = round(time.monotonic() - started, 3)
+    cost["agent_wall_seconds"] = cost["wall_seconds"]
+    cost["wall_seconds"] = elapsed_seconds
+    cost["other_seconds"] = round(
+        max(
+            elapsed_seconds
+            - float(cost.get("model_seconds") or 0)
+            - float(cost.get("tool_seconds") or 0),
+            0,
+        ),
+        3,
+    )
     isolation = _audit_session_isolation(
         session_ids,
         session_db=session_db,
@@ -391,6 +409,23 @@ def run_arm(
         "diversity": scorecard["diversity"],
         "process": scorecard["process"],
         "cost": cost,
+        "session_diagnostics": [
+            {
+                key: row.get(key)
+                for key in (
+                    "stage",
+                    "artifact_key",
+                    "turn",
+                    "title",
+                    "session_id",
+                    "exit_code",
+                    "stdout_tail",
+                    "stderr_tail",
+                )
+                if row.get(key) is not None
+            }
+            for row in sessions
+        ],
         "isolation": isolation,
         "identity": identity,
         "workspace": str(run_root),
@@ -484,6 +519,7 @@ def _drive_campaign(
             if not _wait_for_settle(store, job_id, timeout_s=settle_timeout_s):
                 return str(block.get("reason") or "campaign remained blocked")
             continue
+        block = sandbox_relative(block, root=sandbox)
         rendered = build_evolution_stage_prompt(
             job_id, block, prior_handoff=prior_handoff
         )
@@ -494,8 +530,9 @@ def _drive_campaign(
         )
         prompt_hashes.append(hashlib.sha256(prompt.encode()).hexdigest())
         stage = rendered["session_stage"]
+        artifact_key = rendered["artifact_key"]
         title = f"{rendered['title']}/seed-turn-{turn:02d}"
-        existing_session = stage_sessions.get(stage)
+        existing_session = stage_sessions.get(artifact_key)
         result = run_agent_prompt(
             sandbox=sandbox,
             prompt=prompt,
@@ -508,18 +545,20 @@ def _drive_campaign(
             timeout_s=timeout_s,
             env=env,
         )
-        result.update({"stage": stage, "turn": turn})
+        result.update({"stage": stage, "artifact_key": artifact_key, "turn": turn})
         sessions.append(result)
         if result["exit_code"] != 0:
             return f"OpenCode stage {stage} exited {result['exit_code']}"
         session_db = _session_db(sandbox)
         session_id = existing_session or _lookup_session_id(session_db, title)
         if session_id:
-            stage_sessions[stage] = session_id
+            stage_sessions[artifact_key] = session_id
             result["session_id"] = session_id
         prior_handoff = {
             "from_stage": stage,
-            "final_summary": result["stdout_tail"][-1_200:],
+            "final_summary": sandbox_relative(
+                result["stdout_tail"][-1_200:], root=sandbox
+            ),
         }
         if not _wait_for_settle(store, job_id, timeout_s=settle_timeout_s):
             return f"campaign stage {stage} did not settle"
@@ -579,16 +618,25 @@ def _start_mcp(sandbox: Path, *, port: int, env: dict[str, str]) -> subprocess.P
     raise TimeoutError("benchmark MCP server did not start")
 
 
-def _arm_env(sandbox: Path) -> dict[str, str]:
+def _arm_env(sandbox: Path, *, virtual_now: datetime | None = None) -> dict[str, str]:
     env = dict(os.environ)
+    isolated_home = sandbox / ".bench-home"
+    isolated_home.mkdir(parents=True, exist_ok=True)
+    env["HOME"] = str(isolated_home)
     env["PYTHONPATH"] = str(sandbox)
     env["XDG_DATA_HOME"] = str(sandbox / ".bench-data")
     env["XDG_CACHE_HOME"] = str(sandbox / ".bench-cache")
     env["WAYFINDER_BENCHMARK"] = "1"
+    if virtual_now is not None:
+        env["WAYFINDER_BENCHMARK_NOW"] = _aware_utc(virtual_now).isoformat()
     env["WAYFINDER_BURST_STATE_PATH"] = str(
         sandbox / ".bench-state" / "burst-governor.json"
     )
     return env
+
+
+def _aware_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
 
 def _session_db(sandbox: Path) -> Path:
@@ -735,6 +783,17 @@ def _scorecard(
         for row in elites
         if (cell := behavior_cell(row.get("behavior"))) is not None
     }
+    behavior_flags = [
+        value
+        for row in candidates
+        for attempt in row.get("attempts") or []
+        if isinstance(
+            value := ((attempt.get("postmortem") or {}).get("behavior_diff") or {}).get(
+                "material_change"
+            ),
+            bool,
+        )
+    ]
     return {
         "funnel": {
             "candidates_generated": int(funnel_counts.get("generated") or 0),
@@ -789,6 +848,10 @@ def _scorecard(
             "postmortems_consumed": sum(
                 max(int(row.get("attempt_count") or 0) - 1, 0) for row in candidates
             ),
+            "behavior_changed_attempts": sum(value is True for value in behavior_flags),
+            "behavior_unchanged_attempts": sum(
+                value is False for value in behavior_flags
+            ),
             "holdout_verdict": holdout.get("verdict"),
         },
         "cost": cost,
@@ -827,7 +890,7 @@ def _validate_config(config: dict[str, Any]) -> None:
         raise ValueError("experiments require exactly two arms")
     if not config.get("worlds") or not config.get("seeds"):
         raise ValueError("experiments require worlds and seeds")
-    if len(config["seeds"]) < 4:
+    if not config.get("pilot") and len(config["seeds"]) < 4:
         raise ValueError("experiments require at least four seeds per arm/world")
     names = [str(arm.get("name") or "") for arm in config["arms"]]
     if not all(names) or len(set(names)) != 2:
@@ -863,8 +926,42 @@ def _resolve_sdk_root(config: dict[str, Any], arm: dict[str, Any]) -> Path:
     return value.resolve() if value.is_absolute() else (config_dir / value).resolve()
 
 
+def _resolve_runtime_opencode_config(config: dict[str, Any]) -> Path | None:
+    raw = str(config.get("runtime_opencode_config") or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("{env:") and raw.endswith("}"):
+        variable = raw[5:-1].strip()
+        if not variable:
+            raise ValueError("runtime_opencode_config has an empty env variable")
+        raw = str(os.environ.get(variable) or "").strip()
+        if not raw:
+            raise ValueError(
+                f"runtime_opencode_config requires environment variable {variable}"
+            )
+    config_dir = Path(str(config.get("_config_dir") or Path.cwd()))
+    path = Path(raw).expanduser()
+    resolved = path.resolve() if path.is_absolute() else (config_dir / path).resolve()
+    if not resolved.is_file():
+        raise FileNotFoundError(f"OpenCode runtime config is missing: {resolved}")
+    return resolved
+
+
+def _set_provider_base_url(config_path: Path, *, provider: str, base_url: str) -> None:
+    config = load_json(config_path)
+    provider_config = (config.get("provider") or {}).get(provider)
+    if not isinstance(provider_config, dict):
+        raise ValueError(f"provider {provider!r} is not configured")
+    options = provider_config.setdefault("options", {})
+    if not isinstance(options, dict):
+        raise ValueError(f"provider {provider!r} options must be an object")
+    options["baseURL"] = base_url.rstrip("/")
+    atomic_json(config_path, config)
+
+
 def _runtime_pins(config_path: Path, config: dict[str, Any]) -> dict[str, Any]:
     runtime = {**config, "_config_dir": str(config_path.parent)}
+    runtime_opencode_config = _resolve_runtime_opencode_config(runtime)
     worlds = []
     for item in config["worlds"]:
         world_dir = _from_config(config_path, item["world_dir"])
@@ -891,7 +988,18 @@ def _runtime_pins(config_path: Path, config: dict[str, Any]) -> dict[str, Any]:
         }
         for arm in config["arms"]
     ]
-    return {"worlds": worlds, "arms": arms}
+    return {
+        "worlds": worlds,
+        "arms": arms,
+        "runtime_opencode_config": (
+            {
+                "path": str(runtime_opencode_config),
+                "sha256": sha256_file(runtime_opencode_config),
+            }
+            if runtime_opencode_config is not None
+            else None
+        ),
+    }
 
 
 def _verify_runtime_pins(
@@ -901,6 +1009,7 @@ def _verify_runtime_pins(
     sdk_root: Path,
     world_dir: Path,
     sealed_dir: Path,
+    runtime_opencode_config: Path | None,
 ) -> None:
     pins = dict(config.get("_runtime_pins") or {})
     arm_pin = next(
@@ -928,6 +1037,16 @@ def _verify_runtime_pins(
         "development_sha256"
     ) or world_pin.get("holdout_commitment") != dataset.get("holdout_commitment"):
         raise ValueError("benchmark data commitments changed after registration")
+    config_pin = pins.get("runtime_opencode_config")
+    if runtime_opencode_config is None:
+        if config_pin is not None:
+            raise ValueError("OpenCode runtime config changed after registration")
+    elif (
+        not isinstance(config_pin, dict)
+        or config_pin.get("path") != str(runtime_opencode_config)
+        or config_pin.get("sha256") != sha256_file(runtime_opencode_config)
+    ):
+        raise ValueError("OpenCode runtime config changed after registration")
 
 
 def _overlay_bench_package(root: Path) -> None:

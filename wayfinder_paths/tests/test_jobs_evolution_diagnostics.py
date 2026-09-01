@@ -11,6 +11,7 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
     build_postmortem,
     participation_adjusted_score,
     resolve_json_pointer,
+    valid_evidence_pointers,
 )
 
 
@@ -112,6 +113,9 @@ def test_diagnostic_pack_is_bounded_and_citations_are_exact(tmp_path) -> None:
 
     assert len(json.dumps(pack).encode()) <= DIAGNOSTIC_PACK_MAX_BYTES
     assert resolve_json_pointer(pack, "/baseline/reason") == "no runnable fixture"
+    pointers = valid_evidence_pointers(pack)
+    assert "/baseline/reason" in pointers
+    assert "/research_context/validated_positives" not in pointers
     with pytest.raises(ValueError, match="does not exist"):
         resolve_json_pointer(pack, "/baseline/invented")
 

@@ -16,6 +16,7 @@ def aggregate_experiment(
     output_dir: Path | None = None,
     confidence: float = 0.90,
     max_cost_ratio: float = 1.25,
+    pilot: bool = False,
 ) -> dict[str, Any]:
     if len(arm_order) != 2:
         raise ValueError("campaign A/B aggregation requires exactly two arms")
@@ -76,6 +77,8 @@ def aggregate_experiment(
         decision = "b_wins"
     else:
         decision = "no_significant_difference"
+    if pilot and not decision.startswith("invalid_"):
+        decision = "pilot_directional_only"
     report = {
         "schema_version": "1.0",
         "arms": arm_order,
@@ -84,10 +87,18 @@ def aggregate_experiment(
             "confidence": confidence,
             "cost_ratio_max": max_cost_ratio,
             "decision": (
-                "winner only when the paired interval excludes zero and token "
-                "cost ratio is within the pre-registered bound"
+                (
+                    "pilot reports direction and process metrics only; it cannot "
+                    "declare a winner"
+                )
+                if pilot
+                else (
+                    "winner only when the paired interval excludes zero and token "
+                    "cost ratio is within the pre-registered bound"
+                )
             ),
         },
+        "pilot": pilot,
         "primary": {
             "pairs": len(paired),
             "estimate": round(estimate, 8),
@@ -166,16 +177,43 @@ def _arm_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "process": {
             key: sum(int((row.get("process") or {}).get(key) or 0) for row in rows)
-            for key in ("fact_citations", "wildcards_used", "postmortems_consumed")
+            for key in (
+                "fact_citations",
+                "wildcards_used",
+                "postmortems_consumed",
+                "behavior_changed_attempts",
+                "behavior_unchanged_attempts",
+            )
         },
         "tokens_total": tokens,
         "tokens_per_staged_candidate": round(tokens / staged, 2) if staged else None,
         "tool_calls": sum(
             int((row.get("cost") or {}).get("tool_calls") or 0) for row in rows
         ),
+        "tool_output_bytes": sum(
+            int((row.get("cost") or {}).get("tool_output_bytes") or 0) for row in rows
+        ),
         "wall_seconds": round(
             sum(
                 float((row.get("cost") or {}).get("wall_seconds") or 0) for row in rows
+            ),
+            3,
+        ),
+        "model_seconds": round(
+            sum(
+                float((row.get("cost") or {}).get("model_seconds") or 0) for row in rows
+            ),
+            3,
+        ),
+        "tool_seconds": round(
+            sum(
+                float((row.get("cost") or {}).get("tool_seconds") or 0) for row in rows
+            ),
+            3,
+        ),
+        "other_seconds": round(
+            sum(
+                float((row.get("cost") or {}).get("other_seconds") or 0) for row in rows
             ),
             3,
         ),

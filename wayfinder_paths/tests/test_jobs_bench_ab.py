@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import pytest
 import yaml
 
 from wayfinder_paths.jobs.bench.aggregate import aggregate_experiment
+from wayfinder_paths.jobs.bench.env import sandbox_relative
 from wayfinder_paths.jobs.bench.forward_replay import race_bundles, replay_probation
 from wayfinder_paths.jobs.bench.identity import (
     compare_identities,
@@ -17,11 +19,16 @@ from wayfinder_paths.jobs.bench.identity import (
 )
 from wayfinder_paths.jobs.bench.mcp_server import core_jobs as bench_core_jobs
 from wayfinder_paths.jobs.bench.runner import (
+    _arm_env,
     _assert_bench_root,
     _install_job,
+    _resolve_runtime_opencode_config,
+    _set_provider_base_url,
     _validate_config,
 )
 from wayfinder_paths.jobs.bench.world import load_world, prepare_world
+from wayfinder_paths.jobs.benchmarks.agent_adapter import install_agent_workspace
+from wayfinder_paths.jobs.evolution_campaign import _campaign_now
 from wayfinder_paths.jobs.execution import ExecutionSpec
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import WayfinderJob
@@ -239,6 +246,32 @@ def test_world_and_tool_isolation_fail_closed(tmp_path: Path) -> None:
         _assert_bench_root(tmp_path / ".wayfinder/jobs/a-bench")
 
 
+def test_benchmark_design_validation_is_inline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict = {}
+
+    async def fake_core_jobs(action: str, **kwargs: object) -> dict:
+        seen.update({"action": action, **kwargs})
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.bench.mcp_server._production_core_jobs",
+        fake_core_jobs,
+    )
+
+    asyncio.run(
+        bench_core_jobs(
+            "evolution_design",
+            job_id="bench-only",
+            campaign_design={"hypotheses": [], "slots": []},
+            background=True,
+        )
+    )
+
+    assert seen["background"] is False
+
+
 def test_compressed_replay_uses_real_burn_in_and_day14_endpoint(
     tmp_path: Path,
 ) -> None:
@@ -291,8 +324,35 @@ def test_campaign_prompt_formatter_is_the_production_formatter() -> None:
     rendered = build_evolution_stage_prompt("majors-5m-lab", campaign)
 
     assert rendered["agent_name"] == "wayfinder-evolution-designer"
+    assert rendered["artifact_key"] == "design"
+    assert rendered["work_order"]["lane"] == "evolution_design"
     assert "submit the design" in rendered["prompt"]
     assert '"candidate_id": "c01"' in rendered["prompt"]
+
+
+def test_campaign_repair_prompt_is_a_compact_artifact_work_order() -> None:
+    campaign = {
+        "campaign_id": "campaign-1",
+        "session_stage": "candidate-01",
+        "artifact_key": "candidate-01-attempt-02",
+        "next_action": "repair and evaluate candidate one",
+        "candidate_id": "c01",
+        "postmortem_path": ".wayfinder/jobs/demo/attempts/c01/a01/postmortem.json",
+        "work_inputs": [".wayfinder/jobs/demo/candidates/c01/candidate.json"],
+        "editable_paths": [".wayfinder/jobs/demo/candidates/c01"],
+        "candidate_outcomes": [{"candidate_id": "c01", "attempt_count": 1}],
+        "cases": [{"blob": "must-not-be-repeated"}],
+    }
+
+    rendered = build_evolution_stage_prompt("majors-5m-lab", campaign)
+
+    assert rendered["artifact_key"] == "candidate-01-attempt-02"
+    assert rendered["work_order"]["lane"] == "evolution_repair"
+    assert rendered["work_order"]["editable_paths"] == [
+        ".wayfinder/jobs/demo/candidates/c01"
+    ]
+    assert "postmortem.json" in rendered["prompt"]
+    assert "must-not-be-repeated" not in rendered["prompt"]
 
 
 def test_identity_allows_only_pre_registered_model_difference() -> None:
@@ -344,6 +404,105 @@ def test_flash_max_is_declared_as_model_plus_variant(tmp_path: Path) -> None:
     assert "deepseek-v4-flash" in loaded["provider"]["wayfinder"]["models"]
 
 
+def test_shell_runtime_config_is_copied_and_dev_endpoint_is_explicit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "sdk"
+    (repo / ".opencode/agents").mkdir(parents=True)
+    (repo / ".opencode/opencode.json").write_text(
+        json.dumps({"provider": {"wayfinder": {"models": {}}}}), encoding="utf-8"
+    )
+    (repo / "wayfinder_paths").mkdir()
+    runtime = tmp_path / "shell-opencode.json"
+    runtime.write_text(
+        json.dumps(
+            {
+                "provider": {
+                    "wayfinder": {
+                        "options": {"baseURL": "https://llm.wayfinder.ai/v1"},
+                        "models": {
+                            "deepseek-v4-pro": {},
+                            "deepseek-v4-flash": {},
+                        },
+                    }
+                },
+                "mcp": {"wayfinder": {"enabled": False}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("BENCH_RUNTIME_CONFIG", str(runtime))
+    resolved = _resolve_runtime_opencode_config(
+        {
+            "_config_dir": str(tmp_path),
+            "runtime_opencode_config": "{env:BENCH_RUNTIME_CONFIG}",
+        }
+    )
+    sandbox = tmp_path / "sandbox"
+
+    install_agent_workspace(
+        sandbox=sandbox,
+        repo_root=repo,
+        runtime_config=resolved,
+        mcp_url="http://127.0.0.1:4321/mcp",
+    )
+    installed = sandbox / ".opencode/opencode.json"
+    _set_provider_base_url(
+        installed,
+        provider="wayfinder",
+        base_url="https://llm-dev.wayfinder.ai/v1/",
+    )
+    loaded = json.loads(installed.read_text(encoding="utf-8"))
+
+    assert set(loaded["provider"]["wayfinder"]["models"]) == {
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+    }
+    assert (
+        loaded["provider"]["wayfinder"]["options"]["baseURL"]
+        == "https://llm-dev.wayfinder.ai/v1"
+    )
+    assert loaded["mcp"]["wayfinder"]["url"] == "http://127.0.0.1:4321/mcp"
+    project_root = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=sandbox,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert Path(project_root).resolve() == sandbox.resolve()
+
+
+def test_arm_environment_isolates_user_home_and_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    virtual_now = datetime(2026, 8, 10, 15, 25, tzinfo=UTC)
+    env = _arm_env(tmp_path / "arm", virtual_now=virtual_now)
+
+    assert env["HOME"] == str(tmp_path / "arm/.bench-home")
+    assert Path(env["HOME"]).is_dir()
+    assert env["WAYFINDER_BENCHMARK_NOW"] == virtual_now.isoformat()
+    monkeypatch.setenv("WAYFINDER_BENCHMARK", "1")
+    monkeypatch.setenv("WAYFINDER_BENCHMARK_NOW", env["WAYFINDER_BENCHMARK_NOW"])
+    assert _campaign_now() == virtual_now
+
+
+def test_sandbox_paths_are_rendered_relative_for_production_permissions(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "arm"
+    absolute = root / ".wayfinder/jobs/bench/research/diagnostic_pack.json"
+
+    rendered = sandbox_relative(
+        {"next_action": f"Read `{absolute}`", "paths": [str(absolute)]}, root=root
+    )
+
+    assert rendered == {
+        "next_action": "Read `.wayfinder/jobs/bench/research/diagnostic_pack.json`",
+        "paths": [".wayfinder/jobs/bench/research/diagnostic_pack.json"],
+    }
+
+
 def test_budget_parity_is_explicit_and_four_seeds_are_required_by_config() -> None:
     config = {
         "schema_version": "1.0",
@@ -373,3 +532,34 @@ def test_budget_parity_is_explicit_and_four_seeds_are_required_by_config() -> No
     assert report["primary"]["pairs"] == 4
     assert report["cost_parity"]["matched"] is True
     assert report["decision"] == "a_wins"
+
+
+def test_single_seed_pilot_is_directional_only() -> None:
+    config = {
+        "schema_version": "1.0",
+        "pilot": True,
+        "arms": [{"name": "a"}, {"name": "b"}],
+        "worlds": [{"world_dir": "w", "sealed_dir": "s"}],
+        "seeds": [1],
+    }
+    _validate_config(config)
+    rows = [
+        {
+            "arm": arm,
+            "world_id": "world",
+            "seed": 1,
+            "holdout": {
+                "paired_daily_utility_delta": {"estimate": 0.02 if arm == "a" else 0.0}
+            },
+            "cost": {"tokens_in": 100, "tokens_out": 10},
+            "funnel": {},
+            "forward": {},
+        }
+        for arm in ("a", "b")
+    ]
+
+    report = aggregate_experiment(rows, arm_order=["a", "b"], pilot=True)
+
+    assert report["primary"]["pairs"] == 1
+    assert report["pilot"] is True
+    assert report["decision"] == "pilot_directional_only"
