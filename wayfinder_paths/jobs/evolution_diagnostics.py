@@ -288,7 +288,7 @@ def attempt_made_progress(postmortem: Mapping[str, Any]) -> bool:
 
 def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
     behavior = postmortem.get("behavior_diff") or {}
-    return {
+    compact = {
         "viable": bool(postmortem.get("viable")),
         "primary_failure": postmortem.get("primary_failure"),
         "failure_codes": list(postmortem.get("failure_codes") or [])[:6],
@@ -307,6 +307,12 @@ def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
             if behavior.get(key) is not None
         },
     }
+    repair_error = str(
+        (postmortem.get("repair_context") or {}).get("error") or ""
+    ).strip()
+    if repair_error:
+        compact["repair_context"] = {"error": repair_error[:500]}
+    return compact
 
 
 def participation_adjusted_score(

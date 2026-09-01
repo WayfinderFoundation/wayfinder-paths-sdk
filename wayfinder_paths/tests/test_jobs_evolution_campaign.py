@@ -415,6 +415,40 @@ def test_investigative_attempts_repair_failures_but_close_viable_ideas(
     assert state["counts"]["repairs"] == 2
 
 
+def test_invalid_investigative_attempt_preserves_bounded_repair_cause(
+    tmp_path,
+) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    submit_campaign_design(store, job_id, campaign_design=_campaign_design())
+    prepare_candidate(store, job_id, now=started + timedelta(minutes=1))
+    state = campaign_status(store, job_id)
+    candidate = state["candidates"][0]
+
+    _commit_designed_attempt(
+        store,
+        job_id,
+        state=state,
+        candidate=candidate,
+        outcome={
+            "status": "invalid",
+            "evidence": {
+                "error": "window-invariance probe consumed more than warmup_bars"
+            },
+        },
+    )
+
+    repair_context = candidate["attempts"][0]["postmortem"]["repair_context"]
+    assert "warmup_bars" in repair_context["error"]
+    persisted = store.read_json(
+        job_id,
+        candidate["attempts"][0]["postmortem_path"],
+        default={},
+    )
+    assert persisted["repair_context"] == repair_context
+
+
 def test_sensor_research_seed_is_frozen_then_consumed_as_real_parent(
     tmp_path, monkeypatch
 ) -> None:

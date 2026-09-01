@@ -1476,12 +1476,22 @@ def _commit_designed_attempt(
         }
     postmortem = outcome.pop("postmortem", None)
     if not isinstance(postmortem, dict):
+        evidence = outcome.get("evidence")
+        if isinstance(evidence, dict):
+            error = str(evidence.get("error") or "").strip()
+        else:
+            error = str(evidence or "").strip()
         postmortem = {
             "viable": False,
             "primary_failure": "invalid_execution",
             "failure_codes": ["invalid_execution"],
             "behavior_diff": {"material_change": False},
         }
+        if error:
+            # The repair worker reads only this bounded artifact. Preserve the
+            # deterministic validator cause so it does not have to rediscover
+            # the failure through broad reads or forbidden tool discovery.
+            postmortem["repair_context"] = {"error": error[:500]}
     receipt_relative = f"{attempt_relative}/receipt.json"
     postmortem_relative = f"{attempt_relative}/postmortem.json"
     atomic_write_json(store.job_dir(job_id) / receipt_relative, receipt)

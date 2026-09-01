@@ -9,6 +9,7 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
     attempt_made_progress,
     build_diagnostic_pack,
     build_postmortem,
+    compact_postmortem,
     participation_adjusted_score,
     resolve_json_pointer,
     valid_evidence_pointers,
@@ -83,6 +84,21 @@ def test_noop_and_negative_attempts_are_machine_legible_and_compound() -> None:
     second = build_postmortem(improved, baseline, previous=baseline, min_trades=1)
     assert second["viable"] is False
     assert attempt_made_progress(second) is True
+
+
+def test_compact_postmortem_preserves_bounded_repair_cause() -> None:
+    report = compact_postmortem(
+        {
+            "viable": False,
+            "primary_failure": "invalid_execution",
+            "failure_codes": ["invalid_execution"],
+            "behavior_diff": {"material_change": False},
+            "repair_context": {"error": "window invariant failed " + "x" * 900},
+        }
+    )
+
+    assert report["repair_context"]["error"].startswith("window invariant failed")
+    assert len(report["repair_context"]["error"]) == 500
 
 
 def test_diagnostic_pack_is_bounded_and_citations_are_exact(tmp_path) -> None:
