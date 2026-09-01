@@ -733,6 +733,7 @@ def _audit_session_isolation(
                     for marker in (
                         "prevents you from using this specific tool call",
                         "permission denied",
+                        "url must start with http:// or https://",
                     )
                 )
                 if any(

@@ -291,11 +291,17 @@ def test_session_isolation_separates_denied_attempts_from_breaches(
     connection = sqlite3.connect(database)
     connection.execute("CREATE TABLE part (session_id TEXT, data TEXT)")
 
-    def tool_part(*, path: Path, status: str, error: str | None = None) -> str:
+    def tool_part(
+        *,
+        path: Path,
+        status: str,
+        error: str | None = None,
+        tool: str = "read",
+    ) -> str:
         return json.dumps(
             {
                 "type": "tool",
-                "tool": "read",
+                "tool": tool,
                 "state": {
                     "status": status,
                     "input": {"filePath": str(path)},
@@ -324,6 +330,15 @@ def test_session_isolation_separates_denied_attempts_from_breaches(
                 "session-breach",
                 tool_part(path=escaped_path, status="completed"),
             ),
+            (
+                "session-invalid-url",
+                tool_part(
+                    path=escaped_path,
+                    status="error",
+                    error="URL must start with http:// or https://",
+                    tool="webfetch",
+                ),
+            ),
         ],
     )
     connection.commit()
@@ -345,6 +360,23 @@ def test_session_isolation_separates_denied_attempts_from_breaches(
             "session_id": "session-denied",
             "tool": "read",
             "path": str(denied_path),
+        }
+    ]
+
+    invalid_url_result = _audit_session_isolation(
+        ["session-invalid-url"],
+        session_db=database,
+        sandbox=sandbox,
+        protected_roots=[],
+        missing_transcripts=[],
+    )
+    assert invalid_url_result["passed"] is True
+    assert invalid_url_result["breaches"] == []
+    assert invalid_url_result["denied_attempts"] == [
+        {
+            "type": "denied_network_or_shell_tool",
+            "session_id": "session-invalid-url",
+            "tool": "webfetch",
         }
     ]
 
