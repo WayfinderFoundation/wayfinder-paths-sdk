@@ -156,7 +156,9 @@ def test_regime_specialist_gate_uses_target_edge_and_bounds_outside_loss() -> No
             "target_regimes": ["up_highvol"],
             "objective": {
                 "candidate": {
-                    "target": {"trade_count": 20, "day_count": 8},
+                    # A transition strategy can enter before the target cell;
+                    # whole-strategy activity, not in-cell entries, is binding.
+                    "target": {"trade_count": 0, "day_count": 8},
                     "target_utility": 0.04,
                     "outside": {"loss_pct": 0.01},
                 }

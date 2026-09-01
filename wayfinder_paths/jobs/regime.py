@@ -1,21 +1,25 @@
-"""Causal portfolio-regime contract shared by every execution path.
+"""Causal portfolio-regime contract shared by every evaluation path.
 
-Strategies declare the cells in which they may add risk through
-``execution_params.enabled_regimes``.  The engine owns the label and the entry
-gate so a candidate cannot make its backtest conditional while trading a
-different contract in paper or live execution.
+Strategies declare the cells where their edge should accrue through
+``execution_params.target_regimes``.  The engine owns the label, while the
+economic gate and probation own the attribution.  The declaration deliberately
+does not block entries: transition and mean-reversion strategies often enter
+before the target cell begins, and their marked returns are still charged to
+the cell in which those returns occur.
 """
 
 from __future__ import annotations
 
 import math
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
-from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
-from wayfinder_paths.jobs.indicators import REGIME_LABELS, atr
+from wayfinder_paths.jobs.indicators import REGIME_LABELS, classify_regimes
+
+if TYPE_CHECKING:
+    from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
 
 PORTFOLIO_REGIME_COLUMN = "__wf_portfolio_regime"
 PORTFOLIO_REGIME_CLASSIFIER = "portfolio_majority_v1"
@@ -27,22 +31,22 @@ REGIME_VOL_BASELINE_BARS = 400
 REGIME_FEATURE_WARMUP_BARS = 450
 
 
-def enabled_regimes(params: Mapping[str, Any]) -> tuple[str, ...]:
+def declared_regimes(params: Mapping[str, Any]) -> tuple[str, ...]:
     """Validated regime declaration; an absent declaration means legacy mode."""
-    raw = params.get("enabled_regimes")
+    raw = params.get("target_regimes")
     if raw is None or raw == []:
         return ()
     if isinstance(raw, str) or not isinstance(raw, Sequence):
-        raise ValueError("execution_params.enabled_regimes must be a list")
+        raise ValueError("execution_params.target_regimes must be a list")
     values = tuple(dict.fromkeys(str(value).strip() for value in raw))
     invalid = sorted(set(values) - set(REGIME_LABELS))
     if invalid:
         raise ValueError(
-            "execution_params.enabled_regimes contains unknown cells: "
+            "execution_params.target_regimes contains unknown cells: "
             + ", ".join(invalid)
         )
     if not 1 <= len(values) <= 2:
-        raise ValueError("enabled_regimes must declare one or two regime cells")
+        raise ValueError("target_regimes must declare one or two regime cells")
     return values
 
 
@@ -94,21 +98,7 @@ def classify_portfolio_regimes(
         )
         if ordered.empty:
             continue
-        close = pd.to_numeric(ordered["close"], errors="coerce")
-        trend_up = close > close.rolling(50, min_periods=50).mean()
-        volatility = atr(ordered, 14) / close
-        threshold = (
-            volatility.rolling(
-                vol_baseline_bars, min_periods=vol_baseline_bars
-            ).median()
-        ).shift(1)
-        valid = trend_up.notna() & volatility.notna() & threshold.notna()
-        labels = pd.Series(None, index=ordered.index, dtype=object)
-        high = volatility > threshold
-        labels.loc[valid & trend_up & high] = "up_highvol"
-        labels.loc[valid & trend_up & ~high] = "up_lowvol"
-        labels.loc[valid & ~trend_up & high] = "down_highvol"
-        labels.loc[valid & ~trend_up & ~high] = "down_lowvol"
+        labels = classify_regimes(ordered, vol_baseline_bars=vol_baseline_bars)
         per_symbol.append(
             pd.DataFrame(
                 {
@@ -147,7 +137,9 @@ def add_portfolio_regime_feature(
     view: CompletedBarsView, params: Mapping[str, Any]
 ) -> CompletedBarsView:
     """Attach the engine-owned label only for an explicitly specialized job."""
-    if not enabled_regimes(params):
+    from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+
+    if not declared_regimes(params):
         return view
     bars = view.to_frame()
     labels = classify_portfolio_regimes(
@@ -257,13 +249,13 @@ def opposite_regime(regime: str) -> str:
 def regime_metadata(
     view: CompletedBarsView, params: Mapping[str, Any]
 ) -> dict[str, Any]:
-    declared = enabled_regimes(params)
+    declared = declared_regimes(params)
     if not declared:
         return {"enabled": False}
     return {
         "enabled": True,
         "classifier": PORTFOLIO_REGIME_CLASSIFIER,
         "current": current_portfolio_regime(view),
-        "allowed": list(declared),
+        "target": list(declared),
         "universe": list(regime_universe(params, view.symbols)),
     }

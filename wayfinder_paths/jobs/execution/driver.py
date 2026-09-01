@@ -62,7 +62,7 @@ from wayfinder_paths.jobs.models import (
 from wayfinder_paths.jobs.regime import (
     REGIME_FEATURE_WARMUP_BARS,
     add_portfolio_regime_feature,
-    enabled_regimes,
+    declared_regimes,
 )
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.triggers import fire_triggers
@@ -352,7 +352,7 @@ async def tick_job(
     # slice, so decide() sees the same bounded history in both.
     strategy_lookback_bars = resolve_compute_window(params, strategy).live_depth
     feature_warmup = max(
-        REGIME_FEATURE_WARMUP_BARS if enabled_regimes(params) else 0,
+        REGIME_FEATURE_WARMUP_BARS if declared_regimes(params) else 0,
         (
             defense_feature_warmup_bars(bar_interval_seconds(bar_interval))
             if defense_policy(params)["enabled"]

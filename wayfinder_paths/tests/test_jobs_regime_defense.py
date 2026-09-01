@@ -72,7 +72,7 @@ def test_portfolio_regime_is_causal_and_engine_owned() -> None:
     assert "__wf_portfolio_regime" not in legacy.to_frame().columns
     specialized = add_portfolio_regime_feature(
         view,
-        {"symbols": list(SYMBOLS), "enabled_regimes": ["up_lowvol"]},
+        {"symbols": list(SYMBOLS), "target_regimes": ["up_lowvol"]},
     )
     assert "__wf_portfolio_regime" in specialized.to_frame().columns
 

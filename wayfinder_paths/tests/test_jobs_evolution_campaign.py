@@ -369,7 +369,7 @@ def test_regime_design_requires_counter_cell_and_stamps_candidate(tmp_path) -> N
     )
 
     assert candidate["target_regimes"] == [regime["counter_regime"]]
-    assert job_data["execution_params"]["enabled_regimes"] == [regime["counter_regime"]]
+    assert job_data["execution_params"]["target_regimes"] == [regime["counter_regime"]]
 
 
 def test_investigative_attempts_repair_failures_but_close_viable_ideas(

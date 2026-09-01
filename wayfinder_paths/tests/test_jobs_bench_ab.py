@@ -15,7 +15,11 @@ import yaml
 
 from wayfinder_paths.jobs.bench.aggregate import aggregate_experiment
 from wayfinder_paths.jobs.bench.env import sandbox_relative
-from wayfinder_paths.jobs.bench.forward_replay import race_bundles, replay_probation
+from wayfinder_paths.jobs.bench.forward_replay import (
+    _behavior_distance,
+    race_bundles,
+    replay_probation,
+)
 from wayfinder_paths.jobs.bench.identity import (
     compare_identities,
     ensure_model_declared,
@@ -206,9 +210,15 @@ def test_world_truncates_features_and_installs_only_development_prefix(
 
 def test_race_is_deterministic_and_does_not_mutate_bundles(tmp_path: Path) -> None:
     _, _, world_dir, sealed_dir, _ = _world(tmp_path)
-    a = world_dir / "incumbent"
+    a = tmp_path / "bundle-a"
     b = tmp_path / "bundle-b"
-    shutil.copytree(a, b)
+    shutil.copytree(world_dir / "incumbent", a)
+    shutil.copytree(world_dir / "incumbent", b)
+    a_job = yaml.safe_load((a / "job.yaml").read_text(encoding="utf-8"))
+    a_job["execution_params"]["target_regimes"] = ["up_lowvol"]
+    (a / "job.yaml").write_text(
+        yaml.safe_dump(a_job, sort_keys=False), encoding="utf-8"
+    )
     revisions = (compute_workspace_revision(a), compute_workspace_revision(b))
 
     output = tmp_path / "race"
@@ -222,6 +232,7 @@ def test_race_is_deterministic_and_does_not_mutate_bundles(tmp_path: Path) -> No
     second = race_bundles(a, b, world_dir=world_dir, sealed_dir=sealed_dir)
 
     assert first["verdict"] == "invalid"
+    assert first["a"]["stats"]["regime"]["target_regimes"] == ["up_lowvol"]
     assert first["paired_daily_utility_delta"] == second["paired_daily_utility_delta"]
     assert revisions == (
         compute_workspace_revision(a),
@@ -230,6 +241,26 @@ def test_race_is_deterministic_and_does_not_mutate_bundles(tmp_path: Path) -> No
     assert (output / "results/a/trades.json").exists()
     assert (output / "results/b/equity.json").exists()
     assert (output / "results/compare.json").exists()
+
+
+def test_behavior_distance_detects_sizing_only_changes() -> None:
+    base = {
+        "timestamp": "2026-08-19T20:00:00+00:00",
+        "symbol": "HYPE",
+        "side": "sell",
+    }
+
+    distance = _behavior_distance(
+        [{**base, "filled_size": 0.25}],
+        [{**base, "filled_size": 1.0}],
+    )
+
+    assert distance == {
+        "behavior_changed": True,
+        "changed_decisions": 0,
+        "changed_fill_records": 2,
+        "jaccard_distance": 1.0,
+    }
 
 
 def test_bench_job_is_forced_to_paper_without_wallet(tmp_path: Path) -> None:

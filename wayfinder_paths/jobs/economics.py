@@ -36,7 +36,7 @@ from wayfinder_paths.jobs.regime import (
     PORTFOLIO_REGIME_CLASSIFIER,
     REGIME_FEATURE_WARMUP_BARS,
     classify_portfolio_regimes,
-    enabled_regimes,
+    declared_regimes,
     partition_regime_returns,
     regime_universe,
     utc_timestamp,
@@ -272,7 +272,7 @@ def paired_fold_evaluation(
     slice; return the paired evidence the economic gate decides on."""
     evaluation = constitution["evaluation"]
     weights = constitution["objective"]["weights"]
-    target_regimes = enabled_regimes(candidate_params)
+    target_regimes = declared_regimes(candidate_params)
     effective_warmup = max(
         int(warmup_bars), REGIME_FEATURE_WARMUP_BARS if target_regimes else 0
     )
@@ -572,12 +572,15 @@ def evaluate_economic_readiness(
             f"OOS tail loss {candidate['tail_loss']:.3f} exceeds ceiling "
             f"{hard['max_tail_loss']}"
         )
-    if int(decision_candidate.get("trade_count") or 0) < int(
+    # Participation is a whole-strategy requirement.  A transition strategy
+    # may enter before its target cell and realize marked gains after the flip;
+    # requiring the entry itself to occur in-target selects inert gate stacks.
+    if int(candidate.get("trade_count") or 0) < int(
         promotion["min_oos_trades"]
     ):
         reasons.append(
-            f"OOS {'target-regime ' if specialized else ''}trade count "
-            f"{decision_candidate.get('trade_count') or 0} below minimum "
+            f"OOS whole-strategy trade count "
+            f"{candidate.get('trade_count') or 0} below minimum "
             f"{promotion['min_oos_trades']}"
         )
     if specialized:

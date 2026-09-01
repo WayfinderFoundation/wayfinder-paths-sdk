@@ -27,7 +27,10 @@ from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.improver.spec import ImproverSpec, revision_stamp
 from wayfinder_paths.jobs.models import utc_now_iso
-from wayfinder_paths.jobs.regime import PORTFOLIO_REGIME_CLASSIFIER, enabled_regimes
+from wayfinder_paths.jobs.regime import (
+    PORTFOLIO_REGIME_CLASSIFIER,
+    declared_regimes,
+)
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.runner.monitor_state import atomic_write_json
 
@@ -649,7 +652,7 @@ def stage_evolution_probation(
         raise ValueError("probation candidate must be inside its job root")
     if compute_workspace_revision(source_root) != safe_revision:
         raise ValueError("probation candidate revision does not match its bundle")
-    target_regimes = enabled_regimes(
+    target_regimes = declared_regimes(
         dict(_load_job_yaml(source_root).get("execution_params") or {})
     )
     outside_loss_budget = float(

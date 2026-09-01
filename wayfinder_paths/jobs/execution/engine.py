@@ -46,8 +46,7 @@ from wayfinder_paths.jobs.execution.venues import (
 )
 from wayfinder_paths.jobs.regime import (
     current_portfolio_regime,
-    enabled_regimes,
-    regime_universe,
+    declared_regimes,
 )
 
 OPEN_SIDES_SHORT = frozenset({"short", "sell"})
@@ -341,16 +340,10 @@ async def _run_tick_inner(
     ood_entry_scale = (
         current_ood_entry_scale(view) if defense_config["enabled"] else 1.0
     )
-    declared_regimes = enabled_regimes(params)
-    current_regime = current_portfolio_regime(view) if declared_regimes else None
-    regime_blocked_symbols = (
-        set(regime_universe(params, view.symbols))
-        if declared_regimes and current_regime not in declared_regimes
-        else set()
-    )
+    target_regimes = declared_regimes(params)
+    current_regime = current_portfolio_regime(view) if target_regimes else None
     effective_blocked_symbols = (
         set(blocked_entry_symbols or set())
-        | regime_blocked_symbols
         | defense_blocked_symbols
     )
     if defense_config["enabled"]:
@@ -358,22 +351,12 @@ async def _run_tick_inner(
             "ood_entry_scale": ood_entry_scale,
             "stand_down_symbols": sorted(defense_blocked_symbols),
         }
-    if declared_regimes:
+    if target_regimes:
         result.gates["portfolio_regime"] = {
             "current": current_regime,
-            "allowed": list(declared_regimes),
-            "entry_open": not regime_blocked_symbols,
+            "target": list(target_regimes),
+            "in_target_regime": current_regime in target_regimes,
         }
-    if regime_blocked_symbols:
-        result.guard_events.append(
-            {
-                "kind": "portfolio_regime_entry_gate_closed",
-                "current_regime": current_regime,
-                "allowed_regimes": list(declared_regimes),
-                "symbols": sorted(regime_blocked_symbols),
-                "timestamp": bar_iso,
-            }
-        )
     state.ledger.on_bar_tick(bar_ts)
 
     await _settle_resting_orders(
@@ -577,15 +560,11 @@ async def _run_tick_inner(
             is_risk_reducing_intent(intent)
         ):
             reason = (
-                f"portfolio regime {current_regime!r} is outside enabled cells"
-                if intent.symbol in regime_blocked_symbols
+                f"loss-streak stand-down active for {intent.symbol}"
+                if intent.symbol in defense_blocked_symbols
                 else (
-                    f"loss-streak stand-down active for {intent.symbol}"
-                    if intent.symbol in defense_blocked_symbols
-                    else (
-                        f"new entries for {intent.symbol} are blocked by a "
-                        "durable symbol risk override"
-                    )
+                    f"new entries for {intent.symbol} are blocked by a "
+                    "durable symbol risk override"
                 )
             )
             result.guard_events.append(
@@ -930,7 +909,9 @@ def _record_fill(
         row = fill.to_dict()
         row["realized_pnl_delta"] = state.ledger.realized_pnl - realized_before
         result.trade_rows.append(row)
-        if fill.reduce_only:
+        if fill.reduce_only or (
+            intent is not None and is_risk_reducing_intent(intent)
+        ):
             event = record_stop_loss_result(
                 state.defense_state,
                 symbol=fill.symbol,

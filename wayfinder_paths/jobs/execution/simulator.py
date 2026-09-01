@@ -58,7 +58,7 @@ from wayfinder_paths.jobs.execution.venues import (
 )
 from wayfinder_paths.jobs.regime import (
     add_portfolio_regime_feature,
-    enabled_regimes,
+    declared_regimes,
     partition_regime_returns,
     portfolio_regime_labels,
 )
@@ -579,7 +579,7 @@ def simulate_execution(
     stats["gate_diagnostics"] = summarize_gate_diagnostics(
         trace.runs, equity_curve, positions
     )
-    target_regimes = enabled_regimes(params_data)
+    target_regimes = declared_regimes(params_data)
     if target_regimes:
         regime_stats = partition_regime_returns(
             equity_curve,

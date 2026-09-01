@@ -215,7 +215,56 @@ async def test_symbol_block_and_risk_halt_preserve_semantic_close() -> None:
     assert not any(event["kind"] == "intent_rejected" for event in result.guard_events)
 
 
-async def test_regime_gate_blocks_entries_but_preserves_semantic_close() -> None:
+async def test_semantic_stop_without_reduce_only_arms_defense_stand_down() -> None:
+    class SemanticCloseBroker(FakeBroker):
+        async def place(
+            self, intent: OrderIntent, *, timestamp: str, price: float | None = None
+        ) -> FillEvent:
+            self.placed.append(intent)
+            return FillEvent(
+                status="filled",
+                venue=intent.venue,
+                symbol=intent.symbol,
+                side="sell_close",
+                filled_size=1.0,
+                avg_price=float(price or 1.0),
+                reduce_only=False,
+                raw={
+                    "intent_action": intent.action,
+                    "intent_metadata": intent.metadata,
+                },
+                timestamp=timestamp,
+            )
+
+    state = EngineState()
+    state.ledger.positions["SNX"] = PositionRecord(
+        symbol="SNX", side="long", size=1.0, avg_price=10.0
+    )
+    stop = OrderIntent(
+        action="STOP_LOSS",
+        venue="hyperliquid",
+        symbol="SNX",
+        side="short",
+        size=1.0,
+        reduce_only=False,
+    )
+
+    result = await _tick(
+        _strategy([stop]),
+        _view([10.0, 9.0]),
+        brokers={"hyperliquid": SemanticCloseBroker()},
+        state=state,
+        params={"defense_overlay": {"stop_loss_streak": 1}},
+    )
+
+    assert "SNX" in state.defense_state["stand_downs"]
+    assert any(
+        event["kind"] == "loss_streak_symbol_stand_down"
+        for event in result.guard_events
+    )
+
+
+async def test_regime_contract_reports_target_without_blocking_entries() -> None:
     broker = FakeBroker()
     state = EngineState()
     state.ledger.positions["SNX"] = PositionRecord(
@@ -245,16 +294,16 @@ async def test_regime_gate_blocks_entries_but_preserves_semantic_close() -> None
         CompletedBarsView(frame),
         brokers={"hyperliquid": broker},
         state=state,
-        params={"symbols": ["SNX"], "enabled_regimes": ["up_lowvol"]},
+        params={"symbols": ["SNX"], "target_regimes": ["up_lowvol"]},
     )
 
-    assert broker.placed == [close]
+    assert broker.placed == [entry, close]
     assert result.gates["portfolio_regime"] == {
         "current": "down_highvol",
-        "allowed": ["up_lowvol"],
-        "entry_open": False,
+        "target": ["up_lowvol"],
+        "in_target_regime": False,
     }
-    assert any(event["kind"] == "intent_rejected" for event in result.guard_events)
+    assert not any(event["kind"] == "intent_rejected" for event in result.guard_events)
 
 
 async def test_ood_overlay_scales_entries_but_preserves_semantic_close() -> None:

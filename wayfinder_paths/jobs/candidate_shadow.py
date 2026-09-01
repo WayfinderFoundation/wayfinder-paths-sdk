@@ -47,7 +47,7 @@ from wayfinder_paths.jobs.probation import (
 from wayfinder_paths.jobs.regime import (
     REGIME_FEATURE_WARMUP_BARS,
     add_portfolio_regime_feature,
-    enabled_regimes,
+    declared_regimes,
 )
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.runner.monitor_state import atomic_write_json
@@ -76,13 +76,12 @@ def candidate_shadow_lookback_bars(store: JobStore, job_id: str) -> int:
         if script is None or not script.exists():
             raise FileNotFoundError("candidate execution script missing")
         strategy = _load_strategy(script, params)
-        interval = (
-            (job_data.get("execution_spec") or {}).get("data_contract") or {}
-        ).get("bar_interval")
+        spec_data, _ = resolve_execution_spec(candidate_root, job_data)
+        interval = (spec_data.get("data_contract") or {}).get("bar_interval")
         required = max(
             required,
             resolve_compute_window(params, strategy).live_depth,
-            REGIME_FEATURE_WARMUP_BARS if enabled_regimes(params) else 0,
+            REGIME_FEATURE_WARMUP_BARS if declared_regimes(params) else 0,
             (
                 defense_feature_warmup_bars(bar_interval_seconds(interval))
                 if defense_policy(params)["enabled"]

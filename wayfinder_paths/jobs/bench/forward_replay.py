@@ -33,6 +33,13 @@ from wayfinder_paths.jobs.execution.validation import (
 from wayfinder_paths.jobs.execution.walk_forward import _test_window_stats
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.probation import load_probation, maybe_adjudicate_probation
+from wayfinder_paths.jobs.regime import (
+    classify_portfolio_regimes,
+    declared_regimes,
+    partition_regime_returns,
+    regime_universe,
+    utc_timestamp,
+)
 from wayfinder_paths.jobs.store import JobStore
 
 PARTICIPATION_FLOOR = 10
@@ -161,6 +168,24 @@ def evaluate_bundle(
         for trade in result.trades
         if _trade_timestamp(trade) > pd.Timestamp(cutoff)
     ]
+    target_regimes = declared_regimes(params)
+    if target_regimes:
+        classified = classify_portfolio_regimes(
+            dataset.bars.to_frame(),
+            universe=regime_universe(params, dataset.bars.symbols),
+        )
+        labels = {
+            utc_timestamp(stamp): str(label) for stamp, label in classified.items()
+        }
+        stats["regime"] = {
+            "target_regimes": list(target_regimes),
+            **partition_regime_returns(
+                _equity_window(result.equity_curve, cutoff=cutoff),
+                trades,
+                labels=labels,
+                target_regimes=target_regimes,
+            ),
+        }
     after = compute_workspace_revision(bundle)
     return {
         "revision_before": before,
@@ -285,6 +310,20 @@ def _daily_pnl(
     return daily
 
 
+def _equity_window(
+    equity_curve: list[dict[str, Any]], *, cutoff: datetime
+) -> list[dict[str, Any]]:
+    """Holdout equity plus its last development anchor for first-bar returns."""
+    cutoff_stamp = pd.Timestamp(cutoff)
+    before = [
+        row for row in equity_curve if pd.Timestamp(row["timestamp"]) <= cutoff_stamp
+    ]
+    after = [
+        row for row in equity_curve if pd.Timestamp(row["timestamp"]) > cutoff_stamp
+    ]
+    return [*(before[-1:] if before else []), *after]
+
+
 def _trade_timestamp(trade: dict[str, Any]) -> pd.Timestamp:
     return pd.Timestamp(trade.get("timestamp") or trade.get("filled_at"))
 
@@ -306,7 +345,9 @@ def _per_symbol_direction(trades: list[dict[str, Any]]) -> dict[str, Any]:
 def _behavior_distance(
     a: list[dict[str, Any]], b: list[dict[str, Any]]
 ) -> dict[str, Any]:
-    def signatures(rows: list[dict[str, Any]]) -> set[tuple[str, str, str]]:
+    def decision_signatures(
+        rows: list[dict[str, Any]],
+    ) -> set[tuple[str, str, str]]:
         return {
             (
                 str(row.get("timestamp") or row.get("filled_at")),
@@ -316,11 +357,33 @@ def _behavior_distance(
             for row in rows
         }
 
-    left, right = signatures(a), signatures(b)
-    union = left | right
+    def economic_signatures(
+        rows: list[dict[str, Any]],
+    ) -> set[tuple[str, str, str, float]]:
+        return {
+            (
+                str(row.get("timestamp") or row.get("filled_at")),
+                str(row.get("symbol")),
+                str(row.get("side") or row.get("action")),
+                round(float(row.get("filled_size") or row.get("size") or 0.0), 12),
+            )
+            for row in rows
+        }
+
+    left_decisions = decision_signatures(a)
+    right_decisions = decision_signatures(b)
+    left_economic = economic_signatures(a)
+    right_economic = economic_signatures(b)
+    changed_decisions = len(left_decisions ^ right_decisions)
+    changed_fills = len(left_economic ^ right_economic)
+    union = left_economic | right_economic
     return {
-        "changed_decisions": len(left ^ right),
-        "jaccard_distance": round(len(left ^ right) / len(union), 6) if union else 0.0,
+        "behavior_changed": bool(changed_decisions or changed_fills),
+        "changed_decisions": changed_decisions,
+        "changed_fill_records": changed_fills,
+        "jaccard_distance": (
+            round(changed_fills / len(union), 6) if union else 0.0
+        ),
     }
 
 

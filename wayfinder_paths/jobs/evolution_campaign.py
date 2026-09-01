@@ -99,7 +99,7 @@ from wayfinder_paths.jobs.regime import (
     MIXED_REGIME,
     PORTFOLIO_REGIME_CLASSIFIER,
     classify_portfolio_regimes,
-    enabled_regimes,
+    declared_regimes,
     opposite_regime,
     regime_universe,
 )
@@ -1198,7 +1198,7 @@ def _prepare_candidate(
     if target_regimes:
         job_data = _load_job_yaml(candidate_root)
         params = dict(job_data.get("execution_params") or {})
-        params["enabled_regimes"] = target_regimes
+        params["target_regimes"] = target_regimes
         job_data["execution_params"] = params
         atomic_write_text(
             candidate_root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
@@ -1948,7 +1948,7 @@ def _run_evolution_optuna(
 ) -> tuple[ExecutionGridResult, dict[str, Any]]:
     search_data = _tail(dataset, bars) if bars > 0 else dataset
     started = perf_counter()
-    specialized = bool(enabled_regimes(search_space))
+    specialized = bool(declared_regimes(search_space))
     rank_by = "regime_score" if specialized else "net_return"
     grid = run_optuna_search(
         subject["script"],
@@ -3483,9 +3483,8 @@ def _objective(stats: dict[str, Any], params: dict[str, Any]) -> dict[str, float
 
 
 def _decision_trade_count(stats: dict[str, Any]) -> int:
-    regime = stats.get("regime") or {}
-    if regime.get("target_regimes"):
-        return int(regime.get("target_trade_count") or 0)
+    # Activity protects the frontier from sparse gate stacks.  Count the whole
+    # strategy because transition trades can enter before their target regime.
     return int(stats.get("trade_count") or 0)
 
 

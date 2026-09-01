@@ -270,22 +270,33 @@ def compute_indicators(
 REGIME_LABELS = ("up_lowvol", "up_highvol", "down_lowvol", "down_highvol")
 
 
-def classify_regimes(frame: pd.DataFrame) -> pd.Series:
+def classify_regimes(
+    frame: pd.DataFrame, *, vol_baseline_bars: int | None = None
+) -> pd.Series:
     """Causal per-bar regime label: trend (close vs SMA50) x vol split
     (ATR14/close vs its EXPANDING median — no future data). 2x2 keeps each
-    cell's sample size workable for conditional stats; the same labels gate
-    live legs via an `enabled_regimes` param, so what the scan conditioned on
-    is exactly what the strategy trades."""
+    cell's sample size workable for conditional stats. Evolution uses the
+    same label vocabulary for its engine-owned `target_regimes` attribution."""
     close = frame["close"].astype(float)
     trend_up = close > close.rolling(50).mean()
     vol = atr(frame, 14) / close
-    vol_high = vol > vol.expanding(min_periods=50).median()
+    if vol_baseline_bars is None:
+        vol_threshold = vol.expanding(min_periods=50).median()
+    else:
+        if vol_baseline_bars < 50:
+            raise ValueError("regime volatility baseline must be at least 50 bars")
+        vol_threshold = (
+            vol.rolling(vol_baseline_bars, min_periods=vol_baseline_bars)
+            .median()
+            .shift(1)
+        )
+    vol_high = vol > vol_threshold
     labels = pd.Series("down_lowvol", index=frame.index, dtype=object)
     labels[trend_up & vol_high] = "up_highvol"
     labels[trend_up & ~vol_high] = "up_lowvol"
     labels[~trend_up & vol_high] = "down_highvol"
     warmup = (
-        close.rolling(50).mean().isna() | vol.expanding(min_periods=50).median().isna()
+        close.rolling(50).mean().isna() | vol_threshold.isna()
     )
     labels[warmup] = None
     return labels

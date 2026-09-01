@@ -144,17 +144,23 @@ def test_regime_shadow_requests_classifier_history_from_shared_feed(tmp_path) ->
                     "enabled": True,
                     "entrypoint": "workspace/strategy.py",
                 },
-                "execution_spec": {
-                    "data_contract": {
-                        "bar_interval": "5m",
-                        "symbols": ["BTC"],
-                    }
-                },
                 "execution_params": {
                     "symbols": ["BTC"],
                     "warmup_bars": 20,
-                    "enabled_regimes": ["up_lowvol"],
+                    "target_regimes": ["up_lowvol"],
+                    "defense_overlay": {},
                 },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "execution_spec.json").write_text(
+        json.dumps(
+            {
+                "data_contract": {
+                    "bar_interval": "5m",
+                    "symbols": ["BTC"],
+                }
             }
         ),
         encoding="utf-8",
@@ -171,4 +177,4 @@ def test_regime_shadow_requests_classifier_history_from_shared_feed(tmp_path) ->
         now=pd.Timestamp("2026-08-24T12:00:00Z").to_pydatetime(),
     )
 
-    assert candidate_shadow_lookback_bars(store, job.id) == 450
+    assert candidate_shadow_lookback_bars(store, job.id) == 690

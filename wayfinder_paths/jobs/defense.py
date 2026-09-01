@@ -46,7 +46,11 @@ def defense_policy(params: Mapping[str, Any]) -> dict[str, Any]:
         "enabled": bool(config.get("enabled", True)),
         "stop_loss_streak": max(1, int(config.get("stop_loss_streak", 3))),
         "stand_down_hours": max(1.0, float(config.get("stand_down_hours", 12))),
-        "ood_sigma": max(1.0, float(config.get("ood_sigma", 3.0))),
+        # Three sigma was inert even during the Aug-19 cross-major break: the
+        # third asset peaked around 2.3 sigma while the other two exceeded 4.
+        # Keep the 3-of-4 breadth requirement, but use a threshold that detects
+        # synchronized regime breaks before the following day's close.
+        "ood_sigma": max(1.0, float(config.get("ood_sigma", 2.25))),
         "ood_min_fraction": min(
             1.0, max(0.5, float(config.get("ood_min_fraction", 0.75)))
         ),
