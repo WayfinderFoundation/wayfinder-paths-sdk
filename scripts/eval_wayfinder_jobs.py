@@ -565,7 +565,11 @@ def build_strategy(params: dict) -> Strategy:
         encoding="utf-8",
     )
     write_json(
-        root / "results" / "backtest" / "input_bars.json", execution_backtest_bars()
+        root / "results" / "backtest" / "input_bars.json",
+        {
+            "metadata": {"label_convention": "close_time"},
+            "bars": execution_backtest_bars(),
+        },
     )
     grid_path = root / "workspace" / "config" / "grid.json"
     write_json(grid_path, {"threshold": [10.4, 99.0], "initial_capital": [1000]})
