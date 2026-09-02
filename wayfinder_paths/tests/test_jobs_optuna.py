@@ -19,8 +19,10 @@ from wayfinder_paths.jobs.execution import optimize as optimize_module
 from wayfinder_paths.jobs.execution.experiments import promote_params, run_experiment
 from wayfinder_paths.jobs.execution.optimize import (
     is_search_space,
+    normalize_search_space,
     run_optuna_search,
     search_space_probe_variants,
+    untyped_search_keys,
 )
 from wayfinder_paths.jobs.execution.simulator import (
     ExecutionBacktestResult,
@@ -310,3 +312,26 @@ def test_cli_passes_optimizer_flags(
     assert result.exit_code == 0, result.output
     assert captured["optimizer"] == "optuna"
     assert captured["optuna_options"] == {"n_trials": 7, "seed": 3}
+
+
+def test_normalize_search_space_promotes_agent_shorthand() -> None:
+    payload = {
+        "lookback": [96, 12],
+        "threshold": {"low": 0.5, "high": 5.0},
+        "mode": {"choices": ["fast", "slow"]},
+        "typed": {"type": "int", "low": 1, "high": 3},
+        "constant": 7,
+        "broken": [1, 2, 3],
+    }
+
+    normalized = normalize_search_space(payload)
+
+    assert normalized["lookback"] == {"type": "int", "low": 12, "high": 96}
+    assert normalized["threshold"] == {"type": "float", "low": 0.5, "high": 5.0}
+    assert normalized["mode"] == {"type": "categorical", "choices": ["fast", "slow"]}
+    assert normalized["typed"] == payload["typed"]
+    assert normalized["constant"] == 7
+    assert normalized["broken"] == [1, 2, 3]
+    assert is_search_space(normalized)
+    assert untyped_search_keys(normalized) == ["broken"]
+    assert not is_search_space(normalize_search_space({"only": "12-96"}))

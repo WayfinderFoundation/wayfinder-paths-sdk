@@ -14,24 +14,79 @@ import numpy as np
 import pandas as pd
 
 MAX_INDICATORS = 8
+# A Wilder/EMA recursion truncated to ``multiple`` periods matches the
+# open-ended one to within (1 - 1/period) ** ((multiple - 1) * period), about
+# 7e-4 at the default; the strategy's declared window can then be exact.
+BOUNDED_EWM_MULTIPLE = 8
 
 
-def wilder_rsi(close: pd.Series, period: int = 14) -> pd.Series:
+def bounded_span(period: int, *, multiple: int = BOUNDED_EWM_MULTIPLE) -> int:
+    """Trailing bars a bounded Wilder/EMA needs; declare at least this many."""
+    if period <= 0:
+        raise ValueError("indicator period must be positive")
+    return int(period) * int(multiple)
+
+
+def bounded_recursive_mean(
+    values: pd.Series, alpha: float, *, seed: int, window: int
+) -> pd.Series:
+    """Wilder/EMA recursion over a fixed trailing ``window`` of bars.
+
+    Seeded with the simple mean of the oldest ``seed`` bars in the window,
+    then recursed over the rest — the textbook Wilder start, applied at every
+    bar.  The value at bar t depends only on bars t-window+1..t, so a strategy
+    that declares ``warmup_bars >= window`` is window-invariant by
+    construction instead of by a long-history approximation.
+    """
+    if not 0 < alpha <= 1:
+        raise ValueError("alpha must be in (0, 1]")
+    if seed <= 0 or window <= seed:
+        raise ValueError("window must exceed the seed length")
+    raw = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+    finite = np.isfinite(raw)
+    if not finite.any():
+        return pd.Series(np.nan, index=values.index)
+    lead = int(np.argmax(finite))
+    filled = np.where(finite, raw, 0.0)
+    tail = window - seed
+    weights = np.empty(window)
+    weights[:tail] = alpha * (1 - alpha) ** np.arange(tail)
+    weights[tail:] = (1 - alpha) ** tail / seed
+    out = np.convolve(filled, weights, mode="full")[: len(filled)]
+    out[: min(len(out), lead + window - 1)] = np.nan
+    return pd.Series(out, index=values.index)
+
+
+def wilder_rsi(
+    close: pd.Series, period: int = 14, *, window: int | None = None
+) -> pd.Series:
+    """Wilder RSI; ``window`` bounds its memory to that many trailing bars."""
     delta = close.diff()
-    gain = delta.clip(lower=0.0).ewm(alpha=1 / period, adjust=False).mean()
-    loss = (-delta.clip(upper=0.0)).ewm(alpha=1 / period, adjust=False).mean()
+    gains = delta.clip(lower=0.0)
+    losses = -delta.clip(upper=0.0)
+    if window is None:
+        gain = gains.ewm(alpha=1 / period, adjust=False).mean()
+        loss = losses.ewm(alpha=1 / period, adjust=False).mean()
+    else:
+        gain = bounded_recursive_mean(gains, 1 / period, seed=period, window=window)
+        loss = bounded_recursive_mean(losses, 1 / period, seed=period, window=window)
     rs = gain / loss.replace(0.0, np.nan)
     return 100 - 100 / (1 + rs)
 
 
-def atr(frame: pd.DataFrame, period: int = 14) -> pd.Series:
+def atr(
+    frame: pd.DataFrame, period: int = 14, *, window: int | None = None
+) -> pd.Series:
+    """Wilder ATR; ``window`` bounds its memory to that many trailing bars."""
     high = frame["high"].astype(float)
     low = frame["low"].astype(float)
     prev_close = frame["close"].astype(float).shift(1)
     true_range = pd.concat(
         [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
     ).max(axis=1)
-    return true_range.ewm(alpha=1 / period, adjust=False).mean()
+    if window is None:
+        return true_range.ewm(alpha=1 / period, adjust=False).mean()
+    return bounded_recursive_mean(true_range, 1 / period, seed=period, window=window)
 
 
 def trailing_return(close: pd.Series, period: int) -> pd.Series:
@@ -295,9 +350,7 @@ def classify_regimes(
     labels[trend_up & vol_high] = "up_highvol"
     labels[trend_up & ~vol_high] = "up_lowvol"
     labels[~trend_up & vol_high] = "down_highvol"
-    warmup = (
-        close.rolling(50).mean().isna() | vol_threshold.isna()
-    )
+    warmup = close.rolling(50).mean().isna() | vol_threshold.isna()
     labels[warmup] = None
     return labels
 

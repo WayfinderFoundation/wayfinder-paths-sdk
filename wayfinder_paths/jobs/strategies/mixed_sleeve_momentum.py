@@ -10,6 +10,7 @@ from wayfinder_paths.jobs.execution.primitives import ExecutionContext
 from wayfinder_paths.jobs.strategies._starter_utils import (
     RANKING_STOP_DEFAULTS,
     add_stop_atr,
+    bounded_span,
     current_feature_values,
     merge_params,
     sleeve_weights,
@@ -40,7 +41,13 @@ class MixedSleeveMomentumStrategy:
             [str(symbol) for symbol in sleeve]
             for sleeve in self.params.get("sleeves") or []
         ]
-        self.warmup_bars = int(self.params["momentum_bars"]) + 4
+        self.warmup_bars = (
+            max(
+                int(self.params["momentum_bars"]),
+                bounded_span(int(self.params["stop_atr_period"])),
+            )
+            + 4
+        )
 
     def precompute(self, frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
         lookback = int(self.params["momentum_bars"])

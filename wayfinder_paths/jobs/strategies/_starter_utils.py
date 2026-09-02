@@ -9,7 +9,7 @@ from typing import Any
 import pandas as pd
 
 from wayfinder_paths.jobs.execution.primitives import ExecutionContext
-from wayfinder_paths.jobs.indicators import atr, trailing_return
+from wayfinder_paths.jobs.indicators import atr, bounded_span, trailing_return
 
 # These brackets are catastrophe exits; each strategy's normal exit or rebalance
 # remains responsible for routine risk. The bands below passed full-period and
@@ -140,10 +140,14 @@ def add_stop_atr(
     *,
     period: int,
 ) -> dict[str, pd.DataFrame]:
-    """Add the shared starter ATR column without replacing other features."""
+    """Add the shared starter ATR column without replacing other features.
+
+    Bounded to ``bounded_span(period)`` bars so every starter's declared
+    warmup can be exact; include that span in the strategy's warmup.
+    """
     for symbol, frame in frames.items():
         features = derived.setdefault(symbol, pd.DataFrame(index=frame.index))
-        features["starter_stop_atr"] = atr(frame, period)
+        features["starter_stop_atr"] = atr(frame, period, window=bounded_span(period))
     return derived
 
 

@@ -11,7 +11,7 @@ from wayfinder_paths.jobs.execution.primitives import (
     ExecutionContext,
     mark_to_market_equity,
 )
-from wayfinder_paths.jobs.indicators import atr, wilder_rsi
+from wayfinder_paths.jobs.indicators import atr, bounded_span, wilder_rsi
 from wayfinder_paths.jobs.strategies._starter_utils import (
     MEAN_REVERSION_STOP_DEFAULTS,
     current_rows,
@@ -55,9 +55,9 @@ class HypePassiveRsiStrategy:
     def __init__(self, params: dict[str, Any] | None = None) -> None:
         self.params = merge_params(self.default_params, params)
         self.symbol = str(self.params["symbols"][0])
-        self.warmup_bars = (
-            max(int(self.params["rsi_period"]), int(self.params["stop_atr_period"])) + 4
-        )
+        rsi_period = int(self.params["rsi_period"])
+        stop_period = int(self.params["stop_atr_period"])
+        self.warmup_bars = max(bounded_span(rsi_period), bounded_span(stop_period)) + 4
         exit_mode = str(self.params["exit_mode"])
         if exit_mode not in {"full", "staged"}:
             raise ValueError("exit_mode must be 'full' or 'staged'")
@@ -66,13 +66,19 @@ class HypePassiveRsiStrategy:
             raise ValueError("take_profit_one_fraction must be between 0 and 1")
 
     def precompute(self, frames: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+        rsi_period = int(self.params["rsi_period"])
+        stop_period = int(self.params["stop_atr_period"])
         derived: dict[str, pd.DataFrame] = {}
         for symbol, frame in frames.items():
             close = pd.to_numeric(frame["close"], errors="coerce")
             derived[symbol] = pd.DataFrame(
                 {
-                    "maker_rsi": wilder_rsi(close, int(self.params["rsi_period"])),
-                    "maker_atr": atr(frame, int(self.params["stop_atr_period"])),
+                    "maker_rsi": wilder_rsi(
+                        close, rsi_period, window=bounded_span(rsi_period)
+                    ),
+                    "maker_atr": atr(
+                        frame, stop_period, window=bounded_span(stop_period)
+                    ),
                 }
             )
         return derived

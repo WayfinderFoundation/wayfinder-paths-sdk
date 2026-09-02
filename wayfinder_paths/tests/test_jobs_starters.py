@@ -73,6 +73,20 @@ def _context(
     interval: str,
     volumes: dict[str, list[float]] | None = None,
 ) -> ExecutionContext:
+    # Bounded RSI/ATR spans put every starter's warmup past these hand-built
+    # patterns; a flat prefix clears the gate without changing the pattern.
+    warmup = int(getattr(strategy, "warmup_bars", 0) or 0)
+    pad = max(0, warmup + 1 - len(next(iter(closes.values()))))
+    if pad:
+        closes = {
+            symbol: [values[0]] * pad + list(values)
+            for symbol, values in closes.items()
+        }
+        if volumes:
+            volumes = {
+                symbol: [values[0]] * pad + list(values)
+                for symbol, values in volumes.items()
+            }
     timestamps = pd.date_range(
         "2026-01-01T00:00:00Z",
         periods=len(next(iter(closes.values()))),
@@ -362,6 +376,8 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
 # any starter whose warmup gate exceeds the window silently never trades —
 # 7 of 12 entries did exactly that under the old 200-bar driver default.
 # A new/edited starter MUST update this table consciously.
+# Warmups now cover the bounded RSI/ATR spans (8x period), so the declared
+# window is exact rather than a long-history approximation.
 EXPECTED_STARTER_LOOKBACK_BARS = {
     "mixed-rsi-snapback-1h": 224,
     "mixed-bollinger-pullback-1h": 224,
@@ -370,12 +386,120 @@ EXPECTED_STARTER_LOOKBACK_BARS = {
     "mixed-momentum-rank-1h": 360,
     "crypto-momentum-persistence-4h": 192,
     "mixed-sleeve-momentum-15m": 2904,
-    "mixed-low-vol-rank-15m": 504,
-    "hype-passive-rsi-full-5m": 38,
-    "hype-passive-rsi-staged-5m": 38,
-    "btc-eth-relative-strength-1d": 114,
-    "bch-ltc-relative-strength-1d": 114,
+    "mixed-low-vol-rank-15m": 792,
+    "hype-passive-rsi-full-5m": 136,
+    "hype-passive-rsi-staged-5m": 136,
+    "btc-eth-relative-strength-1d": 184,
+    "bch-ltc-relative-strength-1d": 184,
 }
+
+
+_TIMEFRAME_MINUTES = {"5m": 5, "15m": 15, "1h": 60, "4h": 240, "1d": 1_440}
+
+
+def _synthetic_rows(symbols: tuple[str, ...], count: int, *, minutes: int, seed: int):
+    import random
+    from datetime import UTC, datetime, timedelta
+
+    rng = random.Random(seed)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    rows = []
+    for offset, symbol in enumerate(symbols):
+        close = 100.0 + 10.0 * offset
+        for index in range(count):
+            close *= 1 + rng.gauss(0.0, 0.004)
+            high = close * (1 + abs(rng.gauss(0.0, 0.002)))
+            low = close * (1 - abs(rng.gauss(0.0, 0.002)))
+            rows.append(
+                {
+                    "timestamp": (
+                        start + timedelta(minutes=minutes * index)
+                    ).isoformat(),
+                    "symbol": symbol,
+                    "open": (high + low) / 2,
+                    "high": high,
+                    "low": low,
+                    "close": close,
+                    "volume": 1_000.0 + rng.random() * 500.0,
+                }
+            )
+    return rows
+
+
+def test_bounded_wilder_indicators_are_exact_inside_their_span() -> None:
+    import random
+
+    from wayfinder_paths.jobs.indicators import atr, bounded_span, wilder_rsi
+
+    rng = random.Random(11)
+    closes = [100.0]
+    for _ in range(1_199):
+        closes.append(closes[-1] * (1 + rng.gauss(0.0, 0.01)))
+    close = pd.Series(closes)
+    span = bounded_span(14)
+    full = wilder_rsi(close, 14, window=span)
+    # One extra close feeds the oldest diff, so declared windows exceed the span.
+    tail = wilder_rsi(close.iloc[-(span + 1) :].reset_index(drop=True), 14, window=span)
+    assert full.iloc[-1] == pytest.approx(tail.iloc[-1], abs=1e-9)
+    assert full.iloc[: span - 1].isna().all()
+    assert full.iloc[span:].notna().all()
+    assert abs(full.iloc[-1] - wilder_rsi(close, 14).iloc[-1]) < 0.05
+    frame = pd.DataFrame({"close": close, "high": close * 1.002, "low": close * 0.998})
+    bounded = atr(frame, 14, window=span)
+    tail_atr = atr(frame.iloc[-(span + 1) :].reset_index(drop=True), 14, window=span)
+    assert bounded.iloc[-1] == pytest.approx(tail_atr.iloc[-1], rel=1e-9)
+    assert bounded.iloc[-1] == pytest.approx(atr(frame, 14).iloc[-1], rel=2e-3)
+
+
+def test_every_starter_is_exact_inside_its_declared_window() -> None:
+    from wayfinder_paths.jobs.execution.validation import window_invariance_probe
+
+    base_columns = {"timestamp", "symbol", "open", "high", "low", "close", "volume"}
+    for definition in STARTER_DEFINITIONS:
+        module = importlib.import_module(definition.module)
+        params = {**definition.configured_params(), "symbols": list(definition.symbols)}
+        strategy = module.build_strategy(params)
+        warmup = int(strategy.warmup_bars)
+        rows = _synthetic_rows(
+            definition.symbols,
+            warmup + 200,
+            minutes=_TIMEFRAME_MINUTES[definition.timeframe],
+            seed=len(definition.id),
+        )
+        view = CompletedBarsView.from_rows(rows)
+        full = apply_precompute(strategy, view).to_frame()
+        narrow = apply_precompute(
+            strategy, view.window(len(view.timestamps) - 1, warmup)
+        ).to_frame()
+        for symbol in definition.symbols:
+            wide_row = full[full["symbol"] == symbol].iloc[-1]
+            narrow_row = narrow[narrow["symbol"] == symbol].iloc[-1]
+            for column in full.columns:
+                if column in base_columns:
+                    continue
+                wide, tight = wide_row[column], narrow_row[column]
+                if pd.isna(wide) and pd.isna(tight):
+                    continue
+                assert float(wide) == pytest.approx(
+                    float(tight), rel=1e-9, abs=1e-12
+                ), (
+                    definition.id,
+                    symbol,
+                    column,
+                )
+        probe = window_invariance_probe(
+            module.build_strategy,
+            view,
+            {
+                "market_kind": "perp",
+                "data_contract": {
+                    "bar_interval": definition.timeframe,
+                    "symbols": list(definition.symbols),
+                },
+            },
+            {**params, "warmup_bars": warmup},
+        )
+        assert probe["status"] == "passed", (definition.id, probe)
 
 
 def test_every_starter_lookback_clears_its_warmup_gate() -> None:

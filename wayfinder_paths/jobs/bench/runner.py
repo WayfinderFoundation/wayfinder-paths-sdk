@@ -530,6 +530,7 @@ def _drive_campaign(
     stage_sessions: dict[str, str],
 ) -> str | None:
     prior_handoff: dict[str, Any] | None = None
+    failed_once: set[str] = set()
     for turn in range(max_turns):
         state = campaign_status(store, job_id)
         if state.get("status") in {"complete", "failed", "expired"}:
@@ -572,7 +573,15 @@ def _drive_campaign(
         result.update({"stage": stage, "artifact_key": artifact_key, "turn": turn})
         sessions.append(result)
         if result["exit_code"] != 0:
-            return f"OpenCode stage {stage} exited {result['exit_code']}"
+            # One bad tool call or a crashed turn is a failed turn, not a
+            # verdict: retry the stage once in a fresh session, the way the
+            # production watchdog restarts a stale stage.
+            if artifact_key not in failed_once:
+                failed_once.add(artifact_key)
+                result["retried"] = True
+                stage_sessions.pop(artifact_key, None)
+                continue
+            return f"OpenCode stage {stage} exited {result['exit_code']} twice"
         session_db = _session_db(sandbox)
         session_id = existing_session or _lookup_session_id(session_db, title)
         if session_id:

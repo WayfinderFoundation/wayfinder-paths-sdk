@@ -498,6 +498,71 @@ def test_compressed_replay_uses_real_burn_in_and_day14_endpoint(
     assert (root / "results/forward/probation").exists()
 
 
+def test_campaign_stage_is_retried_once_before_the_cell_is_invalidated(
+    tmp_path, monkeypatch
+) -> None:
+    import wayfinder_paths.jobs.bench.runner as runner_module
+
+    statuses = iter(
+        [{"status": "active"}, {"status": "active"}, {"status": "complete"}]
+    )
+    calls: list[dict] = []
+
+    def fake_status(store, job_id):
+        return next(statuses)
+
+    def fake_prompt(store, job_id, *, now):
+        return {"campaign_id": "campaign-1", "session_stage": "candidate-01"}
+
+    def fake_render(job_id, block, *, prior_handoff=None):
+        return {
+            "prompt": "do the stage",
+            "session_stage": "candidate-01",
+            "artifact_key": "candidate-01-attempt-01",
+            "title": "job/demo/evolution/campaign-1/candidate-01-attempt-01",
+            "agent_name": "wayfinder-evolution-worker",
+        }
+
+    def fake_agent(**kwargs):
+        calls.append(kwargs)
+        # First turn dies on a bad tool call; the retry runs clean.
+        exit_code = 1 if len(calls) == 1 else 0
+        return {"exit_code": exit_code, "stdout_tail": "", "stderr_tail": ""}
+
+    monkeypatch.setattr(runner_module, "campaign_status", fake_status)
+    monkeypatch.setattr(runner_module, "campaign_prompt_block", fake_prompt)
+    monkeypatch.setattr(runner_module, "sandbox_relative", lambda value, *, root: value)
+    monkeypatch.setattr(runner_module, "build_evolution_stage_prompt", fake_render)
+    monkeypatch.setattr(runner_module, "run_agent_prompt", fake_agent)
+    monkeypatch.setattr(runner_module, "_session_db", lambda sandbox: tmp_path / "x")
+    monkeypatch.setattr(runner_module, "_lookup_session_id", lambda db, title: None)
+    monkeypatch.setattr(runner_module, "_wait_for_settle", lambda *a, **k: True)
+
+    sessions: list[dict] = []
+    outcome = runner_module._drive_campaign(
+        store=None,
+        job_id="demo",
+        model="m",
+        variant=None,
+        opencode=tmp_path / "opencode",
+        sandbox=tmp_path,
+        env={},
+        virtual_now=datetime(2026, 8, 10, tzinfo=UTC),
+        repeat_seed=101,
+        max_turns=5,
+        timeout_s=1,
+        settle_timeout_s=1,
+        prompt_hashes=[],
+        sessions=sessions,
+        stage_sessions={},
+    )
+
+    assert outcome is None
+    assert [row["exit_code"] for row in sessions] == [1, 0]
+    assert sessions[0]["retried"] is True
+    assert calls[1]["session_id"] is None
+
+
 def test_campaign_prompt_formatter_is_the_production_formatter() -> None:
     campaign = {
         "campaign_id": "campaign-1",

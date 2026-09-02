@@ -61,8 +61,10 @@ from wayfinder_paths.jobs.execution.features import parse_feature_specs
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.optimize import (
     is_search_space,
+    normalize_search_space,
     run_optuna_search,
     search_space_probe_variants,
+    untyped_search_keys,
 )
 from wayfinder_paths.jobs.execution.primitives import (
     DEFAULT_INITIAL_CAPITAL,
@@ -170,7 +172,10 @@ _PARAMETER_SEARCH_GUIDANCE = (
     "create search_space.json with at most three bounded typed Optuna dimensions, "
     "for example "
     '{"lookback":{"type":"int","low":12,"high":96}}; do not replace the '
-    "search with one hand-picked value."
+    "search with one hand-picked value. Sweep knobs that change decisions "
+    "inside the screen window (entry thresholds, offsets, sizing); a holding "
+    "period or TTL longer than the window changes nothing and is rejected "
+    "before simulation."
 )
 _STRUCTURAL_SEARCH_GUIDANCE = (
     "Make the named causal code change. If it introduces meaningful numeric "
@@ -1618,7 +1623,10 @@ def _evaluate_candidate(
                         "primary_failure": "no_behavior_change",
                         "failure_codes": ["no_behavior_change"],
                         "behavior_diff": {"material_change": False},
-                        "repair_context": {"error": error},
+                        "repair_context": {
+                            "error": error,
+                            "dead_params": _typed_search_dimensions(search_space),
+                        },
                     },
                 }
         result = simulate_execution(subject["script"], quick, subject["spec"], params)
@@ -1842,10 +1850,14 @@ def _commit_designed_attempt(
             # the failure through broad reads or forbidden tool discovery.
             postmortem["repair_context"] = {"error": error[:500]}
     if not bool(postmortem.get("viable")):
+        manifest = store.read_json(job_id, str(state.get("manifest") or ""), default={})
         postmortem["repair_work_order"] = build_repair_work_order(
             postmortem,
             policy,
             params=dict(_load_job_yaml(candidate_root).get("execution_params") or {}),
+            min_fills_per_day=_min_fills_per_day(
+                policy, (manifest or {}).get("dataset")
+            ),
         )
     receipt_relative = f"{attempt_relative}/receipt.json"
     postmortem_relative = f"{attempt_relative}/postmortem.json"
@@ -2010,7 +2022,9 @@ def _incumbent_economics(
 
 
 def _cost_budget(
-    baseline: Mapping[str, Any], policy: Mapping[str, Any]
+    baseline: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    dataset_window: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     economics = baseline.get("economics")
     if not isinstance(economics, Mapping):
@@ -2024,9 +2038,24 @@ def _cost_budget(
         "incumbent_avg_hold_minutes": economics.get("avg_hold_minutes"),
         "max_fills_per_day": round(multiple * fills, 2),
     }
+    floor = _min_fills_per_day(policy, dataset_window)
+    if floor is not None:
+        budget["min_fills_per_day"] = floor
     if baseline.get("round_trip_cost_bps") is not None:
         budget["round_trip_cost_bps"] = baseline["round_trip_cost_bps"]
     return budget
+
+
+def _min_fills_per_day(
+    policy: Mapping[str, Any], dataset_window: Mapping[str, Any] | None
+) -> float | None:
+    """Cadence below which the elite participation floor rejects at full dev."""
+    days = float((dataset_window or {}).get("days") or 0.0)
+    validation = float((policy.get("split") or {}).get("validation") or 0.0)
+    floor_trades = int(policy.get("elite_min_validation_trades") or 8)
+    if days <= 0 or validation <= 0:
+        return None
+    return round(floor_trades / (days * validation), 3)
 
 
 def _close_designed_candidate(
@@ -2871,12 +2900,20 @@ def campaign_prompt_block(
             for item in manifest.get("research_seeds") or []
             if item.get("seed_id")
         ]
-        cost_budget = _cost_budget(diagnostic_pack.get("baseline") or {}, policy)
+        cost_budget = _cost_budget(
+            diagnostic_pack.get("baseline") or {}, policy, manifest.get("dataset")
+        )
         cost_instruction = (
             "Cost budget: the incumbent trades "
             f"{cost_budget['incumbent_fills_per_day']:.1f} fills/day; every slot "
             f"must plausibly stay under {cost_budget['max_fills_per_day']:.1f} "
             "fills/day"
+            + (
+                f" and above {cost_budget['min_fills_per_day']:.2f} (the elite "
+                "participation floor rejects inert books)"
+                if cost_budget.get("min_fills_per_day") is not None
+                else ""
+            )
             + (
                 f" at ~{cost_budget['round_trip_cost_bps']:.0f} bps round trip"
                 if cost_budget.get("round_trip_cost_bps") is not None
@@ -3442,8 +3479,17 @@ def _load_candidate_search_space(
         raise ValueError(
             f"candidate search space is unreadable: {search_path}"
         ) from exc
+    if isinstance(payload, dict):
+        payload = normalize_search_space(payload)
     if not isinstance(payload, dict) or not is_search_space(payload):
-        raise ValueError(f"candidate search space is not typed: {search_path}")
+        offending = untyped_search_keys(payload) if isinstance(payload, dict) else []
+        raise ValueError(
+            "candidate search space is not typed: "
+            + (f"keys {offending} " if offending else "")
+            + 'each dimension must be {"type": "float"|"int"|"categorical", '
+            '"low", "high"} or {"type": "categorical", "choices": [...]} '
+            f"({search_path})"
+        )
     dimensions = len(_typed_search_dimensions(payload))
     if dimensions > _MAX_SEARCH_DIMENSIONS:
         raise ValueError(

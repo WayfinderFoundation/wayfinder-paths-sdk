@@ -501,6 +501,7 @@ def build_repair_work_order(
     policy: Mapping[str, Any] | None = None,
     *,
     params: Mapping[str, Any] | None = None,
+    min_fills_per_day: float | None = None,
 ) -> dict[str, Any]:
     """Deterministic assignment for the next attempt: diagnosis, remedy class, budget."""
     policy = policy or {}
@@ -517,6 +518,8 @@ def build_repair_work_order(
         budget["max_fills_per_day"] = round(
             multiple * _number(comparator.get("fills_per_day")), 2
         )
+    if min_fills_per_day is not None:
+        budget["min_fills_per_day"] = float(min_fills_per_day)
     if params:
         budget["round_trip_cost_bps"] = round(
             2.0
@@ -540,9 +543,19 @@ def _diagnosis(
     comparator_label: str,
 ) -> str:
     primary = str(postmortem.get("primary_failure") or "")
-    error = str((postmortem.get("repair_context") or {}).get("error") or "").strip()
+    context = postmortem.get("repair_context") or {}
+    error = str(context.get("error") or "").strip()
     if primary == "invalid_execution":
         return f"Execution failed before evaluation: {error[:240] or 'see postmortem'}."
+    if primary == "no_behavior_change":
+        dead = [str(item) for item in context.get("dead_params") or []]
+        if dead:
+            return (
+                f"Declared dimensions {dead} changed no decision on the screen "
+                "window; they are dead knobs here. Sweep a knob that alters "
+                "entries or sizing inside the window instead."
+            )
+        return "The edit changed no decision on the screen window."
     if not candidate:
         return (
             f"Attempt failed with {primary or 'no'} evidence beyond the failure code."
@@ -568,8 +581,8 @@ def _diagnosis(
     if primary == "cost_bleed":
         return (
             f"{facts} Fees exceed any plausible edge at this cadence: the "
-            "cadence is the defect, not the signal. Reduce turnover before "
-            "touching entry logic."
+            "cadence is the defect, not the signal. Reduce turnover toward the "
+            "budget band before touching entry logic; do not drive it to zero."
         )
     if primary == "no_trades":
         return "No fills on the screen window: the gate stack never admits an entry."

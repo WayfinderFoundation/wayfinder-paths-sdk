@@ -212,6 +212,19 @@ def test_cost_bleed_is_primary_when_fees_dominate_a_loss() -> None:
     }
     assert any("minimum hold" in item for item in order["admissible_repairs"])
     assert order["forbidden"]
+    banded = build_repair_work_order(report, {}, min_fills_per_day=0.4)
+    assert banded["budget"]["min_fills_per_day"] == 0.4
+    assert "do not drive it to zero" in banded["diagnosis"]
+
+    dead = build_repair_work_order(
+        {
+            "primary_failure": "no_behavior_change",
+            "failure_codes": ["no_behavior_change"],
+            "repair_context": {"error": "no change", "dead_params": ["max_hold_bars"]},
+        }
+    )
+    assert "['max_hold_bars']" in dead["diagnosis"]
+    assert "dead knobs" in dead["diagnosis"]
 
     # No incumbent economics at all: the absolute floor still catches it.
     floor_only = build_postmortem(candidate, reference, min_trades=1)

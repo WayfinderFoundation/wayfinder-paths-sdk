@@ -26,7 +26,9 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _commit_designed_attempt,
     _commit_full_dev,
     _isolated_full_dev,
+    _load_candidate_search_space,
     _materialize_candidate_seed,
+    _min_fills_per_day,
     _parameter_tuning_preview,
     _parent_source,
     _persist_executable_bundle,
@@ -510,9 +512,43 @@ def test_design_prompt_carries_cost_budget_from_baseline(tmp_path) -> None:
     assert budget["max_fills_per_day"] == pytest.approx(8.2, abs=0.05)
     assert budget["round_trip_cost_bps"] == 16.0
     assert "Cost budget: the incumbent trades 2.7 fills/day" in prompt["next_action"]
+    # The fixture freezes no bars, so the cadence floor has no window to use.
+    assert "min_fills_per_day" not in budget
     pack = store.read_json(job_id, str(state["diagnostic_pack"]))
     assert pack["baseline"]["economics"]["fee_pct_of_capital"] == pytest.approx(0.1122)
     assert "/baseline/economics/fills_per_day" in prompt["valid_evidence_pointers"]
+
+
+def test_cadence_floor_follows_the_elite_participation_floor() -> None:
+    policy = {
+        "split": {"train": 0.8, "validation": 0.2},
+        "elite_min_validation_trades": 8,
+    }
+    assert _min_fills_per_day(policy, {"days": 99.0}) == pytest.approx(0.404)
+    assert _min_fills_per_day(policy, {}) is None
+    assert _min_fills_per_day({"split": {}}, {"days": 99.0}) is None
+
+
+def test_candidate_search_space_accepts_shorthand_and_names_untyped_keys(
+    tmp_path,
+) -> None:
+    root = tmp_path / "candidate"
+    root.mkdir()
+    (root / "search_space.json").write_text(
+        json.dumps({"lookback": [12, 96], "threshold": {"low": 0.5, "high": 5.0}}),
+        encoding="utf-8",
+    )
+    loaded = _load_candidate_search_space(root, required=True)
+    assert loaded == {
+        "lookback": {"type": "int", "low": 12, "high": 96},
+        "threshold": {"type": "float", "low": 0.5, "high": 5.0},
+    }
+
+    (root / "search_space.json").write_text(
+        json.dumps({"lookback": [1, 2, 3], "mode": "fast"}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match=r"keys \['lookback'\]"):
+        _load_candidate_search_space(root, required=True)
 
 
 def test_starter_seeds_are_stamped_with_universe_compatibility(tmp_path) -> None:
