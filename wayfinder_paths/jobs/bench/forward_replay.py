@@ -65,7 +65,9 @@ def race_bundles(
     a = evaluate_bundle(a_bundle, rows=rows, cutoff=cutoff, environment=environment)
     b = evaluate_bundle(b_bundle, rows=rows, cutoff=cutoff, environment=environment)
     days = sorted(set(a["daily_pnl"]) & set(b["daily_pnl"]))
-    deltas = paired_daily_utility_deltas(a["daily_pnl"], b["daily_pnl"])
+    deltas = paired_daily_utility_deltas(
+        a["daily_pnl"], b["daily_pnl"], capital=environment_capital(environment)
+    )
     estimate = sum(deltas)
     lcb = block_bootstrap_lcb(
         deltas, block_len=5, iterations=500, confidence=CONFIDENCE
@@ -133,17 +135,25 @@ def race_bundles(
 
 
 def paired_daily_utility_deltas(
-    a_daily: Mapping[str, float], b_daily: Mapping[str, float]
+    a_daily: Mapping[str, float],
+    b_daily: Mapping[str, float],
+    *,
+    capital: float = 10_000.0,
 ) -> list[float]:
-    """Per paired ISO day, log-growth utility of A minus B on 10k capital —
-    the same quantity probation and the holdout race adjudicate on."""
+    """Per paired ISO day, log-growth utility of A minus B on the book's
+    capital — the same quantity probation adjudicates on."""
     days = sorted(set(a_daily) & set(b_daily))
     return [
-        math.log1p(float(a_daily[day]) / 10_000.0)
-        - math.log1p(float(b_daily[day]) / 10_000.0)
+        math.log1p(float(a_daily[day]) / capital)
+        - math.log1p(float(b_daily[day]) / capital)
         for day in days
-        if float(a_daily[day]) > -10_000 and float(b_daily[day]) > -10_000
+        if float(a_daily[day]) > -capital and float(b_daily[day]) > -capital
     ]
+
+
+def environment_capital(environment: Mapping[str, Any] | None) -> float:
+    params = (environment or {}).get("params") or {}
+    return float(params.get("initial_capital") or 10_000.0)
 
 
 def evaluate_bundle(
@@ -211,7 +221,11 @@ def evaluate_bundle(
         },
         "validation": result.validation,
         "stats": stats,
-        "daily_pnl": _daily_pnl(result.equity_curve, cutoff=cutoff),
+        "daily_pnl": _daily_pnl(
+            result.equity_curve,
+            cutoff=cutoff,
+            capital=environment_capital(environment),
+        ),
         "trades": trades,
         "per_symbol_direction": _per_symbol_direction(trades),
         "profile": result.profile,
@@ -323,13 +337,16 @@ def _rebase_trial(trial: dict[str, Any], *, cutoff: datetime) -> None:
 
 
 def _daily_pnl(
-    equity_curve: list[dict[str, Any]], *, cutoff: datetime
+    equity_curve: list[dict[str, Any]],
+    *,
+    cutoff: datetime,
+    capital: float = 10_000.0,
 ) -> dict[str, float]:
     cutoff_stamp = pd.Timestamp(cutoff)
     prior = [
         row for row in equity_curve if pd.Timestamp(row["timestamp"]) <= cutoff_stamp
     ]
-    anchor = float(prior[-1]["equity"]) if prior else 10_000.0
+    anchor = float(prior[-1]["equity"]) if prior else capital
     last_by_day: dict[str, float] = {}
     for row in equity_curve:
         stamp = pd.Timestamp(row["timestamp"])

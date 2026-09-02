@@ -30,6 +30,7 @@ from wayfinder_paths.jobs.bench.env import (
     sha256_json,
 )
 from wayfinder_paths.jobs.bench.forward_replay import (
+    environment_capital,
     evaluate_bundle,
     paired_daily_utility_deltas,
 )
@@ -450,7 +451,9 @@ def run_recurrence_arm(
                 environment=frozen_environment,
             )
             deltas = paired_daily_utility_deltas(
-                deployed["daily_pnl"], frozen["daily_pnl"]
+                deployed["daily_pnl"],
+                frozen["daily_pnl"],
+                capital=environment_capital(manifest.get("execution_environment")),
             )
             applied_trials = _apply_graduates(store, job_id, loop=loop)
             row["apply"] = {"applied": bool(applied_trials), "trials": applied_trials}

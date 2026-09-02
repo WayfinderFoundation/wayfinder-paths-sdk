@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import shutil
 import sqlite3
 import subprocess
@@ -1233,3 +1234,20 @@ def test_run_agent_wakes_forwards_variant_env_and_title(
     assert [(call["variant"], call["env"]) for call in calls[:2]] == [("max", env)] * 2
     assert calls[2]["variant"] is None and calls[2]["env"] is None
     assert calls[0]["prompt"] == "demo:intervene"
+
+
+def test_paired_utility_deltas_scale_with_the_books_capital() -> None:
+    from wayfinder_paths.jobs.bench.forward_replay import (
+        environment_capital,
+        paired_daily_utility_deltas,
+    )
+
+    a = {"2026-01-01": 1.0, "2026-01-02": -1.0}
+    b = {"2026-01-01": 0.0, "2026-01-02": 0.0}
+    big = paired_daily_utility_deltas(a, b)
+    small = paired_daily_utility_deltas(a, b, capital=100.0)
+    assert big[0] == pytest.approx(math.log1p(1 / 10_000))
+    assert small[0] == pytest.approx(math.log1p(0.01))
+    assert small[0] / big[0] > 90
+    assert environment_capital({"params": {"initial_capital": 100.0}}) == 100.0
+    assert environment_capital({}) == 10_000.0
