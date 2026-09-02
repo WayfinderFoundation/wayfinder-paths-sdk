@@ -33,6 +33,9 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _parent_source,
     _persist_executable_bundle,
     _same_family_nonwins,
+    _screen_confidence,
+    _screen_slices,
+    _screen_verdict,
     _select_full_dev_candidate,
     _select_parent_plan,
     _starter_compatibility,
@@ -517,6 +520,75 @@ def test_design_prompt_carries_cost_budget_from_baseline(tmp_path) -> None:
     pack = store.read_json(job_id, str(state["diagnostic_pack"]))
     assert pack["baseline"]["economics"]["fee_pct_of_capital"] == pytest.approx(0.1122)
     assert "/baseline/economics/fills_per_day" in prompt["valid_evidence_pointers"]
+
+
+def test_screen_slices_are_disjoint_and_fall_back_when_short() -> None:
+    from wayfinder_paths.jobs.execution.simulator import PreparedExecutionDataset
+
+    def dataset(count: int) -> PreparedExecutionDataset:
+        rows = []
+        for index in range(count):
+            stamp = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(hours=index)
+            rows.append(
+                {
+                    "timestamp": stamp.isoformat(),
+                    "symbol": "IMX",
+                    "open": 10.0,
+                    "high": 10.1,
+                    "low": 9.9,
+                    "close": 10.0,
+                    "volume": 1.0,
+                }
+            )
+        return PreparedExecutionDataset.from_rows(rows, {})
+
+    slices = _screen_slices(dataset(15_000), bars=10_000)
+    assert [label for label, _ in slices] == ["recent", "earlier"]
+    recent = slices[0][1].bars.timestamps
+    earlier = slices[1][1].bars.timestamps
+    assert len(recent) == 10_000 and len(earlier) == 5_000
+    assert earlier[-1] < recent[0]
+    assert [label for label, _ in _screen_slices(dataset(11_000), bars=10_000)] == [
+        "recent"
+    ]
+    assert [label for label, _ in _screen_slices(dataset(60), bars=10_000)] == [
+        "recent"
+    ]
+
+
+def test_screen_verdict_names_regime_dependence_and_noise_fit() -> None:
+    assert _screen_confidence(1) == 0.7
+    assert _screen_confidence(3) == 0.9
+    assert _screen_confidence(9) == 0.9
+
+    both = {
+        "recent": {"net_return": 0.03, "trade_count": 30, "lcb": 0.004},
+        "earlier": {"net_return": 0.02, "trade_count": 28, "lcb": 0.001},
+    }
+    assert _screen_verdict(both, min_trades=12)["passed"] is True
+
+    mixed = {**both, "earlier": {"net_return": -0.02, "trade_count": 28, "lcb": -0.01}}
+    verdict = _screen_verdict(mixed, min_trades=12)
+    assert verdict["passed"] is False and verdict["code"] == "screen_regime_dependent"
+
+    noisy = {**both, "recent": {"net_return": 0.03, "trade_count": 30, "lcb": -0.002}}
+    assert (
+        _screen_verdict(noisy, min_trades=12)["code"] == "screen_edge_not_significant"
+    )
+
+    sparse = {**both, "earlier": {"net_return": 0.02, "trade_count": 5, "lcb": 0.001}}
+    assert _screen_verdict(sparse, min_trades=12)["code"] == "activity_below_floor"
+
+    # Negative everywhere is plain failure: the postmortem's own code stands.
+    losing = {
+        "recent": {"net_return": -0.01, "trade_count": 30, "lcb": None},
+        "earlier": {"net_return": -0.02, "trade_count": 28, "lcb": None},
+    }
+    verdict = _screen_verdict(losing, min_trades=12)
+    assert verdict["passed"] is False and verdict["code"] is None
+    # Too few days for a bootstrap: a positive point estimate still passes.
+    tiny = {"recent": {"net_return": 0.01, "trade_count": 3, "lcb": None}}
+    assert _screen_verdict(tiny, min_trades=1)["passed"] is True
 
 
 def test_cadence_floor_follows_the_elite_participation_floor() -> None:

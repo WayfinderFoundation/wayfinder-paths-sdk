@@ -108,6 +108,21 @@ REPAIR_REMEDIES: dict[str, dict[str, list[str]]] = {
         "admissible": ["restore participation before judging the mechanism"],
         "forbidden": ["adding more gates"],
     },
+    "screen_regime_dependent": {
+        "admissible": [
+            "change the mechanism so it earns on both screen slices",
+            "declare target_regimes for the slice where it earns and accept the "
+            "bounded-loss-outside-regime bar",
+        ],
+        "forbidden": ["tuning thresholds to the recent slice"],
+    },
+    "screen_edge_not_significant": {
+        "admissible": [
+            "raise per-trade expectancy: drop marginal entries, keep the strongest",
+            "change the mechanism; the current edge is inside the noise",
+        ],
+        "forbidden": ["adding trades to widen the sample"],
+    },
 }
 _DEFAULT_REMEDY = {
     "admissible": ["change the named causal mechanism in response to the evidence"],
@@ -547,6 +562,28 @@ def _diagnosis(
     error = str(context.get("error") or "").strip()
     if primary == "invalid_execution":
         return f"Execution failed before evaluation: {error[:240] or 'see postmortem'}."
+    screen = postmortem.get("screen") or {}
+    if primary in {"screen_regime_dependent", "screen_edge_not_significant"} and screen:
+        parts = []
+        for label, row in (screen.get("slices") or {}).items():
+            lcb = row.get("lcb")
+            parts.append(
+                f"{label}: net {100 * _number(row.get('net_return')):+.1f}% on "
+                f"{_integer(row.get('trade_count'))} trades"
+                + (f", LCB {100 * _number(lcb):+.2f}%" if lcb is not None else "")
+            )
+        facts = "; ".join(parts)
+        if primary == "screen_regime_dependent":
+            return (
+                f"Disjoint screen slices disagree ({facts}). The mechanism is "
+                "regime-dependent: fix it to earn on both, or declare the regime "
+                "where it earns and accept bounded loss elsewhere."
+            )
+        return (
+            f"Positive on every slice but not significant at "
+            f"{100 * _number(screen.get('confidence')):.0f}% ({facts}). The edge "
+            "is inside the noise; strengthen expectancy rather than adding trades."
+        )
     if primary == "no_behavior_change":
         dead = [str(item) for item in context.get("dead_params") or []]
         if dead:
@@ -635,6 +672,19 @@ def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
             }
             for side in ("candidate", "incumbent", "reference")
             if isinstance(economics.get(side), Mapping)
+        }
+    screen = postmortem.get("screen")
+    if isinstance(screen, Mapping) and screen.get("slices"):
+        compact["screen"] = {
+            "confidence": screen.get("confidence"),
+            "code": screen.get("code"),
+            "slices": {
+                label: {
+                    key: row.get(key) for key in ("net_return", "trade_count", "lcb")
+                }
+                for label, row in screen["slices"].items()
+                if isinstance(row, Mapping)
+            },
         }
     repair_error = str(
         (postmortem.get("repair_context") or {}).get("error") or ""

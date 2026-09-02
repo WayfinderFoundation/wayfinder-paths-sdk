@@ -127,6 +127,12 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "cost_bleed_fee_multiple": 3.0,
         "cost_bleed_fee_pct_of_capital_30d": 0.10,
         "max_fills_per_day_multiple": 3.0,
+        # Quick screen generalization: two disjoint train slices, each must be
+        # positive with a paired block-bootstrap LCB > 0 at a confidence that
+        # rises with every repair (each repair is another look at the slice).
+        "screen_slices": 2,
+        "screen_confidence_base": 0.70,
+        "screen_confidence_step": 0.10,
         "wildcard_slots": 2,
         "elite_min_validation_trades": 8,
         "elite_participation_target_trades": 12,

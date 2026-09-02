@@ -226,6 +226,29 @@ def test_cost_bleed_is_primary_when_fees_dominate_a_loss() -> None:
     assert "['max_hold_bars']" in dead["diagnosis"]
     assert "dead knobs" in dead["diagnosis"]
 
+    split = {
+        "viable": False,
+        "primary_failure": "screen_regime_dependent",
+        "failure_codes": ["screen_regime_dependent"],
+        "behavior_diff": {"material_change": True},
+        "screen": {
+            "confidence": 0.7,
+            "code": "screen_regime_dependent",
+            "slices": {
+                "recent": {"net_return": 0.046, "trade_count": 44, "lcb": 0.003},
+                "earlier": {"net_return": -0.037, "trade_count": 41, "lcb": -0.02},
+            },
+        },
+    }
+    order = build_repair_work_order(split)
+    assert "slices disagree" in order["diagnosis"]
+    assert "recent: net +4.6% on 44 trades, LCB +0.30%" in order["diagnosis"]
+    assert any("declare target_regimes" in item for item in order["admissible_repairs"])
+    assert compact_postmortem(split)["screen"]["slices"]["earlier"]["lcb"] == -0.02
+
+    noisy = {**split, "primary_failure": "screen_edge_not_significant"}
+    assert "not significant at 70%" in build_repair_work_order(noisy)["diagnosis"]
+
     # No incumbent economics at all: the absolute floor still catches it.
     floor_only = build_postmortem(candidate, reference, min_trades=1)
     assert floor_only["primary_failure"] == "cost_bleed"

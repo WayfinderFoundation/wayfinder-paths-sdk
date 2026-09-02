@@ -17,7 +17,7 @@ import math
 import os
 import shutil
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from time import perf_counter
@@ -44,6 +44,11 @@ from wayfinder_paths.jobs.compute_lock import (
     machine_state_lock,
 )
 from wayfinder_paths.jobs.constitution import load_constitution
+from wayfinder_paths.jobs.economics import (
+    block_bootstrap_lcb,
+    daily_log_returns,
+    paired_daily_deltas,
+)
 from wayfinder_paths.jobs.evidence import verify_job_evidence_refs
 from wayfinder_paths.jobs.evolution_diagnostics import (
     attempt_made_progress,
@@ -1630,6 +1635,14 @@ def _evaluate_candidate(
                     },
                 }
         result = simulate_execution(subject["script"], quick, subject["spec"], params)
+        screen_results: dict[str, Any] = {"recent": result}
+        if result.validation.get("execution_valid"):
+            for label, dataset in _screen_slices(
+                train, slices=int(policy.get("screen_slices") or 2)
+            )[1:]:
+                screen_results[label] = simulate_execution(
+                    subject["script"], dataset, subject["spec"], params
+                )
         if (
             candidate.get("mutation_kind") == "parameter"
             and search_space is not None
@@ -1707,6 +1720,14 @@ def _evaluate_candidate(
                 policy.get("cost_bleed_fee_pct_of_capital_30d") or 0.10
             ),
         )
+        _apply_screen_verdict(
+            common["postmortem"],
+            screen_results,
+            reference,
+            attempt_index=int(candidate.get("attempt_count") or 0) + 1,
+            policy=policy,
+            manifest=manifest,
+        )
     if search_space is None:
         common["tuning_skip_reason"] = "no_typed_search_space"
     if tuning_preview is not None:
@@ -1726,6 +1747,45 @@ def _evaluate_candidate(
     }
 
 
+def _apply_screen_verdict(
+    postmortem: dict[str, Any],
+    screen_results: Mapping[str, Any],
+    reference: Mapping[str, Any],
+    *,
+    attempt_index: int,
+    policy: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+) -> None:
+    """Overlay the multi-slice, significance-aware screen on the postmortem."""
+    confidence = _screen_confidence(
+        attempt_index,
+        base=float(policy.get("screen_confidence_base") or 0.70),
+        step=float(policy.get("screen_confidence_step") or 0.10),
+    )
+    reference_slices = reference.get("slices") or {}
+    reports = {
+        label: _screen_slice_report(
+            result,
+            (reference_slices.get(label) or {}).get("daily_returns"),
+            confidence=confidence,
+        )
+        for label, result in screen_results.items()
+    }
+    min_trades = _screen_min_trades(policy, manifest, screen_results["recent"])
+    verdict = _screen_verdict(reports, min_trades=min_trades)
+    postmortem["screen"] = {
+        "confidence": confidence,
+        "min_trades": min_trades,
+        **verdict,
+    }
+    code = verdict["code"]
+    if code and code not in postmortem["failure_codes"]:
+        postmortem["failure_codes"].insert(0, code)
+        postmortem["primary_failure"] = code
+    if not verdict["passed"]:
+        postmortem["viable"] = False
+
+
 def _candidate_reference_receipt(
     store: JobStore,
     job_id: str,
@@ -1738,7 +1798,7 @@ def _candidate_reference_receipt(
         f"{candidate['candidate_id']}.json"
     )
     cached = store.read_json(job_id, relative, default={}) or {}
-    if cached.get("revision") == candidate.get("seed_revision"):
+    if cached.get("revision") == candidate.get("seed_revision") and "slices" in cached:
         return cached
     root = store.job_dir(job_id).resolve()
     reference = (root / str(candidate["reference_bundle"])).resolve()
@@ -1756,8 +1816,10 @@ def _candidate_reference_receipt(
     train, _, _ = _split_dataset(
         subject["dataset"], train_end=train_end, validation_end=validation_end
     )
-    quick = _tail(train, 10_000)
     params, _, _ = _calibrated_params(store, job_id, subject)
+    policy = _campaign_policy(store, job_id, campaign_id)
+    slices = _screen_slices(train, slices=int(policy.get("screen_slices") or 2))
+    _, quick = slices[0]
     result = simulate_execution(subject["script"], quick, subject["spec"], params)
     receipt = result_receipt(
         result,
@@ -1765,6 +1827,19 @@ def _candidate_reference_receipt(
         objective=_objective(result.stats, params),
         behavior=_behavior(result, quick, subject["spec"]),
     )
+    receipt["slices"] = {
+        "recent": {"daily_returns": daily_log_returns(result.equity_curve)}
+    }
+    for label, dataset in slices[1:]:
+        extra = simulate_execution(subject["script"], dataset, subject["spec"], params)
+        receipt["slices"][label] = {
+            "daily_returns": daily_log_returns(extra.equity_curve),
+            "stats": {
+                key: extra.stats.get(key)
+                for key in ("net_return", "trade_count")
+                if extra.stats.get(key) is not None
+            },
+        }
     atomic_write_json(root / relative, receipt)
     return receipt
 
@@ -1948,6 +2023,8 @@ def _attempt_cap(
 _FIXABILITY = {
     "cost_bleed": 2,
     "fees_erased_edge": 2,
+    "screen_regime_dependent": 2,
+    "screen_edge_not_significant": 1,
     "negative_after_costs": 1,
     "negative_in_target_regime": 1,
     "out_of_regime_loss_budget": 1,
@@ -3817,6 +3894,117 @@ def _split_dataset(
 def _tail(dataset: PreparedExecutionDataset, bars: int) -> PreparedExecutionDataset:
     timestamps = dataset.bars.timestamps
     return _slice(dataset, timestamps, max(0, len(timestamps) - bars), len(timestamps))
+
+
+_SCREEN_SLICE_BARS = 10_000
+_SCREEN_MIN_EARLIER_BARS = 2_000
+_SCREEN_BOOTSTRAP_BLOCK_DAYS = 2
+_SCREEN_BOOTSTRAP_ITERATIONS = 300
+
+
+def _screen_slices(
+    train: PreparedExecutionDataset,
+    *,
+    bars: int = _SCREEN_SLICE_BARS,
+    slices: int = 2,
+) -> list[tuple[str, PreparedExecutionDataset]]:
+    """Disjoint screen windows: the recent tail plus the tail before it.
+
+    A candidate repaired against one slice is selected for that slice; a
+    second, disjoint slice is the cheapest test that it generalizes at all.
+    Short datasets fall back to the single recent slice.
+    """
+    timestamps = train.bars.timestamps
+    total = len(timestamps)
+    out = [("recent", _tail(train, bars))]
+    remaining = total - min(bars, total)
+    if slices >= 2 and remaining >= _SCREEN_MIN_EARLIER_BARS:
+        out.append(
+            ("earlier", _slice(train, timestamps, max(0, remaining - bars), remaining))
+        )
+    return out
+
+
+def _screen_confidence(
+    attempt_index: int, *, base: float = 0.70, step: float = 0.10, cap: float = 0.90
+) -> float:
+    """Each repair is another look at the same slices; the bar rises with it."""
+    return round(min(cap, base + step * max(0, attempt_index - 1)), 4)
+
+
+def _screen_slice_report(
+    result: Any,
+    reference_daily: Sequence[tuple[str, float]] | None,
+    *,
+    confidence: float,
+) -> dict[str, Any]:
+    candidate_daily = daily_log_returns(result.equity_curve)
+    deltas = (
+        paired_daily_deltas(
+            [(str(day), float(value)) for day, value in reference_daily],
+            candidate_daily,
+        )
+        if reference_daily
+        else [value for _, value in candidate_daily]
+    )
+    lcb = (
+        block_bootstrap_lcb(
+            deltas,
+            block_len=_SCREEN_BOOTSTRAP_BLOCK_DAYS,
+            iterations=_SCREEN_BOOTSTRAP_ITERATIONS,
+            confidence=confidence,
+        )
+        if len(deltas) >= 4
+        else None
+    )
+    return {
+        "net_return": float(result.stats.get("net_return") or 0.0),
+        "trade_count": int(result.stats.get("trade_count") or 0),
+        "paired_days": len(deltas),
+        "lcb": None if lcb is None else round(float(lcb), 8),
+    }
+
+
+def _screen_verdict(
+    slices: Mapping[str, Mapping[str, Any]], *, min_trades: int
+) -> dict[str, Any]:
+    """Pass only when every slice is positive, significant, and populated.
+
+    Mixed signs across slices are regime dependence, not failure: the
+    remedy may be a regime declaration rather than a new mechanism.
+    """
+    positive = {label: float(row["net_return"]) > 0 for label, row in slices.items()}
+    code: str | None = None
+    if any(int(row["trade_count"]) < min_trades for row in slices.values()):
+        code = "activity_below_floor"
+    elif any(positive.values()) and not all(positive.values()):
+        code = "screen_regime_dependent"
+    elif all(positive.values()) and any(
+        row.get("lcb") is not None and float(row["lcb"]) <= 0 for row in slices.values()
+    ):
+        code = "screen_edge_not_significant"
+    return {
+        "passed": all(positive.values()) and code is None,
+        "code": code,
+        "slices": {label: dict(row) for label, row in slices.items()},
+    }
+
+
+def _screen_min_trades(
+    policy: Mapping[str, Any], manifest: Mapping[str, Any], result: Any
+) -> int:
+    """The cadence-band floor prorated to the slice's span (at least one)."""
+    floor = _min_fills_per_day(policy, manifest.get("dataset"))
+    curve = list(getattr(result, "equity_curve", None) or [])
+    if floor is None or len(curve) < 2:
+        return 1
+    try:
+        days = (
+            pd.Timestamp(curve[-1]["timestamp"]) - pd.Timestamp(curve[0]["timestamp"])
+        ).total_seconds() / 86_400.0
+    except (KeyError, TypeError, ValueError):
+        return 1
+    return max(1, math.ceil(floor * days))
 
 
 def _calibrated_params(
