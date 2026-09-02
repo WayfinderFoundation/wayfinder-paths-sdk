@@ -249,6 +249,22 @@ def test_cost_bleed_is_primary_when_fees_dominate_a_loss() -> None:
     noisy = {**split, "primary_failure": "screen_edge_not_significant"}
     assert "not significant at 70%" in build_repair_work_order(noisy)["diagnosis"]
 
+    heavy = build_repair_work_order(
+        {
+            "primary_failure": "complexity_over_budget",
+            "failure_codes": ["complexity_over_budget"],
+            "repair_context": {
+                "error": "too many gates",
+                "complexity": {"comparisons": 71, "numeric_literals": 140},
+                "complexity_budget": 48,
+            },
+        }
+    )
+    assert (
+        "71 comparisons" in heavy["diagnosis"] and "budget of 48" in heavy["diagnosis"]
+    )
+    assert any("remove gates" in item for item in heavy["admissible_repairs"])
+
     # No incumbent economics at all: the absolute floor still catches it.
     floor_only = build_postmortem(candidate, reference, min_trades=1)
     assert floor_only["primary_failure"] == "cost_bleed"

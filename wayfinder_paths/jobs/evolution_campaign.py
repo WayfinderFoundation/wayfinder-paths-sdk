@@ -9,6 +9,7 @@ workspace and no function in this module can authorize live trading.
 
 from __future__ import annotations
 
+import ast
 import gc
 import hashlib
 import importlib
@@ -113,6 +114,11 @@ from wayfinder_paths.jobs.regime import (
     declared_regimes,
     opposite_regime,
     regime_universe,
+)
+from wayfinder_paths.jobs.research import (
+    apply_bh_verdicts,
+    library_signal_warmup_bars,
+    scan_signals,
 )
 from wayfinder_paths.jobs.resource_envelope import (
     evolution_resource_phase,
@@ -513,6 +519,15 @@ def _start_campaign(
         window=snapshots["dataset"],
         params=_target_execution_params(campaign_root / "source"),
     )
+    failure_modes = _incumbent_failure_modes(
+        store, job_id, campaign_root, policy=campaign_policy
+    )
+    if failure_modes is not None:
+        baseline["failure_modes"] = failure_modes
+    baseline["complexity"] = _bundle_complexity(store, job_id, campaign_root / "source")
+    validated_signals = _validated_signals(
+        store, job_id, campaign_root, policy=campaign_policy
+    )
     diagnostic_pack = build_diagnostic_pack(
         root,
         campaign_id=campaign_id,
@@ -521,6 +536,7 @@ def _start_campaign(
         historical_lessons=historical_lessons,
         research_context=research_context,
         regime_context=regime_context,
+        validated_signals=validated_signals,
     )
     diagnostic_path = campaign_root / DIAGNOSTIC_PACK
     atomic_write_json(diagnostic_path, diagnostic_pack)
@@ -611,6 +627,651 @@ def _campaign_regime_context(
         "recent_window_days": 7,
         "recent_counts": {str(key): int(value) for key, value in counts.items()},
         "as_of": pd.Timestamp(usable.index[-1]).isoformat(),
+    }
+
+
+_COMPLEXITY_FLOOR_COMPARISONS = 24
+_COMPLEXITY_MULTIPLE = 1.5
+
+
+def strategy_complexity(source: str) -> dict[str, int]:
+    """Static size of a strategy: comparisons (gates), numeric literals, lines.
+
+    Not a quality score — a budget.  Fewer degrees of freedom on a 35-day
+    screen slice is the most reliable generalization lever there is.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {
+            "comparisons": 0,
+            "numeric_literals": 0,
+            "lines": len(source.splitlines()),
+        }
+    comparisons = sum(isinstance(node, ast.Compare) for node in ast.walk(tree))
+    literals = sum(
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, int | float)
+        and not isinstance(node.value, bool)
+        for node in ast.walk(tree)
+    )
+    return {
+        "comparisons": comparisons,
+        "numeric_literals": literals,
+        "lines": len(source.splitlines()),
+    }
+
+
+def _bundle_complexity(store: JobStore, job_id: str, root: Path) -> dict[str, int]:
+    job_data = _load_job_yaml(root)
+    script = store.resolve_script_entrypoint(job_id, job_data, candidate_dir=root)
+    if script is None or not script.exists():
+        return {"comparisons": 0, "numeric_literals": 0, "lines": 0}
+    return strategy_complexity(script.read_text(encoding="utf-8", errors="replace"))
+
+
+def _complexity_budget(
+    policy: Mapping[str, Any], incumbent: Mapping[str, Any] | None
+) -> int:
+    floor = int(
+        policy.get("complexity_floor_comparisons") or _COMPLEXITY_FLOOR_COMPARISONS
+    )
+    multiple = float(policy.get("complexity_multiple") or _COMPLEXITY_MULTIPLE)
+    base = int((incumbent or {}).get("comparisons") or 0)
+    return max(floor, math.ceil(multiple * base))
+
+
+def _signal_timeframes(bar_seconds: int) -> list[str]:
+    """Base timeframe plus the coarser intraday frames it divides evenly."""
+    out = [f"{int(bar_seconds)}s"]
+    for candidate in ("15m", "1h", "4h"):
+        seconds = bar_interval_seconds(candidate) or 0
+        if seconds > bar_seconds and seconds % bar_seconds == 0:
+            out.append(candidate)
+    return out
+
+
+def _validated_signals(
+    store: JobStore, job_id: str, campaign_root: Path, *, policy: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Library signals with dense, fold-stable, cost-net edge on this dataset.
+
+    Discipline, in order: the scan's own on the FULL train split (events
+    decimated to horizon spacing, |t|>=2 against drift, sign agreement in 3
+    of 4 chronological folds, edge positive net of the round trip); then a
+    density floor so a de-novo strategy built on the signal can clear the
+    participation floor; then the same sign on both disjoint screen slices.
+    Off unless the campaign policy enables it so the bench can A/B it.
+    """
+    if not bool(policy.get("signal_first_seeding", False)):
+        return None
+    try:
+        subject = _load_subject(
+            store,
+            job_id,
+            campaign_root / "source",
+            dataset_root=campaign_root / CAMPAIGN_DATA_ROOT,
+        )
+        split = policy.get("split") or {}
+        train, _, _ = _split_dataset(
+            subject["dataset"],
+            train_end=float(split.get("train") or 0.8),
+            validation_end=1.0,
+        )
+        params, _, _ = _calibrated_params(store, job_id, subject)
+        bar_seconds = bar_interval_seconds(
+            subject["spec"].data_contract.get("bar_interval")
+        )
+        if not bar_seconds:
+            raise ValueError("execution spec requires a positive bar_interval")
+        bar_seconds = int(bar_seconds)
+        timeframes = _signal_timeframes(bar_seconds)
+        slices = _screen_slices(train, slices=int(policy.get("screen_slices") or 2))
+        universe = regime_universe(params, subject["dataset"].bars.symbols)
+        # resample_ohlcv labels the coarser bars by symbol, so keep the column.
+        columns = ["timestamp", "symbol", "open", "high", "low", "close", "volume"]
+        scan_kwargs: dict[str, Any] = {
+            "bar_seconds": bar_seconds,
+            "timeframes": timeframes,
+            "holdout_fraction": 0.0,
+            "min_events": int(policy.get("signal_scan_min_events") or 30),
+            "fee_bps": float(params.get("fee_bps") or 5.0),
+            "slippage_bps": float(params.get("slippage_bps") or 3.5),
+        }
+        train_frame = train.bars.to_frame()
+        stamps = train.bars.timestamps
+        train_days = max((stamps[-1] - stamps[0]).total_seconds() / 86_400.0, 1e-9)
+        full_rows: list[dict[str, Any]] = []
+        for symbol in universe:
+            rows = train_frame[train_frame["symbol"] == symbol][columns].reset_index(
+                drop=True
+            )
+            if len(rows) < 200:
+                continue
+            result = scan_signals(rows, **scan_kwargs)
+            for row in result.get("_all_rows") or []:
+                full_rows.append({**row, "symbol": symbol})
+        apply_bh_verdicts(full_rows, q_threshold=0.10, min_folds_agree=3)
+        per_slice: dict[str, dict[tuple[str, str, str, int], dict[str, Any]]] = {}
+        for label, dataset in slices:
+            frame = dataset.bars.to_frame()
+            table: dict[tuple[str, str, str, int], dict[str, Any]] = {}
+            for symbol in universe:
+                rows = frame[frame["symbol"] == symbol][columns].reset_index(drop=True)
+                if len(rows) < 200:
+                    continue
+                result = scan_signals(rows, **{**scan_kwargs, "min_events": 10})
+                for row in result.get("_all_rows") or []:
+                    key = (
+                        symbol,
+                        str(row["signal"]),
+                        str(row["timeframe"]),
+                        int(row["horizon"]),
+                    )
+                    table[key] = row
+            per_slice[label] = table
+        selected, near = _select_validated_rows(
+            full_rows,
+            per_slice,
+            days=train_days,
+            min_events_per_day=float(
+                policy.get("signal_first_min_events_per_day") or 0.3
+            ),
+            slice_min_t=float(policy.get("signal_first_slice_min_t") or 1.0),
+            min_t_net=float(policy.get("signal_first_min_t_net") or 1.0),
+        )
+        for row in [*selected, *near]:
+            row["warmup_bars_required"] = library_signal_warmup_bars(
+                row["signal"], row["timeframe"], bar_seconds=bar_seconds
+            )
+            row["how_to_use"] = (
+                "in precompute(): from wayfinder_paths.jobs.research import "
+                "library_signal_on_bars; column = library_signal_on_bars(frame, "
+                f"{row['signal']!r}, {row['timeframe']!r}, bar_seconds={bar_seconds}); "
+                f"enter {row['direction']} on True, exit after "
+                f"{row['horizon']} {row['timeframe']} bars; declare warmup_bars >= "
+                f"{row['warmup_bars_required']}"
+            )
+    except Exception as exc:  # noqa: BLE001 - seeding never blocks a start
+        return {"available": False, "reason": str(exc)[:240]}
+    limit = int(policy.get("signal_first_limit") or 10)
+    return {
+        "available": True,
+        "method": (
+            "library event study on the full train split (decimated events, "
+            "|t|>=2 vs drift, 3/4 fold sign agreement, positive edge net of the "
+            "round trip with t_net>=floor; BH q reported, not gated), then an "
+            "event-density floor and same-sign confirmation on both screen slices"
+        ),
+        "timeframes": timeframes,
+        "tests": len(full_rows),
+        "train_days": round(train_days, 2),
+        "signals": selected[:limit],
+        # Passed the scan's own bar but not density or slice confirmation:
+        # direction for the designer, not evidence.
+        "near_misses": near[:5],
+    }
+
+
+def _select_validated_rows(
+    full_rows: Sequence[Mapping[str, Any]],
+    per_slice: Mapping[str, Mapping[tuple[str, str, str, int], Mapping[str, Any]]],
+    *,
+    days: float,
+    min_events_per_day: float,
+    slice_min_t: float,
+    min_t_net: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Replicated, cost-surviving, dense signals from a full-train scan.
+
+    Direction and strength come from the scan's gross t-stat (its
+    ``direction`` field; ``t_net`` is the directional cost-adjusted t and its
+    sign is NOT the trade side).  Benjamini-Hochberg q-values ride along as
+    evidence but do not gate: a family of ~2,000 tests on 80 days of bars
+    never promotes at q<=0.10, and the screen, full-dev and holdout gate the
+    strategy built on the signal anyway.  What replicates is what seeds.
+    """
+    selected: list[dict[str, Any]] = []
+    near: list[dict[str, Any]] = []
+    for row in full_rows:
+        direction = row.get("direction")
+        t_gross = float(row.get("t_stat_vs_drift") or 0.0)
+        t_net = float(row.get("t_net") or 0.0)
+        if direction not in ("long", "short") or not bool(row.get("fold_stable")):
+            continue
+        if float(row.get("edge_net_bps") or 0.0) <= 0 or t_net < min_t_net:
+            continue
+        key = (
+            str(row["symbol"]),
+            str(row["signal"]),
+            str(row["timeframe"]),
+            int(row["horizon"]),
+        )
+        events = int(row.get("n") or 0)
+        density = events / days
+        slice_t = {
+            label: float((table.get(key) or {}).get("t_stat_vs_drift") or 0.0)
+            for label, table in per_slice.items()
+        }
+        confirmed = bool(slice_t) and all(
+            value * t_gross > 0 and abs(value) >= slice_min_t
+            for value in slice_t.values()
+        )
+        entry = {
+            "symbol": key[0],
+            "signal": key[1],
+            "family": row.get("family"),
+            "description": str(row.get("description") or "")[:160],
+            "timeframe": key[2],
+            "horizon": key[3],
+            "direction": str(direction),
+            "t_stat": round(t_gross, 3),
+            "t_net": round(t_net, 3),
+            "q_value": row.get("q_value"),
+            "bh_verdict": row.get("verdict"),
+            "edge_net_bps": round(float(row.get("edge_net_bps") or 0.0), 2),
+            "events": events,
+            "events_per_day": round(density, 3),
+            "folds_agreeing": row.get("folds_agreeing"),
+            "t_stat_by_slice": {
+                label: round(value, 3) for label, value in slice_t.items()
+            },
+            "score": round(t_net, 3),
+        }
+        if density >= min_events_per_day and confirmed:
+            selected.append(entry)
+        else:
+            entry["shortfall"] = (
+                "sparse" if density < min_events_per_day else "slice_disagreement"
+            )
+            near.append(entry)
+    selected.sort(key=lambda item: (-item["score"], item["symbol"], item["signal"]))
+    near.sort(key=lambda item: (-item["score"], item["symbol"], item["signal"]))
+    return selected, near
+
+
+def _numeric_tunables(
+    strategy_params: Mapping[str, Any], params: Mapping[str, Any], *, limit: int = 8
+) -> dict[str, float]:
+    excluded = set(_TARGET_EXECUTION_PARAM_KEYS) | {
+        "warmup_bars",
+        "lookback_bars",
+        "full_history",
+        "target_regimes",
+        "defense_overlay",
+    }
+    merged = {**dict(strategy_params), **dict(params)}
+    out: dict[str, float] = {}
+    for name in sorted(merged):
+        value = merged[name]
+        if name in excluded or isinstance(value, bool):
+            continue
+        if isinstance(value, int | float) and value != 0 and math.isfinite(value):
+            out[name] = float(value)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _neighborhood_dimension(value: float, span: float) -> dict[str, Any]:
+    low, high = value * (1 - span), value * (1 + span)
+    if low > high:
+        low, high = high, low
+    if float(value).is_integer() and abs(value) >= 2:
+        low_int = int(math.floor(low))
+        high_int = max(low_int + 1, int(math.ceil(high)))
+        return {"type": "int", "low": low_int, "high": high_int}
+    return {"type": "float", "low": round(low, 10), "high": round(high, 10)}
+
+
+def _plateau_select(
+    grid: ExecutionGridResult,
+    dimensions: Sequence[str],
+    rank_by: str,
+    *,
+    radius: float = 0.2,
+    min_ratio: float = 0.5,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Prefer a plateau over a peak: the trial whose neighborhood scores best.
+
+    A lone peak whose neighbors score under ``min_ratio`` of it is a fit to
+    noise; the best-neighborhood trial generalizes.
+    """
+    rows = [
+        row
+        for row in (getattr(grid, "runs", None) or [])
+        if isinstance(row.get("params"), dict) and row.get(rank_by) is not None
+    ]
+    if not rows:
+        # No per-trial rows (older grids, test doubles): keep the ranked winner.
+        ranked = list(getattr(grid, "ranked", None) or [])
+        return (
+            (dict(ranked[0]) if ranked else None),
+            {"neighbors_of_best": 0, "ratio": None, "selected_by": "ranked"},
+        )
+
+    def score(row: Mapping[str, Any]) -> float:
+        return float(row[rank_by])
+
+    def near(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
+        for name in dimensions:
+            left, right = a.get(name), b.get(name)
+            if isinstance(left, int | float) and isinstance(right, int | float):
+                if abs(float(left) - float(right)) > radius * max(
+                    abs(float(left)), 1e-9
+                ):
+                    return False
+            elif left != right:
+                return False
+        return True
+
+    def neighborhood(row: Mapping[str, Any]) -> tuple[float, int]:
+        values = [
+            score(other)
+            for other in rows
+            if other is not row and near(row["params"], other["params"])
+        ]
+        return (sum([score(row), *values]) / (1 + len(values)), len(values))
+
+    best = max(rows, key=score)
+    best_mean, best_neighbors = neighborhood(best)
+    ratio = best_mean / score(best) if score(best) > 0 and best_neighbors else None
+    plateau = max(rows, key=lambda row: neighborhood(row)[0])
+    peaky = best_neighbors >= 2 and ratio is not None and ratio < min_ratio
+    selected = plateau if peaky else best
+    return dict(selected), {
+        "neighbors_of_best": best_neighbors,
+        "ratio": None if ratio is None else round(ratio, 4),
+        "selected_by": "plateau" if peaky and selected is not best else "peak",
+        "selected_trial": selected.get("trial"),
+    }
+
+
+def _fill_signatures(result: Any) -> set[tuple[str, str, str]]:
+    return {
+        (
+            str(row.get("timestamp") or row.get("filled_at")),
+            str(row.get("symbol")),
+            str(row.get("side") or row.get("action")),
+        )
+        for row in result.trades
+    }
+
+
+def _alive_tunables(
+    subject: Mapping[str, Any],
+    probe_slice: PreparedExecutionDataset,
+    params: Mapping[str, Any],
+    tunables: Mapping[str, float],
+    *,
+    span: float,
+) -> list[str]:
+    """Knobs whose endpoints change fills on a short slice.
+
+    A sparse strategy trades on ~1% of bars, so an 8-bar intent probe reads
+    every knob as dead; a short full simulation compared by fill signature
+    is the honest cheap test.
+    """
+    baseline = _fill_signatures(
+        simulate_execution(
+            subject["script"], probe_slice, subject["spec"], dict(params)
+        )
+    )
+    alive: list[str] = []
+    for name, value in tunables.items():
+        dimension = _neighborhood_dimension(value, span)
+        for endpoint in (dimension["low"], dimension["high"]):
+            variant = {**params, name: endpoint}
+            fills = _fill_signatures(
+                simulate_execution(
+                    subject["script"], probe_slice, subject["spec"], variant
+                )
+            )
+            if fills != baseline:
+                alive.append(name)
+                break
+        if len(alive) >= _MAX_SEARCH_DIMENSIONS:
+            break
+    return alive
+
+
+def _incumbent_neighborhood(
+    store: JobStore,
+    job_id: str,
+    state: Mapping[str, Any],
+    candidate_root: Path,
+    *,
+    policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Deterministic local search around the incumbent before the model edits.
+
+    Probes which numeric knobs move decisions, tunes the live ones on the
+    recent screen slice, verifies the winner on the earlier slice, and
+    applies it only when it beats the incumbent on both.  Always leaves a
+    typed search_space.json so the parameter slot starts from a valid space.
+    """
+    campaign_id = str(state["campaign_id"])
+    try:
+        subject = _load_subject(store, job_id, candidate_root, campaign_id=campaign_id)
+        train_end, validation_end = _split_bounds(
+            store, job_id, campaign_id=campaign_id
+        )
+        train, _, _ = _split_dataset(
+            subject["dataset"], train_end=train_end, validation_end=validation_end
+        )
+        params, _, _ = _calibrated_params(store, job_id, subject)
+        strategy = _load_strategy(subject["script"], dict(params))
+        tunables = _numeric_tunables(getattr(strategy, "params", {}) or {}, params)
+        if not tunables:
+            return {"available": False, "reason": "no numeric tunables"}
+        slices = _screen_slices(train, slices=int(policy.get("screen_slices") or 2))
+        recent = slices[0][1]
+        span = float(policy.get("incumbent_neighborhood_span") or 0.3)
+        alive = _alive_tunables(
+            subject,
+            _tail(
+                recent, int(policy.get("incumbent_neighborhood_probe_bars") or 2_000)
+            ),
+            params,
+            tunables,
+            span=span,
+        )
+        search_space = {
+            name: _neighborhood_dimension(tunables[name], span) for name in alive
+        }
+        atomic_write_text(
+            candidate_root / "search_space.json",
+            json.dumps(search_space or {}, indent=2, sort_keys=True) + "\n",
+        )
+        if not alive:
+            return {
+                "available": True,
+                "searched": [],
+                "applied": False,
+                "reason": "no decision-sensitive numeric params on the screen slice",
+            }
+        baseline = {
+            label: float(
+                simulate_execution(
+                    subject["script"], dataset, subject["spec"], params
+                ).stats.get("net_return")
+                or 0.0
+            )
+            for label, dataset in slices
+        }
+        grid = run_optuna_search(
+            subject["script"],
+            recent,
+            subject["spec"],
+            {**params, **search_space},
+            rank_by="net_return",
+            n_trials=int(policy.get("incumbent_neighborhood_trials") or 6),
+            seed=_OPTUNA_SEED,
+            timeout=float(policy.get("incumbent_neighborhood_timeout_seconds") or 180),
+        )
+        selected, plateau = _plateau_select(grid, alive, "net_return")
+        if selected is None:
+            return {
+                "available": True,
+                "searched": alive,
+                "applied": False,
+                "reason": "no valid neighborhood trial",
+            }
+        best_params = {
+            name: selected["params"][name]
+            for name in alive
+            if name in selected["params"]
+        }
+        tuned = {**params, **best_params}
+        best = {"recent": float(selected.get("net_return") or 0.0)}
+        for label, dataset in slices[1:]:
+            best[label] = float(
+                simulate_execution(
+                    subject["script"], dataset, subject["spec"], tuned
+                ).stats.get("net_return")
+                or 0.0
+            )
+        applied = all(best[label] > baseline[label] for label in best)
+        if applied:
+            job_data = _load_job_yaml(candidate_root)
+            execution_params = dict(job_data.get("execution_params") or {})
+            execution_params.update(best_params)
+            job_data["execution_params"] = execution_params
+            atomic_write_text(
+                candidate_root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
+            )
+            atomic_write_text(
+                candidate_root / "search_space.json",
+                json.dumps(
+                    {
+                        name: _neighborhood_dimension(float(value), span / 2)
+                        for name, value in best_params.items()
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+            )
+    except Exception as exc:  # noqa: BLE001 - local search never blocks prepare
+        return {"available": False, "reason": str(exc)[:240]}
+    return {
+        "available": True,
+        "searched": alive,
+        "trials": len(grid.runs),
+        "incumbent": {label: round(value, 6) for label, value in baseline.items()},
+        "best": {
+            "params": best_params,
+            **{label: round(value, 6) for label, value in best.items()},
+        },
+        "plateau": plateau,
+        "applied": applied,
+    }
+
+
+def _incumbent_failure_modes(
+    store: JobStore, job_id: str, campaign_root: Path, *, policy: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Where and when the incumbent loses on the screen slices.
+
+    Two bounded simulations at campaign start; the design phase targets the
+    incumbent's losing days and regimes instead of trying to beat it where
+    it already earns.
+    """
+    if not bool(policy.get("incumbent_failure_modes", True)):
+        return None
+    try:
+        subject = _load_subject(
+            store,
+            job_id,
+            campaign_root / "source",
+            dataset_root=campaign_root / CAMPAIGN_DATA_ROOT,
+        )
+        split = policy.get("split") or {}
+        train, _, _ = _split_dataset(
+            subject["dataset"],
+            train_end=float(split.get("train") or 0.8),
+            validation_end=1.0,
+        )
+        params, _, _ = _calibrated_params(store, job_id, subject)
+        labels = classify_portfolio_regimes(
+            train.bars.to_frame(),
+            universe=regime_universe(params, subject["dataset"].bars.symbols),
+        )
+        day_labels = _majority_day_labels(labels)
+        slices: dict[str, Any] = {}
+        for label, dataset in _screen_slices(
+            train, slices=int(policy.get("screen_slices") or 2)
+        ):
+            result = simulate_execution(
+                subject["script"], dataset, subject["spec"], params
+            )
+            slices[label] = _failure_mode_summary(
+                daily_log_returns(result.equity_curve), day_labels
+            )
+    except Exception as exc:  # noqa: BLE001 - diagnostics never block a start
+        return {"available": False, "reason": str(exc)[:240]}
+    return {
+        "available": True,
+        "classifier": PORTFOLIO_REGIME_CLASSIFIER,
+        "slices": slices,
+    }
+
+
+def _majority_day_labels(labels: pd.Series) -> dict[str, str]:
+    if labels.empty:
+        return {}
+    frame = pd.DataFrame(
+        {"day": pd.to_datetime(labels.index, utc=True).date.astype(str), "cell": labels}
+    )
+    return {
+        str(day): str(group["cell"].mode().iloc[0])
+        for day, group in frame.groupby("day")
+        if not group["cell"].mode().empty
+    }
+
+
+def _failure_mode_summary(
+    daily: Sequence[tuple[str, float]], day_labels: Mapping[str, str]
+) -> dict[str, Any]:
+    """Losing days, worst days, and per-regime P&L of one daily return series."""
+    by_regime: dict[str, dict[str, Any]] = {}
+    losing: list[tuple[str, float]] = []
+    for day, value in daily:
+        cell = str(day_labels.get(str(day), MIXED_REGIME))
+        bucket = by_regime.setdefault(
+            cell, {"days": 0, "losing_days": 0, "net_log_growth": 0.0}
+        )
+        bucket["days"] += 1
+        bucket["net_log_growth"] += float(value)
+        if float(value) < 0:
+            bucket["losing_days"] += 1
+            losing.append((str(day), float(value)))
+    for bucket in by_regime.values():
+        bucket["net_log_growth"] = round(bucket["net_log_growth"], 8)
+        bucket["net_return"] = round(math.exp(bucket["net_log_growth"]) - 1.0, 6)
+    worst_regime = (
+        min(by_regime, key=lambda cell: by_regime[cell]["net_log_growth"])
+        if by_regime
+        else None
+    )
+    total = sum(float(value) for _, value in daily)
+    losing_total = sum(value for _, value in losing)
+    return {
+        "days": len(daily),
+        "net_return": round(math.exp(total) - 1.0, 6),
+        "losing_days": len(losing),
+        "losing_log_growth": round(losing_total, 8),
+        "losing_return": round(math.exp(losing_total) - 1.0, 6),
+        "worst_days": [
+            {
+                "day": day,
+                "return": round(value, 6),
+                "regime": day_labels.get(day, MIXED_REGIME),
+            }
+            for day, value in sorted(losing, key=lambda item: item[1])[:5]
+        ],
+        "by_regime": by_regime,
+        "worst_regime": worst_regime,
     }
 
 
@@ -1300,6 +1961,15 @@ def _prepare_candidate(
         atomic_write_text(
             candidate_root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
         )
+    neighborhood: dict[str, Any] | None = None
+    if (
+        source == "incumbent"
+        and chosen_mutation == "parameter"
+        and bool((manifest.get("policy") or {}).get("incumbent_neighborhood_search"))
+    ):
+        neighborhood = _incumbent_neighborhood(
+            store, job_id, state, candidate_root, policy=manifest.get("policy") or {}
+        )
     seed_revision = compute_workspace_revision(candidate_root)
     reference_relative = (
         f"{CAMPAIGN_ROOT}/{state['campaign_id']}/references/{candidate_id}"
@@ -1321,6 +1991,7 @@ def _prepare_candidate(
         "research_seed_id": (parent_plan.get("research_seed") or {}).get("seed_id"),
         "secondary_parent_bundle": (parent_plan.get("secondary") or {}).get("bundle"),
         "mutation_kind": chosen_mutation,
+        "neighborhood": neighborhood,
         "forced_jump": forced_jump,
         "bundle": relative,
         "warmup_bars": seeded_window,
@@ -1552,6 +2223,33 @@ def _evaluate_candidate(
         )
         or {}
     )
+    complexity = _bundle_complexity(store, job_id, candidate_root)
+    complexity_budget = _complexity_budget(
+        manifest.get("policy") or {},
+        _incumbent_complexity(store, job_id, campaign_id),
+    )
+    if int(complexity.get("comparisons") or 0) > complexity_budget:
+        error = (
+            f"strategy has {complexity['comparisons']} comparisons against a "
+            f"budget of {complexity_budget}; simplify before simulation"
+        )
+        return {
+            "status": "low_fidelity_rejected",
+            "evidence": error,
+            "quick_simulation_ran": False,
+            "complexity": complexity,
+            "postmortem": {
+                "viable": False,
+                "primary_failure": "complexity_over_budget",
+                "failure_codes": ["complexity_over_budget"],
+                "behavior_diff": {"material_change": False},
+                "repair_context": {
+                    "error": error,
+                    "complexity": complexity,
+                    "complexity_budget": complexity_budget,
+                },
+            },
+        }
     if (
         revision == _source_baseline_revision(manifest, candidate)
         and search_space is None
@@ -1678,6 +2376,7 @@ def _evaluate_candidate(
     common: dict[str, Any] = {
         "revision": revision,
         "quick": compact,
+        "complexity": complexity,
         "objective": _objective(result.stats, params),
         "behavior": _behavior(result, quick, subject["spec"]),
         "execution_calibration": calibration,
@@ -2025,6 +2724,7 @@ _FIXABILITY = {
     "fees_erased_edge": 2,
     "screen_regime_dependent": 2,
     "screen_edge_not_significant": 1,
+    "complexity_over_budget": 1,
     "negative_after_costs": 1,
     "negative_in_target_regime": 1,
     "out_of_regime_loss_budget": 1,
@@ -2083,6 +2783,19 @@ def _stamp_focus(state: dict[str, Any], policy: Mapping[str, Any]) -> None:
         else [],
         "computed_at": utc_now_iso(),
     }
+
+
+def _incumbent_complexity(
+    store: JobStore, job_id: str, campaign_id: str
+) -> dict[str, Any] | None:
+    pack = (
+        store.read_json(
+            job_id, f"{CAMPAIGN_ROOT}/{campaign_id}/{DIAGNOSTIC_PACK}", default={}
+        )
+        or {}
+    )
+    complexity = (pack.get("baseline") or {}).get("complexity")
+    return dict(complexity) if isinstance(complexity, dict) else None
 
 
 def _incumbent_economics(
@@ -3001,6 +3714,62 @@ def campaign_prompt_block(
             if cost_budget
             else ""
         )
+        failure_target = (
+            ((diagnostic_pack.get("baseline") or {}).get("failure_modes") or {}).get(
+                "slices"
+            )
+            or {}
+        ).get("recent") or {}
+        failure_instruction = (
+            "Failure-mode target: on the recent screen slice the incumbent lost on "
+            f"{failure_target['losing_days']} of {failure_target['days']} days "
+            f"({100 * float(failure_target.get('losing_return') or 0.0):+.1f}% on "
+            f"those days; worst regime {failure_target.get('worst_regime')!r}). A "
+            "candidate that repairs those days while staying non-inferior on the "
+            "incumbent's winning days passes the screen by the failure-mode route; "
+            "cite /baseline/failure_modes. "
+            if failure_target.get("days")
+            else ""
+        )
+        validated = diagnostic_pack.get("validated_signals") or {}
+        validated_rows = (
+            list(validated.get("signals") or []) if validated.get("available") else []
+        )
+        signal_instruction = (
+            "Validated signals (dense, fold-stable, cost-net edge on the full "
+            "train split and the same sign on both screen slices; cite "
+            "/validated_signals/signals/<i>): "
+            + "; ".join(
+                f"{row['signal']} {row['direction']} {row['symbol']} "
+                f"{row['timeframe']} x{row['horizon']} "
+                f"({row.get('events_per_day', 0):.1f} events/day)"
+                for row in validated_rows[:6]
+            )
+            + ". Build de_novo slots around one of these unless the slot is an "
+            "explicit wildcard; each entry's how_to_use gives the one-call "
+            "precompute (library_signal_on_bars), the fixed-horizon exit, and "
+            "the warmup to declare. "
+            if validated_rows
+            else (
+                "No library signal cleared the two-slice edge test on this dataset; "
+                "de_novo slots must state why their mechanism should earn here"
+                + (
+                    " (nearest misses, same sign on both slices but under the "
+                    "floor, not evidence: "
+                    + "; ".join(
+                        f"{row['signal']} {row['direction']} {row['symbol']} "
+                        f"{row['timeframe']} x{row['horizon']} [{row.get('shortfall')}]"
+                        for row in (validated.get("near_misses") or [])[:3]
+                    )
+                    + ")"
+                    if validated.get("near_misses")
+                    else ""
+                )
+                + ". "
+                if validated.get("available")
+                else ""
+            )
+        )
         regime_context = manifest.get("regime_context") or {}
         specialist_design = bool(
             policy.get("regime_specialist_enabled") and regime_context.get("available")
@@ -3030,6 +3799,7 @@ def campaign_prompt_block(
                 "cite existing JSON pointers from the diagnostic pack. Include "
                 "at least one starter_seed and one grounded de_novo slot. "
                 f"{research_instruction}{regime_instruction}{cost_instruction}"
+                f"{failure_instruction}{signal_instruction}"
                 "Use at most one incumbent slot and at "
                 "most two parameter slots. One wildcard must be de_novo. "
                 'Call wayfinder_core_jobs with action="evolution_design", '
@@ -3066,6 +3836,13 @@ def campaign_prompt_block(
                 "regime_specialist_design": specialist_design,
                 "regime_context": regime_context if specialist_design else None,
                 "cost_budget": cost_budget,
+                "failure_modes": failure_target or None,
+                "validated_signals": [
+                    f"{row['symbol']}:{row['signal']}:{row['timeframe']}:{row['horizon']}"
+                    for row in validated_rows
+                ]
+                if validated.get("available")
+                else None,
             },
             "deadline_elapsed": current >= deadline,
         }
@@ -3387,6 +4164,15 @@ def _candidate_handoff(candidate: dict[str, Any]) -> dict[str, Any]:
         "attempt_count": int(candidate.get("attempt_count") or 0),
         "best_attempt": candidate.get("best_attempt"),
     }
+    neighborhood = candidate.get("neighborhood")
+    if isinstance(neighborhood, dict) and neighborhood.get("available"):
+        handoff["neighborhood"] = {
+            key: neighborhood.get(key)
+            for key in ("searched", "incumbent", "best", "plateau", "applied", "reason")
+            if neighborhood.get(key) is not None
+        }
+    if isinstance(candidate.get("complexity"), dict):
+        handoff["complexity"] = dict(candidate["complexity"])
     for key in ("objective", "behavior"):
         value = candidate.get(key)
         if isinstance(value, dict):
@@ -3610,8 +4396,14 @@ def _full_dev(
             bars=search_bars,
             timeout=search_timeout,
         )
-        if grid.ranked:
-            params = dict(grid.ranked[0]["params"])
+        selected, plateau = _plateau_select(
+            grid,
+            _typed_search_dimensions(candidate_search),
+            str(getattr(grid, "rank_by", None) or "net_return"),
+        )
+        tuning["plateau"] = plateau
+        if selected is not None:
+            params = dict(selected["params"])
             params["slippage_bps"] = max(
                 float(params.get("slippage_bps") or 0.0),
                 float(calibration["p50_bps"]),
@@ -3947,22 +4739,72 @@ def _screen_slice_report(
         if reference_daily
         else [value for _, value in candidate_daily]
     )
-    lcb = (
-        block_bootstrap_lcb(
-            deltas,
-            block_len=_SCREEN_BOOTSTRAP_BLOCK_DAYS,
-            iterations=_SCREEN_BOOTSTRAP_ITERATIONS,
-            confidence=confidence,
-        )
-        if len(deltas) >= 4
-        else None
-    )
-    return {
+    report: dict[str, Any] = {
         "net_return": float(result.stats.get("net_return") or 0.0),
         "trade_count": int(result.stats.get("trade_count") or 0),
         "paired_days": len(deltas),
-        "lcb": None if lcb is None else round(float(lcb), 8),
+        "lcb": _screen_lcb(deltas, confidence),
     }
+    if reference_daily:
+        # Where the reference lost is where an improvement is both most
+        # valuable and easiest to see: the effect is concentrated on few days.
+        reference_map = {str(day): float(value) for day, value in reference_daily}
+        losing = [
+            value - reference_map[day]
+            for day, value in candidate_daily
+            if day in reference_map and reference_map[day] < 0
+        ]
+        winning = [
+            value - reference_map[day]
+            for day, value in candidate_daily
+            if day in reference_map and reference_map[day] >= 0
+        ]
+        report["failure_mode"] = {
+            "losing_days": len(losing),
+            "losing_delta": round(sum(losing), 8),
+            "losing_lcb": _screen_lcb(losing, confidence),
+            "winning_days": len(winning),
+            "winning_delta": round(sum(winning), 8),
+        }
+    return report
+
+
+def _screen_lcb(deltas: Sequence[float], confidence: float) -> float | None:
+    if len(deltas) < 4:
+        return None
+    lcb = block_bootstrap_lcb(
+        list(deltas),
+        block_len=_SCREEN_BOOTSTRAP_BLOCK_DAYS,
+        iterations=_SCREEN_BOOTSTRAP_ITERATIONS,
+        confidence=confidence,
+    )
+    return None if lcb is None else round(float(lcb), 8)
+
+
+# Winning-day tolerance for the failure-mode route: a repair may not cost
+# more than this (log return over the slice) where the reference was earning.
+_SCREEN_NON_INFERIORITY_TOLERANCE = 0.005
+_SCREEN_FAILURE_MODE_MIN_DAYS = 3
+
+
+def _slice_route(row: Mapping[str, Any]) -> str | None:
+    """How a positive slice clears the bar: global significance, or by
+    repairing the reference's losing days without hurting its winning days."""
+    lcb = row.get("lcb")
+    if lcb is not None and float(lcb) > 0:
+        return "global"
+    mode = row.get("failure_mode") or {}
+    if (
+        int(mode.get("losing_days") or 0) >= _SCREEN_FAILURE_MODE_MIN_DAYS
+        and float(mode.get("losing_delta") or 0.0) > 0
+        and (mode.get("losing_lcb") is None or float(mode["losing_lcb"]) > 0)
+        and float(mode.get("winning_delta") or 0.0)
+        >= -_SCREEN_NON_INFERIORITY_TOLERANCE
+    ):
+        return "failure_mode"
+    if lcb is None:
+        return "point_estimate"
+    return None
 
 
 def _screen_verdict(
@@ -3974,19 +4816,21 @@ def _screen_verdict(
     remedy may be a regime declaration rather than a new mechanism.
     """
     positive = {label: float(row["net_return"]) > 0 for label, row in slices.items()}
+    routes = {label: _slice_route(row) for label, row in slices.items()}
     code: str | None = None
     if any(int(row["trade_count"]) < min_trades for row in slices.values()):
         code = "activity_below_floor"
     elif any(positive.values()) and not all(positive.values()):
         code = "screen_regime_dependent"
-    elif all(positive.values()) and any(
-        row.get("lcb") is not None and float(row["lcb"]) <= 0 for row in slices.values()
-    ):
+    elif all(positive.values()) and any(route is None for route in routes.values()):
         code = "screen_edge_not_significant"
     return {
         "passed": all(positive.values()) and code is None,
         "code": code,
-        "slices": {label: dict(row) for label, row in slices.items()},
+        "slices": {
+            label: {**dict(row), "route": routes[label]}
+            for label, row in slices.items()
+        },
     }
 
 

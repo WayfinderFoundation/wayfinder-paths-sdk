@@ -123,6 +123,14 @@ REPAIR_REMEDIES: dict[str, dict[str, list[str]]] = {
         ],
         "forbidden": ["adding trades to widen the sample"],
     },
+    "complexity_over_budget": {
+        "admissible": [
+            "remove gates and thresholds that the screen never exercises",
+            "collapse duplicate conditions into one mechanism",
+            "keep at most three tuned dimensions",
+        ],
+        "forbidden": ["adding conditions to make the numbers work"],
+    },
 }
 _DEFAULT_REMEDY = {
     "admissible": ["change the named causal mechanism in response to the evidence"],
@@ -210,6 +218,7 @@ def build_diagnostic_pack(
     historical_lessons: Mapping[str, Any],
     research_context: Mapping[str, Any],
     regime_context: Mapping[str, Any] | None = None,
+    validated_signals: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Freeze compact existing diagnostics with explicit plane/provenance."""
     artifacts: dict[str, Any] = {}
@@ -287,6 +296,7 @@ def build_diagnostic_pack(
             if regime_context and regime_context.get("available")
             else {}
         ),
+        **({"validated_signals": dict(validated_signals)} if validated_signals else {}),
     }
     return _fit_pack(pack)
 
@@ -567,10 +577,18 @@ def _diagnosis(
         parts = []
         for label, row in (screen.get("slices") or {}).items():
             lcb = row.get("lcb")
+            mode = row.get("failure_mode") or {}
             parts.append(
                 f"{label}: net {100 * _number(row.get('net_return')):+.1f}% on "
                 f"{_integer(row.get('trade_count'))} trades"
                 + (f", LCB {100 * _number(lcb):+.2f}%" if lcb is not None else "")
+                + (
+                    f", vs seed {100 * _number(mode.get('losing_delta')):+.2f}% on its "
+                    f"{_integer(mode.get('losing_days'))} losing days / "
+                    f"{100 * _number(mode.get('winning_delta')):+.2f}% on its winning days"
+                    if mode
+                    else ""
+                )
             )
         facts = "; ".join(parts)
         if primary == "screen_regime_dependent":
@@ -582,7 +600,18 @@ def _diagnosis(
         return (
             f"Positive on every slice but not significant at "
             f"{100 * _number(screen.get('confidence')):.0f}% ({facts}). The edge "
-            "is inside the noise; strengthen expectancy rather than adding trades."
+            "is inside the noise. Two routes clear it: strengthen expectancy, or "
+            "repair the seed's losing days while staying non-inferior on its "
+            "winning days."
+        )
+    if primary == "complexity_over_budget":
+        size = context.get("complexity") or {}
+        return (
+            f"{_integer(size.get('comparisons'))} comparisons and "
+            f"{_integer(size.get('numeric_literals'))} numeric literals against a "
+            f"budget of {_integer(context.get('complexity_budget'))} comparisons. "
+            "Every extra gate is a degree of freedom fitted to a 35-day slice; "
+            "simplify to the mechanism that carries the hypothesis."
         )
     if primary == "no_behavior_change":
         dead = [str(item) for item in context.get("dead_params") or []]
@@ -680,7 +709,15 @@ def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
             "code": screen.get("code"),
             "slices": {
                 label: {
-                    key: row.get(key) for key in ("net_return", "trade_count", "lcb")
+                    key: row.get(key)
+                    for key in (
+                        "net_return",
+                        "trade_count",
+                        "lcb",
+                        "route",
+                        "failure_mode",
+                    )
+                    if row.get(key) is not None
                 }
                 for label, row in screen["slices"].items()
                 if isinstance(row, Mapping)
@@ -895,6 +932,8 @@ def _fit_pack(pack: dict[str, Any]) -> dict[str, Any]:
                 "window",
                 "economics",
                 "round_trip_cost_bps",
+                "failure_modes",
+                "complexity",
             )
             if key in baseline
         }

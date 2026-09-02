@@ -402,6 +402,7 @@ def run_arm(
         holdout=holdout,
         sessions=sessions,
         cost=cost,
+        signals=_validated_signal_usage(store, job_id, state),
     )
     identity = runtime_identity(
         sdk_ref=_arm_runtime_pin(config, arm)["sdk_ref"],
@@ -821,6 +822,34 @@ def _input_strings(value: Any, key: str = "") -> list[tuple[str, str]]:
     return [(key, value)] if isinstance(value, str) else []
 
 
+def _validated_signal_usage(
+    store: Any, job_id: str, state: dict[str, Any]
+) -> dict[str, Any]:
+    """How many validated signals the pack offered and how many slots cited one."""
+    pack = (
+        store.read_json(job_id, str(state.get("diagnostic_pack") or ""), default={})
+        or {}
+    )
+    validated = pack.get("validated_signals") or {}
+    design = (
+        store.read_json(job_id, str(state.get("campaign_design") or ""), default={})
+        or {}
+    )
+    citing = 0
+    for hypothesis in design.get("hypotheses") or []:
+        if any(
+            str(ref).startswith("/validated_signals/")
+            for ref in hypothesis.get("evidence_refs") or []
+        ):
+            citing += 1
+    return {
+        "enabled": bool(validated),
+        "available": bool(validated.get("available")),
+        "offered": len(validated.get("signals") or []),
+        "hypotheses_citing": citing,
+    }
+
+
 def _scorecard(
     *,
     state: dict[str, Any],
@@ -829,6 +858,7 @@ def _scorecard(
     holdout: dict[str, Any],
     sessions: list[dict[str, Any]],
     cost: dict[str, Any],
+    signals: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     candidates = list(state.get("candidates") or [])
     funnel_counts = state.get("counts") or {}
@@ -881,6 +911,7 @@ def _scorecard(
                 1 for row in candidates if row.get("status") == "awaiting_regime"
             ),
             "focus": dict(state.get("focus") or {}),
+            "validated_signals": dict(signals or {}),
             "production_summary": funnel,
         },
         "verdicts": {

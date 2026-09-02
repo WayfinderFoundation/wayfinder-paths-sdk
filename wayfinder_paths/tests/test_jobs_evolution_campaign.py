@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import shutil
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
+import pandas as pd
 import pytest
 import yaml
 
@@ -25,19 +27,28 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _claim_full_dev,
     _commit_designed_attempt,
     _commit_full_dev,
+    _complexity_budget,
+    _failure_mode_summary,
     _isolated_full_dev,
     _load_candidate_search_space,
     _materialize_candidate_seed,
     _min_fills_per_day,
+    _neighborhood_dimension,
+    _numeric_tunables,
     _parameter_tuning_preview,
     _parent_source,
     _persist_executable_bundle,
+    _plateau_select,
     _same_family_nonwins,
     _screen_confidence,
+    _screen_slice_report,
     _screen_slices,
     _screen_verdict,
     _select_full_dev_candidate,
     _select_parent_plan,
+    _select_validated_rows,
+    _signal_timeframes,
+    _slice_route,
     _starter_compatibility,
     _write_timeseries_prefix,
     campaign_due,
@@ -591,6 +602,262 @@ def test_screen_verdict_names_regime_dependence_and_noise_fit() -> None:
     assert _screen_verdict(tiny, min_trades=1)["passed"] is True
 
 
+def test_screen_report_splits_the_reference_losing_days() -> None:
+    from types import SimpleNamespace
+
+    days = [
+        datetime(2026, 6, 1, tzinfo=UTC) + timedelta(days=index) for index in range(12)
+    ]
+    # Reference loses on days 3-6 and earns elsewhere; the candidate repairs
+    # exactly those days and matches the reference on the rest.
+    reference_returns = [
+        0.01,
+        0.01,
+        -0.02,
+        -0.02,
+        -0.02,
+        -0.02,
+        0.01,
+        0.01,
+        0.01,
+        0.01,
+        0.01,
+    ]
+    candidate_returns = [
+        0.01,
+        0.01,
+        0.005,
+        0.005,
+        0.005,
+        0.005,
+        0.01,
+        0.01,
+        0.01,
+        0.01,
+        0.01,
+    ]
+
+    def curve(returns):
+        equity, rows = 100.0, [{"timestamp": days[0].isoformat(), "equity": 100.0}]
+        for stamp, value in zip(days[1:], returns, strict=True):
+            equity *= 1 + value
+            rows.append({"timestamp": stamp.isoformat(), "equity": equity})
+        return rows
+
+    from wayfinder_paths.jobs.economics import daily_log_returns
+
+    reference_daily = daily_log_returns(curve(reference_returns))
+    result = SimpleNamespace(
+        equity_curve=curve(candidate_returns),
+        stats={"net_return": 0.06, "trade_count": 30},
+    )
+    report = _screen_slice_report(result, reference_daily, confidence=0.7)
+    mode = report["failure_mode"]
+    assert mode["losing_days"] == 4 and mode["winning_days"] == 7
+    assert mode["losing_delta"] > 0.09 and abs(mode["winning_delta"]) < 1e-9
+    assert _slice_route(report) in {"failure_mode", "global"}
+    verdict = _screen_verdict({"recent": report, "earlier": report}, min_trades=12)
+    assert verdict["passed"] is True
+    assert verdict["slices"]["recent"]["route"] in {"failure_mode", "global"}
+
+    # Repairing the losing days at the cost of the winning days is not a repair.
+    hurt = {**report, "lcb": -0.01, "failure_mode": {**mode, "winning_delta": -0.02}}
+    assert _slice_route(hurt) is None
+    assert _screen_verdict({"recent": hurt}, min_trades=12)["code"] == (
+        "screen_edge_not_significant"
+    )
+
+
+def test_failure_mode_summary_names_worst_days_and_regime() -> None:
+    daily = [
+        ("2026-06-01", 0.01),
+        ("2026-06-02", -0.03),
+        ("2026-06-03", -0.01),
+        ("2026-06-04", 0.02),
+        ("2026-06-05", -0.005),
+    ]
+    labels = {
+        "2026-06-01": "up_lowvol",
+        "2026-06-02": "down_highvol",
+        "2026-06-03": "down_highvol",
+        "2026-06-04": "up_lowvol",
+    }
+    summary = _failure_mode_summary(daily, labels)
+    assert summary["days"] == 5 and summary["losing_days"] == 3
+    assert summary["worst_days"][0] == {
+        "day": "2026-06-02",
+        "return": -0.03,
+        "regime": "down_highvol",
+    }
+    assert summary["worst_regime"] == "down_highvol"
+    assert summary["by_regime"]["mixed"]["days"] == 1
+    assert summary["losing_return"] == pytest.approx(math.exp(-0.045) - 1, abs=1e-6)
+
+
+def test_strategy_complexity_budget_scales_with_the_incumbent() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import strategy_complexity
+
+    source = (
+        "def decide(ctx):\n"
+        "    if ctx.rsi < 30 and ctx.atr > 0.5:\n"
+        "        return [1]\n"
+        "    if ctx.close >= ctx.sma:\n"
+        "        return []\n"
+        "    return [0.25]\n"
+    )
+    size = strategy_complexity(source)
+    assert size["comparisons"] == 3
+    assert size["numeric_literals"] == 4
+    assert _complexity_budget({}, {"comparisons": 32}) == 48
+    assert _complexity_budget({}, {"comparisons": 4}) == 24
+    assert _complexity_budget({"complexity_multiple": 2.0}, {"comparisons": 20}) == 40
+    assert strategy_complexity("def broken(:")["comparisons"] == 0
+
+
+def test_plateau_selection_prefers_a_robust_neighborhood_over_a_lone_peak() -> None:
+    from types import SimpleNamespace
+
+    runs = [
+        {"trial": 0, "params": {"lookback": 20}, "net_return": 0.10},
+        {"trial": 1, "params": {"lookback": 22}, "net_return": 0.02},
+        {"trial": 2, "params": {"lookback": 18}, "net_return": 0.01},
+        {"trial": 3, "params": {"lookback": 60}, "net_return": 0.06},
+        {"trial": 4, "params": {"lookback": 63}, "net_return": 0.058},
+        {"trial": 5, "params": {"lookback": 57}, "net_return": 0.062},
+    ]
+    grid = SimpleNamespace(runs=runs, ranked=[runs[0]], rank_by="net_return")
+    selected, plateau = _plateau_select(grid, ["lookback"], "net_return")
+    assert selected["trial"] == 3 and plateau["selected_by"] == "plateau"
+    assert plateau["neighbors_of_best"] == 2 and plateau["ratio"] < 0.5
+
+    runs[1]["net_return"], runs[2]["net_return"] = 0.09, 0.08
+    selected, plateau = _plateau_select(grid, ["lookback"], "net_return")
+    assert selected["trial"] == 0 and plateau["selected_by"] == "peak"
+    bare = SimpleNamespace(ranked=[{"params": {"lookback": 30}}])
+    selected, plateau = _plateau_select(bare, ["lookback"], "net_return")
+    assert (
+        selected == {"params": {"lookback": 30}} and plateau["selected_by"] == "ranked"
+    )
+
+
+def test_incumbent_neighborhood_tunables_and_dimensions() -> None:
+    tunables = _numeric_tunables(
+        {"stop_pct": 0.03, "hold_bars": 24, "enabled": True, "zero": 0},
+        {"fee_bps": 4.5, "symbols": ["A"], "warmup_bars": 400, "leverage": 3.0},
+    )
+    assert tunables == {"hold_bars": 24.0, "stop_pct": 0.03}
+    assert _neighborhood_dimension(24.0, 0.3) == {"type": "int", "low": 16, "high": 32}
+    assert _neighborhood_dimension(0.03, 0.3) == {
+        "type": "float",
+        "low": 0.021,
+        "high": 0.039,
+    }
+
+
+def test_validated_signal_selection_requires_density_and_slice_agreement() -> None:
+    assert _signal_timeframes(300) == ["300s", "15m", "1h", "4h"]
+    assert _signal_timeframes(3600) == ["3600s", "4h"]
+
+    def row(symbol, signal, t, *, n, t_net=1.5, fold_stable=True, edge=8.0):
+        return {
+            "symbol": symbol,
+            "signal": signal,
+            "timeframe": "1h",
+            "horizon": 4,
+            "t_stat_vs_drift": t,
+            "direction": "short" if t <= -2 else "long" if t >= 2 else None,
+            "t_net": t_net,
+            "q_value": 0.7,
+            "verdict": "candidate",
+            "fold_stable": fold_stable,
+            "folds_agreeing": 3,
+            "edge_net_bps": edge,
+            "n": n,
+            "family": "breakout",
+            "description": "d",
+        }
+
+    full = [
+        row("HYPE", "dense", 3.1, n=60),
+        row("HYPE", "sparse", 3.4, n=12),
+        row("SOL", "flips", 2.8, n=50),
+        row("POL", "short_side", -2.6, n=50, t_net=1.9),
+        row("SOL", "weak", 1.4, n=50),
+        row("SOL", "unstable", 2.9, n=50, fold_stable=False),
+        row("SOL", "costly", 2.7, n=50, edge=-1.0),
+        row("SOL", "marginal", 2.7, n=50, t_net=0.4),
+    ]
+    slices = {
+        "recent": {
+            ("HYPE", "dense", "1h", 4): {"t_stat_vs_drift": 1.4},
+            ("HYPE", "sparse", "1h", 4): {"t_stat_vs_drift": 1.6},
+            ("SOL", "flips", "1h", 4): {"t_stat_vs_drift": 1.9},
+            ("POL", "short_side", "1h", 4): {"t_stat_vs_drift": -2.1},
+        },
+        "earlier": {
+            ("HYPE", "dense", "1h", 4): {"t_stat_vs_drift": 1.1},
+            ("HYPE", "sparse", "1h", 4): {"t_stat_vs_drift": 1.2},
+            ("SOL", "flips", "1h", 4): {"t_stat_vs_drift": -1.5},
+            ("POL", "short_side", "1h", 4): {"t_stat_vs_drift": -1.3},
+        },
+    }
+    selected, near = _select_validated_rows(
+        full, slices, days=100.0, min_events_per_day=0.3, slice_min_t=1.0, min_t_net=1.0
+    )
+    # Ranked by the cost-adjusted t, and the short side keeps its direction.
+    assert [(item["signal"], item["direction"]) for item in selected] == [
+        ("short_side", "short"),
+        ("dense", "long"),
+    ]
+    assert selected[1]["events_per_day"] == 0.6
+    assert {item["signal"]: item["shortfall"] for item in near} == {
+        "sparse": "sparse",
+        "flips": "slice_disagreement",
+    }
+
+
+def test_library_signal_aligns_causally_to_base_bars() -> None:
+    from wayfinder_paths.jobs.research import (
+        library_signal_on_bars,
+        library_signal_warmup_bars,
+        resample_ohlcv,
+    )
+    from wayfinder_paths.jobs.signal_library import build_signal_frame, signal_defs
+
+    start = datetime(2026, 6, 1, tzinfo=UTC)
+    rows = []
+    price = 100.0
+    for index in range(600):
+        price *= 1 + ((index * 7919) % 11 - 5) / 1_000
+        rows.append(
+            {
+                "timestamp": (start + timedelta(minutes=5 * (index + 1))).isoformat(),
+                "symbol": "HYPE",
+                "open": price,
+                "high": price * 1.001,
+                "low": price * 0.999,
+                "close": price,
+                "volume": 10.0,
+            }
+        )
+    frame = pd.DataFrame(rows)
+    signal = "new_low_5"
+    aligned = library_signal_on_bars(frame, signal, "1h", bar_seconds=300)
+    assert aligned.dtype == bool and len(aligned) == 600
+    hourly = resample_ohlcv(frame, 3600, bar_seconds=300)
+    spec = signal_defs()[signal]
+    hourly_signal = build_signal_frame(
+        hourly, include_canonical=False, canonical_signals=(spec,)
+    )[signal]
+    hourly_stamps = pd.to_datetime(hourly["timestamp"], utc=True)
+    base_stamps = pd.to_datetime(frame["timestamp"], utc=True)
+    for index in (120, 300, 599):
+        completed = hourly_stamps <= base_stamps.iloc[index]
+        expected = bool(hourly_signal[completed].iloc[-1]) if completed.any() else False
+        assert bool(aligned.iloc[index]) == expected
+    assert library_signal_warmup_bars(signal, "1h", bar_seconds=300) == (7 + 2) * 12
+
+
 def test_cadence_floor_follows_the_elite_participation_floor() -> None:
     policy = {
         "split": {"train": 0.8, "validation": 0.2},
@@ -683,6 +950,50 @@ def test_starter_seeds_are_stamped_with_universe_compatibility(tmp_path) -> None
             plan={"source": "starter_seed", "starter": sleeves},
         )
     assert not (tmp_path / "never-created").exists()
+
+
+def test_design_prompt_offers_validated_signals_when_seeding_is_on(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    improver_path = store.job_dir(job_id) / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"]["signal_first_seeding"] = True
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    pack_path = str(state["diagnostic_pack"])
+    pack = store.read_json(job_id, pack_path)
+    # The fixture freezes no bars: the scan is unavailable and the prompt is
+    # silent about signals.
+    assert pack["validated_signals"]["available"] is False
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt and prompt["constraints"]["validated_signals"] is None
+    assert "Validated signals" not in prompt["next_action"]
+
+    pack["validated_signals"] = {
+        "available": True,
+        "signals": [
+            {
+                "symbol": "HYPE",
+                "signal": "new_low_5",
+                "timeframe": "1h",
+                "horizon": 4,
+                "direction": "long",
+                "events_per_day": 0.8,
+                "how_to_use": "in precompute(): library_signal_on_bars(...)",
+            }
+        ],
+        "near_misses": [],
+    }
+    store.write_json(job_id, pack_path, pack)
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=2))
+    assert prompt and prompt["constraints"]["validated_signals"] == [
+        "HYPE:new_low_5:1h:4"
+    ]
+    assert "new_low_5 long HYPE 1h x4 (0.8 events/day)" in prompt["next_action"]
+    assert "library_signal_on_bars" in prompt["next_action"]
+    assert (
+        "/validated_signals/signals/0/how_to_use" in prompt["valid_evidence_pointers"]
+    )
 
 
 def test_regime_design_requires_counter_cell_and_stamps_candidate(tmp_path) -> None:
@@ -3540,6 +3851,7 @@ def test_full_dev_optuna_uses_bounded_train_tail_and_timeout(
     assert captured["seed"] == 42
     assert captured["timeout"] == 17
     assert outcome["tuning"] == {
+        "plateau": {"neighbors_of_best": 0, "ratio": None, "selected_by": "ranked"},
         "status": "complete",
         "trials": 5,
         "valid_trials": 4,

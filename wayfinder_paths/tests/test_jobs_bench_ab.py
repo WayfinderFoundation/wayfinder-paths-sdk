@@ -563,6 +563,43 @@ def test_campaign_stage_is_retried_once_before_the_cell_is_invalidated(
     assert calls[1]["session_id"] is None
 
 
+def test_validated_signal_usage_counts_hypotheses_that_cite_the_pack() -> None:
+    from wayfinder_paths.jobs.bench.runner import _validated_signal_usage
+
+    class Store:
+        def __init__(self, docs):
+            self.docs = docs
+
+        def read_json(self, job_id, relative, default=None):
+            return self.docs.get(relative, default)
+
+    store = Store(
+        {
+            "pack.json": {
+                "validated_signals": {"available": True, "signals": [1, 2, 3]}
+            },
+            "design.json": {
+                "hypotheses": [
+                    {"evidence_refs": ["/validated_signals/signals/1/signal"]},
+                    {"evidence_refs": ["/baseline/reason"]},
+                ]
+            },
+        }
+    )
+    usage = _validated_signal_usage(
+        store,
+        "demo",
+        {"diagnostic_pack": "pack.json", "campaign_design": "design.json"},
+    )
+    assert usage == {
+        "enabled": True,
+        "available": True,
+        "offered": 3,
+        "hypotheses_citing": 1,
+    }
+    assert _validated_signal_usage(Store({}), "demo", {})["enabled"] is False
+
+
 def test_campaign_prompt_formatter_is_the_production_formatter() -> None:
     campaign = {
         "campaign_id": "campaign-1",

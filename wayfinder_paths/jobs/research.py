@@ -894,6 +894,69 @@ def _fold_stability(
     return deltas, agreeing, True
 
 
+def library_signal_on_bars(
+    frame: pd.DataFrame,
+    signal: str,
+    timeframe: str,
+    *,
+    bar_seconds: int,
+) -> pd.Series:
+    """One library trigger, computed on a causal ``timeframe`` resample and
+    aligned back to the base bars: the value at base bar t is the signal of
+    the last COMPLETED higher-timeframe bar closing at or before t.
+
+    This is how a de-novo strategy consumes a validated signal in
+    ``precompute()`` without re-implementing the resample or the trigger.
+    """
+    from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
+    from wayfinder_paths.jobs.signal_library import build_signal_frame, signal_defs
+
+    spec = signal_defs().get(signal)
+    if spec is None:
+        raise ValueError(f"unknown library signal {signal!r}")
+    rule_seconds = bar_interval_seconds(timeframe)
+    if not rule_seconds or rule_seconds < bar_seconds or rule_seconds % bar_seconds:
+        raise ValueError(f"timeframe {timeframe!r} is not a multiple of the base bar")
+    base = frame.reset_index(drop=True)
+    if "symbol" not in base.columns:
+        base = base.assign(symbol="")
+    stamps = pd.to_datetime(base["timestamp"], utc=True)
+    bars = resample_ohlcv(base, rule_seconds, bar_seconds=bar_seconds)
+    signals = build_signal_frame(
+        bars, include_canonical=False, canonical_signals=(spec,)
+    )
+    if signal not in signals.columns:
+        return pd.Series(False, index=base.index, dtype=bool)
+    higher = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(bars["timestamp"], utc=True),
+            "value": signals[signal].astype(bool).to_numpy(),
+        }
+    ).sort_values("timestamp")
+    aligned = pd.merge_asof(
+        pd.DataFrame({"timestamp": stamps}).sort_values("timestamp"),
+        higher,
+        on="timestamp",
+        direction="backward",
+    )
+    values = aligned["value"].astype("boolean").fillna(False).astype(bool)
+    values.index = base.index
+    return values
+
+
+def library_signal_warmup_bars(signal: str, timeframe: str, *, bar_seconds: int) -> int:
+    """Base bars a strategy must declare to compute the signal exactly."""
+    from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
+    from wayfinder_paths.jobs.signal_library import signal_defs
+
+    spec = signal_defs().get(signal)
+    if spec is None:
+        raise ValueError(f"unknown library signal {signal!r}")
+    rule_seconds = bar_interval_seconds(timeframe) or bar_seconds
+    ratio = max(1, int(rule_seconds // bar_seconds))
+    return (int(spec.min_bars) + 2) * ratio
+
+
 def scan_signals(
     frame: pd.DataFrame,
     horizons: list[int] | None = None,

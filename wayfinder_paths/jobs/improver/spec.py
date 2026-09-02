@@ -133,6 +133,29 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "screen_slices": 2,
         "screen_confidence_base": 0.70,
         "screen_confidence_step": 0.10,
+        # Incumbent failure modes (two bounded sims at campaign start) point the
+        # design at the days and regimes where the incumbent loses.
+        "incumbent_failure_modes": True,
+        # Deterministic local search around the incumbent for parameter slots
+        # (probe live knobs, tune on the recent slice, verify on the earlier).
+        # Off in production until prepare-time cost is measured on a box.
+        "incumbent_neighborhood_search": False,
+        "incumbent_neighborhood_trials": 6,
+        "incumbent_neighborhood_timeout_seconds": 180,
+        "incumbent_neighborhood_span": 0.3,
+        # Complexity budget: comparisons (gates) may not exceed the larger of
+        # the floor and the multiple of the incumbent's own count.
+        "complexity_floor_comparisons": 24,
+        "complexity_multiple": 1.5,
+        # Signal-first seeding: library event studies on the two screen slices;
+        # signals significant on both feed the design prompt. An A/B arm
+        # variable: off by default, on in the treatment arm.
+        "signal_first_seeding": False,
+        "signal_first_limit": 10,
+        "signal_first_min_t_net": 1.0,
+        "signal_first_min_events_per_day": 0.3,
+        "signal_first_slice_min_t": 1.0,
+        "signal_scan_min_events": 30,
         "wildcard_slots": 2,
         "elite_min_validation_trades": 8,
         "elite_participation_target_trades": 12,
