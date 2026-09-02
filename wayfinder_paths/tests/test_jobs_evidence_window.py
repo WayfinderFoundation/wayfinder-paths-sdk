@@ -392,3 +392,44 @@ def test_replication_window_change_repins_not_decays(tmp_path, monkeypatch) -> N
     second = replication_job(job.id, store=store, force=True)
     assert second["decayed"] is False  # window change, not edge decay
     assert second["baseline"]["dataset_days"] == 40.0  # re-pinned
+
+
+class _CappedFeed(_CountingFeed):
+    """Venue with a history cap: serves at most `cap` bars regardless of the
+    requested lookback (Hyperliquid serves ~5000)."""
+
+    def __init__(self, cap: int):
+        super().__init__()
+        self.cap = cap
+
+    async def get_completed_bars(self, symbols, interval, *, lookback_bars, as_of=None):
+        view = await super().get_completed_bars(
+            symbols, interval, lookback_bars=min(int(lookback_bars), self.cap)
+        )
+        # Record what was REQUESTED (super recorded the capped value).
+        self.lookbacks[-1] = lookback_bars
+        return view
+
+
+def test_incremental_survives_venue_history_cap(tmp_path) -> None:
+    """When the source can't serve the full requested window, the on-disk
+    dataset never reaches back far enough — treating that as a provenance
+    miss re-downloaded the whole window on EVERY refresh (hundreds of
+    paginated candle calls per job per hour → 429 storms → stale features).
+    Same days request + matching provenance must stay tail-only."""
+    from wayfinder_paths.jobs.execution.preflight import build_live_dataset
+
+    store, job_id, root = _mk_dataset_job(tmp_path)
+    feed = _CappedFeed(cap=100)
+
+    build_live_dataset(job_id, days=10, store=store, source="ccxt", feed=feed)
+    assert feed.lookbacks[0] == 240  # asked for the window...
+    # ...but the capped venue returned only ~100 bars of history.
+
+    second = build_live_dataset(job_id, days=10, store=store, source="ccxt", feed=feed)
+    assert feed.lookbacks[1] <= 4, "capped history must not force a full refetch"
+    assert second["metadata"]["incremental"] is True
+
+    # A genuinely longer request still goes full — that's a real backfill ask.
+    build_live_dataset(job_id, days=20, store=store, source="ccxt", feed=feed)
+    assert feed.lookbacks[2] == 480

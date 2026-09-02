@@ -735,9 +735,17 @@ def _incremental_plan(
     oldest = pd.Timestamp(stamps[0])
     newest = pd.Timestamp(stamps[-1])
     # The kept file must reach back far enough for the requested window —
-    # incremental fetching can only extend the tail, never backfill.
+    # incremental fetching can only extend the tail, never backfill. One
+    # exception: when the previous fetch made the SAME days request and this
+    # depth is all the source returned (venue history caps — HL serves only
+    # ~5000 bars), a full refetch cannot reach further back either. Falling
+    # back to full here made every refresh re-download the whole window
+    # forever: hundreds of paginated candle calls per job per hour, 429
+    # storms on the shared proxy throttle, and the stale-features
+    # degraded/recovered flapping that followed.
     if oldest > now - pd.Timedelta(days=days) + pd.Timedelta(seconds=2 * bar_seconds):
-        return [], float(days)
+        if int(float(meta.get("days") or 0)) != int(days):
+            return [], float(days)
     gap_seconds = max((now - newest).total_seconds(), 0.0) + 2 * bar_seconds
     fetch_days = min(float(days), gap_seconds / 86_400)
     return list(rows), max(fetch_days, 2 * bar_seconds / 86_400)
