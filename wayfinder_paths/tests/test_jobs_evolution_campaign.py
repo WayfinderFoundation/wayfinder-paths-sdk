@@ -21,6 +21,7 @@ from wayfinder_paths.jobs.archive import (
 from wayfinder_paths.jobs.compute_lock import ComputeLockBusy
 from wayfinder_paths.jobs.evolution_campaign import (
     _archive_campaign_candidate,
+    _attempt_cap,
     _claim_full_dev,
     _commit_designed_attempt,
     _commit_full_dev,
@@ -32,6 +33,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _same_family_nonwins,
     _select_full_dev_candidate,
     _select_parent_plan,
+    _starter_compatibility,
     _write_timeseries_prefix,
     campaign_due,
     campaign_prompt_block,
@@ -135,6 +137,9 @@ def _investigative_job(tmp_path) -> tuple[JobStore, str]:
                     "max_attempts_per_idea": 3,
                     "max_quick_attempts": 24,
                     "wildcard_slots": 2,
+                    # Depth-first compatibility coverage; screen-then-focus
+                    # allocation has dedicated tests below.
+                    "screen_before_repair": False,
                 }
             }
         ),
@@ -278,6 +283,7 @@ def test_investigative_campaign_requires_and_freezes_one_design_turn(tmp_path) -
     assert prompt["constraints"]["idea_slots"] == 8
     assert prompt["constraints"]["wildcards"] == 2
     assert prompt["constraints"]["research_parent_required"] is False
+    assert prompt["constraints"]["cost_budget"] is None
     assert (
         "Do not allocate a decorative research_seed/research_context"
         in prompt["next_action"]
@@ -330,6 +336,245 @@ def test_investigative_campaign_requires_and_freezes_one_design_turn(tmp_path) -
     assert candidate["starter_seed_id"] == selected_starter
     assert candidate["evidence_refs"] == ["/baseline/reason"]
     assert candidate["reference_bundle"]
+
+
+def _screen_outcome(
+    candidate_root, *, net: float, primary: str = "negative_after_costs", **extra
+) -> dict[str, Any]:
+    revision = compute_workspace_revision(candidate_root)
+    codes = [primary] + list(extra.pop("codes", []))
+    postmortem = {
+        "viable": False,
+        "primary_failure": primary,
+        "failure_codes": codes,
+        "behavior_diff": {"material_change": True},
+        **extra,
+    }
+    return {
+        "status": "low_fidelity_rejected",
+        "evidence": "attempt receipt",
+        "revision": revision,
+        "quick": {"stats": {"trade_count": 40, "net_return": net}},
+        "objective": {
+            "net_log_growth": net,
+            "downside_deviation": 0.0,
+            "tail_loss": 0.0,
+            "max_drawdown_pct": 0.0,
+        },
+        "attempt_receipt": {
+            "revision": revision,
+            "execution_valid": True,
+            "stats": {"trade_count": 40, "net_return": net},
+            "objective": {"net_log_growth": net},
+            "behavior": {},
+            "trades": [],
+        },
+        "postmortem": postmortem,
+    }
+
+
+def test_screen_then_focus_allocation_serves_ranked_candidates(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    improver_path = store.job_dir(job_id) / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"].update(
+        {
+            "screen_before_repair": True,
+            "focus_candidates": 1,
+            "focus_attempts_per_candidate": 3,
+        }
+    )
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    submit_campaign_design(store, job_id, campaign_design=_campaign_design())
+
+    def commit(index: int, **kwargs: Any) -> dict[str, Any]:
+        state = campaign_status(store, job_id)
+        candidate = state["candidates"][index - 1]
+        root = store.job_dir(job_id) / candidate["bundle"]
+        _commit_designed_attempt(
+            store,
+            job_id,
+            state=state,
+            candidate=candidate,
+            outcome=_screen_outcome(root, **kwargs),
+        )
+        store.write_json(job_id, "state/evolution_campaign.json", state)
+        return candidate
+
+    prepare_candidate(store, job_id, now=started + timedelta(minutes=1))
+    first = commit(1, net=-0.01)
+    assert first["status"] == "repair_pending"
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=2))
+    # Screen phase: the next slot is prepared before any repair is served.
+    assert block and block["artifact_key"] == "candidate-02-attempt-01"
+    assert block["focus"]["phase"] == "screen"
+
+    for slot in range(2, 9):
+        prepare_candidate(store, job_id, now=started + timedelta(minutes=slot))
+        if slot == 3:
+            commit(
+                slot,
+                net=-0.5,
+                primary="cost_bleed",
+                codes=["negative_after_costs", "fees_erased_edge"],
+                economics={
+                    "candidate": {"fills_per_day": 59.0, "fee_pct_of_capital": 0.29},
+                    "incumbent": {"fills_per_day": 2.7},
+                },
+            )
+        else:
+            commit(slot, net=-0.01 * slot)
+    state = campaign_status(store, job_id)
+    assert [item["status"] for item in state["candidates"]] == ["repair_pending"] * 8
+    assert state["counts"]["quick_attempts"] == 8 and state["counts"]["repairs"] == 0
+
+    # Focus phase: the fixable cost-bleed churner outranks the mildly negative
+    # siblings, and only it is served.
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=20))
+    assert block and block["artifact_key"] == "candidate-03-attempt-02"
+    focus_id = state["candidates"][2]["candidate_id"]
+    assert block["focus"] == {
+        "phase": "focus",
+        "candidate_ids": [focus_id],
+        "computed_at": state["focus"]["computed_at"],
+    }
+    assert block["repair_work_order"]["primary_failure"] == "cost_bleed"
+    assert "59.0 fills/day vs incumbent 2.7" in block["next_action"]
+    assert "at most 3" in block["next_action"]
+    policy = store.read_json(job_id, str(state["manifest"]))["policy"]
+    assert _attempt_cap(state, state["candidates"][2], policy) == 3
+    assert _attempt_cap(state, state["candidates"][7], policy) == 1
+    outcome = next(
+        item for item in block["candidate_outcomes"] if item["candidate_id"] == focus_id
+    )
+    assert outcome["trajectory"] == [
+        {
+            "attempt": 1,
+            "primary_failure": "cost_bleed",
+            "net_return": -0.5,
+            "fills_per_day": 59.0,
+            "fee_pct_of_capital": 0.29,
+        }
+    ]
+
+    # A repair without causal progress closes the candidate; the budget moves
+    # to the next-ranked parked candidate instead of a fresh free attempt.
+    closed = commit(3, net=-0.5, primary="cost_bleed")
+    assert closed["status"] == "low_fidelity_rejected"
+    state = campaign_status(store, job_id)
+    assert state["counts"]["repairs"] == 1
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=30))
+    assert block and block["artifact_key"] == "candidate-01-attempt-02"
+    assert state["candidates"][7]["status"] == "repair_pending"
+
+
+def test_design_prompt_carries_cost_budget_from_baseline(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    baseline = store.job_dir(job_id) / "results" / "backtest" / "baseline.json"
+    baseline.write_text(
+        json.dumps(
+            {
+                "scope": {
+                    "bars": 28_513,
+                    "start": "2026-05-03T15:25:00+00:00",
+                    "end": "2026-08-10T15:25:00+00:00",
+                },
+                "result": {
+                    "params": {
+                        "initial_capital": 100.0,
+                        "fee_bps": 4.5,
+                        "slippage_bps": 3.5,
+                    },
+                    "stats": {
+                        "net_return": 0.148,
+                        "trade_count": 271,
+                        "total_fees": 11.22,
+                        "total_turnover_usd": 22_441.0,
+                        "exposure_pct": 0.106,
+                        "avg_trade_duration_s": 7_160.0,
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt
+    budget = prompt["constraints"]["cost_budget"]
+    assert budget["incumbent_fills_per_day"] == pytest.approx(2.74, abs=0.01)
+    assert budget["max_fills_per_day"] == pytest.approx(8.2, abs=0.05)
+    assert budget["round_trip_cost_bps"] == 16.0
+    assert "Cost budget: the incumbent trades 2.7 fills/day" in prompt["next_action"]
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    assert pack["baseline"]["economics"]["fee_pct_of_capital"] == pytest.approx(0.1122)
+    assert "/baseline/economics/fills_per_day" in prompt["valid_evidence_pointers"]
+
+
+def test_starter_seeds_are_stamped_with_universe_compatibility(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    job_path = store.job_dir(job_id) / "job.yaml"
+    job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
+    job_data["execution_params"] = {"symbols": ["ETH", "SOL", "HYPE"], "fee_bps": 4.5}
+    job_path.write_text(yaml.safe_dump(job_data, sort_keys=False), encoding="utf-8")
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    starters = {item["starter_id"]: item for item in manifest["starter_seeds"]}
+
+    # The pair starter adapts to any two target symbols, so only the count
+    # blocks it here; the sleeve starter embeds symbol literals in params.
+    pair = starters["btc-eth-relative-strength-1d"]
+    assert pair["compatible"] is False
+    assert pair["missing_symbols"] == []
+    assert "exactly two symbols" in pair["incompatibility_reason"]
+    sleeves = starters["mixed-sleeve-momentum-15m"]
+    assert sleeves["compatible"] is False and "xyz:COIN" in sleeves["missing_symbols"]
+    # The pilot's failure shape: no target symbols, so the starter's own list
+    # survives install and must fit the frozen universe.
+    pair_definition = next(
+        item
+        for item in STARTER_DEFINITIONS
+        if item.id == "btc-eth-relative-strength-1d"
+    )
+    unoverridden = _starter_compatibility(
+        pair_definition,
+        {"HYPE", "SOL", "XRP", "POL"},
+        target_overrides_symbols=False,
+    )
+    assert unoverridden["compatible"] is False
+    assert unoverridden["missing_symbols"] == ["BTC", "ETH"]
+    compatible_ids = [
+        starter_id for starter_id, item in starters.items() if item["compatible"]
+    ]
+    assert compatible_ids
+
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt and "btc-eth-relative-strength-1d" not in prompt["next_action"]
+    plan = _select_parent_plan(
+        manifest, requested_source="starter_seed", slot=1, candidates=[]
+    )
+    assert plan["source"] == "starter_seed"
+    assert plan["starter"]["compatible"] is True
+
+    design = _campaign_design()
+    design["slots"][0]["starter_seed_id"] = "mixed-sleeve-momentum-15m"
+    with pytest.raises(ValueError, match="requires symbols"):
+        submit_campaign_design(store, job_id, campaign_design=design)
+
+    with pytest.raises(ValueError, match="requires symbols"):
+        _materialize_candidate_seed(
+            store,
+            job_id,
+            campaign_id=state["campaign_id"],
+            candidate_root=tmp_path / "never-created",
+            plan={"source": "starter_seed", "starter": sleeves},
+        )
+    assert not (tmp_path / "never-created").exists()
 
 
 def test_regime_design_requires_counter_cell_and_stamps_candidate(tmp_path) -> None:

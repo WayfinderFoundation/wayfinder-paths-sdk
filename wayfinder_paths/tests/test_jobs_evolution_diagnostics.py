@@ -9,8 +9,10 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
     attempt_made_progress,
     build_diagnostic_pack,
     build_postmortem,
+    build_repair_work_order,
     compact_postmortem,
     participation_adjusted_score,
+    receipt_economics,
     resolve_json_pointer,
     valid_evidence_pointers,
 )
@@ -134,6 +136,116 @@ def test_diagnostic_pack_is_bounded_and_citations_are_exact(tmp_path) -> None:
     assert "/research_context/validated_positives" not in pointers
     with pytest.raises(ValueError, match="does not exist"):
         resolve_json_pointer(pack, "/baseline/invented")
+
+
+def _churner(
+    *, days: float, capital: float, fills: int, fees: float, net: float
+) -> dict:
+    trades = [
+        _trade(f"2026-06-{18 + (index % 10):02d}T00:00:00Z", pnl=-0.05)
+        for index in range(fills)
+    ]
+    return {
+        "execution_valid": True,
+        "stats": {
+            "net_return": net,
+            "trade_count": fills,
+            "exposure_pct": 0.95,
+            "total_turnover_usd": 58_706.0,
+            "total_fees": fees,
+            "avg_trade_duration_s": 1_800.0,
+        },
+        "window": {"days": days, "bars": 9_500, "starting_equity": capital},
+        "objective": {"net_log_growth": net},
+        "trades": trades,
+    }
+
+
+INCUMBENT_ECONOMICS = {
+    "window_days": 100.0,
+    "fills_per_day": 2.7,
+    "fee_pct_of_capital": 0.112,
+    "fee_pct_of_capital_30d": 0.0336,
+    "turnover_multiple": 224.0,
+    "exposure_pct": 0.106,
+    "avg_hold_minutes": 119.0,
+}
+
+
+def test_cost_bleed_is_primary_when_fees_dominate_a_loss() -> None:
+    # The pilot's control c04: 1,931 fills in 33 days on $100, fees $29.35.
+    candidate = _churner(days=33.0, capital=100.0, fills=1_931, fees=29.35, net=-0.82)
+    # A de-novo reference is an empty zero-fee scaffold; it must not hide bleed.
+    reference = {"execution_valid": True, "stats": {}, "window": {}, "trades": []}
+
+    report = build_postmortem(
+        candidate,
+        reference,
+        min_trades=1,
+        incumbent_economics=INCUMBENT_ECONOMICS,
+    )
+
+    assert report["primary_failure"] == "cost_bleed"
+    assert "negative_after_costs" in report["failure_codes"]
+    economics = report["economics"]["candidate"]
+    assert economics["fills_per_day"] == pytest.approx(58.52, abs=0.01)
+    assert economics["fee_pct_of_capital"] == pytest.approx(0.2935)
+    assert report["economics"]["incumbent"]["fills_per_day"] == 2.7
+    compact = compact_postmortem(report)
+    assert (
+        compact["economics"]["candidate"]["fills_per_day"] == economics["fills_per_day"]
+    )
+    assert "incumbent" in compact["economics"]
+
+    order = build_repair_work_order(
+        report,
+        {"max_fills_per_day_multiple": 3.0},
+        params={"fee_bps": 4.5, "slippage_bps": 3.5},
+    )
+    assert order["primary_failure"] == "cost_bleed"
+    assert "58.5 fills/day vs incumbent 2.7" in order["diagnosis"]
+    assert "fees consumed 29% of capital in 33 days" in order["diagnosis"]
+    assert order["budget"] == {
+        "incumbent_fills_per_day": 2.7,
+        "max_fills_per_day": 8.1,
+        "round_trip_cost_bps": 16.0,
+    }
+    assert any("minimum hold" in item for item in order["admissible_repairs"])
+    assert order["forbidden"]
+
+    # No incumbent economics at all: the absolute floor still catches it.
+    floor_only = build_postmortem(candidate, reference, min_trades=1)
+    assert floor_only["primary_failure"] == "cost_bleed"
+    # A profitable churner is not bleeding; the code never fires on winners.
+    winner = _churner(days=33.0, capital=100.0, fills=1_931, fees=29.35, net=0.05)
+    assert (
+        "cost_bleed"
+        not in build_postmortem(winner, reference, min_trades=1)["failure_codes"]
+    )
+    assert receipt_economics({"stats": {}, "window": {}}) is None
+
+
+def test_attempt_progress_requires_material_causal_change() -> None:
+    base = {"behavior_diff": {"material_change": True}, "failure_codes": []}
+    assert not attempt_made_progress(
+        {**base, "progress_from_previous": {"trade_count_delta": 3}}
+    )
+    assert attempt_made_progress(
+        {**base, "progress_from_previous": {"net_return_delta": 0.01}}
+    )
+    assert not attempt_made_progress(
+        {
+            "behavior_diff": {"material_change": False},
+            "progress_from_previous": {"net_return_delta": 0.01},
+        }
+    )
+    assert attempt_made_progress(
+        {
+            **base,
+            "primary_failure": "cost_bleed",
+            "progress_from_previous": {"fills_per_day_delta": -20.0},
+        }
+    )
 
 
 def test_participation_adjustment_does_not_reward_sparse_non_trading() -> None:

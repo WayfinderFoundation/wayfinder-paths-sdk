@@ -116,6 +116,17 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "regime_specialist_enabled": False,
         "max_attempts_per_idea": 3,
         "max_quick_attempts": 24,
+        # Screen every slot once, then spend the remaining fixed budget on the
+        # few candidates showing causal progress.  ``screen_before_repair``
+        # False restores the depth-first order for the bench control arm.
+        "screen_before_repair": True,
+        "focus_candidates": 3,
+        "focus_attempts_per_candidate": 6,
+        # Cost-bleed diagnosis: fees per 30 days above the incumbent's rate
+        # times this multiple, or above the absolute floor, on a losing screen.
+        "cost_bleed_fee_multiple": 3.0,
+        "cost_bleed_fee_pct_of_capital_30d": 0.10,
+        "max_fills_per_day_multiple": 3.0,
         "wildcard_slots": 2,
         "elite_min_validation_trades": 8,
         "elite_participation_target_trades": 12,

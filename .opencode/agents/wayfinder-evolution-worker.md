@@ -77,7 +77,11 @@ For each candidate:
   artifacts.
 - On a repair turn, read the named compact deterministic postmortem and change
   the causal mechanism in response. Keep the family and evidence target fixed.
-- A candidate receives at most three attempts in this session. Do not prepare a
+- Follow the repair work order: its diagnosis states the numbers, its
+  admissible repairs are the only changes that count as a repair, and its
+  fills/day budget is a hard ceiling. A change outside them is a new idea
+  wearing the old family's name.
+- A candidate receives at most the attempts the prompt states. Do not prepare a
   new idea; the controller retires this session when the slot closes.
 
 When the prompt says the campaign is draining or complete, stop immediately.

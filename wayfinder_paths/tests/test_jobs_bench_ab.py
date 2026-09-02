@@ -528,6 +528,13 @@ def test_campaign_repair_prompt_is_a_compact_artifact_work_order() -> None:
         "editable_paths": [".wayfinder/jobs/demo/candidates/c01"],
         "candidate_outcomes": [{"candidate_id": "c01", "attempt_count": 1}],
         "cases": [{"blob": "must-not-be-repeated"}],
+        "repair_work_order": {
+            "primary_failure": "cost_bleed",
+            "diagnosis": "59.0 fills/day vs incumbent 2.7; cadence is the defect.",
+            "admissible_repairs": ["raise the minimum hold"],
+            "forbidden": ["signal tweaks"],
+            "budget": {"max_fills_per_day": 8.1},
+        },
     }
 
     rendered = build_evolution_stage_prompt("majors-5m-lab", campaign)
@@ -539,6 +546,12 @@ def test_campaign_repair_prompt_is_a_compact_artifact_work_order() -> None:
     ]
     assert "postmortem.json" in rendered["prompt"]
     assert "must-not-be-repeated" not in rendered["prompt"]
+    prompt = rendered["prompt"]
+    assert "Repair work order (deterministic, authoritative)" in prompt
+    assert "cadence is the defect" in prompt
+    assert prompt.index("Repair work order") < prompt.index(
+        "Persisted candidate outcomes"
+    )
 
 
 def test_identity_allows_only_pre_registered_model_difference() -> None:

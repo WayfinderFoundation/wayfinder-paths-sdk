@@ -871,6 +871,7 @@ def _scorecard(
             "awaiting_regime": sum(
                 1 for row in candidates if row.get("status") == "awaiting_regime"
             ),
+            "focus": dict(state.get("focus") or {}),
             "production_summary": funnel,
         },
         "verdicts": {

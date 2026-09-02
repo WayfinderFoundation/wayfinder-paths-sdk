@@ -2171,6 +2171,15 @@ def build_evolution_stage_prompt(
     prior_stage_text = (
         _canonical_json(prior_handoff, max_chars=1_500) if prior_handoff else "null"
     )
+    repair_work_order = campaign_payload.pop("repair_work_order", None)
+    campaign_payload.pop("focus", None)
+    work_order_text = (
+        "Repair work order (deterministic, authoritative):\n"
+        + _canonical_json(repair_work_order, max_chars=1_500)
+        + "\n\n"
+        if isinstance(repair_work_order, dict) and repair_work_order
+        else ""
+    )
     candidate_outcomes = list(reversed(campaign_payload.pop("candidate_outcomes", [])))
     outcomes_text = _canonical_json(
         {"order": "newest_first", "candidates": candidate_outcomes[:3]},
@@ -2259,6 +2268,7 @@ def build_evolution_stage_prompt(
         "Perform exactly this next action, then end the stage:\n"
         f"{campaign_payload.get('next_action')}\n\n"
         f"Prior stage handoff:\n{prior_stage_text}\n\n"
+        f"{work_order_text}"
         f"Persisted candidate outcomes:\n{outcomes_text}\n\n"
         "Campaign control state:\n" + _canonical_json(control_state, max_chars=2_000)
     )

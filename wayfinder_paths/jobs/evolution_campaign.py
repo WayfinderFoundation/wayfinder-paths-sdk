@@ -17,6 +17,7 @@ import math
 import os
 import shutil
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from time import perf_counter
@@ -48,7 +49,9 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
     attempt_made_progress,
     build_diagnostic_pack,
     build_postmortem,
+    build_repair_work_order,
     compact_postmortem,
+    receipt_economics,
     resolve_json_pointer,
     result_receipt,
     valid_evidence_pointers,
@@ -62,6 +65,7 @@ from wayfinder_paths.jobs.execution.optimize import (
     search_space_probe_variants,
 )
 from wayfinder_paths.jobs.execution.primitives import (
+    DEFAULT_INITIAL_CAPITAL,
     DEFAULT_WARMUP_BARS,
     ExecutionSpec,
     bar_interval_seconds,
@@ -436,7 +440,12 @@ def _start_campaign(
     )
     parent_pool = _freeze_parent_pool(store, job_id, campaign_root)
     research_seeds = _freeze_research_seeds(store, job_id, campaign_root)
-    starter_seeds = _snapshot_starter_seeds(store, job_id, campaign_root)
+    starter_seeds = _snapshot_starter_seeds(
+        store,
+        job_id,
+        campaign_root,
+        dataset_symbols=tuple(snapshots["dataset"].get("symbols") or ()),
+    )
     research_context = _freeze_research_context(store, job_id)
     campaign_policy = {
         **spec.evolution,
@@ -489,7 +498,11 @@ def _start_campaign(
     # The design pack aggregates checked-in diagnostics only. Candidate
     # evaluation owns fresh simulations; campaign start must stay a cheap
     # control-plane operation rather than adding another incumbent backtest.
-    baseline = _existing_baseline_receipt(root)
+    baseline = _existing_baseline_receipt(
+        root,
+        window=snapshots["dataset"],
+        params=_target_execution_params(campaign_root / "source"),
+    )
     diagnostic_pack = build_diagnostic_pack(
         root,
         campaign_id=campaign_id,
@@ -591,7 +604,12 @@ def _campaign_regime_context(
     }
 
 
-def _existing_baseline_receipt(root: Path) -> dict[str, Any]:
+def _existing_baseline_receipt(
+    root: Path,
+    *,
+    window: Mapping[str, Any] | None = None,
+    params: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     path = root / "results/backtest/baseline.json"
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -601,15 +619,67 @@ def _existing_baseline_receipt(root: Path) -> dict[str, Any]:
         return {"available": False, "reason": "baseline backtest is not an object"}
     nested_result = document.get("result")
     result = nested_result if isinstance(nested_result, dict) else document
-    return {
+    stats = result.get("stats") or {}
+    receipt: dict[str, Any] = {
         "available": True,
         "run_id": result.get("run_id"),
-        "stats": result.get("stats") or {},
+        "stats": stats,
         "validation": result.get("validation") or {},
         "source": {
             "path": "results/backtest/baseline.json",
             "sha256": _file_hash(path),
         },
+    }
+    raw_params = result.get("params")
+    result_params: dict[str, Any] = (
+        dict(raw_params) if isinstance(raw_params, dict) else {}
+    )
+    capital = float(
+        result_params.get("initial_capital")
+        or (params or {}).get("initial_capital")
+        or DEFAULT_INITIAL_CAPITAL
+    )
+    baseline_window = _baseline_window(document.get("scope"), window, capital)
+    if baseline_window:
+        receipt["window"] = baseline_window
+        economics = receipt_economics({"stats": stats, "window": baseline_window})
+        if economics:
+            receipt["economics"] = economics
+    fee_bps = (params or {}).get("fee_bps", result_params.get("fee_bps"))
+    slippage_bps = (params or {}).get("slippage_bps", result_params.get("slippage_bps"))
+    if fee_bps is not None and slippage_bps is not None:
+        receipt["round_trip_cost_bps"] = round(
+            2.0 * (float(fee_bps) + float(slippage_bps)), 2
+        )
+    return receipt
+
+
+def _baseline_window(
+    scope: Any, dataset_window: Mapping[str, Any] | None, capital: float
+) -> dict[str, Any]:
+    """Baseline span: its own recorded scope, else the full frozen dataset span."""
+    if isinstance(scope, dict) and scope.get("start") and scope.get("end"):
+        try:
+            days = (
+                pd.Timestamp(scope["end"]) - pd.Timestamp(scope["start"])
+            ).total_seconds() / 86_400.0
+        except (TypeError, ValueError):
+            days = 0.0
+        if days > 0:
+            return {
+                "days": round(days, 4),
+                "bars": int(scope.get("bars") or 0),
+                "starting_equity": capital,
+                "source": "baseline_scope",
+            }
+    days = float((dataset_window or {}).get("full_days") or 0.0)
+    if days <= 0:
+        return {}
+    return {
+        "days": round(days, 4),
+        "bars": int((dataset_window or {}).get("full_bars") or 0),
+        "starting_equity": capital,
+        "source": "dataset_span",
     }
 
 
@@ -790,11 +860,12 @@ def _validate_campaign_design(
         "research_seed",
         "research_context",
     }
-    available_starter_ids = {
-        str(item.get("starter_id") or "")
+    starters_by_id = {
+        str(item.get("starter_id") or ""): item
         for item in manifest.get("starter_seeds") or []
         if item.get("starter_id")
     }
+    available_starter_ids = set(starters_by_id)
     available_research_seed_ids = {
         str(item.get("seed_id") or "")
         for item in manifest.get("research_seeds") or []
@@ -838,6 +909,12 @@ def _validate_campaign_design(
                 raise ValueError(
                     f"slot {slot_id} names unavailable starter_seed_id "
                     f"{starter_seed_id!r}"
+                )
+            starter_snapshot = starters_by_id[starter_seed_id]
+            if starter_snapshot.get("compatible") is False:
+                raise ValueError(
+                    f"slot {slot_id} starter_seed_id {starter_seed_id!r} "
+                    f"{starter_snapshot.get('incompatibility_reason')}"
                 )
         if research_seed_id:
             if source != "research_seed":
@@ -1616,6 +1693,11 @@ def _evaluate_candidate(
                     .get("regime", {})
                 ).get("max_out_of_regime_loss_pct", 0.02)
             ),
+            incumbent_economics=_incumbent_economics(store, job_id, campaign_id),
+            cost_bleed_fee_multiple=float(policy.get("cost_bleed_fee_multiple") or 3.0),
+            cost_bleed_fee_pct_of_capital_30d=float(
+                policy.get("cost_bleed_fee_pct_of_capital_30d") or 0.10
+            ),
         )
     if search_space is None:
         common["tuning_skip_reason"] = "no_typed_search_space"
@@ -1759,6 +1841,12 @@ def _commit_designed_attempt(
             # deterministic validator cause so it does not have to rediscover
             # the failure through broad reads or forbidden tool discovery.
             postmortem["repair_context"] = {"error": error[:500]}
+    if not bool(postmortem.get("viable")):
+        postmortem["repair_work_order"] = build_repair_work_order(
+            postmortem,
+            policy,
+            params=dict(_load_job_yaml(candidate_root).get("execution_params") or {}),
+        )
     receipt_relative = f"{attempt_relative}/receipt.json"
     postmortem_relative = f"{attempt_relative}/postmortem.json"
     atomic_write_json(store.job_dir(job_id) / receipt_relative, receipt)
@@ -1787,26 +1875,158 @@ def _commit_designed_attempt(
     candidate["evaluated_at"] = attempt["evaluated_at"]
     counts = state.setdefault("counts", {})
     counts["quick_attempts"] = int(counts.get("quick_attempts") or 0) + 1
+    if attempt_index > 1:
+        counts["repairs"] = int(counts.get("repairs") or 0) + 1
     max_attempts = int(policy.get("max_attempts_per_idea") or 3)
     global_cap = int(
         policy.get("max_quick_attempts")
         or int(policy["generated_programs"]) * max_attempts
     )
     before_drain = _campaign_now() < _parse(state["deadline_at"]) - CAMPAIGN_DRAIN
-    room = attempt_index < max_attempts and counts["quick_attempts"] < global_cap
-    repair = bool(
-        before_drain
-        and room
-        and not bool(postmortem.get("viable"))
-        and (attempt_index == 1 or attempt_made_progress(postmortem))
-    )
-    if repair:
+    global_room = counts["quick_attempts"] < global_cap
+    viable = bool(postmortem.get("viable"))
+    if _screen_before_repair(policy) and attempt_index == 1:
+        # A candidate's first attempt is its screen.  Non-viable candidates
+        # park until the focus phase ranks them; nothing is rejected on a
+        # single screen, and no repair budget is spent before every slot has
+        # been screened.
+        keep_open = before_drain and global_room and not viable
+    else:
+        cap = _attempt_cap(state, candidate, policy)
+        keep_open = bool(
+            before_drain
+            and attempt_index < cap
+            and global_room
+            and not viable
+            and (attempt_index == 1 or attempt_made_progress(postmortem))
+        )
+    if keep_open:
         candidate["status"] = "repair_pending"
         candidate["evidence"] = postmortem
-        counts["repairs"] = int(counts.get("repairs") or 0) + 1
         atomic_write_json(candidate_root / "candidate.json", candidate)
+        _stamp_focus(state, policy)
         return
     _close_designed_candidate(store, job_id, state=state, candidate=candidate)
+    _stamp_focus(state, policy)
+
+
+def _screen_before_repair(policy: Mapping[str, Any]) -> bool:
+    return bool(policy.get("screen_before_repair", True))
+
+
+def _screen_complete(state: Mapping[str, Any], policy: Mapping[str, Any]) -> bool:
+    budget = int(policy.get("generated_programs") or 0)
+    return len(state.get("candidates") or []) >= budget
+
+
+def _attempt_cap(
+    state: Mapping[str, Any], candidate: Mapping[str, Any], policy: Mapping[str, Any]
+) -> int:
+    """Per-candidate attempt ceiling for the current allocation phase."""
+    if not _screen_before_repair(policy):
+        return int(policy.get("max_attempts_per_idea") or 3)
+    if not _screen_complete(state, policy):
+        return 1
+    focus_ids = {item["candidate_id"] for item in _focus_candidates(state, policy)}
+    if candidate.get("candidate_id") in focus_ids:
+        return int(policy.get("focus_attempts_per_candidate") or 6)
+    return 1
+
+
+_FIXABILITY = {
+    "cost_bleed": 2,
+    "fees_erased_edge": 2,
+    "negative_after_costs": 1,
+    "negative_in_target_regime": 1,
+    "out_of_regime_loss_budget": 1,
+    "no_trades": 1,
+    "activity_below_floor": 1,
+    "activity_collapse": 1,
+}
+
+
+def _focus_rank(candidate: Mapping[str, Any]) -> tuple[Any, ...]:
+    attempts = candidate.get("attempts") or []
+    latest = attempts[-1] if attempts else {}
+    postmortem = latest.get("postmortem") or {}
+    codes = list(postmortem.get("failure_codes") or [])
+    fixability = _FIXABILITY.get(str(postmortem.get("primary_failure") or ""), 0)
+    # A cost-bleed candidate whose gross PnL was positive is the most fixable
+    # shape in the pool: the cadence, not the signal, is the defect.
+    if "cost_bleed" in codes and "fees_erased_edge" in codes:
+        fixability = 3
+    progress = float(
+        (postmortem.get("progress_from_previous") or {}).get("objective_delta") or 0.0
+    )
+    return (
+        bool(latest.get("execution_valid")),
+        fixability,
+        _candidate_score(latest.get("outcome") or {}),
+        progress,
+        -int(candidate.get("slot") or 0),
+    )
+
+
+def _focus_candidates(
+    state: Mapping[str, Any], policy: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Top-ranked open candidates that receive the remaining repair budget."""
+    limit = max(1, int(policy.get("focus_candidates") or 3))
+    pool = [
+        item
+        for item in state.get("candidates") or []
+        if item.get("status") in {"repair_pending", "quick_running"}
+        and item.get("attempts")
+    ]
+    return sorted(pool, key=_focus_rank, reverse=True)[:limit]
+
+
+def _stamp_focus(state: dict[str, Any], policy: Mapping[str, Any]) -> None:
+    if not _screen_before_repair(policy):
+        return
+    phase = "focus" if _screen_complete(state, policy) else "screen"
+    state["focus"] = {
+        "phase": phase,
+        "candidate_ids": [
+            str(item["candidate_id"]) for item in _focus_candidates(state, policy)
+        ]
+        if phase == "focus"
+        else [],
+        "computed_at": utc_now_iso(),
+    }
+
+
+def _incumbent_economics(
+    store: JobStore, job_id: str, campaign_id: str
+) -> dict[str, Any] | None:
+    pack = (
+        store.read_json(
+            job_id, f"{CAMPAIGN_ROOT}/{campaign_id}/{DIAGNOSTIC_PACK}", default={}
+        )
+        or {}
+    )
+    economics = (pack.get("baseline") or {}).get("economics")
+    return dict(economics) if isinstance(economics, dict) else None
+
+
+def _cost_budget(
+    baseline: Mapping[str, Any], policy: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    economics = baseline.get("economics")
+    if not isinstance(economics, Mapping):
+        return None
+    multiple = float(policy.get("max_fills_per_day_multiple") or 3.0)
+    fills = float(economics.get("fills_per_day") or 0.0)
+    budget = {
+        "incumbent_fills_per_day": fills,
+        "incumbent_fee_pct_of_capital_30d": economics.get("fee_pct_of_capital_30d"),
+        "incumbent_exposure_pct": economics.get("exposure_pct"),
+        "incumbent_avg_hold_minutes": economics.get("avg_hold_minutes"),
+        "max_fills_per_day": round(multiple * fills, 2),
+    }
+    if baseline.get("round_trip_cost_bps") is not None:
+        budget["round_trip_cost_bps"] = baseline["round_trip_cost_bps"]
+    return budget
 
 
 def _close_designed_candidate(
@@ -2644,13 +2864,29 @@ def campaign_prompt_block(
         starter_ids = [
             str(item.get("starter_id"))
             for item in manifest.get("starter_seeds") or []
-            if item.get("starter_id")
+            if item.get("starter_id") and item.get("compatible", True)
         ]
         research_seed_ids = [
             str(item.get("seed_id"))
             for item in manifest.get("research_seeds") or []
             if item.get("seed_id")
         ]
+        cost_budget = _cost_budget(diagnostic_pack.get("baseline") or {}, policy)
+        cost_instruction = (
+            "Cost budget: the incumbent trades "
+            f"{cost_budget['incumbent_fills_per_day']:.1f} fills/day; every slot "
+            f"must plausibly stay under {cost_budget['max_fills_per_day']:.1f} "
+            "fills/day"
+            + (
+                f" at ~{cost_budget['round_trip_cost_bps']:.0f} bps round trip"
+                if cost_budget.get("round_trip_cost_bps") is not None
+                else ""
+            )
+            + ". Continuous per-bar rebalancing is dead on arrival; cite "
+            "/baseline/economics when sizing cadence. "
+            if cost_budget
+            else ""
+        )
         regime_context = manifest.get("regime_context") or {}
         specialist_design = bool(
             policy.get("regime_specialist_enabled") and regime_context.get("available")
@@ -2679,8 +2915,8 @@ def campaign_prompt_block(
                 f"exactly {wildcards} explicit wildcards. Grounded slots must "
                 "cite existing JSON pointers from the diagnostic pack. Include "
                 "at least one starter_seed and one grounded de_novo slot. "
-                f"{research_instruction}{regime_instruction}Use at most one "
-                "incumbent slot and at "
+                f"{research_instruction}{regime_instruction}{cost_instruction}"
+                "Use at most one incumbent slot and at "
                 "most two parameter slots. One wildcard must be de_novo. "
                 'Call wayfinder_core_jobs with action="evolution_design", '
                 f'job_id="{job_id}", and campaign_design={{"hypotheses": [...], '
@@ -2715,16 +2951,13 @@ def campaign_prompt_block(
                 "research_parent_required": research_parent_required,
                 "regime_specialist_design": specialist_design,
                 "regime_context": regime_context if specialist_design else None,
+                "cost_budget": cost_budget,
             },
             "deadline_elapsed": current >= deadline,
         }
-    awaiting_evaluation = [
-        item
-        for item in candidates
-        if item.get("status") in {"prepared", "quick_failed", "repair_pending"}
-    ]
     policy = manifest.get("policy") or {}
     budget = int(policy.get("generated_programs") or 0)
+    awaiting_evaluation = _awaiting_evaluation(state, policy)
     deadline_elapsed = current >= deadline
     draining = deadline - CAMPAIGN_DRAIN <= current < deadline
     designed = str(state.get("schema_version") or "") == SCHEMA_VERSION
@@ -2791,20 +3024,27 @@ def campaign_prompt_block(
             store, job_id, str(state["campaign_id"]), candidate
         )
         repair_instruction = ""
+        repair_work_order: dict[str, Any] | None = None
         if candidate.get("status") == "repair_pending":
             latest_attempt = (candidate.get("attempts") or [])[-1]
             postmortem_path = str(
                 store.job_dir(job_id) / str(latest_attempt.get("postmortem_path") or "")
             )
             work_inputs.append(postmortem_path)
+            raw_order = (latest_attempt.get("postmortem") or {}).get(
+                "repair_work_order"
+            )
+            repair_work_order = dict(raw_order) if isinstance(raw_order, dict) else None
             repair_instruction = (
                 f"This is repair {int(candidate.get('attempt_count') or 0)} of "
-                f"at most {int(policy.get('max_attempts_per_idea') or 3)}. Read "
+                f"at most {_attempt_cap(state, candidate, policy)}. Read "
                 f"the deterministic postmortem at "
                 f"`{store.job_dir(job_id) / str(latest_attempt.get('postmortem_path') or '')}`. "
                 "Change the named causal mechanism in response to that evidence; "
                 "do not rename the family or substitute a generic new idea. "
             )
+            if repair_work_order:
+                repair_instruction += _repair_work_order_sentence(repair_work_order)
         next_action = (
             f"{seed_instruction}{mutation_instruction}{repair_instruction}Edit only files inside "
             f"{candidate_root} "
@@ -2870,6 +3110,8 @@ def campaign_prompt_block(
         "work_inputs": work_inputs,
         "editable_paths": editable_paths,
         "postmortem_path": postmortem_path,
+        "repair_work_order": repair_work_order if awaiting_evaluation else None,
+        "focus": state.get("focus"),
         "candidate_outcomes": [_candidate_handoff(item) for item in candidates],
         "historical_lessons": manifest.get("historical_lessons") or {},
         "research_context": manifest.get("research_context") or {},
@@ -2886,6 +3128,49 @@ def campaign_prompt_block(
         },
         "deadline_elapsed": deadline_elapsed,
     }
+
+
+def _awaiting_evaluation(
+    state: Mapping[str, Any], policy: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Candidates the next stage may work on, in service order.
+
+    Screen-first allocation: never-evaluated slots always go first; parked
+    repairs wait until every slot has had its screen attempt, then only the
+    focus set is served, best rank first.  The legacy depth-first order is
+    kept behind ``screen_before_repair: false`` for the bench control arm.
+    """
+    candidates = list(state.get("candidates") or [])
+    fresh = [
+        item
+        for item in candidates
+        if item.get("status") in {"prepared", "quick_failed"}
+    ]
+    if not _screen_before_repair(policy):
+        return fresh + [
+            item for item in candidates if item.get("status") == "repair_pending"
+        ]
+    if not _screen_complete(state, policy):
+        return fresh
+    focus = [
+        item
+        for item in _focus_candidates(state, policy)
+        if item.get("status") == "repair_pending"
+    ]
+    return fresh + focus
+
+
+def _repair_work_order_sentence(order: Mapping[str, Any]) -> str:
+    budget = order.get("budget") or {}
+    text = f"Diagnosis: {order.get('diagnosis')} Admissible repairs: " + "; ".join(
+        str(item) for item in order.get("admissible_repairs") or []
+    )
+    forbidden = "; ".join(str(item) for item in order.get("forbidden") or [])
+    if forbidden:
+        text += f". Do not: {forbidden}"
+    if budget.get("max_fills_per_day") is not None:
+        text += f". Budget: at most {float(budget['max_fills_per_day']):.1f} fills/day"
+    return text + ". "
 
 
 def _parent_plan_handoff(plan: dict[str, Any]) -> dict[str, Any]:
@@ -3006,6 +3291,9 @@ def _candidate_handoff(candidate: dict[str, Any]) -> dict[str, Any]:
                 "trade_count",
                 "win_rate",
                 "profit_factor",
+                "total_fees",
+                "total_turnover_usd",
+                "exposure_pct",
             )
             if quick_stats.get(key) is not None
         }
@@ -3018,12 +3306,38 @@ def _candidate_handoff(candidate: dict[str, Any]) -> dict[str, Any]:
     attempts = candidate.get("attempts") or []
     if attempts:
         latest = attempts[-1]
-        handoff["latest_postmortem"] = {
+        latest_postmortem = latest.get("postmortem") or {}
+        latest_summary: dict[str, Any] = {
             "attempt": latest.get("attempt"),
             "path": latest.get("postmortem_path"),
-            **compact_postmortem(latest.get("postmortem") or {}),
+            **compact_postmortem(latest_postmortem),
         }
+        order = latest_postmortem.get("repair_work_order")
+        if isinstance(order, dict):
+            latest_summary["repair_work_order"] = {
+                key: order.get(key)
+                for key in ("primary_failure", "diagnosis", "budget")
+            }
+        handoff["latest_postmortem"] = latest_summary
+        # The trend across a candidate's own attempts is what a focus repair
+        # needs to see; the last postmortem alone hides direction.
+        handoff["trajectory"] = [
+            _attempt_trajectory_row(item) for item in attempts[-6:]
+        ]
     return handoff
+
+
+def _attempt_trajectory_row(attempt: Mapping[str, Any]) -> dict[str, Any]:
+    postmortem = attempt.get("postmortem") or {}
+    economics = ((postmortem.get("economics") or {}).get("candidate")) or {}
+    quick = ((attempt.get("outcome") or {}).get("quick") or {}).get("stats") or {}
+    return {
+        "attempt": attempt.get("attempt"),
+        "primary_failure": postmortem.get("primary_failure"),
+        "net_return": quick.get("net_return"),
+        "fills_per_day": economics.get("fills_per_day"),
+        "fee_pct_of_capital": economics.get("fee_pct_of_capital"),
+    }
 
 
 def _sync_campaign_archive(store: JobStore, job_id: str, state: dict[str, Any]) -> None:
@@ -3813,11 +4127,19 @@ def _validate_parent_component(value: str, label: str) -> None:
 
 
 def _snapshot_starter_seeds(
-    store: JobStore, job_id: str, campaign_root: Path
+    store: JobStore,
+    job_id: str,
+    campaign_root: Path,
+    *,
+    dataset_symbols: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
     job_data = _load_job_yaml(campaign_root / "source")
     target_params = dict(job_data.get("execution_params") or {})
     target_symbols = {str(symbol) for symbol in target_params.get("symbols") or []}
+    universe = target_symbols or {str(symbol) for symbol in dataset_symbols} or None
+    # Without declared target symbols the starter's own list survives install,
+    # so it must fit the frozen universe too.
+    target_overrides_symbols = bool(target_symbols)
     spec_data, _ = resolve_execution_spec(campaign_root / "source", job_data)
     target_timeframe = str(
         ((spec_data or {}).get("data_contract") or {}).get("bar_interval") or ""
@@ -3861,9 +4183,81 @@ def _snapshot_starter_seeds(
                 "source_sha256": _file_hash(destination),
                 "adaptation_required": True,
                 "research_evidence_reset": True,
+                **_starter_compatibility(
+                    definition,
+                    universe,
+                    target_overrides_symbols=target_overrides_symbols,
+                ),
             }
         )
     return snapshots
+
+
+def _starter_required_symbols(definition: StarterDefinition) -> set[str]:
+    """Symbol literals a starter's params embed (sleeves, pairs, ...).
+
+    ``symbols`` itself is replaced by the target job at install time; the
+    literals inside other params are not, and they are the KeyError site.
+    """
+    declared = {str(symbol) for symbol in definition.symbols}
+    found: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, str):
+            if value in declared:
+                found.add(value)
+        elif isinstance(value, Mapping):
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, list | tuple | set):
+            for item in value:
+                visit(item)
+
+    params = dict(definition.configured_params())
+    params.pop("symbols", None)
+    visit(params)
+    # Strategy classes carry their own ``default_params`` (sleeves, pairs);
+    # those literals survive install exactly like the definition's params.
+    module = importlib.import_module(definition.module)
+    for attribute in vars(module).values():
+        defaults = getattr(attribute, "default_params", None)
+        if isinstance(attribute, type) and isinstance(defaults, Mapping):
+            visit({key: value for key, value in defaults.items() if key != "symbols"})
+    return found
+
+
+def _starter_compatibility(
+    definition: StarterDefinition,
+    universe: set[str] | None,
+    *,
+    target_overrides_symbols: bool = True,
+) -> dict[str, Any]:
+    required_set = _starter_required_symbols(definition)
+    if not target_overrides_symbols:
+        required_set |= {str(symbol) for symbol in definition.symbols}
+    required = sorted(required_set)
+    if universe is None:
+        # Unknown universe (no declared symbols, no frozen bars): nothing to
+        # check against, so the starter stays selectable.
+        return {"required_symbols": required, "compatible": True}
+    missing = [symbol for symbol in required if symbol not in universe]
+    reason: str | None = None
+    if missing:
+        reason = (
+            f"requires symbols {missing} not in the job dataset; available: "
+            f"{sorted(universe)}"
+        )
+    elif definition.family == "relative_value_pair" and len(universe) != 2:
+        reason = (
+            "is a pair strategy that needs exactly two symbols; the job trades "
+            f"{len(universe)}"
+        )
+    return {
+        "required_symbols": required,
+        "compatible": reason is None,
+        "missing_symbols": missing,
+        **({"incompatibility_reason": reason} if reason else {}),
+    }
 
 
 def _freeze_research_seeds(
@@ -4076,6 +4470,7 @@ def _select_parent_plan(
             if item.get("starter_seed_id")
         }
         starters = list(manifest.get("starter_seeds") or [])
+        starters = [item for item in starters if item.get("compatible", True)]
         starter = (
             next(
                 (
@@ -4191,13 +4586,31 @@ def _materialize_candidate_seed(
             store, job_id, str(seed.get("seed_id") or ""), campaign_id
         )
     elif source == "starter_seed":
+        starter = dict(plan.get("starter") or {})
+        if starter.get("compatible") is False:
+            raise ValueError(
+                f"starter {starter.get('starter_id')} "
+                f"{starter.get('incompatibility_reason')}"
+            )
+        target_symbols = _target_execution_params(frozen_source).get("symbols")
+        if isinstance(target_symbols, list):
+            missing = sorted(
+                set(starter.get("required_symbols") or [])
+                - {str(symbol) for symbol in target_symbols}
+            )
+            if missing:
+                raise ValueError(
+                    f"starter {starter.get('starter_id')} requires symbols "
+                    f"{missing} not in the job dataset; available: "
+                    f"{sorted(str(symbol) for symbol in target_symbols)}"
+                )
         _copy_clean_scaffold(store, job_id, frozen_source, candidate_root)
         _install_starter_seed(
             store,
             job_id,
             campaign_id=campaign_id,
             candidate_root=candidate_root,
-            starter=dict(plan.get("starter") or {}),
+            starter=starter,
         )
     else:
         _copy_clean_scaffold(store, job_id, frozen_source, candidate_root)
@@ -4347,7 +4760,7 @@ def _snapshot_campaign_inputs(
     data_root = campaign_root / CAMPAIGN_DATA_ROOT
     bars_path = data_root / "results" / "backtest" / "input_bars.json"
     bars_path.parent.mkdir(parents=True, exist_ok=True)
-    cutoff = _write_development_prefix(
+    cutoff, dataset_window = _write_development_prefix(
         dataset_path,
         bars_path,
         fraction=development_fraction,
@@ -4398,6 +4811,7 @@ def _snapshot_campaign_inputs(
             "sha256": _file_hash(bars_path),
             "bytes": bars_path.stat().st_size,
             "development_cutoff": cutoff.isoformat() if cutoff is not None else None,
+            **dataset_window,
         },
         "features": features,
         "forward_experience": {
@@ -4414,19 +4828,37 @@ def _snapshot_campaign_inputs(
 
 def _write_development_prefix(
     source: Path, destination: Path, *, fraction: float
-) -> pd.Timestamp | None:
+) -> tuple[pd.Timestamp | None, dict[str, Any]]:
+    """Write the development prefix; also report the dataset's span and universe."""
     payload = json.loads(source.read_text(encoding="utf-8"))
     bars = payload.get("bars") if isinstance(payload, dict) else None
     if not isinstance(bars, list) or not bars:
         atomic_write_json(destination, payload)
-        return None
+        return None, {}
     timestamp_values = {_row_timestamp(row) for row in bars if isinstance(row, dict)}
     timestamps = sorted(stamp for stamp in timestamp_values if stamp is not None)
     if not timestamps:
         atomic_write_json(destination, payload)
-        return None
+        return None, {}
     count = max(1, min(len(timestamps), int(len(timestamps) * fraction)))
     cutoff = timestamps[count - 1]
+    window = {
+        "symbols": sorted(
+            {
+                str(row["symbol"])
+                for row in bars
+                if isinstance(row, dict) and row.get("symbol") is not None
+            }
+        ),
+        "full_bars": len(timestamps),
+        "full_days": round(
+            (timestamps[-1] - timestamps[0]).total_seconds() / 86_400.0, 4
+        ),
+        "bars": count,
+        "days": round((cutoff - timestamps[0]).total_seconds() / 86_400.0, 4),
+        "start": timestamps[0].isoformat(),
+        "end": timestamps[-1].isoformat(),
+    }
     development = {
         **payload,
         "bars": [
@@ -4441,7 +4873,7 @@ def _write_development_prefix(
     metadata["evolution_development_cutoff"] = cutoff.isoformat()
     development["metadata"] = metadata
     atomic_write_json(destination, development)
-    return cutoff
+    return cutoff, window
 
 
 def _write_timeseries_prefix(

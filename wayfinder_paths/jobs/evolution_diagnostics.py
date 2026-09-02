@@ -14,6 +14,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import pandas as pd
+
 if TYPE_CHECKING:
     from wayfinder_paths.jobs.execution.simulator import ExecutionBacktestResult
 
@@ -31,7 +33,86 @@ RESULT_STAT_KEYS = (
     "peak_notional_usd",
     "total_fees",
     "total_turnover_usd",
+    "avg_trade_duration_s",
 )
+
+# Failure code -> the class of change that can fix it.  A repair outside the
+# admissible class is a new idea wearing the old family's name.
+REPAIR_REMEDIES: dict[str, dict[str, list[str]]] = {
+    "cost_bleed": {
+        "admissible": [
+            "raise the minimum hold or add a position TTL",
+            "add a rebalance band so small target changes do not trade",
+            "add an entry cooldown per symbol",
+            "trade fewer symbols",
+            "cap position size so turnover falls under the fills/day budget",
+        ],
+        "forbidden": [
+            "signal-threshold or indicator tweaks without a turnover change",
+        ],
+    },
+    "no_trades": {
+        "admissible": [
+            "loosen the entry condition that never fires",
+            "inspect the gate stack for a condition that is always false",
+            "confirm the declared warmup leaves bars to trade",
+        ],
+        "forbidden": ["adding more gates"],
+    },
+    "activity_below_floor": {
+        "admissible": [
+            "loosen the rarest entry condition",
+            "widen the tradable universe within the dataset",
+        ],
+        "forbidden": ["adding more gates"],
+    },
+    "negative_after_costs": {
+        "admissible": [
+            "change the causal mechanism: entry timing, exit rule, or sizing",
+            "keep turnover where it is; the cadence is within budget",
+        ],
+        "forbidden": ["renaming the family", "substituting a generic new idea"],
+    },
+    "negative_in_target_regime": {
+        "admissible": [
+            "change the mechanism that is supposed to earn inside the declared regimes",
+            "tighten exits or flatten when the portfolio regime leaves the target",
+        ],
+        "forbidden": ["renaming the family", "substituting a generic new idea"],
+    },
+    "out_of_regime_loss_budget": {
+        "admissible": [
+            "flatten or reduce exposure when the portfolio regime leaves the "
+            "declared cells",
+            "tighten exits outside the target regimes",
+        ],
+        "forbidden": ["widening the declared regimes to hide the loss"],
+    },
+    "fees_erased_edge": {
+        "admissible": [
+            "reduce turnover: minimum hold, rebalance band, or entry cooldown",
+        ],
+        "forbidden": ["signal changes that raise trade count"],
+    },
+    "invalid_execution": {
+        "admissible": ["fix exactly the named execution error"],
+        "forbidden": ["changing the mechanism before it runs"],
+    },
+    "no_behavior_change": {
+        "admissible": [
+            "make a change that alters decisions on the screen window",
+        ],
+        "forbidden": ["cosmetic edits"],
+    },
+    "activity_collapse": {
+        "admissible": ["restore participation before judging the mechanism"],
+        "forbidden": ["adding more gates"],
+    },
+}
+_DEFAULT_REMEDY = {
+    "admissible": ["change the named causal mechanism in response to the evidence"],
+    "forbidden": ["renaming the family", "substituting a generic new idea"],
+}
 
 
 def result_receipt(
@@ -50,10 +131,58 @@ def result_receipt(
             for key in RESULT_STAT_KEYS
             if result.stats.get(key) is not None
         },
+        "window": _result_window(result),
         "objective": dict(objective or {}),
         "behavior": dict(behavior or {}),
         "regime": dict(result.stats.get("regime") or {}),
         "trades": [_trade_view(row) for row in result.trades],
+    }
+
+
+def _result_window(result: Any) -> dict[str, Any]:
+    """Window span and starting capital; per-day economics need both."""
+    curve = list(getattr(result, "equity_curve", None) or [])
+    params = getattr(result, "params", None) or {}
+    if not curve:
+        return {}
+    try:
+        start = pd.Timestamp(curve[0]["timestamp"])
+        end = pd.Timestamp(curve[-1]["timestamp"])
+        capital = float(params.get("initial_capital") or curve[0]["equity"])
+    except (KeyError, TypeError, ValueError):
+        return {}
+    return {
+        "days": round(max((end - start).total_seconds() / 86_400.0, 0.0), 4),
+        "bars": len(curve),
+        "starting_equity": capital,
+    }
+
+
+def receipt_economics(receipt: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Absolute, per-day trading economics of one receipt.
+
+    Deltas against a reference cannot say "fees consumed 29% of capital in
+    33 days"; the repair loop needs the absolute numbers beside the
+    incumbent's to see that cadence, not signal, is the defect.
+    """
+    window = receipt.get("window") or {}
+    days = _number(window.get("days"))
+    capital = _number(window.get("starting_equity"))
+    if days <= 0 or capital <= 0:
+        return None
+    stats = receipt.get("stats") or {}
+    fills = _integer(stats.get("trade_count"))
+    fee_pct = _number(stats.get("total_fees")) / capital
+    return {
+        "window_days": round(days, 3),
+        "fills_per_day": round(fills / days, 4),
+        "fee_pct_of_capital": round(fee_pct, 6),
+        "fee_pct_of_capital_30d": round(fee_pct * 30.0 / days, 6),
+        "turnover_multiple": round(
+            _number(stats.get("total_turnover_usd")) / capital, 4
+        ),
+        "exposure_pct": round(_number(stats.get("exposure_pct")), 6),
+        "avg_hold_minutes": round(_number(stats.get("avg_trade_duration_s")) / 60.0, 2),
     }
 
 
@@ -213,6 +342,9 @@ def build_postmortem(
     previous: Mapping[str, Any] | None = None,
     min_trades: int = 8,
     max_outside_loss_pct: float = 0.02,
+    incumbent_economics: Mapping[str, Any] | None = None,
+    cost_bleed_fee_multiple: float = 3.0,
+    cost_bleed_fee_pct_of_capital_30d: float = 0.10,
 ) -> dict[str, Any]:
     """Explain what changed and why an attempt did or did not qualify."""
     candidate_trades = list(candidate.get("trades") or [])
@@ -273,6 +405,22 @@ def build_postmortem(
     fees = _number(stats.get("total_fees"))
     if realized > 0 and net_return <= 0 and fees > 0:
         failure_codes.append("fees_erased_edge")
+    economics = {
+        "candidate": receipt_economics(candidate),
+        "reference": receipt_economics(reference),
+        "incumbent": dict(incumbent_economics) if incumbent_economics else None,
+    }
+    # The reference is the candidate's frozen seed (an empty zero-fee scaffold
+    # for de-novo slots), so the incumbent is the comparator whenever known.
+    if _cost_bleed(
+        economics["candidate"],
+        economics["incumbent"] or economics["reference"],
+        net_return=net_return,
+        multiple=cost_bleed_fee_multiple,
+        floor=cost_bleed_fee_pct_of_capital_30d,
+    ):
+        position = 1 if failure_codes[:1] == ["invalid_execution"] else 0
+        failure_codes.insert(position, "cost_bleed")
     viable = bool(
         candidate.get("execution_valid")
         and material_change
@@ -300,21 +448,141 @@ def build_postmortem(
             "by_symbol": _bucket_delta(candidate_trades, reference_trades, "symbol"),
             "by_side": _bucket_delta(candidate_trades, reference_trades, "side"),
         },
+        "economics": economics,
     }
     if previous:
         postmortem["progress_from_previous"] = _progress(candidate, previous)
     return postmortem
 
 
+def _cost_bleed(
+    candidate: Mapping[str, Any] | None,
+    comparator: Mapping[str, Any] | None,
+    *,
+    net_return: float,
+    multiple: float,
+    floor: float,
+) -> bool:
+    if not candidate or net_return > 0:
+        return False
+    candidate_rate = _number(candidate.get("fee_pct_of_capital_30d"))
+    comparator_rate = _number((comparator or {}).get("fee_pct_of_capital_30d"))
+    threshold = min(multiple * comparator_rate, floor) if comparator_rate > 0 else floor
+    return candidate_rate > max(threshold, 0.01)
+
+
 def attempt_made_progress(postmortem: Mapping[str, Any]) -> bool:
+    """Causal progress: the behavior changed and the outcome moved the right way.
+
+    An extra trade is not progress; for a cost-bleed candidate, cutting
+    fills/day toward the budget is.
+    """
     progress = postmortem.get("progress_from_previous") or {}
-    return bool(
-        progress.get("became_valid")
-        or progress.get("became_viable")
-        or _number(progress.get("trade_count_delta")) > 0
-        or _number(progress.get("net_return_delta")) > 1e-9
+    if not progress:
+        return False
+    if progress.get("became_valid") or progress.get("became_viable"):
+        return True
+    material = bool((postmortem.get("behavior_diff") or {}).get("material_change"))
+    if not material:
+        return False
+    if (
+        _number(progress.get("net_return_delta")) > 1e-9
         or _number(progress.get("objective_delta")) > 1e-9
+    ):
+        return True
+    return _number(progress.get("fills_per_day_delta")) < -1e-9 and (
+        postmortem.get("primary_failure") == "cost_bleed"
+        or "cost_bleed" in (postmortem.get("failure_codes") or [])
     )
+
+
+def build_repair_work_order(
+    postmortem: Mapping[str, Any],
+    policy: Mapping[str, Any] | None = None,
+    *,
+    params: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Deterministic assignment for the next attempt: diagnosis, remedy class, budget."""
+    policy = policy or {}
+    primary = postmortem.get("primary_failure")
+    remedy = REPAIR_REMEDIES.get(str(primary or ""), _DEFAULT_REMEDY)
+    economics = postmortem.get("economics") or {}
+    candidate = economics.get("candidate") or {}
+    comparator = economics.get("incumbent") or economics.get("reference") or {}
+    comparator_label = "incumbent" if economics.get("incumbent") else "reference"
+    budget: dict[str, Any] = {}
+    if comparator:
+        multiple = float(policy.get("max_fills_per_day_multiple") or 3.0)
+        budget["incumbent_fills_per_day"] = comparator.get("fills_per_day")
+        budget["max_fills_per_day"] = round(
+            multiple * _number(comparator.get("fills_per_day")), 2
+        )
+    if params:
+        budget["round_trip_cost_bps"] = round(
+            2.0
+            * (_number(params.get("fee_bps")) + _number(params.get("slippage_bps"))),
+            2,
+        )
+    return {
+        "primary_failure": primary,
+        "failure_codes": list(postmortem.get("failure_codes") or [])[:6],
+        "diagnosis": _diagnosis(postmortem, candidate, comparator, comparator_label),
+        "admissible_repairs": list(remedy["admissible"]),
+        "forbidden": list(remedy["forbidden"]),
+        "budget": budget,
+    }
+
+
+def _diagnosis(
+    postmortem: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    comparator: Mapping[str, Any],
+    comparator_label: str,
+) -> str:
+    primary = str(postmortem.get("primary_failure") or "")
+    error = str((postmortem.get("repair_context") or {}).get("error") or "").strip()
+    if primary == "invalid_execution":
+        return f"Execution failed before evaluation: {error[:240] or 'see postmortem'}."
+    if not candidate:
+        return (
+            f"Attempt failed with {primary or 'no'} evidence beyond the failure code."
+        )
+    cadence = f"{_number(candidate.get('fills_per_day')):.1f} fills/day"
+    if comparator:
+        cadence += (
+            f" vs {comparator_label} {_number(comparator.get('fills_per_day')):.1f}"
+        )
+    fees = (
+        f"fees consumed {100 * _number(candidate.get('fee_pct_of_capital')):.0f}% of "
+        f"capital in {_number(candidate.get('window_days')):.0f} days"
+    )
+    if comparator:
+        fees += (
+            f" ({comparator_label} "
+            f"{100 * _number(comparator.get('fee_pct_of_capital_30d')):.1f}% per 30 days)"
+        )
+    exposure = f"exposure {_number(candidate.get('exposure_pct')):.2f}"
+    if comparator:
+        exposure += f" vs {_number(comparator.get('exposure_pct')):.2f}"
+    facts = f"{cadence}; {fees}; {exposure}."
+    if primary == "cost_bleed":
+        return (
+            f"{facts} Fees exceed any plausible edge at this cadence: the "
+            "cadence is the defect, not the signal. Reduce turnover before "
+            "touching entry logic."
+        )
+    if primary == "no_trades":
+        return "No fills on the screen window: the gate stack never admits an entry."
+    if primary == "fees_erased_edge":
+        return f"{facts} Gross realized PnL was positive; fees erased it."
+    if primary in {"negative_after_costs", "negative_in_target_regime"}:
+        return (
+            f"{facts} Turnover is within budget, so the mechanism itself is not "
+            "capturing edge; change the mechanism, not the cadence."
+        )
+    if primary == "out_of_regime_loss_budget":
+        return f"{facts} Losses outside the declared regimes exceeded the budget."
+    return facts
 
 
 def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
@@ -338,6 +606,23 @@ def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
             if behavior.get(key) is not None
         },
     }
+    economics = postmortem.get("economics") or {}
+    if isinstance(economics, Mapping) and economics.get("candidate"):
+        compact["economics"] = {
+            side: {
+                key: economics[side].get(key)
+                for key in (
+                    "window_days",
+                    "fills_per_day",
+                    "fee_pct_of_capital",
+                    "fee_pct_of_capital_30d",
+                    "turnover_multiple",
+                    "exposure_pct",
+                )
+            }
+            for side in ("candidate", "incumbent", "reference")
+            if isinstance(economics.get(side), Mapping)
+        }
     repair_error = str(
         (postmortem.get("repair_context") or {}).get("error") or ""
     ).strip()
@@ -375,6 +660,11 @@ def _progress(
         ),
         "objective_delta": round(
             _objective_score(objective) - _objective_score(prior_objective), 8
+        ),
+        "fills_per_day_delta": round(
+            _number((receipt_economics(candidate) or {}).get("fills_per_day"))
+            - _number((receipt_economics(previous) or {}).get("fills_per_day")),
+            4,
         ),
     }
 
@@ -539,6 +829,9 @@ def _fit_pack(pack: dict[str, Any]) -> dict[str, Any]:
                 "objective",
                 "behavior",
                 "window_bars",
+                "window",
+                "economics",
+                "round_trip_cost_bps",
             )
             if key in baseline
         }
