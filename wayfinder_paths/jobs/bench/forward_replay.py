@@ -228,28 +228,43 @@ def replay_probation(
     generation_cutoff: datetime,
     campaign_id: str | None = None,
 ) -> dict[str, Any]:
-    """Replay a staged trial through the real burn-in/day-7/day-14 code.
+    """Replay staged trials through the real burn-in/day-7/day-14 code.
 
-    ``campaign_id`` restricts the replay to that campaign's trial so a chained
-    run never replays a leftover from an earlier loop.
+    ``campaign_id`` names the trial rebased to ``generation_cutoff``. Open
+    trials from earlier loops keep their cursors and continue over the new
+    window alongside it; their ids are returned as ``carried``.
     """
     cutoff = _aware(generation_cutoff)
     doc = load_probation(store, job_id)
-    runnable = [
+    open_trials = [
         trial
         for trial in doc.get("trials") or []
         if trial.get("status") in {"queued", "burn_in", "active"}
-        and (campaign_id is None or trial.get("campaign_id") == campaign_id)
     ]
-    if not runnable:
-        return {
-            "available": False,
-            "reason": "campaign staged no probation candidate",
-            "paired_daily_delta": [],
-        }
-    trial = runnable[0]
-    _rebase_trial(trial, cutoff=cutoff)
-    store.write_json(job_id, "probation.json", doc)
+    trial = next(
+        (
+            row
+            for row in open_trials
+            if campaign_id is None or row.get("campaign_id") == campaign_id
+        ),
+        None,
+    )
+    carried = [
+        str(row["trial_id"])
+        for row in open_trials
+        if trial is None or row["trial_id"] != trial["trial_id"]
+    ]
+    unavailable = {
+        "available": False,
+        "reason": "campaign staged no probation candidate",
+        "carried": carried,
+        "paired_daily_delta": [],
+    }
+    if trial is None and not carried:
+        return unavailable
+    if trial is not None:
+        _rebase_trial(trial, cutoff=cutoff)
+        store.write_json(job_id, "probation.json", doc)
     warmup_rows = [
         row for row in development_rows if _row_timestamp(row) <= pd.Timestamp(cutoff)
     ][-2_000:]
@@ -258,6 +273,8 @@ def replay_probation(
     end = max(view.timestamps)
     asyncio.run(run_candidate_shadows(store, job_id, view=view, now=end))
     maybe_adjudicate_probation(store, job_id, now=end.to_pydatetime())
+    if trial is None:
+        return unavailable
     updated = next(
         row
         for row in load_probation(store, job_id)["trials"]
@@ -272,6 +289,7 @@ def replay_probation(
         "phase": updated.get("phase"),
         "burn_in": updated.get("burn_in"),
         "forward": updated.get("forward"),
+        "carried": carried,
         "paired_daily_delta": metrics.get("daily_deltas") or [],
     }
 

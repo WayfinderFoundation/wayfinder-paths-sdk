@@ -24,11 +24,15 @@ from wayfinder_paths.jobs.compute_lock import ComputeLockBusy
 from wayfinder_paths.jobs.evolution_campaign import (
     _archive_campaign_candidate,
     _attempt_cap,
+    _candidate_handoff,
     _claim_full_dev,
     _commit_designed_attempt,
     _commit_full_dev,
     _complexity_budget,
     _failure_mode_summary,
+    _focus_rank,
+    _freeze_research_context,
+    _gate_summary,
     _isolated_full_dev,
     _load_candidate_search_space,
     _materialize_candidate_seed,
@@ -39,6 +43,9 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _parent_source,
     _persist_executable_bundle,
     _plateau_select,
+    _prune_risky_trials,
+    _research_context_instruction,
+    _risk_ceiling_scale,
     _same_family_nonwins,
     _screen_confidence,
     _screen_slice_report,
@@ -510,6 +517,7 @@ def test_design_prompt_carries_cost_budget_from_baseline(tmp_path) -> None:
                         "total_turnover_usd": 22_441.0,
                         "exposure_pct": 0.106,
                         "avg_trade_duration_s": 7_160.0,
+                        "max_drawdown_pct": -0.065,
                     },
                 },
             }
@@ -521,6 +529,13 @@ def test_design_prompt_carries_cost_budget_from_baseline(tmp_path) -> None:
 
     prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
     assert prompt
+    risk = prompt["constraints"]["risk_budget"]
+    assert risk["max_drawdown_pct"] == 0.25 and risk["max_tail_loss"] == 0.15
+    assert risk["incumbent_max_drawdown_pct"] == pytest.approx(0.065)
+    assert risk["prior_risk_ceiling"] == []
+    assert "Risk budget: OOS max drawdown <= 25%" in prompt["next_action"]
+    assert "the incumbent runs at" in prompt["next_action"]
+    assert "never a search dimension" in prompt["next_action"]
     budget = prompt["constraints"]["cost_budget"]
     assert budget["incumbent_fills_per_day"] == pytest.approx(2.74, abs=0.01)
     assert budget["max_fills_per_day"] == pytest.approx(8.2, abs=0.05)
@@ -2059,6 +2074,8 @@ def test_parameter_preview_is_seeded_bounded_and_compact(monkeypatch) -> None:
     assert captured["objectives"] == ["net_return", "max_drawdown_pct"]
     assert preview == {
         "status": "complete",
+        "risk_pruned": 0,
+        "max_drawdown_pct": None,
         "trials": 3,
         "valid_trials": 1,
         "bars": 2_000,
@@ -3608,14 +3625,20 @@ def test_evaluate_rejects_parameter_candidate_without_typed_search_space(
 
     result = evaluate_candidate(store, job_id, parameter["candidate_id"])
 
-    assert result["status"] == "invalid"
-    assert "requires search_space.json" in json.dumps(result["evidence"])
+    # A deterministic authoring mistake: nothing ran, nothing was charged.
+    assert result["status"] == "prepared"
+    assert "requires search_space.json" in result["submission_rejection"]["error"]
+    assert result["submission_rejection"]["attempt_charged"] is False
+    assert not result.get("attempts") and int(result.get("attempt_count") or 0) == 0
+    assert int(campaign_status(store, job_id)["counts"].get("quick_attempts") or 0) == 0
     entry = next(
         row
         for row in load_archive(store, job_id)["candidates"]
         if row["candidate_id"] == parameter["candidate_id"]
     )
-    assert entry["status"] == "invalid"
+    assert entry["status"] == "generated"
+    handoff = _candidate_handoff(result)
+    assert "resubmit" in handoff["submission_rejection"]["instruction"]
 
 
 def test_evaluate_rejects_oversized_candidate_search_space(tmp_path) -> None:
@@ -3637,8 +3660,35 @@ def test_evaluate_rejects_oversized_candidate_search_space(tmp_path) -> None:
 
     result = evaluate_candidate(store, job_id, parameter["candidate_id"])
 
-    assert result["status"] == "invalid"
-    assert "three-dimension evolution budget" in json.dumps(result["evidence"])
+    assert result["status"] == "prepared"
+    assert "three-dimension evolution budget" in result["submission_rejection"]["error"]
+
+
+def test_evaluate_rejects_sizing_dimensions_without_charging(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    candidates = _prepare_campaign_candidates(store, job_id, started)
+    parameter = candidates[-1]
+    bundle = store.job_dir(job_id) / parameter["bundle"]
+    (bundle / "search_space.json").write_text(
+        json.dumps(
+            {
+                "hold_hours": {"type": "int", "low": 4, "high": 24},
+                "notional_fraction": {"type": "float", "low": 0.5, "high": 1.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = evaluate_candidate(store, job_id, parameter["candidate_id"])
+
+    assert result["status"] == "prepared"
+    assert (
+        "sizing dimensions are not search dimensions"
+        in (result["submission_rejection"]["error"])
+    )
+    assert "notional_fraction" in result["submission_rejection"]["error"]
 
 
 def test_behavior_preview_rejects_noop_parameter_before_simulation(
@@ -3853,6 +3903,8 @@ def test_full_dev_optuna_uses_bounded_train_tail_and_timeout(
     assert outcome["tuning"] == {
         "plateau": {"neighbors_of_best": 0, "ratio": None, "selected_by": "ranked"},
         "status": "complete",
+        "risk_pruned": 0,
+        "max_drawdown_pct": 0.2,
         "trials": 5,
         "valid_trials": 4,
         "bars": 20,
@@ -3939,3 +3991,348 @@ def test_cli_evolution_start_nudges_the_session(monkeypatch, tmp_path) -> None:
     assert outcome.exit_code == 0, outcome.output
     assert calls == [("nudge", "job-nudge-demo")]
     assert '"queued": true' in outcome.output
+
+
+def test_risk_ceiling_scale_only_for_risk_only_rejections_with_edge() -> None:
+    economic = {
+        "status": "ok",
+        "ready": False,
+        "reasons": ["OOS max drawdown 0.319 exceeds ceiling 0.25"],
+        "objective": {
+            "candidate": {
+                "max_drawdown_pct": 0.319,
+                "tail_loss": 0.074,
+                "net_log_growth": 0.11,
+            }
+        },
+        "paired_incumbent_delta": {"estimate": 0.07, "lcb": -0.1},
+    }
+    hard = {"max_drawdown_pct": 0.25, "max_tail_loss": 0.15}
+    scale, before = _risk_ceiling_scale(economic, hard, margin=0.9)
+    assert scale == pytest.approx(0.9 * 0.25 / 0.319, abs=1e-3)
+    assert before["ceiling_max_drawdown_pct"] == 0.25
+    summary = _gate_summary(economic, hard, {"scale": scale})
+    assert summary["class"] == "risk_ceiling" and summary["implied_scale"] == scale
+    assert summary["observed_max_drawdown_pct"] == 0.319
+    mixed = {
+        **economic,
+        "reasons": [*economic["reasons"], "paired utility estimate not > 0"],
+    }
+    assert _risk_ceiling_scale(mixed, hard, margin=0.9) is None
+    assert _gate_summary(mixed, hard, None)["class"] == "no_edge"
+    flat = {**economic, "paired_incumbent_delta": {"estimate": -0.01}}
+    assert _risk_ceiling_scale(flat, hard, margin=0.9) is None
+    assert (
+        _gate_summary({**economic, "ready": True, "reasons": []}, hard, None)["class"]
+        == "staged"
+    )
+
+
+def _finalist_fixture(tmp_path, monkeypatch, gate_results):
+    from wayfinder_paths.jobs import evolution_campaign as campaign_module
+
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    prepare_candidate(
+        store,
+        job_id,
+        family="trend-hold",
+        summary="edge with too much size",
+        now=started.replace(hour=13),
+    )
+    state = campaign_status(store, job_id)
+    state["candidates"][0].update(
+        {
+            "status": "quick_complete",
+            "objective": {
+                "net_log_growth": 0.1,
+                "downside_deviation": 0.01,
+                "tail_loss": 0.01,
+                "max_drawdown_pct": 0.05,
+            },
+        }
+    )
+    state["counts"]["quick_evaluated"] = 1
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    bundle = store.job_dir(job_id) / state["candidates"][0]["bundle"]
+    monkeypatch.setattr(
+        campaign_module,
+        "_isolated_full_dev",
+        lambda *args, **kwargs: {
+            "status": "dev_frontier",
+            "evidence": "passed",
+            "revision": compute_workspace_revision(bundle),
+        },
+    )
+    calls: list[dict[str, Any]] = []
+
+    def fake_gate(store_, job_id_, candidate, *, campaign_id):
+        calls.append(dict(candidate))
+        return dict(gate_results[min(len(calls) - 1, len(gate_results) - 1)])
+
+    monkeypatch.setattr(campaign_module, "_isolated_economic_gate", fake_gate)
+    staged: dict[str, Any] = {}
+
+    def fake_stage(store_, job_id_, **kwargs):
+        staged.update(kwargs)
+        return {"status": "burn_in", "trial_id": "trial-1"}
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.probation.stage_evolution_probation", fake_stage
+    )
+    return store, job_id, calls, staged
+
+
+_RISK_ONLY_REJECTION = {
+    "status": "ok",
+    "ready": False,
+    "reasons": ["OOS max drawdown 0.319 exceeds ceiling 0.25"],
+    "objective": {
+        "candidate": {
+            "max_drawdown_pct": 0.319,
+            "tail_loss": 0.074,
+            "net_log_growth": 0.11,
+            "trade_count": 12,
+        }
+    },
+    "paired_incumbent_delta": {"estimate": 0.07, "lcb": -0.1},
+}
+_SIZED_READY = {
+    "status": "ok",
+    "ready": True,
+    "reasons": [],
+    "objective": {
+        "candidate": {
+            "max_drawdown_pct": 0.2,
+            "tail_loss": 0.05,
+            "net_log_growth": 0.09,
+            "trade_count": 12,
+        }
+    },
+    "paired_incumbent_delta": {"estimate": 0.06, "lcb": -0.05},
+}
+
+
+def test_finalize_sizes_a_risk_only_rejection_to_the_ceiling(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs.archive import find_candidate
+
+    store, job_id, calls, staged = _finalist_fixture(
+        tmp_path, monkeypatch, [_RISK_ONLY_REJECTION, _SIZED_READY]
+    )
+
+    result = finalize_campaign(store, job_id)
+
+    candidate = result["candidates"][0]
+    assert candidate["status"] == "probation"
+    assert len(calls) == 2
+    bundle = store.job_dir(job_id) / candidate["bundle"]
+    job_yaml = yaml.safe_load((bundle / "job.yaml").read_text(encoding="utf-8"))
+    assert job_yaml["execution_params"]["size_scale"] == pytest.approx(
+        0.9 * 0.25 / 0.319, abs=1e-3
+    )
+    assert candidate["revision"] == compute_workspace_revision(bundle)
+    assert candidate["revision"] != calls[0]["revision"]
+    assert calls[1]["revision"] == candidate["revision"]
+    assert staged["revision"] == candidate["revision"]
+    normalization = candidate["risk_normalization"]
+    assert normalization["applied"] is True and normalization["class"] == "risk_ceiling"
+    assert normalization["before"]["max_drawdown_pct"] == 0.319
+    assert normalization["after"]["max_drawdown_pct"] == 0.2
+    assert candidate["gate"]["class"] == "staged"
+    entry = find_candidate(store, job_id, candidate["candidate_id"])
+    assert entry["metadata"]["gate"]["class"] == "staged"
+    assert entry["metadata"]["risk_normalization"]["scale"] == normalization["scale"]
+
+
+def test_finalize_records_no_edge_rejections_without_resizing(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs.archive import find_candidate
+
+    mixed = {
+        **_RISK_ONLY_REJECTION,
+        "reasons": [
+            *_RISK_ONLY_REJECTION["reasons"],
+            "paired utility estimate not > 0",
+        ],
+    }
+    store, job_id, calls, staged = _finalist_fixture(tmp_path, monkeypatch, [mixed])
+
+    result = finalize_campaign(store, job_id)
+
+    candidate = result["candidates"][0]
+    assert candidate["status"] == "proposal_rejected" and len(calls) == 1
+    assert not staged
+    bundle = store.job_dir(job_id) / candidate["bundle"]
+    job_yaml = yaml.safe_load((bundle / "job.yaml").read_text(encoding="utf-8"))
+    assert "size_scale" not in job_yaml["execution_params"]
+    assert candidate["gate"]["class"] == "no_edge"
+    assert "risk_normalization" not in candidate
+    assert (
+        find_candidate(store, job_id, candidate["candidate_id"])["metadata"]["gate"][
+            "class"
+        ]
+        == "no_edge"
+    )
+
+
+def test_finalize_keeps_a_design_below_the_size_floor_rejected(
+    tmp_path, monkeypatch
+) -> None:
+    hopeless = {
+        **_RISK_ONLY_REJECTION,
+        "reasons": ["OOS max drawdown 1.500 exceeds ceiling 0.25"],
+        "objective": {
+            "candidate": {
+                **_RISK_ONLY_REJECTION["objective"]["candidate"],
+                "max_drawdown_pct": 1.5,
+            }
+        },
+    }
+    store, job_id, calls, staged = _finalist_fixture(tmp_path, monkeypatch, [hopeless])
+
+    result = finalize_campaign(store, job_id)
+
+    candidate = result["candidates"][0]
+    assert candidate["status"] == "proposal_rejected" and len(calls) == 1
+    assert candidate["risk_normalization"]["applied"] is False
+    assert candidate["risk_normalization"]["reason"] == "scale_below_floor"
+    assert candidate["gate"]["class"] == "risk_ceiling"
+
+
+def test_research_context_files_risk_ceiling_rejections_as_validated_edge(
+    tmp_path,
+) -> None:
+    from wayfinder_paths.jobs.archive import evolution_lessons_block, record_candidate
+
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    record_candidate(
+        store,
+        job_id,
+        candidate_id="sized",
+        family="trend-hold",
+        summary="proven edge, too much size",
+        status="proposal_rejected",
+        objective=None,
+        evidence="OOS max drawdown 0.319 exceeds ceiling 0.25",
+        metadata={
+            "campaign_id": "c1",
+            "gate": {
+                "class": "risk_ceiling",
+                "oos_net_log_growth": 0.11,
+                "paired_estimate": 0.07,
+                "observed_max_drawdown_pct": 0.319,
+                "ceiling_max_drawdown_pct": 0.25,
+                "implied_scale": 0.705,
+            },
+        },
+    )
+    record_candidate(
+        store,
+        job_id,
+        candidate_id="flat",
+        family="noise",
+        summary="no edge",
+        status="proposal_rejected",
+        objective=None,
+        evidence="paired utility estimate not > 0",
+        metadata={"campaign_id": "c1", "gate": {"class": "no_edge"}},
+    )
+
+    context = _freeze_research_context(store, job_id)
+
+    assert [row["family"] for row in context["refuted_families"]] == ["noise"]
+    positive = next(
+        row
+        for row in context["validated_positives"]
+        if row["source"] == "gate_edge_risk_ceiling"
+    )
+    assert positive["family"] == "trend-hold" and positive["implied_scale"] == 0.705
+    assert "size <= 0.705x" in positive["evidence"]
+    assert "sized (edge proven, size <= 0.705x)" in _research_context_instruction(
+        context
+    )
+    lessons = {
+        row["candidate_id"]: row
+        for row in evolution_lessons_block(store, job_id)["outcomes"]
+    }
+    assert lessons["sized"]["gate"]["class"] == "risk_ceiling"
+    assert lessons["flat"]["gate"]["class"] == "no_edge"
+    state = {
+        "candidates": [
+            {
+                "family": "trend-hold",
+                "status": "proposal_rejected",
+                "gate": {"class": "risk_ceiling"},
+            },
+            {"family": "trend-hold", "status": "low_fidelity_rejected"},
+        ]
+    }
+    assert _same_family_nonwins(state, "trend-hold", 2) is False
+
+
+def test_focus_rank_keeps_incumbent_parameter_slots_out_of_focus() -> None:
+    def candidate(source: str, slot: int) -> dict[str, Any]:
+        return {
+            "parent_source": source,
+            "slot": slot,
+            "attempts": [
+                {
+                    "execution_valid": True,
+                    "outcome": {},
+                    "postmortem": {
+                        "primary_failure": "cost_bleed",
+                        "failure_codes": ["cost_bleed", "fees_erased_edge"],
+                    },
+                }
+            ],
+        }
+
+    assert _focus_rank(candidate("de_novo", 5)) > _focus_rank(candidate("incumbent", 1))
+    assert _focus_rank(candidate("starter_seed", 5)) > _focus_rank(
+        candidate("incumbent", 1)
+    )
+
+
+def test_plateau_selection_rejects_an_isolated_peak_when_neighborhoods_exist() -> None:
+    from types import SimpleNamespace
+
+    runs = [
+        {"trial": 0, "params": {"lookback": 20}, "net_return": 0.10},
+        {"trial": 1, "params": {"lookback": 60}, "net_return": 0.06},
+        {"trial": 2, "params": {"lookback": 63}, "net_return": 0.058},
+        {"trial": 3, "params": {"lookback": 57}, "net_return": 0.062},
+    ]
+    grid = SimpleNamespace(runs=runs, ranked=[runs[0]], rank_by="net_return")
+    selected, plateau = _plateau_select(grid, ["lookback"], "net_return")
+    assert selected["trial"] in {1, 2, 3}
+    assert plateau["selected_by"] == "plateau"
+    assert plateau["isolated_peak_rejected"] is True and plateau["isolated"] is False
+    lonely = SimpleNamespace(runs=runs[:1], ranked=[runs[0]], rank_by="net_return")
+    selected, plateau = _plateau_select(lonely, ["lookback"], "net_return")
+    assert selected["trial"] == 0 and plateau["isolated"] is True
+
+
+def test_tuning_prune_drops_trials_past_the_drawdown_ceiling() -> None:
+    from wayfinder_paths.jobs.execution.simulator import ExecutionGridResult
+
+    rows = [
+        {"trial": 0, "params": {"k": 1}, "net_return": 0.3, "max_drawdown_pct": -0.3},
+        {"trial": 1, "params": {"k": 2}, "net_return": 0.1, "max_drawdown_pct": -0.1},
+        {"trial": 2, "params": {"k": 3}, "net_return": 0.2},
+    ]
+    grid = ExecutionGridResult(
+        grid_id="g",
+        rank_by="net_return",
+        runs=rows,
+        ranked=[rows[0], rows[2], rows[1]],
+        invalid=[],
+    )
+    pruned, dropped = _prune_risky_trials(grid, 0.2)
+    assert dropped == 1
+    assert [row["trial"] for row in pruned.ranked] == [2, 1]
+    assert pruned.invalid[0]["invalid_reason"] == "drawdown_over_tuning_ceiling"
+    assert _prune_risky_trials(grid, 0.5)[1] == 0

@@ -7,7 +7,12 @@ from __future__ import annotations
 
 import json
 
-from wayfinder_paths.jobs.execution.engine import _apply_engine_leverage
+import pytest
+
+from wayfinder_paths.jobs.execution.engine import (
+    _apply_engine_leverage,
+    _apply_size_scale,
+)
 from wayfinder_paths.jobs.execution.primitives import OrderIntent
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
@@ -64,6 +69,80 @@ def test_engine_scaling_is_idempotent() -> None:
     _apply_engine_leverage([intent], {"leverage": 2.0})
     _apply_engine_leverage([intent], {"leverage": 2.0})  # persisted pending intent
     assert intent.notional == 1000.0
+
+
+def test_size_scale_scales_open_intents() -> None:
+    intent = _open(size=3.0)
+    _apply_size_scale([intent], {"size_scale": 0.5})
+    assert intent.size == 1.5
+    assert intent.metadata["size_scale_applied"] is True
+    assert intent.metadata["engine_size_scale"] == 0.5
+
+
+def test_size_scale_scales_notional_when_present() -> None:
+    intent = _open(notional=500.0, size=3.0)
+    _apply_size_scale([intent], {"size_scale": 0.5})
+    assert intent.notional == 250.0
+    assert intent.size == 1.5
+
+
+def test_size_scale_skips_reduce_only_but_not_leverage_stamped() -> None:
+    close = _open(action="CLOSE", size=3.0)
+    reduce = _open(size=3.0, reduce_only=True)
+    # Compound strategies stamp leverage_applied themselves; size_scale keys
+    # on its own stamp so those intents are still scaled.
+    compound = _open(size=3.0, metadata={"leverage_applied": True})
+    _apply_size_scale([close, reduce, compound], {"size_scale": 0.5})
+    assert close.size == 3.0
+    assert reduce.size == 3.0
+    assert compound.size == 1.5
+    assert compound.metadata["leverage_applied"] is True
+    assert compound.metadata["size_scale_applied"] is True
+
+
+def test_size_scale_composes_with_leverage() -> None:
+    intent = _open(size=3.0)
+    params = {"leverage": 2.0, "size_scale": 0.5}
+    _apply_engine_leverage([intent], params)
+    _apply_size_scale([intent], params)
+    assert intent.size == 3.0
+    assert intent.metadata["leverage_applied"] is True
+    assert intent.metadata["size_scale_applied"] is True
+
+
+def test_size_scale_inert_outside_range() -> None:
+    for params in (
+        {},
+        {"size_scale": None},
+        {"size_scale": 1.0},
+        {"size_scale": 0},
+        {"size_scale": 1.5},
+        {"size_scale": "x"},
+    ):
+        intent = _open(size=3.0)
+        _apply_size_scale([intent], params)
+        assert intent.size == 3.0
+        assert "size_scale_applied" not in (intent.metadata or {})
+
+
+def test_size_scale_is_idempotent() -> None:
+    intent = _open(size=3.0)
+    _apply_size_scale([intent], {"size_scale": 0.5})
+    _apply_size_scale([intent], {"size_scale": 0.5})  # persisted pending intent
+    assert intent.size == 1.5
+
+
+async def test_driver_clamps_size_scale_and_engine_composes_it(tmp_path) -> None:
+    from wayfinder_paths.tests.test_jobs_risk_limits import _make_job, _tick
+
+    store, job, root = _make_job(tmp_path, params={"leverage": 2.0, "size_scale": 0.5})
+    result = await _tick(job, root, store, view_count=1)
+    # Strategy emits size 1: x2 leverage, x0.5 size_scale -> 1.0 at the seam.
+    assert result["intents"][0]["size"] == 1.0
+
+    store, job, root = _make_job(tmp_path / "bad", params={"size_scale": 1.5})
+    with pytest.raises(ValueError, match="size_scale must be in"):
+        await _tick(job, root, store, view_count=1)
 
 
 def test_compound_base_stamps_leverage_applied() -> None:

@@ -4,6 +4,7 @@ loading, enforcement, promotion verdicts, and the evolution ledger."""
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -473,3 +474,31 @@ def test_benchmark_constitution_profile_loads_strict() -> None:
     assert profile["promotion"]["probation_requires_lcb"] is True
     assert profile["verdict"]["maximum_days"] == 30.0
     assert profile["revision"]
+
+
+def test_chained_fold_equity_removes_restart_artifacts() -> None:
+    from wayfinder_paths.jobs.economics import _chain_fold_equity
+
+    def fold(values: list[float], start_day: int) -> list[dict[str, object]]:
+        return [
+            {
+                "timestamp": f"2026-01-{start_day + index:02d}T00:00:00+00:00",
+                "equity": v,
+            }
+            for index, v in enumerate(values)
+        ]
+
+    fold_a = fold([10_000.0, 12_000.0], start_day=1)
+    fold_b = fold([10_000.0, 12_000.0], start_day=3)
+    naive = objective_vector([*fold_a, *fold_b], trades=[])
+    # Today's artifacts: the restart reads as a loss and a carried drawdown.
+    assert naive["max_drawdown_pct"] == pytest.approx(1 / 6)
+    assert naive["net_log_growth"] == pytest.approx(math.log(1.2))
+    pool: list[dict[str, object]] = []
+    for piece in (fold_a, fold_b):
+        pool.extend(_chain_fold_equity(pool, piece))
+    chained = objective_vector(pool, trades=[])
+    assert chained["max_drawdown_pct"] == pytest.approx(0.0)
+    assert chained["net_log_growth"] == pytest.approx(2 * math.log(1.2))
+    assert pool[-1]["equity"] == pytest.approx(14_400.0)
+    assert _chain_fold_equity([], fold_a) == fold_a

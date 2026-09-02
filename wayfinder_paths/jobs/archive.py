@@ -397,6 +397,10 @@ def evolution_lessons_block(
             lesson["optuna_trials"] = tuning["trials"]
         if isinstance(metadata.get("latest_postmortem"), dict):
             lesson["postmortem"] = metadata["latest_postmortem"]
+        if isinstance(metadata.get("gate"), dict):
+            lesson["gate"] = metadata["gate"]
+        if isinstance(metadata.get("risk_normalization"), dict):
+            lesson["risk_normalization"] = metadata["risk_normalization"]
         if status in _EVOLUTION_REJECTION_STATUSES and entry.get("evidence"):
             lesson["rejection_reason"] = str(entry["evidence"])[:240]
         lessons.append(lesson)

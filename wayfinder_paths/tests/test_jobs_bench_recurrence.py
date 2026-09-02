@@ -281,6 +281,7 @@ def test_recurrence_chains_loops_and_applies_graduate_with_one_loop_lag(
     assert loops[0]["forward"]["days"] > 0
     assert all(value == 0 for value in loops[0]["forward"]["paired_deltas"])
     assert loops[0]["apply"]["applied"] is True
+    assert loops[0]["probation_carried"] == []
     assert loops[0]["holdout"]["verdict"] in {
         "invalid",
         "a_beats_b",
@@ -288,13 +289,15 @@ def test_recurrence_chains_loops_and_applies_graduate_with_one_loop_lag(
     }
     # Loop 1 deploys the graduate: its revision is the incumbent and the
     # long-once strategy diverges from the flat original on a rising tape.
-    assert loops[1]["incumbent_revision"] == loops[0]["apply"]["candidate_revision"]
+    graduate = loops[0]["apply"]["trials"][0]
+    assert loops[1]["incumbent_revision"] == graduate["candidate_revision"]
     assert loops[1]["incumbent_revision"] != loops[0]["incumbent_revision"]
     assert loops[1]["frozen_revision"] == loops[0]["incumbent_revision"]
     assert any(value != 0 for value in loops[1]["forward"]["paired_deltas"])
     assert loops[1]["apply"]["applied"] is False
     assert row["lineage"]["depth"] == 1
     assert row["lineage"]["chain"][0]["applied"] is True
+    assert row["lineage"]["chain"][0]["trial_ids"] == [graduate["trial_id"]]
     assert row["dynamics"] == {
         "loops": 3,
         "staged": 1,
@@ -317,6 +320,106 @@ def test_recurrence_chains_loops_and_applies_graduate_with_one_loop_lag(
     assert summary["runs"]["count"] == 0
     assert (output / "loops" / "evolve-7" / "loop-2" / "loop.json").exists()
     assert (output / "sealed" / "evolve-7" / "loop-1" / "holdout.json").exists()
+
+
+def test_recurrence_carries_open_probation_into_the_next_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _source_job(tmp_path / "source")
+    output = tmp_path / "out"
+    config = _config(source, output)
+    _patch_common(monkeypatch)
+    campaigns: list[str] = []
+    replays: list[str | None] = []
+
+    def fake_campaign(sandbox: dict[str, Any], **kwargs: Any) -> str | None:
+        campaign_id = f"camp-{len(campaigns)}"
+        campaigns.append(campaign_id)
+        _write_campaign_state(sandbox, campaign_id)
+        if campaign_id == "camp-0":
+            _stage_candidate(
+                sandbox,
+                campaign_id=campaign_id,
+                strategy=LONG_ONCE,
+                now=kwargs["virtual_now"],
+            )
+        return None
+
+    def carrying_replay(store: JobStore, job_id: str, **kwargs: Any) -> dict[str, Any]:
+        campaign_id = kwargs.get("campaign_id")
+        replays.append(campaign_id)
+        doc = load_probation(store, job_id)
+        open_trials = [
+            row
+            for row in doc["trials"]
+            if row.get("status") in {"queued", "burn_in", "active"}
+        ]
+        own = next(
+            (row for row in open_trials if row.get("campaign_id") == campaign_id),
+            None,
+        )
+        if own is not None:
+            # Loop 0: the trial clears burn-in but the window ends before
+            # a verdict, so it stays open.
+            own["status"] = "active"
+            own["phase"] = "forward"
+            store.write_json(job_id, PROBATION_PATH, doc)
+            return {
+                "available": True,
+                "trial_id": own["trial_id"],
+                "candidate_id": own["candidate_id"],
+                "status": "active",
+                "phase": "forward",
+                "burn_in": {},
+                "forward": {"metrics": {}},
+                "carried": [],
+                "paired_daily_delta": [],
+            }
+        # Later loops stage nothing; the carried trial reaches its verdict.
+        carried = [str(row["trial_id"]) for row in open_trials]
+        for row in open_trials:
+            row["status"] = "graduated"
+            row["phase"] = "graduated"
+        store.write_json(job_id, PROBATION_PATH, doc)
+        return {
+            "available": False,
+            "reason": "campaign staged no probation candidate",
+            "carried": carried,
+            "paired_daily_delta": [],
+        }
+
+    monkeypatch.setattr(recurrence_module, "run_campaign_phase", fake_campaign)
+    monkeypatch.setattr(runner_module, "replay_probation", carrying_replay)
+
+    row = run_recurrence_arm(
+        config=config, arm=config["arms"][0], seed=7, output_dir=output
+    )
+
+    loops = row["loops"]
+    assert [loop["invalid_reason"] for loop in loops] == [None, None, None]
+    assert replays == ["camp-0", "camp-1", "camp-2"]
+    trial_id = loops[0]["probation"]["trial_id"]
+    assert loops[0]["probation"]["status"] == "active"
+    assert loops[0]["apply"] == {"applied": False, "trials": []}
+    assert loops[0]["probation_carried"] == [trial_id]
+    # Loop 1 deploys the still-flat incumbent, then applies the carried graduate.
+    assert loops[1]["incumbent_revision"] == loops[0]["incumbent_revision"]
+    assert all(value == 0 for value in loops[1]["forward"]["paired_deltas"])
+    assert loops[1]["apply"]["applied"] is True
+    assert [trial["trial_id"] for trial in loops[1]["apply"]["trials"]] == [trial_id]
+    assert loops[1]["probation_carried"] == []
+    graduate = loops[1]["apply"]["trials"][0]
+    assert loops[2]["incumbent_revision"] == graduate["candidate_revision"]
+    assert loops[2]["incumbent_revision"] != loops[0]["incumbent_revision"]
+    assert any(value != 0 for value in loops[2]["forward"]["paired_deltas"])
+    assert loops[2]["apply"] == {"applied": False, "trials": []}
+    assert row["lineage"]["depth"] == 1
+    assert row["lineage"]["chain"][0]["applied"] is False
+    assert row["lineage"]["chain"][1]["trial_ids"] == [trial_id]
+    assert row["lineage"]["chain"][1]["candidate_ids"] == ["cand-1"]
+    assert row["dynamics"]["applied"] == 1
+    assert row["dynamics"]["time_to_first_apply"] == 1
+    assert row["dynamics"]["staged"] == 1
 
 
 def test_recurrence_loop_failure_keeps_incumbent_and_continues(
@@ -448,10 +551,26 @@ def test_recurrence_config_validation(tmp_path: Path) -> None:
 
     _validate_recurrence_config(_config(source, output), source_job=source)
 
+    # Production probation (24h burn-in, 14 paired days, partial cutoff day)
+    # needs 16 days: three 5-day loops fall short, three 7-day loops do not,
+    # because probation carries across loops.
     with pytest.raises(ValueError, match="probation cannot reach a verdict"):
         _validate_recurrence_config(
             _config(source, output, campaign={}), source_job=source
         )
+    _validate_recurrence_config(
+        _config(
+            source,
+            output,
+            campaign={},
+            window={
+                "start_cutoff": (START + timedelta(days=35)).isoformat(),
+                "loop_days": 7,
+                "loops": 3,
+            },
+        ),
+        source_job=source,
+    )
     with pytest.raises(ValueError, match="built-in control"):
         _validate_recurrence_config(
             _config(source, output, arms=[{"name": "frozen", "model": "m"}]),

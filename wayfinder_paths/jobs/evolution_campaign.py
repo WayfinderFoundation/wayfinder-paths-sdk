@@ -19,6 +19,7 @@ import os
 import shutil
 import uuid
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from time import perf_counter
@@ -100,6 +101,7 @@ from wayfinder_paths.jobs.forward_experience import (
     execution_cost_assumptions,
 )
 from wayfinder_paths.jobs.gating import (
+    clamp_size_scale,
     compute_workspace_revision,
     evaluate_economic_gate,
 )
@@ -631,6 +633,18 @@ def _campaign_regime_context(
 
 
 _COMPLEXITY_FLOOR_COMPARISONS = 24
+_RISK_NORMALIZATION_FLOOR = 0.25
+_RISK_CEILING_REASON_PREFIXES = ("OOS max drawdown ", "OOS tail loss ")
+_SIZING_DIMENSIONS = frozenset(
+    {
+        "notional_fraction",
+        "position_fraction",
+        "risk_fraction",
+        "leverage",
+        "size_scale",
+        "size",
+    }
+)
 _COMPLEXITY_MULTIPLE = 1.5
 
 
@@ -790,7 +804,11 @@ def _validated_signals(
                 f"{row['signal']!r}, {row['timeframe']!r}, bar_seconds={bar_seconds}); "
                 f"enter {row['direction']} on True, exit after "
                 f"{row['horizon']} {row['timeframe']} bars; declare warmup_bars >= "
-                f"{row['warmup_bars_required']}"
+                f"{row['warmup_bars_required']}; inside the risk envelope: one "
+                "position per symbol, a stop via add_stop_atr or an explicit "
+                "invalidation level, size so a 3x typical adverse move costs < 5% "
+                "of equity (the gate sizes to the ceiling; needing < 0.5x is a "
+                "weak design)"
             )
     except Exception as exc:  # noqa: BLE001 - seeding never blocks a start
         return {"available": False, "reason": str(exc)[:240]}
@@ -899,6 +917,7 @@ def _numeric_tunables(
         "full_history",
         "target_regimes",
         "defense_overlay",
+        "size_scale",
     }
     merged = {**dict(strategy_params), **dict(params)}
     out: dict[str, float] = {}
@@ -976,14 +995,24 @@ def _plateau_select(
     best = max(rows, key=score)
     best_mean, best_neighbors = neighborhood(best)
     ratio = best_mean / score(best) if score(best) > 0 and best_neighbors else None
-    plateau = max(rows, key=lambda row: neighborhood(row)[0])
+    supported = [row for row in rows if neighborhood(row)[1] >= 1]
     peaky = best_neighbors >= 2 and ratio is not None and ratio < min_ratio
-    selected = plateau if peaky else best
+    # A best trial nobody sits next to is unverifiable noise when the search
+    # did find neighborhoods elsewhere; take the best-supported one instead.
+    isolated_peak_rejected = best_neighbors == 0 and bool(supported)
+    if isolated_peak_rejected:
+        selected = max(supported, key=lambda row: neighborhood(row)[0])
+    elif peaky:
+        selected = max(rows, key=lambda row: neighborhood(row)[0])
+    else:
+        selected = best
     return dict(selected), {
         "neighbors_of_best": best_neighbors,
         "ratio": None if ratio is None else round(ratio, 4),
-        "selected_by": "plateau" if peaky and selected is not best else "peak",
+        "selected_by": "plateau" if selected is not best else "peak",
         "selected_trial": selected.get("trial"),
+        "isolated_peak_rejected": isolated_peak_rejected,
+        "isolated": best_neighbors == 0 and not supported,
     }
 
 
@@ -2134,6 +2163,7 @@ def evaluate_candidate(
         }:
             return candidate
         campaign_id = str(state["campaign_id"])
+        status_before_claim = str(candidate["status"])
         candidate.update(
             {
                 "status": "quick_running",
@@ -2176,6 +2206,18 @@ def evaluate_candidate(
         candidate = _candidate(state, candidate_id)
         if candidate.get("evaluation_claim_id") != claim_id:
             return candidate
+        if outcome.get("status") == "rejected_submission":
+            candidate["status"] = status_before_claim
+            candidate["submission_rejection"] = {
+                "error": str((outcome.get("evidence") or {}).get("error") or ""),
+                "at": utc_now_iso(),
+                "attempt_charged": False,
+            }
+            candidate.pop("evaluation_claim_id", None)
+            candidate.pop("evaluation_claimed_at", None)
+            _save_campaign(store, job_id, state)
+            return dict(candidate)
+        candidate.pop("submission_rejection", None)
         if str(state.get("schema_version") or "") != SCHEMA_VERSION:
             candidate.update(outcome)
             candidate["evaluated_at"] = utc_now_iso()
@@ -2195,6 +2237,12 @@ def evaluate_candidate(
     return candidate
 
 
+def _rejected_submission(error: str) -> dict[str, Any]:
+    """A deterministic authoring mistake: no simulation ran, so no attempt is
+    charged; the worker fixes the bundle and resubmits."""
+    return {"status": "rejected_submission", "evidence": {"error": error[:500]}}
+
+
 def _evaluate_candidate(
     store: JobStore,
     job_id: str,
@@ -2212,7 +2260,13 @@ def _evaluate_candidate(
             required=candidate.get("mutation_kind") == "parameter",
         )
     except ValueError as exc:
-        return {"status": "invalid", "evidence": {"error": str(exc)[:500]}}
+        return _rejected_submission(str(exc))
+    sizing = sorted(_SIZING_DIMENSIONS.intersection(search_space or {}))
+    if sizing:
+        return _rejected_submission(
+            f"sizing dimensions are not search dimensions: {sizing}; the finalist "
+            "gate sizes a strategy to the risk ceiling mechanically"
+        )
     report = validate_execution_job(job_id, candidate_dir=candidate_root, store=store)
     if not _candidate_validation_passed(report):
         return {"status": "invalid", "evidence": {"validation": report}}
@@ -2254,12 +2308,9 @@ def _evaluate_candidate(
         revision == _source_baseline_revision(manifest, candidate)
         and search_space is None
     ):
-        return {
-            "status": "invalid",
-            "evidence": {
-                "error": "candidate bundle is identical to its source revision"
-            },
-        }
+        return _rejected_submission(
+            "candidate bundle is identical to its source revision"
+        )
     policy = manifest.get("policy") or {}
     tuning_preview: dict[str, Any] | None = None
     behavior_preview: dict[str, Any] | None = None
@@ -2749,6 +2800,9 @@ def _focus_rank(candidate: Mapping[str, Any]) -> tuple[Any, ...]:
     )
     return (
         bool(latest.get("execution_valid")),
+        # A parameter tweak of the incumbent cannot beat the incumbent
+        # significantly on 35-day slices; the neighborhood search owns it.
+        str(candidate.get("parent_source") or "") != "incumbent",
         fixability,
         _candidate_score(latest.get("outcome") or {}),
         progress,
@@ -2809,6 +2863,27 @@ def _incumbent_economics(
     )
     economics = (pack.get("baseline") or {}).get("economics")
     return dict(economics) if isinstance(economics, dict) else None
+
+
+def _risk_budget(
+    root: Path, baseline: Mapping[str, Any], research_context: Mapping[str, Any]
+) -> dict[str, Any]:
+    """The ceilings the finalist gate enforces, stated where designs are made."""
+    hard = dict(load_constitution(root).get("hard_constraints") or {})
+    stats = baseline.get("stats") if isinstance(baseline.get("stats"), Mapping) else {}
+    drawdown = stats.get("max_drawdown_pct") if isinstance(stats, Mapping) else None
+    return {
+        "max_drawdown_pct": float(hard.get("max_drawdown_pct") or 0.25),
+        "max_tail_loss": float(hard.get("max_tail_loss") or 0.15),
+        "incumbent_max_drawdown_pct": (
+            abs(float(drawdown)) if isinstance(drawdown, int | float) else None
+        ),
+        "prior_risk_ceiling": [
+            {"family": row.get("family"), "implied_scale": row.get("implied_scale")}
+            for row in research_context.get("validated_positives") or []
+            if row.get("source") == "gate_edge_risk_ceiling"
+        ][:5],
+    }
 
 
 def _cost_budget(
@@ -2986,6 +3061,44 @@ def _parameter_tuning_preview(
     return preview
 
 
+def _tuning_drawdown_ceiling(root: Path, *, margin: float = 0.8) -> float:
+    """Tuning may not spend the risk budget: trials past this drawdown are
+    invalid, so the optimizer cannot buy return by sizing into the ceiling."""
+    hard = dict(load_constitution(root).get("hard_constraints") or {})
+    return margin * float(hard.get("max_drawdown_pct") or 0.25)
+
+
+def _prune_risky_trials(
+    grid: ExecutionGridResult, max_drawdown_pct: float
+) -> tuple[ExecutionGridResult, int]:
+    def drawdown(row: Mapping[str, Any]) -> float | None:
+        value = row.get("max_drawdown_pct")
+        if value is None:
+            value = (row.get("stats") or {}).get("max_drawdown_pct")
+        return None if value is None else abs(float(value))
+
+    def keep(row: Mapping[str, Any]) -> bool:
+        value = drawdown(row)
+        return value is None or value <= max_drawdown_pct
+
+    dropped = [row for row in grid.runs if not keep(row)]
+    if not dropped:
+        return grid, 0
+    pruned = replace(
+        grid,
+        runs=[row for row in grid.runs if keep(row)],
+        ranked=[row for row in grid.ranked if keep(row)],
+        invalid=[
+            *grid.invalid,
+            *(
+                {**row, "invalid_reason": "drawdown_over_tuning_ceiling"}
+                for row in dropped
+            ),
+        ],
+    )
+    return pruned, len(dropped)
+
+
 def _run_evolution_optuna(
     subject: dict[str, Any],
     dataset: PreparedExecutionDataset,
@@ -2994,6 +3107,7 @@ def _run_evolution_optuna(
     trials: int,
     bars: int,
     timeout: float | None,
+    max_drawdown_pct: float | None = None,
 ) -> tuple[ExecutionGridResult, dict[str, Any]]:
     search_data = _tail(dataset, bars) if bars > 0 else dataset
     started = perf_counter()
@@ -3010,8 +3124,13 @@ def _run_evolution_optuna(
         timeout=timeout,
         objectives=[] if specialized else ["net_return", "max_drawdown_pct"],
     )
+    risk_pruned = 0
+    if max_drawdown_pct is not None:
+        grid, risk_pruned = _prune_risky_trials(grid, max_drawdown_pct)
     return grid, {
         "status": "complete" if grid.ranked else "no_valid_trials",
+        "risk_pruned": risk_pruned,
+        "max_drawdown_pct": max_drawdown_pct,
         "trials": len(grid.runs),
         "valid_trials": max(len(grid.runs) - len(grid.invalid), 0),
         "bars": len(search_data.bars.timestamps),
@@ -3128,6 +3247,23 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
                 economic = _isolated_economic_gate(
                     store, job_id, candidate, campaign_id=campaign_id
                 )
+                hard = dict(
+                    load_constitution(store.job_dir(job_id)).get("hard_constraints")
+                    or {}
+                )
+                risk_normalization: dict[str, Any] | None = None
+                if economic.get("ready") is not True:
+                    risk_normalization = _normalize_finalist_risk(
+                        store,
+                        job_id,
+                        candidate,
+                        candidate_root=candidate_root,
+                        campaign_id=campaign_id,
+                        economic=economic,
+                        hard=hard,
+                    )
+                    if risk_normalization and risk_normalization.get("applied"):
+                        economic = risk_normalization.pop("economic")
                 if economic.get("ready") is not True:
                     outcome = {
                         "status": "proposal_rejected",
@@ -3170,6 +3306,11 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
                             or "staged for immutable burn-in and paired probation"
                         ),
                     }
+                outcome["gate"] = _gate_summary(economic, hard, risk_normalization)
+                if risk_normalization is not None:
+                    outcome["risk_normalization"] = risk_normalization
+                    if risk_normalization.get("revision"):
+                        outcome["revision"] = risk_normalization["revision"]
         except (ComputeLockBusy, TransientInfrastructureError):
             _release_finalize_claim(
                 store,
@@ -3197,6 +3338,8 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
         if committed is None:
             continue
         candidate = committed
+        # The gate report is the memory the next campaign learns from.
+        _archive_campaign_candidate(store, job_id, candidate)
         set_candidate_status(
             store,
             job_id,
@@ -3499,6 +3642,135 @@ def _commit_proposal(
         return dict(candidate)
 
 
+def _risk_ceiling_scale(
+    economic: Mapping[str, Any], hard: Mapping[str, Any], *, margin: float
+) -> tuple[float, dict[str, Any]] | None:
+    """Scale that would bring a finalist under the hard ceilings, when the
+    ONLY thing wrong with it is risk: every gate reason is a ceiling breach
+    and the paired edge over the incumbent is positive."""
+    reasons = [str(reason) for reason in economic.get("reasons") or []]
+    if economic.get("status") != "ok" or not reasons:
+        return None
+    if not all(reason.startswith(_RISK_CEILING_REASON_PREFIXES) for reason in reasons):
+        return None
+    delta = economic.get("paired_incumbent_delta") or {}
+    if float(delta.get("estimate") or 0.0) <= 0:
+        return None
+    vector = (economic.get("objective") or {}).get("candidate") or {}
+    drawdown = float(vector.get("max_drawdown_pct") or 0.0)
+    tail = float(vector.get("tail_loss") or 0.0)
+    ceiling_drawdown = float(hard.get("max_drawdown_pct") or 0.25)
+    ceiling_tail = float(hard.get("max_tail_loss") or 0.15)
+    ratios = [1.0]
+    if drawdown > 0:
+        ratios.append(ceiling_drawdown / drawdown)
+    if tail > 0:
+        ratios.append(ceiling_tail / tail)
+    scale = round(margin * min(ratios), 4)
+    return scale, {
+        "max_drawdown_pct": drawdown,
+        "tail_loss": tail,
+        "net_log_growth": vector.get("net_log_growth"),
+        "ceiling_max_drawdown_pct": ceiling_drawdown,
+        "ceiling_max_tail_loss": ceiling_tail,
+    }
+
+
+def _gate_summary(
+    economic: Mapping[str, Any],
+    hard: Mapping[str, Any],
+    risk_normalization: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Five numbers and a class: what the next design turn needs to know."""
+    vector = (economic.get("objective") or {}).get("candidate") or {}
+    delta = economic.get("paired_incumbent_delta") or {}
+    reasons = [str(reason) for reason in economic.get("reasons") or []]
+    ceiling_only = bool(reasons) and all(
+        reason.startswith(_RISK_CEILING_REASON_PREFIXES) for reason in reasons
+    )
+    if economic.get("ready") is True:
+        klass = "staged"
+    elif ceiling_only and float(delta.get("estimate") or 0.0) > 0:
+        klass = "risk_ceiling"
+    else:
+        klass = "no_edge"
+    return {
+        "class": klass,
+        "reasons": reasons[:6],
+        "observed_max_drawdown_pct": vector.get("max_drawdown_pct"),
+        "ceiling_max_drawdown_pct": hard.get("max_drawdown_pct"),
+        "tail_loss": vector.get("tail_loss"),
+        "oos_net_log_growth": vector.get("net_log_growth"),
+        "paired_estimate": delta.get("estimate"),
+        "paired_lcb": delta.get("lcb"),
+        "implied_scale": (risk_normalization or {}).get("scale"),
+    }
+
+
+def _normalize_finalist_risk(
+    store: JobStore,
+    job_id: str,
+    candidate: dict[str, Any],
+    *,
+    candidate_root: Path,
+    campaign_id: str,
+    economic: Mapping[str, Any],
+    hard: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Size a risk-only rejection to the ceiling and re-run the gate once.
+
+    Edge was proven; position size is not the designer's claim. The scale
+    lands in the bundle's execution_params, so the sized strategy is what
+    probation and any later apply run. Below the floor the design itself is
+    too risky and stays rejected.
+    """
+    policy = _campaign_policy(store, job_id, campaign_id)
+    if not bool(policy.get("finalist_risk_normalization", True)):
+        return None
+    classified = _risk_ceiling_scale(
+        economic, hard, margin=float(policy.get("finalist_risk_margin") or 0.9)
+    )
+    if classified is None:
+        return None
+    scale, before = classified
+    result: dict[str, Any] = {
+        "class": "risk_ceiling",
+        "scale": scale,
+        "before": before,
+        "applied": False,
+    }
+    if scale < _RISK_NORMALIZATION_FLOOR:
+        result["reason"] = "scale_below_floor"
+        return result
+    job_data = _load_job_yaml(candidate_root)
+    params = dict(job_data.get("execution_params") or {})
+    params["size_scale"] = clamp_size_scale(
+        float(params.get("size_scale") or 1.0) * scale
+    )
+    job_data["execution_params"] = params
+    atomic_write_text(
+        candidate_root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
+    )
+    result["revision_before"] = str(candidate.get("revision") or "")
+    candidate["revision"] = compute_workspace_revision(candidate_root)
+    result["revision"] = candidate["revision"]
+    result["size_scale"] = params["size_scale"]
+    second = _isolated_economic_gate(store, job_id, candidate, campaign_id=campaign_id)
+    vector = (second.get("objective") or {}).get("candidate") or {}
+    result.update(
+        {
+            "applied": True,
+            "after": {
+                key: vector.get(key)
+                for key in ("max_drawdown_pct", "tail_loss", "net_log_growth")
+            },
+            "ready": second.get("ready") is True,
+            "economic": second,
+        }
+    )
+    return result
+
+
 def _isolated_economic_gate(
     store: JobStore,
     job_id: str,
@@ -3693,6 +3965,34 @@ def campaign_prompt_block(
         cost_budget = _cost_budget(
             diagnostic_pack.get("baseline") or {}, policy, manifest.get("dataset")
         )
+        risk_budget = _risk_budget(
+            store.job_dir(job_id),
+            diagnostic_pack.get("baseline") or {},
+            diagnostic_pack.get("research_context") or {},
+        )
+        risk_instruction = (
+            "Risk budget: OOS max drawdown <= "
+            f"{risk_budget['max_drawdown_pct']:.0%} and tail loss <= "
+            f"{risk_budget['max_tail_loss']:.0%} are hard ceilings at the finalist "
+            "gate"
+            + (
+                f"; the incumbent runs at {risk_budget['incumbent_max_drawdown_pct']:.0%}"
+                if risk_budget.get("incumbent_max_drawdown_pct") is not None
+                else ""
+            )
+            + ". Size and stop every slot for the ceiling; sizing is set "
+            "mechanically at the gate, never a search dimension"
+            + (
+                "; prior candidates with proven edge that only failed the ceiling: "
+                + ", ".join(
+                    f"{row['family']} (size <= {row['implied_scale']}x)"
+                    for row in risk_budget["prior_risk_ceiling"]
+                )
+                if risk_budget.get("prior_risk_ceiling")
+                else ""
+            )
+            + ". "
+        )
         cost_instruction = (
             "Cost budget: the incumbent trades "
             f"{cost_budget['incumbent_fills_per_day']:.1f} fills/day; every slot "
@@ -3799,6 +4099,7 @@ def campaign_prompt_block(
                 "cite existing JSON pointers from the diagnostic pack. Include "
                 "at least one starter_seed and one grounded de_novo slot. "
                 f"{research_instruction}{regime_instruction}{cost_instruction}"
+                f"{risk_instruction}"
                 f"{failure_instruction}{signal_instruction}"
                 "Use at most one incumbent slot and at "
                 "most two parameter slots. One wildcard must be de_novo. "
@@ -3836,6 +4137,7 @@ def campaign_prompt_block(
                 "regime_specialist_design": specialist_design,
                 "regime_context": regime_context if specialist_design else None,
                 "cost_budget": cost_budget,
+                "risk_budget": risk_budget,
                 "failure_modes": failure_target or None,
                 "validated_signals": [
                     f"{row['symbol']}:{row['signal']}:{row['timeframe']}:{row['horizon']}"
@@ -4086,7 +4388,11 @@ def _research_context_instruction(context: dict[str, Any]) -> str:
         if item.get("family")
     ][:8]
     positives = [
-        str(item.get("id") or "")
+        (
+            f"{item.get('id')} (edge proven, size <= {item['implied_scale']}x)"
+            if item.get("implied_scale")
+            else str(item.get("id") or "")
+        )
         for item in context.get("validated_positives") or []
         if item.get("id")
     ][:8]
@@ -4203,6 +4509,11 @@ def _candidate_handoff(candidate: dict[str, Any]) -> dict[str, Any]:
     recovery_reason = candidate.get("evaluation_recovery_reason")
     if recovery_reason:
         handoff["evaluation_recovery_reason"] = str(recovery_reason)[:240]
+    if isinstance(candidate.get("submission_rejection"), Mapping):
+        handoff["submission_rejection"] = {
+            **candidate["submission_rejection"],
+            "instruction": "fix the bundle and resubmit; no attempt was charged",
+        }
     attempts = candidate.get("attempts") or []
     if attempts:
         latest = attempts[-1]
@@ -4293,6 +4604,8 @@ def _archive_campaign_candidate(
             "latest_postmortem_path",
             "target_regimes",
             "full_dev_failure_codes",
+            "gate",
+            "risk_normalization",
         )
         if candidate.get(key) is not None
     }
@@ -4395,6 +4708,7 @@ def _full_dev(
             trials=min(int(policy["inner_optuna_trials"]), 20),
             bars=search_bars,
             timeout=search_timeout,
+            max_drawdown_pct=_tuning_drawdown_ceiling(root),
         )
         selected, plateau = _plateau_select(
             grid,
@@ -5373,8 +5687,33 @@ def _freeze_research_context(store: JobStore, job_id: str) -> dict[str, Any]:
     """Two load-bearing lists, distilled from existing mechanical records."""
     archive = load_archive(store, job_id).get("candidates") or []
     refuted_by_family: dict[str, dict[str, Any]] = {}
+    risk_positives: list[dict[str, Any]] = []
     for entry in archive:
         metadata = entry.get("metadata") or {}
+        gate = metadata.get("gate") or {}
+        if (
+            entry.get("status") == "proposal_rejected"
+            and gate.get("class") == "risk_ceiling"
+        ):
+            # Edge was proven at the gate; only the size failed. That is a
+            # validated win with a sizing hint, never a refuted family.
+            risk_positives.append(
+                {
+                    "source": "gate_edge_risk_ceiling",
+                    "id": entry.get("candidate_id"),
+                    "family": entry.get("family"),
+                    "evidence": (
+                        f"edge {float(gate.get('oos_net_log_growth') or 0.0):+.3f} "
+                        f"OOS growth, paired {float(gate.get('paired_estimate') or 0.0):+.3f}; "
+                        f"failed drawdown {float(gate.get('observed_max_drawdown_pct') or 0.0):.3f} "
+                        f"vs ceiling {float(gate.get('ceiling_max_drawdown_pct') or 0.0):.2f}; "
+                        f"size <= {gate.get('implied_scale')}x"
+                    )[:240],
+                    "implied_scale": gate.get("implied_scale"),
+                    "recorded_at": entry.get("updated_at") or entry.get("created_at"),
+                }
+            )
+            continue
         postmortem = metadata.get("latest_postmortem") or {}
         failure_codes = list(
             dict.fromkeys(
@@ -5484,6 +5823,7 @@ def _freeze_research_context(store: JobStore, job_id: str) -> dict[str, Any]:
                 "recorded_at": experiment.get("completed_at"),
             }
         )
+    positives.extend(risk_positives)
     positives.sort(key=lambda item: str(item.get("recorded_at") or ""), reverse=True)
     return {
         "refuted_families": list(refuted_by_family.values())[-20:],
@@ -6068,6 +6408,7 @@ def _same_family_nonwins(state: dict[str, Any], family: str, streak: int) -> boo
         item
         for item in reversed(state.get("candidates") or [])
         if item.get("family") == family
+        and (item.get("gate") or {}).get("class") != "risk_ceiling"
         and item.get("status")
         in {
             "invalid",

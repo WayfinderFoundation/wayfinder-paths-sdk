@@ -140,6 +140,7 @@ def run_experiment(config_path: Path) -> dict[str, Any]:
         output_dir=output_dir,
         confidence=float(config.get("confidence") or 0.90),
         max_cost_ratio=float(config.get("max_cost_ratio") or 1.25),
+        cost_parity_basis=str(config.get("cost_parity_basis") or "tokens"),
         pilot=bool(config.get("pilot")),
     )
 

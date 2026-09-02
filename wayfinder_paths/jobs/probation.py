@@ -644,6 +644,8 @@ def stage_evolution_probation(
     max_queued = int(policy.get("max_queued") or 3)
     min_paired_days = int(policy.get("min_paired_days") or 7)
     max_paired_days = int(policy.get("max_paired_days") or 14)
+    min_effect_utility = float(policy.get("min_effect_utility", 0.001))
+    min_candidate_trades = int(policy.get("min_candidate_trades", 3))
     safe_revision = _safe_component(revision, "candidate revision")
     trial_id = _safe_trial_id(f"{candidate_id}-{safe_revision}")
     root = store.job_dir(job_id).resolve()
@@ -734,6 +736,8 @@ def stage_evolution_probation(
                 "decision_days": sorted({min_paired_days, max_paired_days}),
                 "last_decision_day": 0,
                 "confidence": float(policy.get("confidence") or 0.90),
+                "min_effect_utility": min_effect_utility,
+                "min_candidate_trades": min_candidate_trades,
                 "metrics": None,
             },
             "candidate": {
@@ -1028,6 +1032,13 @@ def _adjudicate_forward(
     min_days = int(trial["forward"]["min_paired_days"])
     max_days = int(trial["forward"]["max_paired_days"])
     last_decision = int(trial["forward"].get("last_decision_day") or 0)
+    # Older trials predate these knobs; the defaults mirror the spec policy.
+    band = float(trial["forward"].get("min_effect_utility", 0.001))
+    trade_floor = int(trial["forward"].get("min_candidate_trades", 3))
+    effect = float(metrics["overall_estimate"])
+    lcb_positive = metrics["lcb"] is not None and metrics["lcb"] > 0
+    ucb_negative = metrics["ucb"] is not None and metrics["ucb"] < 0
+    trades_short = int(metrics["candidate_trade_count"]) < trade_floor
     checkpoint = None
     if paired_days >= max_days and last_decision < max_days:
         checkpoint = max_days
@@ -1047,16 +1058,15 @@ def _adjudicate_forward(
             current=current,
         )
     elif (
-        checkpoint is not None
-        and metrics["lcb"] is not None
-        and metrics["lcb"] > 0
-        and float(metrics.get("overall_estimate") or 0.0) >= 0
+        checkpoint is not None and lcb_positive and effect >= band and not trades_short
     ):
         _close_trial(
             trial, "graduated", reason="paired utility LCB > 0", current=current
         )
         trial["promotion"] = {"status": "pending", "proposal_id": None}
-    elif checkpoint is not None and metrics["ucb"] is not None and metrics["ucb"] < 0:
+    elif (
+        checkpoint is not None and ucb_negative and effect <= -band and not trades_short
+    ):
         _close_trial(trial, "killed", reason="paired utility UCB < 0", current=current)
     elif checkpoint == max_days and metrics.get("target_days_short"):
         # The declared regime never showed up; that is silence, not evidence.
@@ -1066,7 +1076,23 @@ def _adjudicate_forward(
             reason="target regime did not occur during probation",
             current=current,
         )
-    elif checkpoint == max_days and metrics["lcb"] is not None and metrics["lcb"] > 0:
+    elif checkpoint == max_days and trades_short:
+        _close_trial(
+            trial,
+            "inconclusive",
+            reason="candidate closed trades below the probation floor",
+            current=current,
+        )
+    elif (
+        checkpoint == max_days and (lcb_positive or ucb_negative) and abs(effect) < band
+    ):
+        _close_trial(
+            trial,
+            "inconclusive",
+            reason="paired effect inside the indifference band",
+            current=current,
+        )
+    elif checkpoint == max_days and lcb_positive:
         _close_trial(
             trial,
             "inconclusive",
@@ -1186,6 +1212,16 @@ def _paired_forward_metrics(
         )
         ucb = -reverse if reverse is not None else None
     safety = _hard_constraint_metrics(store, job_id, candidate)
+    candidate_trades = _closed_trade_count_for_stream(
+        store.job_dir(job_id) / trial["candidate"]["stream"],
+        since=started,
+        until=current,
+    )
+    reference_trades = _closed_trade_count_for_stream(
+        store.job_dir(job_id) / trial["reference"]["stream"],
+        since=started,
+        until=current,
+    )
     outside_days = [day for day in complete_days if day not in set(target_days)]
     outside_pnl = sum(float(candidate[day]) for day in outside_days)
     outside_loss_pct = max(0.0, -outside_pnl / capital)
@@ -1199,6 +1235,9 @@ def _paired_forward_metrics(
         "confidence": confidence,
         "candidate_net_pnl": round(sum(candidate.values()), 6),
         "reference_net_pnl": round(sum(reference.values()), 6),
+        "candidate_trade_count": candidate_trades,
+        "reference_trade_count": reference_trades,
+        "overall_estimate": round(sum(overall_deltas), 8),
         **(
             {
                 "regime_contract": dict(regime_contract),
@@ -1208,7 +1247,6 @@ def _paired_forward_metrics(
                 "outside_loss_pct": round(outside_loss_pct, 8),
                 "outside_loss_budget_pct": outside_budget,
                 "outside_loss_breach": outside_loss_pct > outside_budget,
-                "overall_estimate": round(sum(overall_deltas), 8),
                 "target_days_short": len(target_days) < min_target_days,
             }
             if target_regimes
@@ -1217,6 +1255,28 @@ def _paired_forward_metrics(
         **safety,
         "updated_at": current.isoformat(),
     }
+
+
+def _closed_trade_count_for_stream(
+    stream: Path, *, since: datetime, until: datetime
+) -> int:
+    # trades.jsonl only ever receives reduce-only closes (driver._record), so
+    # every row is one closed trade; the rows carry no separate closed flag.
+    path = stream / "trades.jsonl"
+    if not path.exists():
+        return 0
+    count = 0
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            row = json.loads(line)
+            stamp = _parse(
+                row.get("closed_at") or row.get("timestamp") or row.get("ts")
+            )
+        except (TypeError, ValueError):
+            continue
+        if since <= stamp < until:
+            count += 1
+    return count
 
 
 def _daily_regimes_for_stream(

@@ -341,7 +341,7 @@ def paired_fold_evaluation(
             vector = objective_vector(equity, trades)
             side_rows[side] = vector
             pool = baseline_pool if side == "baseline" else candidate_pool
-            pool["equity"].extend(equity)
+            pool["equity"].extend(_chain_fold_equity(pool["equity"], equity))
             pool["trades"].extend(trades)
             daily = daily_log_returns(equity)
             (baseline_daily if side == "baseline" else candidate_daily).extend(daily)
@@ -411,7 +411,8 @@ def paired_fold_evaluation(
         baseline_vector, weights
     )
     # Conservative composite: growth term at its LCB, risk terms at their
-    # point estimates. See module docstring for why.
+    # point estimates (folds are chained, so pooled growth equals the sum of
+    # the per-fold daily returns the LCB is built from). See module docstring.
     delta_lcb = None
     if growth_lcb is not None:
         risk_delta = delta_estimate - (
@@ -690,6 +691,28 @@ def evaluate_economic_readiness(
             f"{promotion['audit_min_delta_utility']}"
         )
     return {"ready": not reasons, "reasons": reasons, "probation": probation}
+
+
+def _chain_fold_equity(
+    pooled: Sequence[Mapping[str, Any]], equity: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Continue one fold's equity curve from the pooled curve's last equity.
+
+    Every fold is simulated from ``initial_capital``. Appending the raw rows
+    would record a synthetic daily loss of the previous fold's gain at each
+    boundary, carry the drawdown peak across the restart, and telescope the
+    pooled log growth to the last fold alone. Scaling the fold to start where
+    the pool ended is the reinvest-running-equity path; a genuine cross-fold
+    drawdown still counts. Trades stay in constant-capital dollars, which is
+    what the tail and fee fractions are defined over.
+    """
+    if not pooled or not equity:
+        return [dict(row) for row in equity]
+    first = float(equity[0]["equity"])
+    if first <= 0:
+        raise ValueError("fold equity curve starts at non-positive equity")
+    factor = float(pooled[-1]["equity"]) / first
+    return [{**row, "equity": float(row["equity"]) * factor} for row in equity]
 
 
 def _oos_window(

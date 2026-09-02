@@ -52,7 +52,11 @@ from wayfinder_paths.jobs.execution.venues import (
     build_adapter,
 )
 from wayfinder_paths.jobs.forward import ForwardRecorder, forward_exit_category
-from wayfinder_paths.jobs.gating import clamp_leverage, governance_hard_constraints
+from wayfinder_paths.jobs.gating import (
+    clamp_leverage,
+    clamp_size_scale,
+    governance_hard_constraints,
+)
 from wayfinder_paths.jobs.halt import read_halt, request_halt
 from wayfinder_paths.jobs.models import (
     DEFAULT_FORWARD_FILLS,
@@ -264,6 +268,8 @@ async def tick_job(
         store.append_journal(
             job.id, {"type": "leverage_clamped", "mode": mode, **clamp_payload}
         )
+    if "size_scale" in params:
+        params["size_scale"] = clamp_size_scale(params["size_scale"])
 
     # Optional owner-governed response to a warning/critical portfolio regime
     # report. This is a runtime cap only: it does not edit the user's leverage
@@ -1246,6 +1252,7 @@ def _trade_close_payload(
         "client_order_id": row.get("client_order_id"),
         "exit_reason": exit_reason,
         "effective_leverage": params.get("leverage") or 1.0,
+        "size_scale": params.get("size_scale") or 1.0,
     }
     payload["exit_category"] = forward_exit_category(payload)
     if action == "STOP_LOSS":

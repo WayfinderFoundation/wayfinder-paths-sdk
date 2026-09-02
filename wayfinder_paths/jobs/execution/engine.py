@@ -532,6 +532,7 @@ async def _run_tick_inner(
             decided = list(decided)
     intents = [OrderIntent.from_any(item) for item in decided]
     _apply_engine_leverage(intents, params)
+    _apply_size_scale(intents, params)
     scaled_intents = (
         scale_entry_intents(intents, ood_entry_scale) if defense_active else 0
     )
@@ -900,6 +901,35 @@ def _apply_engine_leverage(
         metadata = dict(intent.metadata or {})
         metadata["leverage_applied"] = True
         metadata["engine_leverage"] = leverage
+        intent.metadata = metadata
+
+
+def _apply_size_scale(intents: list[OrderIntent], params: Mapping[str, Any]) -> None:
+    """Multiplicative sizing knob (params.size_scale in (0, 1]) applied at the
+    same seam as leverage, so the evolution finalist gate can size a strategy
+    to the drawdown ceiling mechanically. Keyed on its OWN stamp rather than
+    `leverage_applied` so it composes with leverage: compound-mode strategies
+    stamp `leverage_applied` themselves and must still be scaled. Defensive-
+    inert: out-of-range values never raise mid-tick (clamp_size_scale enforces
+    the range upstream)."""
+    try:
+        scale = float(params.get("size_scale") or 1.0)
+    except (TypeError, ValueError):
+        return
+    if scale == 1.0 or scale <= 0 or scale > 1:
+        return
+    for intent in intents:
+        if intent.reduce_only or str(intent.action).upper() in REDUCE_ONLY_ACTIONS:
+            continue
+        if (intent.metadata or {}).get("size_scale_applied"):
+            continue
+        if intent.notional is not None:
+            intent.notional = float(intent.notional) * scale
+        if intent.size is not None:
+            intent.size = float(intent.size) * scale
+        metadata = dict(intent.metadata or {})
+        metadata["size_scale_applied"] = True
+        metadata["engine_size_scale"] = scale
         intent.metadata = metadata
 
 

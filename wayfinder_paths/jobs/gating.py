@@ -60,6 +60,17 @@ def clamp_leverage(
     return requested, None
 
 
+def clamp_size_scale(value: Any) -> float:
+    """Range-check the agent-writable size_scale knob: None means unscaled;
+    anything else must be a number in (0, 1]."""
+    if value is None:
+        return 1.0
+    scale = float(value)
+    if not 0 < scale <= 1:
+        raise ValueError("execution_params.size_scale must be in (0, 1]")
+    return scale
+
+
 def compute_workspace_revision(
     root: Path, *, retain_operator_dials: bool = False
 ) -> str:

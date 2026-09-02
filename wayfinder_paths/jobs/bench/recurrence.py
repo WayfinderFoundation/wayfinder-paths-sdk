@@ -3,9 +3,10 @@
 One sandbox job per (arm, seed) lives through every loop. Each loop builds a
 world at the next weekly cutoff from the job's CURRENT incumbent, runs the
 optional researcher wake and one production campaign, replays probation on
-the following sealed bars, applies a graduate under the declared owner rule,
-and scores the strategy that was actually deployed against the frozen
-original. The endpoint is the process, not a candidate.
+the following sealed bars (open trials carry into the next loop), applies
+every graduate under the declared owner rule, and scores the strategy that
+was actually deployed against the frozen original. The endpoint is the
+process, not a candidate.
 """
 
 from __future__ import annotations
@@ -223,12 +224,14 @@ def _validate_recurrence_config(config: dict[str, Any], *, source_job: Path) -> 
         probation = dict(policy.get("probation") or {})
         burn_in_days = float(probation.get("burn_in_hours", 24)) / 24.0
         max_paired = int(probation.get("max_paired_days") or 14)
-        # Burn-in, the paired days, and the partial cutoff day must all fit
-        # inside one loop or no probation verdict can ever fire.
-        if burn_in_days + max_paired + 1 > window["loop_days"]:
+        # Probation carries across loops, so burn-in, the paired days, and
+        # the partial cutoff day must fit inside the whole observation window
+        # or no verdict can ever fire.
+        if burn_in_days + max_paired + 1 > window["loops"] * window["loop_days"]:
             raise ValueError(
-                f"arm {arm['name']!r}: probation cannot reach a verdict inside "
-                f"{window['loop_days']}-day loops (burn_in_hours + max_paired_days)"
+                f"arm {arm['name']!r}: probation cannot reach a verdict inside the "
+                f"{window['loops']}x{window['loop_days']}-day window "
+                "(burn_in_hours + max_paired_days)"
             )
     for relative in ("job.yaml", "workspace", str(BARS_RELATIVE)):
         if not (source_job / relative).exists():
@@ -449,9 +452,10 @@ def run_recurrence_arm(
             deltas = paired_daily_utility_deltas(
                 deployed["daily_pnl"], frozen["daily_pnl"]
             )
-            row["apply"] = _apply_on_graduation(store, job_id, forward, loop=loop)
+            applied_trials = _apply_graduates(store, job_id, loop=loop)
+            row["apply"] = {"applied": bool(applied_trials), "trials": applied_trials}
             _write_forward_summary(store, job_id, deployed, cutoff=cutoff, end=end)
-            row["superseded_trials"] = _supersede_open_trials(store, job_id)
+            row["probation_carried"] = _open_trial_ids(store, job_id)
             audit = audit_and_score(
                 sandbox,
                 sessions=sessions,
@@ -496,15 +500,20 @@ def run_recurrence_arm(
                     "session_diagnostics": audit["session_diagnostics"],
                 }
             )
+            first_applied = applied_trials[0] if applied_trials else {}
             lineage.append(
                 {
                     "loop": loop,
                     "revision_before": row["incumbent_revision"],
                     "revision_after": compute_workspace_revision(_job_root(sandbox)),
-                    "applied": bool(row["apply"].get("applied")),
-                    "trial_id": row["apply"].get("trial_id"),
-                    "candidate_id": row["apply"].get("candidate_id"),
-                    "family": row["apply"].get("family"),
+                    "applied": bool(applied_trials),
+                    "trial_id": first_applied.get("trial_id"),
+                    "candidate_id": first_applied.get("candidate_id"),
+                    "family": first_applied.get("family"),
+                    "trial_ids": [trial["trial_id"] for trial in applied_trials],
+                    "candidate_ids": [
+                        trial.get("candidate_id") for trial in applied_trials
+                    ],
                 }
             )
         except Exception as exc:  # noqa: BLE001 - one loop must not end the chain
@@ -521,6 +530,8 @@ def run_recurrence_arm(
                     "trial_id": None,
                     "candidate_id": None,
                     "family": None,
+                    "trial_ids": [],
+                    "candidate_ids": [],
                 }
             )
         row["wall_seconds"] = round(time.monotonic() - loop_started, 3)
@@ -635,45 +646,48 @@ def _ideation_report(root: Path) -> dict[str, Any]:
     }
 
 
-def _apply_on_graduation(
-    store: JobStore, job_id: str, forward: dict[str, Any], *, loop: int
-) -> dict[str, Any]:
-    """The declared owner rule: every graduate is applied, nothing else is."""
-    if not forward.get("available") or forward.get("status") != "graduated":
-        return {
-            "applied": False,
-            "reason": str(
-                forward.get("status") or forward.get("reason") or "unavailable"
-            ),
-        }
+def _apply_graduates(
+    store: JobStore, job_id: str, *, loop: int
+) -> list[dict[str, Any]]:
+    """The declared owner rule: every graduate is applied, nothing else is.
+    Probation carries across loops, so a trial staged loops ago applies in
+    the loop it graduates."""
     doc = load_probation(store, job_id)
-    trial = next(row for row in doc["trials"] if row["trial_id"] == forward["trial_id"])
-    candidate_dir = resolve_probation_bundle(store, job_id, trial["candidate"])
-    applied = apply_candidate_bundle(
-        store,
-        job_id,
-        candidate_dir,
-        label=f"recur-loop{loop}-{_safe_name(str(trial['trial_id']))[:40]}",
-    )
-    trial["promotion"] = {
-        "status": "applied",
-        "proposal_id": None,
-        "applied_by": "bench_recurrence",
-        "loop": loop,
-        "promoted_revision": applied["promoted_revision"],
-        "updated_at": datetime.now(UTC).isoformat(),
-    }
-    store.write_json(job_id, PROBATION_PATH, doc)
-    set_incumbent(store, job_id, str(trial["candidate_id"]))
-    return {
-        "applied": True,
-        "trial_id": trial["trial_id"],
-        "candidate_id": trial.get("candidate_id"),
-        "candidate_revision": trial.get("candidate_revision"),
-        "family": trial.get("family"),
-        "promoted_revision": applied["promoted_revision"],
-        "backup_dir": applied["backup_dir"],
-    }
+    applied_rows: list[dict[str, Any]] = []
+    for trial in doc.get("trials") or []:
+        if (
+            trial.get("status") != "graduated"
+            or (trial.get("promotion") or {}).get("status") == "applied"
+        ):
+            continue
+        candidate_dir = resolve_probation_bundle(store, job_id, trial["candidate"])
+        applied = apply_candidate_bundle(
+            store,
+            job_id,
+            candidate_dir,
+            label=f"recur-loop{loop}-{_safe_name(str(trial['trial_id']))[:40]}",
+        )
+        trial["promotion"] = {
+            "status": "applied",
+            "proposal_id": None,
+            "applied_by": "bench_recurrence",
+            "loop": loop,
+            "promoted_revision": applied["promoted_revision"],
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        store.write_json(job_id, PROBATION_PATH, doc)
+        set_incumbent(store, job_id, str(trial["candidate_id"]))
+        applied_rows.append(
+            {
+                "trial_id": trial["trial_id"],
+                "candidate_id": trial.get("candidate_id"),
+                "candidate_revision": trial.get("candidate_revision"),
+                "family": trial.get("family"),
+                "promoted_revision": applied["promoted_revision"],
+                "backup_dir": applied["backup_dir"],
+            }
+        )
+    return applied_rows
 
 
 def _write_forward_summary(
@@ -725,19 +739,14 @@ def _write_forward_summary(
     store.write_json(job_id, FORWARD_SUMMARY_RELATIVE, summary)
 
 
-def _supersede_open_trials(store: JobStore, job_id: str) -> list[str]:
-    """A trial the loop did not resolve must not be replayed by the next one."""
+def _open_trial_ids(store: JobStore, job_id: str) -> list[str]:
+    """Trials without a verdict carry into the next loop's replay."""
     doc = load_probation(store, job_id)
-    superseded = []
-    for trial in doc.get("trials") or []:
-        if trial.get("status") in _OPEN_TRIAL_STATUSES:
-            trial["status"] = "superseded"
-            trial["phase"] = "superseded"
-            trial["closed_reason"] = "loop ended before a verdict"
-            superseded.append(str(trial["trial_id"]))
-    if superseded:
-        store.write_json(job_id, PROBATION_PATH, doc)
-    return superseded
+    return [
+        str(trial["trial_id"])
+        for trial in doc.get("trials") or []
+        if trial.get("status") in _OPEN_TRIAL_STATUSES
+    ]
 
 
 def _run_row(

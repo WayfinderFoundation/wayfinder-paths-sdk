@@ -173,6 +173,8 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "inner_optuna_train_bars": 10_000,
         "inner_optuna_timeout_seconds": 1_800,
         "proposal_finalists": 1,
+        "finalist_risk_normalization": True,
+        "finalist_risk_margin": 0.9,
         "split": {"train": 0.80, "validation": 0.20},
         "parent_mix": {
             "incumbent": 0.30,
@@ -199,6 +201,8 @@ DEFAULT_IMPROVER: dict[str, Any] = {
             "min_paired_days": 7,
             "max_paired_days": 14,
             "confidence": 0.90,
+            "min_effect_utility": 0.001,
+            "min_candidate_trades": 3,
         },
         "research_seed_slots": 2,
     },

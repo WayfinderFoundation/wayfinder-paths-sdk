@@ -549,6 +549,10 @@ def test_forward_verdicts_only_peek_at_preregistered_day_7_and_14(
         )
     store.write_json(job_id, "probation.json", doc)
 
+    candidate_stream = store.job_dir(job_id) / trial["candidate"]["stream"]
+    candidate_stream.mkdir(parents=True, exist_ok=True)
+    for offset in range(3):
+        _write_trade(candidate_stream, started + timedelta(days=offset), 0.0)
     for count, current in ((8, 8), (9, 9), (14, 14)):
         stamps = [started + timedelta(days=offset) for offset in range(count)]
         for role in ("candidate", "reference"):
@@ -676,6 +680,208 @@ def test_negative_paired_forward_ucb_kills_at_day_seven(tmp_path: Path) -> None:
     assert updated["verdict_reason"] == "paired utility UCB < 0"
     assert updated["forward"]["metrics"]["ucb"] < 0
     assert outcomes[0]["action"] == "probation_killed"
+
+
+def _write_forward_days(
+    store: JobStore,
+    job_id: str,
+    trial: dict,
+    started: datetime,
+    *,
+    days: int,
+    candidate_pnl: float | None = None,
+    reference_pnl: float | None = None,
+    candidate_trade_days: int | None = None,
+) -> None:
+    stamps = [started + timedelta(days=offset) for offset in range(days)]
+    for role, pnl in (("candidate", candidate_pnl), ("reference", reference_pnl)):
+        stream = store.job_dir(job_id) / trial[role]["stream"]
+        _write_ticks(stream, stamps)
+        if pnl is None:
+            continue
+        limit = candidate_trade_days if role == "candidate" else None
+        for stamp in stamps[:limit]:
+            _write_trade(stream, stamp, pnl)
+
+
+def test_staging_freezes_the_band_and_trade_floor_from_the_policy(
+    tmp_path: Path,
+) -> None:
+    store, job_id = _job(tmp_path)
+    (store.job_dir(job_id) / "improver.yaml").write_text(
+        "evolution:\n  probation:\n    min_effect_utility: 0.005\n"
+        "    min_candidate_trades: 10\n",
+        encoding="utf-8",
+    )
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    trial = _forward_trial(store, job_id, "frozen-policy", started)
+
+    assert trial["forward"]["min_effect_utility"] == 0.005
+    assert trial["forward"]["min_candidate_trades"] == 10
+
+
+@pytest.mark.parametrize("daily_pnl", [0.1, -0.1])
+def test_noise_deltas_inside_the_band_are_inconclusive_not_a_verdict(
+    tmp_path: Path, daily_pnl: float
+) -> None:
+    store, job_id = _job(tmp_path)
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    trial = _forward_trial(store, job_id, "noise", started)
+    # +-$0.10/day on $10k: the paired bounds share a sign, the effect is ~1e-5.
+    _write_forward_days(store, job_id, trial, started, days=8, candidate_pnl=daily_pnl)
+
+    outcomes = maybe_adjudicate_probation(
+        store, job_id, now=started + timedelta(days=8)
+    )
+
+    updated = load_probation(store, job_id)["trials"][0]
+    metrics = updated["forward"]["metrics"]
+    assert [row["action"] for row in outcomes] == ["probation_checkpoint_inconclusive"]
+    assert updated["status"] == "active"
+    assert updated["forward"]["last_decision_day"] == 7
+    assert metrics["candidate_trade_count"] == 8
+    assert metrics["reference_trade_count"] == 0
+    if daily_pnl > 0:
+        assert metrics["lcb"] > 0
+        assert 0 < metrics["overall_estimate"] < 0.001
+    else:
+        assert metrics["ucb"] < 0
+        assert -0.001 < metrics["overall_estimate"] < 0
+
+
+def test_noise_deltas_close_inside_the_indifference_band_at_the_endpoint(
+    tmp_path: Path,
+) -> None:
+    store, job_id = _job(tmp_path)
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    trial = _forward_trial(store, job_id, "noise-endpoint", started)
+    _write_forward_days(store, job_id, trial, started, days=15, candidate_pnl=-0.1)
+
+    outcomes = maybe_adjudicate_probation(
+        store, job_id, now=started + timedelta(days=15)
+    )
+
+    updated = load_probation(store, job_id)["trials"][0]
+    assert updated["status"] == "inconclusive"
+    assert updated["verdict_reason"] == "paired effect inside the indifference band"
+    assert updated["forward"]["metrics"]["ucb"] < 0
+    assert outcomes[0]["action"] == "probation_inconclusive"
+
+
+@pytest.mark.parametrize(
+    ("daily_pnl", "status", "reason"),
+    [
+        (1.5, "graduated", "paired utility LCB > 0"),
+        (-1.5, "killed", "paired utility UCB < 0"),
+    ],
+)
+def test_effects_beyond_the_band_still_decide_at_day_seven(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    daily_pnl: float,
+    status: str,
+    reason: str,
+) -> None:
+    store, job_id = _job(tmp_path)
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    trial = _forward_trial(store, job_id, "real-effect", started)
+    # +-$1.50/day on $10k over eight days is ~1.2e-3: just past the band.
+    _write_forward_days(store, job_id, trial, started, days=8, candidate_pnl=daily_pnl)
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.proposals.propose_change",
+        lambda *args, **kwargs: {"proposal_id": kwargs["proposal_id"]},
+    )
+
+    maybe_adjudicate_probation(store, job_id, now=started + timedelta(days=8))
+
+    updated = load_probation(store, job_id)["trials"][0]
+    metrics = updated["forward"]["metrics"]
+    assert updated["status"] == status
+    assert updated["verdict_reason"] == reason
+    assert abs(metrics["overall_estimate"]) >= 0.001
+    if daily_pnl > 0:
+        assert metrics["lcb"] > 0
+    else:
+        assert metrics["ucb"] < 0
+
+
+def test_trade_floor_withholds_verdicts_until_the_candidate_has_closed_trades(
+    tmp_path: Path,
+) -> None:
+    store, job_id = _job(tmp_path)
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    trial = _forward_trial(store, job_id, "thin", started)
+    # The reference bleeds daily while the candidate sits flat after two
+    # closes: the paired interval would graduate, but two trades are not
+    # evidence of anything.
+    _write_forward_days(
+        store,
+        job_id,
+        trial,
+        started,
+        days=8,
+        candidate_pnl=0.0,
+        reference_pnl=-10.0,
+        candidate_trade_days=2,
+    )
+
+    outcomes = maybe_adjudicate_probation(
+        store, job_id, now=started + timedelta(days=8)
+    )
+
+    updated = load_probation(store, job_id)["trials"][0]
+    metrics = updated["forward"]["metrics"]
+    assert metrics["candidate_trade_count"] == 2
+    assert metrics["reference_trade_count"] == 8
+    assert metrics["lcb"] > 0
+    assert metrics["overall_estimate"] >= 0.001
+    assert [row["action"] for row in outcomes] == ["probation_checkpoint_inconclusive"]
+    assert updated["status"] == "active"
+    assert updated["forward"]["last_decision_day"] == 7
+
+    stamps = [started + timedelta(days=offset) for offset in range(15)]
+    for role in ("candidate", "reference"):
+        stream = store.job_dir(job_id) / trial[role]["stream"]
+        _write_ticks(stream, stamps)
+        if role == "reference":
+            for stamp in stamps[8:]:
+                _write_trade(stream, stamp, -10.0)
+
+    maybe_adjudicate_probation(store, job_id, now=started + timedelta(days=15))
+
+    updated = load_probation(store, job_id)["trials"][0]
+    assert updated["status"] == "inconclusive"
+    assert (
+        updated["verdict_reason"] == "candidate closed trades below the probation floor"
+    )
+    assert updated["forward"]["metrics"]["candidate_trade_count"] == 2
+
+
+def test_older_trials_without_band_or_floor_keys_adjudicate_with_defaults(
+    tmp_path: Path,
+) -> None:
+    store, job_id = _job(tmp_path)
+    started = datetime(2026, 8, 1, tzinfo=UTC)
+    trial = _forward_trial(store, job_id, "legacy-keys", started)
+    assert trial["forward"]["min_effect_utility"] == 0.001
+    assert trial["forward"]["min_candidate_trades"] == 3
+    doc = load_probation(store, job_id)
+    forward = doc["trials"][0]["forward"]
+    del forward["min_effect_utility"]
+    del forward["min_candidate_trades"]
+    store.write_json(job_id, "probation.json", doc)
+    _write_forward_days(store, job_id, trial, started, days=8, candidate_pnl=-0.1)
+
+    outcomes = maybe_adjudicate_probation(
+        store, job_id, now=started + timedelta(days=8)
+    )
+
+    updated = load_probation(store, job_id)["trials"][0]
+    assert "min_effect_utility" not in updated["forward"]
+    # Sign-only adjudication would have killed this on a negative UCB.
+    assert updated["forward"]["metrics"]["ucb"] < 0
+    assert updated["status"] == "active"
+    assert [row["action"] for row in outcomes] == ["probation_checkpoint_inconclusive"]
 
 
 def test_probation_capacity_is_three_active_and_three_queued(tmp_path: Path) -> None:

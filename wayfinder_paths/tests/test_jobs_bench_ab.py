@@ -909,6 +909,51 @@ def test_budget_parity_is_explicit_and_four_seeds_are_required_by_config() -> No
     assert report["by_arm"]["b"]["process"]["policy_denied_attempts"] == 0
 
 
+def test_cost_parity_basis_can_be_attempts_instead_of_tokens(
+    tmp_path: Path,
+) -> None:
+    rows = [
+        {
+            "arm": arm,
+            "world_id": "world",
+            "seed": seed,
+            "holdout": {
+                "paired_daily_utility_delta": {"estimate": 0.02 if arm == "a" else 0.0}
+            },
+            "cost": {"tokens_in": 150 if arm == "a" else 100, "tokens_out": 0},
+            "funnel": {"attempts": 22},
+            "forward": {},
+        }
+        for seed in (1, 2, 3, 4)
+        for arm in ("a", "b")
+    ]
+
+    by_tokens = aggregate_experiment(rows, arm_order=["a", "b"])
+    by_attempts = aggregate_experiment(
+        rows, arm_order=["a", "b"], cost_parity_basis="attempts", output_dir=tmp_path
+    )
+
+    assert by_tokens["cost_parity"] == {
+        "basis": "tokens",
+        "ratio": 1.5,
+        "matched": False,
+    }
+    assert by_tokens["decision"] == "invalid_cost_mismatch"
+    assert by_attempts["cost_parity"] == {
+        "basis": "attempts",
+        "ratio": 1.0,
+        "matched": True,
+    }
+    assert by_attempts["decision"] == "a_wins"
+    assert by_attempts["pre_registered_rule"]["cost_parity_basis"] == "attempts"
+    assert "attempts cost ratio" in by_attempts["pre_registered_rule"]["decision"]
+    assert "Cost parity (attempts): ratio=1.0 matched=True" in (
+        tmp_path / "report.txt"
+    ).read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="cost_parity_basis"):
+        aggregate_experiment(rows, arm_order=["a", "b"], cost_parity_basis="wall")
+
+
 def test_single_seed_pilot_is_directional_only() -> None:
     config = {
         "schema_version": "1.0",
