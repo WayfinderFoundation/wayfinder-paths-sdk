@@ -65,12 +65,7 @@ def race_bundles(
     a = evaluate_bundle(a_bundle, rows=rows, cutoff=cutoff, environment=environment)
     b = evaluate_bundle(b_bundle, rows=rows, cutoff=cutoff, environment=environment)
     days = sorted(set(a["daily_pnl"]) & set(b["daily_pnl"]))
-    deltas = [
-        math.log1p(a["daily_pnl"][day] / 10_000.0)
-        - math.log1p(b["daily_pnl"][day] / 10_000.0)
-        for day in days
-        if a["daily_pnl"][day] > -10_000 and b["daily_pnl"][day] > -10_000
-    ]
+    deltas = paired_daily_utility_deltas(a["daily_pnl"], b["daily_pnl"])
     estimate = sum(deltas)
     lcb = block_bootstrap_lcb(
         deltas, block_len=5, iterations=500, confidence=CONFIDENCE
@@ -135,6 +130,20 @@ def race_bundles(
         atomic_json(results / "compare.json", compare)
         (results / "report.txt").write_text(_race_report(compare), encoding="utf-8")
     return compare
+
+
+def paired_daily_utility_deltas(
+    a_daily: Mapping[str, float], b_daily: Mapping[str, float]
+) -> list[float]:
+    """Per paired ISO day, log-growth utility of A minus B on 10k capital —
+    the same quantity probation and the holdout race adjudicate on."""
+    days = sorted(set(a_daily) & set(b_daily))
+    return [
+        math.log1p(float(a_daily[day]) / 10_000.0)
+        - math.log1p(float(b_daily[day]) / 10_000.0)
+        for day in days
+        if float(a_daily[day]) > -10_000 and float(b_daily[day]) > -10_000
+    ]
 
 
 def evaluate_bundle(
@@ -217,14 +226,20 @@ def replay_probation(
     development_rows: list[dict[str, Any]],
     holdout_rows: list[dict[str, Any]],
     generation_cutoff: datetime,
+    campaign_id: str | None = None,
 ) -> dict[str, Any]:
-    """Replay a staged trial through the real burn-in/day-7/day-14 code."""
+    """Replay a staged trial through the real burn-in/day-7/day-14 code.
+
+    ``campaign_id`` restricts the replay to that campaign's trial so a chained
+    run never replays a leftover from an earlier loop.
+    """
     cutoff = _aware(generation_cutoff)
     doc = load_probation(store, job_id)
     runnable = [
         trial
         for trial in doc.get("trials") or []
         if trial.get("status") in {"queued", "burn_in", "active"}
+        and (campaign_id is None or trial.get("campaign_id") == campaign_id)
     ]
     if not runnable:
         return {
@@ -381,9 +396,7 @@ def _behavior_distance(
         "behavior_changed": bool(changed_decisions or changed_fills),
         "changed_decisions": changed_decisions,
         "changed_fill_records": changed_fills,
-        "jaccard_distance": (
-            round(changed_fills / len(union), 6) if union else 0.0
-        ),
+        "jaccard_distance": (round(changed_fills / len(union), 6) if union else 0.0),
     }
 
 

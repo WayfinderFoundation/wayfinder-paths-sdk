@@ -38,6 +38,8 @@ def prepare_world(
     holdout_end: datetime,
     sealed_dir: Path,
     world_id: str | None = None,
+    min_holdout_days: float = 14,
+    max_holdout_days: float = 21,
 ) -> dict[str, Any]:
     """Freeze one real job into an agent-visible prefix and owner-only tail."""
     source_job = source_job.resolve()
@@ -52,8 +54,11 @@ def prepare_world(
     if end <= cutoff:
         raise ValueError("holdout_end must be after generation_cutoff")
     holdout_days = (end - cutoff).total_seconds() / 86_400
-    if not 14 <= holdout_days <= 21:
-        raise ValueError("benchmark holdout must span 14 to 21 days")
+    if not min_holdout_days <= holdout_days <= max_holdout_days:
+        raise ValueError(
+            f"benchmark holdout must span {min_holdout_days:g} to "
+            f"{max_holdout_days:g} days"
+        )
     if (
         world_dir == sealed_dir
         or world_dir.is_relative_to(sealed_dir)

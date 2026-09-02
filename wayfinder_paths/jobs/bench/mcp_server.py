@@ -1,4 +1,5 @@
-"""Benchmark MCP surface: campaign lifecycle only, no market-data tools."""
+"""Benchmark MCP surface: campaign lifecycle plus read-only local diagnostics,
+no market-data or research tools."""
 
 from __future__ import annotations
 
@@ -12,6 +13,14 @@ from wayfinder_paths.jobs.bench.env import sandbox_relative
 from wayfinder_paths.mcp.tools.jobs import core_jobs as _production_core_jobs
 
 BenchAction = Literal[
+    "status",
+    "report",
+    "regime_health",
+    "attribution",
+    "signal_check",
+    "signal_scan",
+    "backtest_diagnose",
+    "holdout_check",
     "evolution_status",
     "evolution_design",
     "evolution_prepare",
@@ -20,6 +29,14 @@ BenchAction = Literal[
     "evolution_finalize",
 ]
 _ALLOWED_ACTIONS = {
+    "status",
+    "report",
+    "regime_health",
+    "attribution",
+    "signal_check",
+    "signal_scan",
+    "backtest_diagnose",
+    "holdout_check",
     "evolution_status",
     "evolution_design",
     "evolution_prepare",
@@ -43,8 +60,23 @@ async def core_jobs(
     base_revision: str | None = None,
     evidence_refs: list[str] | None = None,
     background: bool | None = None,
+    proposal_id: str | None = None,
+    force: bool = False,
+    symbols: list[str] | None = None,
+    column: str | None = None,
+    horizons: list[int] | None = None,
+    timeframes: list[str] | None = None,
+    direction: Literal["long", "short", "auto"] | None = None,
+    signal: str | None = None,
+    horizon: int | None = None,
+    bar_interval: str | None = None,
+    holdout_fraction: float = 0.15,
+    campaign: str | None = None,
+    condition_regime: bool = False,
+    window_days: int | None = None,
 ) -> dict[str, Any]:
-    """Production evolution lifecycle with all data/live actions absent."""
+    """Production evolution lifecycle and local diagnostics with all
+    data-fetching and live actions absent."""
     if action not in _ALLOWED_ACTIONS:
         raise ValueError(f"action {action!r} is unavailable in benchmark mode")
     # Design validation is lightweight. Keep it inline so a malformed design
@@ -64,6 +96,20 @@ async def core_jobs(
         base_revision=base_revision,
         evidence_refs=evidence_refs,
         background=effective_background,
+        proposal_id=proposal_id,
+        force=force,
+        symbols=symbols,
+        column=column,
+        horizons=horizons,
+        timeframes=timeframes,
+        direction=direction,
+        signal=signal,
+        horizon=horizon,
+        bar_interval=bar_interval,
+        holdout_fraction=holdout_fraction,
+        campaign=campaign,
+        condition_regime=condition_regime,
+        window_days=window_days,
     )
     return sandbox_relative(result, root=Path.cwd())
 

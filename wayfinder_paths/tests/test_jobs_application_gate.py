@@ -9,19 +9,21 @@ through an apply instead of going stale until a manual re-run.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 import yaml
 
 from wayfinder_paths.jobs.application import (
+    apply_candidate_bundle,
     claim_application,
     complete_application,
     ensure_jobs_v1_contract,
     validate_application_candidate,
 )
 from wayfinder_paths.jobs.execution.experiments import promote_params
-from wayfinder_paths.jobs.gating import evaluate_live_gate
+from wayfinder_paths.jobs.gating import compute_workspace_revision, evaluate_live_gate
 from wayfinder_paths.jobs.models import WayfinderJob
 from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.tests.test_jobs_gating import _make_job
@@ -250,3 +252,46 @@ def test_direct_promote_params_restamps_preflight(tmp_path: Path) -> None:
     gate = evaluate_live_gate(job_id, store=store)
     assert gate["live_ready"] is True, gate["reasons"]
     assert gate["revision"] == outcome["revision"]
+
+
+def test_apply_candidate_bundle_promotes_and_stamps_revision(tmp_path: Path) -> None:
+    store, job_id, root = _make_job(tmp_path)
+    job = store.load(job_id)
+    job.execution_params["initial_capital"] = 1000
+    job.script_loop.mode = "paper"
+    store.save(job)
+    strategy = root / "workspace" / "src" / "strategy.py"
+    original_strategy = strategy.read_text(encoding="utf-8")
+    candidate_strategy = original_strategy + "\n# candidate edit\n"
+    candidate = tmp_path / "candidate"
+    shutil.copytree(root / "workspace", candidate / "workspace")
+    (candidate / "workspace" / "src" / "strategy.py").write_text(
+        candidate_strategy, encoding="utf-8"
+    )
+    candidate_yaml = yaml.safe_load((root / "job.yaml").read_text(encoding="utf-8"))
+    candidate_yaml["execution_params"]["initial_capital"] = 5
+    candidate_yaml["script_loop"]["mode"] = "live"
+    (candidate / "job.yaml").write_text(
+        yaml.safe_dump(candidate_yaml, sort_keys=False), encoding="utf-8"
+    )
+
+    result = apply_candidate_bundle(store, job_id, candidate, label="bench-gen-1")
+
+    assert set(result) == {"promoted_revision", "candidate_revision", "backup_dir"}
+    assert strategy.read_text(encoding="utf-8") == candidate_strategy
+    job = store.load(job_id)
+    assert job.execution_params["initial_capital"] == 1000
+    assert job.script_loop.mode == "paper"
+    promoted = compute_workspace_revision(root)
+    assert result["promoted_revision"] == promoted
+    assert result["candidate_revision"] == promoted
+    assert job.versioning["active_revision"] == promoted
+    active = json.loads((root / "versions" / "active.json").read_text(encoding="utf-8"))
+    assert active["active_revision"] == promoted
+    backup = Path(result["backup_dir"])
+    assert backup == root / "applications" / "bench-gen-1" / "backup"
+    assert (backup / "workspace" / "src" / "strategy.py").read_text(
+        encoding="utf-8"
+    ) == original_strategy
+    backed_up_yaml = yaml.safe_load((backup / "job.yaml").read_text(encoding="utf-8"))
+    assert backed_up_yaml["execution_params"]["initial_capital"] == 1000

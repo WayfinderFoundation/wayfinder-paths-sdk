@@ -170,6 +170,35 @@ def _allow_benchmark_job_paths(opencode_root: Path) -> None:
         )
 
 
+def _restrict_bench_worker_agent(sandbox: Path) -> None:
+    """Sandbox the production job-worker persona for benchmark wakes.
+
+    The bench runner drives ``wayfinder-job-worker`` through the real harness,
+    so its sandbox copy keeps every production permission line and ordering
+    but loses shell and subagent dispatch (bash/task denied outright) and
+    gains the same normalized job-path edit rule the evolution agents get.
+    The source agent file is never changed.
+    """
+    path = sandbox / ".opencode" / "agents" / "wayfinder-job-worker.md"
+    if not path.is_file():
+        return
+    relative_rule = '    ".wayfinder/jobs/**": allow\n'
+    normalized_rule = '    "**/.wayfinder/jobs/**": allow\n'
+    content = path.read_text(encoding="utf-8")
+    if relative_rule not in content:
+        raise ValueError(f"benchmark agent is missing job-path permission: {path}")
+    if normalized_rule not in content:
+        content = content.replace(relative_rule, relative_rule + normalized_rule)
+    lines = content.splitlines(keepends=True)
+    for block in ("  bash:\n", "  task:\n"):
+        start = lines.index(block)
+        end = start + 1
+        while end < len(lines) and lines[end].startswith("    "):
+            end += 1
+        lines[start + 1 : end] = ['    "*": deny\n']
+    path.write_text("".join(lines), encoding="utf-8")
+
+
 def install_agent_workspace(
     *,
     sandbox: Path,
@@ -210,6 +239,7 @@ def install_agent_workspace(
             symlinks=False,
         )
     _allow_benchmark_job_paths(target)
+    _restrict_bench_worker_agent(sandbox)
     # The benchmark may pin the exact Shells runtime config. Otherwise the
     # untracked local provider config falls back to the primary checkout;
     # agents and plugins still stay pinned to the declared SDK ref.
@@ -271,6 +301,9 @@ def run_agent_wakes(
     job_id: str,
     wakes: int,
     model: str,
+    variant: str | None = None,
+    env: dict[str, str] | None = None,
+    title: str | None = None,
     opencode: Path = DEFAULT_OPENCODE,
     agent: str = DEFAULT_AGENT,
     timeout_s: int = 1800,
@@ -287,14 +320,19 @@ def run_agent_wakes(
         prepared = prepare_job_worker_prompt(
             store=store, job_id=job_id, mode="intervene"
         )
+        wake_title = title or f"wob-{job_id}-wake-{wake}"
+        if title and wakes > 1:
+            wake_title = f"{title}-{wake}"
         session = run_agent_prompt(
             sandbox=sandbox,
             prompt=prepared["prompt"],
             model=model,
-            title=f"wob-{job_id}-wake-{wake}",
+            variant=variant,
+            title=wake_title,
             opencode=opencode,
             agent=agent,
             timeout_s=timeout_s,
+            env=env,
         )
         sessions.append({"wake": wake, **session})
     return sessions

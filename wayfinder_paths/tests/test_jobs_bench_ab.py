@@ -9,6 +9,7 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import get_args
 
 import pytest
 import yaml
@@ -25,6 +26,10 @@ from wayfinder_paths.jobs.bench.identity import (
     ensure_model_declared,
     runtime_identity,
 )
+from wayfinder_paths.jobs.bench.mcp_server import (
+    _ALLOWED_ACTIONS as BENCH_ALLOWED_ACTIONS,
+)
+from wayfinder_paths.jobs.bench.mcp_server import BenchAction
 from wayfinder_paths.jobs.bench.mcp_server import core_jobs as bench_core_jobs
 from wayfinder_paths.jobs.bench.runner import (
     _arm_env,
@@ -38,7 +43,10 @@ from wayfinder_paths.jobs.bench.runner import (
     run_experiment,
 )
 from wayfinder_paths.jobs.bench.world import load_world, prepare_world
-from wayfinder_paths.jobs.benchmarks.agent_adapter import install_agent_workspace
+from wayfinder_paths.jobs.benchmarks.agent_adapter import (
+    install_agent_workspace,
+    run_agent_wakes,
+)
 from wayfinder_paths.jobs.bundles import resolve_bundle_script_entrypoint
 from wayfinder_paths.jobs.evolution_campaign import _campaign_now
 from wayfinder_paths.jobs.execution import ExecutionSpec
@@ -1055,3 +1063,128 @@ def test_experiment_runs_isolated_arms_concurrently_and_preserves_order(
         "world-2-a.json",
         "world-2-b.json",
     ]
+
+
+def test_bench_mcp_exposes_read_only_research_actions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert {
+        "status",
+        "report",
+        "regime_health",
+        "attribution",
+        "signal_check",
+        "signal_scan",
+        "backtest_diagnose",
+        "holdout_check",
+    } <= BENCH_ALLOWED_ACTIONS
+    assert BENCH_ALLOWED_ACTIONS.isdisjoint(
+        {"propose", "fetch_dataset", "chart", "analogs", "evolution_start"}
+    )
+    assert set(get_args(BenchAction)) == BENCH_ALLOWED_ACTIONS
+    seen: dict = {}
+
+    async def fake_core_jobs(action: str, **kwargs: object) -> dict:
+        seen.update({"action": action, **kwargs})
+        return {"ok": True, "result": {}}
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.bench.mcp_server._production_core_jobs",
+        fake_core_jobs,
+    )
+    asyncio.run(
+        bench_core_jobs(
+            "signal_scan", job_id="bench-only", timeframes=["1h"], window_days=30
+        )
+    )
+    assert seen["action"] == "signal_scan"
+    assert seen["timeframes"] == ["1h"]
+    assert seen["window_days"] == 30
+
+
+def test_bench_sandbox_restricts_job_worker_bash_and_task(tmp_path: Path) -> None:
+    source_agent = (
+        Path(__file__).resolve().parents[2] / ".opencode/agents/wayfinder-job-worker.md"
+    )
+    repo = tmp_path / "sdk"
+    (repo / ".opencode/agents").mkdir(parents=True)
+    shutil.copy(source_agent, repo / ".opencode/agents/wayfinder-job-worker.md")
+    (repo / ".opencode/opencode.json").write_text(
+        json.dumps({"mcp": {}}), encoding="utf-8"
+    )
+    (repo / "wayfinder_paths").mkdir()
+    sandbox = tmp_path / "sandbox"
+
+    install_agent_workspace(sandbox=sandbox, repo_root=repo, disable_mcp=True)
+
+    def permission_block(path: Path) -> dict:
+        return yaml.safe_load(path.read_text(encoding="utf-8").split("---\n")[1])[
+            "permission"
+        ]
+
+    installed = permission_block(sandbox / ".opencode/agents/wayfinder-job-worker.md")
+    source = permission_block(source_agent)
+    assert installed["bash"] == {"*": "deny"}
+    assert installed["task"] == {"*": "deny"}
+    assert installed["edit"]["**/.wayfinder/jobs/**"] == "allow"
+    assert list(installed["edit"]) == [
+        "governance/**",
+        "audit/**",
+        ".wayfinder/jobs/**",
+        "**/.wayfinder/jobs/**",
+        ".wayfinder_runs/**",
+        "*",
+    ]
+    # Every other permission line (and the load-bearing ordering of the
+    # wayfinder_* entries) survives untouched.
+    assert list(installed) == list(source)
+    assert {
+        k: v for k, v in installed.items() if k not in {"bash", "task", "edit"}
+    } == {k: v for k, v in source.items() if k not in {"bash", "task", "edit"}}
+    assert source_agent.read_text(encoding="utf-8") == (
+        repo / ".opencode/agents/wayfinder-job-worker.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_run_agent_wakes_forwards_variant_env_and_title(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict] = []
+
+    def fake_prepare(*, store, job_id, mode):  # noqa: ANN001
+        return {"prompt": f"{job_id}:{mode}"}
+
+    def fake_prompt(**kwargs):  # noqa: ANN003
+        calls.append(kwargs)
+        return {"exit_code": 0}
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.prepare_job_worker_prompt", fake_prepare
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.benchmarks.agent_adapter.run_agent_prompt", fake_prompt
+    )
+    env = {"HOME": str(tmp_path)}
+
+    sessions = run_agent_wakes(
+        sandbox=tmp_path,
+        job_id="demo",
+        wakes=2,
+        model="m",
+        variant="max",
+        env=env,
+        title="recurrence/gen-1",
+    )
+    run_agent_wakes(sandbox=tmp_path, job_id="demo", wakes=1, model="m", title="solo")
+    run_agent_wakes(sandbox=tmp_path, job_id="demo", wakes=1, model="m")
+
+    assert [row["wake"] for row in sessions] == [0, 1]
+    assert [call["title"] for call in calls] == [
+        "recurrence/gen-1-0",
+        "recurrence/gen-1-1",
+        "solo",
+        "wob-demo-wake-0",
+    ]
+    assert [(call["variant"], call["env"]) for call in calls[:2]] == [("max", env)] * 2
+    assert calls[2]["variant"] is None and calls[2]["env"] is None
+    assert calls[0]["prompt"] == "demo:intervene"

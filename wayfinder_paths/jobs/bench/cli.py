@@ -11,6 +11,7 @@ from typing import Any
 
 from wayfinder_paths.jobs.bench.env import atomic_json, git_sha, sha256_file
 from wayfinder_paths.jobs.bench.forward_replay import race_bundles
+from wayfinder_paths.jobs.bench.recurrence import run_recurrence
 from wayfinder_paths.jobs.bench.runner import run_experiment
 from wayfinder_paths.jobs.bench.world import prepare_world
 from wayfinder_paths.jobs.bundles import copy_job_bundle
@@ -31,6 +32,8 @@ def main(argv: list[str] | None = None) -> None:
     world.add_argument("--generation-cutoff", required=True)
     world.add_argument("--holdout-end", required=True)
     world.add_argument("--world-id")
+    world.add_argument("--min-holdout-days", type=float, default=14)
+    world.add_argument("--max-holdout-days", type=float, default=21)
 
     race = commands.add_parser("race")
     race.add_argument("a_bundle", type=Path)
@@ -45,6 +48,9 @@ def main(argv: list[str] | None = None) -> None:
     experiment = commands.add_parser("run")
     experiment.add_argument("config", type=Path)
 
+    recurrence = commands.add_parser("recur")
+    recurrence.add_argument("config", type=Path)
+
     args = parser.parse_args(resolved_argv)
     if args.command == "prepare-world":
         result = prepare_world(
@@ -54,6 +60,8 @@ def main(argv: list[str] | None = None) -> None:
             holdout_end=_parse(args.holdout_end),
             sealed_dir=args.sealed,
             world_id=args.world_id,
+            min_holdout_days=args.min_holdout_days,
+            max_holdout_days=args.max_holdout_days,
         )
     elif args.command == "race":
         result = _run_race(
@@ -65,6 +73,8 @@ def main(argv: list[str] | None = None) -> None:
         )
     elif args.command == "race-rerun":
         result = _rerun_race(args.race_dir)
+    elif args.command == "recur":
+        result = run_recurrence(args.config)
     else:
         result = run_experiment(args.config)
     print(json.dumps(result, indent=2, sort_keys=True, default=str))

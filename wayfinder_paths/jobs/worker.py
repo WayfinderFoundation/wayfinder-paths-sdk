@@ -382,6 +382,22 @@ _IDEATION_PATH = "research/ideation/latest.json"
 _IDEATION_SEEN_PATH = "research/ideation/last_seen.json"
 
 
+def _benchmark_mode() -> bool:
+    return os.getenv("WAYFINDER_BENCHMARK") == "1"
+
+
+def _wake_now() -> dt.datetime:
+    """The bench harness replays wakes under a frozen virtual clock; stamp
+    checks against the real clock would never come due on replay."""
+    frozen = os.getenv("WAYFINDER_BENCHMARK_NOW", "").strip()
+    if not (_benchmark_mode() and frozen):
+        return dt.datetime.now(dt.UTC)
+    stamp = dt.datetime.fromisoformat(frozen.replace("Z", "+00:00"))
+    if stamp.tzinfo is None:
+        return stamp.replace(tzinfo=dt.UTC)
+    return stamp.astimezone(dt.UTC)
+
+
 def _ideation_thresholds(root: Path) -> tuple[int, int]:
     """(due_s, overdue_s) from the active improver spec — daily expedition,
     stamp-gated under the wake rhythm (20h, not 24h, so a 30m cadence cannot
@@ -403,7 +419,59 @@ def _ideation_age_s(root: Path) -> float | None:
         return None
     if stamp.tzinfo is None:
         stamp = stamp.replace(tzinfo=dt.UTC)
-    return (dt.datetime.now(dt.UTC) - stamp).total_seconds()
+    return (_wake_now() - stamp).total_seconds()
+
+
+def _benchmark_ideation_directive(age_desc: str) -> str:
+    """Sandboxed replay: no research/web/market tools exist and any network
+    fetch would leak future bars, so the expedition consults checked-in
+    evidence instead. Same artifact shape as the production directive."""
+    wake_clock = _wake_now().isoformat()
+    return (
+        "IDEATION SESSION — this wake is a research EXPEDITION, not a "
+        "routine review.\n"
+        f"The research artifact ({_IDEATION_PATH}) is {age_desc}; "
+        "the contract is one expedition per day.\n"
+        f"BENCHMARK MODE — the wake clock is {wake_clock}. External research "
+        "tools (research_*, web search/fetch, live market data) are "
+        "UNAVAILABLE in this environment and no network fetch may happen.\n"
+        "Give routine ops ONE glance (act only if something is red), then:\n"
+        "1. Consult at least 3 DISTINCT internal evidence artifacts instead "
+        "of external sources: checked-in results under results/research/ "
+        "(attribution.json, regime_health.json, signal_scan/...), "
+        "results/forward/summary.json, results/backtest/trade_forensics.json, "
+        "research/evolution/** (previous campaigns, probation verdicts), or "
+        "the read-only core_jobs actions status|report|regime_health|"
+        "attribution|signal_check|signal_scan|backtest_diagnose|"
+        "holdout_check. Record each as a sources_consulted entry with tool "
+        "= the file path or action name.\n"
+        "2. Look at what the incumbent's own evidence says about the next "
+        "1-2 weeks: regime drift, attribution decay, probation verdicts, "
+        "signals the scans already rank but nobody has tested.\n"
+        "3. Write research/ideation/latest.json with exactly this shape: "
+        '{"generated_at": "<UTC ISO8601>", "sources_consulted": [{"tool": '
+        '..., "query": ..., "takeaway": ...}], "hypotheses": [{"title": '
+        '..., "thesis": ..., "bucket": "testable"|"starved"|"refuted", '
+        '"next_step": ...}]} — generated_at MUST equal the wake clock '
+        f"{wake_clock}; hypotheses ranked best-first, at least 3, every one "
+        "bucketed honestly:\n"
+        "   - testable: next_step names the exact scan/SignalDef/feature "
+        "run to do NOW with data you already have.\n"
+        "   - starved: next_step names the unlock condition — the data or "
+        "feature that must exist first. Naming missing data is a VALID and "
+        "valuable outcome, not a failure.\n"
+        "   - refuted: next_step names the disqualifying evidence.\n"
+        "4. Fold the artifact into research/agenda.md (curated + compact, "
+        "as usual).\n"
+        "5. When one hypothesis is testable AND backed by a checked-in result "
+        "under results/research/, you MAY check in exactly one research seed "
+        'via core_jobs(action="evolution_submit_seed", ...). Never more than '
+        "one per expedition.\n"
+        "A 'nothing actionable' expedition is valid ONLY if "
+        "sources_consulted proves you looked. The artifact is checked "
+        "mechanically each wake; a missing or stale artifact is journaled "
+        "as ideation_incomplete for the owner to see.\n\n"
+    )
 
 
 def _ideation_bookkeeping(store: JobStore, job_id: str) -> None:
@@ -1567,6 +1635,8 @@ def _build_worker_prompt_sections(
             "mechanically each wake; a missing or stale artifact is journaled "
             "as ideation_incomplete for the owner to see.\n\n"
         )
+        if _benchmark_mode():
+            ideation_directive = _benchmark_ideation_directive(age_desc)
         ideation_task_line = (
             "- This wake is an IDEATION SESSION: execute the IDEATION SESSION "
             "block above the snapshot, including writing "
@@ -1748,8 +1818,15 @@ def prepare_job_worker_prompt(
     # because THIS wake's scans are their consumer — a one-time backfill
     # otherwise goes silently stale (btc_trend froze for 4 days while
     # merging cleanly into every scan frame). Stamp-gated hourly; never
-    # raises.
-    refresh_derived_features_if_stale(job.id, store=store)
+    # raises. Skipped under the bench sandbox: build_live_dataset would
+    # append bars from beyond the virtual clock.
+    if _benchmark_mode():
+        store.append_journal(
+            job.id,
+            {"type": "derived_features_refresh_skipped", "reason": "benchmark_mode"},
+        )
+    else:
+        refresh_derived_features_if_stale(job.id, store=store)
 
     # Portfolio regime/incumbent health consumes the fresh compact market
     # artifact above plus forward PnL. On alert it refreshes attribution before

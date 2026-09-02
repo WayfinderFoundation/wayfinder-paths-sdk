@@ -11,7 +11,9 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -57,6 +59,15 @@ from wayfinder_paths.jobs.store import JobStore
 from wayfinder_paths.jobs.worker import build_evolution_stage_prompt
 
 EXPERIMENT_SCHEMA_VERSION = "1.0"
+SUPPORTED_IDENTITY_DIFFERENCES = (
+    "model",
+    "variant",
+    "sdk_ref",
+    "agent_hashes",
+    "agent_temperatures",
+    "initial_prompt_sha256",
+    "arm_parameters",
+)
 
 
 def run_experiment(config_path: Path) -> dict[str, Any]:
@@ -138,18 +149,25 @@ def _run_arm_in_declared_sdk(
     config: dict[str, Any],
     arm: dict[str, Any],
     seed: int,
-    world_dir: Path,
-    sealed_dir: Path,
+    world_dir: Path | None,
+    sealed_dir: Path | None,
     output_dir: Path,
+    run_id: str | None = None,
+    request_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run the controller under the arm's SDK, not the launcher's imports.
 
     The neutral benchmark package is overlaid onto a private copy of the arm
     SDK. Everything it calls (campaign state, prompts, screens, gates, and
-    probation) therefore resolves from that arm's declared checkout.
+    probation) therefore resolves from that arm's declared checkout. A
+    recurrence run names its own ``run_id`` and request fields instead of a
+    pre-built world.
     """
-    world_id = str(load_json(world_dir / "world.json")["world_id"])
-    run_id = f"{world_id}-{seed}-{arm['name']}"
+    if run_id is None:
+        if world_dir is None:
+            raise ValueError("an arm run needs a world_dir or an explicit run_id")
+        world_id = str(load_json(world_dir / "world.json")["world_id"])
+        run_id = f"{world_id}-{seed}-{arm['name']}"
     controller = output_dir / "controllers" / _safe_name(run_id)
     if controller.exists():
         raise FileExistsError(f"arm controller already exists: {controller}")
@@ -167,10 +185,11 @@ def _run_arm_in_declared_sdk(
         "config": config,
         "arm": arm,
         "seed": seed,
-        "world_dir": str(world_dir),
-        "sealed_dir": str(sealed_dir),
+        "world_dir": str(world_dir) if world_dir is not None else None,
+        "sealed_dir": str(sealed_dir) if sealed_dir is not None else None,
         "output_dir": str(output_dir),
         "result_path": str(controller / "result.json"),
+        **dict(request_extra or {}),
     }
     atomic_json(controller / "request.json", request)
     python = sdk_root / ".venv" / "bin" / "python"
@@ -212,6 +231,102 @@ def run_arm(
 ) -> dict[str, Any]:
     world = load_world(world_dir, sealed_dir)
     run_id = f"{world['manifest']['world_id']}-{seed}-{arm['name']}"
+    sandbox = prepare_sandbox(
+        config=config,
+        arm=arm,
+        world_dir=world_dir,
+        sealed_dir=sealed_dir,
+        output_dir=output_dir,
+        run_id=run_id,
+        # The stores are physically isolated, so arms can share the same job
+        # id. This keeps the production prompt bytes identical across a pair.
+        job_id=f"bench-{_safe_name(world['manifest']['world_id'])}-s{seed}",
+    )
+    generation_cutoff = _parse(world["manifest"]["generation_cutoff"])
+    prompt_hashes: list[str] = []
+    sessions: list[dict[str, Any]] = []
+    stage_sessions: dict[str, str] = {}
+    env = _arm_env(sandbox["run_root"], virtual_now=generation_cutoff)
+    started = time.monotonic()
+    with bench_mcp_server(sandbox, env=env):
+        invalid_reason = run_campaign_phase(
+            sandbox,
+            config=config,
+            seed=seed,
+            env=env,
+            virtual_now=generation_cutoff,
+            sessions=sessions,
+            prompt_hashes=prompt_hashes,
+            stage_sessions=stage_sessions,
+            smoke=bool(config.get("interface_smoke", True)),
+        )
+    forward, holdout, invalid_reason = run_probation_phase(
+        sandbox,
+        world=world,
+        world_dir=world_dir,
+        sealed_dir=sealed_dir,
+        invalid_reason=invalid_reason,
+    )
+    audit = audit_and_score(
+        sandbox,
+        sessions=sessions,
+        started=started,
+        protected_roots=[world_dir, sealed_dir],
+        invalid_reason=invalid_reason,
+        forward=forward,
+        holdout=holdout,
+    )
+    scorecard = audit["scorecard"]
+    identity = runtime_identity(
+        sdk_ref=_arm_runtime_pin(config, arm)["sdk_ref"],
+        sandbox=sandbox["run_root"],
+        model=sandbox["model"],
+        variant=sandbox["variant"],
+        repeat_seed=seed,
+        world_manifest=world["manifest"],
+        prompt_hashes=prompt_hashes,
+        declared_differences=list(
+            config.get("allowed_identity_differences") or ["model", "variant"]
+        ),
+        arm_parameters={"campaign": sandbox["arm_campaign"]},
+        opencode=sandbox["opencode"],
+    )
+    return {
+        "schema_version": EXPERIMENT_SCHEMA_VERSION,
+        "run_id": run_id,
+        "arm": str(arm["name"]),
+        "world_id": world["manifest"]["world_id"],
+        "seed": seed,
+        "model": sandbox["model"],
+        "variant": sandbox["variant"],
+        "invalid_reason": audit["invalid_reason"],
+        "funnel": scorecard["funnel"],
+        "verdicts": scorecard["verdicts"],
+        "forward": forward,
+        "holdout": holdout,
+        "diversity": scorecard["diversity"],
+        "process": scorecard["process"],
+        "cost": audit["cost"],
+        "session_diagnostics": audit["session_diagnostics"],
+        "isolation": audit["isolation"],
+        "identity": identity,
+        "workspace": str(sandbox["run_root"]),
+    }
+
+
+def prepare_sandbox(
+    *,
+    config: dict[str, Any],
+    arm: dict[str, Any],
+    world_dir: Path,
+    sealed_dir: Path,
+    output_dir: Path,
+    run_id: str,
+    job_id: str,
+    verify_world_pin: bool = True,
+) -> dict[str, Any]:
+    """Isolated workspace + agent config + the world's incumbent installed as
+    the sandbox job. Returns the handles every later phase needs."""
     run_root = output_dir / "workspaces" / _safe_name(run_id)
     if run_root.exists():
         raise FileExistsError(f"run workspace already exists: {run_root}")
@@ -220,14 +335,14 @@ def run_arm(
     assert_isolation(sandbox=run_root, sealed_dir=world_dir)
     sdk_root = _resolve_sdk_root(config, arm)
     runtime_opencode_config = _resolve_runtime_opencode_config(config)
-    _verify_runtime_pins(
+    _verify_arm_pins(
         config,
         arm=arm,
         sdk_root=sdk_root,
-        world_dir=world_dir,
-        sealed_dir=sealed_dir,
         runtime_opencode_config=runtime_opencode_config,
     )
+    if verify_world_pin:
+        _verify_world_pin(config, world_dir=world_dir, sealed_dir=sealed_dir)
     model = str(arm["model"])
     variant = str(arm.get("variant") or "") or None
     opencode = Path(config.get("opencode") or DEFAULT_OPENCODE).expanduser()
@@ -244,61 +359,33 @@ def run_arm(
         _set_provider_base_url(config_path, provider="wayfinder", base_url=base_url)
     ensure_model_declared(config_path, model)
     arm_campaign = dict(arm.get("campaign") or {})
-    store, job_id = _install_job(
+    store, installed_job_id = _install_job(
         run_root,
         world_dir=world_dir,
         policy={**dict(config.get("campaign") or {}), **arm_campaign},
-        # The stores are physically isolated, so arms can share the same job
-        # id. This keeps the production prompt bytes identical across a pair.
-        job_id_override=f"bench-{_safe_name(world['manifest']['world_id'])}-s{seed}",
+        job_id_override=job_id,
     )
-    generation_cutoff = _parse(world["manifest"]["generation_cutoff"])
-    prompt_hashes: list[str] = []
-    sessions: list[dict[str, Any]] = []
-    stage_sessions: dict[str, str] = {}
-    env = _arm_env(run_root, virtual_now=generation_cutoff)
-    server = _start_mcp(run_root, port=port, env=env)
-    started = time.monotonic()
-    invalid_reason: str | None = None
+    return {
+        "run_id": run_id,
+        "run_root": run_root,
+        "store": store,
+        "job_id": installed_job_id,
+        "model": model,
+        "variant": variant,
+        "opencode": opencode,
+        "port": port,
+        "sdk_root": sdk_root,
+        "arm_campaign": arm_campaign,
+    }
+
+
+@contextmanager
+def bench_mcp_server(
+    sandbox: dict[str, Any], *, env: dict[str, str]
+) -> Iterator[subprocess.Popen]:
+    server = _start_mcp(sandbox["run_root"], port=sandbox["port"], env=env)
     try:
-        if bool(config.get("interface_smoke", True)):
-            smoke_path = (store.job_dir(job_id) / "job.yaml").resolve()
-            smoke = run_agent_prompt(
-                sandbox=run_root,
-                prompt=(
-                    f"Read exactly `{smoke_path}` with the read tool, then reply "
-                    "with exactly BENCH_READY. Do not call any other tool."
-                ),
-                model=model,
-                variant=variant,
-                title=f"bench-smoke-{_safe_name(run_id)}",
-                opencode=opencode,
-                agent="wayfinder-evolution-designer",
-                timeout_s=int(config.get("turn_timeout_seconds") or 1_800),
-                env=env,
-            )
-            sessions.append({"stage": "interface-smoke", **smoke})
-            if smoke["exit_code"] != 0 or "BENCH_READY" not in smoke["stdout_tail"]:
-                invalid_reason = "model interface smoke failed"
-        if invalid_reason is None:
-            start_campaign(store, job_id, now=generation_cutoff, force=True)
-            invalid_reason = _drive_campaign(
-                store=store,
-                job_id=job_id,
-                model=model,
-                variant=variant,
-                opencode=opencode,
-                sandbox=run_root,
-                env=env,
-                virtual_now=generation_cutoff,
-                repeat_seed=seed,
-                max_turns=int(config.get("max_turns") or 40),
-                timeout_s=int(config.get("turn_timeout_seconds") or 1_800),
-                settle_timeout_s=int(config.get("settle_timeout_seconds") or 3_600),
-                prompt_hashes=prompt_hashes,
-                sessions=sessions,
-                stage_sessions=stage_sessions,
-            )
+        yield server
     finally:
         server.terminate()
         try:
@@ -306,60 +393,155 @@ def run_arm(
         except subprocess.TimeoutExpired:
             server.kill()
 
+
+def run_campaign_phase(
+    sandbox: dict[str, Any],
+    *,
+    config: dict[str, Any],
+    seed: int,
+    env: dict[str, str],
+    virtual_now: datetime,
+    sessions: list[dict[str, Any]],
+    prompt_hashes: list[str],
+    stage_sessions: dict[str, str],
+    smoke: bool,
+) -> str | None:
+    """Optional interface smoke, then one full campaign through the production
+    harness. Returns the invalid reason, if any. Needs the MCP server up."""
+    store: JobStore = sandbox["store"]
+    job_id = str(sandbox["job_id"])
+    invalid_reason: str | None = None
+    if smoke:
+        smoke_path = (store.job_dir(job_id) / "job.yaml").resolve()
+        result = run_agent_prompt(
+            sandbox=sandbox["run_root"],
+            prompt=(
+                f"Read exactly `{smoke_path}` with the read tool, then reply "
+                "with exactly BENCH_READY. Do not call any other tool."
+            ),
+            model=sandbox["model"],
+            variant=sandbox["variant"],
+            title=f"bench-smoke-{_safe_name(str(sandbox['run_id']))}",
+            opencode=sandbox["opencode"],
+            agent="wayfinder-evolution-designer",
+            timeout_s=int(config.get("turn_timeout_seconds") or 1_800),
+            env=env,
+        )
+        sessions.append({"stage": "interface-smoke", **result})
+        if result["exit_code"] != 0 or "BENCH_READY" not in result["stdout_tail"]:
+            invalid_reason = "model interface smoke failed"
+    if invalid_reason is None:
+        start_campaign(store, job_id, now=virtual_now, force=True)
+        invalid_reason = _drive_campaign(
+            store=store,
+            job_id=job_id,
+            model=sandbox["model"],
+            variant=sandbox["variant"],
+            opencode=sandbox["opencode"],
+            sandbox=sandbox["run_root"],
+            env=env,
+            virtual_now=virtual_now,
+            repeat_seed=seed,
+            max_turns=int(config.get("max_turns") or 40),
+            timeout_s=int(config.get("turn_timeout_seconds") or 1_800),
+            settle_timeout_s=int(config.get("settle_timeout_seconds") or 3_600),
+            prompt_hashes=prompt_hashes,
+            sessions=sessions,
+            stage_sessions=stage_sessions,
+        )
+    return invalid_reason
+
+
+def run_probation_phase(
+    sandbox: dict[str, Any],
+    *,
+    world: dict[str, Any],
+    world_dir: Path,
+    sealed_dir: Path,
+    invalid_reason: str | None,
+    campaign_id: str | None = None,
+    holdout_output: Path | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], str | None]:
+    """Replay the staged trial over the sealed holdout and race it against
+    the incumbent. ``campaign_id`` scopes both to one campaign's trial."""
+    store: JobStore = sandbox["store"]
+    job_id = str(sandbox["job_id"])
+    run_root: Path = sandbox["run_root"]
     development = list(world["development"].get("bars") or [])
     holdout_rows = list(world["holdout"].get("bars") or [])
+    generation_cutoff = _parse(world["manifest"]["generation_cutoff"])
     forward: dict[str, Any]
     holdout: dict[str, Any]
     if invalid_reason is not None:
         state = campaign_status(store, job_id)
-        campaign_id = str(state.get("campaign_id") or "")
-        if campaign_id:
-            terminate_campaign_ops(store, job_id, campaign_id)
+        active_campaign = str(state.get("campaign_id") or "")
+        if active_campaign:
+            terminate_campaign_ops(store, job_id, active_campaign)
         forward = {
             "available": False,
             "status": "invalid",
             "reason": invalid_reason,
         }
         holdout = {"verdict": "invalid", "reason": invalid_reason}
+        return forward, holdout, invalid_reason
+    forward = replay_probation(
+        store,
+        job_id,
+        development_rows=development,
+        holdout_rows=holdout_rows,
+        generation_cutoff=generation_cutoff,
+        campaign_id=campaign_id,
+    )
+    trials = list(load_probation(store, job_id).get("trials") or [])
+    if campaign_id is None:
+        trial = next(iter(trials), None)
     else:
-        forward = replay_probation(
-            store,
-            job_id,
-            development_rows=development,
-            holdout_rows=holdout_rows,
-            generation_cutoff=generation_cutoff,
+        trial = next(
+            (row for row in trials if row.get("campaign_id") == campaign_id), None
         )
-        probation = load_probation(store, job_id)
-        trial = next(iter(probation.get("trials") or []), None)
-        if trial:
-            candidate_bundle = resolve_probation_bundle(
-                store, job_id, trial["candidate"]
-            )
-            reference_bundle = resolve_probation_bundle(
-                store, job_id, trial["reference"]
-            )
-            holdout = race_bundles(
-                candidate_bundle,
-                reference_bundle,
-                world_dir=world_dir,
-                sealed_dir=sealed_dir,
-                output_dir=run_root / "results" / "holdout",
-            )
-            if holdout.get("verdict") == "invalid":
-                invalid_reason = "holdout_race_invalid"
-        else:
-            # No survivor means the process retained the incumbent. Its
-            # candidate-minus-incumbent endpoint is exactly zero; do not run
-            # a fake incumbent-vs-itself race just to manufacture activity.
-            holdout = {
-                "verdict": "no_candidate",
-                "paired_daily_utility_delta": {
-                    "days": 0,
-                    "estimate": 0.0,
-                    "lcb": None,
-                    "values": [],
-                },
-            }
+    if trial:
+        candidate_bundle = resolve_probation_bundle(store, job_id, trial["candidate"])
+        reference_bundle = resolve_probation_bundle(store, job_id, trial["reference"])
+        holdout = race_bundles(
+            candidate_bundle,
+            reference_bundle,
+            world_dir=world_dir,
+            sealed_dir=sealed_dir,
+            output_dir=holdout_output or (run_root / "results" / "holdout"),
+        )
+        if holdout.get("verdict") == "invalid":
+            invalid_reason = "holdout_race_invalid"
+    else:
+        # No survivor means the process retained the incumbent. Its
+        # candidate-minus-incumbent endpoint is exactly zero; do not run
+        # a fake incumbent-vs-itself race just to manufacture activity.
+        holdout = {
+            "verdict": "no_candidate",
+            "paired_daily_utility_delta": {
+                "days": 0,
+                "estimate": 0.0,
+                "lcb": None,
+                "values": [],
+            },
+        }
+    return forward, holdout, invalid_reason
+
+
+def audit_and_score(
+    sandbox: dict[str, Any],
+    *,
+    sessions: list[dict[str, Any]],
+    started: float,
+    protected_roots: list[Path],
+    invalid_reason: str | None,
+    forward: dict[str, Any],
+    holdout: dict[str, Any],
+) -> dict[str, Any]:
+    """Meter the sessions, audit isolation against the protected roots, and
+    score the campaign state. Only these sessions count."""
+    store: JobStore = sandbox["store"]
+    job_id = str(sandbox["job_id"])
+    run_root: Path = sandbox["run_root"]
     session_db = _session_db(run_root)
     session_ids = []
     missing_transcripts = []
@@ -388,7 +570,7 @@ def run_arm(
         session_ids,
         session_db=session_db,
         sandbox=run_root,
-        protected_roots=[world_dir, sealed_dir],
+        protected_roots=protected_roots,
         missing_transcripts=missing_transcripts,
     )
     if not isolation["passed"] and invalid_reason is None:
@@ -404,57 +586,34 @@ def run_arm(
         cost=cost,
         signals=_validated_signal_usage(store, job_id, state),
     )
-    identity = runtime_identity(
-        sdk_ref=_arm_runtime_pin(config, arm)["sdk_ref"],
-        sandbox=run_root,
-        model=model,
-        variant=variant,
-        repeat_seed=seed,
-        world_manifest=world["manifest"],
-        prompt_hashes=prompt_hashes,
-        declared_differences=list(
-            config.get("allowed_identity_differences") or ["model", "variant"]
-        ),
-        arm_parameters={"campaign": arm_campaign},
-        opencode=opencode,
-    )
     return {
-        "schema_version": EXPERIMENT_SCHEMA_VERSION,
-        "run_id": run_id,
-        "arm": str(arm["name"]),
-        "world_id": world["manifest"]["world_id"],
-        "seed": seed,
-        "model": model,
-        "variant": variant,
-        "invalid_reason": invalid_reason,
-        "funnel": scorecard["funnel"],
-        "verdicts": scorecard["verdicts"],
-        "forward": forward,
-        "holdout": holdout,
-        "diversity": scorecard["diversity"],
-        "process": scorecard["process"],
         "cost": cost,
-        "session_diagnostics": [
-            {
-                key: row.get(key)
-                for key in (
-                    "stage",
-                    "artifact_key",
-                    "turn",
-                    "title",
-                    "session_id",
-                    "exit_code",
-                    "stdout_tail",
-                    "stderr_tail",
-                )
-                if row.get(key) is not None
-            }
-            for row in sessions
-        ],
         "isolation": isolation,
-        "identity": identity,
-        "workspace": str(run_root),
+        "invalid_reason": invalid_reason,
+        "state": state,
+        "scorecard": scorecard,
+        "session_diagnostics": _session_diagnostics(sessions),
     }
+
+
+def _session_diagnostics(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            key: row.get(key)
+            for key in (
+                "stage",
+                "artifact_key",
+                "turn",
+                "title",
+                "session_id",
+                "exit_code",
+                "stdout_tail",
+                "stderr_tail",
+            )
+            if row.get(key) is not None
+        }
+        for row in sessions
+    ]
 
 
 def _install_job(
@@ -1015,16 +1174,7 @@ def _validate_config(config: dict[str, Any]) -> None:
     allowed_identity = set(
         config.get("allowed_identity_differences") or ["model", "variant"]
     )
-    supported_identity = {
-        "model",
-        "variant",
-        "sdk_ref",
-        "agent_hashes",
-        "agent_temperatures",
-        "initial_prompt_sha256",
-        "arm_parameters",
-    }
-    unsupported = allowed_identity - supported_identity
+    unsupported = allowed_identity - set(SUPPORTED_IDENTITY_DIFFERENCES)
     if unsupported:
         raise ValueError(
             f"unsupported allowed_identity_differences: {sorted(unsupported)}"
@@ -1130,12 +1280,44 @@ def _verify_runtime_pins(
     sealed_dir: Path,
     runtime_opencode_config: Path | None,
 ) -> None:
+    _verify_arm_pins(
+        config,
+        arm=arm,
+        sdk_root=sdk_root,
+        runtime_opencode_config=runtime_opencode_config,
+    )
+    _verify_world_pin(config, world_dir=world_dir, sealed_dir=sealed_dir)
+
+
+def _verify_arm_pins(
+    config: dict[str, Any],
+    *,
+    arm: dict[str, Any],
+    sdk_root: Path,
+    runtime_opencode_config: Path | None,
+) -> None:
     pins = dict(config.get("_runtime_pins") or {})
     arm_pin = _arm_runtime_pin(config, arm)
     if arm_pin.get("sdk_ref") != git_sha(sdk_root):
         raise ValueError("arm SDK changed after experiment registration")
     if arm_pin.get("campaign_sha256") != sha256_json(dict(arm.get("campaign") or {})):
         raise ValueError("arm campaign parameters changed after registration")
+    config_pin = pins.get("runtime_opencode_config")
+    if runtime_opencode_config is None:
+        if config_pin is not None:
+            raise ValueError("OpenCode runtime config changed after registration")
+    elif (
+        not isinstance(config_pin, dict)
+        or config_pin.get("path") != str(runtime_opencode_config)
+        or config_pin.get("sha256") != sha256_file(runtime_opencode_config)
+    ):
+        raise ValueError("OpenCode runtime config changed after registration")
+
+
+def _verify_world_pin(
+    config: dict[str, Any], *, world_dir: Path, sealed_dir: Path
+) -> None:
+    pins = dict(config.get("_runtime_pins") or {})
     world_pin = next(
         (
             row
@@ -1155,16 +1337,6 @@ def _verify_runtime_pins(
         "development_sha256"
     ) or world_pin.get("holdout_commitment") != dataset.get("holdout_commitment"):
         raise ValueError("benchmark data commitments changed after registration")
-    config_pin = pins.get("runtime_opencode_config")
-    if runtime_opencode_config is None:
-        if config_pin is not None:
-            raise ValueError("OpenCode runtime config changed after registration")
-    elif (
-        not isinstance(config_pin, dict)
-        or config_pin.get("path") != str(runtime_opencode_config)
-        or config_pin.get("sha256") != sha256_file(runtime_opencode_config)
-    ):
-        raise ValueError("OpenCode runtime config changed after registration")
 
 
 def _arm_runtime_pin(config: dict[str, Any], arm: dict[str, Any]) -> dict[str, Any]:
