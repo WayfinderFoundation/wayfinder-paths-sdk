@@ -1498,6 +1498,10 @@ def _build_worker_prompt_sections(
     # were actually blocked for 28 hours (2026-08-12).
     gate_alert = ""
     gate_state = snapshot.get("gate") or {}
+    if _benchmark_mode():
+        # The sandbox installs a world (bars + incumbent), not the gate
+        # reports; a red gate there is structural, not a wake's job to fix.
+        gate_state = {}
     if gate_state and gate_state.get("live_ready") is False:
         gate_reasons = "; ".join(str(r) for r in (gate_state.get("reasons") or [])[:4])
         gate_alert = (
@@ -1589,13 +1593,20 @@ def _build_worker_prompt_sections(
     ideation_task_line = ""
     ideation_age = _ideation_age_s(root)
     ideation_due = ideation_age is None or ideation_age > _ideation_thresholds(root)[0]
-    if (
+    gate_red = bool(gate_state and gate_state.get("live_ready") is False)
+    # One predicate for the work order AND the directive: a wake told to run
+    # an expedition without the block that names the artifact wrote its
+    # findings elsewhere. A benchmark sandbox's gate is structurally red (no
+    # validation/backtest/preflight reports are installed), so it never
+    # suppresses ideation there.
+    ideation_session = bool(
         ideation_due
         and mode == "intervene"
         and apply_proposal_id is None
         and not restage_tasks
-        and not (gate_state and gate_state.get("live_ready") is False)
-    ):
+        and (_benchmark_mode() or not gate_red)
+    )
+    if ideation_session:
         age_desc = (
             "missing (no expedition has ever produced one)"
             if ideation_age is None
@@ -1699,8 +1710,8 @@ def _build_worker_prompt_sections(
         maintenance_ready=maintenance_ready,
         remediation_overrides=bool(remediation_overrides),
         restage_tasks=list(restage_tasks or []),
-        ideation_due=bool(ideation_due),
-        gate_red=bool(gate_state and gate_state.get("live_ready") is False),
+        ideation_due=ideation_session,
+        gate_red=gate_red,
     )
     lane = str(work_order["lane"])
     if lane == "remediation":

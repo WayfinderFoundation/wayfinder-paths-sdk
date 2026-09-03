@@ -1817,3 +1817,42 @@ def test_benchmark_wake_skips_derived_feature_refresh(
     skipped = [e for e in events if e["type"] == "derived_features_refresh_skipped"]
     assert len(skipped) == 1
     assert skipped[0]["reason"] == "benchmark_mode"
+
+
+def test_red_gate_defers_ideation_in_production_but_not_in_the_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The work order and the directive must agree: a wake told to complete
+    an expedition without the block naming research/ideation/latest.json
+    wrote its findings elsewhere (first recurrence pilot). Production defers
+    ideation behind a red gate; the sandbox's gate is structurally red."""
+    store = JobStore(repo_root=tmp_path)
+    job = _ideation_job(store, "ideation-gate-demo")
+    red = _worker_snapshot(
+        job,
+        scorecard={"health": "green"},
+        gate={"live_ready": False, "reasons": ["no validation report"]},
+    )
+
+    production = _build_worker_prompt_sections(
+        store=store, job_id=job.id, mode="intervene", snapshot=red
+    )
+    assert (
+        "IDEATION SESSION — this wake is a research EXPEDITION"
+        not in production["dynamic_context"]
+    )
+    assert '"action": "advance_red_gate"' in production["dynamic_context"]
+    assert "GATE STATUS: RED" in production["dynamic_context"]
+
+    monkeypatch.setenv("WAYFINDER_BENCHMARK", "1")
+    monkeypatch.setenv("WAYFINDER_BENCHMARK_NOW", _BENCHMARK_NOW)
+    bench = _build_worker_prompt_sections(
+        store=store, job_id=job.id, mode="intervene", snapshot=red
+    )
+    assert (
+        "IDEATION SESSION — this wake is a research EXPEDITION"
+        in bench["dynamic_context"]
+    )
+    assert "Write research/ideation/latest.json" in bench["dynamic_context"]
+    assert '"action": "complete_research_expedition"' in bench["dynamic_context"]
+    assert "GATE STATUS: RED" not in bench["dynamic_context"]
