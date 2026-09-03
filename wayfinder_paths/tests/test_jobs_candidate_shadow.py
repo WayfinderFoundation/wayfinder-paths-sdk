@@ -449,3 +449,39 @@ def test_candidate_shadow_drops_a_queued_column_the_candidate_declares_itself(
     assert max(
         pd.Timestamp(row["bar_timestamp"]) for row in candidate
     ) >= started + pd.Timedelta(hours=24)
+
+
+def test_candidate_shadow_skip_does_not_run_precompute_over_the_missing_column(
+    tmp_path,
+) -> None:
+    store, job_id, started, turned, bars = _feature_candidate_job(
+        tmp_path,
+        feature={
+            "name": "macro_regime",
+            "source": "file",
+            "max_age_seconds": 3600,
+            "stale_policy": "skip",
+        },
+        strategy_body=(
+            "def precompute(frames):\n"
+            "    return {\n"
+            "        symbol: frame[['macro_regime']].rename(columns={'macro_regime': 'macro_copy'})\n"
+            "        for symbol, frame in frames.items()\n"
+            "    }\n\n"
+            "def decide(ctx):\n"
+            "    return []\n"
+        ),
+    )
+    rows = asyncio.run(
+        run_candidate_shadows(
+            store,
+            job_id,
+            view=CompletedBarsView.from_rows(bars),
+            now=pd.Timestamp("2026-08-25T12:00:00Z"),
+        )
+    )
+    candidate = [row for row in rows if row["role"] == "candidate"]
+    assert candidate and any(row["skipped"] for row in candidate)
+    assert max(
+        pd.Timestamp(row["bar_timestamp"]) for row in candidate
+    ) >= started + pd.Timedelta(hours=24)

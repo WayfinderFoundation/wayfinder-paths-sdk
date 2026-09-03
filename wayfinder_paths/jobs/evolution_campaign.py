@@ -2375,18 +2375,20 @@ def _evaluate_candidate(
             "gate sizes a strategy to the risk ceiling mechanically"
         )
     report = validate_execution_job(job_id, candidate_dir=candidate_root, store=store)
-    clock = next(
+    contract = next(
         (
             check
             for check in report.get("checks") or []
-            if check.get("name") == "no_bounded_index_clock" and not check.get("passed")
+            if check.get("name") in _CONTRACT_CHECKS and not check.get("passed")
         ),
         None,
     )
-    if clock is not None:
+    if contract is not None:
         # A deterministic authoring mistake with a mechanical fix: no
         # simulation ran, so no attempt is charged.
-        return _rejected_submission(str(clock.get("hint") or "bounded index clock"))
+        return _rejected_submission(
+            str(contract.get("hint") or contract.get("error") or contract.get("name"))
+        )
     if not _candidate_validation_passed(report):
         return {"status": "invalid", "evidence": {"validation": report}}
     revision = compute_workspace_revision(candidate_root)
@@ -5896,6 +5898,13 @@ def _candidate_score(candidate: dict[str, Any]) -> float:
         - float(objective.get("max_drawdown_pct") or 0.0)
         - float(objective.get("out_of_regime_loss_pct") or 0.0)
     )
+
+
+# Validation checks that are authoring mistakes with a mechanical fix: the
+# submission is handed back uncharged with the check's hint.
+_CONTRACT_CHECKS = frozenset(
+    {"no_bounded_index_clock", "declared_features_valid", "feature_policy_replayable"}
+)
 
 
 def _candidate_validation_passed(report: dict[str, Any]) -> bool:

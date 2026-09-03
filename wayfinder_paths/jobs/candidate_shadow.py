@@ -251,7 +251,7 @@ async def _run_target(
     # production would.
     window = resolve_compute_window(params, strategy)
     view = window.slice_view(view, len(view.timestamps) - 1)
-    candidate_view = apply_precompute(strategy, view)
+    candidate_view = view if feature_skip else apply_precompute(strategy, view)
     shadow_root = _target_shadow_state_root(root, target)
     engine_state = EngineState.load(shadow_root / "engine_state.json")
     engine_state.mode = "paper"

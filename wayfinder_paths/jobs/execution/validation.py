@@ -936,6 +936,36 @@ def _window_invariance_checks(
 
 
 def _feature_checks(root: Path, spec: ExecutionSpec) -> list[dict[str, Any]]:
+    checks = _feature_availability_checks(root, spec)
+    try:
+        specs = parse_feature_specs(spec)
+    except ValueError:
+        return checks
+    skipping = [item.name for item in specs if item.stale_policy == "skip"]
+    if skipping:
+        # Historical simulation applies no freshness: a backtest would trade
+        # the bars that paper and live skip, so the gate could pass on data
+        # the strategy never acts on. Blocking until history-aware skips exist.
+        checks.insert(
+            0,
+            {
+                "name": "feature_policy_replayable",
+                "passed": False,
+                "blocking": True,
+                "features": skipping,
+                "hint": (
+                    "stale_policy 'skip' is not replayable: backtests apply no "
+                    f"feature freshness ({', '.join(skipping)}); declare "
+                    "decide_anyway (max_age_seconds still journals a guard event)"
+                ),
+            },
+        )
+    return checks
+
+
+def _feature_availability_checks(
+    root: Path, spec: ExecutionSpec
+) -> list[dict[str, Any]]:
     try:
         specs = parse_feature_specs(spec)
     except ValueError as exc:

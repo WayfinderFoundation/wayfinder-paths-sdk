@@ -1622,7 +1622,11 @@ def test_world_tolerates_a_declared_default_store_it_derives(tmp_path: Path) -> 
     # A declared file elsewhere is still required.
     def elsewhere(spec: dict) -> None:
         spec.setdefault("data_contract", {})["features"] = [
-            {"name": "funding", "source": "file", "path": "state/funding.jsonl"}
+            {
+                "name": "funding",
+                "source": "file",
+                "path": "workspace/data/funding.jsonl",
+            }
         ]
 
     _bundle_with_spec(source, elsewhere)
@@ -1899,8 +1903,8 @@ def test_race_replay_honors_a_custom_feature_path_and_column_from_the_bundle(
     shutil.copytree(world_dir / "incumbent", bundle)
     turned = rows[len(rows) // 2]["timestamp"]
     last = rows[-1]["timestamp"]
-    (bundle / "state").mkdir(parents=True, exist_ok=True)
-    (bundle / "state/custom.jsonl").write_text(
+    (bundle / "workspace/data").mkdir(parents=True, exist_ok=True)
+    (bundle / "workspace/data/custom.jsonl").write_text(
         json.dumps(
             {"timestamp": turned, "name": "signal", "value": 1.0, "symbol": None}
         )
@@ -1923,7 +1927,7 @@ def test_race_replay_honors_a_custom_feature_path_and_column_from_the_bundle(
                 {
                     "name": "signal",
                     "source": "file",
-                    "path": "state/custom.jsonl",
+                    "path": "workspace/data/custom.jsonl",
                     "column": "sig",
                 }
             ],

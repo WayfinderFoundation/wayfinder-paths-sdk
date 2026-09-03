@@ -300,7 +300,11 @@ conclusions, anything) into a strategy is structured feature rows:
 `state/features.jsonl`; back-dated timestamps corrupt replay). The strategy
 reads them purely via `ctx.view.feature(name, default=...)` (the default covers bars before the column's first value; an undeclared column raises) with identical backtest/live
 semantics. The feature SCHEMA lives in `execution_spec.data_contract.features`
-and is revision-bound — schema changes must ride a proposal. Model artifacts
+and is revision-bound — schema changes must ride a proposal. A declared `path` is
+relative and has two homes: the job store `state/features.jsonl` (job-owned,
+refreshed) or a file under `workspace/` (candidate-owned, copied and hashed into
+the revision); anything else fails validation. `stale_policy: skip` is not
+replayable in backtests and fails validation — declare `decide_anyway`. Model artifacts
 belong in `workspace/models/` (see `wayfinder_paths.jobs.strategies.models`)
 and also ship via proposals.
 

@@ -4810,3 +4810,39 @@ def test_screen_slices_carry_leader_attribution(tmp_path) -> None:
     assert compact_postmortem(postmortem)["screen"]["slices"]["recent"][
         "leader_attribution"
     ]
+
+
+def test_feature_path_outside_the_contract_is_rejected_without_charge(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    candidates = _prepare_campaign_candidates(store, job_id, started)
+    structural = next(c for c in candidates if c["mutation_kind"] == "structural")
+    bundle = store.job_dir(job_id) / structural["bundle"]
+    job_data = yaml.safe_load((bundle / "job.yaml").read_text(encoding="utf-8"))
+    spec_data = dict(job_data.get("execution_spec") or {})
+    if not spec_data and (bundle / "execution_spec.json").exists():
+        spec_data = json.loads(
+            (bundle / "execution_spec.json").read_text(encoding="utf-8")
+        )
+    spec_data.setdefault("data_contract", {})["features"] = [
+        {
+            "name": "macro_regime",
+            "source": "file",
+            "path": "../other/state/features.jsonl",
+        }
+    ]
+    if "execution_spec" in job_data:
+        job_data["execution_spec"] = spec_data
+        (bundle / "job.yaml").write_text(yaml.safe_dump(job_data), encoding="utf-8")
+    if (bundle / "execution_spec.json").exists():
+        (bundle / "execution_spec.json").write_text(
+            json.dumps(spec_data), encoding="utf-8"
+        )
+
+    result = evaluate_candidate(store, job_id, structural["candidate_id"])
+
+    assert result["status"] == "prepared"
+    assert "path must be" in result["submission_rejection"]["error"]
+    assert result["submission_rejection"]["attempt_charged"] is False
+    assert int(result.get("attempt_count") or 0) == 0

@@ -433,3 +433,103 @@ def test_driver_queues_bars_only_and_shadows_merge_their_own_declared_feature(
     candidate = [row for row in rows if row["role"] == "candidate"]
     assert candidate and not any(row["skipped"] for row in candidate)
     assert max(row["bar_timestamp"] for row in candidate) >= "2026-01-01T00:25"
+
+
+def test_feature_paths_are_contained_to_the_job_store_or_workspace(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.execution.features import DEFAULT_FEATURES_PATH
+
+    assert FeatureSpec.from_dict({"name": "x"}).path == DEFAULT_FEATURES_PATH
+    assert (
+        FeatureSpec.from_dict({"name": "x", "path": "workspace/data/x.jsonl"}).path
+        == "workspace/data/x.jsonl"
+    )
+    for bad in (
+        "/etc/passwd",
+        "../other-job/state/features.jsonl",
+        "workspace/../../x.jsonl",
+        "state/custom.jsonl",
+        "results/x.jsonl",
+    ):
+        with pytest.raises(ValueError, match="path must be"):
+            FeatureSpec.from_dict({"name": "x", "path": bad})
+
+    # A symlink under workspace/ that points out of the root is refused by
+    # the loader even though its declared path is well-formed.
+    root = tmp_path / "job"
+    (root / "workspace").mkdir(parents=True)
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(
+        '{"timestamp": "2026-01-01T00:00:00Z", "name": "x", "value": 1}\n'
+    )
+    (root / "workspace" / "link.jsonl").symlink_to(outside)
+    with pytest.raises(ValueError, match="escapes its root"):
+        load_feature_rows(
+            [root],
+            [FeatureSpec.from_dict({"name": "x", "path": "workspace/link.jsonl"})],
+        )
+
+
+def test_validation_refuses_the_skip_policy_until_backtests_replay_freshness(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.execution.validation import _feature_checks
+
+    root = tmp_path / "job"
+    (root / "state").mkdir(parents=True)
+    (root / "state" / "features.jsonl").write_text(
+        '{"timestamp": "2026-01-01T00:00:00Z", "name": "x", "value": 1}\n'
+    )
+    spec = ExecutionSpec.from_dict(
+        {
+            "data_contract": {
+                "bar_interval": "5m",
+                "symbols": ["BTC"],
+                "features": [
+                    {"name": "x", "max_age_seconds": 60, "stale_policy": "skip"}
+                ],
+            }
+        }
+    )
+    failed = [check for check in _feature_checks(root, spec) if not check["passed"]]
+    assert [check["name"] for check in failed] == ["feature_policy_replayable"]
+    assert failed[0]["blocking"] is True and "decide_anyway" in failed[0]["hint"]
+    spec.data_contract["features"][0]["stale_policy"] = "decide_anyway"
+    assert all(check["passed"] for check in _feature_checks(root, spec))
+
+
+async def test_stale_feature_skip_does_not_run_precompute_over_the_missing_column(
+    tmp_path: Path,
+) -> None:
+    """precompute() consuming the declared column used to raise KeyError on
+    a skipped tick, because the merge was omitted but the hook still ran."""
+    store, job, root = _feature_job(tmp_path)
+    (root / "workspace" / "src" / "strategy.py").write_text(
+        "def precompute(frames):\n"
+        "    return {\n"
+        "        symbol: frame[['sentiment']].rename(columns={'sentiment': 'sentiment_copy'})\n"
+        "        for symbol, frame in frames.items()\n"
+        "    }\n\n"
+        "def decide(ctx):\n"
+        "    return []\n",
+        encoding="utf-8",
+    )
+    spec = ExecutionSpec.from_dict(job.execution_spec)
+    spec.data_contract["features"] = [
+        {"name": "sentiment", "max_age_seconds": 60, "stale_policy": "skip"}
+    ]
+    job.execution_spec = spec.to_dict()
+    store.save(job)
+    view = CompletedBarsView.from_rows(_bars(2))
+    result = await tick_job(
+        job,
+        root,
+        "paper",
+        store=store,
+        adapters={
+            "hyperliquid": FakeAdapter(view, PaperBroker(capabilities=PERP_CAPS))
+        },
+        now=_now(view) + pd.Timedelta(hours=6),
+    )
+    assert result["skipped"] is True and result["skip_reason"] == "stale_feature"

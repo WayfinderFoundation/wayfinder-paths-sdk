@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pandas as pd
@@ -40,6 +40,36 @@ from wayfinder_paths.jobs.execution.primitives import (
 )
 
 DEFAULT_FEATURES_PATH = "state/features.jsonl"
+
+
+WORKSPACE_FEATURE_PREFIX = "workspace/"
+
+
+def _contained_feature_path(name: str, raw: Any) -> str:
+    """The two homes a declared feature file may have: the job store
+    (job-owned, refreshed by the derive op) or a file under workspace/
+    (candidate-owned: copied by copy_job_bundle and hashed into the
+    revision). Anything else — an absolute path, `..`, another job's store,
+    a loose file under state/ — is refused here so live, backtest,
+    probation and the bench all fail closed on the same rule."""
+    path = str(raw or DEFAULT_FEATURES_PATH).strip()
+    parts = PurePosixPath(path).parts
+    if (
+        not parts
+        or PurePosixPath(path).is_absolute()
+        or path.startswith(("/", "\\"))
+        or ".." in parts
+        or any(not part or part == "." for part in parts)
+    ):
+        raise ValueError(
+            f"feature {name!r}: path must be relative, without '..': {path!r}"
+        )
+    if path != DEFAULT_FEATURES_PATH and not path.startswith(WORKSPACE_FEATURE_PREFIX):
+        raise ValueError(
+            f"feature {name!r}: path must be the job store {DEFAULT_FEATURES_PATH!r} "
+            f"or a file under {WORKSPACE_FEATURE_PREFIX!r}: {path!r}"
+        )
+    return path
 
 
 @dataclass(frozen=True)
@@ -69,7 +99,7 @@ class FeatureSpec:
         return cls(
             name=name,
             source=str(data.get("source") or "file"),
-            path=str(data.get("path") or DEFAULT_FEATURES_PATH),
+            path=_contained_feature_path(name, data.get("path")),
             max_age_seconds=int(raw_age) if raw_age is not None else None,
             stale_policy=policy,
             column=str(data["column"]) if data.get("column") else None,
@@ -177,6 +207,10 @@ def load_feature_rows(
         for root in roots:
             candidate = Path(root) / spec.path
             if candidate.exists():
+                # from_dict refuses `..` and absolute paths; a symlink under
+                # workspace/ could still point out of the root.
+                if not candidate.resolve().is_relative_to(Path(root).resolve()):
+                    raise ValueError(f"feature {spec.name!r}: path escapes its root")
                 chosen = candidate
                 break
         spec_path[spec.name] = chosen

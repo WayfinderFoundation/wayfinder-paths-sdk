@@ -562,8 +562,10 @@ async def tick_job(
     # vectorized pass over the bounded window, after the exogenous feature
     # merge so precompute() can consume those columns. The backtest applies
     # the same hook over full history — parity by construction, and the
-    # derived columns land in view_hash/recorded rows for exact replays.
-    view = apply_precompute(strategy, view)
+    # derived columns land in view_hash/recorded rows for exact replays. A
+    # skipped tick has no merged columns to precompute over.
+    if not feature_skip:
+        view = apply_precompute(strategy, view)
 
     # Captured before run_tick mutates state: the reconciler replays each tick
     # from exactly this state.
