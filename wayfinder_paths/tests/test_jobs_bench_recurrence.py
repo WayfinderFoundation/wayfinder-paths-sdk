@@ -13,6 +13,8 @@ import wayfinder_paths.jobs.bench.recurrence as recurrence_module
 import wayfinder_paths.jobs.bench.runner as runner_module
 from wayfinder_paths.jobs.application import apply_candidate_bundle
 from wayfinder_paths.jobs.bench.recurrence import (
+    _ideation_usage,
+    _researcher_wake,
     _validate_recurrence_config,
     aggregate_recurrence,
     run_recurrence,
@@ -684,3 +686,151 @@ def test_recurrence_runs_arm_seed_chains_concurrently(
     assert report["by_arm"]["evolve"]["decision"] == "pilot_directional_only"
     assert (output / "recurrence.json").exists()
     assert (output / "aggregate.json").exists()
+
+
+_CLOCK = "2026-08-10T15:25:00+00:00"
+
+
+def _wake_sandbox(tmp_path: Path) -> dict[str, Any]:
+    store = JobStore(repo_root=tmp_path / "sandbox")
+    job = WayfinderJob.new("bench-majors-live-s7", script="workspace/src/strategy.py")
+    store.save(job)
+    return {
+        "run_id": "evolve-7",
+        "run_root": tmp_path / "sandbox",
+        "store": store,
+        "job_id": job.id,
+        "model": "test/model",
+        "variant": None,
+        "opencode": Path("/nonexistent/opencode"),
+    }
+
+
+def _valid_artifact(store: JobStore, job_id: str, *, generated_at: str) -> None:
+    path = store.job_dir(job_id) / "research" / "ideation" / "latest.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "generated_at": generated_at,
+                "sources_consulted": [
+                    {
+                        "tool": f"results/research/f{i}.json",
+                        "query": "q",
+                        "takeaway": "t",
+                    }
+                    for i in range(3)
+                ],
+                "hypotheses": [
+                    {
+                        "title": f"H{i}",
+                        "thesis": "x",
+                        "bucket": "testable",
+                        "next_step": "s",
+                    }
+                    for i in range(3)
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_researcher_wake_retries_once_with_the_contract_gaps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sandbox = _wake_sandbox(tmp_path)
+    store, job_id = sandbox["store"], sandbox["job_id"]
+    corrections: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        recurrence_module,
+        "run_agent_wakes",
+        lambda **kwargs: [
+            {"title": kwargs["title"], "session_id": "ses-1", "exit_code": 0}
+        ],
+    )
+
+    def fake_correction(**kwargs: Any) -> dict[str, Any]:
+        corrections.append(kwargs)
+        _valid_artifact(store, job_id, generated_at=_CLOCK)
+        return {
+            "title": kwargs["title"],
+            "session_id": kwargs["session_id"],
+            "exit_code": 0,
+        }
+
+    monkeypatch.setattr(recurrence_module, "run_agent_prompt", fake_correction)
+    sessions: list[dict[str, Any]] = []
+
+    report = _researcher_wake(
+        sandbox,
+        config={"researcher": {"timeout_seconds": 5}},
+        env={"WAYFINDER_BENCHMARK_NOW": _CLOCK},
+        loop=0,
+        sessions=sessions,
+    )
+
+    assert report["retried"] is True and report["ideation_artifact"]["valid"] is True
+    assert corrections[0]["session_id"] == "ses-1"
+    assert "research/ideation/latest.json is missing" in corrections[0]["prompt"]
+    assert f'"generated_at": "{_CLOCK}"' in corrections[0]["prompt"]
+    assert [row["stage"] for row in sessions] == ["research-wake", "research-wake-fix"]
+
+
+def test_researcher_wake_with_a_stale_clock_fails_only_when_required(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sandbox = _wake_sandbox(tmp_path)
+    store, job_id = sandbox["store"], sandbox["job_id"]
+    _valid_artifact(store, job_id, generated_at="2026-08-01T00:00:00+00:00")
+    monkeypatch.setattr(
+        recurrence_module,
+        "run_agent_wakes",
+        lambda **kwargs: [
+            {"title": kwargs["title"], "session_id": None, "exit_code": 0}
+        ],
+    )
+    monkeypatch.setattr(
+        recurrence_module,
+        "run_agent_prompt",
+        lambda **kwargs: {"title": kwargs["title"], "session_id": None, "exit_code": 0},
+    )
+
+    report = _researcher_wake(
+        sandbox,
+        config={"researcher": {}},
+        env={"WAYFINDER_BENCHMARK_NOW": _CLOCK},
+        loop=1,
+        sessions=[],
+    )
+    assert report["retried"] is True and report["ideation_artifact"]["valid"] is False
+    assert report["ideation_artifact"]["problems"] == [
+        f"generated_at must equal the wake clock {_CLOCK}"
+    ]
+    with pytest.raises(RuntimeError, match="researcher artifact invalid"):
+        _researcher_wake(
+            sandbox,
+            config={"researcher": {"required": True}},
+            env={"WAYFINDER_BENCHMARK_NOW": _CLOCK},
+            loop=1,
+            sessions=[],
+        )
+
+
+def test_ideation_usage_counts_design_hypotheses_citing_the_artifact(
+    tmp_path: Path,
+) -> None:
+    sandbox = _wake_sandbox(tmp_path)
+    store, job_id = sandbox["store"], sandbox["job_id"]
+    store.write_json(
+        job_id,
+        "design.json",
+        {
+            "hypotheses": [
+                {"evidence_refs": ["/research_ideation/hypotheses/0/title"]},
+                {"evidence_refs": ["/baseline/stats/net_return"]},
+            ]
+        },
+    )
+    assert _ideation_usage(store, job_id, {"campaign_design": "design.json"}) == 1
+    assert _ideation_usage(store, job_id, {}) == 0

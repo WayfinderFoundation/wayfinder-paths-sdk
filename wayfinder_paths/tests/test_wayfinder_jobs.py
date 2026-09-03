@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import json
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from wayfinder_paths.jobs.worker import (
     _ideation_bookkeeping,
     prepare_job_worker_prompt,
     run_job_worker,
+    validate_ideation_artifact,
 )
 
 
@@ -1856,3 +1858,85 @@ def test_red_gate_defers_ideation_in_production_but_not_in_the_sandbox(
     assert "Write research/ideation/latest.json" in bench["dynamic_context"]
     assert '"action": "complete_research_expedition"' in bench["dynamic_context"]
     assert "GATE STATUS: RED" not in bench["dynamic_context"]
+
+
+def _valid_ideation_doc(generated_at: str) -> dict:
+    return {
+        "generated_at": generated_at,
+        "sources_consulted": [
+            {
+                "tool": "results/research/attribution.json",
+                "query": "q",
+                "takeaway": "a",
+            },
+            {
+                "tool": "results/research/regime_health.json",
+                "query": "q",
+                "takeaway": "b",
+            },
+            {"tool": "core_jobs:signal_scan", "query": "q", "takeaway": "c"},
+        ],
+        "hypotheses": [
+            {"title": "T1", "thesis": "x", "bucket": "testable", "next_step": "scan"},
+            {"title": "T2", "thesis": "y", "bucket": "starved", "next_step": "unlock"},
+            {
+                "title": "T3",
+                "thesis": "z",
+                "bucket": "refuted",
+                "next_step": "evidence",
+            },
+        ],
+    }
+
+
+def test_validate_ideation_artifact_names_each_gap() -> None:
+    good = validate_ideation_artifact(_valid_ideation_doc(_BENCHMARK_NOW))
+    assert good["valid"] is True and good["problems"] == []
+    assert good["buckets"] == {"testable": 1, "starved": 1, "refuted": 1}
+    clocked = validate_ideation_artifact(
+        _valid_ideation_doc("2026-08-09T15:25:00+00:00"), expected_clock=_BENCHMARK_NOW
+    )
+    assert clocked["problems"] == [
+        f"generated_at must equal the wake clock {_BENCHMARK_NOW}"
+    ]
+    bad = validate_ideation_artifact(
+        {
+            "generated_at": "yesterday",
+            "sources_consulted": [{"tool": "x"}],
+            "hypotheses": [{"title": "only", "thesis": "t", "bucket": "maybe"}],
+        }
+    )
+    assert bad["valid"] is False
+    assert bad["problems"][0] == "generated_at is not an ISO8601 timestamp"
+    assert "sources_consulted has 0 complete entries" in bad["problems"][1]
+    assert "hypotheses has 0 complete entries" in bad["problems"][2]
+
+
+def test_invalid_ideation_artifact_stays_due_and_is_quoted_back(tmp_path: Path) -> None:
+    store = JobStore(repo_root=tmp_path)
+    job = _ideation_job(store, "ideation-invalid-demo")
+    doc = _valid_ideation_doc(dt.datetime.now(dt.UTC).isoformat())
+    doc["sources_consulted"] = doc["sources_consulted"][:1]
+    path = store.job_dir(job.id) / "research" / "ideation" / "latest.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+    assert _ideation_age_s(store.job_dir(job.id)) is None
+    _ideation_bookkeeping(store, job.id)
+
+    journal = [
+        json.loads(line)
+        for line in (store.job_dir(job.id) / "journal.jsonl").read_text().splitlines()
+    ]
+    invalid = next(row for row in journal if row["type"] == "ideation_invalid")
+    assert invalid["problems"] == [
+        "sources_consulted has 1 complete entries (tool + takeaway); need 3"
+    ]
+    prompt = _build_worker_prompt_sections(
+        store=store,
+        job_id=job.id,
+        mode="intervene",
+        snapshot=_worker_snapshot(job, scorecard={"health": "green"}),
+    )["dynamic_context"]
+    assert "IDEATION SESSION — this wake is a research EXPEDITION" in prompt
+    assert "REJECTED mechanically: sources_consulted has 1 complete entries" in prompt

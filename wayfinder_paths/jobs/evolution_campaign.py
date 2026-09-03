@@ -465,6 +465,7 @@ def _start_campaign(
         dataset_symbols=tuple(snapshots["dataset"].get("symbols") or ()),
     )
     research_context = _freeze_research_context(store, job_id)
+    research_ideation = _freeze_research_ideation(store, job_id)
     campaign_policy = {
         **spec.evolution,
         "same_family_non_wins": spec.stuck_same_family_non_wins,
@@ -507,6 +508,7 @@ def _start_campaign(
         "research_seeds": research_seeds,
         "starter_seeds": starter_seeds,
         "research_context": research_context,
+        "research_ideation": research_ideation,
         "regime_context": regime_context,
         "policy": campaign_policy,
         **revision_stamp(root),
@@ -538,6 +540,7 @@ def _start_campaign(
         historical_lessons=historical_lessons,
         research_context=research_context,
         regime_context=regime_context,
+        research_ideation=research_ideation,
         validated_signals=validated_signals,
     )
     diagnostic_path = campaign_root / DIAGNOSTIC_PACK
@@ -4035,6 +4038,27 @@ def campaign_prompt_block(
         validated_rows = (
             list(validated.get("signals") or []) if validated.get("available") else []
         )
+        ideation = diagnostic_pack.get("research_ideation") or {}
+        ideation_rows = [
+            (index, row)
+            for index, row in enumerate(ideation.get("hypotheses") or [])
+            if ideation.get("valid") and row.get("bucket") == "testable"
+        ]
+        ideation_instruction = (
+            "Researcher hypotheses from the latest expedition (cite "
+            "/research_ideation/hypotheses/<i>): "
+            + "; ".join(f"[{index}] {row['title']}" for index, row in ideation_rows[:5])
+            + ". Ground at least one non-wildcard slot on a testable one, or say in "
+            "that hypothesis's falsifier why the pack refutes it. "
+            if ideation_rows
+            else (
+                "The latest researcher artifact failed its contract ("
+                + "; ".join(str(problem) for problem in ideation.get("problems") or [])
+                + "); do not cite it. "
+                if ideation and ideation.get("valid") is False
+                else ""
+            )
+        )
         signal_instruction = (
             "Validated signals (dense, fold-stable, cost-net edge on the full "
             "train split and the same sign on both screen slices; cite "
@@ -4099,7 +4123,7 @@ def campaign_prompt_block(
                 "cite existing JSON pointers from the diagnostic pack. Include "
                 "at least one starter_seed and one grounded de_novo slot. "
                 f"{research_instruction}{regime_instruction}{cost_instruction}"
-                f"{risk_instruction}"
+                f"{risk_instruction}{ideation_instruction}"
                 f"{failure_instruction}{signal_instruction}"
                 "Use at most one incumbent slot and at "
                 "most two parameter slots. One wildcard must be de_novo. "
@@ -4138,6 +4162,7 @@ def campaign_prompt_block(
                 "regime_context": regime_context if specialist_design else None,
                 "cost_budget": cost_budget,
                 "risk_budget": risk_budget,
+                "research_ideation": [row["title"] for _, row in ideation_rows] or None,
                 "failure_modes": failure_target or None,
                 "validated_signals": [
                     f"{row['symbol']}:{row['signal']}:{row['timeframe']}:{row['horizon']}"
@@ -5681,6 +5706,55 @@ def _freeze_research_seeds(
             }
         )
     return frozen
+
+
+def _freeze_research_ideation(store: JobStore, job_id: str) -> dict[str, Any] | None:
+    """The researcher's ranked hypotheses, frozen for the designer.
+
+    The wake writes research/ideation/latest.json; until now nothing in the
+    campaign read it, so a validated artifact changed nothing downstream.
+    Only a contract-valid artifact offers hypotheses; an invalid one is
+    surfaced as such so the designer does not build on it.
+    """
+    from wayfinder_paths.jobs.worker import _IDEATION_PATH, validate_ideation_artifact
+
+    doc = store.read_json(job_id, _IDEATION_PATH)
+    if not isinstance(doc, dict):
+        return None
+    report = validate_ideation_artifact(doc)
+    if not report["valid"]:
+        return {
+            "valid": False,
+            "generated_at": report["generated_at"],
+            "problems": report["problems"],
+        }
+    order = {"testable": 0, "starved": 1, "refuted": 2}
+    hypotheses = sorted(
+        (row for row in doc.get("hypotheses") or [] if isinstance(row, dict)),
+        key=lambda row: order.get(str(row.get("bucket")), 3),
+    )
+    return {
+        "valid": True,
+        "generated_at": report["generated_at"],
+        "buckets": report["buckets"],
+        "sources": [
+            {
+                "tool": str(row.get("tool"))[:120],
+                "takeaway": str(row.get("takeaway"))[:160],
+            }
+            for row in (doc.get("sources_consulted") or [])
+            if isinstance(row, dict) and row.get("tool")
+        ][:5],
+        "hypotheses": [
+            {
+                "title": str(row.get("title"))[:120],
+                "thesis": str(row.get("thesis"))[:240],
+                "bucket": str(row.get("bucket")),
+                "next_step": str(row.get("next_step"))[:200],
+            }
+            for row in hypotheses
+        ][:5],
+    }
 
 
 def _freeze_research_context(store: JobStore, job_id: str) -> dict[str, Any]:

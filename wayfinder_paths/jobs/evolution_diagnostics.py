@@ -219,6 +219,7 @@ def build_diagnostic_pack(
     research_context: Mapping[str, Any],
     regime_context: Mapping[str, Any] | None = None,
     validated_signals: Mapping[str, Any] | None = None,
+    research_ideation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Freeze compact existing diagnostics with explicit plane/provenance."""
     artifacts: dict[str, Any] = {}
@@ -297,6 +298,7 @@ def build_diagnostic_pack(
             else {}
         ),
         **({"validated_signals": dict(validated_signals)} if validated_signals else {}),
+        **({"research_ideation": dict(research_ideation)} if research_ideation else {}),
     }
     return _fit_pack(pack)
 

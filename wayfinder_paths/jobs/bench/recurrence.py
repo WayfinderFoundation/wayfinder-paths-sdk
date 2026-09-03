@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import shutil
 import time
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -58,7 +59,10 @@ from wayfinder_paths.jobs.bench.world import (
     load_world,
     prepare_world,
 )
-from wayfinder_paths.jobs.benchmarks.agent_adapter import run_agent_wakes
+from wayfinder_paths.jobs.benchmarks.agent_adapter import (
+    run_agent_prompt,
+    run_agent_wakes,
+)
 from wayfinder_paths.jobs.bundles import copy_job_bundle
 from wayfinder_paths.jobs.economics import block_bootstrap_lcb
 from wayfinder_paths.jobs.evolution_campaign import campaign_status
@@ -71,6 +75,7 @@ from wayfinder_paths.jobs.probation import (
     resolve_probation_bundle,
 )
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.worker import validate_ideation_artifact
 
 RECURRENCE_SCHEMA_VERSION = "1.0"
 RECURRENCE_KIND = "recurrence"
@@ -470,6 +475,9 @@ def run_recurrence_arm(
             )
             scorecard = audit["scorecard"]
             if researcher_enabled:
+                row["researcher"]["campaign_hypotheses_citing"] = _ideation_usage(
+                    store, job_id, state
+                )
                 row["researcher"]["campaign_seed_slots"] = sum(
                     1
                     for candidate in state.get("candidates") or []
@@ -610,16 +618,78 @@ def _researcher_wake(
         title=f"bench-research-{_safe_name(str(sandbox['run_id']))}-loop-{loop}",
     )[0]
     sessions.append({"stage": "research-wake", **wake})
+    clock = env.get("WAYFINDER_BENCHMARK_NOW")
+    ideation = _ideation_report(root, expected_clock=clock)
+    retried = False
+    if not ideation["valid"]:
+        # One bounded corrective turn in the same session, naming exactly
+        # what the contract found missing. Production gets the same text
+        # on its next scheduled wake through the journaled problems.
+        retried = True
+        correction = run_agent_prompt(
+            sandbox=sandbox["run_root"],
+            prompt=_ideation_correction_prompt(ideation, clock=str(clock or "")),
+            model=sandbox["model"],
+            variant=sandbox["variant"],
+            title=f"bench-research-{_safe_name(str(sandbox['run_id']))}-loop-{loop}-fix",
+            session_id=wake.get("session_id"),
+            opencode=sandbox["opencode"],
+            agent=str(researcher.get("agent") or "wayfinder-job-worker"),
+            timeout_s=int(researcher.get("timeout_seconds") or 1_200),
+            env=env,
+        )
+        sessions.append({"stage": "research-wake-fix", **correction})
+        ideation = _ideation_report(root, expected_clock=clock)
+        if not ideation["valid"] and bool(researcher.get("required")):
+            raise RuntimeError(
+                "researcher artifact invalid after one correction: "
+                + "; ".join(ideation.get("problems") or [])
+            )
     after = _research_fingerprint(root)
-    ideation = _ideation_report(root)
     return {
         "enabled": True,
         "exit_code": wake.get("exit_code"),
         "ideation_artifact": ideation,
+        "retried": retried,
         "agenda_changed": before["agenda"] != after["agenda"],
         "seeds_submitted": max(after["seeds"] - before["seeds"], 0),
         "campaign_seed_slots": 0,
+        "campaign_hypotheses_citing": 0,
     }
+
+
+def _ideation_correction_prompt(report: Mapping[str, Any], *, clock: str) -> str:
+    problems = "; ".join(str(problem) for problem in report.get("problems") or [])
+    return (
+        "Your expedition did not deliver its artifact. Mechanical check of "
+        "research/ideation/latest.json: "
+        + (problems or "file missing")
+        + ". Write research/ideation/latest.json now with exactly this shape: "
+        '{"generated_at": "'
+        + clock
+        + '", "sources_consulted": [{"tool": <file path or core_jobs action>, '
+        '"query": ..., "takeaway": ...}] (at least 3 distinct), "hypotheses": '
+        '[{"title": ..., "thesis": ..., "bucket": "testable"|"starved"|"refuted", '
+        '"next_step": ...}] (at least 3, ranked best-first)}. Use the evidence you '
+        "already read this session; then fold a compact summary into "
+        "research/agenda.md. Do nothing else."
+    )
+
+
+def _ideation_usage(store: JobStore, job_id: str, state: Mapping[str, Any]) -> int:
+    """Design hypotheses that ground themselves on the researcher's artifact."""
+    design = (
+        store.read_json(job_id, str(state.get("campaign_design") or ""), default={})
+        or {}
+    )
+    return sum(
+        1
+        for hypothesis in design.get("hypotheses") or []
+        if any(
+            str(ref).startswith("/research_ideation/")
+            for ref in hypothesis.get("evidence_refs") or []
+        )
+    )
 
 
 def _research_fingerprint(root: Path) -> dict[str, Any]:
@@ -633,19 +703,30 @@ def _research_fingerprint(root: Path) -> dict[str, Any]:
     }
 
 
-def _ideation_report(root: Path) -> dict[str, Any]:
+def _ideation_report(
+    root: Path, *, expected_clock: str | None = None
+) -> dict[str, Any]:
     path = root / IDEATION_RELATIVE
     if not path.exists():
-        return {"present": False, "valid": False, "hypotheses": 0, "sources": 0}
+        return {
+            "present": False,
+            "valid": False,
+            "problems": ["research/ideation/latest.json is missing"],
+            "hypotheses": 0,
+            "sources": 0,
+        }
     doc = load_json(path)
-    hypotheses = list(doc.get("hypotheses") or [])
-    sources = list(doc.get("sources_consulted") or [])
+    if not isinstance(doc, dict):
+        return {
+            "present": True,
+            "valid": False,
+            "problems": ["research/ideation/latest.json is not a JSON object"],
+            "hypotheses": 0,
+            "sources": 0,
+        }
     return {
         "present": True,
-        "valid": len(hypotheses) >= 3 and len(sources) >= 3,
-        "hypotheses": len(hypotheses),
-        "sources": len(sources),
-        "generated_at": doc.get("generated_at"),
+        **validate_ideation_artifact(doc, expected_clock=expected_clock),
     }
 
 
@@ -904,6 +985,10 @@ def _researcher_totals(loops: list[dict[str, Any]], *, enabled: bool) -> dict[st
             if (report.get("ideation_artifact") or {}).get("valid")
         ),
         "agenda_changed": sum(1 for report in reports if report.get("agenda_changed")),
+        "retried": sum(1 for report in reports if report.get("retried")),
+        "campaign_hypotheses_citing": sum(
+            int(report.get("campaign_hypotheses_citing") or 0) for report in reports
+        ),
         "seeds_submitted": sum(
             int(report.get("seeds_submitted") or 0) for report in reports
         ),
@@ -1066,9 +1151,11 @@ def _sum_researcher(rows: list[dict[str, Any]]) -> dict[str, Any]:
     keys = (
         "wakes",
         "ideation_valid",
+        "retried",
         "agenda_changed",
         "seeds_submitted",
         "campaign_seed_slots",
+        "campaign_hypotheses_citing",
     )
     return {
         "enabled": any(report.get("enabled") for report in reports),

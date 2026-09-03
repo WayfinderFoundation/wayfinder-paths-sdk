@@ -4336,3 +4336,85 @@ def test_tuning_prune_drops_trials_past_the_drawdown_ceiling() -> None:
     assert [row["trial"] for row in pruned.ranked] == [2, 1]
     assert pruned.invalid[0]["invalid_reason"] == "drawdown_over_tuning_ceiling"
     assert _prune_risky_trials(grid, 0.5)[1] == 0
+
+
+def _ideation_artifact(store, job_id, *, sources: int = 3) -> None:
+    doc = {
+        "generated_at": "2099-08-25T12:00:00+00:00",
+        "sources_consulted": [
+            {
+                "tool": f"results/research/file{index}.json",
+                "query": "q",
+                "takeaway": "t",
+            }
+            for index in range(sources)
+        ],
+        "hypotheses": [
+            {
+                "title": "Starved idea",
+                "thesis": "needs data",
+                "bucket": "starved",
+                "next_step": "unlock",
+            },
+            {
+                "title": "Fade the shakeout",
+                "thesis": "x",
+                "bucket": "testable",
+                "next_step": "scan",
+            },
+            {
+                "title": "Dead idea",
+                "thesis": "y",
+                "bucket": "refuted",
+                "next_step": "evidence",
+            },
+        ],
+    }
+    path = store.job_dir(job_id) / "research" / "ideation" / "latest.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+
+
+def test_campaign_freezes_researcher_hypotheses_into_the_pack(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    _ideation_artifact(store, job_id)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    block = pack["research_ideation"]
+    assert block["valid"] is True
+    # Testable first, so the designer's pointer /research_ideation/hypotheses/0
+    # is the one worth building on.
+    assert [row["bucket"] for row in block["hypotheses"]] == [
+        "testable",
+        "starved",
+        "refuted",
+    ]
+    assert block["hypotheses"][0]["title"] == "Fade the shakeout"
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    assert (
+        manifest["research_ideation"]["hypotheses"][0]["title"] == "Fade the shakeout"
+    )
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt
+    assert prompt["constraints"]["research_ideation"] == ["Fade the shakeout"]
+    assert "Researcher hypotheses from the latest expedition" in prompt["next_action"]
+    assert "[0] Fade the shakeout" in prompt["next_action"]
+    assert "/research_ideation/hypotheses/0/title" in prompt["valid_evidence_pointers"]
+
+
+def test_campaign_flags_an_invalid_researcher_artifact_instead_of_offering_it(
+    tmp_path,
+) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    _ideation_artifact(store, job_id, sources=1)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    assert pack["research_ideation"]["valid"] is False
+    assert "hypotheses" not in pack["research_ideation"]
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt and prompt["constraints"]["research_ideation"] is None
+    assert "failed its contract (sources_consulted has 1" in prompt["next_action"]
