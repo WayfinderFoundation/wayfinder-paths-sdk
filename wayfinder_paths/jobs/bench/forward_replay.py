@@ -22,7 +22,7 @@ from wayfinder_paths.jobs.execution.features import (
     merge_features,
     parse_feature_specs,
 )
-from wayfinder_paths.jobs.execution.job import _load_job_yaml, _store_feature_specs
+from wayfinder_paths.jobs.execution.job import _load_job_yaml
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     ExecutionSpec,
@@ -201,7 +201,7 @@ def evaluate_bundle(
     )
     if feature_root is not None:
         dataset = PreparedExecutionDataset(
-            merge_store_features(dataset.bars, feature_root, spec=spec),
+            merge_store_features(dataset.bars, feature_root, spec=spec, bundle=bundle),
             dict(dataset.metadata),
             list(dataset.market_events),
         )
@@ -277,29 +277,21 @@ def merge_store_features(
     view: CompletedBarsView,
     root: Path,
     *,
-    spec: ExecutionSpec | Sequence[ExecutionSpec] | None = None,
+    spec: ExecutionSpec,
+    bundle: Path | None = None,
 ) -> CompletedBarsView:
-    """As-of merge of the job's store onto a replay view. Replays build their
-    bars from frozen rows, not the driver, so a strategy that declares a
-    derived column (the macro regime) would otherwise meet a view without it
-    and fail on the first tick. With ``spec`` given, only the columns those
-    specs declare are merged — the live driver loads declared features only,
-    so an undeclared read must fail here too, not first in production."""
-    declared: set[str] | None = None
-    if spec is not None:
-        specs_in = [spec] if isinstance(spec, ExecutionSpec) else list(spec)
-        declared = {
-            feature.name for item in specs_in for feature in parse_feature_specs(item)
-        }
-    specs = [
-        item
-        for item in _store_feature_specs((root,), set())
-        if declared is None or item.name in declared
-    ]
+    """Merge the features ``spec`` declares onto a replay view, the way the
+    live driver does for the incumbent: the declared specs themselves (their
+    paths and column mappings), resolved from the candidate bundle first and
+    the job store second, with an absent file yielding an empty column so a
+    defaulted read carries. Replays build their bars from frozen rows, not
+    the driver, so nothing else puts the columns there; and only declared
+    columns are merged, so an undeclared read fails here, not first live."""
+    specs = parse_feature_specs(spec)
     if not specs:
         return view
-    frames = load_feature_rows([root], specs)
-    return merge_features(view, frames, specs)
+    roots = [bundle, root] if bundle is not None else [root]
+    return merge_features(view, load_feature_rows(roots, specs), specs)
 
 
 def replay_probation(

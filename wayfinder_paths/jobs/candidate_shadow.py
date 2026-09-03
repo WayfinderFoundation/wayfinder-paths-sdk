@@ -14,9 +14,10 @@ from wayfinder_paths.jobs.defense import (
     defense_feature_warmup_bars,
     defense_policy,
 )
-from wayfinder_paths.jobs.execution.engine import EngineState, run_tick
+from wayfinder_paths.jobs.execution.engine import EngineState, TickResult, run_tick
 from wayfinder_paths.jobs.execution.features import (
     apply_precompute,
+    feature_staleness,
     load_feature_rows,
     merge_features,
     parse_feature_specs,
@@ -223,14 +224,26 @@ async def _run_target(
     params = dict(job_data.get("execution_params") or {})
     strategy = _load_strategy(script, params)
     # The candidate's declared file features (a derived column such as the
-    # macro regime) ride from its own bundle first, then the job store —
-    # the same rows the live driver merges for the incumbent. Without this a
-    # feature-aware candidate met a bars-only view and died on its first tick.
+    # macro regime) ride from its own bundle first, then the job store, with
+    # the driver's window and staleness rule: a stale feature whose policy is
+    # skip skips the shadow tick exactly as it skips the live tick. Columns
+    # already on the queued view under a declared name are dropped first so
+    # the candidate's own merge wins instead of pandas suffixing both away.
     declared = parse_feature_specs(spec)
+    feature_skip = False
     if declared:
-        view = merge_features(
-            view, load_feature_rows([candidate_root, root], declared), declared
+        stamps = view.timestamps
+        feature_window = (stamps[0], stamps[-1]) if stamps else None
+        feature_frames = load_feature_rows(
+            [candidate_root, root], declared, window=feature_window
         )
+        _, feature_skip = feature_staleness(declared, feature_frames, timestamp)
+        if not feature_skip:
+            view = merge_features(
+                _without_columns(view, [item.column_name for item in declared]),
+                feature_frames,
+                declared,
+            )
     view = add_defense_features(view, params)
     view = add_portfolio_regime_feature(view, params)
     # Same bounded window the simulator replays with and the live driver
@@ -249,24 +262,32 @@ async def _run_target(
         slippage_bps=float(params.get("slippage_bps") or 0.0),
     )
     engine_state_pre = engine_state.to_dict()
-    tick = await run_tick(
-        strategy,
-        view=candidate_view,
-        brokers={"*": broker},
-        state=engine_state,
-        spec=spec,
-        params=params,
-        timestamp=timestamp,
-        snapshot=StateSnapshot(status="valid"),
-        client_order_prefix=(
-            f"paper-ab-{target['legacy_shadow_arm']}-champion-{target['revision'][:8]}"
-            if target.get("bundle_scope") == "legacy_experiment"
-            else (
-                f"probation-{target['trial_id'][:12]}-{target['role']}-"
-                f"{target['revision'][:8]}"
-            )
-        ),
-    )
+    if feature_skip:
+        tick = TickResult(
+            skipped=True,
+            skip_reason="stale_feature",
+            bar_timestamp=bar_iso,
+            snapshot=StateSnapshot(status="valid"),
+        )
+    else:
+        tick = await run_tick(
+            strategy,
+            view=candidate_view,
+            brokers={"*": broker},
+            state=engine_state,
+            spec=spec,
+            params=params,
+            timestamp=timestamp,
+            snapshot=StateSnapshot(status="valid"),
+            client_order_prefix=(
+                f"paper-ab-{target['legacy_shadow_arm']}-champion-{target['revision'][:8]}"
+                if target.get("bundle_scope") == "legacy_experiment"
+                else (
+                    f"probation-{target['trial_id'][:12]}-{target['role']}-"
+                    f"{target['revision'][:8]}"
+                )
+            ),
+        )
     engine_state.save(shadow_root / "engine_state.json")
     recorder = ForwardRecorder(
         job_id=job_id,
@@ -295,6 +316,12 @@ async def _run_target(
         "intents": len(tick.intents),
         "fills": len(tick.fills),
     }
+
+
+def _without_columns(view: CompletedBarsView, names: list[str]) -> CompletedBarsView:
+    frame = view.to_frame()
+    present = [name for name in names if name in frame.columns]
+    return CompletedBarsView(frame.drop(columns=present)) if present else view
 
 
 def _advance_cursor(

@@ -74,6 +74,21 @@ def _bars(count: int = 456) -> list[dict]:
     ]
 
 
+def _declaring(*names: str):
+    """An execution spec declaring ``names`` as file features, for the replay merge."""
+    from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+
+    return ExecutionSpec.from_dict(
+        {
+            "data_contract": {
+                "bar_interval": "1h",
+                "symbols": ["IMX"],
+                "features": [{"name": name, "source": "file"} for name in names],
+            }
+        }
+    )
+
+
 def _job(tmp_path: Path) -> tuple[JobStore, str, list[dict]]:
     store = JobStore(repo_root=tmp_path)
     job = WayfinderJob.new(
@@ -1378,7 +1393,11 @@ def test_world_freezes_the_macro_feature_and_reveals_the_holdout_rows(
     assert len(store_path.read_text().splitlines()) == len(dev_rows)
     assert reveal_holdout_features(sealed_dir, sandbox_job) == len(sealed)
     assert reveal_holdout_features(sealed_dir, sandbox_job) == 0
-    view = merge_store_features(CompletedBarsView.from_rows(rows), sandbox_job)
+    view = merge_store_features(
+        CompletedBarsView.from_rows(rows),
+        sandbox_job,
+        spec=_declaring("macro_regime", "macro_ret_7d"),
+    )
     assert view.feature("macro_regime") in {-1.0, 0.0, 1.0}
     assert view.feature("macro_ret_7d") is not None
 
@@ -1457,7 +1476,11 @@ def test_world_freezes_the_leader_feature_from_the_leader_file(tmp_path: Path) -
     install_development_world(world_dir, destination_job=sandbox_job)
     assert reveal_holdout_features(sealed_dir, sandbox_job) == len(sealed)
     assert reveal_holdout_features(sealed_dir, sandbox_job) == 0
-    view = merge_store_features(CompletedBarsView.from_rows(rows), sandbox_job)
+    view = merge_store_features(
+        CompletedBarsView.from_rows(rows),
+        sandbox_job,
+        spec=_declaring("leader_state", "btc_ret_7d"),
+    )
     assert view.feature("leader_state") == 1.0
     assert view.feature("btc_ret_7d") > 0.08
 
@@ -1826,3 +1849,92 @@ def test_race_does_not_merge_features_the_candidate_never_declared(
             environment=environment,
             feature_root=sandbox_job,
         )
+
+
+def test_race_replay_carries_a_declared_feature_the_store_never_wrote(
+    tmp_path: Path,
+) -> None:
+    """An absent store still yields the declared column, so the defaulted
+    read carries the whole replay instead of raising 'No feature column'."""
+    from wayfinder_paths.jobs.bench.forward_replay import evaluate_bundle
+
+    _, _, world_dir, sealed_dir, rows = _world(tmp_path)
+    environment = load_world(world_dir, sealed_dir)["manifest"]["execution_environment"]
+    bundle = tmp_path / "defaulted"
+    shutil.copytree(world_dir / "incumbent", bundle)
+    (bundle / "workspace/src/strategy.py").write_text(
+        "def decide(ctx):\n"
+        "    if ctx.view.feature('macro_regime', default=0.0) != 0.0:\n"
+        "        raise ValueError('nothing wrote this column')\n"
+        "    return []\n",
+        encoding="utf-8",
+    )
+    _bundle_with_spec(
+        bundle,
+        lambda spec: spec.setdefault("data_contract", {}).__setitem__(
+            "features", [{"name": "macro_regime", "source": "file"}]
+        ),
+    )
+    empty_store = tmp_path / "empty-job"
+    empty_store.mkdir()
+    verdict = evaluate_bundle(
+        bundle,
+        rows=rows,
+        cutoff=datetime(2026, 1, 3, 23, tzinfo=UTC),
+        environment=environment,
+        feature_root=empty_store,
+    )
+    assert verdict["window_invariance"]["status"] == "passed"
+    assert verdict["validation"]["execution_valid"] is True
+
+
+def test_race_replay_honors_a_custom_feature_path_and_column_from_the_bundle(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.bench.forward_replay import evaluate_bundle
+
+    _, _, world_dir, sealed_dir, rows = _world(tmp_path)
+    environment = load_world(world_dir, sealed_dir)["manifest"]["execution_environment"]
+    bundle = tmp_path / "custom"
+    shutil.copytree(world_dir / "incumbent", bundle)
+    turned = rows[len(rows) // 2]["timestamp"]
+    last = rows[-1]["timestamp"]
+    (bundle / "state").mkdir(parents=True, exist_ok=True)
+    (bundle / "state/custom.jsonl").write_text(
+        json.dumps(
+            {"timestamp": turned, "name": "signal", "value": 1.0, "symbol": None}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (bundle / "workspace/src/strategy.py").write_text(
+        "def decide(ctx):\n"
+        "    sig = ctx.view.feature('sig', default=0.0)\n"
+        f"    if str(ctx.timestamp) >= '{last[:13]}' and sig != 1.0:\n"
+        "        raise ValueError('custom path or column mapping was lost')\n"
+        "    return []\n",
+        encoding="utf-8",
+    )
+    _bundle_with_spec(
+        bundle,
+        lambda spec: spec.setdefault("data_contract", {}).__setitem__(
+            "features",
+            [
+                {
+                    "name": "signal",
+                    "source": "file",
+                    "path": "state/custom.jsonl",
+                    "column": "sig",
+                }
+            ],
+        ),
+    )
+    verdict = evaluate_bundle(
+        bundle,
+        rows=rows,
+        cutoff=datetime(2026, 1, 3, 23, tzinfo=UTC),
+        environment=environment,
+        feature_root=tmp_path / "no-store",
+    )
+    assert verdict["window_invariance"]["status"] == "passed"
+    assert verdict["validation"]["execution_valid"] is True

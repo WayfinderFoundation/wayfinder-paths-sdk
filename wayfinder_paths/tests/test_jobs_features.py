@@ -368,3 +368,68 @@ def test_feature_accessor_default_covers_missing_history_not_missing_columns() -
     # An undeclared column is a contract error, default or not.
     with pytest.raises(ValueError, match="No feature column"):
         view.feature("macro_regime", default=0.0)
+
+
+def test_driver_queues_bars_only_and_shadows_merge_their_own_declared_feature(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live driver -> queued probation view -> shadow lane, incumbent and
+    candidate both declaring `sentiment`: the queue carries bars only (no
+    incumbent column to collide with or to leak) and the candidate reads the
+    values its own declaration merges."""
+    import asyncio
+
+    from wayfinder_paths.jobs import background
+    from wayfinder_paths.jobs.candidate_shadow import run_candidate_shadows
+    from wayfinder_paths.jobs.gating import compute_workspace_revision
+    from wayfinder_paths.jobs.probation import (
+        PROBATION_VIEW_PATH,
+        stage_evolution_probation,
+    )
+
+    store, job, root = _feature_job(tmp_path)
+    (root / "workspace" / "src" / "strategy.py").write_text(
+        "def decide(ctx):\n"
+        "    sentiment = ctx.view.feature('sentiment', default=0.0)\n"
+        "    if sentiment not in (0.0, 0.9, -0.9):\n"
+        "        raise ValueError('a column collided or leaked')\n"
+        "    if str(ctx.timestamp) >= '2026-01-01T00:25' and sentiment != -0.9:\n"
+        "        raise ValueError('the candidate never saw its declared feature')\n"
+        "    return []\n",
+        encoding="utf-8",
+    )
+    stage_evolution_probation(
+        store,
+        job.id,
+        candidate_id="candidate-1",
+        candidate_root=root,
+        revision=compute_workspace_revision(root),
+        source="evolution_campaign",
+        family="feature-aware",
+        evidence={"objective": {"candidate": {"trade_count": 12}}},
+        now=pd.Timestamp("2025-12-31T23:00:00Z").to_pydatetime(),
+    )
+    monkeypatch.setattr(background, "spawn_detached_op", lambda *a, **k: None)
+    bars = _bars(6)
+
+    async def _drive() -> None:
+        broker = PaperBroker(capabilities=PERP_CAPS)
+        for count in range(1, len(bars) + 1):
+            view = CompletedBarsView.from_rows(bars[:count])
+            await tick_job(
+                job,
+                root,
+                "paper",
+                store=store,
+                adapters={"hyperliquid": FakeAdapter(view, broker)},
+                now=_now(view),
+            )
+
+    asyncio.run(_drive())
+    queued = json.loads((root / PROBATION_VIEW_PATH).read_text(encoding="utf-8"))
+    assert queued["rows"] and all("sentiment" not in row for row in queued["rows"])
+
+    rows = asyncio.run(run_candidate_shadows(store, job.id))
+    candidate = [row for row in rows if row["role"] == "candidate"]
+    assert candidate and not any(row["skipped"] for row in candidate)
+    assert max(row["bar_timestamp"] for row in candidate) >= "2026-01-01T00:25"

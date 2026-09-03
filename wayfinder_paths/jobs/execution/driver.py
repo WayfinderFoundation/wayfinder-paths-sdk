@@ -534,6 +534,12 @@ async def tick_job(
     # owns this I/O so decide() stays pure. The merged columns land in the
     # view (and therefore in view_hash + recorded rows), giving the backtest
     # loader identical as-of semantics and the reconciler exact replays.
+    # Candidate shadows receive the shared fetch BEFORE the incumbent's
+    # feature merge: each shadow target merges the columns its own spec
+    # declares (candidate_shadow._run_target), so a candidate never sees a
+    # column it did not declare, and one that declares the incumbent's
+    # column does not collide with it (pandas would suffix both away).
+    shadow_view = view
     feature_specs = parse_feature_specs(spec)
     feature_guards: list[dict[str, Any]] = []
     feature_skip = False
@@ -546,11 +552,6 @@ async def tick_job(
         )
         if not feature_skip:
             view = merge_features(view, feature_frames, feature_specs)
-
-    # Candidate shadows receive the full shared fetch and exogenous feature
-    # snapshot, but apply their own engine-owned features and bounded strategy
-    # window in an isolated paper engine.
-    shadow_view = view
 
     view = add_defense_features(view, params)
     view = add_portfolio_regime_feature(view, params)
