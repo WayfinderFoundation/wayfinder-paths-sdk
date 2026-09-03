@@ -189,6 +189,11 @@ def _restrict_bench_worker_agent(sandbox: Path) -> None:
         raise ValueError(f"benchmark agent is missing job-path permission: {path}")
     if normalized_rule not in content:
         content = content.replace(relative_rule, relative_rule + normalized_rule)
+    # A headless wake cannot answer a prompt (question is denied), so an
+    # "ask" on the runs tree would stall or fail the turn; deny it outright.
+    content = content.replace(
+        '    ".wayfinder_runs/**": ask\n', '    ".wayfinder_runs/**": deny\n'
+    )
     lines = content.splitlines(keepends=True)
     for block in ("  bash:\n", "  task:\n"):
         start = lines.index(block)

@@ -1173,14 +1173,17 @@ def test_bench_sandbox_restricts_job_worker_bash_and_task(tmp_path: Path) -> Non
     assert installed["bash"] == {"*": "deny"}
     assert installed["task"] == {"*": "deny"}
     assert installed["edit"]["**/.wayfinder/jobs/**"] == "allow"
+    # Last-match-wins: the catch-all deny first, the job-tree allows after it,
+    # the governance plane last; the runs tree is denied, never asked.
     assert list(installed["edit"]) == [
-        "governance/**",
-        "audit/**",
+        "*",
+        ".wayfinder_runs/**",
         ".wayfinder/jobs/**",
         "**/.wayfinder/jobs/**",
-        ".wayfinder_runs/**",
-        "*",
+        "governance/**",
+        "audit/**",
     ]
+    assert installed["edit"][".wayfinder_runs/**"] == "deny"
     # Every other permission line (and the load-bearing ordering of the
     # wayfinder_* entries) survives untouched.
     assert list(installed) == list(source)
@@ -1251,3 +1254,22 @@ def test_paired_utility_deltas_scale_with_the_books_capital() -> None:
     assert small[0] / big[0] > 90
     assert environment_capital({"params": {"initial_capital": 100.0}}) == 100.0
     assert environment_capital({}) == 10_000.0
+
+
+@pytest.mark.parametrize(
+    "agent", ["wayfinder-job-worker.md", "wayfinder-job-auto-worker.md"]
+)
+def test_worker_personas_put_catch_all_denies_before_their_allows(agent: str) -> None:
+    """OpenCode resolves the LAST matching permission rule. A catch-all deny
+    that trails an allow silently wins: the job worker ran benchmark wakes
+    with no write path and no MCP tool until this ordering was fixed."""
+    path = Path(__file__).resolve().parents[2] / ".opencode/agents" / agent
+    permission = yaml.safe_load(path.read_text(encoding="utf-8").split("---\n")[1])[
+        "permission"
+    ]
+    edit_keys = list(permission["edit"])
+    assert edit_keys.index("*") < edit_keys.index(".wayfinder/jobs/**")
+    assert permission["edit"][".wayfinder/jobs/**"] == "allow"
+    mcp_keys = [key for key in permission if key.startswith("wayfinder_")]
+    assert mcp_keys.index("wayfinder_*") < mcp_keys.index("wayfinder_core_jobs")
+    assert permission["wayfinder_core_jobs"] == "allow"
