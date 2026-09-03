@@ -874,14 +874,30 @@ def test_arm_environment_isolates_user_home_and_clock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     virtual_now = datetime(2026, 8, 10, 15, 25, tzinfo=UTC)
-    env = _arm_env(tmp_path / "arm", virtual_now=virtual_now)
+    monkeypatch.setenv("WAYFINDER_API_BASE_URL", "https://ambient.invalid/api/v1")
+    env = _arm_env(
+        tmp_path / "arm",
+        virtual_now=virtual_now,
+        api_base_url="https://strategies-dev.wayfinder.ai/api/v1/",
+    )
 
     assert env["HOME"] == str(tmp_path / "arm/.bench-home")
     assert Path(env["HOME"]).is_dir()
     assert env["WAYFINDER_BENCHMARK_NOW"] == virtual_now.isoformat()
+    assert env["WAYFINDER_API_BASE_URL"] == "https://strategies-dev.wayfinder.ai/api/v1"
     monkeypatch.setenv("WAYFINDER_BENCHMARK", "1")
     monkeypatch.setenv("WAYFINDER_BENCHMARK_NOW", env["WAYFINDER_BENCHMARK_NOW"])
     assert _campaign_now() == virtual_now
+
+
+def test_arm_environment_does_not_inherit_backend_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("WAYFINDER_API_BASE_URL", "https://ambient.invalid/api/v1")
+
+    env = _arm_env(tmp_path / "arm")
+
+    assert "WAYFINDER_API_BASE_URL" not in env
 
 
 def test_sandbox_paths_are_rendered_relative_for_production_permissions(

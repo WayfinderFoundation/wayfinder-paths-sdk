@@ -306,6 +306,9 @@ def _recurrence_pins(
             }
             for arm in config["arms"]
         ],
+        "wayfinder_api_base_url": str(config.get("wayfinder_api_base_url") or "")
+        .strip()
+        .rstrip("/"),
         "runtime_opencode_config": (
             {
                 "path": str(runtime_opencode_config),
@@ -399,7 +402,11 @@ def run_recurrence_arm(
                 frozen_revision = incumbent_revision
             row["incumbent_revision"] = incumbent_revision
             row["frozen_revision"] = frozen_revision
-            env = _arm_env(sandbox["run_root"], virtual_now=cutoff)
+            env = _arm_env(
+                sandbox["run_root"],
+                virtual_now=cutoff,
+                api_base_url=str(config.get("wayfinder_api_base_url") or ""),
+            )
             os.environ["WAYFINDER_BENCHMARK"] = env["WAYFINDER_BENCHMARK"]
             os.environ["WAYFINDER_BENCHMARK_NOW"] = env["WAYFINDER_BENCHMARK_NOW"]
             sessions: list[dict[str, Any]] = []

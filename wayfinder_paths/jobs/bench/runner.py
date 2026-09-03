@@ -254,7 +254,11 @@ def run_arm(
     prompt_hashes: list[str] = []
     sessions: list[dict[str, Any]] = []
     stage_sessions: dict[str, str] = {}
-    env = _arm_env(sandbox["run_root"], virtual_now=generation_cutoff)
+    env = _arm_env(
+        sandbox["run_root"],
+        virtual_now=generation_cutoff,
+        api_base_url=str(config.get("wayfinder_api_base_url") or ""),
+    )
     started = time.monotonic()
     with bench_mcp_server(sandbox, env=env):
         invalid_reason = run_campaign_phase(
@@ -850,7 +854,12 @@ def _start_mcp(sandbox: Path, *, port: int, env: dict[str, str]) -> subprocess.P
     raise TimeoutError("benchmark MCP server did not start")
 
 
-def _arm_env(sandbox: Path, *, virtual_now: datetime | None = None) -> dict[str, str]:
+def _arm_env(
+    sandbox: Path,
+    *,
+    virtual_now: datetime | None = None,
+    api_base_url: str = "",
+) -> dict[str, str]:
     env = dict(os.environ)
     isolated_home = sandbox / ".bench-home"
     isolated_home.mkdir(parents=True, exist_ok=True)
@@ -864,6 +873,12 @@ def _arm_env(sandbox: Path, *, virtual_now: datetime | None = None) -> dict[str,
     env["WAYFINDER_BURST_STATE_PATH"] = str(
         sandbox / ".bench-state" / "burst-governor.json"
     )
+    # Backend calls are distinct from the OpenCode inference provider. Clear
+    # an ambient override so benchmark identity comes only from the declared
+    # config, then opt into the requested Strategies environment explicitly.
+    env.pop("WAYFINDER_API_BASE_URL", None)
+    if normalized_api_base_url := api_base_url.strip().rstrip("/"):
+        env["WAYFINDER_API_BASE_URL"] = normalized_api_base_url
     return env
 
 
@@ -1365,6 +1380,9 @@ def _runtime_pins(config_path: Path, config: dict[str, Any]) -> dict[str, Any]:
     return {
         "worlds": worlds,
         "arms": arms,
+        "wayfinder_api_base_url": str(config.get("wayfinder_api_base_url") or "")
+        .strip()
+        .rstrip("/"),
         "runtime_opencode_config": (
             {
                 "path": str(runtime_opencode_config),
