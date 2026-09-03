@@ -1264,3 +1264,54 @@ def test_paired_utility_uses_the_jobs_capital_not_ten_thousand(tmp_path: Path) -
     assert updated["status"] == "graduated"
     assert updated["forward"]["metrics"]["overall_estimate"] > 0.001
     assert outcomes[0]["action"] == "probation_graduated"
+
+
+def test_probation_verdict_archives_the_numbers_it_was_decided_on(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.archive import find_candidate
+    from wayfinder_paths.jobs.probation import _sync_trial_archive
+
+    store, job_id = _job(tmp_path)
+    record_candidate(
+        store,
+        job_id,
+        candidate_id="cand-noise",
+        family="mean-revert",
+        summary="killed on a quiet week",
+        status="paper_proposal",
+        objective={"net_log_growth": 0.01},
+    )
+
+    _sync_trial_archive(
+        store,
+        job_id,
+        {
+            "action": "probation_killed",
+            "trial_id": "trial-1",
+            "candidate_id": "cand-noise",
+            "reason": "paired utility UCB < 0",
+            "metrics": {
+                "paired_days": 7,
+                "daily_deltas": [0.0, -0.0001, 0.0, 0.0, -0.00002, 0.0, 0.0],
+                "estimate": -0.00012,
+                "overall_estimate": -0.00012,
+                "lcb": -0.0003,
+                "ucb": -0.00001,
+                "confidence": 0.9,
+                "candidate_trade_count": 4,
+                "reference_trade_count": 9,
+                "candidate_max_drawdown_pct": 0.012,
+                "hard_constraint_breach": False,
+            },
+        },
+    )
+
+    entry = find_candidate(store, job_id, "cand-noise")
+    assert entry["status"] == "refuted"
+    assert entry["evidence"] == "paired utility UCB < 0"
+    forward = entry["metadata"]["forward"]
+    assert forward["verdict"] == "killed" and forward["trial_id"] == "trial-1"
+    assert forward["paired_days"] == 7 and forward["candidate_trade_count"] == 4
+    assert forward["overall_estimate"] == -0.00012
+    assert "daily_deltas" not in forward

@@ -664,9 +664,11 @@ def test_screen_report_splits_the_reference_losing_days() -> None:
     reference_daily = daily_log_returns(curve(reference_returns))
     result = SimpleNamespace(
         equity_curve=curve(candidate_returns),
-        stats={"net_return": 0.06, "trade_count": 30},
+        stats={"net_return": 0.06, "trade_count": 30, "max_drawdown_pct": -0.05},
     )
     report = _screen_slice_report(result, reference_daily, confidence=0.7)
+    # The ceiling's convention, so a slice reads against the 0.25 budget.
+    assert report["max_drawdown_pct"] == 0.05
     mode = report["failure_mode"]
     assert mode["losing_days"] == 4 and mode["winning_days"] == 7
     assert mode["losing_delta"] > 0.09 and abs(mode["winning_delta"]) < 1e-9
@@ -3844,6 +3846,14 @@ def test_full_dev_runs_real_small_simulations_in_disposable_child(tmp_path) -> N
     resources = store.read_json(job_id, "reports/evolution/resources.json")
     assert resources["latest"]["phase"] == "full_dev"
     assert resources["latest"]["candidate_id"] == candidate["candidate_id"]
+    # The validation window records how the candidate's positions ended and
+    # the same path forensics the incumbent gets, never an error.
+    validation = outcome["dev"]["validation"]
+    forensics = validation["forensics"]
+    assert "error" not in forensics and set(forensics) == {"closes", "by_exit_reason"}
+    exits = validation["exits"]
+    assert exits is None or set(exits) == {"closes", "stop_share", "by_reason"}
+    assert (exits or {}).get("closes", 0) == forensics["closes"]
 
 
 def test_full_dev_optuna_uses_bounded_train_tail_and_timeout(
@@ -4241,10 +4251,46 @@ def test_research_context_files_risk_ceiling_rejections_as_validated_edge(
         evidence="paired utility estimate not > 0",
         metadata={"campaign_id": "c1", "gate": {"class": "no_edge"}},
     )
+    record_candidate(
+        store,
+        job_id,
+        candidate_id="killed",
+        family="mean-revert",
+        summary="killed in probation",
+        status="refuted",
+        objective=None,
+        evidence="paired utility UCB < 0",
+        metadata={
+            "campaign_id": "c1",
+            "forward": {
+                "verdict": "killed",
+                "reason": "paired utility UCB < 0",
+                "paired_days": 7,
+                "overall_estimate": -0.00012,
+                "lcb": -0.0003,
+                "ucb": -0.00001,
+                "candidate_trade_count": 4,
+                "reference_trade_count": 9,
+                "daily_deltas": [0.0, -0.0001],
+            },
+        },
+    )
 
     context = _freeze_research_context(store, job_id)
 
-    assert [row["family"] for row in context["refuted_families"]] == ["noise"]
+    assert [row["family"] for row in context["refuted_families"]] == [
+        "noise",
+        "mean-revert",
+    ]
+    killed = context["refuted_families"][1]
+    assert killed["forward"] == {
+        "verdict": "killed",
+        "paired_days": 7,
+        "overall_estimate": -0.00012,
+        "lcb": -0.0003,
+        "ucb": -0.00001,
+        "candidate_trade_count": 4,
+    }
     positive = next(
         row
         for row in context["validated_positives"]
@@ -4260,6 +4306,7 @@ def test_research_context_files_risk_ceiling_rejections_as_validated_edge(
         for row in evolution_lessons_block(store, job_id)["outcomes"]
     }
     assert lessons["sized"]["gate"]["class"] == "risk_ceiling"
+    assert lessons["killed"]["forward"]["candidate_trade_count"] == 4
     assert lessons["flat"]["gate"]["class"] == "no_edge"
     state = {
         "candidates": [
@@ -4418,3 +4465,35 @@ def test_campaign_flags_an_invalid_researcher_artifact_instead_of_offering_it(
     prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
     assert prompt and prompt["constraints"]["research_ideation"] is None
     assert "failed its contract (sources_consulted has 1" in prompt["next_action"]
+
+
+def test_attempt_trajectory_row_carries_drawdown_and_stop_share() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _attempt_trajectory_row
+
+    row = _attempt_trajectory_row(
+        {
+            "attempt": 2,
+            "outcome": {
+                "quick": {"stats": {"net_return": 0.01, "max_drawdown_pct": -0.08}}
+            },
+            "postmortem": {
+                "primary_failure": None,
+                "economics": {
+                    "candidate": {"fills_per_day": 1.5, "fee_pct_of_capital": 0.01}
+                },
+                "exits": {"candidate": {"closes": 4, "stop_share": 0.25}},
+            },
+        }
+    )
+
+    assert row == {
+        "attempt": 2,
+        "primary_failure": None,
+        "net_return": 0.01,
+        "fills_per_day": 1.5,
+        "fee_pct_of_capital": 0.01,
+        "max_drawdown_pct": 0.08,
+        "stop_share": 0.25,
+    }
+    bare = _attempt_trajectory_row({"attempt": 1, "outcome": {}, "postmortem": {}})
+    assert "max_drawdown_pct" not in bare and "stop_share" not in bare

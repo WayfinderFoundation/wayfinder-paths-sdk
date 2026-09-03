@@ -441,3 +441,21 @@ def test_stop_close_payload_preserves_trigger_and_slippage_evidence() -> None:
     assert payload["stop_slippage_bps"] == 1_000.0
     assert payload["effective_leverage"] == 3
     assert payload["venue_stop_slippage_tolerance_bps"] == 1_000
+
+
+def test_fill_exit_reason_is_one_rule_for_every_consumer() -> None:
+    from wayfinder_paths.jobs.trade_forensics import (
+        fill_exit_reason,
+        is_stop_exit_reason,
+    )
+
+    assert fill_exit_reason({"exit_reason": "tp_tier_one"}) == "tp_tier_one"
+    assert fill_exit_reason({"bracket": {"kind": "stop"}}) == "bracket_stop"
+    assert fill_exit_reason({"liquidation": True, "position_side": "long"}) == (
+        "liquidation"
+    )
+    assert fill_exit_reason({"stale_policy": "flat"}) == "stale_flat"
+    assert fill_exit_reason({}) == "unlabeled"
+    assert fill_exit_reason(None) == "unlabeled"
+    assert is_stop_exit_reason("bracket_stop") and is_stop_exit_reason("atr_stop")
+    assert not is_stop_exit_reason("time_exit") and not is_stop_exit_reason(None)

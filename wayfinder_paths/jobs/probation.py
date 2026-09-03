@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -1636,11 +1637,46 @@ def _sync_trial_archive(store: JobStore, job_id: str, outcome: dict[str, Any]) -
             candidate_id,
             status,
             evidence=str(outcome.get("reason") or "forward probation verdict")[:300],
+            metadata={"forward": _forward_verdict_block(outcome)},
         )
     except ValueError:
         # Legacy experiments can predate the archive. Their immutable trial
         # remains the authoritative receipt and must still finish.
         return
+
+
+_FORWARD_VERDICT_KEYS = (
+    "paired_days",
+    "estimate",
+    "overall_estimate",
+    "lcb",
+    "ucb",
+    "confidence",
+    "candidate_net_pnl",
+    "reference_net_pnl",
+    "candidate_trade_count",
+    "reference_trade_count",
+    "candidate_max_drawdown_pct",
+    "hard_constraint_breach",
+    "outside_loss_pct",
+    "outside_loss_breach",
+)
+
+
+def _forward_verdict_block(outcome: Mapping[str, Any]) -> dict[str, Any]:
+    """The verdict with the numbers it was decided on, for the archive: a
+    kill at -0.01% over seven days on four trades reads as noise to the next
+    design; the sentence "paired utility UCB < 0" alone reads as refutation."""
+    metrics = outcome.get("metrics") or {}
+    block: dict[str, Any] = {
+        "verdict": str(outcome.get("action") or "").removeprefix("probation_"),
+        "reason": outcome.get("reason"),
+        "trial_id": outcome.get("trial_id"),
+    }
+    for key in _FORWARD_VERDICT_KEYS:
+        if metrics.get(key) is not None:
+            block[key] = metrics[key]
+    return block
 
 
 def _stale_promotion_staging(promotion: dict[str, Any], *, current: datetime) -> bool:

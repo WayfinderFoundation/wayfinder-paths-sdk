@@ -16,6 +16,12 @@ from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
+from wayfinder_paths.jobs.trade_forensics import (
+    UNLABELED_EXIT_REASON,
+    fill_exit_reason,
+    is_stop_exit_reason,
+)
+
 if TYPE_CHECKING:
     from wayfinder_paths.jobs.execution.simulator import ExecutionBacktestResult
 
@@ -476,6 +482,10 @@ def build_postmortem(
             "by_side": _bucket_delta(candidate_trades, reference_trades, "side"),
         },
         "economics": economics,
+        "exits": {
+            "candidate": receipt_exits(candidate),
+            "reference": receipt_exits(reference),
+        },
     }
     if previous:
         postmortem["progress_from_previous"] = _progress(candidate, previous)
@@ -580,10 +590,16 @@ def _diagnosis(
         for label, row in (screen.get("slices") or {}).items():
             lcb = row.get("lcb")
             mode = row.get("failure_mode") or {}
+            drawdown = row.get("max_drawdown_pct")
             parts.append(
                 f"{label}: net {100 * _number(row.get('net_return')):+.1f}% on "
                 f"{_integer(row.get('trade_count'))} trades"
                 + (f", LCB {100 * _number(lcb):+.2f}%" if lcb is not None else "")
+                + (
+                    f", drawdown {100 * _number(drawdown):.1f}%"
+                    if drawdown is not None
+                    else ""
+                )
                 + (
                     f", vs seed {100 * _number(mode.get('losing_delta')):+.2f}% on its "
                     f"{_integer(mode.get('losing_days'))} losing days / "
@@ -646,6 +662,9 @@ def _diagnosis(
     if comparator:
         exposure += f" vs {_number(comparator.get('exposure_pct')):.2f}"
     facts = f"{cadence}; {fees}; {exposure}."
+    exits = exits_sentence((postmortem.get("exits") or {}).get("candidate"))
+    if exits:
+        facts = f"{facts[:-1]}; {exits}."
     if primary == "cost_bleed":
         return (
             f"{facts} Fees exceed any plausible edge at this cadence: the "
@@ -704,6 +723,13 @@ def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
             for side in ("candidate", "incumbent", "reference")
             if isinstance(economics.get(side), Mapping)
         }
+    exits = postmortem.get("exits") or {}
+    if isinstance(exits, Mapping) and exits.get("candidate"):
+        compact["exits"] = {
+            side: _compact_exits(exits[side])
+            for side in ("candidate", "reference")
+            if isinstance(exits.get(side), Mapping)
+        }
     screen = postmortem.get("screen")
     if isinstance(screen, Mapping) and screen.get("slices"):
         compact["screen"] = {
@@ -715,6 +741,7 @@ def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
                     for key in (
                         "net_return",
                         "trade_count",
+                        "max_drawdown_pct",
                         "lcb",
                         "route",
                         "failure_mode",
@@ -731,6 +758,32 @@ def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
     if repair_error:
         compact["repair_context"] = {"error": repair_error[:500]}
     return compact
+
+
+_COMPACT_EXIT_REASONS = 6
+
+
+def _compact_exits(exits: Mapping[str, Any]) -> dict[str, Any]:
+    by_reason = exits.get("by_reason") or {}
+    return {
+        "closes": exits.get("closes"),
+        "stop_share": exits.get("stop_share"),
+        "by_reason": dict(list(by_reason.items())[:_COMPACT_EXIT_REASONS]),
+    }
+
+
+def exits_sentence(exits: Mapping[str, Any] | None) -> str:
+    """One clause an agent can act on: stop share first, then the reasons."""
+    if not exits or not exits.get("closes"):
+        return ""
+    parts = [
+        f"{reason} {_integer(cell.get('count'))} ({_number(cell.get('net_pnl')):+.2f})"
+        for reason, cell in list((exits.get("by_reason") or {}).items())[:3]
+    ]
+    return (
+        f"exits: {100 * _number(exits.get('stop_share')):.0f}% stops of "
+        f"{_integer(exits.get('closes'))} closes; " + ", ".join(parts)
+    )
 
 
 def participation_adjusted_score(
@@ -792,7 +845,7 @@ def _objective_score(objective: Mapping[str, Any]) -> float:
 def _trade_view(row: Mapping[str, Any]) -> dict[str, Any]:
     raw = row.get("raw") or {}
     metadata = raw.get("intent_metadata") or raw.get("metadata") or raw
-    return {
+    view: dict[str, Any] = {
         "timestamp": row.get("timestamp"),
         "symbol": row.get("symbol"),
         "side": row.get("side"),
@@ -802,6 +855,51 @@ def _trade_view(row: Mapping[str, Any]) -> dict[str, Any]:
         "realized_pnl_delta": row.get("realized_pnl_delta"),
         "reduce_only": bool(row.get("reduce_only")),
         "action": raw.get("intent_action") or metadata.get("action"),
+    }
+    if view["reduce_only"]:
+        view["exit_reason"] = fill_exit_reason(metadata)
+    elif metadata.get("entry_reason"):
+        view["entry_reason"] = str(metadata["entry_reason"])
+    return view
+
+
+def receipt_exits(receipt: Mapping[str, Any]) -> dict[str, Any] | None:
+    """How the receipt's positions ended: closes by exit reason with their
+    realized PnL, and the share that were protective stops.
+
+    A design with stops on every entry still needs to know whether the stops
+    fire; a 60% stop share with negative stop PnL and positive time-exit PnL
+    is the difference between "widen the stop" and "the entry is wrong".
+    """
+    closes = [row for row in receipt.get("trades") or [] if row.get("reduce_only")]
+    if not closes:
+        return None
+    by_reason: dict[str, dict[str, Any]] = {}
+    for row in closes:
+        reason = str(row.get("exit_reason") or UNLABELED_EXIT_REASON)
+        cell = by_reason.setdefault(reason, {"count": 0, "net_pnl": 0.0, "wins": 0})
+        pnl = _number(row.get("realized_pnl_delta"))
+        cell["count"] += 1
+        cell["net_pnl"] += pnl
+        cell["wins"] += int(pnl > 0)
+    stops = sum(
+        cell["count"]
+        for reason, cell in by_reason.items()
+        if is_stop_exit_reason(reason)
+    )
+    return {
+        "closes": len(closes),
+        "stop_share": round(stops / len(closes), 4),
+        "by_reason": {
+            reason: {
+                "count": cell["count"],
+                "net_pnl": round(cell["net_pnl"], 6),
+                "win_rate": round(cell["wins"] / cell["count"], 4),
+            }
+            for reason, cell in sorted(
+                by_reason.items(), key=lambda item: -item[1]["count"]
+            )
+        },
     }
 
 

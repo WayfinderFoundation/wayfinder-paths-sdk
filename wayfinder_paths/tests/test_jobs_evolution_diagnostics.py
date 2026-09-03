@@ -308,3 +308,87 @@ def test_participation_adjustment_does_not_reward_sparse_non_trading() -> None:
         pytest.approx(-0.4)
     )
     assert participation_adjusted_score(0.1, trade_count=0) == float("-inf")
+
+
+def _close(timestamp: str, *, reason: str, pnl: float) -> dict:
+    return {
+        **_trade(timestamp, pnl=pnl),
+        "side": "sell",
+        "reduce_only": True,
+        "action": "CLOSE",
+        "exit_reason": reason,
+    }
+
+
+def test_postmortem_records_exit_reasons_and_diagnosis_names_stops() -> None:
+    candidate = _receipt(
+        net=-0.01,
+        trades=[
+            _trade("2026-08-01T00:00:00Z"),
+            _close("2026-08-01T02:00:00Z", reason="bracket_stop", pnl=-3.0),
+            _trade("2026-08-01T03:00:00Z"),
+            _close("2026-08-01T05:00:00Z", reason="time_exit", pnl=1.5),
+            _trade("2026-08-01T06:00:00Z"),
+            _close("2026-08-01T08:00:00Z", reason="time_exit", pnl=0.5),
+            _trade("2026-08-02T00:00:00Z"),
+            _close("2026-08-02T02:00:00Z", reason="atr_stop", pnl=-2.0),
+        ],
+    )
+    candidate["window"] = {"days": 2.0, "starting_equity": 100.0}
+    reference = _receipt(net=0.0, trades=[_trade("2026-08-01T00:00:00Z")])
+
+    report = build_postmortem(candidate, reference, min_trades=1)
+
+    exits = report["exits"]["candidate"]
+    assert exits["closes"] == 4 and exits["stop_share"] == 0.5
+    assert exits["by_reason"]["time_exit"] == {
+        "count": 2,
+        "net_pnl": 2.0,
+        "win_rate": 1.0,
+    }
+    assert exits["by_reason"]["bracket_stop"]["net_pnl"] == -3.0
+    assert report["exits"]["reference"] is None  # opens only: nothing closed
+
+    compact = compact_postmortem(report)
+    assert compact["exits"]["candidate"]["stop_share"] == 0.5
+    assert next(iter(compact["exits"]["candidate"]["by_reason"])) == "time_exit"
+    assert "reference" not in compact["exits"]
+
+    order = build_repair_work_order(report)
+    assert "exits: 50% stops of 4 closes; time_exit 2 (+2.00)" in order["diagnosis"]
+
+
+def test_trade_view_labels_closes_from_intent_metadata() -> None:
+    from wayfinder_paths.jobs.evolution_diagnostics import _trade_view
+
+    def fill(reduce_only: bool, metadata: dict) -> dict:
+        return {
+            "timestamp": "2026-08-01T00:00:00Z",
+            "symbol": "BTC",
+            "side": "sell" if reduce_only else "buy",
+            "filled_size": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.1,
+            "realized_pnl_delta": 0.0,
+            "reduce_only": reduce_only,
+            "raw": {
+                "intent_action": "CLOSE" if reduce_only else "OPEN",
+                "intent_metadata": metadata,
+            },
+        }
+
+    assert _trade_view(fill(False, {"entry_reason": "breakout"}))["entry_reason"] == (
+        "breakout"
+    )
+    assert "exit_reason" not in _trade_view(fill(False, {}))
+    assert _trade_view(fill(True, {"exit_reason": "time_exit"}))["exit_reason"] == (
+        "time_exit"
+    )
+    # Engine closes carry a marker, not a label.
+    assert _trade_view(fill(True, {"bracket": {"kind": "stop"}}))["exit_reason"] == (
+        "bracket_stop"
+    )
+    assert _trade_view(fill(True, {"liquidation": True}))["exit_reason"] == (
+        "liquidation"
+    )
+    assert _trade_view(fill(True, {}))["exit_reason"] == "unlabeled"

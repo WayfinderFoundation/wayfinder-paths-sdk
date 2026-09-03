@@ -59,6 +59,7 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
     build_repair_work_order,
     compact_postmortem,
     receipt_economics,
+    receipt_exits,
     resolve_json_pointer,
     result_receipt,
     valid_evidence_pointers,
@@ -136,6 +137,10 @@ from wayfinder_paths.jobs.starters import (
     starter_warmup_bars,
 )
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.trade_forensics import (
+    aggregate_trade_forensics,
+    forensics_for_closed_trades,
+)
 from wayfinder_paths.runner.monitor_state import atomic_write_json, atomic_write_text
 
 CAMPAIGN_STATE_PATH = "state/evolution_campaign.json"
@@ -4566,14 +4571,20 @@ def _candidate_handoff(candidate: dict[str, Any]) -> dict[str, Any]:
 def _attempt_trajectory_row(attempt: Mapping[str, Any]) -> dict[str, Any]:
     postmortem = attempt.get("postmortem") or {}
     economics = ((postmortem.get("economics") or {}).get("candidate")) or {}
+    exits = ((postmortem.get("exits") or {}).get("candidate")) or {}
     quick = ((attempt.get("outcome") or {}).get("quick") or {}).get("stats") or {}
-    return {
+    row = {
         "attempt": attempt.get("attempt"),
         "primary_failure": postmortem.get("primary_failure"),
         "net_return": quick.get("net_return"),
         "fills_per_day": economics.get("fills_per_day"),
         "fee_pct_of_capital": economics.get("fee_pct_of_capital"),
     }
+    if quick.get("max_drawdown_pct") is not None:
+        row["max_drawdown_pct"] = round(abs(float(quick["max_drawdown_pct"])), 6)
+    if exits.get("closes"):
+        row["stop_share"] = exits.get("stop_share")
+    return row
 
 
 def _sync_campaign_archive(store: JobStore, job_id: str, state: dict[str, Any]) -> None:
@@ -4804,6 +4815,12 @@ def _full_dev(
         start_at=validation.bars.timestamps[0],
     )
     compact_validation = _compact_result(validation_result, stats=validation_stats)
+    compact_validation["exits"] = receipt_exits(
+        result_receipt(validation_result, revision=revision)
+    )
+    compact_validation["forensics"] = _validation_forensics(
+        validation_result, validation
+    )
     del validation_result
     gc.collect()
     stress_result, stress_stats = _window_result(
@@ -4891,6 +4908,56 @@ def _full_dev(
             ),
         },
         "evidence": verdict["evidence"],
+    }
+
+
+_FORENSICS_MAX_CLOSES = 120
+_FORENSICS_KEEP = (
+    "count",
+    "avg_realized_bps",
+    "avg_hold_mae_bps",
+    "avg_hold_mfe_bps",
+    "avg_post_exit_favorable_bps",
+    "stop_survival_rate",
+)
+
+
+def _validation_forensics(result: Any, dataset: Any) -> dict[str, Any]:
+    """The candidate's own exit-quality view on the validation window: per
+    exit reason, adverse/favorable excursion while held, what the price did
+    after the exit, and which stop widths the winners would have survived.
+
+    This is the same aggregate the baseline backtest writes for the incumbent
+    (``results/backtest/trade_forensics.json``), so a design can compare the
+    two directly. Best-effort like the baseline's: a forensics failure is not
+    evidence against the candidate.
+    """
+    try:
+        trades = list(result.trades or [])
+        closes = [
+            {
+                **row,
+                "price": row.get("avg_price"),
+                "closed_at": row.get("timestamp"),
+                "net_pnl": row.get("realized_pnl_delta"),
+            }
+            for row in trades
+            if row.get("reduce_only")
+        ][-_FORENSICS_MAX_CLOSES:]
+        if not closes:
+            return {"closes": 0, "by_exit_reason": {}}
+        view = dataset.bars
+        bars_by_symbol = {symbol: view.symbol_frame(symbol) for symbol in view.symbols}
+        rows = forensics_for_closed_trades(bars_by_symbol, closes, trades)
+        aggregate = aggregate_trade_forensics(rows)
+    except Exception as exc:  # noqa: BLE001 - diagnostics must not reject a candidate
+        return {"error": str(exc)[:240]}
+    return {
+        "closes": len(rows),
+        "by_exit_reason": {
+            reason: {key: cell.get(key) for key in _FORENSICS_KEEP if key in cell}
+            for reason, cell in (aggregate.get("by_exit_reason") or {}).items()
+        },
     }
 
 
@@ -5081,6 +5148,11 @@ def _screen_slice_report(
     report: dict[str, Any] = {
         "net_return": float(result.stats.get("net_return") or 0.0),
         "trade_count": int(result.stats.get("trade_count") or 0),
+        # Positive fraction like the gate's ceiling; the simulator reports the
+        # drawdown as a negative return.
+        "max_drawdown_pct": round(
+            abs(float(result.stats.get("max_drawdown_pct") or 0.0)), 6
+        ),
         "paired_days": len(deltas),
         "lcb": _screen_lcb(deltas, confidence),
     }
@@ -5811,6 +5883,22 @@ def _freeze_research_context(store: JobStore, job_id: str) -> dict[str, Any]:
                 "candidate_id": entry.get("candidate_id"),
                 "evidence": str(entry.get("evidence") or "")[:240],
             }
+            forward = metadata.get("forward")
+            if isinstance(forward, dict):
+                refutation["forward"] = {
+                    key: forward.get(key)
+                    for key in (
+                        "verdict",
+                        "paired_days",
+                        "estimate",
+                        "overall_estimate",
+                        "lcb",
+                        "ucb",
+                        "candidate_trade_count",
+                        "candidate_max_drawdown_pct",
+                    )
+                    if forward.get(key) is not None
+                }
             if entry.get("status") != "refuted":
                 refutation.update(
                     {
