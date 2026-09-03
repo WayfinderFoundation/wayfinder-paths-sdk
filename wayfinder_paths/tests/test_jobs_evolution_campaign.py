@@ -4543,3 +4543,48 @@ def test_screen_slices_prefer_an_earlier_window_from_another_macro_regime() -> N
     assert flat["earlier"].bars.timestamps[-1] == slices["recent"].bars.timestamps[
         0
     ] - timedelta(hours=1)
+
+
+def test_campaign_carries_the_feature_store_and_tells_the_designer_to_read_it(
+    tmp_path,
+) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    root = store.job_dir(job_id)
+    bars = _regime_bars()
+    (root / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 2}, "bars": bars}), encoding="utf-8"
+    )
+    # The incumbent declares no features; the store still holds the macro
+    # label a candidate may declare.
+    stamps = sorted({row["timestamp"] for row in bars})
+    store_rows = [
+        {"timestamp": stamp, "name": name, "value": value, "symbol": symbol}
+        for stamp in stamps[::60]
+        for symbol in ("SOL", "XRP", "POL", "HYPE")
+        for name, value in (("macro_regime", 1.0), ("macro_ret_28d", 0.12))
+    ]
+    (root / "state").mkdir(exist_ok=True)
+    (root / "state/features.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in store_rows), encoding="utf-8"
+    )
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    manifest = store.read_json(job_id, str(state["manifest"]))
+
+    copied = [f for f in manifest["features"] if f.get("declared") is False]
+    assert copied and copied[0]["path"].endswith("dataset/state/features.jsonl")
+    assert (
+        root
+        / "research/evolution/campaigns"
+        / state["campaign_id"]
+        / "dataset/state/features.jsonl"
+    ).exists()
+    runtime = manifest["regime_context"]["macro"]["runtime_feature"]
+    assert runtime["available"] is True and runtime["codes"] == {
+        "bull": 1,
+        "chop": 0,
+        "bear": -1,
+    }
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert "ctx.view.feature('macro_regime')" in prompt["next_action"]
+    assert "execution_spec.data_contract.features" in prompt["next_action"]

@@ -39,7 +39,11 @@ from wayfinder_paths.jobs.bench.identity import (
     ensure_model_declared,
     runtime_identity,
 )
-from wayfinder_paths.jobs.bench.world import install_development_world, load_world
+from wayfinder_paths.jobs.bench.world import (
+    install_development_world,
+    load_world,
+    reveal_holdout_features,
+)
 from wayfinder_paths.jobs.benchmarks.agent_adapter import (
     DEFAULT_OPENCODE,
     install_agent_workspace,
@@ -487,6 +491,7 @@ def run_probation_phase(
         }
         holdout = {"verdict": "invalid", "reason": invalid_reason}
         return forward, holdout, invalid_reason
+    reveal_holdout_features(sealed_dir, store.job_dir(job_id))
     forward = replay_probation(
         store,
         job_id,
@@ -511,6 +516,7 @@ def run_probation_phase(
             world_dir=world_dir,
             sealed_dir=sealed_dir,
             output_dir=holdout_output or (run_root / "results" / "holdout"),
+            feature_root=store.job_dir(job_id),
         )
         if holdout.get("verdict") == "invalid":
             invalid_reason = "holdout_race_invalid"

@@ -14,9 +14,15 @@ from wayfinder_paths.jobs.bundles import (
     copy_job_bundle,
     resolve_bundle_script_entrypoint,
 )
-from wayfinder_paths.jobs.execution.features import parse_feature_specs
+from wayfinder_paths.jobs.execution.features import (
+    DEFAULT_FEATURES_PATH,
+    parse_feature_specs,
+)
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
-from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+from wayfinder_paths.jobs.execution.primitives import (
+    ExecutionSpec,
+    bar_interval_seconds,
+)
 from wayfinder_paths.jobs.execution.simulator import (
     PreparedExecutionDataset,
     simulate_execution,
@@ -126,6 +132,15 @@ def prepare_world(
         cutoff=cutoff,
         spec=spec,
     )
+    holdout_features = _freeze_macro_features(
+        rows,
+        world_dir=world_dir,
+        sealed_dir=sealed_dir,
+        cutoff=cutoff,
+        end=end,
+        spec=spec,
+        frozen=features,
+    )
 
     source_bars = source_job / "results" / "backtest" / "input_bars.json"
     manifest = {
@@ -156,6 +171,7 @@ def prepare_world(
         },
         "baseline": baseline,
         "features": features,
+        "holdout_features": holdout_features,
         # The runner receives sealed_dir separately. No owner path or holdout
         # bytes are written into the agent-visible world.
         "holdout_locator": "owner-supplied",
@@ -264,6 +280,127 @@ def _row_timestamp(row: dict[str, Any]) -> datetime:
     if stamp.tzinfo is None:
         stamp = stamp.tz_localize("UTC")
     return stamp.tz_convert("UTC").to_pydatetime()
+
+
+HOLDOUT_FEATURES_FILE = "features-holdout.jsonl"
+
+
+def _freeze_macro_features(
+    rows: list[dict[str, Any]],
+    *,
+    world_dir: Path,
+    sealed_dir: Path,
+    cutoff: datetime,
+    end: datetime,
+    spec: ExecutionSpec,
+    frozen: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The macro regime as a feature the sandbox strategies can consume.
+
+    Benchmark mode never refreshes derived features, so the world computes
+    the rows itself from the frozen bars: the agent-visible prefix (at or
+    before the cutoff) joins the job's feature store, and the holdout rows
+    stay in the sealed directory until the owner replays the week."""
+    from wayfinder_paths.jobs.regime import macro_feature_store_rows
+
+    frame = pd.DataFrame(rows)
+    if frame.empty or "close" not in frame.columns:
+        return {"rows": 0, "holdout_rows": 0}
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+    closes = frame.pivot_table(
+        index="timestamp", columns="symbol", values="close", aggfunc="last"
+    ).sort_index()
+    bar_seconds = bar_interval_seconds(spec.data_contract.get("bar_interval")) or 300
+    every_bars = max(1, 3600 // int(bar_seconds))
+    store_rows = macro_feature_store_rows(
+        closes, every_bars=every_bars, written_at=datetime.now(UTC).isoformat()
+    )
+    development = [row for row in store_rows if _row_timestamp(row) <= cutoff]
+    holdout = [row for row in store_rows if cutoff < _row_timestamp(row) <= end]
+    names = sorted({str(row["name"]) for row in store_rows})
+    if development:
+        existing = next(
+            (
+                item
+                for item in frozen
+                if item.get("target_path") == DEFAULT_FEATURES_PATH
+            ),
+            None,
+        )
+        if existing is None:
+            target = world_dir / "features" / f"feature-{len(frozen):02d}.jsonl"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("", encoding="utf-8")
+            existing = {
+                "target_path": DEFAULT_FEATURES_PATH,
+                "path": str(target.relative_to(world_dir)),
+                "rows": 0,
+            }
+            frozen.append(existing)
+        target = world_dir / str(existing["path"])
+        with target.open("a", encoding="utf-8") as handle:
+            for row in development:
+                handle.write(json.dumps(row, sort_keys=True) + "\n")
+        existing["rows"] = int(existing.get("rows") or 0) + len(development)
+        existing["sha256"] = sha256_file(target)
+        existing["derived"] = names
+    sealed_path = sealed_dir / HOLDOUT_FEATURES_FILE
+    sealed_path.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in holdout),
+        encoding="utf-8",
+    )
+    return {
+        "names": names,
+        "every_bars": every_bars,
+        "rows": len(development),
+        "holdout_rows": len(holdout),
+        "holdout_sha256": sha256_file(sealed_path),
+    }
+
+
+def reveal_holdout_features(sealed_dir: Path, job_root: Path) -> int:
+    """Owner-side, after the campaign: append the sealed holdout feature rows
+    to the sandbox job's store so the replayed week reads the label it would
+    have had live. The next loop's install rewrites the store from its own
+    prefix, so nothing leaks forward."""
+    source = sealed_dir / HOLDOUT_FEATURES_FILE
+    if not source.exists():
+        return 0
+    target = job_root / DEFAULT_FEATURES_PATH
+    seen: set[tuple[str, str, str]] = set()
+    if target.exists():
+        for line in target.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                seen.add(
+                    (
+                        str(row.get("timestamp")),
+                        str(row.get("name")),
+                        str(row.get("symbol")),
+                    )
+                )
+    appended = 0
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8") as handle:
+        for line in source.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            key = (
+                str(row.get("timestamp")),
+                str(row.get("name")),
+                str(row.get("symbol")),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
+            appended += 1
+    return appended
 
 
 def _freeze_feature_prefixes(

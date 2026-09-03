@@ -17,7 +17,8 @@ from wayfinder_paths.jobs.bench.world import load_world
 from wayfinder_paths.jobs.bundles import resolve_bundle_script_entrypoint
 from wayfinder_paths.jobs.candidate_shadow import run_candidate_shadows
 from wayfinder_paths.jobs.economics import block_bootstrap_lcb
-from wayfinder_paths.jobs.execution.job import _load_job_yaml
+from wayfinder_paths.jobs.execution.features import load_feature_rows, merge_features
+from wayfinder_paths.jobs.execution.job import _load_job_yaml, _store_feature_specs
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
     ExecutionSpec,
@@ -53,8 +54,11 @@ def race_bundles(
     world_dir: Path,
     sealed_dir: Path,
     output_dir: Path | None = None,
+    feature_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Evaluate A and B on identical frozen rows and pre-written rules."""
+    """Evaluate A and B on identical frozen rows and pre-written rules.
+    ``feature_root`` is the job whose feature store (derived columns such as
+    the macro regime) both bundles may declare and read."""
     world = load_world(world_dir, sealed_dir)
     cutoff = _parse(world["manifest"]["generation_cutoff"])
     rows = [
@@ -62,8 +66,20 @@ def race_bundles(
         *(world["holdout"].get("bars") or []),
     ]
     environment = dict(world["manifest"].get("execution_environment") or {})
-    a = evaluate_bundle(a_bundle, rows=rows, cutoff=cutoff, environment=environment)
-    b = evaluate_bundle(b_bundle, rows=rows, cutoff=cutoff, environment=environment)
+    a = evaluate_bundle(
+        a_bundle,
+        rows=rows,
+        cutoff=cutoff,
+        environment=environment,
+        feature_root=feature_root,
+    )
+    b = evaluate_bundle(
+        b_bundle,
+        rows=rows,
+        cutoff=cutoff,
+        environment=environment,
+        feature_root=feature_root,
+    )
     days = sorted(set(a["daily_pnl"]) & set(b["daily_pnl"]))
     deltas = paired_daily_utility_deltas(
         a["daily_pnl"], b["daily_pnl"], capital=environment_capital(environment)
@@ -162,6 +178,7 @@ def evaluate_bundle(
     rows: Sequence[Mapping[str, Any]],
     cutoff: datetime,
     environment: dict[str, Any] | None = None,
+    feature_root: Path | None = None,
 ) -> dict[str, Any]:
     bundle = bundle.resolve()
     before = compute_workspace_revision(bundle)
@@ -179,6 +196,12 @@ def evaluate_bundle(
     dataset = PreparedExecutionDataset.from_rows(
         list(rows), {"source": "sealed_benchmark_world"}
     )
+    if feature_root is not None:
+        dataset = PreparedExecutionDataset(
+            merge_store_features(dataset.bars, feature_root),
+            dict(dataset.metadata),
+            list(dataset.market_events),
+        )
     probe = window_invariance_probe(script, dataset.bars, spec, params)
     result = simulate_execution(script, dataset, spec, params)
     stats = _test_window_stats(result, pd.Timestamp(cutoff), spec, params)
@@ -233,6 +256,18 @@ def evaluate_bundle(
     }
 
 
+def merge_store_features(view: CompletedBarsView, root: Path) -> CompletedBarsView:
+    """As-of merge of every feature in the job's store onto a replay view.
+    Replays build their bars from frozen rows, not the driver, so a strategy
+    that declares a derived column (the macro regime) would otherwise meet a
+    view without it and fail on the first tick."""
+    specs = _store_feature_specs((root,), set())
+    if not specs:
+        return view
+    frames = load_feature_rows([root], specs)
+    return merge_features(view, frames, specs)
+
+
 def replay_probation(
     store: JobStore,
     job_id: str,
@@ -283,7 +318,9 @@ def replay_probation(
         row for row in development_rows if _row_timestamp(row) <= pd.Timestamp(cutoff)
     ][-2_000:]
     replay_rows: list[Mapping[str, Any]] = [*warmup_rows, *holdout_rows]
-    view = CompletedBarsView.from_rows(replay_rows)
+    view = merge_store_features(
+        CompletedBarsView.from_rows(replay_rows), store.job_dir(job_id)
+    )
     end = max(view.timestamps)
     asyncio.run(run_candidate_shadows(store, job_id, view=view, now=end))
     maybe_adjudicate_probation(store, job_id, now=end.to_pydatetime())

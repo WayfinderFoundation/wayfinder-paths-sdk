@@ -418,3 +418,29 @@ def test_refresh_extends_stale_dataset_with_recorded_provenance(
         job.id, store=store, derive=healthy, refresh_dataset=False
     )
     assert len(fetches) == 1
+
+
+def test_macro_set_writes_the_regime_a_strategy_can_read(tmp_path: Path) -> None:
+    store, job_id = _make_job(tmp_path)
+    # Thirty-one days of 5m bars: the 28-day window is covered for three days.
+    (store.job_dir(job_id) / "results" / "backtest" / "input_bars.json").write_text(
+        json.dumps(_panel_frame(count=288 * 31)), encoding="utf-8"
+    )
+
+    result = derive_features_job(job_id, sets=("macro",), store=store)
+
+    assert {"macro_ret_7d", "macro_ret_28d", "macro_regime"} <= set(
+        result["per_feature"]
+    )
+    rows = [
+        json.loads(line)
+        for line in (store.job_dir(job_id) / "state" / "features.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    codes = {row["value"] for row in rows if row["name"] == "macro_regime"}
+    assert codes <= {-1.0, 0.0, 1.0}
+    assert {row["symbol"] for row in rows if row["name"] == "macro_regime"} == {
+        "LIT",
+        "SOL",
+    }

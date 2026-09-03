@@ -1322,3 +1322,62 @@ def test_settle_recovers_a_dead_finalize_in_the_foreground(monkeypatch, tmp_path
     )
     assert runner_module._wait_for_settle(FakeStore(), "demo", timeout_s=1) is False
     assert finalized == []
+
+
+def test_world_freezes_the_macro_feature_and_reveals_the_holdout_rows(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.bench.forward_replay import merge_store_features
+    from wayfinder_paths.jobs.bench.world import (
+        install_development_world,
+        reveal_holdout_features,
+    )
+    from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+
+    store, job_id, _ = _job(tmp_path / "source")
+    rows = _bars(count=24 * 40)  # forty days of hourly bars
+    (store.job_dir(job_id) / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 40}, "bars": rows}), encoding="utf-8"
+    )
+    cutoff = datetime(2026, 1, 25, 23, tzinfo=UTC)
+    end = datetime(2026, 2, 9, 23, tzinfo=UTC)
+    world_dir, sealed_dir = tmp_path / "world", tmp_path / "owner-sealed"
+    manifest = prepare_world(
+        store.job_dir(job_id),
+        world_dir,
+        generation_cutoff=cutoff,
+        holdout_end=end,
+        sealed_dir=sealed_dir,
+        world_id="macro-world",
+    )
+
+    frozen = manifest["features"]
+    assert frozen and frozen[0]["target_path"] == "state/features.jsonl"
+    assert "macro_ret_7d" in frozen[0]["derived"]
+    dev_rows = [
+        json.loads(line)
+        for line in (world_dir / frozen[0]["path"]).read_text().splitlines()
+    ]
+    assert dev_rows and max(r["timestamp"] for r in dev_rows) <= cutoff.isoformat()
+    # The 28-day label only exists past day 28, which is inside the holdout.
+    assert not any(r["name"] == "macro_regime" for r in dev_rows)
+    sealed = [
+        json.loads(line)
+        for line in (sealed_dir / "features-holdout.jsonl").read_text().splitlines()
+    ]
+    assert any(r["name"] == "macro_regime" for r in sealed)
+    assert min(r["timestamp"] for r in sealed) > cutoff.isoformat()
+    assert manifest["holdout_features"]["holdout_rows"] == len(sealed)
+
+    # Install: the prefix lands in the sandbox job's store; reveal appends the
+    # holdout rows once, and a replay view then carries the columns.
+    sandbox_job = tmp_path / "sandbox-job"
+    sandbox_job.mkdir()
+    install_development_world(world_dir, destination_job=sandbox_job)
+    store_path = sandbox_job / "state" / "features.jsonl"
+    assert len(store_path.read_text().splitlines()) == len(dev_rows)
+    assert reveal_holdout_features(sealed_dir, sandbox_job) == len(sealed)
+    assert reveal_holdout_features(sealed_dir, sandbox_job) == 0
+    view = merge_store_features(CompletedBarsView.from_rows(rows), sandbox_job)
+    assert view.feature("macro_regime") in {-1.0, 0.0, 1.0}
+    assert view.feature("macro_ret_7d") is not None

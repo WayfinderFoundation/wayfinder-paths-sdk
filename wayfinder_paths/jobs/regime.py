@@ -30,6 +30,91 @@ REGIME_VOL_BASELINE_BARS = 400
 # strategies still receive only their own declared compute window.
 REGIME_FEATURE_WARMUP_BARS = 450
 
+# Macro regime: the universe-median cumulative close-to-close return over a
+# window, labelled bull / bear / chop. The portfolio cells above work on the
+# bar interval (a 50-bar trend is four hours on 5-minute bars) and see a +45%
+# week as the same shuffle of micro-cells as the chop before it; this is the
+# scale a designer means by "bear flipping to bull". Design time reads it from
+# the campaign pack; runtime reads the same label as a derived feature column
+# (numeric store: +1 bull, 0 chop, -1 bear) refreshed hourly.
+MACRO_BULL_RETURN = 0.10
+MACRO_BEAR_RETURN = -0.10
+MACRO_RETURN_WINDOWS_DAYS = (7, 28)
+MACRO_LABEL_WINDOW_DAYS = 28
+MACRO_FEATURE_NAME = "macro_regime"
+MACRO_RETURN_FEATURE_NAMES = tuple(
+    f"macro_ret_{days}d" for days in MACRO_RETURN_WINDOWS_DAYS
+)
+MACRO_CODES = {"bull": 1.0, "chop": 0.0, "bear": -1.0}
+
+
+def macro_label(median_return: float) -> str:
+    if median_return >= MACRO_BULL_RETURN:
+        return "bull"
+    if median_return <= MACRO_BEAR_RETURN:
+        return "bear"
+    return "chop"
+
+
+def macro_feature_columns(closes: pd.DataFrame) -> dict[str, pd.Series]:
+    """Panel-wide macro series at every timestamp of a close matrix (index:
+    UTC timestamps, columns: symbols): the universe-median trailing return
+    over each window and the coded label of the labelling window. Causal by
+    construction — the value at t uses closes at or before t and the last
+    close at or before t minus the window — so appending bars never changes
+    an earlier value. NaN until the window is covered."""
+    if closes.empty:
+        return {}
+    ordered = closes.sort_index().astype(float)
+    out: dict[str, pd.Series] = {}
+    label_source: pd.Series | None = None
+    for days in MACRO_RETURN_WINDOWS_DAYS:
+        shifted = ordered.copy()
+        shifted.index = shifted.index + pd.Timedelta(days=days)
+        # reindex+ffill leaves every timestamp before the first shifted
+        # stamp NaN, so the window is empty until it is fully covered.
+        prior = shifted.reindex(ordered.index, method="ffill")
+        median = (ordered / prior - 1.0).median(axis=1, skipna=True)
+        median = median.where(prior.notna().any(axis=1))
+        out[f"macro_ret_{days}d"] = median
+        if days == MACRO_LABEL_WINDOW_DAYS:
+            label_source = median
+    if label_source is not None:
+        out[MACRO_FEATURE_NAME] = label_source.map(
+            lambda value: MACRO_CODES[macro_label(float(value))]
+            if pd.notna(value)
+            else float("nan")
+        )
+    return out
+
+
+def macro_feature_store_rows(
+    closes: pd.DataFrame, *, every_bars: int, written_at: str
+) -> list[dict[str, Any]]:
+    """The macro series as feature-store rows (one per symbol, the panel-wide
+    value repeated) at a coarse cadence, the shape `derive_features_job`
+    writes and `merge_features` reads."""
+    columns = macro_feature_columns(closes)
+    if not columns:
+        return []
+    stamps = closes.sort_index().index[:: max(1, int(every_bars))]
+    rows: list[dict[str, Any]] = []
+    for name, series in columns.items():
+        sampled = series.loc[series.index.intersection(stamps)].dropna()
+        for stamp, value in sampled.items():
+            for symbol in closes.columns:
+                rows.append(
+                    {
+                        "timestamp": pd.Timestamp(stamp).isoformat(),
+                        "name": name,
+                        "value": round(float(value), 8),
+                        "symbol": str(symbol),
+                        "written_at": written_at,
+                    }
+                )
+    rows.sort(key=lambda row: (row["timestamp"], row["name"], row["symbol"]))
+    return rows
+
 
 def declared_regimes(params: Mapping[str, Any]) -> tuple[str, ...]:
     """Validated regime declaration; an absent declaration means legacy mode."""

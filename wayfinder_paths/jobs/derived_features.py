@@ -78,8 +78,9 @@ def derive_features_job(
     store: JobStore | None = None,
     fetch_closes: Callable[[str, int, int], pd.Series] | None = None,
 ) -> dict[str, Any]:
-    """Compute and append derived feature rows. Sets: cross, exog, venue."""
-    unknown = set(sets) - {"cross", "exog", "venue", "regime"}
+    """Compute and append derived feature rows. Sets: cross, exog, venue,
+    regime, macro."""
+    unknown = set(sets) - {"cross", "exog", "venue", "regime", "macro"}
     if unknown:
         raise ValueError(f"unknown feature sets: {sorted(unknown)}")
     store = store or JobStore()
@@ -136,6 +137,14 @@ def derive_features_job(
         breadth = panel_breadth(above, 1.0, min_assets=len(symbols))
         _add(f"breadth_sma{BREADTH_SMA}", breadth * len(symbols))
         _add("panelret_lag1", returns.mean(axis=1).shift(1))
+
+    if "macro" in sets:
+        from wayfinder_paths.jobs.regime import macro_feature_columns
+
+        # Universe-median trailing returns and the bull/bear/chop code: the
+        # regime a designer means, readable in decide() as a feature column.
+        for name, series in macro_feature_columns(closes).items():
+            _add(name, series)
 
     if "regime" in sets:
         from wayfinder_paths.jobs.indicators import REGIME_LABELS, classify_regimes
@@ -300,7 +309,7 @@ REFRESH_STAMP_PATH = "results/research/derived_refresh.json"
 # Just under the hourly design cadence so a 30m wake rhythm refreshes every
 # other wake instead of aliasing to 90m.
 REFRESH_MAX_AGE_S = 3300
-_REFRESH_SETS = ("cross", "exog", "venue", "regime")
+_REFRESH_SETS = ("cross", "exog", "venue", "regime", "macro")
 # Features derive over the job DATASET, so they can never advance past its
 # newest bar. The dataset historically refreshed only as a side effect of
 # applies/validations — features froze for 15h+ between agent activity.

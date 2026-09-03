@@ -66,7 +66,10 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
     valid_evidence_pointers,
 )
 from wayfinder_paths.jobs.evolution_funnel import summarize_evolution_funnel
-from wayfinder_paths.jobs.execution.features import parse_feature_specs
+from wayfinder_paths.jobs.execution.features import (
+    DEFAULT_FEATURES_PATH,
+    parse_feature_specs,
+)
 from wayfinder_paths.jobs.execution.job import _load_dataset, _load_job_yaml
 from wayfinder_paths.jobs.execution.optimize import (
     is_search_space,
@@ -112,10 +115,14 @@ from wayfinder_paths.jobs.indicators import REGIME_LABELS
 from wayfinder_paths.jobs.isolated_phase import run_isolated_phase
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.regime import (
+    MACRO_CODES,
+    MACRO_FEATURE_NAME,
+    MACRO_RETURN_FEATURE_NAMES,
     MIXED_REGIME,
     PORTFOLIO_REGIME_CLASSIFIER,
     classify_portfolio_regimes,
     declared_regimes,
+    macro_label,
     opposite_regime,
     regime_universe,
 )
@@ -607,6 +614,9 @@ def _campaign_regime_context(
         rows = payload.get("bars") if isinstance(payload, dict) else payload
         if isinstance(rows, list) and rows:
             macro = _macro_regime_context(pd.DataFrame(rows))
+            macro["runtime_feature"] = _macro_runtime_feature(
+                dataset_path.parents[2] / DEFAULT_FEATURES_PATH
+            )
     except (KeyError, OSError, TypeError, ValueError) as exc:
         macro = {"available": False, "reason": str(exc)[:240]}
     if not enabled:
@@ -5143,25 +5153,14 @@ def _tail(dataset: PreparedExecutionDataset, bars: int) -> PreparedExecutionData
 
 _SCREEN_SLICE_BARS = 10_000
 _SCREEN_MIN_EARLIER_BARS = 2_000
-# Macro regime of a window: the universe-median cumulative close-to-close
-# return over it. The portfolio cell classifier works on 5-minute bars (a
-# 50-bar trend is four hours) and sees a +45% week as the same shuffle of
-# micro-cells as the chop before it; this is the scale a designer means by
+# Macro regime of a window (see regime.MACRO_*): the universe-median
+# cumulative close-to-close return over it, at the scale a designer means by
 # "bear flipping to bull".
-_MACRO_BULL_RETURN = 0.10
-_MACRO_BEAR_RETURN = -0.10
 _MACRO_WEEK_MOVE = 0.08
 _MACRO_LEG_WEEKS = 4
 _MACRO_LEG_RETURN = 0.15
 _SCREEN_MACRO_STEP_BARS = 2_500
-
-
-def _macro_label(median_return: float) -> str:
-    if median_return >= _MACRO_BULL_RETURN:
-        return "bull"
-    if median_return <= _MACRO_BEAR_RETURN:
-        return "bear"
-    return "chop"
+_macro_label = macro_label
 
 
 def _slice_macro_regime(dataset: PreparedExecutionDataset) -> dict[str, Any]:
@@ -5230,6 +5229,25 @@ def _macro_regime_context(frame: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+def _macro_runtime_feature(store_path: Path) -> dict[str, Any]:
+    """Whether the campaign's frozen feature store carries the macro label a
+    strategy can read at decision time, and how to consume it."""
+    available = False
+    if store_path.exists():
+        needle = f'"name": "{MACRO_FEATURE_NAME}"'
+        with store_path.open(encoding="utf-8") as handle:
+            available = any(needle in line for line in handle)
+    return {
+        "available": available,
+        "name": MACRO_FEATURE_NAME,
+        "columns": [MACRO_FEATURE_NAME, *MACRO_RETURN_FEATURE_NAMES],
+        "codes": {label: int(code) for label, code in MACRO_CODES.items()},
+        "declare": {"name": MACRO_FEATURE_NAME, "source": "file"},
+        "read": f"ctx.view.feature({MACRO_FEATURE_NAME!r})",
+        "cadence": "hourly, causal (as-of the last completed bar)",
+    }
+
+
 def macro_regime_sentence(macro: Mapping[str, Any] | None) -> str:
     if not macro or not macro.get("recent"):
         return ""
@@ -5253,7 +5271,19 @@ def macro_regime_sentence(macro: Mapping[str, Any] | None) -> str:
             f"; it contains no {' or '.join(missing)} leg of {coverage.get('leg_weeks')}+ "
             "weeks, so a design that earns only there cannot be validated here"
         )
-    return text + ". Say which macro regime each hypothesis earns in. "
+    text += ". Say which macro regime each hypothesis earns in. "
+    runtime = macro.get("runtime_feature") or {}
+    if runtime.get("available"):
+        text += (
+            f"The same label is a runtime feature column: declare "
+            f"{json.dumps(runtime.get('declare'))} under "
+            "execution_spec.data_contract.features in the candidate job.yaml and "
+            f"read {runtime.get('read')} in decide() (1 bull, 0 chop, -1 bear; "
+            f"{', '.join(MACRO_RETURN_FEATURE_NAMES)} alongside), refreshed hourly "
+            "and causal, so a strategy can condition its entries on the macro "
+            "regime its hypothesis names. "
+        )
+    return text
 
 
 _SCREEN_BOOTSTRAP_BLOCK_DAYS = 2
@@ -6530,8 +6560,8 @@ def _snapshot_campaign_inputs(
     features: list[dict[str, Any]] = []
     job_data = _load_job_yaml(active_root)
     spec_data, _ = resolve_execution_spec(active_root, job_data)
+    copied: set[Path] = set()
     if spec_data:
-        copied: set[Path] = set()
         for feature in parse_feature_specs(ExecutionSpec.from_dict(spec_data)):
             relative = Path(feature.path)
             if relative.is_absolute():
@@ -6563,6 +6593,24 @@ def _snapshot_campaign_inputs(
                     "bytes": destination.stat().st_size,
                 }
             )
+    # The store itself rides along even when the incumbent declares
+    # nothing: a candidate may declare a derived column (the macro
+    # regime) the incumbent never used, and its screen must find it.
+    store_source = (active_root / DEFAULT_FEATURES_PATH).resolve()
+    if store_source.exists() and store_source not in copied:
+        destination = (data_root / DEFAULT_FEATURES_PATH).resolve()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if not _write_timeseries_prefix(store_source, destination, cutoff=cutoff):
+            shutil.copy2(store_source, destination)
+        copied.add(store_source)
+        features.append(
+            {
+                "path": f"{CAMPAIGN_DATA_ROOT}/{DEFAULT_FEATURES_PATH}",
+                "sha256": _file_hash(destination),
+                "bytes": destination.stat().st_size,
+                "declared": False,
+            }
+        )
 
     forward_path = campaign_root / FORWARD_SNAPSHOT
     atomic_write_json(forward_path, experience)

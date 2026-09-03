@@ -431,3 +431,35 @@ def test_macro_regime_context_sees_a_bull_leg_and_says_what_is_missing() -> None
     assert sentence.startswith("Macro regime: last 7 days")
     assert "contains no bear leg" in sentence
     assert macro_regime_sentence(None) == ""
+
+
+def test_macro_feature_columns_are_causal_and_coded() -> None:
+    from wayfinder_paths.jobs.regime import (
+        MACRO_CODES,
+        macro_feature_columns,
+        macro_feature_store_rows,
+    )
+
+    index = pd.date_range("2026-01-01", periods=24 * 40, freq="h", tz="UTC")
+    steps = np.arange(len(index))
+    # Flat for twenty days, then +1.2% a day.
+    level = np.where(steps < 24 * 20, 100.0, 100.0 * (1 + 0.012 * (steps - 480) / 24))
+    closes = pd.DataFrame({"A": level, "B": level * 1.1, "C": level * 0.9}, index=index)
+
+    columns = macro_feature_columns(closes)
+
+    assert set(columns) == {"macro_ret_7d", "macro_ret_28d", "macro_regime"}
+    assert columns["macro_ret_7d"].dropna().index[0] == index[24 * 7]
+    assert columns["macro_ret_28d"].dropna().index[0] == index[24 * 28]
+    assert columns["macro_regime"].loc[index[24 * 30]] == MACRO_CODES["bull"]
+    assert abs(columns["macro_ret_28d"].loc[index[24 * 30]] - 0.12) < 0.01
+    # Prefix property: appending bars never changes an earlier value.
+    prefix = macro_feature_columns(closes.iloc[:-100])["macro_ret_28d"]
+    assert prefix.fillna(-9).equals(
+        columns["macro_ret_28d"].loc[prefix.index].fillna(-9)
+    )
+    rows = macro_feature_store_rows(closes, every_bars=24, written_at="t")
+    assert {row["symbol"] for row in rows} == {"A", "B", "C"}
+    assert all(row["name"].startswith("macro_") for row in rows)
+    sample = next(row for row in rows if row["name"] == "macro_regime")
+    assert sample["value"] in {-1.0, 0.0, 1.0}
