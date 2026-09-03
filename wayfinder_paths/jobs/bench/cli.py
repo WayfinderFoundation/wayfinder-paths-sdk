@@ -11,6 +11,7 @@ from typing import Any
 
 from wayfinder_paths.jobs.bench.env import atomic_json, git_sha, sha256_file
 from wayfinder_paths.jobs.bench.forward_replay import race_bundles
+from wayfinder_paths.jobs.bench.leaders import freeze_leader_closes
 from wayfinder_paths.jobs.bench.recurrence import run_recurrence
 from wayfinder_paths.jobs.bench.runner import run_experiment
 from wayfinder_paths.jobs.bench.world import prepare_world
@@ -51,6 +52,12 @@ def main(argv: list[str] | None = None) -> None:
     recurrence = commands.add_parser("recur")
     recurrence.add_argument("config", type=Path)
 
+    leaders = commands.add_parser("freeze-leaders")
+    leaders.add_argument("source_job", type=Path)
+    leaders.add_argument("--days", required=True, type=int)
+    leaders.add_argument("--symbols", nargs="+", default=None)
+    leaders.add_argument("--exchange", default="binance")
+
     args = parser.parse_args(resolved_argv)
     if args.command == "prepare-world":
         result = prepare_world(
@@ -75,6 +82,13 @@ def main(argv: list[str] | None = None) -> None:
         result = _rerun_race(args.race_dir)
     elif args.command == "recur":
         result = run_recurrence(args.config)
+    elif args.command == "freeze-leaders":
+        result = freeze_leader_closes(
+            args.source_job,
+            days=args.days,
+            **({"symbols": tuple(args.symbols)} if args.symbols else {}),
+            exchange_id=args.exchange,
+        )
     else:
         result = run_experiment(args.config)
     print(json.dumps(result, indent=2, sort_keys=True, default=str))

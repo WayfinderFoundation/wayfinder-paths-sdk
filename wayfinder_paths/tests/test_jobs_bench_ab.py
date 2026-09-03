@@ -1381,3 +1381,131 @@ def test_world_freezes_the_macro_feature_and_reveals_the_holdout_rows(
     view = merge_store_features(CompletedBarsView.from_rows(rows), sandbox_job)
     assert view.feature("macro_regime") in {-1.0, 0.0, 1.0}
     assert view.feature("macro_ret_7d") is not None
+
+
+def _leader_file(source_job: Path, *, days: int, daily_growth: float = 0.02) -> None:
+    from wayfinder_paths.jobs.bench.leaders import LEADER_CLOSES_RELATIVE
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    closes = []
+    for hour in range(24 * days):
+        level = 100.0 * (1 + daily_growth) ** (hour / 24)
+        stamp = (start + timedelta(hours=hour)).isoformat()
+        closes.append({"timestamp": stamp, "symbol": "BTC", "close": level})
+        closes.append({"timestamp": stamp, "symbol": "ETH", "close": level * 0.05})
+    path = source_job / LEADER_CLOSES_RELATIVE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "metadata": {"interval": "1h", "symbols": ["BTC", "ETH"]},
+                "closes": closes,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_world_freezes_the_leader_feature_from_the_leader_file(tmp_path: Path) -> None:
+    from wayfinder_paths.jobs.bench.forward_replay import merge_store_features
+    from wayfinder_paths.jobs.bench.world import (
+        install_development_world,
+        reveal_holdout_features,
+    )
+    from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+
+    store, job_id, _ = _job(tmp_path / "source")
+    rows = _bars(count=24 * 40)
+    (store.job_dir(job_id) / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 40}, "bars": rows}), encoding="utf-8"
+    )
+    _leader_file(store.job_dir(job_id), days=40)
+    cutoff = datetime(2026, 1, 25, 23, tzinfo=UTC)
+    end = datetime(2026, 2, 9, 23, tzinfo=UTC)
+    world_dir, sealed_dir = tmp_path / "world", tmp_path / "owner-sealed"
+
+    manifest = prepare_world(
+        store.job_dir(job_id),
+        world_dir,
+        generation_cutoff=cutoff,
+        holdout_end=end,
+        sealed_dir=sealed_dir,
+        world_id="leader-world",
+    )
+
+    frozen = manifest["features"]
+    assert "leader_state" in frozen[0]["derived"]
+    assert "macro_ret_7d" in frozen[0]["derived"]
+    leaders = manifest["holdout_features"]["leaders"]
+    assert leaders["symbols"] == ["BTC", "ETH"] and leaders["interval"] == "1h"
+    dev_rows = [
+        json.loads(line)
+        for line in (world_dir / frozen[0]["path"]).read_text().splitlines()
+    ]
+    states = [r for r in dev_rows if r["name"] == "leader_state"]
+    assert states and max(r["timestamp"] for r in states) <= cutoff.isoformat()
+    assert {r["value"] for r in states} == {1.0}  # +2%/day is a broad rally
+    sealed = [
+        json.loads(line)
+        for line in (sealed_dir / "features-holdout.jsonl").read_text().splitlines()
+    ]
+    assert any(r["name"] == "leader_state" for r in sealed)
+    assert min(r["timestamp"] for r in sealed) > cutoff.isoformat()
+
+    sandbox_job = tmp_path / "sandbox-job"
+    sandbox_job.mkdir()
+    install_development_world(world_dir, destination_job=sandbox_job)
+    assert reveal_holdout_features(sealed_dir, sandbox_job) == len(sealed)
+    assert reveal_holdout_features(sealed_dir, sandbox_job) == 0
+    view = merge_store_features(CompletedBarsView.from_rows(rows), sandbox_job)
+    assert view.feature("leader_state") == 1.0
+    assert view.feature("btc_ret_7d") > 0.08
+
+
+def test_world_without_a_leader_file_records_no_leaders(tmp_path: Path) -> None:
+    _, _, world_dir, sealed_dir, _ = _world(tmp_path)
+
+    world = load_world(world_dir, sealed_dir)
+
+    assert world["manifest"]["holdout_features"]["leaders"] is None
+    assert "leader_state" not in (
+        world["manifest"]["holdout_features"].get("names") or []
+    )
+
+
+def test_scorecard_counts_sequence_previews_and_stale_repairs() -> None:
+    scorecard = _scorecard(
+        state={
+            "counts": {},
+            "candidates": [
+                {
+                    "attempts": [
+                        {
+                            "postmortem": {"primary_failure": "activity_below_floor"},
+                            "outcome": {
+                                "quick_simulation_ran": True,
+                                "sequence_preview": {"status": "armed_no_entry"},
+                            },
+                        },
+                        {
+                            "postmortem": {"primary_failure": "no_progress_preview"},
+                            "outcome": {
+                                "quick_simulation_ran": False,
+                                "sequence_preview": {"status": "armed_no_entry"},
+                            },
+                        },
+                    ]
+                }
+            ],
+        },
+        funnel={},
+        forward={},
+        holdout={},
+        sessions=[],
+        cost={},
+    )
+
+    assert scorecard["process"]["sequence_previews"] == 2
+    assert scorecard["process"]["sequence_preview_frozen"] == 2
+    assert scorecard["process"]["no_progress_preview_rejections"] == 1
+    assert scorecard["process"]["quick_simulations"] == 1

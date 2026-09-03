@@ -568,3 +568,71 @@ def test_preview_progress_requires_new_intent_or_transition() -> None:
         attempt_made_progress({"progress_from_previous": {"preview_progress": True}})
         is True
     )
+
+
+def test_compact_postmortem_keeps_leader_attribution_and_the_diagnosis_names_it() -> (
+    None
+):
+    from wayfinder_paths.jobs.evolution_diagnostics import leader_attribution_sentence
+
+    attribution = {
+        "days": 40,
+        "labelled_days": 40,
+        "rally": {
+            "days": 2,
+            "day_share": 0.05,
+            "loss_share": 0.28,
+            "net_log_growth": -0.03,
+        },
+        "selloff": {
+            "days": 12,
+            "day_share": 0.30,
+            "loss_share": 0.10,
+            "net_log_growth": -0.01,
+        },
+    }
+    assert leader_attribution_sentence(attribution) == (
+        "28% of losses on broad-rally days (5% of days)"
+    )
+    assert (
+        leader_attribution_sentence({"rally": {"day_share": 0.4, "loss_share": 0.4}})
+        == ""
+    )
+    assert leader_attribution_sentence(None) == ""
+
+    postmortem = {
+        "primary_failure": "screen_edge_not_significant",
+        "failure_codes": ["screen_edge_not_significant"],
+        "screen": {
+            "confidence": 0.7,
+            "code": "screen_edge_not_significant",
+            "slices": {
+                "recent": {
+                    "net_return": 0.02,
+                    "trade_count": 30,
+                    "macro_regime": "chop",
+                    "leader_attribution": attribution,
+                    "lcb": -0.01,
+                    "route": None,
+                }
+            },
+        },
+    }
+    compact = compact_postmortem(postmortem)
+    assert (
+        compact["screen"]["slices"]["recent"]["leader_attribution"]["rally"][
+            "loss_share"
+        ]
+        == 0.28
+    )
+    assert (
+        "28% of losses on broad-rally days (5% of days)"
+        in build_repair_work_order(postmortem)["diagnosis"]
+    )
+
+    negative = _receipt(net=-0.01, trades=[_trade("2026-08-01T00:00:00Z", pnl=-1.0)])
+    negative["window"] = {"days": 2.0, "starting_equity": 100.0}
+    report = build_postmortem(negative, _receipt(net=0.0, trades=[]), min_trades=1)
+    report["screen"] = postmortem["screen"]
+    diagnosis = build_repair_work_order(report)["diagnosis"]
+    assert "28% of losses on broad-rally days (5% of days)." in diagnosis

@@ -19,7 +19,7 @@ import os
 import shutil
 import statistics
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
@@ -59,6 +59,7 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
     build_postmortem,
     build_repair_work_order,
     compact_postmortem,
+    leader_attribution_sentence,
     preview_progress,
     receipt_economics,
     receipt_exits,
@@ -117,6 +118,12 @@ from wayfinder_paths.jobs.indicators import REGIME_LABELS
 from wayfinder_paths.jobs.isolated_phase import run_isolated_phase
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.regime import (
+    LEADER_CODES,
+    LEADER_FEATURE_NAME,
+    LEADER_RALLY_RETURN,
+    LEADER_RETURN_FEATURE_NAMES,
+    LEADER_SELLOFF_RETURN,
+    LEADER_SYMBOLS,
     MACRO_CODES,
     MACRO_FEATURE_NAME,
     MACRO_RETURN_FEATURE_NAMES,
@@ -124,6 +131,7 @@ from wayfinder_paths.jobs.regime import (
     PORTFOLIO_REGIME_CLASSIFIER,
     classify_portfolio_regimes,
     declared_regimes,
+    leader_feature_names,
     macro_label,
     opposite_regime,
     regime_universe,
@@ -620,9 +628,14 @@ def _campaign_regime_context(
         rows = payload.get("bars") if isinstance(payload, dict) else payload
         if isinstance(rows, list) and rows:
             macro = _macro_regime_context(pd.DataFrame(rows))
-            macro["runtime_feature"] = _macro_runtime_feature(
-                dataset_path.parents[2] / DEFAULT_FEATURES_PATH
+            latest = _store_latest_values(
+                dataset_path.parents[2] / DEFAULT_FEATURES_PATH,
+                {MACRO_FEATURE_NAME, *leader_feature_names()},
             )
+            macro["runtime_feature"] = _macro_runtime_feature(
+                available=MACRO_FEATURE_NAME in latest
+            )
+            macro["leaders"] = _leader_context(latest)
     except (KeyError, OSError, TypeError, ValueError) as exc:
         macro = {"available": False, "reason": str(exc)[:240]}
     if not enabled:
@@ -1265,6 +1278,9 @@ def _incumbent_failure_modes(
             universe=regime_universe(params, subject["dataset"].bars.symbols),
         )
         day_labels = _majority_day_labels(labels)
+        leader_days = _leader_day_states(
+            campaign_root / CAMPAIGN_DATA_ROOT / DEFAULT_FEATURES_PATH
+        )
         slices: dict[str, Any] = {}
         for label, dataset in _screen_slices(
             train, slices=int(policy.get("screen_slices") or 2)
@@ -1272,9 +1288,11 @@ def _incumbent_failure_modes(
             result = simulate_execution(
                 subject["script"], dataset, subject["spec"], params
             )
-            slices[label] = _failure_mode_summary(
-                daily_log_returns(result.equity_curve), day_labels
-            )
+            daily = daily_log_returns(result.equity_curve)
+            slices[label] = _failure_mode_summary(daily, day_labels)
+            attribution = _leader_attribution(daily, leader_days)
+            if attribution:
+                slices[label]["leader_attribution"] = attribution
     except Exception as exc:  # noqa: BLE001 - diagnostics never block a start
         return {"available": False, "reason": str(exc)[:240]}
     return {
@@ -1282,6 +1300,57 @@ def _incumbent_failure_modes(
         "classifier": PORTFOLIO_REGIME_CLASSIFIER,
         "slices": slices,
     }
+
+
+def _leader_day_states(store_path: Path) -> dict[str, int]:
+    """Day -> leader state code (+1 broad rally, -1 broad selloff, 0) from the
+    campaign's frozen feature store; majority per day of the hourly rows."""
+    if not store_path.exists():
+        return {}
+    needle = f'"name": "{LEADER_FEATURE_NAME}"'
+    values: dict[str, float] = {}
+    with store_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if needle not in line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            stamp = str(row.get("timestamp") or "")
+            if stamp and stamp not in values:
+                values[stamp] = float(row.get("value") or 0.0)
+    if not values:
+        return {}
+    series = pd.Series(values)
+    series.index = pd.to_datetime(series.index, utc=True)
+    return {
+        day: int(float(label))
+        for day, label in _majority_day_labels(series.astype(str)).items()
+    }
+
+
+def _leader_attribution(
+    daily: Sequence[tuple[str, float]], day_states: Mapping[str, int]
+) -> dict[str, Any] | None:
+    """How much of a slice's losses fell on broad-rally and broad-selloff
+    days, beside those days' share of the slice. None when no day is labelled."""
+    rows = [(str(day), float(value)) for day, value in daily]
+    labelled = [(day, value) for day, value in rows if day in day_states]
+    if not rows or not labelled:
+        return None
+    total_loss = sum(value for _, value in rows if value < 0)
+    out: dict[str, Any] = {"days": len(rows), "labelled_days": len(labelled)}
+    for state, code in (("rally", 1), ("selloff", -1)):
+        days = [(day, value) for day, value in rows if day_states.get(day) == code]
+        loss = sum(value for _, value in days if value < 0)
+        out[state] = {
+            "days": len(days),
+            "day_share": round(len(days) / len(rows), 4),
+            "loss_share": round(loss / total_loss, 4) if total_loss else 0.0,
+            "net_log_growth": round(sum(value for _, value in days), 8),
+        }
+    return out
 
 
 def _majority_day_labels(labels: pd.Series) -> dict[str, str]:
@@ -2585,6 +2654,13 @@ def _evaluate_candidate(
             policy=policy,
             manifest=manifest,
             screen_macros=screen_macros,
+            leader_days=_leader_day_states(
+                store.job_dir(job_id)
+                / CAMPAIGN_ROOT
+                / campaign_id
+                / CAMPAIGN_DATA_ROOT
+                / DEFAULT_FEATURES_PATH
+            ),
         )
     if search_space is None:
         common["tuning_skip_reason"] = "no_typed_search_space"
@@ -2626,6 +2702,7 @@ def _apply_screen_verdict(
     policy: Mapping[str, Any],
     manifest: Mapping[str, Any],
     screen_macros: Mapping[str, Mapping[str, Any]] | None = None,
+    leader_days: Mapping[str, int] | None = None,
 ) -> None:
     """Overlay the multi-slice, significance-aware screen on the postmortem."""
     confidence = _screen_confidence(
@@ -2639,6 +2716,7 @@ def _apply_screen_verdict(
             result,
             (reference_slices.get(label) or {}).get("daily_returns"),
             confidence=confidence,
+            leader_days=leader_days,
         )
         for label, result in screen_results.items()
     }
@@ -4157,6 +4235,14 @@ def campaign_prompt_block(
             if failure_target.get("days")
             else ""
         )
+        concentration = leader_attribution_sentence(
+            failure_target.get("leader_attribution")
+        )
+        if failure_instruction and concentration:
+            failure_instruction += (
+                f"The incumbent's losses concentrate: {concentration}; a design "
+                "that stands down on that side of the market repairs those days. "
+            )
         validated = diagnostic_pack.get("validated_signals") or {}
         validated_rows = (
             list(validated.get("signals") or []) if validated.get("available") else []
@@ -5312,14 +5398,74 @@ def _macro_regime_context(frame: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def _macro_runtime_feature(store_path: Path) -> dict[str, Any]:
+def _store_latest_values(
+    store_path: Path, names: Collection[str]
+) -> dict[str, tuple[str, float]]:
+    """Newest (timestamp, value) per feature name in one streamed scan of the
+    campaign's frozen store."""
+    latest: dict[str, tuple[str, float]] = {}
+    if not store_path.exists():
+        return latest
+    needles = {name: f'"name": "{name}"' for name in names}
+    with store_path.open(encoding="utf-8") as handle:
+        for line in handle:
+            hit = next(
+                (name for name, needle in needles.items() if needle in line), None
+            )
+            if hit is None:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            stamp = str(row.get("timestamp") or "")
+            if stamp > latest.get(hit, ("", 0.0))[0]:
+                latest[hit] = (stamp, float(row.get("value") or 0.0))
+    return latest
+
+
+def _leader_context(latest: Mapping[str, tuple[str, float]]) -> dict[str, Any] | None:
+    """The leaders' latest returns and broad state from the frozen store,
+    plus how a strategy declares and reads the runtime column."""
+    if LEADER_FEATURE_NAME not in latest:
+        return None
+    stamp, code = latest[LEADER_FEATURE_NAME]
+    state = next(
+        (name for name, value in LEADER_CODES.items() if float(value) == code),
+        "neutral",
+    )
+    ret_7d = {
+        symbol: latest[f"{symbol.lower()}_ret_7d"][1]
+        for symbol in LEADER_SYMBOLS
+        if f"{symbol.lower()}_ret_7d" in latest
+    }
+    if LEADER_RETURN_FEATURE_NAMES[0] in latest:
+        ret_7d["median"] = latest[LEADER_RETURN_FEATURE_NAMES[0]][1]
+    ret_28d = (
+        {"median": latest[LEADER_RETURN_FEATURE_NAMES[1]][1]}
+        if LEADER_RETURN_FEATURE_NAMES[1] in latest
+        else {}
+    )
+    return {
+        "symbols": list(LEADER_SYMBOLS),
+        "ret_7d": ret_7d,
+        "ret_28d": ret_28d,
+        "state": state,
+        "as_of": stamp,
+        "thresholds": {"rally": LEADER_RALLY_RETURN, "selloff": LEADER_SELLOFF_RETURN},
+        "runtime_feature": {
+            "name": LEADER_FEATURE_NAME,
+            "columns": list(leader_feature_names()),
+            "codes": {label: int(value) for label, value in LEADER_CODES.items()},
+            "declare": {"name": LEADER_FEATURE_NAME, "source": "file"},
+            "read": f"ctx.view.feature({LEADER_FEATURE_NAME!r})",
+        },
+    }
+
+
+def _macro_runtime_feature(*, available: bool) -> dict[str, Any]:
     """Whether the campaign's frozen feature store carries the macro label a
     strategy can read at decision time, and how to consume it."""
-    available = False
-    if store_path.exists():
-        needle = f'"name": "{MACRO_FEATURE_NAME}"'
-        with store_path.open(encoding="utf-8") as handle:
-            available = any(needle in line for line in handle)
     return {
         "available": available,
         "name": MACRO_FEATURE_NAME,
@@ -5354,6 +5500,21 @@ def macro_regime_sentence(macro: Mapping[str, Any] | None) -> str:
             f"; it contains no {' or '.join(missing)} leg of {coverage.get('leg_weeks')}+ "
             "weeks, so a design that earns only there cannot be validated here"
         )
+    leaders = macro.get("leaders") or {}
+    if leaders:
+        ret_7d = leaders.get("ret_7d") or {}
+        named = ", ".join(
+            f"{symbol} {100 * float(ret_7d[symbol]):+.0f}%"
+            for symbol in leaders.get("symbols") or []
+            if symbol in ret_7d
+        )
+        state = {"rally": "broad rally", "selloff": "broad selloff"}.get(
+            str(leaders.get("state")), "neither"
+        )
+        month = (leaders.get("ret_28d") or {}).get("median")
+        text += f"; leaders {named} over 7 days ({state})"
+        if month is not None:
+            text += f", median {100 * float(month):+.0f}% over 28 days"
     text += ". Say which macro regime each hypothesis earns in. "
     runtime = macro.get("runtime_feature") or {}
     if runtime.get("available"):
@@ -5365,6 +5526,19 @@ def macro_regime_sentence(macro: Mapping[str, Any] | None) -> str:
             f"{', '.join(MACRO_RETURN_FEATURE_NAMES)} alongside), refreshed hourly "
             "and causal, so a strategy can condition its entries on the macro "
             "regime its hypothesis names. "
+        )
+    leader_runtime = (leaders or {}).get("runtime_feature") or {}
+    if leader_runtime:
+        text += (
+            f"{LEADER_FEATURE_NAME} is a second column the same way (declare "
+            f"{json.dumps(leader_runtime.get('declare'))}, read "
+            f"{leader_runtime.get('read')}; +1 broad rally when "
+            f"every leader's 7-day return exceeds {100 * LEADER_RALLY_RETURN:+.0f}%, "
+            f"-1 broad selloff below {100 * LEADER_SELLOFF_RETURN:+.0f}%, 0 otherwise; "
+            f"{', '.join(leader_runtime.get('columns') or [])} alongside). It has no "
+            "forward-return edge: broad-rally days concentrate a short book's "
+            "losses and broad-selloff days a long-fade book's, so use it to gate "
+            "the side being run over, not to pick direction. "
         )
     return text
 
@@ -5429,6 +5603,7 @@ def _screen_slice_report(
     reference_daily: Sequence[tuple[str, float]] | None,
     *,
     confidence: float,
+    leader_days: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     candidate_daily = daily_log_returns(result.equity_curve)
     deltas = (
@@ -5450,6 +5625,9 @@ def _screen_slice_report(
         "paired_days": len(deltas),
         "lcb": _screen_lcb(deltas, confidence),
     }
+    attribution = _leader_attribution(candidate_daily, leader_days or {})
+    if attribution:
+        report["leader_attribution"] = attribution
     if reference_daily:
         # Where the reference lost is where an improvement is both most
         # valuable and easiest to see: the effect is concentrated on few days.

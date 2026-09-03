@@ -647,6 +647,7 @@ def _diagnosis(
             mode = row.get("failure_mode") or {}
             drawdown = row.get("max_drawdown_pct")
             macro = row.get("macro_regime")
+            concentration = leader_attribution_sentence(row.get("leader_attribution"))
             parts.append(
                 f"{label}{f' ({macro})' if macro else ''}: net "
                 f"{100 * _number(row.get('net_return')):+.1f}% on "
@@ -664,6 +665,7 @@ def _diagnosis(
                     if mode
                     else ""
                 )
+                + (f", {concentration}" if concentration else "")
             )
         facts = "; ".join(parts)
         if primary == "screen_regime_dependent":
@@ -737,6 +739,10 @@ def _diagnosis(
     exits = exits_sentence((postmortem.get("exits") or {}).get("candidate"))
     if exits:
         facts = f"{facts[:-1]}; {exits}."
+    recent = ((postmortem.get("screen") or {}).get("slices") or {}).get("recent") or {}
+    concentration = leader_attribution_sentence(recent.get("leader_attribution"))
+    if concentration:
+        facts = f"{facts[:-1]}; {concentration}."
     if primary == "cost_bleed":
         return (
             f"{facts} Fees exceed any plausible edge at this cadence: the "
@@ -817,6 +823,7 @@ def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
                         "trade_count",
                         "max_drawdown_pct",
                         "macro_regime",
+                        "leader_attribution",
                         "lcb",
                         "route",
                         "failure_mode",
@@ -905,6 +912,35 @@ def _compact_exits(exits: Mapping[str, Any]) -> dict[str, Any]:
         "stop_share": exits.get("stop_share"),
         "by_reason": dict(list(by_reason.items())[:_COMPACT_EXIT_REASONS]),
     }
+
+
+# A book's losses "concentrate" on a leader state when that state holds at
+# least a fifth of them and more than its share of days by half again: the
+# pilot's short book lost 28% of its losses on 5% of days (broad rally), the
+# long-fade books 38–48% on 22% of days (broad selloff).
+_LEADER_MATERIAL_LOSS_SHARE = 0.2
+_LEADER_CONCENTRATION = 1.5
+
+
+def leader_attribution_sentence(attribution: Mapping[str, Any] | None) -> str:
+    """One clause per leader state whose loss share is material: '28% of
+    losses on broad-rally days (5% of days)'."""
+    if not attribution:
+        return ""
+    parts = []
+    for state, name in (("rally", "broad-rally"), ("selloff", "broad-selloff")):
+        cell = attribution.get(state) or {}
+        loss_share = _number(cell.get("loss_share"))
+        day_share = _number(cell.get("day_share"))
+        if (
+            loss_share >= _LEADER_MATERIAL_LOSS_SHARE
+            and loss_share >= _LEADER_CONCENTRATION * day_share
+        ):
+            parts.append(
+                f"{100 * loss_share:.0f}% of losses on {name} days "
+                f"({100 * day_share:.0f}% of days)"
+            )
+    return "; ".join(parts)
 
 
 def exits_sentence(exits: Mapping[str, Any] | None) -> str:

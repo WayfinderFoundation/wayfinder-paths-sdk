@@ -36,6 +36,7 @@ from wayfinder_paths.jobs.bench.forward_replay import (
     paired_daily_utility_deltas,
 )
 from wayfinder_paths.jobs.bench.identity import runtime_identity
+from wayfinder_paths.jobs.bench.leaders import LEADER_CLOSES_RELATIVE
 from wayfinder_paths.jobs.bench.runner import (
     EXPERIMENT_SCHEMA_VERSION,
     SUPPORTED_IDENTITY_DIFFERENCES,
@@ -107,6 +108,9 @@ _PROCESS_SUM_KEYS = (
     "quick_simulations",
     "behavior_preview_rejections",
     "behavior_preview_ticks",
+    "sequence_previews",
+    "sequence_preview_frozen",
+    "no_progress_preview_rejections",
 )
 _COST_SUM_KEYS = (
     "sessions",
@@ -360,6 +364,14 @@ def run_recurrence_arm(
                 source_job / BARS_RELATIVE,
                 _ensure_parent(incumbent_dir / BARS_RELATIVE),
             )
+            # The frozen leader closes ride beside the bars (copy_job_bundle
+            # carries only the bundle); without them the world has no leader
+            # state and says so in its manifest.
+            if (source_job / LEADER_CLOSES_RELATIVE).exists():
+                shutil.copy2(
+                    source_job / LEADER_CLOSES_RELATIVE,
+                    _ensure_parent(incumbent_dir / LEADER_CLOSES_RELATIVE),
+                )
             manifest = prepare_world(
                 incumbent_dir,
                 world_dir,

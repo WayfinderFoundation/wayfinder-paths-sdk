@@ -75,6 +75,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
 from wayfinder_paths.jobs.evolution_diagnostics import (
     REPAIR_REMEDIES,
     build_repair_work_order,
+    compact_postmortem,
 )
 from wayfinder_paths.jobs.execution.op_process import op_runner_command
 from wayfinder_paths.jobs.execution.op_runner import _nudge_evolution
@@ -4565,7 +4566,15 @@ def test_campaign_carries_the_feature_store_and_tells_the_designer_to_read_it(
         {"timestamp": stamp, "name": name, "value": value, "symbol": symbol}
         for stamp in stamps[::60]
         for symbol in ("SOL", "XRP", "POL", "HYPE")
-        for name, value in (("macro_regime", 1.0), ("macro_ret_28d", 0.12))
+        for name, value in (
+            ("macro_regime", 1.0),
+            ("macro_ret_28d", 0.12),
+            ("leader_state", 1.0),
+            ("leader_ret_7d", 0.12),
+            ("leader_ret_28d", 0.30),
+            ("btc_ret_7d", 0.13),
+            ("eth_ret_7d", 0.11),
+        )
     ]
     (root / "state").mkdir(exist_ok=True)
     (root / "state/features.jsonl").write_text(
@@ -4589,9 +4598,17 @@ def test_campaign_carries_the_feature_store_and_tells_the_designer_to_read_it(
         "chop": 0,
         "bear": -1,
     }
+    leaders = manifest["regime_context"]["macro"]["leaders"]
+    assert leaders["state"] == "rally" and leaders["ret_7d"]["BTC"] == 0.13
+    assert leaders["ret_28d"]["median"] == 0.30
     prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
     assert "ctx.view.feature('macro_regime')" in prompt["next_action"]
     assert "execution_spec.data_contract.features" in prompt["next_action"]
+    assert (
+        "leaders BTC +13%, ETH +11% over 7 days (broad rally)" in prompt["next_action"]
+    )
+    assert "ctx.view.feature('leader_state')" in prompt["next_action"]
+    assert prompt["constraints"]["macro_regime"]["leaders"]["state"] == "rally"
 
 
 def test_bounded_index_clock_candidate_is_rejected_without_charge(tmp_path) -> None:
@@ -4722,3 +4739,74 @@ def test_no_trade_repair_without_preview_progress_skips_the_quick_simulation(
         "changed nothing the replay can see"
         in build_repair_work_order(postmortem)["diagnosis"]
     )
+
+
+def test_leader_attribution_shares_losses_between_rally_and_selloff_days() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _leader_attribution
+
+    daily = [
+        ("2026-08-01", 0.01),
+        ("2026-08-02", -0.03),
+        ("2026-08-03", -0.01),
+        ("2026-08-04", 0.02),
+        ("2026-08-05", -0.005),
+    ]
+    states = {"2026-08-01": 1, "2026-08-02": 1, "2026-08-03": -1}
+
+    out = _leader_attribution(daily, states)
+
+    assert out["days"] == 5 and out["labelled_days"] == 3
+    assert out["rally"]["days"] == 2 and out["rally"]["day_share"] == 0.4
+    assert abs(out["rally"]["loss_share"] - 0.03 / 0.045) < 1e-3
+    assert abs(out["selloff"]["loss_share"] - 0.01 / 0.045) < 1e-3
+    assert _leader_attribution(daily, {}) is None
+    assert (
+        _leader_attribution([("2026-08-01", 0.01)], states)["rally"]["loss_share"]
+        == 0.0
+    )
+
+
+def test_screen_slices_carry_leader_attribution(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _apply_screen_verdict
+
+    def curve(returns):
+        stamp = datetime(2026, 8, 1, tzinfo=UTC)
+        equity, rows = 100.0, [{"timestamp": stamp.isoformat(), "equity": 100.0}]
+        for index, value in enumerate(returns, start=1):
+            equity *= 1 + value
+            rows.append(
+                {
+                    "timestamp": (stamp + timedelta(days=index)).isoformat(),
+                    "equity": equity,
+                }
+            )
+        return rows
+
+    # Losses on Aug 2 and Aug 3; Aug 2 is a broad-rally day.
+    result = SimpleNamespace(
+        equity_curve=curve([-0.04, -0.01, 0.02, 0.01]),
+        stats={"net_return": -0.02, "trade_count": 12, "max_drawdown_pct": -0.05},
+    )
+    postmortem = {"failure_codes": [], "primary_failure": None, "viable": True}
+    _apply_screen_verdict(
+        postmortem,
+        {"recent": result},
+        {"slices": {}},
+        attempt_index=1,
+        policy={},
+        manifest={},
+        leader_days={
+            "2026-08-02": 1,
+            "2026-08-03": 0,
+            "2026-08-04": 0,
+            "2026-08-05": 0,
+        },
+    )
+
+    attribution = postmortem["screen"]["slices"]["recent"]["leader_attribution"]
+    assert (
+        attribution["rally"]["days"] == 1 and attribution["rally"]["loss_share"] > 0.75
+    )
+    assert compact_postmortem(postmortem)["screen"]["slices"]["recent"][
+        "leader_attribution"
+    ]

@@ -463,3 +463,51 @@ def test_macro_feature_columns_are_causal_and_coded() -> None:
     assert all(row["name"].startswith("macro_") for row in rows)
     sample = next(row for row in rows if row["name"] == "macro_regime")
     assert sample["value"] in {-1.0, 0.0, 1.0}
+
+
+def test_leader_feature_columns_are_causal_and_coded() -> None:
+    from wayfinder_paths.jobs.regime import LEADER_CODES, leader_feature_columns
+
+    index = pd.date_range("2026-01-01", periods=24 * 40, freq="h", tz="UTC")
+    steps = np.arange(len(index))
+    # Flat for ten days, then +2% a day: both leaders climb together.
+    level = np.where(steps < 24 * 10, 100.0, 100.0 * (1 + 0.02 * (steps - 240) / 24))
+    leaders = pd.DataFrame({"BTC": level, "ETH": level * 1.1}, index=index)
+
+    columns = leader_feature_columns(leaders)
+
+    assert set(columns) == {
+        "leader_ret_7d",
+        "leader_ret_28d",
+        "btc_ret_7d",
+        "eth_ret_7d",
+        "leader_state",
+    }
+    assert columns["leader_ret_7d"].dropna().index[0] == index[24 * 7]
+    assert columns["leader_ret_28d"].dropna().index[0] == index[24 * 28]
+    assert columns["leader_state"].loc[index[24 * 20]] == LEADER_CODES["rally"]
+    assert columns["leader_state"].loc[index[24 * 9]] == LEADER_CODES["neutral"]
+    assert abs(columns["btc_ret_7d"].loc[index[24 * 20]] - 0.14 / 1.20) < 0.02
+    # Prefix property: appending bars never changes an earlier value.
+    prefix = leader_feature_columns(leaders.iloc[:-100])["leader_ret_28d"]
+    assert prefix.fillna(-9).equals(
+        columns["leader_ret_28d"].loc[prefix.index].fillna(-9)
+    )
+    # Both leaders must clear the bar: a flat ETH keeps the state neutral.
+    one_sided = leader_feature_columns(
+        pd.DataFrame({"BTC": level, "ETH": 100.0}, index=index)
+    )
+    assert one_sided["leader_state"].loc[index[24 * 20]] == LEADER_CODES["neutral"]
+    # A broad decline codes as a selloff.
+    falling = np.where(steps < 24 * 10, 100.0, 100.0 * (1 - 0.01 * (steps - 240) / 24))
+    down = leader_feature_columns(
+        pd.DataFrame({"BTC": falling, "ETH": falling}, index=index)
+    )
+    assert down["leader_state"].loc[index[24 * 20]] == LEADER_CODES["selloff"]
+    # Reindexed onto a 5-minute panel: step-wise values, NaN before coverage.
+    panel_index = pd.date_range(
+        "2026-01-01", periods=12 * 24 * 40, freq="5min", tz="UTC"
+    )
+    onto = leader_feature_columns(leaders, index=panel_index)["leader_state"]
+    assert onto.loc[panel_index[12 * 24 * 20 + 5]] == LEADER_CODES["rally"]
+    assert pd.isna(onto.loc[panel_index[12 * 24 * 3]])

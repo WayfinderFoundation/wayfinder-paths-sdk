@@ -10,6 +10,10 @@ from typing import Any
 import pandas as pd
 
 from wayfinder_paths.jobs.bench.env import atomic_json, sha256_file, sha256_json
+from wayfinder_paths.jobs.bench.leaders import (
+    LEADER_CLOSES_RELATIVE,
+    load_leader_closes,
+)
 from wayfinder_paths.jobs.bundles import (
     copy_job_bundle,
     resolve_bundle_script_entrypoint,
@@ -132,8 +136,10 @@ def prepare_world(
         cutoff=cutoff,
         spec=spec,
     )
-    holdout_features = _freeze_macro_features(
+    holdout_features = _freeze_derived_features(
         rows,
+        leaders=load_leader_closes(source_job),
+        leader_file=source_job / LEADER_CLOSES_RELATIVE,
         world_dir=world_dir,
         sealed_dir=sealed_dir,
         cutoff=cutoff,
@@ -285,9 +291,11 @@ def _row_timestamp(row: dict[str, Any]) -> datetime:
 HOLDOUT_FEATURES_FILE = "features-holdout.jsonl"
 
 
-def _freeze_macro_features(
+def _freeze_derived_features(
     rows: list[dict[str, Any]],
     *,
+    leaders: tuple[pd.DataFrame, dict[str, Any]] | None,
+    leader_file: Path | None,
     world_dir: Path,
     sealed_dir: Path,
     cutoff: datetime,
@@ -295,25 +303,51 @@ def _freeze_macro_features(
     spec: ExecutionSpec,
     frozen: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """The macro regime as a feature the sandbox strategies can consume.
+    """The derived features the sandbox strategies can consume: the macro
+    regime from the frozen panel bars and, when the source carries a frozen
+    leader-close file, the leader state.
 
     Benchmark mode never refreshes derived features, so the world computes
-    the rows itself from the frozen bars: the agent-visible prefix (at or
-    before the cutoff) joins the job's feature store, and the holdout rows
-    stay in the sealed directory until the owner replays the week."""
-    from wayfinder_paths.jobs.regime import macro_feature_store_rows
+    the rows itself: the agent-visible prefix (at or before the cutoff)
+    joins the job's feature store, and the holdout rows stay in the sealed
+    directory until the owner replays the week."""
+    from wayfinder_paths.jobs.regime import (
+        feature_store_rows,
+        leader_feature_columns,
+        macro_feature_columns,
+    )
 
     frame = pd.DataFrame(rows)
     if frame.empty or "close" not in frame.columns:
-        return {"rows": 0, "holdout_rows": 0}
+        return {"rows": 0, "holdout_rows": 0, "leaders": None}
     frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
     closes = frame.pivot_table(
         index="timestamp", columns="symbol", values="close", aggfunc="last"
     ).sort_index()
     bar_seconds = bar_interval_seconds(spec.data_contract.get("bar_interval")) or 300
     every_bars = max(1, 3600 // int(bar_seconds))
-    store_rows = macro_feature_store_rows(
-        closes, every_bars=every_bars, written_at=datetime.now(UTC).isoformat()
+    columns = macro_feature_columns(closes)
+    leaders_record: dict[str, Any] | None = None
+    if leaders is not None:
+        leader_frame, leader_meta = leaders
+        columns.update(leader_feature_columns(leader_frame, index=closes.index))
+        leaders_record = {
+            "symbols": [str(symbol) for symbol in leader_frame.columns],
+            "interval": leader_meta.get("interval"),
+            "rows": int(len(leader_frame)),
+            "first": leader_frame.index[0].isoformat(),
+            "last": leader_frame.index[-1].isoformat(),
+            "sha256": (
+                sha256_file(leader_file)
+                if leader_file is not None and leader_file.exists()
+                else None
+            ),
+        }
+    store_rows = feature_store_rows(
+        columns,
+        symbols=[str(symbol) for symbol in closes.columns],
+        stamps=closes.index[::every_bars],
+        written_at=datetime.now(UTC).isoformat(),
     )
     development = [row for row in store_rows if _row_timestamp(row) <= cutoff]
     holdout = [row for row in store_rows if cutoff < _row_timestamp(row) <= end]
@@ -355,6 +389,7 @@ def _freeze_macro_features(
         "rows": len(development),
         "holdout_rows": len(holdout),
         "holdout_sha256": sha256_file(sealed_path),
+        "leaders": leaders_record,
     }
 
 

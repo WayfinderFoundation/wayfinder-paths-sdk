@@ -860,3 +860,51 @@ def test_each_loop_keeps_its_own_finalize_record(tmp_path) -> None:
         "evolution_finalize.json",
         "evolution_finalize.log",
     ]
+
+
+def test_recurrence_copies_the_leader_file_beside_the_bars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from wayfinder_paths.jobs.bench.leaders import LEADER_CLOSES_RELATIVE
+
+    source = _source_job(tmp_path / "source")
+    closes = []
+    for hour in range(24 * 54):
+        stamp = (START + timedelta(hours=hour)).isoformat()
+        level = 100.0 * 1.02 ** (hour / 24)
+        closes.append({"timestamp": stamp, "symbol": "BTC", "close": level})
+        closes.append({"timestamp": stamp, "symbol": "ETH", "close": level / 20})
+    (source / LEADER_CLOSES_RELATIVE).write_text(
+        json.dumps({"metadata": {"interval": "1h"}, "closes": closes}),
+        encoding="utf-8",
+    )
+    output = tmp_path / "out"
+    config = _config(
+        source,
+        output,
+        window={
+            "start_cutoff": (START + timedelta(days=35)).isoformat(),
+            "loop_days": 5,
+            "loops": 1,
+        },
+    )
+    _patch_common(monkeypatch)
+
+    def fake_campaign(sandbox: dict[str, Any], **kwargs: Any) -> str | None:
+        _write_campaign_state(sandbox, "camp-0")
+        return None
+
+    monkeypatch.setattr(recurrence_module, "run_campaign_phase", fake_campaign)
+
+    row = run_recurrence_arm(
+        config=config, arm=config["arms"][0], seed=7, output_dir=output
+    )
+
+    assert row["loops"][0]["invalid_reason"] is None
+    loop_dir = output / "loops" / "research-signal-first-7" / "loop-0"
+    candidates = list(output.glob("loops/*/loop-0"))
+    assert candidates, "loop directory missing"
+    loop_dir = candidates[0]
+    assert (loop_dir / "incumbent" / LEADER_CLOSES_RELATIVE).exists()
+    manifest = json.loads((loop_dir / "world" / "world.json").read_text())
+    assert manifest["holdout_features"]["leaders"]["symbols"] == ["BTC", "ETH"]

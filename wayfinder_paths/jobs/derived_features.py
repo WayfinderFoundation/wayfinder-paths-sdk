@@ -33,6 +33,7 @@ from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
 from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
 from wayfinder_paths.jobs.indicators import panel_breadth
 from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.regime import LEADER_SYMBOLS
 from wayfinder_paths.jobs.store import JobStore
 
 CORR_BARS = 12
@@ -40,7 +41,10 @@ RATIO_Z_BARS = 96
 BREADTH_SMA = 50
 EXOG_TREND_SMA = 50
 DEFAULT_EVERY_BARS = 12
-MAX_APPEND_ROWS = 200_000
+# A fresh 4-symbol 120-day 5m store with every refresh set writes about
+# 253k rows: (cross 9 + exog 2 + regime 1 + macro 3 + leaders 7 names) x 4
+# symbols x 2,880 hourly stamps. Incremental runs append a few hundred.
+MAX_APPEND_ROWS = 400_000
 # Incremental exog/venue fetches reach back far enough for the widest rolling
 # window used on fetched series, plus margin.
 _FETCH_WARMUP_BARS = max(CORR_BARS, EXOG_TREND_SMA) * 2
@@ -74,13 +78,16 @@ def derive_features_job(
     *,
     sets: tuple[str, ...] = ("cross", "exog"),
     exog_symbols: tuple[str, ...] = ("BTC",),
+    leader_symbols: tuple[str, ...] = LEADER_SYMBOLS,
     every_bars: int = DEFAULT_EVERY_BARS,
     store: JobStore | None = None,
     fetch_closes: Callable[[str, int, int], pd.Series] | None = None,
 ) -> dict[str, Any]:
     """Compute and append derived feature rows. Sets: cross, exog, venue,
-    regime, macro."""
-    unknown = set(sets) - {"cross", "exog", "venue", "regime", "macro"}
+    regime, macro, leaders (the leader coins' 7/28-day returns and the
+    broad rally/selloff code, with each leader's closes persisted so the
+    trailing windows survive incremental fetches)."""
+    unknown = set(sets) - {"cross", "exog", "venue", "regime", "macro", "leaders"}
     if unknown:
         raise ValueError(f"unknown feature sets: {sorted(unknown)}")
     store = store or JobStore()
@@ -175,6 +182,11 @@ def derive_features_job(
     features_path.parent.mkdir(parents=True, exist_ok=True)
     newest_by_series: dict[tuple[str, str], str] = {}
     funding_rows: list[dict[str, Any]] = []
+    # Each leader's persisted closes (panel-wide rows repeat per symbol, so
+    # the stamp-keyed dict dedups them): the anchors for the 7/28-day
+    # returns, which an 8-hour incremental fetch could never supply.
+    leader_close_names = {f"{coin.lower()}_close": coin for coin in leader_symbols}
+    stored_leader_closes: dict[str, dict[str, float]] = {}
     market_first_ts = pd.Timestamp(frame["timestamp"].min())
     market_last_ts = pd.Timestamp(frame["timestamp"].max())
     if features_path.exists():
@@ -190,6 +202,13 @@ def derive_features_job(
                 ts = str(row.get("timestamp"))
                 if ts > newest_by_series.get(series, ""):
                     newest_by_series[series] = ts
+                if series[0] in leader_close_names and row.get("value") is not None:
+                    try:
+                        stored_leader_closes.setdefault(
+                            leader_close_names[series[0]], {}
+                        )[ts] = float(row["value"])
+                    except (TypeError, ValueError):
+                        continue
                 if series[0] == "funding":
                     try:
                         funding_ts = pd.Timestamp(ts)
@@ -204,26 +223,29 @@ def derive_features_job(
                         funding_rows.append(row)
     newest_existing = max(newest_by_series.values(), default="")
 
-    if "exog" in sets or "venue" in sets:
-        start_ms = int(closes.index[0].timestamp() * 1000)
+    if {"exog", "venue", "leaders"} & set(sets):
+        full_start_ms = int(closes.index[0].timestamp() * 1000)
         end_ms = int(closes.index[-1].timestamp() * 1000) + 300_000
-        if newest_existing:
+        bar_step = (
+            closes.index[1] - closes.index[0]
+            if len(closes.index) > 1
+            else pd.Timedelta(minutes=5)
+        )
+
+        def _tail_start(newest: str) -> int:
             # Incremental: rows before the newest stored stamp are dedup'd
             # away anyway, so fetch only the tail plus rolling-window warmup.
             # The full-span fetch (120d of 5m bars, paginated, every ~30min,
             # per job) was the request storm behind the 429/credit burn.
+            if not newest:
+                return full_start_ms
             try:
-                bar_step = (
-                    closes.index[1] - closes.index[0]
-                    if len(closes.index) > 1
-                    else pd.Timedelta(minutes=5)
-                )
-                warm_start = pd.Timestamp(newest_existing) - bar_step * (
-                    _FETCH_WARMUP_BARS
-                )
-                start_ms = max(start_ms, int(warm_start.timestamp() * 1000))
+                warm_start = pd.Timestamp(newest) - bar_step * _FETCH_WARMUP_BARS
+                return max(full_start_ms, int(warm_start.timestamp() * 1000))
             except (ValueError, TypeError):
-                pass  # unparseable stamp → keep the full window
+                return full_start_ms  # unparseable stamp → keep the full window
+
+        start_ms = _tail_start(newest_existing)
         if "exog" in sets:
             for coin in exog_symbols:
                 exog = fetch(coin, start_ms, end_ms).reindex(closes.index).ffill()
@@ -237,6 +259,34 @@ def derive_features_job(
                 hl = fetch(symbol, start_ms, end_ms).reindex(closes.index).ffill()
                 basis = (hl / closes[symbol] - 1) * 1e4
                 columns.setdefault("venue_basis_bps", pd.DataFrame())[symbol] = basis
+        if "leaders" in sets:
+            from wayfinder_paths.jobs.regime import leader_feature_columns
+
+            leader_closes: dict[str, pd.Series] = {}
+            for coin in leader_symbols:
+                stored = pd.Series(stored_leader_closes.get(coin, {}), dtype=float)
+                stored.index = pd.to_datetime(stored.index, utc=True)
+                # Warm from the leader's OWN persisted closes: the global
+                # newest stamp would narrow the first fetch to eight hours and
+                # leave every 7/28-day return NaN until a month had passed.
+                newest_close = stored.index.max().isoformat() if len(stored) else ""
+                fresh = fetch(coin, _tail_start(newest_close), end_ms)
+                merged = pd.concat([stored, fresh.astype(float)]).sort_index()
+                merged = merged[~merged.index.duplicated(keep="last")]
+                if merged.empty:
+                    continue
+                leader_closes[coin] = merged
+                _add(
+                    f"{coin.lower()}_close",
+                    merged.reindex(closes.index, method="ffill"),
+                )
+            # Live anchors are hourly stored closes and bench anchors are 1h
+            # bars: at most 59 minutes apart, immaterial against the 8%/5%
+            # state thresholds.
+            for name, series in leader_feature_columns(
+                pd.DataFrame(leader_closes), index=closes.index
+            ).items():
+                _add(name, series)
 
     # Serialize at the coarse cadence with the fetch-funding dedup semantics.
     written_at = utc_now_iso()
@@ -309,7 +359,7 @@ REFRESH_STAMP_PATH = "results/research/derived_refresh.json"
 # Just under the hourly design cadence so a 30m wake rhythm refreshes every
 # other wake instead of aliasing to 90m.
 REFRESH_MAX_AGE_S = 3300
-_REFRESH_SETS = ("cross", "exog", "venue", "regime", "macro")
+_REFRESH_SETS = ("cross", "exog", "venue", "regime", "macro", "leaders")
 # Features derive over the job DATASET, so they can never advance past its
 # newest bar. The dataset historically refreshed only as a side effect of
 # applies/validations — features froze for 15h+ between agent activity.

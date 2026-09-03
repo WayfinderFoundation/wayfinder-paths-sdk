@@ -14,6 +14,7 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import pandas as pd
 
 from wayfinder_paths.jobs.indicators import REGIME_LABELS, classify_regimes
@@ -47,6 +48,43 @@ MACRO_RETURN_FEATURE_NAMES = tuple(
 )
 MACRO_CODES = {"bull": 1.0, "chop": 0.0, "bear": -1.0}
 
+# Leader state: the broad market's direction as read from a small set of
+# leader coins (crypto: BTC and ETH). It has no forward-return edge for the
+# panel; its value is attribution and gating — broad-rally days concentrate
+# a short book's losses and broad-selloff days a long-fade book's, so a
+# strategy gates the side being run over. The leader list is a parameter:
+# equities or commodities would name their own leaders.
+LEADER_SYMBOLS = ("BTC", "ETH")
+LEADER_RALLY_RETURN = 0.08
+LEADER_SELLOFF_RETURN = -0.05
+LEADER_RETURN_WINDOWS_DAYS = (7, 28)
+LEADER_STATE_WINDOW_DAYS = 7
+LEADER_FEATURE_NAME = "leader_state"
+LEADER_RETURN_FEATURE_NAMES = tuple(
+    f"leader_ret_{days}d" for days in LEADER_RETURN_WINDOWS_DAYS
+)
+LEADER_CODES = {"rally": 1.0, "neutral": 0.0, "selloff": -1.0}
+
+
+def leader_label(returns_7d: Sequence[float]) -> str:
+    values = [float(value) for value in returns_7d]
+    if values and all(value > LEADER_RALLY_RETURN for value in values):
+        return "rally"
+    if values and all(value < LEADER_SELLOFF_RETURN for value in values):
+        return "selloff"
+    return "neutral"
+
+
+def leader_feature_names(symbols: Sequence[str] = LEADER_SYMBOLS) -> tuple[str, ...]:
+    return (
+        LEADER_FEATURE_NAME,
+        *LEADER_RETURN_FEATURE_NAMES,
+        *(
+            f"{str(symbol).lower()}_ret_{LEADER_STATE_WINDOW_DAYS}d"
+            for symbol in symbols
+        ),
+    )
+
 
 def macro_label(median_return: float) -> str:
     if median_return >= MACRO_BULL_RETURN:
@@ -69,11 +107,7 @@ def macro_feature_columns(closes: pd.DataFrame) -> dict[str, pd.Series]:
     out: dict[str, pd.Series] = {}
     label_source: pd.Series | None = None
     for days in MACRO_RETURN_WINDOWS_DAYS:
-        shifted = ordered.copy()
-        shifted.index = shifted.index + pd.Timedelta(days=days)
-        # reindex+ffill leaves every timestamp before the first shifted
-        # stamp NaN, so the window is empty until it is fully covered.
-        prior = shifted.reindex(ordered.index, method="ffill")
+        prior = _prior_closes(ordered, days)
         median = (ordered / prior - 1.0).median(axis=1, skipna=True)
         median = median.where(prior.notna().any(axis=1))
         out[f"macro_ret_{days}d"] = median
@@ -88,21 +122,71 @@ def macro_feature_columns(closes: pd.DataFrame) -> dict[str, pd.Series]:
     return out
 
 
-def macro_feature_store_rows(
-    closes: pd.DataFrame, *, every_bars: int, written_at: str
+def _prior_closes(ordered: pd.DataFrame, days: int) -> pd.DataFrame:
+    """The last close at or before each timestamp minus ``days``. Shifting the
+    index forward and reindexing with ffill leaves every timestamp before the
+    first shifted stamp NaN, so a window is empty until it is fully covered
+    and appending bars never changes an earlier value."""
+    shifted = ordered.copy()
+    shifted.index = shifted.index + pd.Timedelta(days=days)
+    return shifted.reindex(ordered.index, method="ffill")
+
+
+def leader_feature_columns(
+    leader_closes: pd.DataFrame, *, index: pd.DatetimeIndex | None = None
+) -> dict[str, pd.Series]:
+    """Leader-set series at every timestamp of a leader close matrix (index:
+    UTC stamps, columns: leader coins): the median trailing return across
+    leaders per window, each leader's own state-window return, and the
+    broad rally / selloff code (+1 when every leader clears the rally
+    return over the state window, -1 when every leader is below the selloff
+    return, 0 otherwise). NaN until every leader covers the window; causal
+    like the macro series. ``index`` reindexes the result step-wise (ffill)
+    onto a panel index whose stamps need not coincide with the leaders'."""
+    if leader_closes.empty:
+        return {}
+    ordered = leader_closes.sort_index().astype(float).ffill()
+    out: dict[str, pd.Series] = {}
+    for days in LEADER_RETURN_WINDOWS_DAYS:
+        returns = ordered / _prior_closes(ordered, days) - 1.0
+        covered = returns.notna().all(axis=1)
+        out[f"leader_ret_{days}d"] = returns.median(axis=1).where(covered)
+        if days == LEADER_STATE_WINDOW_DAYS:
+            for coin in ordered.columns:
+                out[f"{str(coin).lower()}_ret_{days}d"] = returns[coin]
+            rally = (returns > LEADER_RALLY_RETURN).all(axis=1)
+            selloff = (returns < LEADER_SELLOFF_RETURN).all(axis=1)
+            code = pd.Series(
+                np.where(
+                    rally,
+                    LEADER_CODES["rally"],
+                    np.where(selloff, LEADER_CODES["selloff"], LEADER_CODES["neutral"]),
+                ),
+                index=returns.index,
+            )
+            out[LEADER_FEATURE_NAME] = code.where(covered)
+    if index is not None:
+        out = {
+            name: series.reindex(index, method="ffill") for name, series in out.items()
+        }
+    return out
+
+
+def feature_store_rows(
+    columns: Mapping[str, pd.Series],
+    *,
+    symbols: Sequence[str],
+    stamps: pd.DatetimeIndex,
+    written_at: str,
 ) -> list[dict[str, Any]]:
-    """The macro series as feature-store rows (one per symbol, the panel-wide
-    value repeated) at a coarse cadence, the shape `derive_features_job`
-    writes and `merge_features` reads."""
-    columns = macro_feature_columns(closes)
-    if not columns:
-        return []
-    stamps = closes.sort_index().index[:: max(1, int(every_bars))]
+    """Panel-wide series as feature-store rows (one per symbol, the value
+    repeated) at the given stamps, the shape `derive_features_job` writes
+    and `merge_features` reads."""
     rows: list[dict[str, Any]] = []
     for name, series in columns.items():
         sampled = series.loc[series.index.intersection(stamps)].dropna()
         for stamp, value in sampled.items():
-            for symbol in closes.columns:
+            for symbol in symbols:
                 rows.append(
                     {
                         "timestamp": pd.Timestamp(stamp).isoformat(),
@@ -114,6 +198,22 @@ def macro_feature_store_rows(
                 )
     rows.sort(key=lambda row: (row["timestamp"], row["name"], row["symbol"]))
     return rows
+
+
+def macro_feature_store_rows(
+    closes: pd.DataFrame, *, every_bars: int, written_at: str
+) -> list[dict[str, Any]]:
+    """The macro series as feature-store rows at a coarse cadence."""
+    columns = macro_feature_columns(closes)
+    if not columns:
+        return []
+    stamps = closes.sort_index().index[:: max(1, int(every_bars))]
+    return feature_store_rows(
+        columns,
+        symbols=[str(symbol) for symbol in closes.columns],
+        stamps=stamps,
+        written_at=written_at,
+    )
 
 
 def declared_regimes(params: Mapping[str, Any]) -> tuple[str, ...]:
