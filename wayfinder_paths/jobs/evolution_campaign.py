@@ -1347,7 +1347,7 @@ def _leader_attribution(
         out[state] = {
             "days": len(days),
             "day_share": round(len(days) / len(rows), 4),
-            "loss_share": round(loss / total_loss, 4) if total_loss else 0.0,
+            "loss_share": abs(round(loss / total_loss, 4)) if total_loss else 0.0,
             "net_log_growth": round(sum(value for _, value in days), 8),
         }
     return out
