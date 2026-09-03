@@ -12,8 +12,8 @@ from typing import Any
 
 import pandas as pd
 
-from wayfinder_paths.jobs.bench.env import atomic_json, git_sha, sha256_json
-from wayfinder_paths.jobs.bench.world import load_world
+from wayfinder_paths.jobs.bench.env import atomic_json, git_sha
+from wayfinder_paths.jobs.bench.world import execution_identity_sha256, load_world
 from wayfinder_paths.jobs.bundles import resolve_bundle_script_entrypoint
 from wayfinder_paths.jobs.candidate_shadow import run_candidate_shadows
 from wayfinder_paths.jobs.economics import block_bootstrap_lcb
@@ -190,7 +190,7 @@ def evaluate_bundle(
     params = dict(job_data.get("execution_params") or {})
     environment = environment or {}
     expected_spec = environment.get("spec_sha256")
-    spec_matches = not expected_spec or sha256_json(spec.to_dict()) == expected_spec
+    spec_matches = not expected_spec or execution_identity_sha256(spec) == expected_spec
     params.update(dict(environment.get("params") or {}))
     script = resolve_bundle_script_entrypoint(bundle, job_data)
     dataset = PreparedExecutionDataset.from_rows(

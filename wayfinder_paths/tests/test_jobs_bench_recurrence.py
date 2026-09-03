@@ -908,3 +908,36 @@ def test_recurrence_copies_the_leader_file_beside_the_bars(
     assert (loop_dir / "incumbent" / LEADER_CLOSES_RELATIVE).exists()
     manifest = json.loads((loop_dir / "world" / "world.json").read_text())
     assert manifest["holdout_features"]["leaders"]["symbols"] == ["BTC", "ETH"]
+
+
+def test_loop_source_carries_bars_leaders_and_the_sandbox_store(tmp_path: Path) -> None:
+    from wayfinder_paths.jobs.bench.leaders import LEADER_CLOSES_RELATIVE
+    from wayfinder_paths.jobs.bench.recurrence import (
+        BARS_RELATIVE,
+        _copy_loop_source_extras,
+    )
+
+    source_job = tmp_path / "source"
+    (source_job / BARS_RELATIVE).parent.mkdir(parents=True)
+    (source_job / BARS_RELATIVE).write_text("[]", encoding="utf-8")
+    (source_job / LEADER_CLOSES_RELATIVE).write_text("{}", encoding="utf-8")
+    sandbox_job = tmp_path / "sandbox-job"
+    (sandbox_job / "state").mkdir(parents=True)
+    (sandbox_job / "state/features.jsonl").write_text(
+        '{"timestamp": "t", "name": "macro_regime", "value": 1.0, "symbol": "X"}\n',
+        encoding="utf-8",
+    )
+    incumbent = tmp_path / "incumbent"
+
+    copied = _copy_loop_source_extras(
+        source_job, source_bundle=sandbox_job, incumbent_dir=incumbent
+    )
+
+    assert copied == {"leaders": True, "features": True}
+    assert (incumbent / BARS_RELATIVE).exists()
+    assert (incumbent / LEADER_CLOSES_RELATIVE).exists()
+    assert "macro_regime" in (incumbent / "state/features.jsonl").read_text()
+    # Loop 0 draws from the source job itself, which has no store.
+    assert _copy_loop_source_extras(
+        source_job, source_bundle=source_job, incumbent_dir=tmp_path / "loop0"
+    ) == {"leaders": True, "features": False}

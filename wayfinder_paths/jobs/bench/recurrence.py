@@ -59,6 +59,7 @@ from wayfinder_paths.jobs.bench.world import (
     install_development_world,
     load_world,
     prepare_world,
+    reveal_holdout_features,
 )
 from wayfinder_paths.jobs.benchmarks.agent_adapter import (
     run_agent_prompt,
@@ -67,6 +68,7 @@ from wayfinder_paths.jobs.benchmarks.agent_adapter import (
 from wayfinder_paths.jobs.bundles import copy_job_bundle
 from wayfinder_paths.jobs.economics import block_bootstrap_lcb
 from wayfinder_paths.jobs.evolution_campaign import campaign_status
+from wayfinder_paths.jobs.execution.features import DEFAULT_FEATURES_PATH
 from wayfinder_paths.jobs.execution.op_process import terminate_campaign_ops
 from wayfinder_paths.jobs.forward import default_forward_summary
 from wayfinder_paths.jobs.gating import compute_workspace_revision
@@ -360,18 +362,9 @@ def run_recurrence_arm(
         try:
             source_bundle = source_job if sandbox is None else _job_root(sandbox)
             copy_job_bundle(source_bundle, incumbent_dir)
-            shutil.copy2(
-                source_job / BARS_RELATIVE,
-                _ensure_parent(incumbent_dir / BARS_RELATIVE),
+            _copy_loop_source_extras(
+                source_job, source_bundle=source_bundle, incumbent_dir=incumbent_dir
             )
-            # The frozen leader closes ride beside the bars (copy_job_bundle
-            # carries only the bundle); without them the world has no leader
-            # state and says so in its manifest.
-            if (source_job / LEADER_CLOSES_RELATIVE).exists():
-                shutil.copy2(
-                    source_job / LEADER_CLOSES_RELATIVE,
-                    _ensure_parent(incumbent_dir / LEADER_CLOSES_RELATIVE),
-                )
             manifest = prepare_world(
                 incumbent_dir,
                 world_dir,
@@ -456,17 +449,24 @@ def run_recurrence_arm(
                 *(world["development"].get("bars") or []),
                 *(world["holdout"].get("bars") or []),
             ]
+            # The deployed strategy may declare a derived column; score it
+            # with the sandbox store, holdout rows revealed (idempotent).
+            feature_root = None if sandbox is None else _job_root(sandbox)
+            if feature_root is not None:
+                reveal_holdout_features(sealed_dir, feature_root)
             deployed = evaluate_bundle(
                 world_dir / "incumbent",
                 rows=rows,
                 cutoff=cutoff,
                 environment=dict(manifest.get("execution_environment") or {}),
+                feature_root=feature_root,
             )
             frozen = evaluate_bundle(
                 frozen_bundle if frozen_bundle is not None else world_dir / "incumbent",
                 rows=rows,
                 cutoff=cutoff,
                 environment=frozen_environment,
+                feature_root=feature_root,
             )
             deltas = paired_daily_utility_deltas(
                 deployed["daily_pnl"],
@@ -792,6 +792,30 @@ _FINALIZE_RECORD_FILES = (
     "evolution_finalize.log",
     "evolution_finalize.result.json",
 )
+
+
+def _copy_loop_source_extras(
+    source_job: Path, *, source_bundle: Path, incumbent_dir: Path
+) -> dict[str, bool]:
+    """What copy_job_bundle leaves behind and a loop's world needs: the bars
+    and frozen leader closes from the source job, and the sandbox job's
+    feature store (macro and leader rows through this loop's cutoff, which
+    a graduated candidate may declare)."""
+    shutil.copy2(
+        source_job / BARS_RELATIVE, _ensure_parent(incumbent_dir / BARS_RELATIVE)
+    )
+    copied = {"leaders": False, "features": False}
+    if (source_job / LEADER_CLOSES_RELATIVE).exists():
+        shutil.copy2(
+            source_job / LEADER_CLOSES_RELATIVE,
+            _ensure_parent(incumbent_dir / LEADER_CLOSES_RELATIVE),
+        )
+        copied["leaders"] = True
+    store_file = source_bundle / DEFAULT_FEATURES_PATH
+    if store_file.exists():
+        shutil.copy2(store_file, _ensure_parent(incumbent_dir / DEFAULT_FEATURES_PATH))
+        copied["features"] = True
+    return copied
 
 
 def _preserve_finalize_record(store: JobStore, job_id: str, loop_dir: Path) -> None:

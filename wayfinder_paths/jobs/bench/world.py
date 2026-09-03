@@ -167,7 +167,7 @@ def prepare_world(
             "holdout_commitment": sha256_json(holdout_payload),
         },
         "execution_environment": {
-            "spec_sha256": sha256_json(spec.to_dict()),
+            "spec_sha256": execution_identity_sha256(spec),
             "data_contract": dict(spec.data_contract),
             "params": _frozen_execution_params(execution_params, spec),
         },
@@ -186,8 +186,28 @@ def prepare_world(
     return manifest
 
 
+def execution_identity_sha256(spec: ExecutionSpec) -> str:
+    """The execution environment a candidate must match: the spec without
+    ``data_contract.features``. Declared features are the candidate's own
+    inputs (a strategy that reads the macro regime declares it), not the
+    market it is judged in; hashing them made every feature-aware candidate
+    fail the holdout race against the incumbent's spec."""
+    data = spec.to_dict()
+    contract = dict(data.get("data_contract") or {})
+    contract.pop("features", None)
+    data["data_contract"] = contract
+    return sha256_json(data)
+
+
 def load_world(world_dir: Path, sealed_dir: Path) -> dict[str, Any]:
     manifest = json.loads((world_dir / "world.json").read_text(encoding="utf-8"))
+    holdout_features = manifest.get("holdout_features") or {}
+    sealed_features = sealed_dir / HOLDOUT_FEATURES_FILE
+    if holdout_features.get("holdout_sha256"):
+        if not sealed_features.exists():
+            raise ValueError("sealed holdout features are missing")
+        if sha256_file(sealed_features) != holdout_features["holdout_sha256"]:
+            raise ValueError("sealed holdout features do not match the commitment")
     development = json.loads((world_dir / "bars.json").read_text(encoding="utf-8"))
     holdout = json.loads((sealed_dir / "holdout.json").read_text(encoding="utf-8"))
     if sha256_json(development) != manifest["dataset"]["development_sha256"]:
@@ -456,7 +476,24 @@ def _freeze_feature_prefixes(
             raise ValueError("benchmark feature paths must stay inside the job root")
         source = source_job / relative
         if not source.exists():
-            raise FileNotFoundError(f"declared feature file is missing: {source}")
+            if feature.path != DEFAULT_FEATURES_PATH:
+                raise FileNotFoundError(f"declared feature file is missing: {source}")
+            # The default store is what the world derives itself (macro and
+            # leader rows): a graduated candidate that declares one of those
+            # columns must not strand the next loop for lack of a file.
+            target = world_dir / "features" / f"feature-{len(frozen):02d}.jsonl"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("", encoding="utf-8")
+            frozen.append(
+                {
+                    "target_path": feature.path,
+                    "path": str(target.relative_to(world_dir)),
+                    "sha256": sha256_file(target),
+                    "rows": 0,
+                    "missing_source": True,
+                }
+            )
+            continue
         lines: list[str] = []
         with source.open(encoding="utf-8") as handle:
             for raw in handle:

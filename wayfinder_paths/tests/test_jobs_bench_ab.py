@@ -1509,3 +1509,129 @@ def test_scorecard_counts_sequence_previews_and_stale_repairs() -> None:
     assert scorecard["process"]["sequence_preview_frozen"] == 2
     assert scorecard["process"]["no_progress_preview_rejections"] == 1
     assert scorecard["process"]["quick_simulations"] == 1
+
+
+def _bundle_with_spec(bundle: Path, mutate) -> None:
+    """Rewrite a bundle's execution spec wherever it lives."""
+    from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+
+    job_data = yaml.safe_load((bundle / "job.yaml").read_text(encoding="utf-8"))
+    spec_data, _ = resolve_execution_spec(bundle, job_data)
+    spec_data = json.loads(json.dumps(spec_data or {}))
+    mutate(spec_data)
+    (bundle / "execution_spec.json").write_text(json.dumps(spec_data), encoding="utf-8")
+    if "execution_spec" in job_data:
+        job_data["execution_spec"] = spec_data
+        (bundle / "job.yaml").write_text(yaml.safe_dump(job_data), encoding="utf-8")
+
+
+def test_race_accepts_a_candidate_that_declares_a_feature(tmp_path: Path) -> None:
+    from wayfinder_paths.jobs.bench.forward_replay import evaluate_bundle
+
+    _, _, world_dir, sealed_dir, rows = _world(tmp_path)
+    world = load_world(world_dir, sealed_dir)
+    environment = world["manifest"]["execution_environment"]
+    cutoff = datetime(2026, 1, 3, 23, tzinfo=UTC)
+
+    declares = tmp_path / "declares"
+    shutil.copytree(world_dir / "incumbent", declares)
+
+    def declare(spec: dict) -> None:
+        spec.setdefault("data_contract", {})["features"] = [
+            {"name": "macro_regime", "source": "file"}
+        ]
+
+    _bundle_with_spec(declares, declare)
+    verdict = evaluate_bundle(
+        declares, rows=rows, cutoff=cutoff, environment=environment
+    )
+    assert verdict["spec_matches_world"] is True
+
+    # A different market is still a different market.
+    other = tmp_path / "other"
+    shutil.copytree(world_dir / "incumbent", other)
+
+    def retime(spec: dict) -> None:
+        spec.setdefault("data_contract", {})["bar_interval"] = "4h"
+
+    _bundle_with_spec(other, retime)
+    assert (
+        evaluate_bundle(other, rows=rows, cutoff=cutoff, environment=environment)[
+            "spec_matches_world"
+        ]
+        is False
+    )
+
+
+def test_world_tolerates_a_declared_default_store_it_derives(tmp_path: Path) -> None:
+    from wayfinder_paths.jobs.bench.world import install_development_world
+
+    store, job_id, rows = _job(tmp_path / "source")
+    source = store.job_dir(job_id)
+    (source / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 40}, "bars": _bars(count=24 * 40)}),
+        encoding="utf-8",
+    )
+
+    def declare(spec: dict) -> None:
+        spec.setdefault("data_contract", {})["features"] = [
+            {"name": "macro_regime", "source": "file"}
+        ]
+
+    _bundle_with_spec(source, declare)
+    assert not (source / "state/features.jsonl").exists()
+    manifest = prepare_world(
+        source,
+        tmp_path / "world",
+        generation_cutoff=datetime(2026, 1, 25, 23, tzinfo=UTC),
+        holdout_end=datetime(2026, 2, 9, 23, tzinfo=UTC),
+        sealed_dir=tmp_path / "sealed",
+        world_id="derived-store",
+    )
+    entry = manifest["features"][0]
+    assert entry["missing_source"] is True and entry["rows"] > 0
+    assert "macro_ret_7d" in entry["derived"]
+    sandbox_job = tmp_path / "sandbox-job"
+    sandbox_job.mkdir()
+    install_development_world(tmp_path / "world", destination_job=sandbox_job)
+    assert (sandbox_job / "state/features.jsonl").read_text().count("macro_ret_7d") > 0
+
+    # A declared file elsewhere is still required.
+    def elsewhere(spec: dict) -> None:
+        spec.setdefault("data_contract", {})["features"] = [
+            {"name": "funding", "source": "file", "path": "state/funding.jsonl"}
+        ]
+
+    _bundle_with_spec(source, elsewhere)
+    with pytest.raises(FileNotFoundError, match="declared feature file is missing"):
+        prepare_world(
+            source,
+            tmp_path / "world2",
+            generation_cutoff=datetime(2026, 1, 25, 23, tzinfo=UTC),
+            holdout_end=datetime(2026, 2, 9, 23, tzinfo=UTC),
+            sealed_dir=tmp_path / "sealed2",
+            world_id="missing-store",
+        )
+
+
+def test_load_world_verifies_the_sealed_feature_hash(tmp_path: Path) -> None:
+    store, job_id, _ = _job(tmp_path / "source")
+    source = store.job_dir(job_id)
+    (source / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 40}, "bars": _bars(count=24 * 40)}),
+        encoding="utf-8",
+    )
+    world_dir, sealed_dir = tmp_path / "world", tmp_path / "sealed"
+    prepare_world(
+        source,
+        world_dir,
+        generation_cutoff=datetime(2026, 1, 25, 23, tzinfo=UTC),
+        holdout_end=datetime(2026, 2, 9, 23, tzinfo=UTC),
+        sealed_dir=sealed_dir,
+        world_id="sealed-check",
+    )
+    load_world(world_dir, sealed_dir)
+    sealed = sealed_dir / "features-holdout.jsonl"
+    sealed.write_text(sealed.read_text() + '{"tampered": true}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="sealed holdout features"):
+        load_world(world_dir, sealed_dir)

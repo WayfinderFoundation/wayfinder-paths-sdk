@@ -1230,8 +1230,22 @@ def _bounded_index_clock_hits(text: str) -> list[str]:
             node = node.args[0]
         return node
 
+    # Names bound straight from the index (`now = ctx.bar_index`) carry it.
+    aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], unwrap(node.value)
+            if (
+                isinstance(target, ast.Name)
+                and isinstance(value, ast.Attribute)
+                and value.attr == "bar_index"
+            ):
+                aliases.add(target.id)
+
     def is_bar_index(node: ast.AST) -> bool:
         inner = unwrap(node)
+        if isinstance(inner, ast.Name):
+            return inner.id in aliases
         return isinstance(inner, ast.Attribute) and inner.attr == "bar_index"
 
     def permitted(node: ast.AST) -> bool:
@@ -1278,9 +1292,17 @@ def _bounded_index_clock_hits(text: str) -> list[str]:
         elif (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "setdefault"
-            and len(node.args) >= 2
-            and is_bar_index(node.args[1])
+            and (
+                (
+                    node.func.attr == "setdefault"
+                    and len(node.args) >= 2
+                    and is_bar_index(node.args[1])
+                )
+                or (
+                    node.func.attr in {"append", "insert", "add", "appendleft"}
+                    and any(is_bar_index(arg) for arg in node.args)
+                )
+            )
         ):
             record(node)
         elif isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub)):
