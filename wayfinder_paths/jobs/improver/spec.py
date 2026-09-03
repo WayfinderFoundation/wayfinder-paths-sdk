@@ -170,6 +170,11 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # production until its full-process A/B measures both compute saved
         # and any false rejection of useful sparse behavior.
         "behavior_preview_enabled": False,
+        # Sequential replay of the quick window's tail with persistent state
+        # for structural candidates: diagnostic on a first attempt, the gate
+        # for a no-trade repair (the replay must move before another screen).
+        "sequence_preview_enabled": True,
+        "sequence_preview_bars": 2_000,
         "inner_optuna_train_bars": 10_000,
         "inner_optuna_timeout_seconds": 1_800,
         "proposal_finalists": 1,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import io
 import json
@@ -22,6 +23,7 @@ from wayfinder_paths.jobs.execution.features import (
 )
 from wayfinder_paths.jobs.execution.primitives import (
     BAR_CLOSE_LABEL,
+    REDUCE_ONLY_ACTIONS,
     CompletedBarsView,
     ExecutionSpec,
     ExecutionTrace,
@@ -776,6 +778,104 @@ def window_invariance_probe(
     return asyncio.run(probe())
 
 
+SEQUENCE_PREVIEW_BARS = 2_000
+_SEQUENCE_PREVIEW_STATE_KEYS = 8
+
+
+def sequence_preview(
+    script_entrypoint: str | Path | Callable[..., Any],
+    dataset: Any,
+    execution_spec: ExecutionSpec | Mapping[str, Any] | None,
+    params: Mapping[str, Any],
+    *,
+    bars: int = SEQUENCE_PREVIEW_BARS,
+) -> dict[str, Any]:
+    """Replay the last ``bars`` decision bars of a dataset through the real
+    sequential simulator (one strategy, one precompute, one engine state)
+    and summarize what decide() did: every intent it emitted and how its own
+    strategy_state moved bar to bar. An isolated-bar probe cannot see a state
+    machine; this can, and names the keys that were written but froze."""
+    from wayfinder_paths.jobs.execution.simulator import (  # circular import
+        PreparedExecutionDataset,
+        _load_strategy,
+        simulate_execution,
+    )
+    from wayfinder_paths.jobs.execution.walk_forward import _slice  # circular
+
+    params_data = dict(params)
+    spec = ExecutionSpec.coerce(execution_spec)
+    window = resolve_compute_window(
+        params_data, _load_strategy(script_entrypoint, dict(params_data))
+    )
+    if not window.declared or window.size is None:
+        return {
+            "status": "skipped",
+            "reason": f"compute window is {window.source}, not declared",
+        }
+    timestamps = dataset.bars.timestamps
+    if len(timestamps) <= window.size:
+        return {
+            "status": "skipped",
+            "reason": "dataset does not extend beyond the declared window",
+        }
+    start = max(0, len(timestamps) - (window.size + int(bars)))
+    replay: PreparedExecutionDataset = _slice(
+        dataset, timestamps, start, len(timestamps)
+    )
+    result = simulate_execution(
+        script_entrypoint, replay, spec, params_data, record_strategy_state=True
+    )
+    warm = window.size - 1
+    runs = list(result.trace.get("runs") or [])[warm:]
+    decision_stamps = {str(row.get("timestamp")) for row in runs}
+    intents = [
+        row
+        for row in result.trace.get("intents") or []
+        if str(row.get("timestamp")) in decision_stamps
+    ]
+    by_action: dict[str, int] = {}
+    entries = 0
+    first_entry_bar: str | None = None
+    for intent in intents:
+        action = str(intent.get("action") or "").upper()
+        by_action[action] = by_action.get(action, 0) + 1
+        if action not in REDUCE_ONLY_ACTIONS and not intent.get("reduce_only"):
+            entries += 1
+            first_entry_bar = first_entry_bar or str(intent.get("timestamp"))
+    seen: dict[str, str] = {}
+    keys: dict[str, dict[str, Any]] = {}
+    frozen_after: str | None = None
+    for row in runs:
+        stamp = str(row.get("timestamp"))
+        for key, digest in (row.get("strategy_state_digest") or {}).items():
+            if key not in seen:
+                keys[key] = {
+                    "first_set_bar": stamp,
+                    "last_changed_bar": stamp,
+                    "changes": 1,
+                }
+                frozen_after = stamp
+            elif seen[key] != digest:
+                keys[key]["last_changed_bar"] = stamp
+                keys[key]["changes"] += 1
+                frozen_after = stamp
+            seen[key] = digest
+    ranked = sorted(keys.items(), key=lambda item: (-item[1]["changes"], item[0]))
+    status = "entries" if entries else ("armed_no_entry" if keys else "silent")
+    return {
+        "status": status,
+        "bars_replayed": len(runs),
+        "window": window.size,
+        "intents_total": len(intents),
+        "by_action": by_action,
+        "entries": entries,
+        "first_entry_bar": first_entry_bar,
+        "state_keys": dict(ranked[:_SEQUENCE_PREVIEW_STATE_KEYS]),
+        "state_keys_total": len(keys),
+        "frozen_after": frozen_after,
+    }
+
+
 def _window_invariance_checks(
     root: Path, script_path: Path, job_data: Mapping[str, Any], spec: ExecutionSpec
 ) -> list[dict[str, Any]]:
@@ -1106,6 +1206,100 @@ def entrypoint_inside_workspace_check(
     return check
 
 
+_CLOCK_PERMITTED_TOKENS = ("warmup", "params", "lookback")
+_CLOCK_HIT_LIMIT = 4
+
+
+def _bounded_index_clock_hits(text: str) -> list[str]:
+    """Source lines that persist `ctx.bar_index` or do elapsed-time arithmetic
+    with it. Permitted: comparisons and arithmetic against constants or
+    warmup/params/lookback expressions (`ctx.bar_index < self.warmup_bars`,
+    `ctx.bar_index - 1`)."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+
+    def unwrap(node: ast.AST) -> ast.AST:
+        while (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"int", "float"}
+            and len(node.args) == 1
+        ):
+            node = node.args[0]
+        return node
+
+    def is_bar_index(node: ast.AST) -> bool:
+        inner = unwrap(node)
+        return isinstance(inner, ast.Attribute) and inner.attr == "bar_index"
+
+    def permitted(node: ast.AST) -> bool:
+        inner = unwrap(node)
+        if isinstance(inner, ast.Constant):
+            return True
+        words = " ".join(
+            str(getattr(item, "id", "") or getattr(item, "attr", "") or "")
+            + " "
+            + (str(item.value) if isinstance(item, ast.Constant) else "")
+            for item in ast.walk(inner)
+        ).lower()
+        return any(token in words for token in _CLOCK_PERMITTED_TOKENS)
+
+    def stored_read(node: ast.AST) -> bool:
+        inner = unwrap(node)
+        if isinstance(inner, ast.Subscript):
+            return not permitted(inner)
+        return (
+            isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Attribute)
+            and inner.func.attr == "get"
+            and not permitted(inner)
+        )
+
+    hits: list[tuple[int, str]] = []
+
+    def record(node: ast.AST) -> None:
+        segment = ast.get_source_segment(text, node) or ast.dump(node)
+        hits.append((int(getattr(node, "lineno", 0)), " ".join(segment.split())[:120]))
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if (
+                node.value is not None
+                and is_bar_index(node.value)
+                and any(isinstance(t, (ast.Subscript, ast.Attribute)) for t in targets)
+            ):
+                record(node)
+        elif isinstance(node, ast.Dict):
+            if any(value is not None and is_bar_index(value) for value in node.values):
+                record(node)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "setdefault"
+            and len(node.args) >= 2
+            and is_bar_index(node.args[1])
+        ):
+            record(node)
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub)):
+            left, right = is_bar_index(node.left), is_bar_index(node.right)
+            if left != right:
+                other = node.right if left else node.left
+                if not permitted(other):
+                    record(node)
+        elif isinstance(node, ast.Compare) and len(node.comparators) == 1:
+            sides = (node.left, node.comparators[0])
+            flags = tuple(is_bar_index(side) for side in sides)
+            if flags[0] != flags[1]:
+                other = sides[1] if flags[0] else sides[0]
+                if stored_read(other):
+                    record(node)
+    unique = sorted(set(hits))[:_CLOCK_HIT_LIMIT]
+    return [f"line {line}: {segment}" for line, segment in unique]
+
+
 def _code_only_text(text: str) -> str:
     """Strip comments and docstrings so static greps see only real code.
 
@@ -1192,6 +1386,28 @@ def _script_static_checks(
                 "strategy_state re-warm from zero on every state reset"
             )
             if counter_gate is not None
+            else None,
+        }
+    )
+    # ctx.bar_index is the bounded view length and is constant once warm, so
+    # a stored copy never ages: five of eight designs in one campaign armed a
+    # state machine on it and never traded. Warmup comparisons stay legal.
+    clock_hits = _bounded_index_clock_hits(text)
+    checks.append(
+        {
+            "name": "no_bounded_index_clock",
+            "passed": not clock_hits,
+            "blocking": True,
+            "details": clock_hits,
+            "hint": (
+                "ctx.bar_index is the bounded view length and is constant once "
+                "warm, so it cannot measure elapsed bars: an age, cooldown or "
+                "expiry computed from it reads 0 forever and the state machine "
+                f"never fires ({'; '.join(clock_hits)}). Stamp ctx.bar_ordinal "
+                "into strategy_state and measure with ctx.bars_since(stamp), or "
+                "store ctx.timestamp."
+            )
+            if clock_hits
             else None,
         }
     )

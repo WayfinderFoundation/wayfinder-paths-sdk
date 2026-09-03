@@ -70,6 +70,11 @@ For each candidate:
 - Edit only its named bundle and optional `search_space.json`.
 - Prefer existing research helpers and starter cases over new indicator code.
 - Declare `execution_params.warmup_bars` for the longest lookback plus buffer.
+- `ctx.bar_index` is the length of the bounded view and is constant once warm:
+  never store it in `strategy_state` or subtract it to measure an age,
+  cooldown, refractory period or expiry (every age reads 0 and the state
+  machine never fires). Stamp `ctx.bar_ordinal` and measure with
+  `ctx.bars_since(stamp)`; gate cadence with `ctx.every_n_bars(n)`.
 - Keep indicator work bounded or incremental; never recompute full history in
   `decide()`.
 - Call `wayfinder_core_jobs` with `action="evolution_evaluate"` and continue when

@@ -219,6 +219,7 @@ async def run_tick(
     client_order_prefix: str | None = None,
     blocked_entry_symbols: set[str] | None = None,
     liquidation: LiquidationConfig | None = None,
+    record_strategy_state: bool = False,
 ) -> TickResult:
     """One engine tick, identical across backtest, paper, and live.
 
@@ -252,6 +253,7 @@ async def run_tick(
             blocked_entry_symbols=blocked_entry_symbols,
             liquidation=liquidation,
             result=result,
+            record_strategy_state=record_strategy_state,
         )
     finally:
         trace.guard_events.extend(result.guard_events)
@@ -276,6 +278,7 @@ async def _run_tick_inner(
     blocked_entry_symbols: set[str] | None,
     liquidation: LiquidationConfig | None,
     result: TickResult,
+    record_strategy_state: bool = False,
 ) -> TickResult:
     bar_ts = view.timestamps[-1] if view.timestamps else None
     if bar_ts is None:
@@ -729,9 +732,26 @@ async def _run_tick_inner(
             "visible_latest_timestamp": _latest_visible_timestamp(ctx.view),
             "guard_event_count": len(result.guard_events),
             "gates": result.gates,
+            # Only the sequence preview asks for this: a per-key digest of the
+            # strategy's own state so a replay can see whether a state
+            # machine advances, without growing stored traces.
+            **(
+                {"strategy_state_digest": _strategy_state_digest(state.strategy_state)}
+                if record_strategy_state
+                else {}
+            ),
         }
     )
     return result
+
+
+def _strategy_state_digest(strategy_state: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        str(key): hashlib.sha1(
+            json.dumps(value, sort_keys=True, default=str).encode()
+        ).hexdigest()[:12]
+        for key, value in strategy_state.items()
+    }
 
 
 async def _settle_resting_orders(

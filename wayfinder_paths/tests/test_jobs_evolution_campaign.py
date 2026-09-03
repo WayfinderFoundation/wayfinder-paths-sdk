@@ -72,6 +72,10 @@ from wayfinder_paths.jobs.evolution_campaign import (
     submit_campaign_design,
     submit_research_seed,
 )
+from wayfinder_paths.jobs.evolution_diagnostics import (
+    REPAIR_REMEDIES,
+    build_repair_work_order,
+)
 from wayfinder_paths.jobs.execution.op_process import op_runner_command
 from wayfinder_paths.jobs.execution.op_runner import _nudge_evolution
 from wayfinder_paths.jobs.execution.primitives import DEFAULT_WARMUP_BARS
@@ -4588,3 +4592,133 @@ def test_campaign_carries_the_feature_store_and_tells_the_designer_to_read_it(
     prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
     assert "ctx.view.feature('macro_regime')" in prompt["next_action"]
     assert "execution_spec.data_contract.features" in prompt["next_action"]
+
+
+def test_bounded_index_clock_candidate_is_rejected_without_charge(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    candidates = _prepare_campaign_candidates(store, job_id, started)
+    structural = next(c for c in candidates if c["mutation_kind"] == "structural")
+    script = store.job_dir(job_id) / structural["bundle"] / "workspace/src/strategy.py"
+    script.write_text(
+        script.read_text(encoding="utf-8") + "\n\ndef _armed_age(ctx):\n"
+        "    state = ctx.strategy_state\n"
+        "    state.setdefault('arm_bar', ctx.bar_index)\n"
+        "    return ctx.bar_index - state['arm_bar']\n",
+        encoding="utf-8",
+    )
+
+    result = evaluate_candidate(store, job_id, structural["candidate_id"])
+
+    assert result["status"] == "prepared"
+    assert "bar_ordinal" in result["submission_rejection"]["error"]
+    assert result["submission_rejection"]["attempt_charged"] is False
+    assert int(result.get("attempt_count") or 0) == 0
+    assert int(campaign_status(store, job_id)["counts"].get("quick_attempts") or 0) == 0
+
+
+def _stuck_clock_free_no_trade_strategy() -> str:
+    # Writes state every bar with the correct primitive but never enters:
+    # a state machine the sequence preview can see moving.
+    return (
+        "\n\ndef decide(ctx):\n"
+        "    ctx.strategy_state['seen'] = ctx.bar_ordinal\n"
+        "    return []\n"
+    )
+
+
+def _windowed_candidate(store, job_id, *, summary: str, extra_source: str):
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="breakout",
+        summary=summary,
+        now=datetime(2026, 8, 25, 13, tzinfo=UTC),
+    )
+    bundle = store.job_dir(job_id) / candidate["bundle"]
+    job_yaml = yaml.safe_load((bundle / "job.yaml").read_text(encoding="utf-8"))
+    job_yaml["execution_params"]["warmup_bars"] = 20
+    (bundle / "job.yaml").write_text(
+        yaml.safe_dump(job_yaml, sort_keys=False), encoding="utf-8"
+    )
+    script = bundle / "workspace/src/strategy.py"
+    script.write_text(
+        script.read_text(encoding="utf-8") + extra_source, encoding="utf-8"
+    )
+    return candidate
+
+
+def test_no_trade_structural_candidate_carries_sequence_preview_into_work_order(
+    tmp_path,
+) -> None:
+    store, job_id = _evaluatable_job(tmp_path, source_params={"warmup_bars": 20})
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = _windowed_candidate(
+        store, job_id, summary="silent structural probe", extra_source="\nPROBE = 1\n"
+    )
+
+    result = evaluate_candidate(store, job_id, candidate["candidate_id"])
+
+    assert result["evidence"] == "quick screen produced no closed trades"
+    assert result["sequence_preview"]["status"] == "silent"
+    assert result["sequence_preview"]["bars_replayed"] > 0
+    postmortem = result["postmortem"]
+    assert postmortem["repair_context"]["sequence_preview"]["status"] == "silent"
+    order = build_repair_work_order(postmortem)
+    assert "sequence preview saw no intents" in order["diagnosis"]
+    assert order["admissible_repairs"] == REPAIR_REMEDIES["no_trades"]["admissible"]
+
+
+def test_no_trade_repair_without_preview_progress_skips_the_quick_simulation(
+    tmp_path, monkeypatch
+) -> None:
+    import wayfinder_paths.jobs.evolution_campaign as campaign_module
+
+    store, job_id = _evaluatable_job(tmp_path, source_params={"warmup_bars": 20})
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = _windowed_candidate(
+        store,
+        job_id,
+        summary="state moves, never enters",
+        extra_source=_stuck_clock_free_no_trade_strategy(),
+    )
+    first = evaluate_candidate(store, job_id, candidate["candidate_id"])
+    assert first["sequence_preview"]["status"] == "armed_no_entry"
+    assert first["sequence_preview"]["state_keys"]["seen"]["changes"] > 1
+
+    # Re-open the candidate as a no-trade repair carrying its first preview,
+    # then resubmit the same state machine: only the 10k screen is
+    # intercepted, the preview replays through its own import.
+    state = campaign_status(store, job_id)
+    row = next(
+        c for c in state["candidates"] if c["candidate_id"] == candidate["candidate_id"]
+    )
+    row["status"] = "repair_pending"
+    row["attempts"] = [
+        {
+            "attempt": 1,
+            "outcome": {"sequence_preview": first["sequence_preview"]},
+            "postmortem": {"failure_codes": ["activity_below_floor", "no_trades"]},
+        }
+    ]
+    campaign_module._save_campaign(store, job_id, state)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("quick simulation must not run")
+
+    monkeypatch.setattr(campaign_module, "simulate_execution", boom)
+    second = evaluate_candidate(store, job_id, candidate["candidate_id"])
+
+    assert second["status"] == "low_fidelity_rejected"
+    assert second["quick_simulation_ran"] is False
+    postmortem = second["postmortem"]
+    assert postmortem["primary_failure"] == "no_progress_preview"
+    assert postmortem["failure_codes"] == ["no_progress_preview", "no_trades"]
+    assert (
+        postmortem["repair_context"]["previous_preview"]["status"] == "armed_no_entry"
+    )
+    assert (
+        "changed nothing the replay can see"
+        in build_repair_work_order(postmortem)["diagnosis"]
+    )

@@ -59,6 +59,7 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
     build_postmortem,
     build_repair_work_order,
     compact_postmortem,
+    preview_progress,
     receipt_economics,
     receipt_exits,
     resolve_json_pointer,
@@ -95,6 +96,7 @@ from wayfinder_paths.jobs.execution.validation import (
     BOUNDED_WINDOW_HINT,
     parameter_behavior_probe,
     resolve_execution_spec,
+    sequence_preview,
     validate_execution_job,
     window_invariance_probe,
 )
@@ -207,7 +209,11 @@ _STRUCTURAL_SEARCH_GUIDANCE = (
     "Make the named causal code change. If it introduces meaningful numeric "
     "behavior knobs, also create search_space.json with at most three bounded "
     "typed dimensions covering only those new knobs. Otherwise omit it; do not "
-    "invent tuning axes for a boolean or parameterless change."
+    "invent tuning axes for a boolean or parameterless change. Any age, "
+    "cooldown or expiry must be measured with ctx.bar_ordinal / "
+    "ctx.bars_since(stamp) or timestamps, never ctx.bar_index (the bounded "
+    "view length, constant once warm; such a candidate is rejected before "
+    "simulation)."
 )
 
 
@@ -2300,6 +2306,18 @@ def _evaluate_candidate(
             "gate sizes a strategy to the risk ceiling mechanically"
         )
     report = validate_execution_job(job_id, candidate_dir=candidate_root, store=store)
+    clock = next(
+        (
+            check
+            for check in report.get("checks") or []
+            if check.get("name") == "no_bounded_index_clock" and not check.get("passed")
+        ),
+        None,
+    )
+    if clock is not None:
+        # A deterministic authoring mistake with a mechanical fix: no
+        # simulation ran, so no attempt is charged.
+        return _rejected_submission(str(clock.get("hint") or "bounded index clock"))
     if not _candidate_validation_passed(report):
         return {"status": "invalid", "evidence": {"validation": report}}
     revision = compute_workspace_revision(candidate_root)
@@ -2346,6 +2364,9 @@ def _evaluate_candidate(
     policy = manifest.get("policy") or {}
     tuning_preview: dict[str, Any] | None = None
     behavior_preview: dict[str, Any] | None = None
+    sequence_report: dict[str, Any] | None = None
+    previous_preview: dict[str, Any] | None = None
+    repair_gate = False
     try:
         subject = _load_subject(store, job_id, candidate_root, campaign_id=campaign_id)
         train_end, validation_end = _split_bounds(
@@ -2376,6 +2397,56 @@ def _evaluate_candidate(
                     },
                 },
             }
+        # A stuck state machine (armed once, never fires) is invisible to
+        # isolated-bar probes; replay consecutive bars with persistent state
+        # before the 10k-bar screen. A first attempt is never rejected on it
+        # (a sparse, alive mechanism may not fire in the replayed tail); a
+        # no-trade repair must show the replay moved.
+        attempts = list(candidate.get("attempts") or [])
+        previous_codes = set(
+            ((attempts[-1].get("postmortem") or {}).get("failure_codes") or [])
+            if attempts
+            else []
+        )
+        repair_gate = bool(previous_codes & {"no_trades", "no_progress_preview"})
+        previous_preview = (
+            ((attempts[-1].get("outcome") or {}).get("sequence_preview"))
+            if attempts
+            else None
+        )
+        if repair_gate or (
+            candidate.get("mutation_kind") != "parameter"
+            and bool(policy.get("sequence_preview_enabled", True))
+        ):
+            sequence_report = sequence_preview(
+                subject["script"],
+                quick,
+                subject["spec"],
+                params,
+                bars=int(policy.get("sequence_preview_bars") or 2_000),
+            )
+            if repair_gate and not preview_progress(previous_preview, sequence_report):
+                reason = (
+                    "sequence preview shows no new intent or state transition "
+                    "since the previous no-trade attempt"
+                )
+                return {
+                    "status": "low_fidelity_rejected",
+                    "evidence": reason,
+                    "quick_simulation_ran": False,
+                    "sequence_preview": sequence_report,
+                    "postmortem": {
+                        "viable": False,
+                        "primary_failure": "no_progress_preview",
+                        "failure_codes": ["no_progress_preview", "no_trades"],
+                        "behavior_diff": {"material_change": False},
+                        "repair_context": {
+                            "error": reason,
+                            "sequence_preview": sequence_report,
+                            "previous_preview": previous_preview,
+                        },
+                    },
+                }
         if (
             bool(policy.get("behavior_preview_enabled"))
             and candidate.get("mutation_kind") == "parameter"
@@ -2521,7 +2592,19 @@ def _evaluate_candidate(
         common["tuning_preview"] = tuning_preview
     if behavior_preview is not None:
         common["behavior_preview"] = behavior_preview
+    if sequence_report is not None:
+        common["sequence_preview"] = sequence_report
     if _decision_trade_count(result.stats) <= 0:
+        postmortem = common.get("postmortem")
+        if isinstance(postmortem, dict) and sequence_report is not None:
+            context = postmortem.setdefault("repair_context", {})
+            context["sequence_preview"] = sequence_report
+            if previous_preview:
+                context["previous_preview"] = previous_preview
+            if repair_gate:
+                postmortem.setdefault("progress_from_previous", {})[
+                    "preview_progress"
+                ] = True
         return {
             **common,
             "status": "low_fidelity_rejected",

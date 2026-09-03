@@ -61,9 +61,20 @@ REPAIR_REMEDIES: dict[str, dict[str, list[str]]] = {
         "admissible": [
             "loosen the entry condition that never fires",
             "inspect the gate stack for a condition that is always false",
-            "confirm the declared warmup leaves bars to trade",
+            "if the sequence preview shows strategy_state written but no entry, "
+            "replace any ctx.bar_index age/cooldown/expiry arithmetic with "
+            "ctx.bar_ordinal and ctx.bars_since(stamp)",
         ],
         "forbidden": ["adding more gates"],
+    },
+    "no_progress_preview": {
+        "admissible": [
+            "change the mechanism so the replay emits a new intent or a new state "
+            "transition",
+            "if a stored ctx.bar_index drives an age, cooldown or expiry, replace it "
+            "with ctx.bar_ordinal and ctx.bars_since(stamp)",
+        ],
+        "forbidden": ["resubmitting the same state machine with different thresholds"],
     },
     "activity_below_floor": {
         "admissible": [
@@ -515,6 +526,33 @@ def _cost_bleed(
     return candidate_rate > max(threshold, 0.01)
 
 
+def preview_progress(
+    previous: Mapping[str, Any] | None, current: Mapping[str, Any] | None
+) -> bool:
+    """Did the sequence preview move since the last no-trade attempt: a new
+    intent, a new entry, a new state key, or one more state transition. A
+    missing or skipped preview cannot veto a repair."""
+    if not previous or not current or current.get("status") == "skipped":
+        return True
+    if previous.get("status") == "skipped":
+        return True
+
+    def transitions(report: Mapping[str, Any]) -> int:
+        return sum(
+            int(item.get("changes") or 0)
+            for item in (report.get("state_keys") or {}).values()
+        )
+
+    return (
+        int(current.get("intents_total") or 0) > int(previous.get("intents_total") or 0)
+        or int(current.get("entries") or 0) > int(previous.get("entries") or 0)
+        or transitions(current) > transitions(previous)
+        or bool(
+            set(current.get("state_keys") or {}) - set(previous.get("state_keys") or {})
+        )
+    )
+
+
 def attempt_made_progress(postmortem: Mapping[str, Any]) -> bool:
     """Causal progress: the behavior changed and the outcome moved the right way.
 
@@ -525,6 +563,10 @@ def attempt_made_progress(postmortem: Mapping[str, Any]) -> bool:
     if not progress:
         return False
     if progress.get("became_valid") or progress.get("became_viable"):
+        return True
+    if progress.get("preview_progress"):
+        # The replay proved a new intent or state transition; trade-level
+        # deltas are blind to a no-trade repair that moved its state machine.
         return True
     material = bool((postmortem.get("behavior_diff") or {}).get("material_change"))
     if not material:
@@ -550,7 +592,13 @@ def build_repair_work_order(
     """Deterministic assignment for the next attempt: diagnosis, remedy class, budget."""
     policy = policy or {}
     primary = postmortem.get("primary_failure")
-    remedy = REPAIR_REMEDIES.get(str(primary or ""), _DEFAULT_REMEDY)
+    codes = list(postmortem.get("failure_codes") or [])
+    remedy_key = str(primary or "")
+    if primary == "activity_below_floor" and "no_trades" in codes:
+        # A zero-trade book is filed under the floor by the screen verdict;
+        # the remedy that fits is the no-trades one.
+        remedy_key = "no_trades"
+    remedy = REPAIR_REMEDIES.get(remedy_key, _DEFAULT_REMEDY)
     economics = postmortem.get("economics") or {}
     candidate = economics.get("candidate") or {}
     comparator = economics.get("incumbent") or economics.get("reference") or {}
@@ -640,6 +688,21 @@ def _diagnosis(
             "Every extra gate is a degree of freedom fitted to a 35-day slice; "
             "simplify to the mechanism that carries the hypothesis."
         )
+    preview = context.get("sequence_preview") or {}
+    if primary == "no_progress_preview":
+        previous = context.get("previous_preview") or {}
+        return (
+            "The repair changed nothing the replay can see: the sequence preview "
+            f"still shows {_integer(preview.get('intents_total'))} intents and "
+            f"{_integer(preview.get('entries'))} entries over "
+            f"{_integer(preview.get('bars_replayed'))} bars (previous attempt "
+            f"{_integer(previous.get('intents_total'))} intents, "
+            f"{_integer(previous.get('entries'))} entries; state froze after "
+            f"{preview.get('frozen_after') or 'the first bar'}). "
+            + _stuck_clock_hint(preview)
+        )
+    if "no_trades" in (postmortem.get("failure_codes") or []) and preview:
+        return _no_trades_diagnosis(preview)
     if primary == "no_behavior_change":
         dead = [str(item) for item in context.get("dead_params") or []]
         if dead:
@@ -681,6 +744,8 @@ def _diagnosis(
             "budget band before touching entry logic; do not drive it to zero."
         )
     if primary == "no_trades":
+        if preview:
+            return _no_trades_diagnosis(preview)
         return "No fills on the screen window: the gate stack never admits an entry."
     if primary == "fees_erased_edge":
         return f"{facts} Gross realized PnL was positive; fees erased it."
@@ -762,12 +827,72 @@ def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
                 if isinstance(row, Mapping)
             },
         }
-    repair_error = str(
-        (postmortem.get("repair_context") or {}).get("error") or ""
-    ).strip()
+    context = postmortem.get("repair_context") or {}
+    repair_error = str(context.get("error") or "").strip()
+    repair_context: dict[str, Any] = {}
     if repair_error:
-        compact["repair_context"] = {"error": repair_error[:500]}
+        repair_context["error"] = repair_error[:500]
+    for key in ("sequence_preview", "previous_preview"):
+        if isinstance(context.get(key), Mapping):
+            repair_context[key] = _compact_preview(context[key])
+    if repair_context:
+        compact["repair_context"] = repair_context
     return compact
+
+
+def _compact_preview(preview: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: preview.get(key)
+        for key in (
+            "status",
+            "bars_replayed",
+            "intents_total",
+            "entries",
+            "by_action",
+            "state_keys",
+            "frozen_after",
+        )
+        if preview.get(key) is not None
+    }
+
+
+def _stuck_clock_hint(preview: Mapping[str, Any]) -> str:
+    keys = ", ".join(sorted(preview.get("state_keys") or {})[:6]) or "none"
+    return (
+        f"strategy_state keys written: {keys}. An armed state machine that never "
+        "fires usually measures age, cooldown or expiry from ctx.bar_index, "
+        "which is the bounded view length and stays constant once warm, so "
+        "every age reads 0; stamp ctx.bar_ordinal and measure with "
+        "ctx.bars_since(stamp)."
+    )
+
+
+def _no_trades_diagnosis(preview: Mapping[str, Any]) -> str:
+    bars = _integer(preview.get("bars_replayed"))
+    status = str(preview.get("status") or "")
+    if status == "armed_no_entry":
+        return (
+            f"No fills on the screen window. The sequence preview replayed {bars} "
+            "consecutive bars with persistent state: "
+            f"{_integer(preview.get('intents_total'))} intents, "
+            f"{_integer(preview.get('entries'))} entries; state was written but "
+            f"froze after {preview.get('frozen_after') or 'the first bar'}. "
+            + _stuck_clock_hint(preview)
+        )
+    if status == "silent":
+        return (
+            "No fills on the screen window and the sequence preview saw no intents "
+            f"and no strategy_state writes across {bars} consecutive bars: the "
+            "gate stack never admits an entry."
+        )
+    if status == "entries":
+        return (
+            "No closed trades although the sequence preview emitted "
+            f"{_integer(preview.get('entries'))} entry intents across {bars} bars: "
+            "read the guard rejections (limit price, size, symbol) and the exit "
+            "path before touching the entry gate."
+        )
+    return "No fills on the screen window: the gate stack never admits an entry."
 
 
 _COMPACT_EXIT_REASONS = 6

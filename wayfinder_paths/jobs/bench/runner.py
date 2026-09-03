@@ -1087,6 +1087,11 @@ def _scorecard(
         for row in candidates
         for attempt in row.get("attempts") or []
     ]
+    attempt_postmortems = [
+        attempt.get("postmortem") or {}
+        for row in candidates
+        for attempt in row.get("attempts") or []
+    ]
     return {
         "funnel": {
             "candidates_generated": int(funnel_counts.get("generated") or 0),
@@ -1161,6 +1166,18 @@ def _scorecard(
             "behavior_preview_ticks": sum(
                 int((outcome.get("behavior_preview") or {}).get("ticks_evaluated") or 0)
                 for outcome in attempt_outcomes
+            ),
+            "sequence_previews": sum(
+                bool(outcome.get("sequence_preview")) for outcome in attempt_outcomes
+            ),
+            "sequence_preview_frozen": sum(
+                (outcome.get("sequence_preview") or {}).get("status")
+                == "armed_no_entry"
+                for outcome in attempt_outcomes
+            ),
+            "no_progress_preview_rejections": sum(
+                postmortem.get("primary_failure") == "no_progress_preview"
+                for postmortem in attempt_postmortems
             ),
             "holdout_verdict": holdout.get("verdict"),
         },

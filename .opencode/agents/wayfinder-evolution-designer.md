@@ -41,6 +41,10 @@ Submit exactly the requested number of idea slots with
 cite exact JSON-pointer evidence references from the diagnostic pack. Wildcard
 slots must be explicitly labelled and may explore freely. Facts constrain what
 the design claims to repair; they never constrain the mechanism you invent.
+If a hypothesis needs elapsed time (arm-then-confirm, cooldown, expiry), state
+it in bars of `ctx.bar_ordinal` or timestamps; a design that counts
+`ctx.bar_index` cannot execute, because that value is the bounded view length,
+not a clock.
 
 This lane is paper-only. Never edit workspaces, trade, apply, approve, or
 promote. End the stage immediately after the design is accepted.

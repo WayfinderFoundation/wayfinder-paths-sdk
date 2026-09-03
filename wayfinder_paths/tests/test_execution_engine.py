@@ -1330,3 +1330,36 @@ def test_engine_state_round_trip(tmp_path) -> None:
     assert restored.last_processed_bar_ts == state.last_processed_bar_ts
     assert restored.daily_notional == {"2026-01-01": 20.0}
     assert restored.revision == "abc123"
+
+
+async def test_run_tick_records_strategy_state_digest_only_when_asked() -> None:
+    from wayfinder_paths.jobs.execution.primitives import ExecutionTrace
+
+    def decide(ctx):
+        ctx.strategy_state["n"] = int(ctx.strategy_state.get("n") or 0) + 1
+        ctx.strategy_state["fixed"] = "x"
+        return []
+
+    state = EngineState()
+    plain = ExecutionTrace(execution_spec=_spec().to_dict())
+    await _tick(decide, _view([10.0, 10.5]), state=state, trace=plain)
+    assert "strategy_state_digest" not in plain.runs[-1]
+
+    recorded = ExecutionTrace(execution_spec=_spec().to_dict())
+    await _tick(
+        decide,
+        _view([10.0, 10.5, 11.0]),
+        state=state,
+        trace=recorded,
+        record_strategy_state=True,
+    )
+    await _tick(
+        decide,
+        _view([10.0, 10.5, 11.0, 11.5]),
+        state=state,
+        trace=recorded,
+        record_strategy_state=True,
+    )
+    first, second = (row["strategy_state_digest"] for row in recorded.runs[-2:])
+    assert set(first) == {"n", "fixed"}
+    assert first["n"] != second["n"] and first["fixed"] == second["fixed"]

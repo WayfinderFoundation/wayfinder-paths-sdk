@@ -675,3 +675,149 @@ def test_probe_tolerates_seed_noise_but_names_a_real_level_shift() -> None:
     assert rows[0]["path"] == "[0].bracket.stop_loss" and rows[0]["rel"] > 0.01
     # A different number of intents is a mismatch in kind, not in degree.
     assert probe_mismatches([intent(1.0)], [])[0]["kind"] == "count"
+
+
+def test_bounded_index_clock_store_is_flagged_and_blocks(tmp_path: Path) -> None:
+    report = _close_stop_report(
+        tmp_path,
+        "def decide(ctx):\n"
+        "    state = ctx.strategy_state\n"
+        "    if ctx.bar_index < 20:\n"
+        "        return []\n"
+        "    state['arm'] = {'bar': int(ctx.bar_index), 'px': 1.0}\n"
+        "    state.setdefault('first_bar', ctx.bar_index)\n"
+        "    return []\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    check = _check(report, "no_bounded_index_clock")
+    assert check["passed"] is False
+    assert check["blocking"] is True
+    assert len(check["details"]) == 2
+    assert "bar_ordinal" in check["hint"] and "bars_since" in check["hint"]
+
+
+def test_bounded_index_clock_arithmetic_and_compare_are_flagged(
+    tmp_path: Path,
+) -> None:
+    report = _close_stop_report(
+        tmp_path,
+        "def decide(ctx):\n"
+        "    state = ctx.strategy_state\n"
+        "    arm_bar = state.get('arm_bar')\n"
+        "    age = int(ctx.bar_index) - arm_bar\n"
+        "    if int(ctx.bar_index) - state['last_bar'] < 12:\n"
+        "        return []\n"
+        "    if int(state.get('cool', 0)) > ctx.bar_index:\n"
+        "        return []\n"
+        "    return []\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    check = _check(report, "no_bounded_index_clock")
+    assert check["passed"] is False
+    assert len(check["details"]) == 3
+    assert any("int(ctx.bar_index) - arm_bar" in hit for hit in check["details"])
+
+
+def test_bounded_index_warmup_gate_passes_clock_check(tmp_path: Path) -> None:
+    report = _close_stop_report(
+        tmp_path,
+        "# cooldown measured from ctx.bar_index would be wrong; we use ordinals\n"
+        "def decide(ctx):\n"
+        "    if ctx.bar_index < self_warmup(ctx):\n"
+        "        return []\n"
+        "    if ctx.bar_index < int(ctx.params.get('momentum_bars', 12)) + 4:\n"
+        "        return []\n"
+        "    last = ctx.view.timestamps[ctx.bar_index - 1]\n"
+        "    ctx.strategy_state['arm_ordinal'] = ctx.bar_ordinal\n"
+        "    age = ctx.bars_since(ctx.strategy_state.get('arm_ordinal'))\n"
+        "    return []\n\n"
+        "def self_warmup(ctx):\n    return int(ctx.params.get('warmup_bars', 20))\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    check = _check(report, "no_bounded_index_clock")
+    assert check["passed"] is True and check["hint"] is None
+
+
+def _open_intent(size: float = 1.0) -> OrderIntent:
+    return OrderIntent(
+        action="OPEN", venue="hyperliquid", symbol="SNX", side="long", size=size
+    )
+
+
+def _build_armed_by_bar_index(params: dict[str, Any]) -> Any:
+    """The stuck clock: arms once on the bounded index and never ages."""
+
+    def decide(ctx: Any) -> list[OrderIntent]:
+        if ctx.bar_index < 20:
+            return []
+        arm = ctx.strategy_state.setdefault("arm", {"bar": int(ctx.bar_index)})
+        if int(ctx.bar_index) - int(arm["bar"]) >= 3:
+            return [_open_intent()]
+        return []
+
+    return types.SimpleNamespace(decide=decide)
+
+
+def _build_armed_by_ordinal(params: dict[str, Any]) -> Any:
+    """The same machine on the global bar ordinal: fires every three bars."""
+
+    def decide(ctx: Any) -> list[OrderIntent]:
+        if ctx.bar_index < 20:
+            return []
+        stamp = ctx.strategy_state.setdefault("arm", ctx.bar_ordinal)
+        if ctx.bars_since(stamp) >= 3:
+            ctx.strategy_state["arm"] = ctx.bar_ordinal
+            return [_open_intent()]
+        return []
+
+    return types.SimpleNamespace(decide=decide)
+
+
+def _build_silent(params: dict[str, Any]) -> Any:
+    def decide(ctx: Any) -> list[OrderIntent]:
+        return []
+
+    return types.SimpleNamespace(decide=decide)
+
+
+def test_sequence_preview_reports_armed_state_machine() -> None:
+    from wayfinder_paths.jobs.execution.simulator import PreparedExecutionDataset
+    from wayfinder_paths.jobs.execution.validation import sequence_preview
+
+    dataset = PreparedExecutionDataset.from_rows(_bars(140), {})
+    stuck = sequence_preview(
+        _build_armed_by_bar_index, dataset, _PROBE_SPEC, {"warmup_bars": 20}, bars=60
+    )
+    assert stuck["status"] == "armed_no_entry"
+    assert stuck["entries"] == 0 and stuck["intents_total"] == 0
+    assert stuck["bars_replayed"] == 61  # 80 replayed bars minus the 19 warmup
+    assert stuck["state_keys"]["arm"]["changes"] == 1
+    assert stuck["frozen_after"] == stuck["state_keys"]["arm"]["first_set_bar"]
+
+    alive = sequence_preview(
+        _build_armed_by_ordinal, dataset, _PROBE_SPEC, {"warmup_bars": 20}, bars=60
+    )
+    assert alive["status"] == "entries"
+    assert alive["entries"] >= 15 and alive["by_action"]["OPEN"] == alive["entries"]
+    assert alive["state_keys"]["arm"]["changes"] > 1
+    assert alive["first_entry_bar"] is not None
+
+
+def test_sequence_preview_is_silent_without_writes_and_skips_short_data() -> None:
+    from wayfinder_paths.jobs.execution.simulator import PreparedExecutionDataset
+    from wayfinder_paths.jobs.execution.validation import sequence_preview
+
+    dataset = PreparedExecutionDataset.from_rows(_bars(140), {})
+    silent = sequence_preview(
+        _build_silent, dataset, _PROBE_SPEC, {"warmup_bars": 20}, bars=60
+    )
+    assert silent["status"] == "silent" and silent["state_keys"] == {}
+    assert sequence_preview(_build_silent, dataset, _PROBE_SPEC, {})["status"] == (
+        "skipped"
+    )
+    assert (
+        sequence_preview(_build_silent, dataset, _PROBE_SPEC, {"warmup_bars": 200})[
+            "status"
+        ]
+        == "skipped"
+    )

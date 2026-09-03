@@ -485,3 +485,86 @@ def test_pack_exposes_the_macro_regime_when_the_specialist_cells_are_off(
 
     assert "campaign_regime" not in pack
     assert pack["macro_regime"]["recent"]["7d"]["label"] == "bull"
+
+
+def test_no_trades_diagnosis_names_the_frozen_state_key_and_the_primitive() -> None:
+    from wayfinder_paths.jobs.evolution_diagnostics import REPAIR_REMEDIES
+
+    preview = {
+        "status": "armed_no_entry",
+        "bars_replayed": 2000,
+        "intents_total": 0,
+        "entries": 0,
+        "by_action": {},
+        "state_keys": {
+            "fr_arm:HYPE": {
+                "first_set_bar": "b1",
+                "last_changed_bar": "b1",
+                "changes": 1,
+            }
+        },
+        "frozen_after": "2026-08-01T00:00:00+00:00",
+    }
+    postmortem = {
+        "viable": False,
+        "primary_failure": "activity_below_floor",
+        "failure_codes": ["activity_below_floor", "no_trades", "negative_after_costs"],
+        "behavior_diff": {"material_change": True},
+        "repair_context": {"sequence_preview": preview},
+    }
+
+    order = build_repair_work_order(postmortem)
+    assert order["admissible_repairs"] == REPAIR_REMEDIES["no_trades"]["admissible"]
+    assert "fr_arm:HYPE" in order["diagnosis"]
+    assert "ctx.bar_ordinal" in order["diagnosis"]
+    assert "froze after 2026-08-01" in order["diagnosis"]
+    compact = compact_postmortem(postmortem)
+    assert compact["repair_context"]["sequence_preview"]["status"] == "armed_no_entry"
+
+    silent = {
+        **postmortem,
+        "repair_context": {
+            "sequence_preview": {**preview, "status": "silent", "state_keys": {}}
+        },
+    }
+    assert "never admits an entry" in build_repair_work_order(silent)["diagnosis"]
+    stale = {
+        **postmortem,
+        "primary_failure": "no_progress_preview",
+        "failure_codes": ["no_progress_preview", "no_trades"],
+        "repair_context": {"sequence_preview": preview, "previous_preview": preview},
+    }
+    assert (
+        "changed nothing the replay can see"
+        in build_repair_work_order(stale)["diagnosis"]
+    )
+
+
+def test_preview_progress_requires_new_intent_or_transition() -> None:
+    from wayfinder_paths.jobs.evolution_diagnostics import preview_progress
+
+    base = {
+        "status": "armed_no_entry",
+        "intents_total": 0,
+        "entries": 0,
+        "state_keys": {"arm": {"changes": 1}},
+    }
+    assert preview_progress(base, base) is False
+    assert preview_progress(base, {**base, "intents_total": 1}) is True
+    assert (
+        preview_progress(base, {**base, "state_keys": {"arm": {"changes": 2}}}) is True
+    )
+    assert (
+        preview_progress(
+            base,
+            {**base, "state_keys": {"arm": {"changes": 1}, "cooldown": {"changes": 1}}},
+        )
+        is True
+    )
+    assert preview_progress(None, base) is True
+    assert preview_progress(base, {"status": "skipped"}) is True
+    # A no-trade repair whose replay moved keeps its budget.
+    assert (
+        attempt_made_progress({"progress_from_previous": {"preview_progress": True}})
+        is True
+    )

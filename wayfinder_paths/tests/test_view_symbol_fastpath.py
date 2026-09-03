@@ -129,8 +129,10 @@ def test_every_n_bars_is_epoch_aligned_not_window_relative() -> None:
 
     fired = [ctx_at(i).every_n_bars(2) for i in range(20, 26)]
     # Alternates tick to tick even though bar_index stays 10 throughout.
-    assert fired in ([True, False, True, False, True, False],
-                     [False, True, False, True, False, True])
+    assert fired in (
+        [True, False, True, False, True, False],
+        [False, True, False, True, False, True],
+    )
     assert all(ctx_at(i).bar_index == 10 for i in range(20, 26))
     # offset pins the phase: complementary offsets partition the bars.
     for i in range(20, 26):
@@ -188,3 +190,44 @@ def test_manual_to_dict_matches_asdict(obj) -> None:
             attr = getattr(obj, key, None)
             if isinstance(attr, dict):
                 assert value is not attr
+
+
+def test_bar_ordinal_advances_while_bar_index_is_frozen() -> None:
+    """The window END moves one bar per tick; bar_ordinal follows it and
+    bars_since measures against a stored stamp, while bar_index stays 10."""
+    from wayfinder_paths.jobs.execution.primitives import (
+        ExecutionContext,
+        ExecutionSpec,
+        PositionLedger,
+        StateSnapshot,
+    )
+
+    spec = ExecutionSpec()
+    spec.data_contract["bar_interval"] = "1h"
+    root = CompletedBarsView.from_rows(_rows(30, SYMBOLS))
+
+    def ctx_at(end_index: int, contract: ExecutionSpec = spec) -> ExecutionContext:
+        return ExecutionContext(
+            view=root.window(end_index, 10),
+            ledger=PositionLedger(),
+            state_snapshot=StateSnapshot(status="valid"),
+            capacity=None,
+            params={},
+            timestamp="2024-01-02T00:00:00+00:00",
+            execution_spec=contract,
+        )
+
+    ordinals = [ctx_at(i).bar_ordinal for i in range(20, 26)]
+    assert [o - ordinals[0] for o in ordinals] == [0, 1, 2, 3, 4, 5]
+    assert all(ctx_at(i).bar_index == 10 for i in range(20, 26))
+    stamp = ctx_at(20).bar_ordinal
+    assert ctx_at(25).bars_since(stamp) == 5
+    assert ctx_at(25).bars_since(None) is None
+    # every_n_bars keeps its epoch alignment on the same arithmetic.
+    assert [ctx_at(i).every_n_bars(2) for i in range(20, 26)] == [
+        (o % 2 == 0) for o in ordinals
+    ]
+    bare = ExecutionSpec()
+    assert ctx_at(22, bare).bar_ordinal is None
+    assert ctx_at(22, bare).bars_since(stamp) is None
+    assert ctx_at(22, bare).every_n_bars(3) is True

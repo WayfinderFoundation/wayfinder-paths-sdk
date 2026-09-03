@@ -193,6 +193,9 @@ def _arm_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "quick_simulations",
             "behavior_preview_rejections",
             "behavior_preview_ticks",
+            "sequence_previews",
+            "sequence_preview_frozen",
+            "no_progress_preview_rejections",
         )
     }
     process["policy_denied_attempts"] = sum(

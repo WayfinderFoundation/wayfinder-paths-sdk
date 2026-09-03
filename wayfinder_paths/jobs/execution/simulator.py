@@ -418,6 +418,7 @@ def simulate_execution(
     dataset: PreparedExecutionDataset,
     execution_spec: ExecutionSpec | Mapping[str, Any] | None = None,
     params: Mapping[str, Any] | None = None,
+    record_strategy_state: bool = False,
 ) -> ExecutionBacktestResult:
     spec = ExecutionSpec.coerce(execution_spec)
     params_data = dict(params) if params else {}
@@ -519,6 +520,7 @@ def simulate_execution(
                 trace=trace,
                 liquidation=liquidation,
                 events=events_by_timestamp.get(timestamp_iso, []),
+                record_strategy_state=record_strategy_state,
             )
             tick_ms.append((time.perf_counter() - tick_start) * 1000.0)
             if total_bars and (index + 1) % progress_every == 0:
