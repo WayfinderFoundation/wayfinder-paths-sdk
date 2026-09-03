@@ -1635,3 +1635,194 @@ def test_load_world_verifies_the_sealed_feature_hash(tmp_path: Path) -> None:
     sealed.write_text(sealed.read_text() + '{"tampered": true}\n', encoding="utf-8")
     with pytest.raises(ValueError, match="sealed holdout features"):
         load_world(world_dir, sealed_dir)
+
+
+def test_legacy_world_manifests_still_match_on_the_full_spec_hash(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.bench.env import sha256_json
+    from wayfinder_paths.jobs.bench.forward_replay import evaluate_bundle
+    from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+
+    _, _, world_dir, sealed_dir, rows = _world(tmp_path)
+    manifest = load_world(world_dir, sealed_dir)["manifest"]
+    environment = manifest["execution_environment"]
+    cutoff = datetime(2026, 1, 3, 23, tzinfo=UTC)
+    incumbent = world_dir / "incumbent"
+    job_data = yaml.safe_load((incumbent / "job.yaml").read_text(encoding="utf-8"))
+    spec_data, _ = resolve_execution_spec(incumbent, job_data)
+
+    # New manifests carry both: the full hash keeps its old meaning.
+    assert environment["spec_sha256"] == sha256_json(spec_data)
+    assert environment[
+        "execution_identity_sha256"
+    ]  # equal to the full hash only when nothing is declared
+
+    legacy = {"spec_sha256": sha256_json(spec_data), "params": environment["params"]}
+    assert (
+        evaluate_bundle(incumbent, rows=rows, cutoff=cutoff, environment=legacy)[
+            "spec_matches_world"
+        ]
+        is True
+    )
+    declares = tmp_path / "declares"
+    shutil.copytree(incumbent, declares)
+    _bundle_with_spec(
+        declares,
+        lambda spec: spec.setdefault("data_contract", {}).__setitem__(
+            "features", [{"name": "macro_regime", "source": "file"}]
+        ),
+    )
+    # A world frozen before the identity existed keeps rejecting it, as it did.
+    assert (
+        evaluate_bundle(declares, rows=rows, cutoff=cutoff, environment=legacy)[
+            "spec_matches_world"
+        ]
+        is False
+    )
+    assert (
+        evaluate_bundle(declares, rows=rows, cutoff=cutoff, environment=environment)[
+            "spec_matches_world"
+        ]
+        is True
+    )
+
+
+def _rising_bars(days: int) -> list[dict]:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    return [
+        {
+            "timestamp": (start + timedelta(hours=index)).isoformat(),
+            "symbol": "IMX",
+            "open": 10.0 * 1.01 ** (index / 24),
+            "high": 10.1 * 1.01 ** (index / 24),
+            "low": 9.9 * 1.01 ** (index / 24),
+            "close": 10.0 * 1.01 ** (index / 24),
+            "volume": 100.0,
+        }
+        for index in range(24 * days)
+    ]
+
+
+def _feature_world(tmp_path: Path) -> tuple[Path, Path, Path, list[dict]]:
+    """A 40-day rising world with a rising leader file, installed into a
+    sandbox job with the holdout features revealed: macro +1 after 28 days,
+    leader +1 after 7."""
+    from wayfinder_paths.jobs.bench.leaders import LEADER_CLOSES_RELATIVE
+    from wayfinder_paths.jobs.bench.world import (
+        install_development_world,
+        reveal_holdout_features,
+    )
+
+    store, job_id, _ = _job(tmp_path / "source")
+    source = store.job_dir(job_id)
+    bars = _rising_bars(40)
+    (source / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 40}, "bars": bars}), encoding="utf-8"
+    )
+    closes = []
+    for row in bars:
+        level = 100.0 * 1.02 ** (bars.index(row) / 24) if False else None
+    for index, row in enumerate(bars):
+        level = 100.0 * 1.02 ** (index / 24)
+        closes.append({"timestamp": row["timestamp"], "symbol": "BTC", "close": level})
+        closes.append(
+            {"timestamp": row["timestamp"], "symbol": "ETH", "close": level / 20}
+        )
+    (source / LEADER_CLOSES_RELATIVE).parent.mkdir(parents=True, exist_ok=True)
+    (source / LEADER_CLOSES_RELATIVE).write_text(
+        json.dumps({"metadata": {"interval": "1h"}, "closes": closes}), encoding="utf-8"
+    )
+    world_dir, sealed_dir = tmp_path / "world", tmp_path / "sealed"
+    prepare_world(
+        source,
+        world_dir,
+        generation_cutoff=datetime(2026, 1, 25, 23, tzinfo=UTC),
+        holdout_end=datetime(2026, 2, 9, 23, tzinfo=UTC),
+        sealed_dir=sealed_dir,
+        world_id="feature-world",
+    )
+    sandbox_job = tmp_path / "sandbox-job"
+    sandbox_job.mkdir()
+    install_development_world(world_dir, destination_job=sandbox_job)
+    reveal_holdout_features(sealed_dir, sandbox_job)
+    return world_dir, sealed_dir, sandbox_job, bars
+
+
+_READS_BOTH_FEATURES = (
+    "def decide(ctx):\n"
+    "    macro = ctx.view.feature('macro_regime', default=0.0)\n"
+    "    leader = ctx.view.feature('leader_state', default=0.0)\n"
+    "    if macro not in (-1.0, 0.0, 1.0) or leader not in (-1.0, 0.0, 1.0):\n"
+    "        raise ValueError('unexpected feature code')\n"
+    "    if str(ctx.timestamp) >= '2026-02-09T23' and (macro != 1.0 or leader != 1.0):\n"
+    "        raise ValueError('declared features were never populated')\n"
+    "    return []\n"
+)
+
+
+def test_race_replays_a_strategy_that_reads_declared_features_end_to_end(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.bench.forward_replay import evaluate_bundle
+
+    world_dir, sealed_dir, sandbox_job, rows = _feature_world(tmp_path)
+    environment = load_world(world_dir, sealed_dir)["manifest"]["execution_environment"]
+    bundle = tmp_path / "reads"
+    shutil.copytree(world_dir / "incumbent", bundle)
+    (bundle / "workspace/src/strategy.py").write_text(
+        _READS_BOTH_FEATURES, encoding="utf-8"
+    )
+    _bundle_with_spec(
+        bundle,
+        lambda spec: spec.setdefault("data_contract", {}).__setitem__(
+            "features",
+            [
+                {"name": "macro_regime", "source": "file"},
+                {"name": "leader_state", "source": "file"},
+            ],
+        ),
+    )
+    verdict = evaluate_bundle(
+        bundle,
+        rows=rows,
+        cutoff=datetime(2026, 1, 25, 23, tzinfo=UTC),
+        environment=environment,
+        feature_root=sandbox_job,
+    )
+    # The default carried the 28 feature-less days, the probe and the full
+    # replay ran through the last bar, and both columns read +1 there.
+    assert verdict["spec_matches_world"] is True
+    assert verdict["window_invariance"]["status"] == "passed"
+    assert verdict["validation"]["execution_valid"] is True
+    assert verdict["valid"] is True
+
+
+def test_race_does_not_merge_features_the_candidate_never_declared(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.bench.forward_replay import evaluate_bundle
+
+    world_dir, sealed_dir, sandbox_job, rows = _feature_world(tmp_path)
+    environment = load_world(world_dir, sealed_dir)["manifest"]["execution_environment"]
+    bundle = tmp_path / "undeclared"
+    shutil.copytree(world_dir / "incumbent", bundle)
+    (bundle / "workspace/src/strategy.py").write_text(
+        _READS_BOTH_FEATURES, encoding="utf-8"
+    )
+    _bundle_with_spec(
+        bundle,
+        lambda spec: spec.setdefault("data_contract", {}).__setitem__(
+            "features", [{"name": "macro_regime", "source": "file"}]
+        ),
+    )
+    # leader_state sits in the store but was not declared: the replay must
+    # fail the way the live driver would, not paper over it.
+    with pytest.raises(ValueError, match="No feature column 'leader_state'"):
+        evaluate_bundle(
+            bundle,
+            rows=rows,
+            cutoff=datetime(2026, 1, 25, 23, tzinfo=UTC),
+            environment=environment,
+            feature_root=sandbox_job,
+        )

@@ -12,12 +12,16 @@ from typing import Any
 
 import pandas as pd
 
-from wayfinder_paths.jobs.bench.env import atomic_json, git_sha
+from wayfinder_paths.jobs.bench.env import atomic_json, git_sha, sha256_json
 from wayfinder_paths.jobs.bench.world import execution_identity_sha256, load_world
 from wayfinder_paths.jobs.bundles import resolve_bundle_script_entrypoint
 from wayfinder_paths.jobs.candidate_shadow import run_candidate_shadows
 from wayfinder_paths.jobs.economics import block_bootstrap_lcb
-from wayfinder_paths.jobs.execution.features import load_feature_rows, merge_features
+from wayfinder_paths.jobs.execution.features import (
+    load_feature_rows,
+    merge_features,
+    parse_feature_specs,
+)
 from wayfinder_paths.jobs.execution.job import _load_job_yaml, _store_feature_specs
 from wayfinder_paths.jobs.execution.primitives import (
     CompletedBarsView,
@@ -189,8 +193,7 @@ def evaluate_bundle(
     spec = ExecutionSpec.from_dict(spec_data)
     params = dict(job_data.get("execution_params") or {})
     environment = environment or {}
-    expected_spec = environment.get("spec_sha256")
-    spec_matches = not expected_spec or execution_identity_sha256(spec) == expected_spec
+    spec_matches = _spec_matches_environment(spec, environment)
     params.update(dict(environment.get("params") or {}))
     script = resolve_bundle_script_entrypoint(bundle, job_data)
     dataset = PreparedExecutionDataset.from_rows(
@@ -198,7 +201,7 @@ def evaluate_bundle(
     )
     if feature_root is not None:
         dataset = PreparedExecutionDataset(
-            merge_store_features(dataset.bars, feature_root),
+            merge_store_features(dataset.bars, feature_root, spec=spec),
             dict(dataset.metadata),
             list(dataset.market_events),
         )
@@ -256,12 +259,43 @@ def evaluate_bundle(
     }
 
 
-def merge_store_features(view: CompletedBarsView, root: Path) -> CompletedBarsView:
-    """As-of merge of every feature in the job's store onto a replay view.
-    Replays build their bars from frozen rows, not the driver, so a strategy
-    that declares a derived column (the macro regime) would otherwise meet a
-    view without it and fail on the first tick."""
-    specs = _store_feature_specs((root,), set())
+def _spec_matches_environment(
+    spec: ExecutionSpec, environment: Mapping[str, Any]
+) -> bool:
+    """New manifests carry the feature-stripped identity; worlds frozen before
+    it carry only the full-spec hash, which keeps its original meaning."""
+    expected_identity = environment.get("execution_identity_sha256")
+    if expected_identity:
+        return execution_identity_sha256(spec) == expected_identity
+    expected_spec = environment.get("spec_sha256")
+    if expected_spec:
+        return sha256_json(spec.to_dict()) == expected_spec
+    return True
+
+
+def merge_store_features(
+    view: CompletedBarsView,
+    root: Path,
+    *,
+    spec: ExecutionSpec | Sequence[ExecutionSpec] | None = None,
+) -> CompletedBarsView:
+    """As-of merge of the job's store onto a replay view. Replays build their
+    bars from frozen rows, not the driver, so a strategy that declares a
+    derived column (the macro regime) would otherwise meet a view without it
+    and fail on the first tick. With ``spec`` given, only the columns those
+    specs declare are merged — the live driver loads declared features only,
+    so an undeclared read must fail here too, not first in production."""
+    declared: set[str] | None = None
+    if spec is not None:
+        specs_in = [spec] if isinstance(spec, ExecutionSpec) else list(spec)
+        declared = {
+            feature.name for item in specs_in for feature in parse_feature_specs(item)
+        }
+    specs = [
+        item
+        for item in _store_feature_specs((root,), set())
+        if declared is None or item.name in declared
+    ]
     if not specs:
         return view
     frames = load_feature_rows([root], specs)
@@ -318,9 +352,9 @@ def replay_probation(
         row for row in development_rows if _row_timestamp(row) <= pd.Timestamp(cutoff)
     ][-2_000:]
     replay_rows: list[Mapping[str, Any]] = [*warmup_rows, *holdout_rows]
-    view = merge_store_features(
-        CompletedBarsView.from_rows(replay_rows), store.job_dir(job_id)
-    )
+    # Bars only: each shadow target merges the features its own spec
+    # declares from the sandbox store, exactly as the live lane does.
+    view = CompletedBarsView.from_rows(replay_rows)
     end = max(view.timestamps)
     asyncio.run(run_candidate_shadows(store, job_id, view=view, now=end))
     maybe_adjudicate_probation(store, job_id, now=end.to_pydatetime())

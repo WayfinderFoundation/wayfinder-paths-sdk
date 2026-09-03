@@ -4602,12 +4602,12 @@ def test_campaign_carries_the_feature_store_and_tells_the_designer_to_read_it(
     assert leaders["state"] == "rally" and leaders["ret_7d"]["BTC"] == 0.13
     assert leaders["ret_28d"]["median"] == 0.30
     prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
-    assert "ctx.view.feature('macro_regime')" in prompt["next_action"]
+    assert "ctx.view.feature('macro_regime', default=0.0)" in prompt["next_action"]
     assert "execution_spec.data_contract.features" in prompt["next_action"]
     assert (
         "leaders BTC +13%, ETH +11% over 7 days (broad rally)" in prompt["next_action"]
     )
-    assert "ctx.view.feature('leader_state')" in prompt["next_action"]
+    assert "ctx.view.feature('leader_state', default=0.0)" in prompt["next_action"]
     assert prompt["constraints"]["macro_regime"]["leaders"]["state"] == "rally"
 
 

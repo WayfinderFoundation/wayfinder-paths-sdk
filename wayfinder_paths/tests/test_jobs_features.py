@@ -351,3 +351,20 @@ def test_feature_coverage_metadata_and_summary_note(tmp_path: Path) -> None:
     payload["dataset"] = dict(dataset.metadata)
     summary = summarize_backtest_payload(payload)
     assert "feature_coverage_note" not in summary
+
+
+def test_feature_accessor_default_covers_missing_history_not_missing_columns() -> None:
+    view = CompletedBarsView.from_rows(_bars(2))
+    merged = merge_features(
+        view,
+        {"macro_regime": pd.DataFrame(columns=["timestamp", "value", "symbol"])},
+        [FeatureSpec(name="macro_regime")],
+    )
+    # A declared column with no history yet takes the default (the macro
+    # label needs 28 days of closes before its first row).
+    assert merged.feature("macro_regime", default=0.0) == 0.0
+    with pytest.raises(ValueError, match="No values yet"):
+        merged.feature("macro_regime")
+    # An undeclared column is a contract error, default or not.
+    with pytest.raises(ValueError, match="No feature column"):
+        view.feature("macro_regime", default=0.0)

@@ -382,7 +382,7 @@ Exogenous signals (weather, sentiment, research conclusions) reach a jobs_v1
 strategy as feature rows: schema in `execution_spec.data_contract.features`
 (revision-bound), data appended to `state/features.jsonl` via
 `wayfinder job feature append` (append-only), read purely in strategies via
-`ctx.view.feature(name)` — identical semantics in backtest and live.
+`ctx.view.feature(name, default=...)` — identical semantics in backtest and live; the default covers bars before the column's first value, an undeclared column raises.
 
 Kill switch: `core_jobs(action="halt", job_id=..., reason=...)` forces
 reduce-only from the next tick (never gated — it is the safety action);

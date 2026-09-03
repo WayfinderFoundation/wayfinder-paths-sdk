@@ -1230,17 +1230,30 @@ def _bounded_index_clock_hits(text: str) -> list[str]:
             node = node.args[0]
         return node
 
-    # Names bound straight from the index (`now = ctx.bar_index`) carry it.
+    # Names bound from the index carry it: `now = ctx.bar_index`,
+    # `now: int = ctx.bar_index`, `(now := ctx.bar_index)`, and aliases of
+    # aliases (`later = now`), collected to a fixed point.
     aliases: set[str] = set()
+
+    def carries_index(value: ast.AST | None) -> bool:
+        inner = unwrap(value) if value is not None else None
+        if isinstance(inner, ast.Name):
+            return inner.id in aliases
+        return isinstance(inner, ast.Attribute) and inner.attr == "bar_index"
+
+    bindings: list[tuple[str, ast.AST]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
-            target, value = node.targets[0], unwrap(node.value)
-            if (
-                isinstance(target, ast.Name)
-                and isinstance(value, ast.Attribute)
-                and value.attr == "bar_index"
-            ):
-                aliases.add(target.id)
+            if isinstance(node.targets[0], ast.Name):
+                bindings.append((node.targets[0].id, node.value))
+        elif isinstance(node, ast.AnnAssign | ast.NamedExpr) and node.value is not None:
+            if isinstance(node.target, ast.Name):
+                bindings.append((node.target.id, node.value))
+    while True:
+        grown = {name for name, value in bindings if carries_index(value)} - aliases
+        if not grown:
+            break
+        aliases |= grown
 
     def is_bar_index(node: ast.AST) -> bool:
         inner = unwrap(node)

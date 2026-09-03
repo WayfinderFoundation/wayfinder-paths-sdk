@@ -199,7 +199,7 @@ reading, a sentiment score, a probability), you MAY log it as a feature row:
 `poetry run wayfinder job feature append <job_id> --name <feature> --value <v>
 [--symbol S]`. This gives you a durable, timestamped signal history across
 wakes, and if the job (now or later) runs a jobs_v1 script strategy, that
-strategy reads the same rows purely via `ctx.view.feature(name)` with
+strategy reads the same rows purely via `ctx.view.feature(name, default=...)` (the default covers bars before the column's first value; an undeclared column raises) with
 identical backtest/live semantics. Feature rows are APPEND-ONLY — never write
 `state/features.jsonl` with `cat >` (that truncates history and corrupts
 replay), and never back-date timestamps.

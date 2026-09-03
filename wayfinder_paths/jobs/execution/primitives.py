@@ -101,6 +101,9 @@ class MarketBar:
         }
 
 
+_NO_DEFAULT = object()
+
+
 class CompletedBarsView:
     """Immutable view over completed OHLC bars.
 
@@ -230,15 +233,24 @@ class CompletedBarsView:
             self._symbol_positions_offset = 0
         return self._symbol_positions
 
-    def feature(self, name: str, symbol: str | None = None) -> Any:
+    def feature(
+        self, name: str, symbol: str | None = None, *, default: Any = _NO_DEFAULT
+    ) -> Any:
         """Latest non-null value of an exogenous feature column (merged by
         the driver/dataset loader per execution_spec.data_contract.features).
-        Pure — reads only view data, purity-sandbox safe."""
+        Pure — reads only view data, purity-sandbox safe.
+
+        Derived columns start later than the price history (the macro regime
+        needs 28 days, the leader state 7): pass ``default`` for the bars
+        before the first value. An undeclared column raises regardless — that
+        is a contract error, not missing history."""
         frame = self._filter_symbol(symbol)
         if name not in frame.columns:
             raise ValueError(f"No feature column {name!r} in view")
         series = frame[name].dropna()
         if series.empty:
+            if default is not _NO_DEFAULT:
+                return default
             raise ValueError(f"No values yet for feature {name!r}")
         return series.iloc[-1]
 

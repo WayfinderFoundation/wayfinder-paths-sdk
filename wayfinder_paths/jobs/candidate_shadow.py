@@ -15,7 +15,12 @@ from wayfinder_paths.jobs.defense import (
     defense_policy,
 )
 from wayfinder_paths.jobs.execution.engine import EngineState, run_tick
-from wayfinder_paths.jobs.execution.features import apply_precompute
+from wayfinder_paths.jobs.execution.features import (
+    apply_precompute,
+    load_feature_rows,
+    merge_features,
+    parse_feature_specs,
+)
 from wayfinder_paths.jobs.execution.job import _load_job_yaml
 from wayfinder_paths.jobs.execution.paper import PaperBroker
 from wayfinder_paths.jobs.execution.primitives import (
@@ -217,6 +222,15 @@ async def _run_target(
         raise FileNotFoundError("candidate execution script missing")
     params = dict(job_data.get("execution_params") or {})
     strategy = _load_strategy(script, params)
+    # The candidate's declared file features (a derived column such as the
+    # macro regime) ride from its own bundle first, then the job store —
+    # the same rows the live driver merges for the incumbent. Without this a
+    # feature-aware candidate met a bars-only view and died on its first tick.
+    declared = parse_feature_specs(spec)
+    if declared:
+        view = merge_features(
+            view, load_feature_rows([candidate_root, root], declared), declared
+        )
     view = add_defense_features(view, params)
     view = add_portfolio_regime_feature(view, params)
     # Same bounded window the simulator replays with and the live driver

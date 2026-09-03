@@ -5458,7 +5458,7 @@ def _leader_context(latest: Mapping[str, tuple[str, float]]) -> dict[str, Any] |
             "columns": list(leader_feature_names()),
             "codes": {label: int(value) for label, value in LEADER_CODES.items()},
             "declare": {"name": LEADER_FEATURE_NAME, "source": "file"},
-            "read": f"ctx.view.feature({LEADER_FEATURE_NAME!r})",
+            "read": f"ctx.view.feature({LEADER_FEATURE_NAME!r}, default=0.0)",
         },
     }
 
@@ -5472,7 +5472,7 @@ def _macro_runtime_feature(*, available: bool) -> dict[str, Any]:
         "columns": [MACRO_FEATURE_NAME, *MACRO_RETURN_FEATURE_NAMES],
         "codes": {label: int(code) for label, code in MACRO_CODES.items()},
         "declare": {"name": MACRO_FEATURE_NAME, "source": "file"},
-        "read": f"ctx.view.feature({MACRO_FEATURE_NAME!r})",
+        "read": f"ctx.view.feature({MACRO_FEATURE_NAME!r}, default=0.0)",
         "cadence": "hourly, causal (as-of the last completed bar)",
     }
 
@@ -5525,7 +5525,10 @@ def macro_regime_sentence(macro: Mapping[str, Any] | None) -> str:
             f"read {runtime.get('read')} in decide() (1 bull, 0 chop, -1 bear; "
             f"{', '.join(MACRO_RETURN_FEATURE_NAMES)} alongside), refreshed hourly "
             "and causal, so a strategy can condition its entries on the macro "
-            "regime its hypothesis names. "
+            "regime its hypothesis names. The default covers the bars before the "
+            "column's first value (28 days of history for the macro label, 7 for "
+            "the leader state); an undefaulted read raises there, and a column "
+            "that is read must be declared or the read fails live. "
         )
     leader_runtime = (leaders or {}).get("runtime_feature") or {}
     if leader_runtime:

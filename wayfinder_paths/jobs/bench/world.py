@@ -167,7 +167,10 @@ def prepare_world(
             "holdout_commitment": sha256_json(holdout_payload),
         },
         "execution_environment": {
-            "spec_sha256": execution_identity_sha256(spec),
+            # Full-spec hash keeps its original meaning for worlds frozen
+            # before the identity existed; the race matches on the identity.
+            "spec_sha256": sha256_json(spec.to_dict()),
+            "execution_identity_sha256": execution_identity_sha256(spec),
             "data_contract": dict(spec.data_contract),
             "params": _frozen_execution_params(execution_params, spec),
         },

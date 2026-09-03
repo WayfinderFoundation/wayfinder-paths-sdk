@@ -298,7 +298,7 @@ conclusions, anything) into a strategy is structured feature rows:
 `poetry run wayfinder job feature append <job_id> --name <feature> --value <v>
 [--symbol S] [--timestamp ISO]` (append-only — NEVER truncate or rewrite
 `state/features.jsonl`; back-dated timestamps corrupt replay). The strategy
-reads them purely via `ctx.view.feature(name)` with identical backtest/live
+reads them purely via `ctx.view.feature(name, default=...)` (the default covers bars before the column's first value; an undeclared column raises) with identical backtest/live
 semantics. The feature SCHEMA lives in `execution_spec.data_contract.features`
 and is revision-bound — schema changes must ride a proposal. Model artifacts
 belong in `workspace/models/` (see `wayfinder_paths.jobs.strategies.models`)

@@ -845,3 +845,23 @@ def test_bounded_index_clock_follows_aliases_and_container_writes(
     assert len(check["details"]) == 3
     assert any("state['last'] = now" in hit for hit in check["details"])
     assert any(".append(ctx.bar_index)" in hit for hit in check["details"])
+
+
+def test_bounded_index_clock_follows_typed_and_chained_aliases(tmp_path: Path) -> None:
+    report = _close_stop_report(
+        tmp_path,
+        "def decide(ctx):\n"
+        "    state = ctx.strategy_state\n"
+        "    now: int = ctx.bar_index\n"
+        "    later = now\n"
+        "    if now < 20:\n"
+        "        return []\n"
+        "    state['typed'] = now\n"
+        "    state['chained'] = later\n"
+        "    return []\n\n"
+        "def build_strategy(params):\n    return None\n",
+    )
+    check = _check(report, "no_bounded_index_clock")
+    assert check["passed"] is False
+    assert any("state['typed'] = now" in hit for hit in check["details"])
+    assert any("state['chained'] = later" in hit for hit in check["details"])

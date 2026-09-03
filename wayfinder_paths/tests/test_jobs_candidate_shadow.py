@@ -178,3 +178,119 @@ def test_regime_shadow_requests_classifier_history_from_shared_feed(tmp_path) ->
     )
 
     assert candidate_shadow_lookback_bars(store, job.id) == 690
+
+
+def test_candidate_shadow_merges_the_features_the_candidate_declares(tmp_path) -> None:
+    """A feature-aware candidate reads its declared derived column in the
+    shadow lane from the job store, defaulting until the first row exists."""
+    started = pd.Timestamp("2026-08-24T11:00:00Z")
+    queued_at = pd.Timestamp("2026-08-24T12:00:00Z")
+    store = JobStore(repo_root=tmp_path)
+    job = WayfinderJob.new("majors-5m-lab", script="workspace/src/strategy.py")
+    store.save(job)
+    root = store.job_dir(job.id)
+    script = root / "workspace" / "src" / "strategy.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(
+        "from wayfinder_paths.jobs.execution import OrderIntent\n\n"
+        "class Strategy:\n"
+        "    def decide(self, ctx):\n"
+        "        macro = ctx.view.feature('macro_regime', default=0.0)\n"
+        "        if str(ctx.timestamp) >= '2026-08-25T11' and macro != 1.0:\n"
+        "            raise ValueError('declared feature never reached the shadow')\n"
+        "        if macro != 1.0 or ctx.ledger.positions:\n"
+        "            return []\n"
+        "        latest = ctx.view.latest('BTC')\n"
+        "        return [OrderIntent(action='OPEN', venue='hyperliquid', "
+        "symbol='BTC', side='long', size=1, "
+        "bracket={'take_profit': latest['close'] + 0.5})]\n\n"
+        "def build_strategy(params):\n"
+        "    return Strategy()\n",
+        encoding="utf-8",
+    )
+    (root / "job.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "id": job.id,
+                "execution_contract": "jobs_v1",
+                "script_loop": {
+                    "enabled": True,
+                    "entrypoint": "workspace/src/strategy.py",
+                },
+                "execution_spec": {
+                    "data_contract": {
+                        "bar_interval": "5m",
+                        "symbols": ["BTC"],
+                        "stale_policy": "decide_anyway",
+                        "features": [{"name": "macro_regime", "source": "file"}],
+                    },
+                    "venues": ["hyperliquid"],
+                },
+                "execution_params": {"symbols": ["BTC"], "lookback_bars": 20},
+            }
+        ),
+        encoding="utf-8",
+    )
+    # The store turns bull half-way through the replay; before that the
+    # default carries the strategy.
+    turned = started + pd.Timedelta(hours=18)
+    (root / "state").mkdir(parents=True, exist_ok=True)
+    (root / "state" / "features.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": turned.isoformat(),
+                "name": "macro_regime",
+                "value": 1.0,
+                "symbol": "BTC",
+                "written_at": turned.isoformat(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    revision = compute_workspace_revision(root)
+    stage_evolution_probation(
+        store,
+        job.id,
+        candidate_id="candidate-1",
+        candidate_root=root,
+        revision=revision,
+        source="evolution_campaign",
+        family="feature-aware",
+        evidence={"objective": {"candidate": {"trade_count": 12}}},
+        now=queued_at.to_pydatetime(),
+    )
+    view = CompletedBarsView.from_rows(
+        [
+            {
+                "timestamp": (started + pd.Timedelta(minutes=5 * index)).isoformat(),
+                "symbol": "BTC",
+                "open": 100 + index * 0.01,
+                "high": 101 + index * 0.01,
+                "low": 99 + index * 0.01,
+                "close": 100 + index * 0.01,
+                "volume": 10,
+            }
+            for index in range(302)
+        ]
+    )
+    rows = asyncio.run(
+        run_candidate_shadows(
+            store, job.id, view=view, now=pd.Timestamp("2026-08-25T12:00:00Z")
+        )
+    )
+    assert {row["role"] for row in rows} == {"candidate", "reference"}
+    ticks_paths = list(
+        (root / "results" / "forward" / "probation").rglob("ticks.jsonl")
+    )
+    assert ticks_paths
+    last_bars = [
+        max(
+            pd.Timestamp(json.loads(line)["bar_ts"])
+            for line in path.read_text(encoding="utf-8").splitlines()
+        )
+        for path in ticks_paths
+    ]
+    # Every stream replayed through the last bar, past the point where an
+    # unmerged feature would have raised.
+    assert all(last >= started + pd.Timedelta(hours=24) for last in last_bars)
