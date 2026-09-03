@@ -220,6 +220,7 @@ class HypePassiveRsiStrategy:
             "limit_price": float(position.avg_price) + target_atr * entry_atr,
             "time_in_force": "ALO",
             "metadata": {
+                "exit_reason": f"take_profit_{stage}",
                 "exit_stage": stage,
                 "move_stop_to_break_even": move_stop_to_break_even,
             },

@@ -204,15 +204,20 @@ def load_feature_rows(
     spec_path: dict[str, Path | None] = {}
     for spec in specs:
         chosen: Path | None = None
-        for root in roots:
-            candidate = Path(root) / spec.path
-            if candidate.exists():
-                # from_dict refuses `..` and absolute paths; a symlink under
-                # workspace/ could still point out of the root.
-                if not candidate.resolve().is_relative_to(Path(root).resolve()):
-                    raise ValueError(f"feature {spec.name!r}: path escapes its root")
-                chosen = candidate
-                break
+        # Ownership by path class, not first-existing-wins. ``roots`` is
+        # ``(bundle, protected_root)``: the job store is job-owned and comes
+        # from the protected root (the campaign snapshot during a campaign,
+        # the job root live), never from a bundle; a workspace/ file is
+        # candidate-owned and comes from the bundle, never from the job's own
+        # workspace. One root means both are the same place.
+        owner = Path(roots[-1] if spec.path == DEFAULT_FEATURES_PATH else roots[0])
+        candidate = owner / spec.path
+        if candidate.exists():
+            # from_dict refuses `..` and absolute paths; a symlink under
+            # workspace/ could still point out of the root.
+            if not candidate.resolve().is_relative_to(owner.resolve()):
+                raise ValueError(f"feature {spec.name!r}: path escapes its root")
+            chosen = candidate
         spec_path[spec.name] = chosen
         if chosen is not None:
             by_path.setdefault(chosen, set()).add(spec.name)

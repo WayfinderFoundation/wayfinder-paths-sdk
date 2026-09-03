@@ -4846,3 +4846,143 @@ def test_feature_path_outside_the_contract_is_rejected_without_charge(tmp_path) 
     assert "path must be" in result["submission_rejection"]["error"]
     assert result["submission_rejection"]["attempt_charged"] is False
     assert int(result.get("attempt_count") or 0) == 0
+
+
+def _declare_bundle_feature(bundle, feature: dict) -> None:
+    job_data = yaml.safe_load((bundle / "job.yaml").read_text(encoding="utf-8"))
+    spec_data = dict(job_data.get("execution_spec") or {})
+    if not spec_data and (bundle / "execution_spec.json").exists():
+        spec_data = json.loads(
+            (bundle / "execution_spec.json").read_text(encoding="utf-8")
+        )
+    spec_data.setdefault("data_contract", {})["features"] = [feature]
+    if "execution_spec" in job_data:
+        job_data["execution_spec"] = spec_data
+        (bundle / "job.yaml").write_text(yaml.safe_dump(job_data), encoding="utf-8")
+    if (bundle / "execution_spec.json").exists():
+        (bundle / "execution_spec.json").write_text(
+            json.dumps(spec_data), encoding="utf-8"
+        )
+
+
+_SIGNAL_STRATEGY = (
+    "\n\ndef decide(ctx):\n"
+    "    state = ctx.strategy_state\n"
+    "    if ctx.ledger.positions:\n"
+    "        if ctx.bars_since(state['opened']) >= 3:\n"
+    "            return [{'action': 'CLOSE', 'venue': 'hyperliquid', 'symbol': 'IMX',"
+    " 'side': 'sell', 'size': 1, 'reduce_only': True,"
+    " 'metadata': {'exit_reason': 'hold_done'}}]\n"
+    "        return []\n"
+    "    if ctx.view.feature('signal', default=0.0) == 1.0 and not state.get('done'):\n"
+    "        state['opened'] = ctx.bar_ordinal\n"
+    "        state['done'] = True\n"
+    "        return [{'action': 'OPEN', 'venue': 'hyperliquid', 'symbol': 'IMX',"
+    " 'side': 'buy', 'size': 1, 'metadata': {'entry_reason': 'signal'}}]\n"
+    "    return []\n"
+)
+
+
+def test_bundle_owned_feature_is_gated_and_reaches_probation_the_same_way(
+    tmp_path,
+) -> None:
+    """Evolution → probation parity for a candidate-owned workspace/ feature:
+    the quick screen trades on the bundle's file (it is gated), validation
+    sees it, and the probation shadow lane fills on the same bar."""
+    import asyncio
+
+    import pandas as pd
+
+    from wayfinder_paths.jobs.candidate_shadow import run_candidate_shadows
+    from wayfinder_paths.jobs.execution.primitives import CompletedBarsView
+    from wayfinder_paths.jobs.execution.validation import validate_execution_job
+    from wayfinder_paths.jobs.gating import compute_workspace_revision
+    from wayfinder_paths.jobs.probation import stage_evolution_probation
+
+    store, job_id = _evaluatable_job(tmp_path, source_params={"warmup_bars": 20})
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = _windowed_candidate(
+        store, job_id, summary="signal-gated long", extra_source=_SIGNAL_STRATEGY
+    )
+    bundle = store.job_dir(job_id) / candidate["bundle"]
+    bars = _hourly_bars(60)
+    turned = bars[40]["timestamp"]
+    (bundle / "workspace" / "data").mkdir(parents=True, exist_ok=True)
+    (bundle / "workspace" / "data" / "signal.jsonl").write_text(
+        json.dumps(
+            {"timestamp": turned, "name": "signal", "value": 1.0, "symbol": None}
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _declare_bundle_feature(
+        bundle,
+        {"name": "signal", "source": "file", "path": "workspace/data/signal.jsonl"},
+    )
+    assert not (store.job_dir(job_id) / "workspace" / "data" / "signal.jsonl").exists()
+
+    validation = validate_execution_job(job_id, candidate_dir=bundle, store=store)
+    available = next(
+        c for c in validation["checks"] if c["name"] == "declared_features_available"
+    )
+    assert available["passed"] is True
+
+    result = evaluate_candidate(store, job_id, candidate["candidate_id"])
+    assert result.get("evidence") != "quick screen produced no closed trades"
+    entry = next(
+        row
+        for row in load_archive(store, job_id)["candidates"]
+        if row["candidate_id"] == candidate["candidate_id"]
+    )
+    assert entry["metadata"]["quick"]["stats"]["trade_count"] >= 1
+    receipt = result["attempt_receipt"]
+    quick_entry = next(t for t in receipt["trades"] if not t.get("reduce_only"))
+
+    stage_evolution_probation(
+        store,
+        job_id,
+        candidate_id=candidate["candidate_id"],
+        candidate_root=bundle,
+        revision=compute_workspace_revision(bundle),
+        source="evolution_campaign",
+        family="signal",
+        evidence={"objective": {"candidate": {"trade_count": 1}}},
+        now=datetime(2026, 7, 31, 23, tzinfo=UTC),
+    )
+    rows = asyncio.run(
+        run_candidate_shadows(
+            store,
+            job_id,
+            view=CompletedBarsView.from_rows(bars),
+            now=pd.Timestamp("2026-08-04T00:00:00Z"),
+        )
+    )
+    shadow_fill = next(
+        row for row in rows if row["role"] == "candidate" and row["fills"] >= 1
+    )
+    assert shadow_fill["bar_timestamp"] == quick_entry["timestamp"]
+
+
+def test_escaping_feature_file_is_rejected_without_charge(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    candidates = _prepare_campaign_candidates(store, job_id, started)
+    structural = next(c for c in candidates if c["mutation_kind"] == "structural")
+    bundle = store.job_dir(job_id) / structural["bundle"]
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(
+        '{"timestamp": "2026-08-01T00:00:00Z", "name": "sig", "value": 1}\n'
+    )
+    (bundle / "workspace" / "data").mkdir(parents=True, exist_ok=True)
+    (bundle / "workspace" / "data" / "link.jsonl").symlink_to(outside)
+    _declare_bundle_feature(
+        bundle, {"name": "sig", "source": "file", "path": "workspace/data/link.jsonl"}
+    )
+
+    result = evaluate_candidate(store, job_id, structural["candidate_id"])
+
+    assert result["status"] == "prepared"
+    assert "escapes its root" in result["submission_rejection"]["error"]
+    assert result["submission_rejection"]["attempt_charged"] is False
+    assert int(result.get("attempt_count") or 0) == 0

@@ -1028,7 +1028,7 @@ def _trade_view(row: Mapping[str, Any]) -> dict[str, Any]:
         "action": raw.get("intent_action") or metadata.get("action"),
     }
     if view["reduce_only"]:
-        view["exit_reason"] = fill_exit_reason(metadata)
+        view["exit_reason"] = fill_exit_reason(metadata, action=view["action"])
     elif metadata.get("entry_reason"):
         view["entry_reason"] = str(metadata["entry_reason"])
     return view

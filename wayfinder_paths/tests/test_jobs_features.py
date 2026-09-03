@@ -533,3 +533,92 @@ async def test_stale_feature_skip_does_not_run_precompute_over_the_missing_colum
         now=_now(view) + pd.Timedelta(hours=6),
     )
     assert result["skipped"] is True and result["skip_reason"] == "stale_feature"
+
+
+def _row(stamp: str, name: str, value: float) -> str:
+    return (
+        json.dumps({"timestamp": stamp, "name": name, "value": value, "symbol": None})
+        + "\n"
+    )
+
+
+def test_feature_roots_are_owned_by_path_class(tmp_path: Path) -> None:
+    """(bundle, protected_root): the store is read from the protected root
+    even when the bundle carries one; a workspace/ file is read from the
+    bundle even when the job's own workspace has one."""
+    from wayfinder_paths.jobs.execution.features import DEFAULT_FEATURES_PATH
+
+    job, bundle = tmp_path / "job", tmp_path / "bundle"
+    for base in (job, bundle):
+        (base / "state").mkdir(parents=True)
+        (base / "workspace" / "data").mkdir(parents=True)
+    (job / DEFAULT_FEATURES_PATH).write_text(_row("2026-01-01T00:00:00Z", "store", 1.0))
+    (bundle / DEFAULT_FEATURES_PATH).write_text(
+        _row("2026-01-01T00:00:00Z", "store", 9.0)
+    )
+    (job / "workspace/data/sig.jsonl").write_text(
+        _row("2026-01-01T00:00:00Z", "sig", 1.0)
+    )
+    specs = [
+        FeatureSpec.from_dict({"name": "store"}),
+        FeatureSpec.from_dict({"name": "sig", "path": "workspace/data/sig.jsonl"}),
+    ]
+    frames = load_feature_rows([bundle, job], specs)
+    assert frames["store"]["value"].tolist() == [1.0]
+    assert frames["sig"].empty  # the job's workspace file is not the bundle's
+    (bundle / "workspace/data/sig.jsonl").write_text(
+        _row("2026-01-01T00:00:00Z", "sig", 7.0)
+    )
+    assert load_feature_rows([bundle, job], specs)["sig"]["value"].tolist() == [7.0]
+    single = load_feature_rows([job], specs)
+    assert single["store"]["value"].tolist() == [1.0]
+    assert single["sig"]["value"].tolist() == [1.0]
+
+
+def test_load_dataset_merges_bundle_workspace_features_with_the_protected_store(
+    tmp_path: Path,
+) -> None:
+    """The choke point every gating lane calls: the bundle's workspace file and
+    the protected root's store land on the same bars."""
+    store, job, root = _feature_job(tmp_path)
+    bars = _bars(6)
+    (root / "results" / "backtest").mkdir(parents=True, exist_ok=True)
+    (root / "results" / "backtest" / "input_bars.json").write_text(
+        json.dumps(bars), encoding="utf-8"
+    )
+    bundle = tmp_path / "bundle"
+    (bundle / "workspace" / "data").mkdir(parents=True)
+    (bundle / "workspace/data/sig.jsonl").write_text(
+        _row(bars[2]["timestamp"], "sig", 1.0)
+    )
+    spec = ExecutionSpec.from_dict(job.execution_spec)
+    spec.data_contract["features"] = [
+        {"name": "sentiment"},
+        {"name": "sig", "source": "file", "path": "workspace/data/sig.jsonl"},
+    ]
+    dataset = _load_dataset(root, spec, job.to_dict(), feature_roots=(bundle, root))
+    frame = dataset.bars.to_frame()
+    assert frame["sentiment"].notna().any()
+    assert frame["sig"].notna().any()
+
+
+def test_validation_reports_an_escaping_feature_file_instead_of_raising(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.execution.validation import validate_execution_job
+
+    store, job, root = _feature_job(tmp_path)
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(_row("2026-01-01T00:00:00Z", "sig", 1.0))
+    (root / "workspace" / "data").mkdir(parents=True, exist_ok=True)
+    (root / "workspace" / "data" / "link.jsonl").symlink_to(outside)
+    spec = ExecutionSpec.from_dict(job.execution_spec)
+    spec.data_contract["features"] = [
+        {"name": "sig", "source": "file", "path": "workspace/data/link.jsonl"}
+    ]
+    job.execution_spec = spec.to_dict()
+    store.save(job)
+    report = validate_execution_job(job.id, store=store)
+    failed = [c for c in report["checks"] if c["name"] == "declared_features_valid"]
+    assert failed and failed[0]["passed"] is False
+    assert "escapes its root" in failed[0]["error"]

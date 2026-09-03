@@ -5279,11 +5279,14 @@ def _load_subject(
         if campaign_id
         else root
     )
+    # The subject bundle owns its workspace/ feature files; the protected
+    # dataset root owns the store. Gating must load exactly what probation
+    # and the live driver will, or a bundle-owned file activates ungated.
     dataset = _load_dataset(
         resolved_dataset_root,
         spec,
         job_data,
-        feature_roots=(resolved_dataset_root,),
+        feature_roots=(root, resolved_dataset_root),
     )
     return {
         "root": root,

@@ -191,6 +191,21 @@ def test_hype_passive_rsi_supports_full_and_staged_maker_exits() -> None:
     assert [intent["limit_price"] for intent in staged_exits] == [76.0, 76.5]
     assert staged_exits[0]["metadata"]["move_stop_to_break_even"] is True
     assert staged_exits[1]["metadata"]["move_stop_to_break_even"] is False
+    # Every reduce-only intent the starters emit says why it exits.
+    reasons = [intent["metadata"]["exit_reason"] for intent in staged_exits]
+    assert all(reason.startswith("take_profit_") for reason in reasons)
+    assert len(set(reasons)) == 2
+    assert full_exits[0]["metadata"]["exit_reason"].startswith("take_profit_")
+
+
+def test_portfolio_rebalance_close_labels_its_exit() -> None:
+    from types import SimpleNamespace
+
+    from wayfinder_paths.jobs.strategies.portfolio import _close
+
+    intent = _close("IMX", SimpleNamespace(side="long"), "hyperliquid", size=1.0)
+    assert intent["reduce_only"] is True
+    assert intent["metadata"]["exit_reason"] == "target_weight"
 
 
 def _journal_events(store: JobStore, job_id: str) -> list[dict[str, Any]]:

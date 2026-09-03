@@ -75,6 +75,9 @@ For each candidate:
   cooldown, refractory period or expiry (every age reads 0 and the state
   machine never fires). Stamp `ctx.bar_ordinal` and measure with
   `ctx.bars_since(stamp)`; gate cadence with `ctx.every_n_bars(n)`.
+- Put `metadata={"exit_reason": ...}` on every reduce-only intent (close,
+  take-profit, stop) so the postmortem's exit summary can name why the book
+  exits; the engine labels only its own bracket stops.
 - Keep indicator work bounded or incremental; never recompute full history in
   `decide()`.
 - Call `wayfinder_core_jobs` with `action="evolution_evaluate"` and continue when

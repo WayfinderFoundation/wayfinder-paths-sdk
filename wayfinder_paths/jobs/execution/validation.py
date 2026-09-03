@@ -973,7 +973,13 @@ def _feature_availability_checks(
         return [{"name": "declared_features_valid", "passed": False, "error": str(exc)}]
     if not specs:
         return []
-    frames = load_feature_rows([root], specs)
+    try:
+        frames = load_feature_rows([root], specs)
+    except ValueError as exc:
+        # A declared file resolving out of its root (a symlink under
+        # workspace/) is the same contract error as a bad path: blocking,
+        # and handed back uncharged by the campaign like any contract check.
+        return [{"name": "declared_features_valid", "passed": False, "error": str(exc)}]
     missing = [
         item.name
         for item in specs

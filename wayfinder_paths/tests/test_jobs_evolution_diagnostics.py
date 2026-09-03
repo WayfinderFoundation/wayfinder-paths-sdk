@@ -636,3 +636,32 @@ def test_compact_postmortem_keeps_leader_attribution_and_the_diagnosis_names_it(
     report["screen"] = postmortem["screen"]
     diagnosis = build_repair_work_order(report)["diagnosis"]
     assert "28% of losses on broad-rally days (5% of days)." in diagnosis
+
+
+def test_trade_view_labels_take_profit_and_stop_intents_by_action() -> None:
+    from wayfinder_paths.jobs.evolution_diagnostics import _trade_view
+
+    def fill(action: str, metadata: dict) -> dict:
+        return {
+            "timestamp": "2026-08-01T00:00:00Z",
+            "symbol": "BTC",
+            "side": "sell",
+            "filled_size": 1.0,
+            "avg_price": 100.0,
+            "fee": 0.1,
+            "realized_pnl_delta": 0.0,
+            "reduce_only": True,
+            "raw": {"intent_action": action, "intent_metadata": metadata},
+        }
+
+    # The intent kind labels an unlabeled take-profit or stop; a stage rides along.
+    assert _trade_view(fill("TAKE_PROFIT", {}))["exit_reason"] == "take_profit"
+    assert _trade_view(fill("TAKE_PROFIT", {"exit_stage": "tp1"}))["exit_reason"] == (
+        "take_profit:tp1"
+    )
+    assert _trade_view(fill("STOP_LOSS", {}))["exit_reason"] == "stop_loss"
+    # An explicit label still wins; a plain CLOSE is still unlabeled.
+    assert _trade_view(fill("TAKE_PROFIT", {"exit_reason": "tp_hit"}))[
+        "exit_reason"
+    ] == ("tp_hit")
+    assert _trade_view(fill("CLOSE", {}))["exit_reason"] == "unlabeled"

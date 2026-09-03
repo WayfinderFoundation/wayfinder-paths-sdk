@@ -426,7 +426,10 @@ def evaluate_economic_gate(
                 protected_dataset_root or candidate_root,
                 spec,
                 candidate_yaml,
-                feature_roots=(protected_dataset_root,)
+                # Bundle-owned workspace/ features from the candidate, the
+                # store from the protected root — the same pair the fold key
+                # fingerprint already hashes.
+                feature_roots=(candidate_root, protected_dataset_root)
                 if protected_dataset_root is not None
                 else None,
             )
