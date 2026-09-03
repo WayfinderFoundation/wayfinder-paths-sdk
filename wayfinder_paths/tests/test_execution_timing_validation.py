@@ -649,3 +649,29 @@ def test_window_invariance_check_reds_validation_with_hint(tmp_path: Path) -> No
 
     # No declared window ⇒ no check (the simulator warns instead).
     assert _window_invariance_checks(root, script, {"execution_params": {}}, spec) == []
+
+
+def test_probe_tolerates_seed_noise_but_names_a_real_level_shift() -> None:
+    from wayfinder_paths.jobs.execution.validation import (
+        _probe_values_match,
+        probe_mismatches,
+    )
+
+    def intent(stop: float, size: float = 1.2249) -> dict:
+        return {
+            "action": "OPEN",
+            "symbol": "SOL",
+            "side": "buy",
+            "size": size,
+            "bracket": {"stop_loss": stop},
+        }
+
+    # A Wilder-ATR stop seeded 64 bars earlier: 2.6 bps apart, same trade.
+    assert _probe_values_match([intent(92.5769)], [intent(92.5525)])
+    assert probe_mismatches([intent(92.5769)], [intent(92.5525)]) == []
+    # A level that really depends on history beyond the window.
+    rows = probe_mismatches([intent(92.5769)], [intent(91.60)])
+    assert not _probe_values_match([intent(92.5769)], [intent(91.60)])
+    assert rows[0]["path"] == "[0].bracket.stop_loss" and rows[0]["rel"] > 0.01
+    # A different number of intents is a mismatch in kind, not in degree.
+    assert probe_mismatches([intent(1.0)], [])[0]["kind"] == "count"

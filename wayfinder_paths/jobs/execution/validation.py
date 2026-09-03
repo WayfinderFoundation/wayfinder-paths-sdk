@@ -490,10 +490,19 @@ BOUNDED_WINDOW_HINT = (
 )
 
 
+# Relative tolerance between the two replays' numeric fields. An exponential
+# average (Wilder ATR, EMA) seeded 64 bars earlier moves a stop or a size by
+# a few basis points with no real dependence beyond the window; a decide()
+# that reads beyond its window moves entries, sides or levels by far more.
+# Ten basis points sits well under one side of execution cost, so a passing
+# difference cannot change a fill's economics. (1e-6 rejected two genuine
+# candidates on a 2.6 bps ATR-stop gap and took a whole benchmark loop with
+# them.)
+WINDOW_PROBE_REL_TOL = 1e-3
+
+
 def _probe_values_match(left: Any, right: Any) -> bool:
-    """Structural equality with float tolerance: sizing arithmetic may carry
-    float noise between the two slices (e.g. an EMA seeded 64 rows earlier)
-    without any real dependence beyond the window."""
+    """Structural equality with the economic float tolerance above."""
     match left, right:
         case dict(), dict():
             return left.keys() == right.keys() and all(
@@ -506,9 +515,47 @@ def _probe_values_match(left: Any, right: Any) -> bool:
         case bool(), _:
             return left == right
         case ((int() | float()), (int() | float())):
-            return math.isclose(float(left), float(right), rel_tol=1e-6, abs_tol=1e-9)
+            return math.isclose(
+                float(left), float(right), rel_tol=WINDOW_PROBE_REL_TOL, abs_tol=1e-9
+            )
         case _:
             return left == right
+
+
+def probe_mismatches(base: Any, wide: Any, path: str = "") -> list[dict[str, Any]]:
+    """The fields that differ between the two replays, with their relative
+    gap, so a rejection names the level or size that moved, not a slogan."""
+    rows: list[dict[str, Any]] = []
+    match base, wide:
+        case dict(), dict():
+            for key in sorted(set(base) | set(wide)):
+                rows.extend(
+                    probe_mismatches(base.get(key), wide.get(key), f"{path}.{key}")
+                )
+        case ((list() | tuple()), (list() | tuple())):
+            if len(base) != len(wide):
+                rows.append(
+                    {
+                        "path": path or "/",
+                        "base": len(base),
+                        "wide": len(wide),
+                        "kind": "count",
+                    }
+                )
+            for index, (a, b) in enumerate(zip(base, wide, strict=False)):
+                rows.extend(probe_mismatches(a, b, f"{path}[{index}]"))
+        case _:
+            if not _probe_values_match(base, wide):
+                row: dict[str, Any] = {
+                    "path": path.lstrip("."),
+                    "base": base,
+                    "wide": wide,
+                }
+                if isinstance(base, (int, float)) and isinstance(wide, (int, float)):
+                    denominator = max(abs(float(wide)), 1e-12)
+                    row["rel"] = round(abs(float(base) - float(wide)) / denominator, 8)
+                rows.append(row)
+    return rows
 
 
 def _probe_indices(timestamps: Any, *, first: int, samples: int) -> list[int]:
@@ -717,6 +764,7 @@ def window_invariance_probe(
                     "window_source": window.source,
                     "base_intents": base,
                     "wide_intents": wide,
+                    "mismatches": probe_mismatches(base, wide)[:6],
                 }
         return {
             "status": "passed",

@@ -4787,7 +4787,8 @@ def _full_dev(
         raise ValueError(
             f"window-invariance probe failed at bar {probe['bar']}: decide() "
             "consumed history beyond its declared window of "
-            f"{probe['window']} bars — {BOUNDED_WINDOW_HINT}"
+            f"{probe['window']} bars ({_probe_mismatch_text(probe)}) — "
+            f"{BOUNDED_WINDOW_HINT}"
         )
     revision = compute_workspace_revision(root)
     manifest = (
@@ -4960,6 +4961,20 @@ def _validation_forensics(result: Any, dataset: Any) -> dict[str, Any]:
             for reason, cell in (aggregate.get("by_exit_reason") or {}).items()
         },
     }
+
+
+def _probe_mismatch_text(probe: Mapping[str, Any]) -> str:
+    rows = probe.get("mismatches") or []
+    if not rows:
+        return "intents differ"
+    parts = []
+    for row in rows[:3]:
+        gap = row.get("rel")
+        parts.append(
+            f"{row.get('path')} {row.get('base')} vs {row.get('wide')}"
+            + (f" ({10_000 * float(gap):.1f} bps)" if gap is not None else "")
+        )
+    return "; ".join(parts)
 
 
 def _full_dev_verdict(
