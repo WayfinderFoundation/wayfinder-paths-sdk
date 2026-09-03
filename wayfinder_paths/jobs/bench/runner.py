@@ -21,6 +21,7 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 
 from wayfinder_paths.jobs.archive import behavior_cell
+from wayfinder_paths.jobs.background import op_status_summary
 from wayfinder_paths.jobs.bench.aggregate import aggregate_experiment
 from wayfinder_paths.jobs.bench.env import (
     atomic_json,
@@ -49,6 +50,7 @@ from wayfinder_paths.jobs.bundles import copy_job_bundle
 from wayfinder_paths.jobs.evolution_campaign import (
     campaign_prompt_block,
     campaign_status,
+    finalize_campaign,
     start_campaign,
 )
 from wayfinder_paths.jobs.evolution_funnel import summarize_evolution_funnel
@@ -754,9 +756,17 @@ def _drive_campaign(
                 result["stdout_tail"][-1_200:], root=sandbox
             ),
         }
-        if not _wait_for_settle(store, job_id, timeout_s=settle_timeout_s):
+        try:
+            settled = _wait_for_settle(store, job_id, timeout_s=settle_timeout_s)
+        except CampaignSettleError as exc:
+            return f"campaign stage {stage} did not settle: {exc}"
+        if not settled:
             return f"campaign stage {stage} did not settle"
     return f"campaign exceeded max_turns={max_turns}"
+
+
+class CampaignSettleError(RuntimeError):
+    """The campaign cannot settle: its finalize died and the retry failed."""
 
 
 def _wait_for_settle(store: JobStore, job_id: str, *, timeout_s: int) -> bool:
@@ -766,6 +776,9 @@ def _wait_for_settle(store: JobStore, job_id: str, *, timeout_s: int) -> bool:
     time.sleep(0.5)
     while time.monotonic() < deadline:
         state = campaign_status(store, job_id)
+        if state.get("status") == "finalizing":
+            _recover_dead_finalize(store, job_id)
+            state = campaign_status(store, job_id)
         encoded = json.dumps(state, sort_keys=True, default=str)
         running = state.get("status") == "finalizing" or any(
             str(candidate.get("status") or "").endswith("_running")
@@ -780,6 +793,23 @@ def _wait_for_settle(store: JobStore, job_id: str, *, timeout_s: int) -> bool:
         prior = encoded
         time.sleep(1.0)
     return False
+
+
+def _recover_dead_finalize(store: JobStore, job_id: str) -> None:
+    """Production's watchdog relaunches a finalize whose detached op died
+    with the campaign still ``finalizing``; the bench has no watchdog, so
+    without this a dead finalize costs the whole settle timeout and voids
+    the loop with no reason recorded. Run it in the foreground once; a
+    failure names the cause instead of the clock."""
+    op = op_status_summary(store.job_dir(job_id), "evolution_finalize")
+    if op is None or op.get("status") == "running":
+        return
+    try:
+        finalize_campaign(store, job_id)
+    except Exception as exc:  # noqa: BLE001 - the reason is the verdict
+        raise CampaignSettleError(
+            f"finalize op {op.get('status')}; foreground retry failed: {exc}"
+        ) from exc
 
 
 def _start_mcp(sandbox: Path, *, port: int, env: dict[str, str]) -> subprocess.Popen:

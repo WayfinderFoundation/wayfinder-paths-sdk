@@ -981,6 +981,10 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+_LESSON_BULK_KEYS = frozenset({"postmortem", "validation_forensics"})
+_LESSON_PACK_OUTCOMES = 12
+
+
 def _fit_pack(pack: dict[str, Any]) -> dict[str, Any]:
     def size() -> int:
         return len(json.dumps(pack, default=str).encode())
@@ -1007,6 +1011,19 @@ def _fit_pack(pack: dict[str, Any]) -> dict[str, Any]:
             attribution["archetypes_forward"] = {
                 key: archetypes[key] for key in sorted(archetypes)[:8]
             }
+    lessons = pack.get("prior_campaign_lessons")
+    if isinstance(lessons, dict) and size() > DIAGNOSTIC_PACK_MAX_BYTES:
+        # The outcomes (what was tried, how it ended, the numbers) are the
+        # load-bearing part; the per-attempt postmortems and path forensics
+        # are the bulk. Trim before dropping the block whole.
+        lessons["outcomes"] = [
+            {
+                key: value
+                for key, value in outcome.items()
+                if key not in _LESSON_BULK_KEYS
+            }
+            for outcome in list(lessons.get("outcomes") or [])[:_LESSON_PACK_OUTCOMES]
+        ]
     for key in ("attribution", "prior_campaign_lessons", "research_context"):
         if size() <= DIAGNOSTIC_PACK_MAX_BYTES:
             break

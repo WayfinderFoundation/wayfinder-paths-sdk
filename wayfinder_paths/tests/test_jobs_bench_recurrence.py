@@ -834,3 +834,29 @@ def test_ideation_usage_counts_design_hypotheses_citing_the_artifact(
     )
     assert _ideation_usage(store, job_id, {"campaign_design": "design.json"}) == 1
     assert _ideation_usage(store, job_id, {}) == 0
+
+
+def test_each_loop_keeps_its_own_finalize_record(tmp_path) -> None:
+    from wayfinder_paths.jobs.bench.recurrence import _preserve_finalize_record
+
+    class FakeStore:
+        def job_dir(self, job_id):
+            return tmp_path / "job"
+
+    ops = tmp_path / "job" / "state" / "background_ops"
+    loop_dir = tmp_path / "loop-0"
+    _preserve_finalize_record(FakeStore(), "demo", loop_dir)
+    assert not (loop_dir / "finalize").exists()
+
+    ops.mkdir(parents=True)
+    (ops / "evolution_finalize.json").write_text('{"state": "failed"}')
+    (ops / "evolution_finalize.log").write_text("Traceback: window probe")
+    _preserve_finalize_record(FakeStore(), "demo", loop_dir)
+
+    assert (loop_dir / "finalize" / "evolution_finalize.log").read_text() == (
+        "Traceback: window probe"
+    )
+    assert sorted(p.name for p in (loop_dir / "finalize").iterdir()) == [
+        "evolution_finalize.json",
+        "evolution_finalize.log",
+    ]

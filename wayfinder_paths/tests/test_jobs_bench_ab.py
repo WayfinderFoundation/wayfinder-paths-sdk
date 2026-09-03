@@ -1273,3 +1273,52 @@ def test_worker_personas_put_catch_all_denies_before_their_allows(agent: str) ->
     mcp_keys = [key for key in permission if key.startswith("wayfinder_")]
     assert mcp_keys.index("wayfinder_*") < mcp_keys.index("wayfinder_core_jobs")
     assert permission["wayfinder_core_jobs"] == "allow"
+
+
+def test_settle_recovers_a_dead_finalize_in_the_foreground(monkeypatch, tmp_path):
+    from wayfinder_paths.jobs.bench import runner as runner_module
+
+    states = [
+        {"status": "finalizing", "candidates": []},
+        {"status": "complete", "candidates": []},
+    ]
+    finalized: list[str] = []
+
+    def fake_status(store, job_id):
+        return dict(states[min(len(finalized), 1)])
+
+    class FakeStore:
+        def job_dir(self, job_id):
+            return tmp_path
+
+    monkeypatch.setattr(runner_module, "campaign_status", fake_status)
+    monkeypatch.setattr(
+        runner_module, "op_status_summary", lambda job_dir, op: {"status": "failed"}
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "finalize_campaign",
+        lambda store, job_id: finalized.append(job_id) or {},
+    )
+    monkeypatch.setattr(runner_module.time, "sleep", lambda seconds: None)
+
+    assert runner_module._wait_for_settle(FakeStore(), "demo", timeout_s=30) is True
+    assert finalized == ["demo"]
+
+    def failing_finalize(store, job_id):
+        raise RuntimeError("evolution completion compute duty exhausted")
+
+    finalized.clear()
+    monkeypatch.setattr(runner_module, "finalize_campaign", failing_finalize)
+    with pytest.raises(runner_module.CampaignSettleError, match="duty exhausted"):
+        runner_module._wait_for_settle(FakeStore(), "demo", timeout_s=30)
+
+    # A live op is left alone: the bench only stands in for the watchdog.
+    monkeypatch.setattr(
+        runner_module, "op_status_summary", lambda job_dir, op: {"status": "running"}
+    )
+    monkeypatch.setattr(
+        runner_module, "finalize_campaign", lambda store, job_id: finalized.append("x")
+    )
+    assert runner_module._wait_for_settle(FakeStore(), "demo", timeout_s=1) is False
+    assert finalized == []

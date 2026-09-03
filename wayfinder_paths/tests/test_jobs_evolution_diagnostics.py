@@ -392,3 +392,37 @@ def test_trade_view_labels_closes_from_intent_metadata() -> None:
         "liquidation"
     )
     assert _trade_view(fill(True, {}))["exit_reason"] == "unlabeled"
+
+
+def test_pack_budget_trims_lessons_before_dropping_them() -> None:
+    from wayfinder_paths.jobs.evolution_diagnostics import _fit_pack
+
+    outcomes = [
+        {
+            "candidate_id": f"c{i:02d}",
+            "family": f"family-{i}",
+            "status": "low_fidelity_rejected",
+            "quick_result": {"net_return": 0.01, "trade_count": 20},
+            "validation_exits": {"closes": 8, "stop_share": 0.25},
+            "postmortem": {"failure_codes": ["x"], "blob": "p" * 900},
+            "validation_forensics": {"time_exit": {"count": 8, "blob": "f" * 400}},
+        }
+        for i in range(16)
+    ]
+    pack = {
+        "schema_version": "1.0",
+        "baseline": {"stats": {"net_return": 0.0}},
+        "validated_signals": {"blob": "s" * 9_000},
+        "research_ideation": {"blob": "i" * 4_500},
+        "research_context": {"refuted_families": [{"family": "f"}]},
+        "prior_campaign_lessons": {"outcomes": outcomes, "_basis": "prior outcomes"},
+    }
+
+    fitted = _fit_pack(pack)
+
+    assert len(json.dumps(fitted).encode()) <= DIAGNOSTIC_PACK_MAX_BYTES
+    kept = fitted["prior_campaign_lessons"]["outcomes"]
+    assert len(kept) == 12
+    assert kept[0]["validation_exits"] == {"closes": 8, "stop_share": 0.25}
+    assert "postmortem" not in kept[0] and "validation_forensics" not in kept[0]
+    assert "prior_campaign_lessons_truncated" not in fitted

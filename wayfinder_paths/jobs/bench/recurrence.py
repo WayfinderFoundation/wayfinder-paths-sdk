@@ -424,6 +424,7 @@ def run_recurrence_arm(
                 )
             store: JobStore = sandbox["store"]
             job_id = str(sandbox["job_id"])
+            _preserve_finalize_record(store, job_id, loop_dir)
             state = campaign_status(store, job_id)
             campaign_id = str(state.get("campaign_id") or "") or None
             forward, holdout, invalid_reason = run_probation_phase(
@@ -772,6 +773,26 @@ def _apply_graduates(
             }
         )
     return applied_rows
+
+
+_FINALIZE_RECORD_FILES = (
+    "evolution_finalize.json",
+    "evolution_finalize.log",
+    "evolution_finalize.result.json",
+)
+
+
+def _preserve_finalize_record(store: JobStore, job_id: str, loop_dir: Path) -> None:
+    """Keep this loop's detached finalize record; the next loop's finalize
+    overwrites the job's copy, which is how the first pilot lost the trace
+    of a finalize that died two hours before anyone looked."""
+    ops_dir = store.job_dir(job_id) / "state" / "background_ops"
+    target = loop_dir / "finalize"
+    for name in _FINALIZE_RECORD_FILES:
+        source = ops_dir / name
+        if source.exists():
+            target.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target / name)
 
 
 def _write_forward_summary(

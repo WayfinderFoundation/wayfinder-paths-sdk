@@ -440,7 +440,8 @@ def _start_campaign(
         experience = build_forward_experience(store, job_id, now=current)
     if existing and existing.get("status") not in {"active", "finalizing"}:
         _sync_campaign_archive(store, job_id, existing)
-    historical_lessons = evolution_lessons_block(store, job_id)
+    # Two campaigns' worth: a weekly loop must still see the week before last.
+    historical_lessons = evolution_lessons_block(store, job_id, limit=16)
     cases = select_starter_cases(_job_tags(store, job_id))
     relative_root = f"{CAMPAIGN_ROOT}/{campaign_id}"
     campaign_root = root / relative_root
