@@ -17,6 +17,7 @@ import json
 import math
 import os
 import shutil
+import statistics
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -597,9 +598,19 @@ def _start_campaign(
 def _campaign_regime_context(
     dataset_path: Path, source_root: Path, *, enabled: bool
 ) -> dict[str, Any]:
-    """Freeze the causal market cell that campaign design must diversify from."""
+    """Freeze the causal market cell that campaign design must diversify from,
+    and the macro regime (the scale a designer means) whether or not the
+    specialist cells are enabled."""
+    macro: dict[str, Any] | None = None
+    try:
+        payload = json.loads(dataset_path.read_text(encoding="utf-8"))
+        rows = payload.get("bars") if isinstance(payload, dict) else payload
+        if isinstance(rows, list) and rows:
+            macro = _macro_regime_context(pd.DataFrame(rows))
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        macro = {"available": False, "reason": str(exc)[:240]}
     if not enabled:
-        return {"enabled": False, "available": False}
+        return {"enabled": False, "available": False, "macro": macro}
     try:
         payload = json.loads(dataset_path.read_text(encoding="utf-8"))
         rows = payload.get("bars") if isinstance(payload, dict) else None
@@ -618,6 +629,7 @@ def _campaign_regime_context(
             "enabled": True,
             "available": False,
             "reason": str(exc)[:240],
+            "macro": macro,
         }
     recent_cutoff = usable.index[-1] - pd.Timedelta(days=7)
     recent = usable[usable.index >= recent_cutoff]
@@ -638,6 +650,7 @@ def _campaign_regime_context(
         "recent_window_days": 7,
         "recent_counts": {str(key): int(value) for key, value in counts.items()},
         "as_of": pd.Timestamp(usable.index[-1]).isoformat(),
+        "macro": macro,
     }
 
 
@@ -2394,10 +2407,14 @@ def _evaluate_candidate(
                 }
         result = simulate_execution(subject["script"], quick, subject["spec"], params)
         screen_results: dict[str, Any] = {"recent": result}
+        screen_slices = _screen_slices(
+            train, slices=int(policy.get("screen_slices") or 2)
+        )
+        screen_macros = {
+            label: _slice_macro_regime(dataset) for label, dataset in screen_slices
+        }
         if result.validation.get("execution_valid"):
-            for label, dataset in _screen_slices(
-                train, slices=int(policy.get("screen_slices") or 2)
-            )[1:]:
+            for label, dataset in screen_slices[1:]:
                 screen_results[label] = simulate_execution(
                     subject["script"], dataset, subject["spec"], params
                 )
@@ -2486,6 +2503,7 @@ def _evaluate_candidate(
             attempt_index=int(candidate.get("attempt_count") or 0) + 1,
             policy=policy,
             manifest=manifest,
+            screen_macros=screen_macros,
         )
     if search_space is None:
         common["tuning_skip_reason"] = "no_typed_search_space"
@@ -2514,6 +2532,7 @@ def _apply_screen_verdict(
     attempt_index: int,
     policy: Mapping[str, Any],
     manifest: Mapping[str, Any],
+    screen_macros: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> None:
     """Overlay the multi-slice, significance-aware screen on the postmortem."""
     confidence = _screen_confidence(
@@ -2530,6 +2549,11 @@ def _apply_screen_verdict(
         )
         for label, result in screen_results.items()
     }
+    for label, macro in (screen_macros or {}).items():
+        if label in reports:
+            reports[label]["macro_regime"] = macro.get("label")
+            reports[label]["macro_median_return"] = macro.get("median_return")
+            reports[label]["window"] = [macro.get("start"), macro.get("end")]
     min_trades = _screen_min_trades(policy, manifest, screen_results["recent"])
     verdict = _screen_verdict(reports, min_trades=min_trades)
     postmortem["screen"] = {
@@ -4113,6 +4137,10 @@ def campaign_prompt_block(
             if specialist_design
             else ""
         )
+        macro_regime = regime_context.get("macro")
+        macro_instruction = macro_regime_sentence(
+            macro_regime if isinstance(macro_regime, dict) else None
+        )
         return {
             "job_id": job_id,
             "campaign_id": state["campaign_id"],
@@ -4128,8 +4156,8 @@ def campaign_prompt_block(
                 f"exactly {wildcards} explicit wildcards. Grounded slots must "
                 "cite existing JSON pointers from the diagnostic pack. Include "
                 "at least one starter_seed and one grounded de_novo slot. "
-                f"{research_instruction}{regime_instruction}{cost_instruction}"
-                f"{risk_instruction}{ideation_instruction}"
+                f"{research_instruction}{regime_instruction}{macro_instruction}"
+                f"{cost_instruction}{risk_instruction}{ideation_instruction}"
                 f"{failure_instruction}{signal_instruction}"
                 "Use at most one incumbent slot and at "
                 "most two parameter slots. One wildcard must be de_novo. "
@@ -4166,6 +4194,9 @@ def campaign_prompt_block(
                 "research_parent_required": research_parent_required,
                 "regime_specialist_design": specialist_design,
                 "regime_context": regime_context if specialist_design else None,
+                "macro_regime": (
+                    macro_regime if isinstance(macro_regime, dict) else None
+                ),
                 "cost_budget": cost_budget,
                 "risk_budget": risk_budget,
                 "research_ideation": [row["title"] for _, row in ideation_rows] or None,
@@ -5112,6 +5143,119 @@ def _tail(dataset: PreparedExecutionDataset, bars: int) -> PreparedExecutionData
 
 _SCREEN_SLICE_BARS = 10_000
 _SCREEN_MIN_EARLIER_BARS = 2_000
+# Macro regime of a window: the universe-median cumulative close-to-close
+# return over it. The portfolio cell classifier works on 5-minute bars (a
+# 50-bar trend is four hours) and sees a +45% week as the same shuffle of
+# micro-cells as the chop before it; this is the scale a designer means by
+# "bear flipping to bull".
+_MACRO_BULL_RETURN = 0.10
+_MACRO_BEAR_RETURN = -0.10
+_MACRO_WEEK_MOVE = 0.08
+_MACRO_LEG_WEEKS = 4
+_MACRO_LEG_RETURN = 0.15
+_SCREEN_MACRO_STEP_BARS = 2_500
+
+
+def _macro_label(median_return: float) -> str:
+    if median_return >= _MACRO_BULL_RETURN:
+        return "bull"
+    if median_return <= _MACRO_BEAR_RETURN:
+        return "bear"
+    return "chop"
+
+
+def _slice_macro_regime(dataset: PreparedExecutionDataset) -> dict[str, Any]:
+    view = dataset.bars
+    by_symbol: dict[str, float] = {}
+    for symbol in view.symbols:
+        closes = view.symbol_frame(symbol)["close"].astype(float)
+        if len(closes) >= 2 and float(closes.iloc[0]) > 0:
+            by_symbol[symbol] = float(closes.iloc[-1]) / float(closes.iloc[0]) - 1.0
+    median = statistics.median(by_symbol.values()) if by_symbol else 0.0
+    timestamps = view.timestamps
+    return {
+        "label": _macro_label(median),
+        "median_return": round(median, 4),
+        "by_symbol": {symbol: round(value, 4) for symbol, value in by_symbol.items()},
+        "start": timestamps[0].isoformat() if len(timestamps) else None,
+        "end": timestamps[-1].isoformat() if len(timestamps) else None,
+    }
+
+
+def _macro_regime_context(frame: pd.DataFrame) -> dict[str, Any]:
+    """Universe-median returns over the recent 7, 28 and 90 days, plus what
+    the whole window covers in bull, bear and chop weeks and whether it
+    holds a multi-week leg of each sign. A design can only be validated in
+    a regime the window contains; the pack says so instead of letting the
+    screen certify a bear-fitted book the week the market turns."""
+    close = (
+        frame.assign(timestamp=pd.to_datetime(frame["timestamp"], utc=True))
+        .pivot_table(index="timestamp", columns="symbol", values="close")
+        .sort_index()
+        .astype(float)
+    )
+    if close.empty:
+        raise ValueError("campaign dataset has no closes")
+    end = close.index[-1]
+    recent: dict[str, Any] = {}
+    for days in (7, 28, 90):
+        window = close[close.index > end - pd.Timedelta(days=days)]
+        first, last = window.iloc[0], window.iloc[-1]
+        returns = (last / first - 1.0).dropna()
+        median = float(returns.median()) if len(returns) else 0.0
+        recent[f"{days}d"] = {
+            "median_return": round(median, 4),
+            "label": _macro_label(median),
+            "by_symbol": {str(k): round(float(v), 4) for k, v in returns.items()},
+        }
+    weekly = close.resample("7D", origin="end").last()
+    weekly_median = (weekly / weekly.shift(1) - 1.0).median(axis=1).dropna()
+    bull_weeks = int((weekly_median >= _MACRO_WEEK_MOVE).sum())
+    bear_weeks = int((weekly_median <= -_MACRO_WEEK_MOVE).sum())
+    leg = (weekly / weekly.shift(_MACRO_LEG_WEEKS) - 1.0).median(axis=1).dropna()
+    return {
+        "basis": "universe-median close-to-close return",
+        "as_of": end.isoformat(),
+        "recent": recent,
+        "coverage": {
+            "weeks": int(len(weekly_median)),
+            "bull_weeks": bull_weeks,
+            "bear_weeks": bear_weeks,
+            "chop_weeks": int(len(weekly_median) - bull_weeks - bear_weeks),
+            "has_bull_leg": bool((leg >= _MACRO_LEG_RETURN).any()),
+            "has_bear_leg": bool((leg <= -_MACRO_LEG_RETURN).any()),
+            "leg_weeks": _MACRO_LEG_WEEKS,
+            "leg_return": _MACRO_LEG_RETURN,
+        },
+    }
+
+
+def macro_regime_sentence(macro: Mapping[str, Any] | None) -> str:
+    if not macro or not macro.get("recent"):
+        return ""
+    recent = macro["recent"]
+    coverage = macro.get("coverage") or {}
+    seven, month = recent.get("7d") or {}, recent.get("28d") or {}
+    text = (
+        f"Macro regime: last 7 days universe-median "
+        f"{100 * float(seven.get('median_return') or 0):+.0f}% ({seven.get('label')}), "
+        f"last 28 days {100 * float(month.get('median_return') or 0):+.0f}% "
+        f"({month.get('label')}); the window holds {coverage.get('bull_weeks')} bull, "
+        f"{coverage.get('bear_weeks')} bear and {coverage.get('chop_weeks')} chop weeks"
+    )
+    missing = [
+        name
+        for name, key in (("bull", "has_bull_leg"), ("bear", "has_bear_leg"))
+        if not coverage.get(key)
+    ]
+    if missing:
+        text += (
+            f"; it contains no {' or '.join(missing)} leg of {coverage.get('leg_weeks')}+ "
+            "weeks, so a design that earns only there cannot be validated here"
+        )
+    return text + ". Say which macro regime each hypothesis earns in. "
+
+
 _SCREEN_BOOTSTRAP_BLOCK_DAYS = 2
 _SCREEN_BOOTSTRAP_ITERATIONS = 300
 
@@ -5130,13 +5274,34 @@ def _screen_slices(
     """
     timestamps = train.bars.timestamps
     total = len(timestamps)
-    out = [("recent", _tail(train, bars))]
+    recent = _tail(train, bars)
+    out = [("recent", recent)]
     remaining = total - min(bars, total)
     if slices >= 2 and remaining >= _SCREEN_MIN_EARLIER_BARS:
-        out.append(
-            ("earlier", _slice(train, timestamps, max(0, remaining - bars), remaining))
-        )
+        out.append(("earlier", _earlier_screen_slice(train, remaining, bars, recent)))
     return out
+
+
+def _earlier_screen_slice(
+    train: PreparedExecutionDataset,
+    remaining: int,
+    bars: int,
+    recent: PreparedExecutionDataset,
+) -> PreparedExecutionDataset:
+    """The most recent disjoint window whose macro regime differs from the
+    recent slice's; adjacent windows share a regime, and two slices of one
+    regime cannot say whether a design survives the other. Falls back to
+    the adjacent window when the history holds only one regime."""
+    timestamps = train.bars.timestamps
+    adjacent = _slice(train, timestamps, max(0, remaining - bars), remaining)
+    recent_label = _slice_macro_regime(recent)["label"]
+    end = remaining
+    while end - bars >= 0:
+        candidate = _slice(train, timestamps, end - bars, end)
+        if _slice_macro_regime(candidate)["label"] != recent_label:
+            return candidate
+        end -= _SCREEN_MACRO_STEP_BARS
+    return adjacent
 
 
 def _screen_confidence(

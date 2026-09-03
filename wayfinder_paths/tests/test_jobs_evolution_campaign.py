@@ -541,6 +541,9 @@ def test_design_prompt_carries_cost_budget_from_baseline(tmp_path) -> None:
     assert budget["max_fills_per_day"] == pytest.approx(8.2, abs=0.05)
     assert budget["round_trip_cost_bps"] == 16.0
     assert "Cost budget: the incumbent trades 2.7 fills/day" in prompt["next_action"]
+    # This fixture freezes no bars, so there is no macro regime to state.
+    assert prompt["constraints"]["macro_regime"] is None
+    assert "Macro regime" not in prompt["next_action"]
     # The fixture freezes no bars, so the cadence floor has no window to use.
     assert "min_fills_per_day" not in budget
     pack = store.read_json(job_id, str(state["diagnostic_pack"]))
@@ -1033,6 +1036,11 @@ def test_regime_design_requires_counter_cell_and_stamps_candidate(tmp_path) -> N
     prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
     assert prompt and prompt["constraints"]["regime_specialist_design"] is True
     assert "target_regimes" in prompt["next_action"]
+    # The macro regime (a 28% drift over the frozen 46 hours reads as bull at
+    # every horizon) is frozen beside the specialist cells and said in words.
+    assert manifest["regime_context"]["macro"]["recent"]["7d"]["label"] == "bull"
+    assert prompt["constraints"]["macro_regime"]["recent"]["7d"]["label"] == "bull"
+    assert "Macro regime: last 7 days universe-median +" in prompt["next_action"]
 
     design = _campaign_design()
     for slot in design["slots"]:
@@ -4497,3 +4505,41 @@ def test_attempt_trajectory_row_carries_drawdown_and_stop_share() -> None:
     }
     bare = _attempt_trajectory_row({"attempt": 1, "outcome": {}, "postmortem": {}})
     assert "max_drawdown_pct" not in bare and "stop_share" not in bare
+
+
+def test_screen_slices_prefer_an_earlier_window_from_another_macro_regime() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _slice_macro_regime
+    from wayfinder_paths.jobs.execution.simulator import PreparedExecutionDataset
+
+    def dataset(closes: list[float]) -> PreparedExecutionDataset:
+        rows = []
+        for index, close in enumerate(closes):
+            stamp = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(hours=index)
+            rows.append(
+                {
+                    "timestamp": stamp.isoformat(),
+                    "symbol": "IMX",
+                    "open": close,
+                    "high": close * 1.001,
+                    "low": close * 0.999,
+                    "close": close,
+                    "volume": 1.0,
+                }
+            )
+        return PreparedExecutionDataset.from_rows(rows, {})
+
+    # A bull leg (10 -> 20 over the first 12k bars), then 18k bars of chop.
+    bull = [10.0 + 10.0 * index / 12_000 for index in range(12_000)]
+    chop = [20.0 + 0.05 * ((index % 7) - 3) for index in range(18_000)]
+    slices = dict(_screen_slices(dataset(bull + chop), bars=10_000))
+    assert _slice_macro_regime(slices["recent"])["label"] == "chop"
+    earlier = slices["earlier"]
+    assert _slice_macro_regime(earlier)["label"] == "bull"
+    assert earlier.bars.timestamps[-1] < slices["recent"].bars.timestamps[0]
+    assert len(earlier.bars.timestamps) == 10_000
+
+    # One regime only: the adjacent window, as before.
+    flat = dict(_screen_slices(dataset([10.0] * 30_000), bars=10_000))
+    assert flat["earlier"].bars.timestamps[-1] == slices["recent"].bars.timestamps[
+        0
+    ] - timedelta(hours=1)

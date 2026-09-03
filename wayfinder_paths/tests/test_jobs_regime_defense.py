@@ -317,6 +317,17 @@ def test_campaign_regime_context_freezes_primary_and_counter(tmp_path) -> None:
     assert context["available"] is True
     assert context["primary_regime"] != context["counter_regime"]
     assert set(context["universe"]) == set(SYMBOLS)
+    # The macro block rides along whether or not the specialist cells are on:
+    # a slow 3%/100h drift is chop at every horizon, with no leg of either sign.
+    macro = context["macro"]
+    assert macro["recent"]["7d"]["label"] == "chop"
+    assert macro["coverage"]["has_bull_leg"] is False
+    assert macro["coverage"]["has_bear_leg"] is False
+    # The same 3%/100h drift is +17% over the 23-day window: bull at 28 days.
+    off = _campaign_regime_context(dataset, source, enabled=False)
+    assert (
+        off["available"] is False and off["macro"]["recent"]["28d"]["label"] == "bull"
+    )
 
 
 def test_forward_probation_uses_target_days_and_outside_loss_budget(tmp_path) -> None:
@@ -382,3 +393,41 @@ def test_forward_probation_uses_target_days_and_outside_loss_budget(tmp_path) ->
     assert metrics["outside_loss_breach"] is True
     assert metrics["overall_estimate"] < 0
     assert metrics["target_days_short"] is True
+
+
+def test_macro_regime_context_sees_a_bull_leg_and_says_what_is_missing() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _macro_regime_context,
+        macro_regime_sentence,
+    )
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    rows = []
+    for index in range(24 * 7 * 12):  # twelve weeks of hourly bars
+        week = index // (24 * 7)
+        # Six flat weeks, then a six-week climb of ~10% a week.
+        level = 100.0 * (1.10 ** max(0, week - 5)) * (1 + 0.001 * ((index % 5) - 2))
+        for offset, symbol in enumerate(SYMBOLS):
+            close = level * (1 + offset * 0.1)
+            rows.append(
+                {
+                    "timestamp": (start + timedelta(hours=index)).isoformat(),
+                    "symbol": symbol,
+                    "open": close,
+                    "high": close * 1.002,
+                    "low": close * 0.998,
+                    "close": close,
+                    "volume": 1.0,
+                }
+            )
+
+    macro = _macro_regime_context(pd.DataFrame(rows))
+
+    assert macro["recent"]["28d"]["label"] == "bull"
+    assert macro["coverage"]["has_bull_leg"] is True
+    assert macro["coverage"]["has_bear_leg"] is False
+    assert macro["coverage"]["bull_weeks"] >= 4
+    sentence = macro_regime_sentence(macro)
+    assert sentence.startswith("Macro regime: last 7 days")
+    assert "contains no bear leg" in sentence
+    assert macro_regime_sentence(None) == ""

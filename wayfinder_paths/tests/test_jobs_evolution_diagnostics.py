@@ -426,3 +426,62 @@ def test_pack_budget_trims_lessons_before_dropping_them() -> None:
     assert kept[0]["validation_exits"] == {"closes": 8, "stop_share": 0.25}
     assert "postmortem" not in kept[0] and "validation_forensics" not in kept[0]
     assert "prior_campaign_lessons_truncated" not in fitted
+
+
+def test_screen_slices_carry_their_macro_regime_into_the_diagnosis() -> None:
+    postmortem = {
+        "primary_failure": "screen_regime_dependent",
+        "failure_codes": ["screen_regime_dependent"],
+        "screen": {
+            "confidence": 0.7,
+            "code": "screen_regime_dependent",
+            "slices": {
+                "recent": {
+                    "net_return": 0.031,
+                    "trade_count": 29,
+                    "max_drawdown_pct": 0.04,
+                    "macro_regime": "chop",
+                    "lcb": -0.01,
+                    "route": None,
+                },
+                "earlier": {
+                    "net_return": -0.062,
+                    "trade_count": 22,
+                    "max_drawdown_pct": 0.12,
+                    "macro_regime": "bull",
+                    "lcb": -0.05,
+                    "route": None,
+                },
+            },
+        },
+    }
+
+    compact = compact_postmortem(postmortem)
+    assert compact["screen"]["slices"]["earlier"]["macro_regime"] == "bull"
+    diagnosis = build_repair_work_order(postmortem)["diagnosis"]
+    assert "earlier (bull): net -6.2% on 22 trades" in diagnosis
+    assert "recent (chop): net +3.1%" in diagnosis
+
+
+def test_pack_exposes_the_macro_regime_when_the_specialist_cells_are_off(
+    tmp_path,
+) -> None:
+    pack = build_diagnostic_pack(
+        tmp_path,
+        campaign_id="c1",
+        created_at="2026-08-24T15:25:00+00:00",
+        baseline={"stats": {"net_return": 0.0}},
+        historical_lessons={},
+        research_context={},
+        regime_context={
+            "enabled": False,
+            "available": False,
+            "macro": {
+                "recent": {"7d": {"label": "bull", "median_return": 0.41}},
+                "coverage": {"has_bull_leg": False},
+            },
+        },
+    )
+
+    assert "campaign_regime" not in pack
+    assert pack["macro_regime"]["recent"]["7d"]["label"] == "bull"

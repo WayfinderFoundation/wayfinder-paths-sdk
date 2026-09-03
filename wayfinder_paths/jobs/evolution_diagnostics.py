@@ -303,6 +303,13 @@ def build_diagnostic_pack(
             if regime_context and regime_context.get("available")
             else {}
         ),
+        **(
+            {"macro_regime": dict(regime_context["macro"])}
+            if regime_context
+            and isinstance(regime_context.get("macro"), Mapping)
+            and regime_context["macro"].get("recent")
+            else {}
+        ),
         **({"validated_signals": dict(validated_signals)} if validated_signals else {}),
         **({"research_ideation": dict(research_ideation)} if research_ideation else {}),
     }
@@ -591,8 +598,10 @@ def _diagnosis(
             lcb = row.get("lcb")
             mode = row.get("failure_mode") or {}
             drawdown = row.get("max_drawdown_pct")
+            macro = row.get("macro_regime")
             parts.append(
-                f"{label}: net {100 * _number(row.get('net_return')):+.1f}% on "
+                f"{label}{f' ({macro})' if macro else ''}: net "
+                f"{100 * _number(row.get('net_return')):+.1f}% on "
                 f"{_integer(row.get('trade_count'))} trades"
                 + (f", LCB {100 * _number(lcb):+.2f}%" if lcb is not None else "")
                 + (
@@ -742,6 +751,7 @@ def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
                         "net_return",
                         "trade_count",
                         "max_drawdown_pct",
+                        "macro_regime",
                         "lcb",
                         "route",
                         "failure_mode",
