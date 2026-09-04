@@ -9,6 +9,7 @@ from urllib import error, parse, request
 
 _PYPI_PROJECT_URL = "https://pypi.org/pypi/{package}/json"
 _PYPI_TIMEOUT_SECONDS = 2.0
+LEGACY_RUNTIME_MINIMUMS = {("wayfinder-paths", "0.11.0"): "0.11.1"}
 
 
 @dataclass(frozen=True)
@@ -54,3 +55,16 @@ def installed_package_version(package: str) -> str | None:
 
 def installed_runtime_package_version(package: str = "wayfinder-paths") -> str:
     return installed_package_version(package) or "0.0.0"
+
+
+def compatible_runtime_version(package: str, version: str) -> str:
+    return LEGACY_RUNTIME_MINIMUMS.get((package, version), version)
+
+
+def scaffold_runtime_package_version(package: str = "wayfinder-paths") -> str:
+    """Prefer the checkout version only when users can install it from PyPI."""
+    installed = installed_runtime_package_version(package)
+    published = published_package(package)
+    if published is not None and installed not in published.versions:
+        return published.latest
+    return installed

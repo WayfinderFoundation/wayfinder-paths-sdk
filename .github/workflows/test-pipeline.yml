@@ -131,6 +131,14 @@ jobs:
     - name: Run smoke tests
       run: poetry run pytest -k smoke -v -m "not local"
 
+    - name: Verify clean wheel runtime
+      run: |
+        poetry build --format wheel
+        python -m venv /tmp/wayfinder-wheel-smoke
+        /tmp/wayfinder-wheel-smoke/bin/pip install dist/*.whl
+        /tmp/wayfinder-wheel-smoke/bin/wayfinder path version
+        /tmp/wayfinder-wheel-smoke/bin/python -c "import mcp, solana, solders"
+
   # Adapter Tests
   adapter-tests:
     name: Adapter Tests

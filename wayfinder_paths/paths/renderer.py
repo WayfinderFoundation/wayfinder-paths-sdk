@@ -17,6 +17,8 @@ from wayfinder_paths.paths.manifest import (
     resolve_skill_dependencies,
     resolve_skill_runtime,
 )
+from wayfinder_paths.paths.path_safety import unsafe_bundle_path_reason
+from wayfinder_paths.paths.runtime_registry import LEGACY_RUNTIME_MINIMUMS
 
 
 class PathSkillRenderError(Exception):
@@ -33,6 +35,7 @@ _EXCLUDED_PATH_DIRS = {
     ".wf-artifacts",
     ".wf-state",
     ".wayfinder",
+    ".wayfinder_runs",
     "__pycache__",
     "applet",
     "dist",
@@ -84,12 +87,24 @@ def _write_text(path: Path, content: str) -> None:
     path.write_text(content.rstrip() + "\n", encoding="utf-8")
 
 
+def _ensure_safe_copy_source(path: Path) -> None:
+    reason = unsafe_bundle_path_reason(path)
+    if reason:
+        raise PathSkillRenderError(f"Path exports cannot include {reason}: {path}")
+
+
 def _copy_optional_dirs(path_dir: Path, export_dir: Path) -> list[str]:
     written: list[str] = []
     for name in _CANONICAL_SKILL_SUBDIRS:
         src = path_dir / "skill" / name
         if not src.exists():
             continue
+        _ensure_safe_copy_source(src)
+        for dirpath, dirnames, filenames in os.walk(src):
+            for dirname in dirnames:
+                _ensure_safe_copy_source(Path(dirpath) / dirname)
+            for filename in filenames:
+                _ensure_safe_copy_source(Path(dirpath) / filename)
         dest = export_dir / name
         if dest.exists():
             shutil.rmtree(dest)
@@ -106,14 +121,13 @@ def _copy_runtime_path(path_dir: Path, export_dir: Path) -> list[str]:
     path_export_dir.mkdir(parents=True, exist_ok=True)
     for dirpath, dirnames, filenames in os.walk(path_dir):
         rel_dir = Path(dirpath).relative_to(path_dir)
-        dirnames[:] = sorted(
-            [
-                name
-                for name in dirnames
-                if name not in _EXCLUDED_PATH_DIRS
-                and not (rel_dir == Path(".") and name == "dist")
-            ]
-        )
+        included_dirs: list[str] = []
+        for name in dirnames:
+            if name in _EXCLUDED_PATH_DIRS or (rel_dir == Path(".") and name == "dist"):
+                continue
+            _ensure_safe_copy_source(Path(dirpath) / name)
+            included_dirs.append(name)
+        dirnames[:] = sorted(included_dirs)
         for filename in sorted(filenames):
             if filename in _EXCLUDED_PATH_FILES:
                 continue
@@ -121,6 +135,7 @@ def _copy_runtime_path(path_dir: Path, export_dir: Path) -> list[str]:
             rel_path = src.relative_to(path_dir)
             if any(part in _EXCLUDED_PATH_DIRS for part in rel_path.parts):
                 continue
+            _ensure_safe_copy_source(src)
             dest = path_export_dir / rel_path
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
@@ -876,6 +891,7 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "SKILL_ROOT = Path(__file__).resolve().parents[1]",
             "RUNTIME_MANIFEST_PATH = SKILL_ROOT / 'runtime' / 'manifest.json'",
             "DEFAULT_RUNTIME_CONFIG_PATH = SKILL_ROOT / '.runtime' / 'config.json'",
+            f"LEGACY_RUNTIME_MINIMUMS = {LEGACY_RUNTIME_MINIMUMS!r}",
             "",
             "",
             "def _load_manifest() -> dict[str, object]:",
@@ -893,6 +909,23 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "    cfg_env = str(manifest.get('config_path_env') or 'WAYFINDER_CONFIG_PATH')",
             "    if not env.get(cfg_env) and DEFAULT_RUNTIME_CONFIG_PATH.exists():",
             "        env[cfg_env] = str(DEFAULT_RUNTIME_CONFIG_PATH)",
+            "    base_runs = str(env.get('WAYFINDER_RUNS_DIR') or '').strip()",
+            "    slug = str(manifest.get('slug') or '').strip()",
+            "    if base_runs and slug:",
+            "        if Path(slug).name != slug or slug in {'.', '..'}:",
+            "            raise SystemExit(f'Invalid path slug in runtime manifest: {slug}')",
+            "        root = Path(base_runs).expanduser()",
+            "        if not root.is_absolute():",
+            "            root = (Path.cwd() / root).resolve()",
+            "        path_runs = root / 'paths' / slug",
+            "        path_runs.mkdir(parents=True, exist_ok=True)",
+            "        env['WAYFINDER_RUNS_DIR'] = str(path_runs)",
+            "        local_runs = SKILL_ROOT / 'path' / '.wayfinder_runs'",
+            "        if not local_runs.exists() and not local_runs.is_symlink():",
+            "            try:",
+            "                local_runs.symlink_to(path_runs, target_is_directory=True)",
+            "            except OSError as exc:",
+            "                print(f'Warning: could not link path state directory: {exc}', file=sys.stderr)",
             "    return env",
             "",
             "",
@@ -929,22 +962,71 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "    return subprocess.call(command, env=env)",
             "",
             "",
-            "def _current_runtime_matches(manifest: dict[str, object]) -> bool:",
+            "def _runtime_version_is_compatible(installed: str, required: str) -> bool:",
+            "    if installed == required:",
+            "        return True",
+            "    try:",
+            "        installed_release = tuple(int(part) for part in installed.split('.'))",
+            "        required_release = tuple(int(part) for part in required.split('.'))",
+            "    except ValueError:",
+            "        return False",
+            "    if len(installed_release) != 3 or len(required_release) != 3:",
+            "        return False",
+            "    return (",
+            "        installed_release[:2] == required_release[:2]",
+            "        and installed_release[2] >= required_release[2]",
+            "    )",
+            "",
+            "",
+            "def _python_version_is_compatible(spec: str) -> bool:",
+            "    if not spec:",
+            "        return True",
+            "    try:",
+            "        from packaging.specifiers import SpecifierSet",
+            "        from packaging.version import Version",
+            "    except ImportError:",
+            "        return False",
+            "    current = Version('.'.join(str(part) for part in sys.version_info[:3]))",
+            "    try:",
+            "        return current in SpecifierSet(spec)",
+            "    except ValueError:",
+            "        return False",
+            "",
+            "",
+            "def _runtime_requirement(manifest: dict[str, object]) -> tuple[str, str]:",
             "    package = str(manifest.get('package') or 'wayfinder-paths')",
             "    version = str(manifest.get('version') or '').strip()",
+            "    return package, LEGACY_RUNTIME_MINIMUMS.get((package, version), version)",
+            "",
+            "",
+            "def _runtime_package_spec(manifest: dict[str, object]) -> str:",
+            "    package, version = _runtime_requirement(manifest)",
             "    if not version:",
+            "        return package",
+            "    try:",
+            "        release = tuple(int(part) for part in version.split('.'))",
+            "    except ValueError:",
+            "        return f'{package}=={version}'",
+            "    operator = '~=' if len(release) == 3 else '=='",
+            "    return f'{package}{operator}{version}'",
+            "",
+            "",
+            "def _current_runtime_is_compatible(manifest: dict[str, object]) -> bool:",
+            "    package, required = _runtime_requirement(manifest)",
+            "    python = str(manifest.get('python') or '').strip()",
+            "    if not required or not _python_version_is_compatible(python):",
             "        return False",
             "    try:",
             "        installed = importlib_metadata.version(package)",
             "    except importlib_metadata.PackageNotFoundError:",
             "        return False",
-            "    return installed == version",
+            "    return _runtime_version_is_compatible(installed, required)",
             "",
             "",
-            "def _wayfinder_binary_matches(manifest: dict[str, object]) -> str | None:",
+            "def _compatible_wayfinder_binary(manifest: dict[str, object]) -> str | None:",
             "    binary = shutil.which('wayfinder')",
-            "    version = str(manifest.get('version') or '').strip()",
-            "    if not binary or not version:",
+            "    _, required = _runtime_requirement(manifest)",
+            "    if not binary or not required:",
             "        return None",
             "    try:",
             "        proc = subprocess.run(",
@@ -956,7 +1038,7 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "    except Exception:",
             "        return None",
             "    resolved = proc.stdout.strip()",
-            "    if resolved == version:",
+            "    if _runtime_version_is_compatible(resolved, required):",
             "        return binary",
             "    return None",
             "",
@@ -964,38 +1046,30 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "def _wayfinder_exec_args(manifest: dict[str, object], args: list[str]) -> list[str]:",
             "    path_dir = SKILL_ROOT / 'path'",
             "    component = str(manifest.get('component') or 'main')",
-            "    return [",
+            "    command = [",
             "        'path',",
             "        'exec',",
             "        '--path-dir',",
             "        str(path_dir),",
             "        '--component',",
             "        component,",
-            "        '--',",
-            "        *_normalized_passthrough(args),",
             "    ]",
-            "",
-            "",
-            "def _run_with_existing_runtime(manifest: dict[str, object], env: dict[str, str]) -> int | None:",
-            "    if not bool(manifest.get('prefer_existing_runtime', True)):",
-            "        return None",
-            "    exec_args = _wayfinder_exec_args(manifest, [])",
-            "    if _current_runtime_matches(manifest):",
-            "        return None",
-            "    binary = _wayfinder_binary_matches(manifest)",
-            "    if binary:",
-            "        return _call_cli([binary, *_wayfinder_exec_args(manifest, sys.argv[2:])], env)",
-            "    return None",
+            "    passthrough = _normalized_passthrough(args)",
+            "    if passthrough:",
+            "        command.extend(['--args-json', json.dumps(passthrough)])",
+            "    return command",
             "",
             "",
             "def _bootstrap_with_uv(manifest: dict[str, object], env: dict[str, str], args: list[str]) -> int:",
             "    binary = shutil.which('uv')",
             "    if not binary:",
             "        raise FileNotFoundError('uv not found')",
-            "    package = str(manifest.get('package') or 'wayfinder-paths')",
-            "    version = str(manifest.get('version') or '').strip()",
-            "    spec = f'{package}=={version}' if version else package",
-            "    cmd = [binary, 'run', '--with', spec, 'wayfinder', *_wayfinder_exec_args(manifest, args)]",
+            "    spec = _runtime_package_spec(manifest)",
+            "    python = str(manifest.get('python') or '').strip()",
+            "    cmd = [binary, 'run', '--isolated', '--no-project']",
+            "    if python:",
+            "        cmd.extend(['--python', python])",
+            "    cmd.extend(['--with', spec, 'wayfinder', *_wayfinder_exec_args(manifest, args)])",
             "    return _call_cli(cmd, env)",
             "",
             "",
@@ -1003,9 +1077,10 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "    binary = shutil.which('pipx')",
             "    if not binary:",
             "        raise FileNotFoundError('pipx not found')",
-            "    package = str(manifest.get('package') or 'wayfinder-paths')",
-            "    version = str(manifest.get('version') or '').strip()",
-            "    spec = f'{package}=={version}' if version else package",
+            "    python = str(manifest.get('python') or '').strip()",
+            "    if not _python_version_is_compatible(python):",
+            "        raise RuntimeError(f'Current Python does not satisfy {python}')",
+            "    spec = _runtime_package_spec(manifest)",
             "    cmd = [binary, 'run', '--spec', spec, 'wayfinder', *_wayfinder_exec_args(manifest, args)]",
             "    return _call_cli(cmd, env)",
             "",
@@ -1017,9 +1092,8 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "",
             "",
             "def _venv_matches(python_bin: Path, manifest: dict[str, object]) -> bool:",
-            "    package = str(manifest.get('package') or 'wayfinder-paths')",
-            "    version = str(manifest.get('version') or '').strip()",
-            "    if not python_bin.exists() or not version:",
+            "    package, required = _runtime_requirement(manifest)",
+            "    if not python_bin.exists() or not required:",
             "        return False",
             "    try:",
             "        proc = subprocess.run(",
@@ -1037,10 +1111,13 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "        )",
             "    except Exception:",
             "        return False",
-            "    return proc.stdout.strip() == version",
+            "    return _runtime_version_is_compatible(proc.stdout.strip(), required)",
             "",
             "",
             "def _bootstrap_with_local_venv(manifest: dict[str, object], env: dict[str, str], args: list[str]) -> int:",
+            "    python = str(manifest.get('python') or '').strip()",
+            "    if not _python_version_is_compatible(python):",
+            "        raise RuntimeError(f'Current Python does not satisfy {python}')",
             "    runtime_dir = SKILL_ROOT / '.runtime'",
             "    venv_dir = runtime_dir / 'venv'",
             "    python_bin = _venv_python(venv_dir)",
@@ -1049,9 +1126,7 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "        subprocess.check_call([sys.executable, '-m', 'venv', str(venv_dir)])",
             "        python_bin = _venv_python(venv_dir)",
             "        subprocess.check_call([str(python_bin), '-m', 'pip', 'install', '--upgrade', 'pip'])",
-            "        package = str(manifest.get('package') or 'wayfinder-paths')",
-            "        version = str(manifest.get('version') or '').strip()",
-            "        spec = f'{package}=={version}' if version else package",
+            "        spec = _runtime_package_spec(manifest)",
             "        subprocess.check_call([str(python_bin), '-m', 'pip', 'install', spec])",
             "    cmd = [",
             "        str(python_bin),",
@@ -1069,7 +1144,7 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "    env = _runtime_env(manifest)",
             "    _ensure_api_key(manifest, env)",
             "",
-            "    if _current_runtime_matches(manifest):",
+            "    if _current_runtime_is_compatible(manifest):",
             "        cmd = [",
             "            sys.executable,",
             "            '-m',",
@@ -1078,7 +1153,7 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "        ]",
             "        return _call_cli(cmd, env)",
             "",
-            "    binary = _wayfinder_binary_matches(manifest)",
+            "    binary = _compatible_wayfinder_binary(manifest)",
             "    if binary:",
             "        return _call_cli([binary, *_wayfinder_exec_args(manifest, args)], env)",
             "",
@@ -1102,6 +1177,8 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "            errors.append(str(exc))",
             "        except subprocess.CalledProcessError as exc:",
             "            errors.append(f'{method} failed with exit code {exc.returncode}')",
+            "        except RuntimeError as exc:",
+            "            errors.append(str(exc))",
             "",
             "    raise SystemExit('Failed to bootstrap runtime: ' + '; '.join(errors))",
             "",
