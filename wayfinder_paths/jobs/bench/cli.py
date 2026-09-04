@@ -11,7 +11,10 @@ from typing import Any
 
 from wayfinder_paths.jobs.bench.env import atomic_json, git_sha, sha256_file
 from wayfinder_paths.jobs.bench.forward_replay import race_bundles
-from wayfinder_paths.jobs.bench.leaders import freeze_leader_closes
+from wayfinder_paths.jobs.bench.leaders import (
+    freeze_funding_features,
+    freeze_leader_closes,
+)
 from wayfinder_paths.jobs.bench.recurrence import run_recurrence
 from wayfinder_paths.jobs.bench.runner import run_experiment
 from wayfinder_paths.jobs.bench.world import prepare_world
@@ -58,6 +61,11 @@ def main(argv: list[str] | None = None) -> None:
     leaders.add_argument("--symbols", nargs="+", default=None)
     leaders.add_argument("--exchange", default="binance")
 
+    funding = commands.add_parser("freeze-funding")
+    funding.add_argument("source_job", type=Path)
+    funding.add_argument("--days", required=True, type=int)
+    funding.add_argument("--exchange", default="binance")
+
     args = parser.parse_args(resolved_argv)
     if args.command == "prepare-world":
         result = prepare_world(
@@ -88,6 +96,10 @@ def main(argv: list[str] | None = None) -> None:
             days=args.days,
             **({"symbols": tuple(args.symbols)} if args.symbols else {}),
             exchange_id=args.exchange,
+        )
+    elif args.command == "freeze-funding":
+        result = freeze_funding_features(
+            args.source_job, days=args.days, exchange_id=args.exchange
         )
     else:
         result = run_experiment(args.config)

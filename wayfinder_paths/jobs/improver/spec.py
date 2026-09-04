@@ -136,6 +136,7 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # positive with a paired block-bootstrap LCB > 0 at a confidence that
         # rises with every repair (each repair is another look at the slice).
         "screen_slices": 2,
+        "screen_slice_days": 35,
         "screen_confidence_base": 0.70,
         "screen_slice_max_loss": 0.02,
         # A campaign that finds nothing while the incumbent lost to cash
@@ -174,6 +175,7 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "signal_population_search": True,
         "signal_population_limit": 300,
         "signal_composition_rounds": 2,
+        "signal_first_extra_horizons": {"1h": [72, 168], "4h": [42, 84]},
         "signal_scan_min_events": 30,
         "wildcard_slots": 2,
         "elite_min_validation_trades": 8,

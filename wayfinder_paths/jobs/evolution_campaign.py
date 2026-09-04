@@ -40,6 +40,10 @@ from wayfinder_paths.jobs.archive import (
     record_candidate,
     set_candidate_status,
 )
+from wayfinder_paths.jobs.bench.leaders import (
+    LEADER_CLOSES_RELATIVE,
+    load_leader_closes,
+)
 from wayfinder_paths.jobs.bundles import copy_job_bundle
 from wayfinder_paths.jobs.compute_lock import (
     ComputeLockBusy,
@@ -119,7 +123,7 @@ from wayfinder_paths.jobs.gating import (
     evaluate_economic_gate,
 )
 from wayfinder_paths.jobs.improver.spec import ImproverSpec, revision_stamp
-from wayfinder_paths.jobs.indicators import REGIME_LABELS
+from wayfinder_paths.jobs.indicators import REGIME_LABELS, wilder_rsi
 from wayfinder_paths.jobs.isolated_phase import run_isolated_phase
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.multiple_testing import haircut
@@ -145,6 +149,7 @@ from wayfinder_paths.jobs.regime import (
 from wayfinder_paths.jobs.research import (
     apply_bh_verdicts,
     library_signal_warmup_bars,
+    rank_ic,
     resample_ohlcv,
     scan_signals,
 )
@@ -191,6 +196,9 @@ CAMPAIGN_DESIGN = "campaign_design.json"
 SCHEMA_VERSION = "2.0"
 COMPOSE_STAGE = "compose"
 MECHANISM_GRID_MAX = 6
+_DEFAULT_EXTRA_HORIZONS: dict[str, list[int]] = {"1h": [72, 168], "4h": [42, 84]}
+_CROSS_SECTION_SECONDS = 3600
+_CROSS_SECTION_HORIZON_HOURS = (24, 168)
 _MECHANISM_REF_RE = re.compile(r"^/mechanism_grids/(\d+)/top/(\d+)(?:/|$)")
 _PROPOSAL_NAME_RE = re.compile(r"^[a-z0-9_]{1,48}$")
 _COMPOSE_DSL_NAMES = tuple(name for name in SIGNAL_DSL if name not in {"pd", "np"})
@@ -852,6 +860,105 @@ def _condition_features(
     }
 
 
+def _extra_horizons(policy: Mapping[str, Any]) -> dict[str, list[int]]:
+    raw = policy.get("signal_first_extra_horizons")
+    table = raw if isinstance(raw, Mapping) else _DEFAULT_EXTRA_HORIZONS
+    out: dict[str, list[int]] = {}
+    for timeframe, horizons in table.items():
+        if not bar_interval_seconds(str(timeframe)):
+            continue
+        values = sorted({int(h) for h in (horizons or []) if int(h) > 0})
+        if values:
+            out[str(timeframe)] = values
+    return out
+
+
+def _ranking_columns(close: pd.Series, *, bars_per_day: int) -> dict[str, pd.Series]:
+    """Cross-sectional rankings a rotation slot could trade: trailing
+    strength, oversold-ness and stretch from the mean."""
+    return {
+        "ret_7d": close / close.shift(7 * bars_per_day) - 1.0,
+        "rsi14": wilder_rsi(close),
+        "dist_sma20": close / close.rolling(20).mean() - 1.0,
+    }
+
+
+def _cross_sectional_block(
+    frames: Mapping[str, pd.DataFrame],
+    *,
+    bar_seconds: int,
+    leaders: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    """Rank-IC of a few ranking columns across the panel (plus the frozen
+    leaders when present) on the hour frame: does the ranking order relative
+    forward returns? Material for a rotation slot, reported beside the
+    per-symbol signals."""
+    rule = max(int(bar_seconds), _CROSS_SECTION_SECONDS)
+    bars_per_day = max(1, 86_400 // rule)
+    panel: dict[str, pd.Series] = {}
+    for symbol, frame in frames.items():
+        bars = (
+            resample_ohlcv(frame, rule, bar_seconds=int(bar_seconds))
+            if rule != int(bar_seconds)
+            else frame
+        )
+        panel[str(symbol)] = pd.Series(
+            bars["close"].astype(float).to_numpy(),
+            index=pd.to_datetime(bars["timestamp"], utc=True),
+        )
+    leader_names: list[str] = []
+    if leaders is not None and not leaders.empty and panel:
+        start = min(series.index.min() for series in panel.values())
+        end = max(series.index.max() for series in panel.values())
+        for name in leaders.columns:
+            series = leaders[name].dropna()
+            series = series[(series.index >= start) & (series.index <= end)]
+            if len(series) and str(name) not in panel:
+                panel[str(name)] = series.astype(float)
+                leader_names.append(str(name))
+    if len(panel) < 4:
+        return {
+            "available": False,
+            "reason": f"rank IC needs at least 4 symbols; the panel has {len(panel)}",
+        }
+    ranked: dict[str, dict[str, pd.DataFrame]] = {}
+    for symbol, close in panel.items():
+        columns = _ranking_columns(close, bars_per_day=bars_per_day)
+        for column, values in columns.items():
+            ranked.setdefault(column, {})[symbol] = pd.DataFrame(
+                {
+                    "timestamp": close.index,
+                    "close": close.to_numpy(),
+                    column: values.to_numpy(),
+                }
+            )
+    horizons = [max(1, hours * 3600 // rule) for hours in _CROSS_SECTION_HORIZON_HOURS]
+    columns_out: list[dict[str, Any]] = []
+    for column, by_symbol in ranked.items():
+        result = rank_ic(by_symbol, column, horizons=horizons)
+        columns_out.append(
+            {
+                "column": column,
+                "has_edge": bool(result.get("has_edge")),
+                "horizons": [
+                    {
+                        key: row.get(key)
+                        for key in ("horizon", "n", "mean_ic", "t_stat", "edge")
+                    }
+                    for row in result.get("horizons") or []
+                ],
+            }
+        )
+    return {
+        "available": True,
+        "timeframe": f"{rule}s",
+        "symbols": sorted(panel),
+        "leaders": leader_names,
+        "horizons": horizons,
+        "columns": columns_out,
+    }
+
+
 def _campaign_scan_frames(
     store: JobStore, job_id: str, campaign_root: Path, *, policy: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -896,7 +1003,7 @@ def _campaign_scan_frames(
 
     stamps = train.bars.timestamps
     train_days = max((stamps[-1] - stamps[0]).total_seconds() / 86_400.0, 1e-9)
-    slices = _screen_slices(train, slices=int(policy.get("screen_slices") or 2))
+    slices = _policy_screen_slices(train, policy)
     fee_bps = float(params.get("fee_bps") or 5.0)
     slippage_bps = float(params.get("slippage_bps") or 3.5)
     timeframes = _signal_timeframes(bar_seconds)
@@ -920,7 +1027,11 @@ def _campaign_scan_frames(
             "min_events": int(policy.get("signal_scan_min_events") or 30),
             "fee_bps": fee_bps,
             "slippage_bps": slippage_bps,
+            # Slow signals act past the default 24-bar ceiling: 3 and 7 days
+            # on the hour frame, 7 and 14 days on the 4-hour frame.
+            "required_horizons": _extra_horizons(policy),
         },
+        "source_root": campaign_root / "source",
     }
 
 
@@ -1083,6 +1194,23 @@ def _validated_signals(
             row.get("library") == "population" for row in full_rows
         )
         breakdown = _signal_breakdown([*selected, *replicated])
+        leader_source = next(
+            (
+                root
+                for root in (frames["source_root"], store.job_dir(job_id))
+                if (root / LEADER_CLOSES_RELATIVE).exists()
+            ),
+            None,
+        )
+        loaded = load_leader_closes(leader_source) if leader_source else None
+        try:
+            cross_sectional = _cross_sectional_block(
+                frames["train"],
+                bar_seconds=int(frames["bar_seconds"]),
+                leaders=loaded[0] if loaded else None,
+            )
+        except Exception as exc:  # noqa: BLE001 - a side panel never blocks seeding
+            cross_sectional = {"available": False, "reason": str(exc)[:200]}
         funnel["population_survivors"] = sum(
             row.get("library") == "population" for row in [*selected, *replicated]
         )
@@ -1121,6 +1249,8 @@ def _validated_signals(
         "condition_features": sorted(frames["condition_features"]),
         "feature_columns": list(frames["feature_columns"]),
         "breakdown": breakdown,
+        "horizons_required": frames["scan_kwargs"].get("required_horizons") or {},
+        "cross_sectional": cross_sectional,
         "tests": len(full_rows),
         # The haircut the designer should see: this many tests would clear a
         # 5% bar by luck alone, which is why q gates the validated tier.
@@ -1507,7 +1637,7 @@ def _incumbent_neighborhood(
         tunables = _numeric_tunables(getattr(strategy, "params", {}) or {}, params)
         if not tunables:
             return {"available": False, "reason": "no numeric tunables"}
-        slices = _screen_slices(train, slices=int(policy.get("screen_slices") or 2))
+        slices = _policy_screen_slices(train, policy)
         recent = slices[0][1]
         span = float(policy.get("incumbent_neighborhood_span") or 0.3)
         alive = _alive_tunables(
@@ -1645,9 +1775,7 @@ def _incumbent_failure_modes(
             campaign_root / CAMPAIGN_DATA_ROOT / DEFAULT_FEATURES_PATH
         )
         slices: dict[str, Any] = {}
-        for label, dataset in _screen_slices(
-            train, slices=int(policy.get("screen_slices") or 2)
-        ):
+        for label, dataset in _policy_screen_slices(train, policy):
             result = simulate_execution(
                 subject["script"], dataset, subject["spec"], params
             )
@@ -2425,6 +2553,39 @@ def submit_signal_proposals(
             )
         ],
     }
+
+
+def _cross_sectional_instruction(block: Mapping[str, Any]) -> str:
+    edges = [
+        (index, column)
+        for index, column in enumerate(block.get("columns") or [])
+        if column.get("has_edge")
+    ]
+    if not block.get("available") or not edges:
+        return ""
+    parts = []
+    for index, column in edges:
+        best = max(
+            (row for row in column.get("horizons") or [] if row.get("edge")),
+            key=lambda row: abs(float(row.get("t_stat") or 0.0)),
+            default=None,
+        )
+        if best is None:
+            continue
+        parts.append(
+            f"{column['column']} (rank IC {float(best.get('mean_ic') or 0):+.3f}, t "
+            f"{float(best.get('t_stat') or 0):+.1f} over {best.get('horizon')} bars; "
+            f"/validated_signals/cross_sectional/columns/{index})"
+        )
+    if not parts:
+        return ""
+    return (
+        "Cross-sectional: on the hour frame across "
+        f"{', '.join(block.get('symbols') or [])} the ranking "
+        + "; ".join(parts)
+        + " orders relative forward returns — material for a rotation slot "
+        "(long the top, short or flat the bottom), not a per-symbol trigger. "
+    )
 
 
 def _mechanism_instruction(
@@ -3752,9 +3913,7 @@ def _evaluate_candidate(
                 }
         result = simulate_execution(subject["script"], quick, subject["spec"], params)
         screen_results: dict[str, Any] = {"recent": result}
-        screen_slices = _screen_slices(
-            train, slices=int(policy.get("screen_slices") or 2)
-        )
+        screen_slices = _policy_screen_slices(train, policy)
         screen_macros = {
             label: _slice_macro_regime(dataset) for label, dataset in screen_slices
         }
@@ -4018,7 +4177,7 @@ def _candidate_reference_receipt(
     )
     params, _, _ = _calibrated_params(store, job_id, subject)
     policy = _campaign_policy(store, job_id, campaign_id)
-    slices = _screen_slices(train, slices=int(policy.get("screen_slices") or 2))
+    slices = _policy_screen_slices(train, policy)
     _, quick = slices[0]
     result = simulate_execution(subject["script"], quick, subject["spec"], params)
     receipt = result_receipt(
@@ -5817,6 +5976,7 @@ def campaign_prompt_block(
             + _mechanism_instruction(
                 job_id, diagnostic_pack, [*validated_rows, *replicated_rows]
             )
+            + _cross_sectional_instruction(validated.get("cross_sectional") or {})
         )
         regime_context = manifest.get("regime_context") or {}
         specialist_design = bool(
@@ -7199,25 +7359,64 @@ _SCREEN_BOOTSTRAP_BLOCK_DAYS = 2
 _SCREEN_BOOTSTRAP_ITERATIONS = 300
 
 
+def _policy_screen_slices(
+    train: PreparedExecutionDataset, policy: Mapping[str, Any]
+) -> list[tuple[str, PreparedExecutionDataset]]:
+    return _screen_slices(
+        train,
+        slices=int(policy.get("screen_slices") or 2),
+        days=policy.get("screen_slice_days"),
+    )
+
+
+def _dataset_bar_seconds(train: PreparedExecutionDataset) -> int:
+    stamps = train.bars.timestamps
+    if len(stamps) < 2:
+        return 0
+    diffs = sorted(
+        (later - earlier).total_seconds()
+        for earlier, later in zip(stamps[:200], stamps[1:201], strict=False)
+        if later > earlier
+    )
+    return int(diffs[len(diffs) // 2]) if diffs else 0
+
+
 def _screen_slices(
     train: PreparedExecutionDataset,
     *,
     bars: int = _SCREEN_SLICE_BARS,
     slices: int = 2,
+    days: float | None = None,
 ) -> list[tuple[str, PreparedExecutionDataset]]:
     """Disjoint screen windows: the recent tail plus the tail before it.
 
     A candidate repaired against one slice is selected for that slice; a
     second, disjoint slice is the cheapest test that it generalizes at all.
-    Short datasets fall back to the single recent slice.
+    Short datasets fall back to the single recent slice. With ``days`` the
+    window is sized in calendar time from the bar interval (35 days is
+    10,080 five-minute bars or 210 four-hour bars) so a slow lane gets
+    slices instead of one multi-year window.
     """
     timestamps = train.bars.timestamps
     total = len(timestamps)
+    step = _SCREEN_MACRO_STEP_BARS
+    min_earlier = _SCREEN_MIN_EARLIER_BARS
+    if days is not None:
+        bar_seconds = _dataset_bar_seconds(train)
+        if bar_seconds > 0:
+            bars = max(50, int(round(float(days) * 86_400.0 / bar_seconds)))
+            step = max(1, bars // 4)
+            min_earlier = min(_SCREEN_MIN_EARLIER_BARS, bars)
     recent = _tail(train, bars)
     out = [("recent", recent)]
     remaining = total - min(bars, total)
-    if slices >= 2 and remaining >= _SCREEN_MIN_EARLIER_BARS:
-        out.append(("earlier", _earlier_screen_slice(train, remaining, bars, recent)))
+    if slices >= 2 and remaining >= min_earlier:
+        out.append(
+            (
+                "earlier",
+                _earlier_screen_slice(train, remaining, bars, recent, step=step),
+            )
+        )
     return out
 
 
@@ -7226,6 +7425,8 @@ def _earlier_screen_slice(
     remaining: int,
     bars: int,
     recent: PreparedExecutionDataset,
+    *,
+    step: int = _SCREEN_MACRO_STEP_BARS,
 ) -> PreparedExecutionDataset:
     """The most recent disjoint window whose macro regime differs from the
     recent slice's; adjacent windows share a regime, and two slices of one
@@ -7239,7 +7440,7 @@ def _earlier_screen_slice(
         candidate = _slice(train, timestamps, end - bars, end)
         if _slice_macro_regime(candidate)["label"] != recent_label:
             return candidate
-        end -= _SCREEN_MACRO_STEP_BARS
+        end -= step
     return adjacent
 
 

@@ -5446,6 +5446,15 @@ def test_campaign_scan_frames_carry_store_columns_and_condition(tmp_path) -> Non
     assert block["maker_round_trip_bps"] == 3.0
     assert block["funnel"]["regime_tests"] > 0
     assert block["funnel"]["population_tests"] > 0
+    # Slow horizons reach the scan on the hour frame; the panel is one
+    # symbol, so the cross-sectional side reports why it stood down.
+    assert frames["scan_kwargs"]["required_horizons"] == {
+        "1h": [72, 168],
+        "4h": [42, 84],
+    }
+    assert block["horizons_required"] == {"1h": [72, 168], "4h": [42, 84]}
+    assert block["cross_sectional"]["available"] is False
+    assert "at least 4 symbols" in block["cross_sectional"]["reason"]
     assert "replicated" in block
     composed = [
         row
@@ -5845,3 +5854,94 @@ def test_mechanism_grid_sweeps_a_signal_and_the_chosen_row_reaches_the_candidate
     )
     assert candidate["mechanism_refs"][0]["stop_atr"] == best["stop_atr"]
     assert candidate["signal_refs"][0]["signal"] == "ws_spring"
+
+
+def test_screen_slices_size_by_days_from_the_bar_interval() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _screen_slices
+    from wayfinder_paths.jobs.execution.simulator import PreparedExecutionDataset
+
+    def dataset(count: int, *, seconds: int) -> PreparedExecutionDataset:
+        started = datetime(2026, 1, 1, tzinfo=UTC)
+        rows = [
+            {
+                "timestamp": (started + timedelta(seconds=seconds * index)).isoformat(),
+                "symbol": "IMX",
+                "open": 10.0,
+                "high": 10.1,
+                "low": 9.9,
+                "close": 10.0 + 0.001 * (index % 7),
+                "volume": 1.0,
+            }
+            for index in range(count)
+        ]
+        return PreparedExecutionDataset.from_rows(
+            rows, {"days": count * seconds / 86_400}
+        )
+
+    five_minute = _screen_slices(dataset(30_000, seconds=300), days=35)
+    assert [label for label, _ in five_minute] == ["recent", "earlier"]
+    assert len(five_minute[0][1].bars.timestamps) == 10_080
+    four_hour = _screen_slices(dataset(3_000, seconds=14_400), days=35)
+    assert [label for label, _ in four_hour] == ["recent", "earlier"]
+    assert len(four_hour[0][1].bars.timestamps) == 210
+    assert len(four_hour[1][1].bars.timestamps) == 210
+    # Without days the historical bar count rules: one 10,000-bar window.
+    assert [label for label, _ in _screen_slices(dataset(3_000, seconds=14_400))] == [
+        "recent"
+    ]
+
+
+def test_cross_sectional_block_ranks_a_persistent_momentum_panel() -> None:
+    import numpy as np
+
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _cross_sectional_block,
+        _cross_sectional_instruction,
+    )
+
+    # Five symbols with distinct constant drifts: trailing strength orders
+    # forward returns, so ret_7d carries rank IC; a leader frame joins the
+    # panel by name.
+    started = pd.Timestamp("2026-01-01", tz="UTC")
+    stamps = pd.date_range(started, periods=1_500, freq="1h")
+    rng = np.random.default_rng(3)
+    frames: dict[str, pd.DataFrame] = {}
+    drifts = [-0.0006, -0.0003, 0.0, 0.0003, 0.0006]
+    for index, drift in enumerate(drifts):
+        close = 100.0 * np.exp(np.cumsum(drift + rng.normal(0, 0.003, len(stamps))))
+        frames[f"S{index}"] = pd.DataFrame(
+            {
+                "timestamp": stamps,
+                "symbol": f"S{index}",
+                "open": close,
+                "high": close * 1.001,
+                "low": close * 0.999,
+                "close": close,
+                "volume": 1.0,
+            }
+        )
+    leader = pd.DataFrame(
+        {
+            "BTC": 50_000.0
+            * np.exp(np.cumsum(0.0009 + rng.normal(0, 0.0004, len(stamps))))
+        },
+        index=stamps,
+    )
+    block = _cross_sectional_block(frames, bar_seconds=3600, leaders=leader)
+    assert block["available"] is True and block["timeframe"] == "3600s"
+    assert block["symbols"] == ["BTC", "S0", "S1", "S2", "S3", "S4"]
+    assert block["leaders"] == ["BTC"] and block["horizons"] == [24, 168]
+    by_column = {column["column"]: column for column in block["columns"]}
+    assert set(by_column) == {"ret_7d", "rsi14", "dist_sma20"}
+    assert by_column["ret_7d"]["has_edge"] is True
+    assert all(row["mean_ic"] > 0.3 for row in by_column["ret_7d"]["horizons"])
+    assert any(
+        row["t_stat"] > 2 and row["edge"] for row in by_column["ret_7d"]["horizons"]
+    )
+    text = _cross_sectional_instruction(block)
+    assert "ret_7d (rank IC" in text and "rotation slot" in text
+    assert "/validated_signals/cross_sectional/columns/0" in text
+    assert _cross_sectional_instruction({"available": False}) == ""
+    # A three-symbol panel cannot be ranked.
+    small = {name: frames[name] for name in ("S0", "S1", "S2")}
+    assert _cross_sectional_block(small, bar_seconds=3600)["available"] is False

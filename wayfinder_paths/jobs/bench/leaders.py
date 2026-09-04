@@ -76,6 +76,32 @@ def freeze_leader_closes(
     }
 
 
+def freeze_funding_features(
+    source_job: Path,
+    *,
+    days: int,
+    exchange_id: str = "binance",
+    exchange: Any | None = None,
+) -> dict[str, Any]:
+    """Fetch funding for the source job's symbols into its feature store
+    (network once, at freeze time) and declare the feature, so worlds carry
+    a ``funding`` column and campaigns can scan and condition on it."""
+    from wayfinder_paths.jobs.execution.preflight import fetch_funding_features
+    from wayfinder_paths.jobs.store import JobStore
+
+    resolved = Path(source_job).resolve()
+    if resolved.parent.name != "jobs" or resolved.parent.parent.name != ".wayfinder":
+        raise ValueError("source_job must be a .wayfinder/jobs/<job_id> directory")
+    store = JobStore(repo_root=resolved.parents[2])
+    return fetch_funding_features(
+        resolved.name,
+        days=int(days),
+        exchange=exchange_id,
+        store=store,
+        exchange_client=exchange,
+    )
+
+
 def load_leader_closes(
     source_job: Path,
 ) -> tuple[pd.DataFrame, dict[str, Any]] | None:
