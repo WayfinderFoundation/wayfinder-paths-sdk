@@ -932,7 +932,7 @@ def _select_validated_rows(
     max_q: float,
     slice_min_t: float,
     min_t_net: float,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
     """Replicated, cost-surviving, dense signals from a full-train scan.
 
     Direction and strength come from the scan's gross t-stat (its
@@ -1857,7 +1857,7 @@ def _validate_campaign_design(
             if slot["parent_source"] not in {"de_novo", "research_context"}:
                 continue
             refs = list(
-                (hypothesis_by_id.get(slot.get("hypothesis_id")) or {}).get(
+                (hypothesis_by_id.get(str(slot.get("hypothesis_id") or "")) or {}).get(
                     "evidence_refs"
                 )
                 or []
