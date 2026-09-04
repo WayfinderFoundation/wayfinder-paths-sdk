@@ -6417,7 +6417,9 @@ def test_proposal_names_are_immutable_within_a_campaign(tmp_path) -> None:
     first = submit_signal_proposals(store, job_id, signal_proposals=[proposal])
     assert first["status"] == "scanned"
     state = _active_campaign(store, job_id)
-    assert state["composition"]["names"] == {"ws_dip_3": "new_extreme(f, 3, -1)"}
+    assert state["composition"]["names"] == {
+        "ws_dip_3": {"expression": "new_extreme(f, 3, -1)", "min_bars": 5}
+    }
     altered = submit_signal_proposals(
         store,
         job_id,
@@ -6425,6 +6427,11 @@ def test_proposal_names_are_immutable_within_a_campaign(tmp_path) -> None:
     )
     assert altered["status"] == "rejected"
     assert "immutable" in altered["problems"][0]
+    # A changed warmup under the same name is a changed definition too.
+    rewarmed = submit_signal_proposals(
+        store, job_id, signal_proposals=[{**proposal, "min_bars": 9}]
+    )
+    assert rewarmed["status"] == "rejected" and "min_bars" in rewarmed["problems"][0]
     assert _active_campaign(store, job_id)["composition"]["rounds_used"] == 1
     # The same name with the same definition is the same row, and the
     # identity hash separates a changed definition or side regardless.
@@ -6443,3 +6450,71 @@ def test_proposal_names_are_immutable_within_a_campaign(tmp_path) -> None:
     assert _signal_id({**row, "expression": "a"}) != _signal_id(
         {**row, "expression": "b"}
     )
+    assert _signal_id({**row, "min_bars": 5}) != _signal_id({**row, "min_bars": 9})
+
+
+def test_cited_mechanisms_export_the_signal_where_it_sits_now(tmp_path) -> None:
+    """A grid computed before a prepending round exports its source at the
+    source's current pointer, resolved from the id, not the pointer stored
+    when the grid ran (which now names a different signal)."""
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _cited_mechanisms,
+        _cited_signals,
+        mechanism_grid,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _mechanism_job(tmp_path)
+    root = store.job_dir(job_id)
+    improver_path = root / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"]["signal_composition_rounds"] = 2
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    spring = (
+        "(close(f) == 100.0) & (close(f).shift(1) == 100.0) & "
+        "(close(f).shift(2) == 100.0) & (close(f).shift(3) == 100.0) & "
+        "(close(f).shift(4) == 100.0) & (close(f).shift(5) != 100.0)"
+    )
+    first = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_spring",
+                "family": "mean_reversion",
+                "description": "five flat closes",
+                "min_bars": 8,
+                "expression": spring,
+            }
+        ],
+    )
+    a = next(row for row in first["survivors"] if row["merged"])
+    grid = mechanism_grid(store, job_id, signal_ref=a["pointer"], side="long")
+    assert grid["status"] == "ok" and grid["top"], grid
+    assert grid["signal_ref"] == a["pointer"]
+    second = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_spring_twin",
+                "family": "mean_reversion",
+                "description": "the same events",
+                "min_bars": 8,
+                "expression": f"({spring}) & (close(f) > 0)",
+            }
+        ],
+    )
+    b = next(row for row in second["survivors"] if row["merged"])
+    assert b["pointer"] == a["pointer"]
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    cited = _cited_mechanisms(store, job_id, manifest, ["/mechanism_grids/0/top/0"])
+    assert cited[0]["signal_id"] == a["signal_id"]
+    assert cited[0]["signal_ref"] != a["pointer"]
+    source = _cited_signals(store, job_id, manifest, [cited[0]["signal_ref"]])
+    assert source[0]["signal"] == "ws_spring"
+    assert source[0]["signal_id"] == a["signal_id"]
+    wrong = _cited_signals(store, job_id, manifest, [a["pointer"]])
+    assert wrong[0]["signal"] == "ws_spring_twin"

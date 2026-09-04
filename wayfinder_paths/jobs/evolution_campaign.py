@@ -1134,12 +1134,37 @@ def _signal_row_key(row: Mapping[str, Any]) -> str:
             "regime",
             "direction",
             "expression",
+            "min_bars",
         )
     )
 
 
 def _signal_id(row: Mapping[str, Any]) -> str:
     return hashlib.sha1(_signal_row_key(row).encode()).hexdigest()[:12]
+
+
+def _definition_fingerprint(definition: Any) -> tuple[str, int | None]:
+    """What a proposal name is bound to for the campaign: its expression and
+    warmup. Accepts a SignalDef, a registry record or a bare expression."""
+    if isinstance(definition, Mapping):
+        min_bars = definition.get("min_bars")
+        return (
+            str(definition.get("expression") or ""),
+            int(min_bars) if min_bars is not None else None,
+        )
+    if isinstance(definition, str):
+        return (definition, None)
+    return (str(getattr(definition, "expression", "") or ""), int(definition.min_bars))
+
+
+def _locate_signal_pointer(block: Mapping[str, Any], signal_id: str) -> str | None:
+    """The current positional pointer of an offered row, by identity; None
+    when the budget has trimmed it."""
+    for tier_key in ("signals", "replicated"):
+        for position, row in enumerate(block.get(tier_key) or []):
+            if str(row.get("signal_id") or _signal_id(row)) == str(signal_id):
+                return f"/validated_signals/{tier_key}/{position}"
+    return None
 
 
 def _pack_signal_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
@@ -2658,11 +2683,13 @@ def submit_signal_proposals(
         registry = dict(composition.get("names") or {})
         for spec in defs:
             previous = registry.get(spec.name)
-            if previous is not None and previous != spec.expression:
+            if previous is not None and _definition_fingerprint(previous) != (
+                _definition_fingerprint(spec)
+            ):
                 problems.append(
                     f"{spec.name!r} was proposed in an earlier round with a different "
-                    "expression; names are immutable within a campaign, choose a new "
-                    "name"
+                    "definition (expression or min_bars); names are immutable within "
+                    "a campaign, choose a new name"
                 )
         if problems:
             composition["problems"] = problems[:12]
@@ -2742,7 +2769,13 @@ def submit_signal_proposals(
         composition["problems"] = None
         composition["names"] = {
             **dict(composition.get("names") or {}),
-            **{spec.name: str(spec.expression or "") for spec in defs},
+            **{
+                spec.name: {
+                    "expression": str(spec.expression or ""),
+                    "min_bars": int(spec.min_bars),
+                }
+                for spec in defs
+            },
         }
         composition["history"] = [
             *list(composition.get("history") or []),
@@ -3140,7 +3173,12 @@ def _cited_mechanisms(
         cited.append(
             {
                 "pointer": f"/mechanism_grids/{grid_index}/top/{row_index}",
-                "signal_ref": record.get("signal_ref"),
+                # The stored pointer is where the signal sat when the grid ran;
+                # a later round may have moved it. Export where it is now.
+                "signal_ref": _locate_signal_pointer(
+                    (pack or {}).get("validated_signals") or {},
+                    str(record.get("signal_id") or ""),
+                ),
                 "signal_id": record.get("signal_id"),
                 "symbol": record.get("symbol"),
                 "signal": record.get("signal"),
