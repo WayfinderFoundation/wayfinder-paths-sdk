@@ -132,6 +132,7 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # rises with every repair (each repair is another look at the slice).
         "screen_slices": 2,
         "screen_confidence_base": 0.70,
+        "screen_slice_max_loss": 0.02,
         "screen_confidence_step": 0.10,
         # Incumbent failure modes (two bounded sims at campaign start) point the
         # design at the days and regimes where the incumbent loses.

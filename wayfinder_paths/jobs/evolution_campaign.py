@@ -2806,7 +2806,17 @@ def _apply_screen_verdict(
             reports[label]["macro_median_return"] = macro.get("median_return")
             reports[label]["window"] = [macro.get("start"), macro.get("end")]
     min_trades = _screen_min_trades(policy, manifest, screen_results["recent"])
-    verdict = _screen_verdict(reports, min_trades=min_trades)
+    pooled = [
+        value for report in reports.values() for value in report.pop("deltas", [])
+    ]
+    verdict = _screen_verdict(
+        reports,
+        min_trades=min_trades,
+        pooled_lcb=_screen_lcb(pooled, confidence),
+        max_slice_loss=float(
+            policy.get("screen_slice_max_loss") or SCREEN_SLICE_MAX_LOSS
+        ),
+    )
     postmortem["screen"] = {
         "confidence": confidence,
         "min_trades": min_trades,
@@ -3063,6 +3073,7 @@ _FIXABILITY = {
     "cost_bleed": 2,
     "fees_erased_edge": 2,
     "screen_regime_dependent": 2,
+    "screen_slice_loss_bound": 2,
     "screen_edge_not_significant": 1,
     "complexity_over_budget": 1,
     "negative_after_costs": 1,
@@ -5619,9 +5630,11 @@ def macro_regime_sentence(macro: Mapping[str, Any] | None) -> str:
             "and causal, so a strategy can condition its entries on the macro "
             "regime its hypothesis names. A book that earns in one macro regime "
             "may keep that mechanism gated on the column and run a different "
-            "mechanism in the other regime: the screen judges each slice on its "
-            "own, and a regime-conditioned book gets a complexity budget per "
-            "branch. The default covers the bars before the "
+            "mechanism in the other regime, or stand aside there: the screen "
+            "judges the book as a whole (positive and significant against the "
+            f"incumbent across both slices) while no slice may give back more than "
+            f"{100 * SCREEN_SLICE_MAX_LOSS:.0f}%, and a regime-conditioned book "
+            "gets a complexity budget per branch. The default covers the bars before the "
             "column's first value (28 days of history for the macro label, 7 for "
             "the leader state); an undefaulted read raises there, and a column "
             "that is read must be declared or the read fails live. "
@@ -5723,6 +5736,8 @@ def _screen_slice_report(
         ),
         "paired_days": len(deltas),
         "lcb": _screen_lcb(deltas, confidence),
+        # Pooled by the verdict into one whole-book bound, then dropped.
+        "deltas": [round(float(value), 8) for value in deltas],
     }
     attribution = _leader_attribution(candidate_daily, leader_days or {})
     if attribution:
@@ -5789,26 +5804,50 @@ def _slice_route(row: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _screen_verdict(
-    slices: Mapping[str, Mapping[str, Any]], *, min_trades: int
-) -> dict[str, Any]:
-    """Pass only when every slice is positive, significant, and populated.
+# The most a single screen slice may give back for an all-weather book: it
+# may stand aside in a regime, or give a little back, but not bleed there.
+SCREEN_SLICE_MAX_LOSS = 0.02
 
-    Mixed signs across slices are regime dependence, not failure: the
-    remedy may be a regime declaration rather than a new mechanism.
-    """
-    positive = {label: float(row["net_return"]) > 0 for label, row in slices.items()}
+
+def _screen_verdict(
+    slices: Mapping[str, Mapping[str, Any]],
+    *,
+    min_trades: int,
+    pooled_lcb: float | None = None,
+    max_slice_loss: float = SCREEN_SLICE_MAX_LOSS,
+) -> dict[str, Any]:
+    """The all-weather bar. The book as a whole must be positive and
+    significant against the reference (pooled paired deltas, or every slice
+    clearing its own route) and populated across the slices together; no
+    slice may give back more than ``max_slice_loss``. A slice where the book
+    stood aside is zero trades and zero return, and passes: flipping off in a
+    regime is allowed, bleeding in it is not."""
+    nets = {label: float(row["net_return"]) for label, row in slices.items()}
+    combined = 1.0
+    for value in nets.values():
+        combined *= 1.0 + value
+    combined -= 1.0
+    total_trades = sum(int(row["trade_count"]) for row in slices.values())
     routes = {label: _slice_route(row) for label, row in slices.items()}
+    significant = (pooled_lcb is not None and float(pooled_lcb) > 0) or all(
+        route is not None for route in routes.values()
+    )
+    overdrawn = [label for label, value in nets.items() if value < -max_slice_loss]
     code: str | None = None
-    if any(int(row["trade_count"]) < min_trades for row in slices.values()):
+    if total_trades < min_trades:
         code = "activity_below_floor"
-    elif any(positive.values()) and not all(positive.values()):
-        code = "screen_regime_dependent"
-    elif all(positive.values()) and any(route is None for route in routes.values()):
+    elif overdrawn:
+        code = "screen_slice_loss_bound"
+    elif combined > 0 and not significant:
         code = "screen_edge_not_significant"
     return {
-        "passed": all(positive.values()) and code is None,
+        "passed": combined > 0 and significant and code is None,
         "code": code,
+        "combined_net_return": round(combined, 6),
+        "pooled_lcb": pooled_lcb,
+        "total_trades": total_trades,
+        "max_slice_loss": max_slice_loss,
+        "overdrawn": overdrawn,
         "slices": {
             label: {**dict(row), "route": routes[label]}
             for label, row in slices.items()

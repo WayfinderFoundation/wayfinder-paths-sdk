@@ -718,3 +718,39 @@ def test_regime_dependent_work_order_names_the_composition_route() -> None:
     assert "macro_regime" in order["diagnosis"]
     enabled = build_repair_work_order(postmortem, {"regime_specialist_enabled": True})
     assert any("target_regimes" in r for r in enabled["admissible_repairs"])
+
+
+def test_slice_loss_bound_work_order_says_stand_aside_or_size_down() -> None:
+    from wayfinder_paths.jobs.evolution_diagnostics import (
+        build_repair_work_order,
+        compact_postmortem,
+    )
+
+    postmortem = {
+        "primary_failure": "screen_slice_loss_bound",
+        "failure_codes": ["screen_slice_loss_bound"],
+        "screen": {
+            "confidence": 0.7,
+            "combined_net_return": -0.12,
+            "pooled_lcb": -0.2,
+            "max_slice_loss": 0.02,
+            "overdrawn": ["earlier"],
+            "slices": {
+                "earlier": {
+                    "macro_regime": "chop",
+                    "net_return": -0.253,
+                    "trade_count": 128,
+                },
+                "recent": {
+                    "macro_regime": "bear",
+                    "net_return": 0.149,
+                    "trade_count": 114,
+                },
+            },
+        },
+    }
+    order = build_repair_work_order(postmortem)
+    assert "more than 2% in earlier" in order["diagnosis"]
+    assert any("stand aside" in item for item in order["admissible_repairs"])
+    compact = compact_postmortem(postmortem)["screen"]
+    assert compact["overdrawn"] == ["earlier"] and compact["max_slice_loss"] == 0.02

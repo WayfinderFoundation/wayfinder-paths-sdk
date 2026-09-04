@@ -125,14 +125,25 @@ REPAIR_REMEDIES: dict[str, dict[str, list[str]]] = {
         "admissible": ["restore participation before judging the mechanism"],
         "forbidden": ["adding more gates"],
     },
+    "screen_slice_loss_bound": {
+        "admissible": [
+            "stand aside or size down in the slice's regime: gate on "
+            "ctx.view.feature('macro_regime', default=0.0) (declare "
+            '{"name": "macro_regime", "source": "file"}) and skip entries or cut '
+            "exposure there; the book may earn nothing in that regime but may not "
+            "give back more than the bound",
+            "add a mechanism that earns in that regime (a regime-conditioned book "
+            "gets a complexity budget per branch)",
+        ],
+        "forbidden": ["tuning thresholds to that slice", "removing exits"],
+    },
     "screen_regime_dependent": {
         "admissible": [
             "keep the mechanism that earns gated on "
             "ctx.view.feature('macro_regime', default=0.0) (declare "
-            '{"name": "macro_regime", "source": "file"}) and add a mechanism '
-            "that trades and earns in the other slice's regime; both slices must "
-            "clear the activity floor and be positive, and a regime-conditioned "
-            "book gets a complexity budget per branch",
+            '{"name": "macro_regime", "source": "file"}) and stand aside or add a '
+            "mechanism in the other slice's regime; the book must be positive and "
+            "significant as a whole and no slice may give back more than the bound",
             "change the mechanism so it earns on both screen slices",
         ],
         "forbidden": ["tuning thresholds to the recent slice"],
@@ -668,7 +679,15 @@ def _diagnosis(
     if primary == "invalid_execution":
         return f"Execution failed before evaluation: {error[:240] or 'see postmortem'}."
     screen = postmortem.get("screen") or {}
-    if primary in {"screen_regime_dependent", "screen_edge_not_significant"} and screen:
+    if (
+        primary
+        in {
+            "screen_regime_dependent",
+            "screen_edge_not_significant",
+            "screen_slice_loss_bound",
+        }
+        and screen
+    ):
         parts = []
         for label, row in (screen.get("slices") or {}).items():
             lcb = row.get("lcb")
@@ -696,6 +715,15 @@ def _diagnosis(
                 + (f", {concentration}" if concentration else "")
             )
         facts = "; ".join(parts)
+        if primary == "screen_slice_loss_bound":
+            bound = 100 * _number(screen.get("max_slice_loss"))
+            return (
+                f"The book gave back more than {bound:.0f}% in "
+                f"{', '.join(screen.get('overdrawn') or [])} ({facts}). An "
+                "all-weather book may stand aside in a regime or give a little "
+                "back, not this much: gate on the macro_regime column and skip "
+                "entries or size down there, or add a mechanism that earns there."
+            )
         if primary == "screen_regime_dependent":
             return (
                 f"Disjoint screen slices disagree ({facts}). The mechanism is "
@@ -704,7 +732,7 @@ def _diagnosis(
                 "earn in both; each slice is judged on its own."
             )
         return (
-            f"Positive on every slice but not significant at "
+            f"Positive as a whole but not significant at "
             f"{100 * _number(screen.get('confidence')):.0f}% ({facts}). The edge "
             "is inside the noise. Two routes clear it: strengthen expectancy, or "
             "repair the seed's losing days while staying non-inferior on its "
@@ -842,6 +870,10 @@ def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
     screen = postmortem.get("screen")
     if isinstance(screen, Mapping) and screen.get("slices"):
         compact["screen"] = {
+            "combined_net_return": screen.get("combined_net_return"),
+            "pooled_lcb": screen.get("pooled_lcb"),
+            "overdrawn": screen.get("overdrawn"),
+            "max_slice_loss": screen.get("max_slice_loss"),
             "confidence": screen.get("confidence"),
             "code": screen.get("code"),
             "slices": {

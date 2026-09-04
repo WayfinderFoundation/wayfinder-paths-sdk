@@ -609,16 +609,33 @@ def test_screen_verdict_names_regime_dependence_and_noise_fit() -> None:
     }
     assert _screen_verdict(both, min_trades=12)["passed"] is True
 
+    # All-weather: a slice that gives a little back is fine when the book as a
+    # whole is positive and significant; one that bleeds past the bound is not.
     mixed = {**both, "earlier": {"net_return": -0.02, "trade_count": 28, "lcb": -0.01}}
-    verdict = _screen_verdict(mixed, min_trades=12)
-    assert verdict["passed"] is False and verdict["code"] == "screen_regime_dependent"
+    verdict = _screen_verdict(mixed, min_trades=12, pooled_lcb=0.003)
+    assert verdict["passed"] is True and verdict["code"] is None
+    assert verdict["combined_net_return"] == pytest.approx(1.03 * 0.98 - 1)
+    bleeding = {
+        **both,
+        "earlier": {"net_return": -0.05, "trade_count": 28, "lcb": -0.04},
+    }
+    verdict = _screen_verdict(bleeding, min_trades=12, pooled_lcb=0.003)
+    assert verdict["passed"] is False and verdict["code"] == "screen_slice_loss_bound"
+    assert verdict["overdrawn"] == ["earlier"]
+    # Flipping off in a regime is allowed: zero trades, zero return, passes.
+    aside = {**both, "earlier": {"net_return": 0.0, "trade_count": 0, "lcb": None}}
+    assert _screen_verdict(aside, min_trades=12, pooled_lcb=0.003)["passed"] is True
 
     noisy = {**both, "recent": {"net_return": 0.03, "trade_count": 30, "lcb": -0.002}}
     assert (
         _screen_verdict(noisy, min_trades=12)["code"] == "screen_edge_not_significant"
     )
 
-    sparse = {**both, "earlier": {"net_return": 0.02, "trade_count": 5, "lcb": 0.001}}
+    # The activity floor applies to the book across the slices, not per slice.
+    sparse = {
+        "recent": {"net_return": 0.03, "trade_count": 5, "lcb": 0.004},
+        "earlier": {"net_return": 0.02, "trade_count": 5, "lcb": 0.001},
+    }
     assert _screen_verdict(sparse, min_trades=12)["code"] == "activity_below_floor"
 
     # Negative everywhere is plain failure: the postmortem's own code stands.
