@@ -7290,10 +7290,23 @@ def test_redesign_checkpoint_runs_once_after_the_screens(tmp_path) -> None:
     assert by_id[ids[3]]["status"] == "low_fidelity_rejected"
     assert by_id[ids[3]]["abandoned_at_redesign"] is True
     assert by_id[ids[2]]["status"] == "repair_pending"
+    # The accepted design stays immutable; the decision is its own artifact
+    # and campaign state references it.
     design = store.read_json(job_id, str(state["campaign_design"]))
-    assert len(design["slots"]) == 9 and design["slots"][-1]["slot_id"] == "r01"
-    assert len(design["hypotheses"]) == 4
-    assert state["design"]["slots"] == 9
+    assert len(design["slots"]) == 8 and len(design["hypotheses"]) == 3
+    assert state["design"]["slots"] == 8
+    artifact = store.read_json(job_id, str(state["redesign"]["path"]))
+    assert [item["slot_id"] for item in artifact["slots"]] == ["r01"]
+    assert artifact["hypotheses"][0]["id"] == "h_relay"
+    assert artifact["abandon"] == [ids[3], ids[5]] and artifact["kept"] == [ids[2]]
+    from wayfinder_paths.jobs.evolution_campaign import _design_slots, _file_hash
+
+    assert state["redesign"]["sha256"] == _file_hash(
+        store.job_dir(job_id) / str(state["redesign"]["path"])
+    )
+    hypotheses_all, slots_all = _design_slots(store, job_id, state)
+    assert len(slots_all) == 9 and slots_all[-1]["slot_id"] == "r01"
+    assert len(hypotheses_all) == 4
     with pytest.raises(ValueError, match="already used"):
         submit_campaign_redesign(store, job_id, redesign={"keep": [ids[2]]})
 
@@ -7319,3 +7332,126 @@ def test_redesign_checkpoint_can_be_disabled(tmp_path) -> None:
     block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=20))
     assert block and block["artifact_key"] == "candidate-03-attempt-02"
     assert block["focus"]["phase"] == "focus"
+
+
+def test_redesign_recovers_from_a_crash_between_the_two_writes(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs import evolution_campaign as campaign_module
+    from wayfinder_paths.jobs.evolution_campaign import submit_campaign_redesign
+
+    store, job_id, started, commit = _screened_campaign(tmp_path)
+    state = campaign_status(store, job_id)
+    ids = [item["candidate_id"] for item in state["candidates"]]
+    decision = {
+        "abandon": [ids[3]],
+        "keep": [ids[2]],
+        "hypotheses": [
+            {
+                "id": "h_relay",
+                "family": "risk_haven_relay",
+                "causal_mechanism": "risk-on leader, else the defensive asset",
+                "falsifier": "loses on both screen slices",
+                "evidence_refs": ["/baseline/reason"],
+            }
+        ],
+        "slots": [
+            {
+                "slot_id": "r01",
+                "wildcard": False,
+                "hypothesis_id": "h_relay",
+                "parent_source": "de_novo",
+                "mutation_kind": "structural",
+                "family": "risk_haven_relay",
+                "summary": "replace the falsified breakout with a relay",
+            }
+        ],
+    }
+    real_save = campaign_module._save_campaign
+    calls = {"n": 0}
+
+    def crash_once(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise MemoryError("box ran out of memory between writes")
+        return real_save(*args, **kwargs)
+
+    monkeypatch.setattr(campaign_module, "_save_campaign", crash_once)
+    with pytest.raises(MemoryError):
+        submit_campaign_redesign(store, job_id, redesign=decision)
+    # The artifact exists, the state does not reference it: nothing applied.
+    campaign_root = (
+        store.job_dir(job_id) / "research/evolution/campaigns" / state["campaign_id"]
+    )
+    assert (campaign_root / "campaign_redesign.json").exists()
+    state = campaign_status(store, job_id)
+    assert state.get("redesign") is None
+    assert all(item["status"] == "repair_pending" for item in state["candidates"])
+    # A different decision on top of the unreferenced artifact is refused.
+    other = json.loads(json.dumps(decision))
+    other["abandon"] = [ids[4]]
+    with pytest.raises(ValueError, match="different redesign artifact"):
+        submit_campaign_redesign(store, job_id, redesign=other)
+    # The identical decision completes the commit.
+    result = submit_campaign_redesign(store, job_id, redesign=decision)
+    assert result["status"] == "accepted" and result["added_slots"] == ["r01"]
+    state = campaign_status(store, job_id)
+    assert state["redesign"]["abandoned"] == [ids[3]]
+    by_id = {item["candidate_id"]: item for item in state["candidates"]}
+    assert by_id[ids[3]]["status"] == "low_fidelity_rejected"
+
+
+def test_redesign_replacements_are_bounded_by_remaining_attempts(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import submit_campaign_redesign
+
+    store, job_id, started, commit = _screened_campaign(tmp_path)
+    state = campaign_status(store, job_id)
+    ids = [item["candidate_id"] for item in state["candidates"]]
+    policy = store.read_json(job_id, str(state["manifest"]))["policy"]
+    state["counts"]["quick_attempts"] = int(policy["max_quick_attempts"]) - 1
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+
+    def slot(index: int) -> dict[str, Any]:
+        return {
+            "slot_id": f"r{index:02d}",
+            "wildcard": False,
+            "hypothesis_id": "h_relay",
+            "parent_source": "de_novo",
+            "mutation_kind": "structural",
+            "family": "risk_haven_relay",
+            "summary": f"replacement {index}",
+        }
+
+    hypotheses = [
+        {
+            "id": "h_relay",
+            "family": "risk_haven_relay",
+            "causal_mechanism": "risk-on leader, else the defensive asset",
+            "falsifier": "loses on both screen slices",
+            "evidence_refs": ["/baseline/reason"],
+        }
+    ]
+    with pytest.raises(ValueError, match="only 1 attempt\\(s\\) remain"):
+        submit_campaign_redesign(
+            store,
+            job_id,
+            redesign={
+                "keep": [ids[2]],
+                "hypotheses": hypotheses,
+                "slots": [slot(1), slot(2)],
+            },
+        )
+    result = submit_campaign_redesign(
+        store,
+        job_id,
+        redesign={"keep": [ids[2]], "hypotheses": hypotheses, "slots": [slot(1)]},
+    )
+    assert result["added_slots"] == ["r01"]
+
+
+def test_policy_kernel_candidates_pair_against_the_incumbent() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _INCUMBENT_REFERENCE_SOURCES
+
+    assert {"starter_seed", "research_seed", "policy_kernel"} <= set(
+        _INCUMBENT_REFERENCE_SOURCES
+    )

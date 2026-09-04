@@ -305,7 +305,7 @@ def _nudge_evolution(op: str, kwargs: dict[str, Any]) -> None:
         # designer session has returned from its final tool call. Give only
         # this stage transition a short bounded retry window; evaluations are
         # long enough that their worker is already idle at completion.
-        for _ in range(10 if op == "evolution_design" else 0):
+        for _ in range(10 if op in {"evolution_design", "evolution_redesign"} else 0):
             if not isinstance(result, dict) or not (
                 result.get("transition_pending") or result.get("busy")
             ):

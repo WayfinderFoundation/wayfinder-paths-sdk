@@ -41,7 +41,7 @@ def _panel_frames(
             steps = steps + factor
         if report_seed is not None:
             split = int(n_bars * 0.7)
-            tail = np.random.default_rng(report_seed + hash(symbol) % 1000).normal(
+            tail = np.random.default_rng(report_seed + sum(map(ord, symbol))).normal(
                 mu, 0.004, size=n_bars - split
             )
             steps = np.concatenate([steps[:split], tail])
@@ -246,22 +246,24 @@ def test_survivors_are_selected_on_the_rank_window_only() -> None:
         return rows
 
     first_rows, second_rows = per_family(first), per_family(second)
-    assert first_rows
+    assert first_rows and set(first_rows) & set(second_rows)
     # Different report windows, identical rank windows: within every family
     # offered by both runs the same rows appear in the same order with the
     # same rank numbers; only the report numbers (and, through the family's
     # one look at the report window, which families are offered) may differ.
-    for family in set(first_rows) & set(second_rows):
-        assert [r["policy_id"] for r in first_rows[family]] == [
-            r["policy_id"] for r in second_rows[family]
-        ]
-        assert [r["rank"] for r in first_rows[family]] == [
-            r["rank"] for r in second_rows[family]
-        ]
+    # The round-robin fill hands a family more rows when another family
+    # dropped out, so compare the common prefix: the order within a family
+    # is by rank Sharpe alone.
+    shared = set(first_rows) & set(second_rows)
+    for family in shared:
+        pairs = list(zip(first_rows[family], second_rows[family], strict=False))
+        assert pairs
+        assert [a["policy_id"] for a, _ in pairs] == [b["policy_id"] for _, b in pairs]
+        assert [a["rank"] for a, _ in pairs] == [b["rank"] for _, b in pairs]
     assert any(
         a["report"] != b["report"]
-        for family in set(first_rows) & set(second_rows)
-        for a, b in zip(first_rows[family], second_rows[family], strict=True)
+        for family in shared
+        for a, b in zip(first_rows[family], second_rows[family], strict=False)
     )
     for row in first["survivors"]:
         assert row["rank"]["sharpe"] >= ps.SURVIVOR_MIN_SHARPE

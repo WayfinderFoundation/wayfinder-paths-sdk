@@ -204,6 +204,13 @@ CAMPAIGN_DESIGN = "campaign_design.json"
 SCHEMA_VERSION = "2.0"
 COMPOSE_STAGE = "compose"
 REDESIGN_STAGE = "redesign"
+CAMPAIGN_REDESIGN = "campaign_redesign.json"
+# Seeds that exist to ask whether an audited mechanism beats the book: their
+# screen reference is the incumbent, never the seed itself (paired against
+# itself an unchanged winner scores a zero delta every day and cannot pass).
+_INCUMBENT_REFERENCE_SOURCES = frozenset(
+    {"starter_seed", "research_seed", "policy_kernel"}
+)
 MECHANISM_GRID_MAX = 6
 _DEFAULT_EXTRA_HORIZONS: dict[str, list[int]] = {"1h": [72, 168], "4h": [42, 84]}
 _CROSS_SECTION_SECONDS = 3600
@@ -3812,6 +3819,27 @@ def submit_research_seed(
     return seed
 
 
+def _design_slots(
+    store: JobStore, job_id: str, state: Mapping[str, Any]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The accepted design's hypotheses and slots followed by the redesign
+    checkpoint's, when campaign state references one. The accepted design
+    file is immutable; the redesign is its own artifact and state is the
+    commit point, so a crash between writes leaves nothing half-applied."""
+    design = (
+        store.read_json(job_id, str(state.get("campaign_design") or ""), default={})
+        or {}
+    )
+    hypotheses = list(design.get("hypotheses") or [])
+    slots = list(design.get("slots") or [])
+    redesign = state.get("redesign") or {}
+    if isinstance(redesign, Mapping) and redesign.get("path"):
+        extension = store.read_json(job_id, str(redesign["path"]), default={}) or {}
+        hypotheses.extend(extension.get("hypotheses") or [])
+        slots.extend(extension.get("slots") or [])
+    return hypotheses, slots
+
+
 def _prepare_candidate(
     store: JobStore,
     job_id: str,
@@ -3837,11 +3865,9 @@ def _prepare_candidate(
     if designed:
         if state.get("stage") != "generate":
             raise ValueError("campaign design must be accepted before preparation")
-        design = (
-            store.read_json(job_id, str(state["campaign_design"]), default={}) or {}
-        )
+        design_hypotheses, design_slots = _design_slots(store, job_id, state)
         try:
-            design_slot = dict(design["slots"][slot - 1])
+            design_slot = dict(design_slots[slot - 1])
         except (KeyError, IndexError, TypeError) as exc:
             raise ValueError("campaign design has no next slot") from exc
         falsified = set((state.get("design") or {}).get("falsified_hypotheses") or [])
@@ -3856,13 +3882,13 @@ def _prepare_candidate(
             replacement = next(
                 (
                     item
-                    for item in design.get("hypotheses") or []
+                    for item in design_hypotheses
                     if item.get("id") not in falsified and item.get("id") not in used
                 ),
                 next(
                     (
                         item
-                        for item in design.get("hypotheses") or []
+                        for item in design_hypotheses
                         if item.get("id") not in falsified
                     ),
                     None,
@@ -3879,7 +3905,7 @@ def _prepare_candidate(
         hypothesis = next(
             (
                 dict(item)
-                for item in design.get("hypotheses") or []
+                for item in design_hypotheses
                 if item.get("id") == design_slot.get("hypothesis_id")
             ),
             {},
@@ -3978,7 +4004,7 @@ def _prepare_candidate(
     # zero delta on every day and can never pass.
     reference_source = (
         f"{CAMPAIGN_ROOT}/{state['campaign_id']}/source"
-        if source in {"starter_seed", "research_seed"}
+        if source in _INCUMBENT_REFERENCE_SOURCES
         else relative
     )
     copy_job_bundle(
@@ -6431,17 +6457,24 @@ def submit_campaign_redesign(
         slots = list(redesign.get("slots") or [])
         if bool(hypotheses) != bool(slots):
             raise ValueError("replacement hypotheses and slots come together")
-        root = store.job_dir(job_id)
-        design_path = root / str(state["campaign_design"])
-        design = json.loads(design_path.read_text(encoding="utf-8"))
-        added: list[str] = []
+        counts = state.get("counts") or {}
+        remaining = int(policy.get("max_quick_attempts") or 0) - int(
+            counts.get("quick_attempts") or 0
+        )
+        if len(slots) > remaining:
+            raise ValueError(
+                f"redesign adds {len(slots)} replacement slots but only "
+                f"{remaining} attempt(s) remain; each replacement needs one screen"
+            )
+        design_hypotheses, design_slots = _design_slots(store, job_id, state)
+        extension: dict[str, Any] = {"hypotheses": [], "slots": []}
         if slots:
             pack = (
                 store.read_json(job_id, str(state["diagnostic_pack"]), default={}) or {}
             )
             reserved = {
-                *(str(item.get("slot_id")) for item in design.get("slots") or []),
-                *(str(item.get("id")) for item in design.get("hypotheses") or []),
+                *(str(item.get("slot_id")) for item in design_slots),
+                *(str(item.get("id")) for item in design_hypotheses),
             }
             extension = _validate_campaign_design(
                 {"hypotheses": hypotheses, "slots": slots},
@@ -6450,22 +6483,39 @@ def submit_campaign_redesign(
                 extension=True,
                 reserved_ids=reserved,
             )
-            design["hypotheses"].extend(extension["hypotheses"])
-            design["slots"].extend(extension["slots"])
-            added = [str(item["slot_id"]) for item in extension["slots"]]
-            atomic_write_json(design_path, design)
-            state["design"] = {
-                **dict(state.get("design") or {}),
-                "sha256": _file_hash(design_path),
-                "hypotheses": len(design["hypotheses"]),
-                "slots": len(design["slots"]),
-            }
+        added = [str(item["slot_id"]) for item in extension["slots"]]
+        # The decision is its own immutable artifact; campaign state is the
+        # commit point. A retry after a crash between the two writes finds
+        # the identical artifact and completes; a different decision on top
+        # of an unreferenced artifact is refused rather than merged.
+        relative = f"{CAMPAIGN_ROOT}/{campaign_id}/{CAMPAIGN_REDESIGN}"
+        artifact_path = store.job_dir(job_id) / relative
+        artifact = {
+            "schema_version": "1.0",
+            "campaign_id": campaign_id,
+            "abandon": abandon,
+            "kept": keep,
+            "hypotheses": list(extension["hypotheses"]),
+            "slots": list(extension["slots"]),
+        }
+        if artifact_path.exists():
+            existing = json.loads(artifact_path.read_text(encoding="utf-8"))
+            comparable = {k: v for k, v in existing.items() if k != "created_at"}
+            if comparable != artifact:
+                raise ValueError(
+                    "a different redesign artifact is already written for this "
+                    "campaign; resubmit that decision or leave the campaign as is"
+                )
+        else:
+            atomic_write_json(artifact_path, {**artifact, "created_at": utc_now_iso()})
         for cid in abandon:
             candidate = by_id[cid]
             _close_designed_candidate(store, job_id, state=state, candidate=candidate)
             candidate["abandoned_at_redesign"] = True
         state["redesign"] = {
             "at": utc_now_iso(),
+            "path": relative,
+            "sha256": _file_hash(artifact_path),
             "abandoned": abandon,
             "kept": keep,
             "added_slots": added,
@@ -6937,14 +6987,9 @@ def campaign_prompt_block(
     if not deadline_elapsed and not draining and _redesign_due(state, policy):
         return _redesign_prompt_block(store, job_id, state, manifest)
     designed = str(state.get("schema_version") or "") == SCHEMA_VERSION
-    design = (
-        store.read_json(job_id, str(state.get("campaign_design") or ""), default={})
-        or {}
-        if designed
-        else {}
-    )
+    _, design_slots = _design_slots(store, job_id, state) if designed else ([], [])
     try:
-        requested_next_source = str(design["slots"][len(candidates)]["parent_source"])
+        requested_next_source = str(design_slots[len(candidates)]["parent_source"])
     except (KeyError, IndexError, TypeError):
         requested_next_source = _parent_source(
             len(candidates) + 1, policy.get("parent_mix") or {}

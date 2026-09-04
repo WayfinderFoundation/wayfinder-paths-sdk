@@ -467,3 +467,21 @@ async def test_evolution_redesign_is_a_synchronous_control_op(
         "evolution_redesign" in _CONTROL_PLANE_OPS
         and "evolution_redesign" in _NUDGE_OPS
     )
+
+
+def test_redesign_nudge_retries_while_the_designer_session_is_busy(monkeypatch) -> None:
+    from wayfinder_paths.jobs.execution import op_runner
+
+    seen: list[str] = []
+    replies = iter([{"busy": True}, {"transition_pending": True}, {"ok": True}])
+
+    def fake_nudge(store, job_id):
+        seen.append(job_id)
+        return next(replies, {"ok": True})
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.worker.nudge_evolution_session", fake_nudge
+    )
+    monkeypatch.setattr(op_runner.time, "sleep", lambda _seconds: None)
+    op_runner._nudge_evolution("evolution_redesign", {"job_id": "majors-5m-lab"})
+    assert len(seen) == 3
