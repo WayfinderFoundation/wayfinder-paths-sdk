@@ -736,14 +736,44 @@ def _bundle_complexity(store: JobStore, job_id: str, root: Path) -> dict[str, in
 
 
 def _complexity_budget(
-    policy: Mapping[str, Any], incumbent: Mapping[str, Any] | None
+    policy: Mapping[str, Any],
+    incumbent: Mapping[str, Any] | None,
+    *,
+    regime_branches: int = 1,
 ) -> int:
+    """Comparisons a candidate may spend: a multiple of the incumbent's above
+    a floor, per regime branch — a book that runs one mechanism in one macro
+    regime and another elsewhere is two books, and the budget says so."""
     floor = int(
         policy.get("complexity_floor_comparisons") or _COMPLEXITY_FLOOR_COMPARISONS
     )
     multiple = float(policy.get("complexity_multiple") or _COMPLEXITY_MULTIPLE)
     base = int((incumbent or {}).get("comparisons") or 0)
-    return max(floor, math.ceil(multiple * base))
+    return max(floor, math.ceil(multiple * base)) * max(1, int(regime_branches))
+
+
+def _regime_branches(store: JobStore, job_id: str, root: Path) -> int:
+    """Two when the bundle declares the macro regime column and reads it in
+    its script (a regime-conditioned book), else one."""
+    job_data = _load_job_yaml(root)
+    spec_data, _ = resolve_execution_spec(root, job_data)
+    if not spec_data:
+        return 1
+    try:
+        declared = {
+            item.column_name
+            for item in parse_feature_specs(ExecutionSpec.from_dict(spec_data))
+        }
+    except ValueError:
+        return 1
+    if MACRO_FEATURE_NAME not in declared:
+        return 1
+    script = store.resolve_script_entrypoint(job_id, job_data, candidate_dir=root)
+    if script is None or not script.exists():
+        return 1
+    text = script.read_text(encoding="utf-8", errors="replace")
+    reads = (f"feature('{MACRO_FEATURE_NAME}'", f'feature("{MACRO_FEATURE_NAME}"')
+    return 2 if any(read in text for read in reads) else 1
 
 
 def _signal_timeframes(bar_seconds: int) -> list[str]:
@@ -2413,14 +2443,18 @@ def _evaluate_candidate(
         or {}
     )
     complexity = _bundle_complexity(store, job_id, candidate_root)
+    regime_branches = _regime_branches(store, job_id, candidate_root)
     complexity_budget = _complexity_budget(
         manifest.get("policy") or {},
         _incumbent_complexity(store, job_id, campaign_id),
+        regime_branches=regime_branches,
     )
     if int(complexity.get("comparisons") or 0) > complexity_budget:
         error = (
             f"strategy has {complexity['comparisons']} comparisons against a "
-            f"budget of {complexity_budget}; simplify before simulation"
+            f"budget of {complexity_budget}"
+            + (f" ({regime_branches} regime branches)" if regime_branches > 1 else "")
+            + "; simplify before simulation"
         )
         return {
             "status": "low_fidelity_rejected",
@@ -2436,6 +2470,7 @@ def _evaluate_candidate(
                     "error": error,
                     "complexity": complexity,
                     "complexity_budget": complexity_budget,
+                    "regime_branches": regime_branches,
                 },
             },
         }
@@ -5582,7 +5617,11 @@ def macro_regime_sentence(macro: Mapping[str, Any] | None) -> str:
             f"read {runtime.get('read')} in decide() (1 bull, 0 chop, -1 bear; "
             f"{', '.join(MACRO_RETURN_FEATURE_NAMES)} alongside), refreshed hourly "
             "and causal, so a strategy can condition its entries on the macro "
-            "regime its hypothesis names. The default covers the bars before the "
+            "regime its hypothesis names. A book that earns in one macro regime "
+            "may keep that mechanism gated on the column and run a different "
+            "mechanism in the other regime: the screen judges each slice on its "
+            "own, and a regime-conditioned book gets a complexity budget per "
+            "branch. The default covers the bars before the "
             "column's first value (28 days of history for the macro label, 7 for "
             "the leader state); an undefaulted read raises there, and a column "
             "that is read must be declared or the read fails live. "

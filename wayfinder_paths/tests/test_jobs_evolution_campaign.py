@@ -5049,3 +5049,33 @@ def test_undeclared_feature_read_is_rejected_without_charge(tmp_path) -> None:
     assert "macro_regime" in result["submission_rejection"]["error"]
     assert result["submission_rejection"]["attempt_charged"] is False
     assert int(result.get("attempt_count") or 0) == 0
+
+
+def test_regime_conditioned_books_get_a_complexity_budget_per_branch(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _complexity_budget,
+        _regime_branches,
+    )
+
+    policy = {"complexity_multiple": 1.5, "complexity_floor_comparisons": 24}
+    assert _complexity_budget(policy, {"comparisons": 32}) == 48
+    assert _complexity_budget(policy, {"comparisons": 32}, regime_branches=2) == 96
+
+    store, job_id = _evaluatable_job(tmp_path, source_params={"warmup_bars": 20})
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = _windowed_candidate(
+        store,
+        job_id,
+        summary="bear book with a chop book",
+        extra_source=(
+            "\n\ndef decide(ctx):\n"
+            "    if ctx.view.feature('macro_regime', default=0.0) == -1.0:\n"
+            "        return []\n"
+            "    return []\n"
+        ),
+    )
+    bundle = store.job_dir(job_id) / candidate["bundle"]
+    # Reads the column but has not declared it: still one book.
+    assert _regime_branches(store, job_id, bundle) == 1
+    _declare_bundle_feature(bundle, {"name": "macro_regime", "source": "file"})
+    assert _regime_branches(store, job_id, bundle) == 2

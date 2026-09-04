@@ -127,9 +127,13 @@ REPAIR_REMEDIES: dict[str, dict[str, list[str]]] = {
     },
     "screen_regime_dependent": {
         "admissible": [
+            "keep the mechanism that earns gated on "
+            "ctx.view.feature('macro_regime', default=0.0) (declare "
+            '{"name": "macro_regime", "source": "file"}) and add a mechanism '
+            "that trades and earns in the other slice's regime; both slices must "
+            "clear the activity floor and be positive, and a regime-conditioned "
+            "book gets a complexity budget per branch",
             "change the mechanism so it earns on both screen slices",
-            "declare target_regimes for the slice where it earns and accept the "
-            "bounded-loss-outside-regime bar",
         ],
         "forbidden": ["tuning thresholds to the recent slice"],
     },
@@ -593,6 +597,12 @@ def attempt_made_progress(postmortem: Mapping[str, Any]) -> bool:
     )
 
 
+_SPECIALIST_REMEDY = (
+    "declare target_regimes for the slice where it earns and accept the "
+    "bounded-loss-outside-regime bar"
+)
+
+
 def build_repair_work_order(
     postmortem: Mapping[str, Any],
     policy: Mapping[str, Any] | None = None,
@@ -610,6 +620,13 @@ def build_repair_work_order(
         # the remedy that fits is the no-trades one.
         remedy_key = "no_trades"
     remedy = REPAIR_REMEDIES.get(remedy_key, _DEFAULT_REMEDY)
+    admissible = list(remedy["admissible"])
+    if remedy_key == "screen_regime_dependent" and policy.get(
+        "regime_specialist_enabled"
+    ):
+        # The specialist bar is a route only where the campaign accepts
+        # target_regimes on a slot; elsewhere it is a dead end.
+        admissible.append(_SPECIALIST_REMEDY)
     economics = postmortem.get("economics") or {}
     candidate = economics.get("candidate") or {}
     comparator = economics.get("incumbent") or economics.get("reference") or {}
@@ -633,7 +650,7 @@ def build_repair_work_order(
         "primary_failure": primary,
         "failure_codes": list(postmortem.get("failure_codes") or [])[:6],
         "diagnosis": _diagnosis(postmortem, candidate, comparator, comparator_label),
-        "admissible_repairs": list(remedy["admissible"]),
+        "admissible_repairs": admissible,
         "forbidden": list(remedy["forbidden"]),
         "budget": budget,
     }
@@ -682,8 +699,9 @@ def _diagnosis(
         if primary == "screen_regime_dependent":
             return (
                 f"Disjoint screen slices disagree ({facts}). The mechanism is "
-                "regime-dependent: fix it to earn on both, or declare the regime "
-                "where it earns and accept bounded loss elsewhere."
+                "regime-dependent: keep it gated on the macro_regime column and "
+                "add a mechanism for the other slice's regime, or change it to "
+                "earn in both; each slice is judged on its own."
             )
         return (
             f"Positive on every slice but not significant at "

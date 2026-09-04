@@ -243,7 +243,16 @@ def test_cost_bleed_is_primary_when_fees_dominate_a_loss() -> None:
     order = build_repair_work_order(split)
     assert "slices disagree" in order["diagnosis"]
     assert "recent: net +4.6% on 44 trades, LCB +0.30%" in order["diagnosis"]
-    assert any("declare target_regimes" in item for item in order["admissible_repairs"])
+    # The open route is composition on the macro column; the specialist bar
+    # is offered only where the campaign accepts target_regimes.
+    assert any("macro_regime" in item for item in order["admissible_repairs"])
+    assert not any("target_regimes" in item for item in order["admissible_repairs"])
+    assert any(
+        "declare target_regimes" in item
+        for item in build_repair_work_order(split, {"regime_specialist_enabled": True})[
+            "admissible_repairs"
+        ]
+    )
     assert compact_postmortem(split)["screen"]["slices"]["earlier"]["lcb"] == -0.02
 
     noisy = {**split, "primary_failure": "screen_edge_not_significant"}
@@ -678,3 +687,34 @@ def test_trade_view_labels_take_profit_and_stop_intents_by_action() -> None:
         "exit_reason"
     ] == ("tp_hit")
     assert _trade_view(fill("CLOSE", {}))["exit_reason"] == "unlabeled"
+
+
+def test_regime_dependent_work_order_names_the_composition_route() -> None:
+    from wayfinder_paths.jobs.evolution_diagnostics import build_repair_work_order
+
+    postmortem = {
+        "primary_failure": "screen_regime_dependent",
+        "failure_codes": ["screen_regime_dependent"],
+        "screen": {
+            "slices": {
+                "earlier": {
+                    "macro_regime": "chop",
+                    "net_return": -0.11,
+                    "trade_count": 88,
+                },
+                "recent": {
+                    "macro_regime": "bear",
+                    "net_return": 0.096,
+                    "trade_count": 104,
+                },
+            },
+            "confidence": 0.7,
+        },
+    }
+    order = build_repair_work_order(postmortem)
+    joined = " ".join(order["admissible_repairs"])
+    assert "macro_regime" in joined and "other slice" in joined
+    assert "target_regimes" not in joined  # the specialist path is off by default
+    assert "macro_regime" in order["diagnosis"]
+    enabled = build_repair_work_order(postmortem, {"regime_specialist_enabled": True})
+    assert any("target_regimes" in r for r in enabled["admissible_repairs"])
