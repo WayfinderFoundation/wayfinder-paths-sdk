@@ -75,6 +75,10 @@ For each candidate:
   cooldown, refractory period or expiry (every age reads 0 and the state
   machine never fires). Stamp `ctx.bar_ordinal` and measure with
   `ctx.bars_since(stamp)`; gate cadence with `ctx.every_n_bars(n)`.
+- Every trade must capture at least the hurdle multiple of the round-trip
+  cost gross (the work order states both in bps); `gross_bps_per_trade` is
+  the number a repair has to move. A book that pays to trade is rejected
+  before its slices are read.
 - Put `metadata={"exit_reason": ...}` on every reduce-only intent (close,
   take-profit, stop) so the postmortem's exit summary can name why the book
   exits; the engine labels only its own bracket stops.

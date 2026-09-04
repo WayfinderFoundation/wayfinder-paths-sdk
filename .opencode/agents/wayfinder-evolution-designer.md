@@ -41,6 +41,10 @@ Submit exactly the requested number of idea slots with
 cite exact JSON-pointer evidence references from the diagnostic pack. Wildcard
 slots must be explicitly labelled and may explore freely. Facts constrain what
 the design claims to repair; they never constrain the mechanism you invent.
+Costs come first: `/baseline/economics` states the round-trip cost, what the
+incumbent captures per trade and what it pays in fees; a slot whose trades
+cannot plausibly capture the hurdle multiple of that cost gross is rejected at
+the screen before anything else, so size the expected move per trade against it.
 If a hypothesis needs elapsed time (arm-then-confirm, cooldown, expiry), state
 it in bars of `ctx.bar_ordinal` or timestamps; a design that counts
 `ctx.bar_index` cannot execute, because that value is the bounded view length,

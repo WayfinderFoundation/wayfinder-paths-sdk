@@ -54,6 +54,7 @@ from wayfinder_paths.jobs.economics import (
 )
 from wayfinder_paths.jobs.evidence import verify_job_evidence_refs
 from wayfinder_paths.jobs.evolution_diagnostics import (
+    COST_HURDLE_MULTIPLE,
     attempt_made_progress,
     build_diagnostic_pack,
     build_postmortem,
@@ -2668,6 +2669,7 @@ def _evaluate_candidate(
             objective=common["objective"],
             behavior=common["behavior"],
         )
+        receipt["round_trip_cost_bps"] = _round_trip_cost_bps(params)
         reference = _candidate_reference_receipt(
             store,
             job_id,
@@ -2809,6 +2811,7 @@ def _apply_screen_verdict(
     pooled = [
         value for report in reports.values() for value in report.pop("deltas", [])
     ]
+    candidate_economics = (postmortem.get("economics") or {}).get("candidate") or {}
     verdict = _screen_verdict(
         reports,
         min_trades=min_trades,
@@ -2816,6 +2819,8 @@ def _apply_screen_verdict(
         max_slice_loss=float(
             policy.get("screen_slice_max_loss") or SCREEN_SLICE_MAX_LOSS
         ),
+        cost_coverage=candidate_economics.get("cost_coverage"),
+        cost_hurdle=float(policy.get("cost_hurdle_multiple") or COST_HURDLE_MULTIPLE),
     )
     postmortem["screen"] = {
         "confidence": confidence,
@@ -2876,6 +2881,7 @@ def _candidate_reference_receipt(
         objective=_objective(result.stats, params),
         behavior=_behavior(result, quick, subject["spec"]),
     )
+    receipt["round_trip_cost_bps"] = _round_trip_cost_bps(params)
     receipt["slices"] = {
         "recent": {"daily_returns": daily_log_returns(result.equity_curve)}
     }
@@ -3074,6 +3080,7 @@ _FIXABILITY = {
     "fees_erased_edge": 2,
     "screen_regime_dependent": 2,
     "screen_slice_loss_bound": 2,
+    "cost_not_covered": 2,
     "screen_edge_not_significant": 1,
     "complexity_over_budget": 1,
     "negative_after_costs": 1,
@@ -3186,6 +3193,22 @@ def _risk_budget(
     }
 
 
+# Fees plus slippage a book may spend per 30 days, as a fraction of capital;
+# the cadence ceiling is derived from it at the incumbent's notional per fill.
+MAX_COST_PCT_OF_CAPITAL_30D = 0.02
+
+
+def _round_trip_cost_bps(params: Mapping[str, Any]) -> float:
+    return round(
+        2.0
+        * (
+            float(params.get("fee_bps") or 0.0)
+            + float(params.get("slippage_bps") or 0.0)
+        ),
+        2,
+    )
+
+
 def _cost_budget(
     baseline: Mapping[str, Any],
     policy: Mapping[str, Any],
@@ -3196,18 +3219,48 @@ def _cost_budget(
         return None
     multiple = float(policy.get("max_fills_per_day_multiple") or 3.0)
     fills = float(economics.get("fills_per_day") or 0.0)
-    budget = {
+    budget: dict[str, Any] = {
         "incumbent_fills_per_day": fills,
         "incumbent_fee_pct_of_capital_30d": economics.get("fee_pct_of_capital_30d"),
         "incumbent_exposure_pct": economics.get("exposure_pct"),
         "incumbent_avg_hold_minutes": economics.get("avg_hold_minutes"),
-        "max_fills_per_day": round(multiple * fills, 2),
+        "cost_hurdle_multiple": float(
+            policy.get("cost_hurdle_multiple") or COST_HURDLE_MULTIPLE
+        ),
     }
+    for key in ("gross_bps_per_trade", "cost_coverage"):
+        if economics.get(key) is not None:
+            budget[f"incumbent_{key}"] = economics[key]
     floor = _min_fills_per_day(policy, dataset_window)
     if floor is not None:
         budget["min_fills_per_day"] = floor
-    if baseline.get("round_trip_cost_bps") is not None:
-        budget["round_trip_cost_bps"] = baseline["round_trip_cost_bps"]
+    round_trip = baseline.get("round_trip_cost_bps")
+    if round_trip is not None:
+        budget["round_trip_cost_bps"] = round_trip
+    # The ceiling is cost arithmetic, not the incumbent's habit: fills per day
+    # such that fees plus slippage stay under the 30-day cost budget at the
+    # incumbent's notional per fill. Falls back to the cadence multiple when
+    # the arithmetic has no inputs.
+    cost_budget_30d = float(
+        policy.get("max_cost_pct_of_capital_30d") or MAX_COST_PCT_OF_CAPITAL_30D
+    )
+    days = float(economics.get("window_days") or 0.0)
+    turnover_multiple = float(economics.get("turnover_multiple") or 0.0)
+    ceiling = None
+    if round_trip and fills > 0 and days > 0 and turnover_multiple > 0:
+        notional_fraction_per_fill = turnover_multiple / (fills * days)
+        per_side_cost = float(round_trip) / 2.0 / 1e4
+        if notional_fraction_per_fill > 0 and per_side_cost > 0:
+            ceiling = (cost_budget_30d / 30.0) / (
+                notional_fraction_per_fill * per_side_cost
+            )
+    if ceiling is not None:
+        budget["max_fills_per_day"] = round(ceiling, 2)
+        budget["max_cost_pct_of_capital_30d"] = cost_budget_30d
+        budget["basis"] = "cost_budget"
+    else:
+        budget["max_fills_per_day"] = round(multiple * fills, 2)
+        budget["basis"] = "incumbent_multiple"
     return budget
 
 
@@ -4294,19 +4347,39 @@ def campaign_prompt_block(
             + ". "
         )
         cost_instruction = (
-            "Cost budget: the incumbent trades "
-            f"{cost_budget['incumbent_fills_per_day']:.1f} fills/day; every slot "
-            f"must plausibly stay under {cost_budget['max_fills_per_day']:.1f} "
-            "fills/day"
+            "Cost budget: "
+            + (
+                f"at ~{cost_budget['round_trip_cost_bps']:.0f} bps round trip a "
+                f"trade must capture at least {cost_budget['cost_hurdle_multiple']:.1f}x "
+                f"that gross ({cost_budget['cost_hurdle_multiple'] * cost_budget['round_trip_cost_bps']:.0f} bps) "
+                "or the screen rejects it before anything else; "
+                if cost_budget.get("round_trip_cost_bps") is not None
+                else ""
+            )
+            + f"the incumbent trades {cost_budget['incumbent_fills_per_day']:.1f} fills/day"
+            + (
+                f" capturing {cost_budget['incumbent_gross_bps_per_trade']:+.1f} bps "
+                "gross per trade"
+                if cost_budget.get("incumbent_gross_bps_per_trade") is not None
+                else ""
+            )
+            + (
+                f" and pays {100 * float(cost_budget['incumbent_fee_pct_of_capital_30d']):.1f}% "
+                "of capital in fees per 30 days"
+                if cost_budget.get("incumbent_fee_pct_of_capital_30d") is not None
+                else ""
+            )
+            + f". Every slot must plausibly stay under {cost_budget['max_fills_per_day']:.1f} fills/day"
+            + (
+                f" (the {100 * float(cost_budget['max_cost_pct_of_capital_30d']):.0f}% "
+                "of capital per 30 days cost budget at the incumbent's notional per fill)"
+                if cost_budget.get("basis") == "cost_budget"
+                else ""
+            )
             + (
                 f" and above {cost_budget['min_fills_per_day']:.2f} (the elite "
                 "participation floor rejects inert books)"
                 if cost_budget.get("min_fills_per_day") is not None
-                else ""
-            )
-            + (
-                f" at ~{cost_budget['round_trip_cost_bps']:.0f} bps round trip"
-                if cost_budget.get("round_trip_cost_bps") is not None
                 else ""
             )
             + ". Continuous per-bar rebalancing is dead on arrival; cite "
@@ -4700,6 +4773,13 @@ def _repair_work_order_sentence(order: Mapping[str, Any]) -> str:
         text += f". Do not: {forbidden}"
     if budget.get("max_fills_per_day") is not None:
         text += f". Budget: at most {float(budget['max_fills_per_day']):.1f} fills/day"
+    if budget.get("cost_coverage") is not None:
+        text += (
+            f"; each trade captured {float(budget.get('gross_bps_per_trade') or 0.0):+.1f} "
+            f"bps gross vs {float(budget.get('round_trip_cost_bps') or 0.0):.0f} bps "
+            f"round trip (coverage {float(budget['cost_coverage']):.2f}x, hurdle "
+            f"{float(budget.get('cost_hurdle_multiple') or 0.0):.1f}x)"
+        )
     return text + ". "
 
 
@@ -4891,6 +4971,8 @@ def _attempt_trajectory_row(attempt: Mapping[str, Any]) -> dict[str, Any]:
         "fills_per_day": economics.get("fills_per_day"),
         "fee_pct_of_capital": economics.get("fee_pct_of_capital"),
     }
+    if economics.get("gross_bps_per_trade") is not None:
+        row["gross_bps_per_trade"] = economics["gross_bps_per_trade"]
     if quick.get("max_drawdown_pct") is not None:
         row["max_drawdown_pct"] = round(abs(float(quick["max_drawdown_pct"])), 6)
     if exits.get("closes"):
@@ -5815,6 +5897,8 @@ def _screen_verdict(
     min_trades: int,
     pooled_lcb: float | None = None,
     max_slice_loss: float = SCREEN_SLICE_MAX_LOSS,
+    cost_coverage: float | None = None,
+    cost_hurdle: float = COST_HURDLE_MULTIPLE,
 ) -> dict[str, Any]:
     """The all-weather bar. The book as a whole must be positive and
     significant against the reference (pooled paired deltas, or every slice
@@ -5836,6 +5920,11 @@ def _screen_verdict(
     code: str | None = None
     if total_trades < min_trades:
         code = "activity_below_floor"
+    elif cost_coverage is not None and float(cost_coverage) < cost_hurdle:
+        # Cost arithmetic first: a book whose trades do not capture the
+        # hurdle multiple of the round trip gross is paying to trade, whatever
+        # the slices say.
+        code = "cost_not_covered"
     elif overdrawn:
         code = "screen_slice_loss_bound"
     elif combined > 0 and not significant:
@@ -5845,6 +5934,8 @@ def _screen_verdict(
         "code": code,
         "combined_net_return": round(combined, 6),
         "pooled_lcb": pooled_lcb,
+        "cost_coverage": cost_coverage,
+        "cost_hurdle": cost_hurdle,
         "total_trades": total_trades,
         "max_slice_loss": max_slice_loss,
         "overdrawn": overdrawn,

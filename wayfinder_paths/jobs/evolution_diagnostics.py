@@ -57,6 +57,16 @@ REPAIR_REMEDIES: dict[str, dict[str, list[str]]] = {
             "signal-threshold or indicator tweaks without a turnover change",
         ],
     },
+    "cost_not_covered": {
+        "admissible": [
+            "lengthen the hold or raise the target so each trade captures at "
+            "least the hurdle multiple of the round-trip cost gross",
+            "trade the coarser timeframe the pack validated; fewer, larger moves",
+            "drop the marginal entries and keep the ones with the largest "
+            "expected move",
+        ],
+        "forbidden": ["adding fills", "tightening targets", "removing exits"],
+    },
     "no_trades": {
         "admissible": [
             "loosen the entry condition that never fires",
@@ -213,6 +223,12 @@ def _result_window(result: Any) -> dict[str, Any]:
     }
 
 
+# A trade must capture this multiple of the round-trip cost gross before the
+# screen looks at anything else: at 17 bps round trip that is ~26 bps of
+# move per trade. Below it the mechanism is paying to trade.
+COST_HURDLE_MULTIPLE = 1.5
+
+
 def receipt_economics(receipt: Mapping[str, Any]) -> dict[str, Any] | None:
     """Absolute, per-day trading economics of one receipt.
 
@@ -227,18 +243,32 @@ def receipt_economics(receipt: Mapping[str, Any]) -> dict[str, Any] | None:
         return None
     stats = receipt.get("stats") or {}
     fills = _integer(stats.get("trade_count"))
-    fee_pct = _number(stats.get("total_fees")) / capital
-    return {
+    fees = _number(stats.get("total_fees"))
+    fee_pct = fees / capital
+    turnover = _number(stats.get("total_turnover_usd"))
+    economics = {
         "window_days": round(days, 3),
         "fills_per_day": round(fills / days, 4),
         "fee_pct_of_capital": round(fee_pct, 6),
         "fee_pct_of_capital_30d": round(fee_pct * 30.0 / days, 6),
-        "turnover_multiple": round(
-            _number(stats.get("total_turnover_usd")) / capital, 4
-        ),
+        "turnover_multiple": round(turnover / capital, 4),
         "exposure_pct": round(_number(stats.get("exposure_pct")), 6),
         "avg_hold_minutes": round(_number(stats.get("avg_trade_duration_s")) / 60.0, 2),
     }
+    if turnover > 0:
+        # Gross capture per unit of position notional: turnover counts both
+        # sides of a round trip, so the notional traded once is turnover / 2.
+        # Comparable to the round-trip cost in bps, which is charged once on
+        # that same notional.
+        gross = _number(stats.get("net_return")) * capital + fees
+        economics["gross_bps_per_trade"] = round(gross / (turnover / 2.0) * 1e4, 2)
+        cost = _number(receipt.get("round_trip_cost_bps"))
+        if cost > 0:
+            economics["round_trip_cost_bps"] = round(cost, 2)
+            economics["cost_coverage"] = round(
+                economics["gross_bps_per_trade"] / cost, 4
+            )
+    return economics
 
 
 def build_diagnostic_pack(
@@ -657,6 +687,12 @@ def build_repair_work_order(
             * (_number(params.get("fee_bps")) + _number(params.get("slippage_bps"))),
             2,
         )
+    if candidate.get("cost_coverage") is not None:
+        budget["gross_bps_per_trade"] = candidate.get("gross_bps_per_trade")
+        budget["cost_coverage"] = candidate.get("cost_coverage")
+        budget["cost_hurdle_multiple"] = float(
+            policy.get("cost_hurdle_multiple") or COST_HURDLE_MULTIPLE
+        )
     return {
         "primary_failure": primary,
         "failure_codes": list(postmortem.get("failure_codes") or [])[:6],
@@ -788,6 +824,17 @@ def _diagnosis(
         fees += (
             f" ({comparator_label} "
             f"{100 * _number(comparator.get('fee_pct_of_capital_30d')):.1f}% per 30 days)"
+        )
+    if candidate.get("cost_coverage") is not None:
+        hurdle = _number(
+            ((postmortem.get("screen") or {}).get("cost_hurdle"))
+            or COST_HURDLE_MULTIPLE
+        )
+        fees += (
+            f"; each trade captured {_number(candidate.get('gross_bps_per_trade')):+.1f} "
+            f"bps gross against a {_number(candidate.get('round_trip_cost_bps')):.0f} "
+            f"bps round trip (coverage {_number(candidate.get('cost_coverage')):.2f}x, "
+            f"hurdle {hurdle:.1f}x)"
         )
     exposure = f"exposure {_number(candidate.get('exposure_pct')):.2f}"
     if comparator:

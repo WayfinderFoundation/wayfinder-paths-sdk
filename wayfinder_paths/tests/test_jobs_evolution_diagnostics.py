@@ -754,3 +754,44 @@ def test_slice_loss_bound_work_order_says_stand_aside_or_size_down() -> None:
     assert any("stand aside" in item for item in order["admissible_repairs"])
     compact = compact_postmortem(postmortem)["screen"]
     assert compact["overdrawn"] == ["earlier"] and compact["max_slice_loss"] == 0.02
+
+
+def test_receipt_economics_reports_per_trade_cost_coverage() -> None:
+    from wayfinder_paths.jobs.evolution_diagnostics import (
+        REPAIR_REMEDIES,
+        build_repair_work_order,
+        receipt_economics,
+    )
+
+    receipt = {
+        "window": {"days": 341.0, "starting_equity": 100.0},
+        "round_trip_cost_bps": 17.0,
+        "stats": {
+            "trade_count": 887,
+            "total_fees": 20.56,
+            "net_return": -0.4411,
+            "total_turnover_usd": 41115.6,
+            "exposure_pct": 0.099,
+            "avg_trade_duration_s": 7003.0,
+        },
+    }
+    economics = receipt_economics(receipt)
+    # gross = net PnL + fees = -44.11 + 20.56 = -23.55 on 20,557.8 of notional.
+    assert economics["gross_bps_per_trade"] == pytest.approx(-11.46, abs=0.05)
+    assert economics["round_trip_cost_bps"] == 17.0
+    assert economics["cost_coverage"] == pytest.approx(-0.674, abs=0.005)
+    assert "cost_not_covered" in REPAIR_REMEDIES
+    order = build_repair_work_order(
+        {
+            "primary_failure": "cost_not_covered",
+            "failure_codes": ["cost_not_covered"],
+            "economics": {"candidate": economics, "incumbent": None, "reference": None},
+            "screen": {"cost_hurdle": 1.5},
+        },
+        {},
+        params={"fee_bps": 5.0, "slippage_bps": 3.5},
+    )
+    assert order["budget"]["cost_coverage"] == economics["cost_coverage"]
+    assert order["budget"]["cost_hurdle_multiple"] == 1.5
+    assert "captured -11.5 bps gross against a 17 bps round trip" in order["diagnosis"]
+    assert any("hurdle multiple" in item for item in order["admissible_repairs"])

@@ -551,9 +551,27 @@ def test_design_prompt_carries_cost_budget_from_baseline(tmp_path) -> None:
     assert "never a search dimension" in prompt["next_action"]
     budget = prompt["constraints"]["cost_budget"]
     assert budget["incumbent_fills_per_day"] == pytest.approx(2.74, abs=0.01)
-    assert budget["max_fills_per_day"] == pytest.approx(8.2, abs=0.05)
     assert budget["round_trip_cost_bps"] == 16.0
-    assert "Cost budget: the incumbent trades 2.7 fills/day" in prompt["next_action"]
+    assert budget["cost_hurdle_multiple"] == 1.5
+    # The ceiling is cost arithmetic at the incumbent's notional per fill, not
+    # a multiple of its habit.
+    economics = prompt["constraints"]["cost_budget"]
+    assert budget["basis"] == "cost_budget"
+    pack_economics = store.read_json(job_id, str(state["diagnostic_pack"]))["baseline"][
+        "economics"
+    ]
+    notional_per_fill = pack_economics["turnover_multiple"] / (
+        pack_economics["fills_per_day"] * pack_economics["window_days"]
+    )
+    expected = (0.02 / 30.0) / (notional_per_fill * 16.0 / 2.0 / 1e4)
+    assert budget["max_fills_per_day"] == pytest.approx(expected, abs=0.05)
+    assert budget["max_fills_per_day"] < 8.2
+    assert (
+        "at ~16 bps round trip a trade must capture at least 1.5x"
+        in prompt["next_action"]
+    )
+    assert "the incumbent trades 2.7 fills/day" in prompt["next_action"]
+    del economics
     # This fixture freezes no bars, so there is no macro regime to state.
     assert prompt["constraints"]["macro_regime"] is None
     assert "Macro regime" not in prompt["next_action"]
@@ -5096,3 +5114,47 @@ def test_regime_conditioned_books_get_a_complexity_budget_per_branch(tmp_path) -
     assert _regime_branches(store, job_id, bundle) == 1
     _declare_bundle_feature(bundle, {"name": "macro_regime", "source": "file"})
     assert _regime_branches(store, job_id, bundle) == 2
+
+
+def test_screen_rejects_a_book_that_does_not_cover_its_costs() -> None:
+    both = {
+        "recent": {"net_return": 0.03, "trade_count": 30, "lcb": 0.004},
+        "earlier": {"net_return": 0.02, "trade_count": 28, "lcb": 0.001},
+    }
+    verdict = _screen_verdict(both, min_trades=12, pooled_lcb=0.003, cost_coverage=0.8)
+    assert verdict["passed"] is False and verdict["code"] == "cost_not_covered"
+    assert verdict["cost_coverage"] == 0.8 and verdict["cost_hurdle"] == 1.5
+    assert (
+        _screen_verdict(both, min_trades=12, pooled_lcb=0.003, cost_coverage=2.0)[
+            "passed"
+        ]
+        is True
+    )
+    # Unknown coverage (no round-trip cost on the receipt) does not block.
+    assert _screen_verdict(both, min_trades=12, pooled_lcb=0.003)["passed"] is True
+
+
+def test_cost_budget_ceiling_follows_the_cost_budget_not_the_incumbent() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _cost_budget
+
+    baseline = {
+        "round_trip_cost_bps": 17.0,
+        "economics": {
+            "window_days": 341.0,
+            "fills_per_day": 2.6,
+            "fee_pct_of_capital_30d": 0.018,
+            "turnover_multiple": 411.2,
+            "gross_bps_per_trade": -11.4,
+            "cost_coverage": -0.67,
+        },
+    }
+    budget = _cost_budget(baseline, {}, {"days": 341.0})
+    # 46% of capital per fill at 8.5 bps a side: the 2%/30d budget allows ~1.7
+    # fills/day, not the 7.8 the incumbent multiple gave.
+    assert budget["basis"] == "cost_budget"
+    assert budget["max_fills_per_day"] == pytest.approx(1.7, abs=0.05)
+    assert budget["incumbent_gross_bps_per_trade"] == -11.4
+    assert budget["cost_hurdle_multiple"] == 1.5
+    fallback = _cost_budget({"economics": {"fills_per_day": 2.6}}, {}, None)
+    assert fallback["basis"] == "incumbent_multiple"
+    assert fallback["max_fills_per_day"] == pytest.approx(7.8)

@@ -127,6 +127,11 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "cost_bleed_fee_multiple": 3.0,
         "cost_bleed_fee_pct_of_capital_30d": 0.10,
         "max_fills_per_day_multiple": 3.0,
+        # Cost arithmetic first: a trade must capture this multiple of the
+        # round-trip cost gross, and the cadence ceiling is the fills/day that
+        # keep fees plus slippage under this share of capital per 30 days.
+        "cost_hurdle_multiple": 1.5,
+        "max_cost_pct_of_capital_30d": 0.02,
         # Quick screen generalization: two disjoint train slices, each must be
         # positive with a paired block-bootstrap LCB > 0 at a confidence that
         # rises with every repair (each repair is another look at the slice).
