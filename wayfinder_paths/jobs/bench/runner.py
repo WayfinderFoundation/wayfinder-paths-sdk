@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -365,6 +366,7 @@ def prepare_sandbox(
     if base_url := str(config.get("wayfinder_base_url") or "").strip():
         _set_provider_base_url(config_path, provider="wayfinder", base_url=base_url)
     ensure_model_declared(config_path, model)
+    _require_config_env(config_path)
     arm_campaign = dict(arm.get("campaign") or {})
     store, installed_job_id = _install_job(
         run_root,
@@ -1277,6 +1279,37 @@ def _resolve_runtime_opencode_config(config: dict[str, Any]) -> Path | None:
     if not resolved.is_file():
         raise FileNotFoundError(f"OpenCode runtime config is missing: {resolved}")
     return resolved
+
+
+_ENV_PLACEHOLDER = re.compile(r"^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+
+def _require_config_env(config_path: Path) -> None:
+    """OpenCode resolves `{env:VAR}` placeholders from the process environment
+    at request time, so a launch shell without the variable produces a run
+    where every session dies with a 401 and every loop is invalid. Refuse
+    before any model call is made."""
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    missing: list[str] = []
+
+    def walk(node: Any, path: tuple[str, ...]) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                walk(value, (*path, str(key)))
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, (*path, str(index)))
+        elif isinstance(node, str):
+            match = _ENV_PLACEHOLDER.match(node)
+            if match and not str(os.environ.get(match.group(1)) or "").strip():
+                missing.append(f"{'/'.join(path)} needs {match.group(1)}")
+
+    walk(config, ())
+    if missing:
+        raise RuntimeError(
+            "OpenCode config references environment variables the launching "
+            f"shell does not export: {'; '.join(missing)} ({config_path})"
+        )
 
 
 def _set_provider_base_url(config_path: Path, *, provider: str, base_url: str) -> None:

@@ -37,6 +37,7 @@ from wayfinder_paths.jobs.bench.runner import (
     _assert_bench_root,
     _audit_session_isolation,
     _install_job,
+    _require_config_env,
     _resolve_runtime_opencode_config,
     _scorecard,
     _set_provider_base_url,
@@ -1998,3 +1999,38 @@ def test_compose_stage_renders_as_a_designer_turn() -> None:
     assert rendered["work_order"]["lane"] == "evolution_compose"
     assert rendered["work_order"]["action"] == "submit_signal_proposals"
     assert "evolution_compose once" in rendered["work_order"]["completion"]
+
+
+def test_prepare_sandbox_refuses_unset_env_placeholders(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "opencode.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "provider": {
+                    "wayfinder": {
+                        "options": {
+                            "apiKey": "{env:BENCH_PREFLIGHT_KEY}",
+                            "baseURL": "https://example.invalid/v1",
+                        }
+                    }
+                },
+                "mcp": {
+                    "wayfinder": {"headers": {"X-Token": "{env:BENCH_PREFLIGHT_TOKEN}"}}
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("BENCH_PREFLIGHT_KEY", raising=False)
+    monkeypatch.setenv("BENCH_PREFLIGHT_TOKEN", "   ")
+    with pytest.raises(RuntimeError) as excinfo:
+        _require_config_env(config_path)
+    message = str(excinfo.value)
+    assert "provider/wayfinder/options/apiKey needs BENCH_PREFLIGHT_KEY" in message
+    assert "mcp/wayfinder/headers/X-Token needs BENCH_PREFLIGHT_TOKEN" in message
+
+    monkeypatch.setenv("BENCH_PREFLIGHT_KEY", "k")
+    monkeypatch.setenv("BENCH_PREFLIGHT_TOKEN", "t")
+    _require_config_env(config_path)
