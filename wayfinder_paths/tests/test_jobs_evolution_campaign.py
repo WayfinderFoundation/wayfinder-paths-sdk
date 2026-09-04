@@ -54,7 +54,6 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _select_full_dev_candidate,
     _select_parent_plan,
     _select_validated_rows,
-    _signal_timeframes,
     _slice_route,
     _starter_compatibility,
     _write_timeseries_prefix,
@@ -826,68 +825,6 @@ def test_incumbent_neighborhood_tunables_and_dimensions() -> None:
     }
 
 
-def test_validated_signal_selection_requires_density_and_slice_agreement() -> None:
-    assert _signal_timeframes(300) == ["300s", "15m", "1h", "4h"]
-    assert _signal_timeframes(3600) == ["3600s", "4h"]
-
-    def row(symbol, signal, t, *, n, t_net=1.5, fold_stable=True, edge=8.0):
-        return {
-            "symbol": symbol,
-            "signal": signal,
-            "timeframe": "1h",
-            "horizon": 4,
-            "t_stat_vs_drift": t,
-            "direction": "short" if t <= -2 else "long" if t >= 2 else None,
-            "t_net": t_net,
-            "q_value": 0.7,
-            "verdict": "candidate",
-            "fold_stable": fold_stable,
-            "folds_agreeing": 3,
-            "edge_net_bps": edge,
-            "n": n,
-            "family": "breakout",
-            "description": "d",
-        }
-
-    full = [
-        row("HYPE", "dense", 3.1, n=60),
-        row("HYPE", "sparse", 3.4, n=12),
-        row("SOL", "flips", 2.8, n=50),
-        row("POL", "short_side", -2.6, n=50, t_net=1.9),
-        row("SOL", "weak", 1.4, n=50),
-        row("SOL", "unstable", 2.9, n=50, fold_stable=False),
-        row("SOL", "costly", 2.7, n=50, edge=-1.0),
-        row("SOL", "marginal", 2.7, n=50, t_net=0.4),
-    ]
-    slices = {
-        "recent": {
-            ("HYPE", "dense", "1h", 4): {"t_stat_vs_drift": 1.4},
-            ("HYPE", "sparse", "1h", 4): {"t_stat_vs_drift": 1.6},
-            ("SOL", "flips", "1h", 4): {"t_stat_vs_drift": 1.9},
-            ("POL", "short_side", "1h", 4): {"t_stat_vs_drift": -2.1},
-        },
-        "earlier": {
-            ("HYPE", "dense", "1h", 4): {"t_stat_vs_drift": 1.1},
-            ("HYPE", "sparse", "1h", 4): {"t_stat_vs_drift": 1.2},
-            ("SOL", "flips", "1h", 4): {"t_stat_vs_drift": -1.5},
-            ("POL", "short_side", "1h", 4): {"t_stat_vs_drift": -1.3},
-        },
-    }
-    selected, near = _select_validated_rows(
-        full, slices, days=100.0, min_events_per_day=0.3, slice_min_t=1.0, min_t_net=1.0
-    )
-    # Ranked by the cost-adjusted t, and the short side keeps its direction.
-    assert [(item["signal"], item["direction"]) for item in selected] == [
-        ("short_side", "short"),
-        ("dense", "long"),
-    ]
-    assert selected[1]["events_per_day"] == 0.6
-    assert {item["signal"]: item["shortfall"] for item in near} == {
-        "sparse": "sparse",
-        "flips": "slice_disagreement",
-    }
-
-
 def test_library_signal_aligns_causally_to_base_bars() -> None:
     from wayfinder_paths.jobs.research import (
         library_signal_on_bars,
@@ -1061,11 +998,37 @@ def test_design_prompt_offers_validated_signals_when_seeding_is_on(tmp_path) -> 
     assert prompt and prompt["constraints"]["validated_signals"] == [
         "HYPE:new_low_5:1h:4"
     ]
-    assert "new_low_5 long HYPE 1h x4 (0.8 events/day)" in prompt["next_action"]
+    assert "new_low_5 long HYPE 1h x4" in prompt["next_action"]
+    assert "must cite one of these" in prompt["next_action"]
     assert "library_signal_on_bars" in prompt["next_action"]
     assert (
         "/validated_signals/signals/0/how_to_use" in prompt["valid_evidence_pointers"]
     )
+    # A grounded free-form slot that cites no validated signal is rejected.
+    design = _campaign_design()
+    with pytest.raises(ValueError, match="must build on a validated signal"):
+        submit_campaign_design(store, job_id, campaign_design=design)
+    # A citation resolves to the recipe the worker's candidate.json carries.
+    from wayfinder_paths.jobs.evolution_campaign import _cited_signals
+
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    assert _cited_signals(
+        store,
+        job_id,
+        manifest,
+        ["/baseline/reason", "/validated_signals/signals/0/how_to_use"],
+    ) == [
+        {
+            "pointer": "/validated_signals/signals/0",
+            "symbol": "HYPE",
+            "signal": "new_low_5",
+            "timeframe": "1h",
+            "horizon": 4,
+            "direction": "long",
+            "how_to_use": "in precompute(): library_signal_on_bars(...)",
+        }
+    ]
+    assert _cited_signals(store, job_id, manifest, ["/baseline/reason"]) == []
 
 
 def test_regime_design_requires_counter_cell_and_stamps_candidate(tmp_path) -> None:
@@ -5162,3 +5125,70 @@ def test_cost_budget_ceiling_follows_the_cost_budget_not_the_incumbent() -> None
     fallback = _cost_budget({"economics": {"fills_per_day": 2.6}}, {}, None)
     assert fallback["basis"] == "incumbent_multiple"
     assert fallback["max_fills_per_day"] == pytest.approx(7.8)
+
+
+def test_validated_signal_selection_uses_power_q_and_non_inferiority() -> None:
+    def row(**overrides):
+        base = {
+            "symbol": "HYPE",
+            "signal": "new_low_5",
+            "family": "exhaustion",
+            "description": "close makes a 5-bar low",
+            "timeframe": "4h",
+            "horizon": 3,
+            "direction": "long",
+            "t_stat_vs_drift": 2.6,
+            "t_net": 2.2,
+            "edge_net_bps": 18.0,
+            "fold_stable": True,
+            "folds_agreeing": 3,
+            "n": 52,
+            "q_value": 0.12,
+            "verdict": "promote",
+        }
+        base.update(overrides)
+        return base
+
+    key = ("HYPE", "new_low_5", "4h", 3)
+    slices = {
+        "recent": {key: {"t_stat_vs_drift": 0.4}},  # flat for the signal: fine
+        "earlier": {key: {"t_stat_vs_drift": 1.1}},
+    }
+    kwargs = {
+        "days": 292.0,
+        "min_events": 40,
+        "max_q": 0.20,
+        "slice_min_t": 1.0,
+        "min_t_net": 2.0,
+    }
+    selected, near, funnel = _select_validated_rows([row()], slices, **kwargs)
+    assert len(selected) == 1 and not near
+    assert funnel == {
+        "tests": 1,
+        "directional_fold_stable": 1,
+        "cost_positive": 1,
+        "t_net_at_floor": 1,
+        "q_at_threshold": 1,
+        "powered": 1,
+        "non_inferior": 1,
+    }
+    assert selected[0]["events"] == 52 and selected[0]["q_value"] == 0.12
+    # The old per-day density floor would have called 52 events over 292
+    # days sparse; the power floor does not.
+    assert selected[0]["events_per_day"] < 0.3
+    _, near, _ = _select_validated_rows([row(n=25)], slices, **kwargs)
+    assert near[0]["shortfall"] == "underpowered"
+    _, near, _ = _select_validated_rows([row(q_value=0.35)], slices, **kwargs)
+    assert near[0]["shortfall"] == "q_above_threshold"
+    against = {**slices, "recent": {key: {"t_stat_vs_drift": -1.4}}}
+    _, near, _ = _select_validated_rows([row()], against, **kwargs)
+    assert near[0]["shortfall"] == "slice_against"
+    # Under the t_net floor is direction for the designer, not silence.
+    selected, near, funnel = _select_validated_rows([row(t_net=1.5)], slices, **kwargs)
+    assert selected == [] and near[0]["shortfall"] == "t_net_below_floor"
+    assert funnel["cost_positive"] == 1 and funnel["t_net_at_floor"] == 0
+    # A losing-after-cost row never appears, even as a near miss.
+    assert _select_validated_rows([row(edge_net_bps=-2.0)], slices, **kwargs)[:2] == (
+        [],
+        [],
+    )

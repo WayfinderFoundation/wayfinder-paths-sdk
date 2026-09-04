@@ -16,6 +16,7 @@ import importlib
 import json
 import math
 import os
+import re
 import shutil
 import statistics
 import uuid
@@ -791,14 +792,16 @@ def _signal_timeframes(bar_seconds: int) -> list[str]:
 def _validated_signals(
     store: JobStore, job_id: str, campaign_root: Path, *, policy: Mapping[str, Any]
 ) -> dict[str, Any] | None:
-    """Library signals with dense, fold-stable, cost-net edge on this dataset.
+    """Library signals with fold-stable, cost-net, family-corrected edge on
+    this dataset, selected by statistical power rather than cadence.
 
     Discipline, in order: the scan's own on the FULL train split (events
     decimated to horizon spacing, |t|>=2 against drift, sign agreement in 3
-    of 4 chronological folds, edge positive net of the round trip); then a
-    density floor so a de-novo strategy built on the signal can clear the
-    participation floor; then the same sign on both disjoint screen slices.
-    Off unless the campaign policy enables it so the bench can A/B it.
+    of 4 chronological folds, edge positive net of the round trip); the
+    Benjamini-Hochberg q over the whole family at or under the threshold (the
+    trial-count haircut at signal level); at least the minimum event count;
+    then non-inferiority on both disjoint screen slices. The designer must
+    build grounded de-novo slots on what survives.
     """
     if not bool(policy.get("signal_first_seeding", False)):
         return None
@@ -848,7 +851,8 @@ def _validated_signals(
             result = scan_signals(rows, **scan_kwargs)
             for row in result.get("_all_rows") or []:
                 full_rows.append({**row, "symbol": symbol})
-        apply_bh_verdicts(full_rows, q_threshold=0.10, min_folds_agree=3)
+        max_q = float(policy.get("signal_first_max_q") or 0.20)
+        apply_bh_verdicts(full_rows, q_threshold=max_q, min_folds_agree=3)
         per_slice: dict[str, dict[tuple[str, str, str, int], dict[str, Any]]] = {}
         for label, dataset in slices:
             frame = dataset.bars.to_frame()
@@ -867,15 +871,14 @@ def _validated_signals(
                     )
                     table[key] = row
             per_slice[label] = table
-        selected, near = _select_validated_rows(
+        selected, near, funnel = _select_validated_rows(
             full_rows,
             per_slice,
             days=train_days,
-            min_events_per_day=float(
-                policy.get("signal_first_min_events_per_day") or 0.3
-            ),
+            min_events=int(policy.get("signal_first_min_events") or 40),
+            max_q=max_q,
             slice_min_t=float(policy.get("signal_first_slice_min_t") or 1.0),
-            min_t_net=float(policy.get("signal_first_min_t_net") or 1.0),
+            min_t_net=float(policy.get("signal_first_min_t_net") or 2.0),
         )
         for row in [*selected, *near]:
             row["warmup_bars_required"] = library_signal_warmup_bars(
@@ -901,16 +904,22 @@ def _validated_signals(
         "method": (
             "library event study on the full train split (decimated events, "
             "|t|>=2 vs drift, 3/4 fold sign agreement, positive edge net of the "
-            "round trip with t_net>=floor; BH q reported, not gated), then an "
-            "event-density floor and same-sign confirmation on both screen slices"
+            "round trip with t_net>=floor, Benjamini-Hochberg q over the whole "
+            "family at or under the threshold, at least the minimum event "
+            "count), then non-inferiority on both screen slices"
         ),
         "timeframes": timeframes,
         "tests": len(full_rows),
+        # The haircut the designer should see: this many tests would clear a
+        # 5% bar by luck alone, which is why q gates and t alone does not.
+        "expected_lucky_passes": round(0.05 * len(full_rows), 1),
+        "q_threshold": max_q,
+        "funnel": funnel,
         "train_days": round(train_days, 2),
         "signals": selected[:limit],
-        # Passed the scan's own bar but not density or slice confirmation:
-        # direction for the designer, not evidence.
-        "near_misses": near[:5],
+        # Passed the scan's own bar but not q, event count or slice
+        # non-inferiority: direction for the designer, not evidence.
+        "near_misses": near[:10],
     }
 
 
@@ -919,7 +928,8 @@ def _select_validated_rows(
     per_slice: Mapping[str, Mapping[tuple[str, str, str, int], Mapping[str, Any]]],
     *,
     days: float,
-    min_events_per_day: float,
+    min_events: int,
+    max_q: float,
     slice_min_t: float,
     min_t_net: float,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -934,14 +944,28 @@ def _select_validated_rows(
     """
     selected: list[dict[str, Any]] = []
     near: list[dict[str, Any]] = []
+    # Stage counts so the designer reads why nothing survived, not silence.
+    funnel = {
+        "tests": len(full_rows),
+        "directional_fold_stable": 0,
+        "cost_positive": 0,
+        "t_net_at_floor": 0,
+        "q_at_threshold": 0,
+        "powered": 0,
+        "non_inferior": 0,
+    }
     for row in full_rows:
         direction = row.get("direction")
         t_gross = float(row.get("t_stat_vs_drift") or 0.0)
         t_net = float(row.get("t_net") or 0.0)
         if direction not in ("long", "short") or not bool(row.get("fold_stable")):
             continue
-        if float(row.get("edge_net_bps") or 0.0) <= 0 or t_net < min_t_net:
+        funnel["directional_fold_stable"] += 1
+        if float(row.get("edge_net_bps") or 0.0) <= 0:
             continue
+        funnel["cost_positive"] += 1
+        t_ok = t_net >= min_t_net
+        funnel["t_net_at_floor"] += int(t_ok)
         key = (
             str(row["symbol"]),
             str(row["signal"]),
@@ -954,10 +978,16 @@ def _select_validated_rows(
             label: float((table.get(key) or {}).get("t_stat_vs_drift") or 0.0)
             for label, table in per_slice.items()
         }
-        confirmed = bool(slice_t) and all(
-            value * t_gross > 0 and abs(value) >= slice_min_t
-            for value in slice_t.values()
-        )
+        # Non-inferiority, not confirmation: a 35-day slice may be flat for
+        # the signal, it may not be significantly against its side.
+        side = 1.0 if t_gross > 0 else -1.0
+        non_inferior = all(value * side > -slice_min_t for value in slice_t.values())
+        q_value = row.get("q_value")
+        q_ok = q_value is not None and float(q_value) <= max_q
+        powered = events >= min_events
+        funnel["q_at_threshold"] += int(t_ok and q_ok)
+        funnel["powered"] += int(t_ok and q_ok and powered)
+        funnel["non_inferior"] += int(t_ok and q_ok and powered and non_inferior)
         entry = {
             "symbol": key[0],
             "signal": key[1],
@@ -979,16 +1009,22 @@ def _select_validated_rows(
             },
             "score": round(t_net, 3),
         }
-        if density >= min_events_per_day and confirmed:
+        if t_ok and powered and q_ok and non_inferior:
             selected.append(entry)
         else:
             entry["shortfall"] = (
-                "sparse" if density < min_events_per_day else "slice_disagreement"
+                "t_net_below_floor"
+                if not t_ok
+                else (
+                    "underpowered"
+                    if not powered
+                    else ("q_above_threshold" if not q_ok else "slice_against")
+                )
             )
             near.append(entry)
     selected.sort(key=lambda item: (-item["score"], item["symbol"], item["signal"]))
     near.sort(key=lambda item: (-item["score"], item["symbol"], item["signal"]))
-    return selected, near
+    return selected, near, funnel
 
 
 def _numeric_tunables(
@@ -1811,6 +1847,33 @@ def _validate_campaign_design(
     if wildcard_count != int(manifest["policy"].get("wildcard_slots") or 0):
         raise ValueError("campaign design has the wrong number of wildcard slots")
     grounded = [slot for slot in normalized_slots if not slot["wildcard"]]
+    offered = list(
+        ((diagnostic_pack.get("validated_signals") or {}).get("signals")) or []
+    )
+    if offered:
+        # Signals that survived the family-corrected scan are the evidence a
+        # grounded free-form slot must build on; narratives are not.
+        for slot in grounded:
+            if slot["parent_source"] not in {"de_novo", "research_context"}:
+                continue
+            refs = list(
+                (hypothesis_by_id.get(slot.get("hypothesis_id")) or {}).get(
+                    "evidence_refs"
+                )
+                or []
+            )
+            if not any(
+                str(ref).startswith("/validated_signals/signals/") for ref in refs
+            ):
+                names = ", ".join(
+                    f"{row.get('signal')} {row.get('symbol')} {row.get('timeframe')}"
+                    for row in offered[:6]
+                )
+                raise ValueError(
+                    f"slot {slot['slot_id']} must build on a validated signal: its "
+                    "hypothesis cites none of /validated_signals/signals/<i> while "
+                    f"the pack offers {len(offered)} ({names})"
+                )
     sources = {str(slot["parent_source"]) for slot in grounded}
     if "starter_seed" not in sources:
         raise ValueError("grounded design requires an explicit starter_seed slot")
@@ -2185,6 +2248,9 @@ def _prepare_candidate(
         "wildcard": bool(design_slot.get("wildcard")),
         "target_regimes": target_regimes,
         "evidence_refs": list(hypothesis.get("evidence_refs") or []),
+        "signal_refs": _cited_signals(
+            store, job_id, manifest, list(hypothesis.get("evidence_refs") or [])
+        ),
         "causal_mechanism": hypothesis.get("causal_mechanism"),
         "falsifier": hypothesis.get("falsifier"),
         "attempt_count": 0,
@@ -4447,27 +4513,42 @@ def campaign_prompt_block(
                 else ""
             )
         )
+        funnel = validated.get("funnel") or {}
+        funnel_text = (
+            f" (of {funnel.get('tests')} tests: {funnel.get('directional_fold_stable')} "
+            f"directional and fold-stable, {funnel.get('cost_positive')} positive net of "
+            f"the round trip, {funnel.get('t_net_at_floor')} at the t_net floor, "
+            f"{funnel.get('q_at_threshold')} at q <= {float(validated.get('q_threshold') or 0.2):.2f}, "
+            f"{funnel.get('powered')} with enough events, {funnel.get('non_inferior')} "
+            "non-inferior on both slices)"
+            if funnel.get("tests")
+            else ""
+        )
         signal_instruction = (
-            "Validated signals (dense, fold-stable, cost-net edge on the full "
-            "train split and the same sign on both screen slices; cite "
-            "/validated_signals/signals/<i>): "
+            "Validated signals (fold-stable, cost-net edge on the full train "
+            "split, Benjamini-Hochberg q at or under "
+            f"{float(validated.get('q_threshold') or 0.2):.2f} across "
+            f"{int(validated.get('tests') or 0)} tests, non-inferior on both "
+            "screen slices; cite /validated_signals/signals/<i>): "
             + "; ".join(
                 f"{row['signal']} {row['direction']} {row['symbol']} "
                 f"{row['timeframe']} x{row['horizon']} "
-                f"({row.get('events_per_day', 0):.1f} events/day)"
-                for row in validated_rows[:6]
+                f"(t_net {row.get('t_net', 0):+.1f}, q {row.get('q_value') or 0:.2f}, "
+                f"{row.get('events', 0)} events)"
+                for row in validated_rows[:10]
             )
-            + ". Build de_novo slots around one of these unless the slot is an "
-            "explicit wildcard; each entry's how_to_use gives the one-call "
-            "precompute (library_signal_on_bars), the fixed-horizon exit, and "
-            "the warmup to declare. "
+            + ". Every grounded de_novo or research_context slot must cite one "
+            "of these; a design that does not is rejected. Each entry's "
+            "how_to_use gives the one-call precompute (library_signal_on_bars), "
+            "the fixed-horizon exit, and the warmup to declare. "
             if validated_rows
             else (
-                "No library signal cleared the two-slice edge test on this dataset; "
-                "de_novo slots must state why their mechanism should earn here"
+                "No library signal cleared the family-corrected edge test on this "
+                "dataset"
+                + funnel_text
+                + "; de_novo slots must state why their mechanism should earn here"
                 + (
-                    " (nearest misses, same sign on both slices but under the "
-                    "floor, not evidence: "
+                    " (nearest misses, not evidence: "
                     + "; ".join(
                         f"{row['signal']} {row['direction']} {row['symbol']} "
                         f"{row['timeframe']} x{row['horizon']} [{row.get('shortfall')}]"
@@ -4798,6 +4879,46 @@ def _repair_work_order_sentence(order: Mapping[str, Any]) -> str:
     return text + ". "
 
 
+_SIGNAL_REF_KEYS = (
+    "symbol",
+    "signal",
+    "timeframe",
+    "horizon",
+    "direction",
+    "t_net",
+    "q_value",
+    "events",
+    "warmup_bars_required",
+    "how_to_use",
+)
+
+
+def _cited_signals(
+    store: JobStore, job_id: str, manifest: Mapping[str, Any], refs: Sequence[str]
+) -> list[dict[str, Any]]:
+    """The validated-signal entries a hypothesis cites, resolved from the
+    frozen pack so the worker's candidate.json carries the recipe."""
+    indices: list[int] = []
+    for ref in refs:
+        match = re.match(r"^/validated_signals/signals/(\d+)(?:/|$)", str(ref))
+        if match and int(match.group(1)) not in indices:
+            indices.append(int(match.group(1)))
+    if not indices:
+        return []
+    pack_path = str((manifest.get("diagnostic_pack") or {}).get("path") or "")
+    pack = store.read_json(job_id, pack_path, default={}) if pack_path else {}
+    rows = list(((pack or {}).get("validated_signals") or {}).get("signals") or [])
+    cited = []
+    for index in indices:
+        if 0 <= index < len(rows):
+            row = rows[index]
+            cited.append(
+                {"pointer": f"/validated_signals/signals/{index}"}
+                | {key: row.get(key) for key in _SIGNAL_REF_KEYS if key in row}
+            )
+    return cited
+
+
 def _parent_plan_handoff(plan: dict[str, Any]) -> dict[str, Any]:
     starter = plan.get("starter") or {}
     return {
@@ -4903,6 +5024,7 @@ def _candidate_handoff(candidate: dict[str, Any]) -> dict[str, Any]:
         "hypothesis_id": candidate.get("hypothesis_id"),
         "wildcard": bool(candidate.get("wildcard")),
         "target_regimes": list(candidate.get("target_regimes") or []),
+        "signal_refs": list(candidate.get("signal_refs") or []),
         "attempt_count": int(candidate.get("attempt_count") or 0),
         "best_attempt": candidate.get("best_attempt"),
     }

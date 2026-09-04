@@ -157,10 +157,14 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         # Signal-first seeding: library event studies on the two screen slices;
         # signals significant on both feed the design prompt. An A/B arm
         # variable: off by default, on in the treatment arm.
-        "signal_first_seeding": False,
+        # On by default: grounded free-form slots must build on what survives.
+        "signal_first_seeding": True,
         "signal_first_limit": 10,
-        "signal_first_min_t_net": 1.0,
-        "signal_first_min_events_per_day": 0.3,
+        "signal_first_min_t_net": 2.0,
+        # Power and family-corrected significance, not cadence: a per-day
+        # density floor rejected every slow horizon.
+        "signal_first_min_events": 40,
+        "signal_first_max_q": 0.20,
         "signal_first_slice_min_t": 1.0,
         "signal_scan_min_events": 30,
         "wildcard_slots": 2,

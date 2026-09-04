@@ -41,6 +41,11 @@ Submit exactly the requested number of idea slots with
 cite exact JSON-pointer evidence references from the diagnostic pack. Wildcard
 slots must be explicitly labelled and may explore freely. Facts constrain what
 the design claims to repair; they never constrain the mechanism you invent.
+When the pack offers validated signals (`/validated_signals/signals/<i>`:
+fold-stable, cost-net, family-corrected edges on this dataset), every grounded
+de_novo or research_context slot must cite one and build its entry on it; a
+design that cites none is rejected. Narratives about why a mechanism should
+earn are not evidence; the near misses are direction, not evidence.
 Costs come first: `/baseline/economics` states the round-trip cost, what the
 incumbent captures per trade and what it pays in fees; a slot whose trades
 cannot plausibly capture the hurdle multiple of that cost gross is rejected at
