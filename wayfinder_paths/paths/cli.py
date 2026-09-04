@@ -847,6 +847,26 @@ def _should_merge_json_install_target(*, op: str, src: Path, dest: Path) -> bool
     )
 
 
+def _resolve_install_target_paths(
+    *, source_dir: Path, destination_root: Path, target: dict[str, Any]
+) -> tuple[Path, Path]:
+    try:
+        return (
+            resolve_contained_path(
+                source_dir,
+                str(target.get("source") or ""),
+                label="Install source",
+            ),
+            resolve_contained_path(
+                destination_root,
+                str(target.get("destination") or ""),
+                label="Install destination",
+            ),
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
 def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str]:
     export_manifest = _read_export_manifest(source_dir)
     install_targets = export_manifest.get("install_targets") or []
@@ -857,19 +877,11 @@ def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str
         if not isinstance(target, dict):
             continue
         op = str(target.get("op") or "").strip()
-        try:
-            src = resolve_contained_path(
-                source_dir,
-                str(target.get("source") or ""),
-                label="Install source",
-            )
-            dest = resolve_contained_path(
-                destination_root,
-                str(target.get("destination") or ""),
-                label="Install destination",
-            )
-        except ValueError as exc:
-            raise click.ClickException(str(exc)) from exc
+        src, dest = _resolve_install_target_paths(
+            source_dir=source_dir,
+            destination_root=destination_root,
+            target=target,
+        )
         if _should_merge_json_install_target(op=op, src=src, dest=dest):
             if _is_opencode_config_path(dest):
                 _merge_opencode_config_patch(dest, src)
@@ -903,19 +915,11 @@ def _remove_install_targets(source_dir: Path, destination_root: Path) -> list[st
         if not isinstance(target, dict):
             continue
         op = str(target.get("op") or "").strip()
-        try:
-            src = resolve_contained_path(
-                source_dir,
-                str(target.get("source") or ""),
-                label="Install source",
-            )
-            dest = resolve_contained_path(
-                destination_root,
-                str(target.get("destination") or ""),
-                label="Install destination",
-            )
-        except ValueError as exc:
-            raise click.ClickException(str(exc)) from exc
+        src, dest = _resolve_install_target_paths(
+            source_dir=source_dir,
+            destination_root=destination_root,
+            target=target,
+        )
         if _should_merge_json_install_target(op=op, src=src, dest=dest):
             removed_json = (
                 _remove_opencode_config_patch(dest, src)

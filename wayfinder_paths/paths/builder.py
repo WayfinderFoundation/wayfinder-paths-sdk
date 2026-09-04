@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from wayfinder_paths.paths.manifest import PathManifest, PathManifestError
+from wayfinder_paths.paths.path_safety import unsafe_bundle_path_reason
 
 
 class PathBuildError(Exception):
@@ -45,18 +46,6 @@ _DEFAULT_SOURCE_IGNORE_DIRS = {
     ".wayfinder_runs",
 }
 
-_SECRET_FILENAMES = {
-    "credentials.json",
-    "id_dsa",
-    "id_ecdsa",
-    "id_ed25519",
-    "id_rsa",
-    "secrets.json",
-    "secrets.yaml",
-    "secrets.yml",
-}
-_SECRET_SUFFIXES = {".key", ".p12", ".pem"}
-
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 
 
@@ -65,7 +54,10 @@ def _iter_files(root: Path, *, ignore_dirs: set[str]) -> Iterable[Path]:
         rel_dir = Path(dirpath).relative_to(root)
         for dirname in dirnames:
             path = Path(dirpath) / dirname
-            if dirname not in ignore_dirs and path.is_symlink():
+            if (
+                dirname not in ignore_dirs
+                and unsafe_bundle_path_reason(path) == "symlink"
+            ):
                 raise PathBuildError(
                     f"Symlinks are not allowed in path bundles: {path}"
                 )
@@ -78,17 +70,12 @@ def _iter_files(root: Path, *, ignore_dirs: set[str]) -> Iterable[Path]:
         )
         for filename in sorted(filenames):
             path = Path(dirpath) / filename
-            if path.is_symlink():
+            reason = unsafe_bundle_path_reason(path)
+            if reason == "symlink":
                 raise PathBuildError(
                     f"Symlinks are not allowed in path bundles: {path}"
                 )
-            lowered = filename.lower()
-            if (
-                lowered == ".env"
-                or lowered.startswith(".env.")
-                or lowered in _SECRET_FILENAMES
-                or path.suffix.lower() in _SECRET_SUFFIXES
-            ):
+            if reason:
                 raise PathBuildError(
                     f"Secret-like files are not allowed in path bundles: {path}"
                 )

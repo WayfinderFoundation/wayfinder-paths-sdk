@@ -21,6 +21,36 @@ from wayfinder_paths.paths.scaffold import init_path
 pytestmark = pytest.mark.usefixtures("published_installed_runtime")
 
 
+def test_path_exec_accepts_legacy_argument_separator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path_dir = tmp_path / "legacy-wrapper"
+    init_path(path_dir=path_dir, slug="legacy-wrapper", with_applet=False)
+    calls: list[list[str]] = []
+
+    def capture_call(command: list[str], **_kwargs: object) -> int:
+        calls.append(command)
+        return 0
+
+    monkeypatch.setattr("wayfinder_paths.paths.cli.subprocess.call", capture_call)
+
+    result = CliRunner().invoke(
+        path_cli,
+        [
+            "exec",
+            "--path-dir",
+            str(path_dir),
+            "--component",
+            "main",
+            "--",
+            "--help",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls[0][-1] == "--help"
+
+
 def test_path_publish_uploads_rendered_skill_exports_and_bond_metadata(
     tmp_path: Path, monkeypatch
 ):

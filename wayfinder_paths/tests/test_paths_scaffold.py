@@ -18,7 +18,7 @@ from wayfinder_paths.paths.evaluator import run_path_eval
 from wayfinder_paths.paths.hooks import install_path_hooks
 from wayfinder_paths.paths.manifest import PathManifest, resolve_skill_runtime
 from wayfinder_paths.paths.preview import inspect_preview_path
-from wayfinder_paths.paths.renderer import render_skill_exports
+from wayfinder_paths.paths.renderer import PathSkillRenderError, render_skill_exports
 from wayfinder_paths.paths.runtime_registry import PublishedPackage
 from wayfinder_paths.paths.scaffold import init_path
 
@@ -595,6 +595,9 @@ def test_rendered_export_reuses_newer_compatible_runtime(
     package_spec = cast(
         Callable[[dict[str, object]], str], namespace["_runtime_package_spec"]
     )
+    python_is_compatible = cast(
+        Callable[[str], bool], namespace["_python_version_is_compatible"]
+    )
     run = cast(Callable[[str | None, list[str]], int], namespace["run"])
 
     assert is_compatible("0.11.0", "0.11.0") is True
@@ -607,6 +610,8 @@ def test_rendered_export_reuses_newer_compatible_runtime(
     assert package_spec({"package": "wayfinder-paths", "version": "0.11.2"}) == (
         "wayfinder-paths~=0.11.2"
     )
+    assert python_is_compatible("~=3.12.0") is True
+    assert python_is_compatible(">=3.13") is False
 
     commands: list[list[str]] = []
 
@@ -711,7 +716,9 @@ def test_build_ignores_dot_build_artifacts(tmp_path: Path):
     assert not any(name.startswith(".build/") for name in names)
 
 
-@pytest.mark.parametrize("filename", [".env", "wallet.pem", "credentials.json"])
+@pytest.mark.parametrize(
+    "filename", [".env", ".env.local", "wallet.pem", "credentials.json"]
+)
 def test_build_rejects_secret_like_files(tmp_path: Path, filename: str) -> None:
     path_dir = tmp_path / "secret-path"
     init_path(path_dir=path_dir, slug="secret-path", with_applet=False)
@@ -719,6 +726,17 @@ def test_build_rejects_secret_like_files(tmp_path: Path, filename: str) -> None:
 
     with pytest.raises(PathBuildError, match="Secret-like"):
         PathBuilder.build(path_dir=path_dir, out_path=tmp_path / "bundle.zip")
+
+
+def test_build_allows_environment_templates(tmp_path: Path) -> None:
+    path_dir = tmp_path / "environment-template"
+    init_path(path_dir=path_dir, slug="environment-template", with_applet=False)
+    (path_dir / ".env.example").write_text("API_KEY=\n", encoding="utf-8")
+
+    result = PathBuilder.build(path_dir=path_dir, out_path=tmp_path / "bundle.zip")
+
+    with ZipFile(result.bundle_path) as archive:
+        assert ".env.example" in archive.namelist()
 
 
 def test_build_rejects_symlinks_and_output_self_inclusion(tmp_path: Path) -> None:
@@ -737,6 +755,17 @@ def test_build_rejects_symlinks_and_output_self_inclusion(tmp_path: Path) -> Non
     out_path.write_bytes(b"old archive")
     with pytest.raises(PathBuildError, match="include itself"):
         PathBuilder.build(path_dir=path_dir, out_path=out_path)
+
+
+def test_rendered_export_rejects_unsafe_source_entries(tmp_path: Path) -> None:
+    path_dir = tmp_path / "unsafe-export"
+    init_path(path_dir=path_dir, slug="unsafe-export", with_applet=False)
+    outside = tmp_path / "outside.py"
+    outside.write_text("SECRET = 'outside'\n", encoding="utf-8")
+    (path_dir / "scripts" / "outside.py").symlink_to(outside)
+
+    with pytest.raises(PathSkillRenderError, match="cannot include symlink"):
+        render_skill_exports(path_dir=path_dir)
 
 
 def test_install_path_hooks_is_idempotent(tmp_path: Path):

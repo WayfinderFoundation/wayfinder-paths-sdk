@@ -17,6 +17,7 @@ from wayfinder_paths.paths.manifest import (
     resolve_skill_dependencies,
     resolve_skill_runtime,
 )
+from wayfinder_paths.paths.path_safety import unsafe_bundle_path_reason
 
 
 class PathSkillRenderError(Exception):
@@ -85,12 +86,24 @@ def _write_text(path: Path, content: str) -> None:
     path.write_text(content.rstrip() + "\n", encoding="utf-8")
 
 
+def _ensure_safe_copy_source(path: Path) -> None:
+    reason = unsafe_bundle_path_reason(path)
+    if reason:
+        raise PathSkillRenderError(f"Path exports cannot include {reason}: {path}")
+
+
 def _copy_optional_dirs(path_dir: Path, export_dir: Path) -> list[str]:
     written: list[str] = []
     for name in _CANONICAL_SKILL_SUBDIRS:
         src = path_dir / "skill" / name
         if not src.exists():
             continue
+        _ensure_safe_copy_source(src)
+        for dirpath, dirnames, filenames in os.walk(src):
+            for dirname in dirnames:
+                _ensure_safe_copy_source(Path(dirpath) / dirname)
+            for filename in filenames:
+                _ensure_safe_copy_source(Path(dirpath) / filename)
         dest = export_dir / name
         if dest.exists():
             shutil.rmtree(dest)
@@ -107,14 +120,13 @@ def _copy_runtime_path(path_dir: Path, export_dir: Path) -> list[str]:
     path_export_dir.mkdir(parents=True, exist_ok=True)
     for dirpath, dirnames, filenames in os.walk(path_dir):
         rel_dir = Path(dirpath).relative_to(path_dir)
-        dirnames[:] = sorted(
-            [
-                name
-                for name in dirnames
-                if name not in _EXCLUDED_PATH_DIRS
-                and not (rel_dir == Path(".") and name == "dist")
-            ]
-        )
+        included_dirs: list[str] = []
+        for name in dirnames:
+            if name in _EXCLUDED_PATH_DIRS or (rel_dir == Path(".") and name == "dist"):
+                continue
+            _ensure_safe_copy_source(Path(dirpath) / name)
+            included_dirs.append(name)
+        dirnames[:] = sorted(included_dirs)
         for filename in sorted(filenames):
             if filename in _EXCLUDED_PATH_FILES:
                 continue
@@ -122,6 +134,7 @@ def _copy_runtime_path(path_dir: Path, export_dir: Path) -> list[str]:
             rel_path = src.relative_to(path_dir)
             if any(part in _EXCLUDED_PATH_DIRS for part in rel_path.parts):
                 continue
+            _ensure_safe_copy_source(src)
             dest = path_export_dir / rel_path
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
@@ -898,6 +911,8 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "    base_runs = str(env.get('WAYFINDER_RUNS_DIR') or '').strip()",
             "    slug = str(manifest.get('slug') or '').strip()",
             "    if base_runs and slug:",
+            "        if Path(slug).name != slug or slug in {'.', '..'}:",
+            "            raise SystemExit(f'Invalid path slug in runtime manifest: {slug}')",
             "        root = Path(base_runs).expanduser()",
             "        if not root.is_absolute():",
             "            root = (Path.cwd() / root).resolve()",
@@ -906,7 +921,10 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "        env['WAYFINDER_RUNS_DIR'] = str(path_runs)",
             "        local_runs = SKILL_ROOT / 'path' / '.wayfinder_runs'",
             "        if not local_runs.exists() and not local_runs.is_symlink():",
-            "            local_runs.symlink_to(path_runs, target_is_directory=True)",
+            "            try:",
+            "                local_runs.symlink_to(path_runs, target_is_directory=True)",
+            "            except OSError as exc:",
+            "                print(f'Warning: could not link path state directory: {exc}', file=sys.stderr)",
             "    return env",
             "",
             "",
@@ -962,38 +980,16 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "def _python_version_is_compatible(spec: str) -> bool:",
             "    if not spec:",
             "        return True",
-            "    current = tuple(sys.version_info[:3])",
-            "    for raw_clause in spec.split(','):",
-            "        clause = raw_clause.strip()",
-            "        match = None",
-            "        for operator in ('>=', '<=', '==', '>', '<'):",
-            "            if clause.startswith(operator):",
-            "                match = (operator, clause[len(operator):].strip())",
-            "                break",
-            "        if match is None:",
-            "            return False",
-            "        operator, raw_version = match",
-            "        wildcard = raw_version.endswith('.*')",
-            "        if wildcard:",
-            "            raw_version = raw_version[:-2]",
-            "        try:",
-            "            required = tuple(int(part) for part in raw_version.split('.'))",
-            "        except ValueError:",
-            "            return False",
-            "        compared = current[:len(required)]",
-            "        if operator == '==' and compared != required:",
-            "            return False",
-            "        if operator == '>=' and compared < required:",
-            "            return False",
-            "        if operator == '<=' and compared > required:",
-            "            return False",
-            "        if operator == '>' and compared <= required:",
-            "            return False",
-            "        if operator == '<' and compared >= required:",
-            "            return False",
-            "        if wildcard and operator != '==':",
-            "            return False",
-            "    return True",
+            "    try:",
+            "        from packaging.specifiers import SpecifierSet",
+            "        from packaging.version import Version",
+            "    except ImportError:",
+            "        return False",
+            "    current = Version('.'.join(str(part) for part in sys.version_info[:3]))",
+            "    try:",
+            "        return current in SpecifierSet(spec)",
+            "    except ValueError:",
+            "        return False",
             "",
             "",
             "def _runtime_requirement(manifest: dict[str, object]) -> tuple[str, str]:",

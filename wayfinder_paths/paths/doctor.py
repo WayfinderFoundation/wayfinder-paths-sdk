@@ -172,7 +172,7 @@ def _validate_components(
         if target.suffix == ".py":
             try:
                 ast.parse(target.read_text(encoding="utf-8"), filename=str(target))
-            except (OSError, SyntaxError) as exc:
+            except (OSError, SyntaxError, UnicodeDecodeError) as exc:
                 _record_issue(
                     errors,
                     level="error",
