@@ -1,4 +1,4 @@
-"""Fifteen-minute crypto/equity sleeve momentum, rebalanced daily."""
+"""Configurable cross-asset sleeve momentum strategy."""
 
 from __future__ import annotations
 

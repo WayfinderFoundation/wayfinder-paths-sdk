@@ -29,7 +29,7 @@ from wayfinder_paths.jobs.strategies._starter_utils import (
     RANKING_STOP_DEFAULTS,
 )
 
-STARTER_CATALOG_VERSION = "1.9.0"
+STARTER_CATALOG_VERSION = "2.0.0"
 STARTER_STRATEGY_INCEPTION_AT = "2026-08-24T00:00:00+00:00"
 # Catalog launch policy: every off-the-shelf starter launches with the agent
 # loop ON in intervene mode. Fleet evidence (two launches of the identical
@@ -122,6 +122,7 @@ class StarterDefinition:
     rules: tuple[str, ...]
     params: dict[str, Any]
     research_evidence: dict[str, Any]
+    strategy_inception_at: str = STARTER_STRATEGY_INCEPTION_AT
     cautions: tuple[str, ...] = ()
 
     def configured_params(self) -> dict[str, Any]:
@@ -219,7 +220,9 @@ class StarterDefinition:
         }
         payload["research_evidence"] = {
             **payload["research_evidence"],
-            "strategy_revision": STARTER_EVIDENCE_REVISION,
+            "strategy_revision": payload["research_evidence"].get(
+                "strategy_revision", STARTER_EVIDENCE_REVISION
+            ),
             "risk_overlay_backtest_status": "validated",
             "risk_overlay_backtest_scope": "per_position_ohlc_stops",
             "risk_overlay_note": (
@@ -233,6 +236,10 @@ class StarterDefinition:
                     "The jobs_v1 engine figures include the current per-position "
                     "stop overlay. Live pair-group and account monitors run between "
                     "strategy bars and are not included in these historical figures."
+                    if self.family == "relative_value_pair"
+                    else "The jobs_v1 engine figures include the current per-position "
+                    "stop overlay. The live account monitor runs between strategy "
+                    "bars and is not included in these historical figures."
                 )
             ),
             "jobs_v1_leverage_sweep": {
@@ -259,7 +266,7 @@ class StarterDefinition:
         payload.update(
             {
                 "catalog_version": STARTER_CATALOG_VERSION,
-                "strategy_inception_at": STARTER_STRATEGY_INCEPTION_AT,
+                "strategy_inception_at": self.strategy_inception_at,
                 "execution_contract": "jobs_v1",
                 "default_mode": "paper",
                 "selectable": True,
@@ -380,8 +387,346 @@ _MAKER_RESEARCH_METHOD = {
     ),
 }
 
+_DIVERSE_INTRADAY_RESEARCH_METHOD = {
+    "source": "Hydromancer Reservoir 1-second Hyperliquid candles aggregated to 15m",
+    "window_start": "2025-10-02T13:30:00+00:00",
+    "window_end": "2026-08-25T00:00:00+00:00",
+    "calendar_days": 326.4,
+    "fill_model": "decision on completed close; fill at next bar open",
+    "costs": {"taker_fee_bps_per_side": 4.5, "slippage_bps_per_side": 3.5},
+    "funding_included": False,
+    "funding": "not included; long and short carry can change live returns",
+    "validation": (
+        "parameter grids ranked on the first 60% of common asset history; the "
+        "next 20%, final 20%, jobs_v1 replay, and every UTC rebalance phase were "
+        "reported separately but reviewed before publication; no sealed holdout"
+    ),
+}
+
+_BULLISH_5M_RESEARCH_METHOD = {
+    "source": "Binance USD-M native 5m candles via the SDK CCXT dataset fetcher",
+    "window_start": "2025-09-04T15:25:00+00:00",
+    "window_end": "2026-09-04T15:15:00+00:00",
+    "calendar_days": 365.0,
+    "fill_model": "decision on completed 5m close; fill at next 5m bar open",
+    "costs": {"taker_fee_bps_per_side": 4.5, "slippage_bps_per_side": 3.5},
+    "funding_included": False,
+    "funding": "not included; long carry can change live returns",
+    "validation": (
+        "native-resolution cross-venue replay of a mechanism developed on an "
+        "independent Hyperliquid 15m panel; all slices were reviewed before "
+        "publication, so forward paper results remain the real holdout"
+    ),
+}
+
 
 STARTER_DEFINITIONS: tuple[StarterDefinition, ...] = (
+    StarterDefinition(
+        id="bullish-regime-rotation-5m",
+        name="Bullish Regime Rotation · 5m",
+        family="regime_rotation",
+        summary=(
+            "Owns one confirmed medium-term leader during broad uptrends and "
+            "otherwise holds cash, using a deliberately modest 40% gross allocation."
+        ),
+        timeframe="5m",
+        module="wayfinder_paths.jobs.strategies.regime_rotation",
+        symbols=("BNB", "PAXG", "HYPE", "ZEC", "MORPHO"),
+        crypto_assets=("BNB", "PAXG", "HYPE", "ZEC", "MORPHO"),
+        tokenized_equities=(),
+        rules=(
+            "Treat an asset as bullish only when its 24-hour average and price are above its 5-day average and its trailing 3-day return is positive.",
+            "Hold the strongest 3-day leader only when at least three of five assets are bullish; otherwise hold cash.",
+            "Re-evaluate daily at 12:00 UTC and cap target gross exposure at 40%.",
+        ),
+        params={
+            "risk_symbols": ["BNB", "PAXG", "HYPE", "ZEC", "MORPHO"],
+            "defensive_symbol": None,
+            "momentum_bars": 864,
+            "fast_sma_bars": 288,
+            "slow_sma_bars": 1440,
+            "require_trend_alignment": True,
+            "minimum_breadth": 0.5,
+            "top_n": 1,
+            "gross_exposure": 0.4,
+            "rebalance_bars": 288,
+            "rebalance_offset": 144,
+            "rebalance_threshold": 0.10,
+            "stop_atr_period": 180,
+        },
+        research_evidence={
+            **_BULLISH_5M_RESEARCH_METHOD,
+            "strategy_revision": "2.0.0",
+            "strategy_family": "long-only breadth-confirmed momentum rotation",
+            "sharpe": 2.6261,
+            "max_drawdown": -0.1758,
+            "chronological_fold_method": (
+                "fixed-parameter continuous jobs_v1 path divided into four "
+                "contiguous quarters"
+            ),
+            "chronological_fold_returns": [0.5858, 0.0182, 0.5495, -0.0269],
+            "hyperliquid_mechanism_check": {
+                "bar_interval": "15m",
+                "window_start": "2025-10-02T13:30:00+00:00",
+                "window_end": "2026-08-25T00:00:00+00:00",
+                "return_after_fees_and_slippage": 0.8949,
+                "sharpe": 2.5219,
+                "max_drawdown": -0.1748,
+                "btc_bull_regime_return": 0.7200,
+                "btc_bear_regime_return": 0.1017,
+                "rebalance_phases_passing_return_and_sharpe_target": 57,
+                "rebalance_phases_checked": 96,
+            },
+            "jobs_v1_engine": {
+                "return_after_fees_and_slippage": 1.4347,
+                "sharpe": 2.6261,
+                "max_drawdown": -0.1758,
+                "trade_count": 156,
+                "total_fees_usd": 508.61,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
+                "funding_included": False,
+                "trace_valid": True,
+            },
+        },
+        strategy_inception_at="2026-09-04T00:00:00+00:00",
+        cautions=(
+            "Native 5m validation used Binance USD-M candles; the same mechanism also passed on Hyperliquid 15m bars, but venue-specific forward behavior can differ.",
+            "The newest chronological quarter lost 2.7%; this is a paper-first bullish specialist, not an all-regime claim.",
+            "Funding is not included and the strategy can concentrate its full 40% target in one asset.",
+            "Only the default 1x setting stayed within the -20% account-halt threshold in the leverage sweep.",
+        ),
+    ),
+    StarterDefinition(
+        id="diversified-trend-sleeves-15m",
+        name="Diversified Trend Sleeves · 15m",
+        family="cross_sectional_momentum",
+        summary=(
+            "Runs four independent relative-trend sleeves across underused crypto "
+            "markets, so no single leader decides the whole portfolio."
+        ),
+        timeframe="15m",
+        module="wayfinder_paths.jobs.strategies.mixed_sleeve_momentum",
+        symbols=("HYPE", "DOGE", "ZEC", "SUI", "MORPHO", "AAVE", "PAXG", "AVAX"),
+        crypto_assets=("HYPE", "DOGE", "ZEC", "SUI", "MORPHO", "AAVE", "PAXG", "AVAX"),
+        tokenized_equities=(),
+        rules=(
+            "Compare trailing 3-day returns within HYPE/DOGE, ZEC/SUI, MORPHO/AAVE, and PAXG/AVAX.",
+            "Long each sleeve winner and short its loser at 12.5% per leg; gross 100%, net 0%.",
+            "Re-rank every 48 hours on a 00:00 UTC completed bar.",
+        ),
+        params={
+            "sleeves": [
+                ["HYPE", "DOGE"],
+                ["ZEC", "SUI"],
+                ["MORPHO", "AAVE"],
+                ["PAXG", "AVAX"],
+            ],
+            "momentum_bars": 288,
+            "rebalance_bars": 192,
+            "rebalance_offset": 0,
+            "weight_per_leg": 0.125,
+            "rebalance_threshold": 0.10,
+            "stop_atr_period": 96,
+            "stop_atr_multiple": 20.0,
+            "stop_min_pct": 0.60,
+            "stop_max_pct": 0.80,
+            "stop_cooldown_seconds": 0,
+        },
+        research_evidence={
+            **_DIVERSE_INTRADAY_RESEARCH_METHOD,
+            "strategy_revision": "2.0.0",
+            "strategy_family": "cross-sectional sleeve momentum",
+            "sharpe": 2.6780,
+            "max_drawdown": -0.1107,
+            "chronological_fold_method": (
+                "fixed-parameter continuous jobs_v1 path divided into four "
+                "contiguous quarters"
+            ),
+            "chronological_fold_returns": [0.1534, 0.1117, 0.3104, 0.0977],
+            "phase_robustness": {
+                "rebalance_phases_passing_return_and_sharpe_target": 159,
+                "rebalance_phases_checked": 192,
+                "full_period_sharpe_median": 2.0398,
+            },
+            "jobs_v1_engine": {
+                "return_after_fees_and_slippage": 0.8443,
+                "sharpe": 2.6780,
+                "max_drawdown": -0.1107,
+                "trade_count": 889,
+                "total_fees_usd": 674.93,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
+                "funding_included": False,
+                "trace_valid": True,
+            },
+        },
+        strategy_inception_at="2026-09-04T00:00:00+00:00",
+        cautions=(
+            "Funding is not included and four short legs can create material carry costs.",
+            "The evidence spans roughly eleven months and includes an exceptional ZEC trend; forward diversification may be weaker.",
+            "Only the default 1x setting stayed within the -20% account-halt threshold in the leverage sweep.",
+        ),
+    ),
+    StarterDefinition(
+        id="diversified-momentum-taker-15m",
+        name="Diversified Momentum Taker · 15m",
+        family="cross_sectional_momentum",
+        summary=(
+            "Trades only the strongest and weakest momentum tails of a broad "
+            "ten-asset crypto panel using marketable rebalances."
+        ),
+        timeframe="15m",
+        module="wayfinder_paths.jobs.strategies.mixed_momentum_rank",
+        symbols=(
+            "BNB",
+            "DOGE",
+            "SUI",
+            "LINK",
+            "AAVE",
+            "AVAX",
+            "PAXG",
+            "HYPE",
+            "ZEC",
+            "MORPHO",
+        ),
+        crypto_assets=(
+            "BNB",
+            "DOGE",
+            "SUI",
+            "LINK",
+            "AAVE",
+            "AVAX",
+            "PAXG",
+            "HYPE",
+            "ZEC",
+            "MORPHO",
+        ),
+        tokenized_equities=(),
+        rules=(
+            "Rank all ten assets by trailing 5-day return.",
+            "Long the top three and short the bottom three at one-sixth per leg; leave the middle four flat.",
+            "Use taker orders to re-rank every 12 hours at 00:00 and 12:00 UTC.",
+        ),
+        params={
+            "momentum_bars": 480,
+            "rank_legs": 3,
+            "rebalance_bars": 48,
+            "rebalance_offset": 0,
+            "weight_per_leg": 1 / 6,
+            "rebalance_threshold": 0.10,
+            "stop_atr_period": 96,
+            "stop_atr_multiple": 20.0,
+            "stop_min_pct": 0.60,
+            "stop_max_pct": 0.80,
+            "stop_cooldown_seconds": 0,
+        },
+        research_evidence={
+            **_DIVERSE_INTRADAY_RESEARCH_METHOD,
+            "strategy_revision": "2.0.0",
+            "strategy_family": "broad cross-sectional taker momentum",
+            "sharpe": 1.4236,
+            "max_drawdown": -0.1821,
+            "chronological_fold_method": (
+                "fixed-parameter continuous jobs_v1 path divided into four "
+                "contiguous quarters"
+            ),
+            "chronological_fold_returns": [0.0190, 0.1071, 0.3487, -0.0446],
+            "phase_robustness": {
+                "rebalance_phases_passing_return_and_sharpe_target": 40,
+                "rebalance_phases_checked": 48,
+                "full_period_sharpe_median": 1.7995,
+            },
+            "jobs_v1_engine": {
+                "return_after_fees_and_slippage": 0.4537,
+                "sharpe": 1.4236,
+                "max_drawdown": -0.1821,
+                "trade_count": 1634,
+                "total_fees_usd": 1437.92,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
+                "funding_included": False,
+                "trace_valid": True,
+            },
+        },
+        strategy_inception_at="2026-09-04T00:00:00+00:00",
+        cautions=(
+            "The full-period Sharpe only narrowly clears 1.4 and the newest chronological quarter lost 4.5%.",
+            "This is an intentionally active taker strategy: the replay paid $1,438 in fees and modeled slippage on $10,000 initial capital.",
+            "Funding is not included and can materially alter a persistent long/short basket.",
+            "Only the default 1x setting stayed within the -20% account-halt threshold in the leverage sweep.",
+        ),
+    ),
+    StarterDefinition(
+        id="crypto-gold-regime-relay-15m",
+        name="Crypto–Gold Regime Relay · 15m",
+        family="regime_rotation",
+        summary=(
+            "Rotates between a concentrated crypto leader and tokenized gold, "
+            "with cash as the fallback when neither side has positive momentum."
+        ),
+        timeframe="15m",
+        module="wayfinder_paths.jobs.strategies.regime_rotation",
+        symbols=("BNB", "HYPE", "ZEC", "MORPHO", "PAXG"),
+        crypto_assets=("BNB", "HYPE", "ZEC", "MORPHO", "PAXG"),
+        tokenized_equities=(),
+        rules=(
+            "Measure trailing 10-day momentum in BNB, HYPE, ZEC, and MORPHO.",
+            "When at least two risk assets have positive momentum, own the strongest at 40% gross; otherwise own PAXG at 40% only if its own momentum is positive.",
+            "Re-evaluate every eight hours at 00:00, 08:00, and 16:00 UTC; hold cash when neither side qualifies.",
+        ),
+        params={
+            "risk_symbols": ["BNB", "HYPE", "ZEC", "MORPHO"],
+            "defensive_symbol": "PAXG",
+            "momentum_bars": 960,
+            "require_trend_alignment": False,
+            "minimum_breadth": 0.5,
+            "top_n": 1,
+            "gross_exposure": 0.4,
+            "rebalance_bars": 32,
+            "rebalance_offset": 0,
+            "rebalance_threshold": 0.10,
+            "stop_atr_period": 96,
+        },
+        research_evidence={
+            **_DIVERSE_INTRADAY_RESEARCH_METHOD,
+            "strategy_revision": "2.0.0",
+            "strategy_family": "risk-on crypto / defensive gold relay",
+            "sharpe": 1.6410,
+            "max_drawdown": -0.1716,
+            "chronological_fold_method": (
+                "fixed-parameter continuous jobs_v1 path divided into four "
+                "contiguous quarters"
+            ),
+            "chronological_fold_returns": [0.1737, 0.1426, 0.2226, 0.0384],
+            "phase_robustness": {
+                "rebalance_phases_passing_return_and_sharpe_target": 32,
+                "rebalance_phases_checked": 32,
+                "full_period_sharpe_minimum": 1.5580,
+            },
+            "jobs_v1_engine": {
+                "return_after_fees_and_slippage": 0.7023,
+                "sharpe": 1.6410,
+                "max_drawdown": -0.1716,
+                "trade_count": 276,
+                "total_fees_usd": 634.06,
+                "stop_count": 0,
+                "full_period_vs_no_stop": "unchanged",
+                "chronological_folds_non_regressing": 4,
+                "funding_included": False,
+                "trace_valid": True,
+            },
+        },
+        strategy_inception_at="2026-09-04T00:00:00+00:00",
+        cautions=(
+            "PAXG is a traded asset, not cash; it can fall during risk-off periods and carries venue-specific basis and liquidity risk.",
+            "Funding is not included and the evidence spans roughly eleven months.",
+            "Only the default 1x setting stayed within the -20% account-halt threshold in the leverage sweep.",
+        ),
+    ),
     StarterDefinition(
         id="mixed-rsi-snapback-1h",
         name="Mixed RSI Snapback · 1h",
@@ -1490,7 +1835,7 @@ def create_starter_job(
     job.controller["starter"] = {
         "id": definition.id,
         "catalog_version": STARTER_CATALOG_VERSION,
-        "strategy_inception_at": STARTER_STRATEGY_INCEPTION_AT,
+        "strategy_inception_at": definition.strategy_inception_at,
         "job_tracking_inception_at": job.created_at,
         "paper_only": True,
         "risk_limits": definition.risk_limits(),

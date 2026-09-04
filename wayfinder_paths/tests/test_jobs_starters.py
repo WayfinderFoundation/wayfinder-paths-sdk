@@ -63,6 +63,7 @@ from wayfinder_paths.jobs.strategies.mixed_volume_capitulation import (
 from wayfinder_paths.jobs.strategies.pair_relative_strength import (
     PairRelativeStrengthStrategy,
 )
+from wayfinder_paths.jobs.strategies.regime_rotation import RegimeRotationStrategy
 from wayfinder_paths.jobs.sync import snapshot_job
 
 
@@ -241,7 +242,7 @@ def dataset_fetch_spawns(monkeypatch) -> list[dict[str, Any]]:
 
 def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
     catalog = starter_catalog()
-    assert len(catalog) == 12
+    assert len(catalog) == 16
     assert {item["timeframe"] for item in catalog} == {
         "5m",
         "15m",
@@ -249,8 +250,8 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
         "4h",
         "1d",
     }
-    assert [item["timeframe"] for item in catalog].count("5m") == 2
-    assert [item["timeframe"] for item in catalog].count("15m") == 2
+    assert [item["timeframe"] for item in catalog].count("5m") == 3
+    assert [item["timeframe"] for item in catalog].count("15m") == 5
     assert [item["timeframe"] for item in catalog].count("1h") == 5
     assert [item["timeframe"] for item in catalog].count("4h") == 1
     assert [item["timeframe"] for item in catalog].count("1d") == 2
@@ -266,6 +267,7 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
             "maker_mean_reversion",
             "mean_reversion",
             "low_volatility_ranking",
+            "regime_rotation",
             "relative_value_pair",
         }
         assert isinstance(item["cautions"], list)
@@ -306,11 +308,45 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
         assert sweep["account_halt_simulated"] is False
         assert [row["leverage"] for row in sweep["results"]] == [1, 2, 3, 4, 5]
         assert all(row["liquidation_count"] == 0 for row in sweep["results"])
+        assert all(
+            row["within_account_halt_threshold"]
+            == (row["max_drawdown"] >= row["account_halt_threshold"])
+            for row in sweep["results"]
+        )
         assert sweep["results"][0]["return_after_fees_and_slippage"] == pytest.approx(
             engine["return_after_fees_and_slippage"], abs=0.0001
         )
 
     by_id = {item["id"]: item for item in catalog}
+    new_intraday_ids = {
+        "bullish-regime-rotation-5m",
+        "diversified-trend-sleeves-15m",
+        "diversified-momentum-taker-15m",
+        "crypto-gold-regime-relay-15m",
+    }
+    for starter_id in new_intraday_ids:
+        engine = by_id[starter_id]["research_evidence"]["jobs_v1_engine"]
+        assert by_id[starter_id]["strategy_inception_at"] == (
+            "2026-09-04T00:00:00+00:00"
+        )
+        assert by_id[starter_id]["research_evidence"]["strategy_revision"] == "2.0.0"
+        assert engine["return_after_fees_and_slippage"] > 0.15
+        assert engine["sharpe"] > 1.4
+        assert (
+            engine["max_drawdown"] >= by_id[starter_id]["risk_limits"]["max_drawdown"]
+        )
+    bull_regimes = by_id["bullish-regime-rotation-5m"]["research_evidence"][
+        "hyperliquid_mechanism_check"
+    ]
+    assert bull_regimes["btc_bull_regime_return"] > 0
+    assert bull_regimes["btc_bear_regime_return"] >= 0
+    assert by_id["mixed-rsi-snapback-1h"]["strategy_inception_at"] == (
+        "2026-08-24T00:00:00+00:00"
+    )
+    assert (
+        by_id["mixed-rsi-snapback-1h"]["research_evidence"]["strategy_revision"]
+        == "1.8.0"
+    )
     crypto_momentum = by_id["crypto-momentum-persistence-4h"]
     assert crypto_momentum["params"]["score_volatility_bars"] == 168
     assert crypto_momentum["params"]["broad_bull_momentum_threshold"] == 0.10
@@ -337,6 +373,10 @@ def test_starter_catalog_has_mixed_maker_and_pair_paper_strategies() -> None:
         "hype-passive-rsi-full-5m": (3.0, 0.001, 0.20),
         "hype-passive-rsi-staged-5m": (3.0, 0.001, 0.20),
         "btc-eth-relative-strength-1d": (15.0, 0.40, 0.60),
+        "bullish-regime-rotation-5m": (12.0, 0.25, 0.50),
+        "diversified-trend-sleeves-15m": (20.0, 0.60, 0.80),
+        "diversified-momentum-taker-15m": (20.0, 0.60, 0.80),
+        "crypto-gold-regime-relay-15m": (12.0, 0.25, 0.50),
     }
     for starter_id, expected in expected_stops.items():
         params = by_id[starter_id]["params"]
@@ -406,6 +446,10 @@ EXPECTED_STARTER_LOOKBACK_BARS = {
     "hype-passive-rsi-staged-5m": 136,
     "btc-eth-relative-strength-1d": 184,
     "bch-ltc-relative-strength-1d": 184,
+    "bullish-regime-rotation-5m": 1464,
+    "diversified-trend-sleeves-15m": 792,
+    "diversified-momentum-taker-15m": 792,
+    "crypto-gold-regime-relay-15m": 984,
 }
 
 
@@ -580,6 +624,122 @@ def test_momentum_rank_longs_leaders_and_shorts_laggards() -> None:
         "C": "sell",
         "D": "sell",
     }
+
+
+def test_momentum_rank_can_leave_middle_assets_flat() -> None:
+    symbols = list("ABCDEFGHIJ")
+    strategy = MixedMomentumRankStrategy(
+        {
+            "symbols": symbols,
+            "momentum_bars": 2,
+            "rank_legs": 3,
+            "rebalance_bars": 1,
+            "stop_atr_period": 1,
+            "min_trade_notional": 0.0,
+        }
+    )
+    ctx = _context(
+        strategy,
+        {
+            symbol: [100.0, 100.0, 90.0 + 3.0 * index]
+            for index, symbol in enumerate(symbols)
+        },
+        interval="15min",
+    )
+
+    assert _sides(strategy.decide(ctx)) == {
+        "A": "sell",
+        "B": "sell",
+        "C": "sell",
+        "H": "buy",
+        "I": "buy",
+        "J": "buy",
+    }
+
+
+def test_momentum_rank_preserves_odd_universe_default_and_validates_rank_legs() -> None:
+    from wayfinder_paths.jobs.strategies._starter_utils import ranked_weights
+
+    assert ranked_weights({"A": 1.0, "B": 2.0, "C": 3.0}, weight_per_leg=0.25) == {
+        "A": -0.25,
+        "B": 0.25,
+        "C": 0.25,
+    }
+    with pytest.raises(ValueError, match="whole number"):
+        MixedMomentumRankStrategy({"symbols": list("ABCD"), "rank_legs": 1.5})
+    with pytest.raises(ValueError, match="at most half"):
+        MixedMomentumRankStrategy({"symbols": list("ABCD"), "rank_legs": 3})
+
+
+def test_bullish_regime_rotation_owns_leader_or_cash() -> None:
+    symbols = list("ABCDE")
+    params = {
+        "symbols": symbols,
+        "risk_symbols": symbols,
+        "momentum_bars": 2,
+        "fast_sma_bars": 2,
+        "slow_sma_bars": 3,
+        "minimum_breadth": 0.5,
+        "rebalance_bars": 1,
+        "stop_atr_period": 1,
+        "min_trade_notional": 0.0,
+    }
+    strategy = RegimeRotationStrategy(params)
+    bull = _context(
+        strategy,
+        {
+            "A": [100.0, 105.0, 120.0],
+            "B": [100.0, 104.0, 112.0],
+            "C": [100.0, 103.0, 108.0],
+            "D": [100.0, 98.0, 96.0],
+            "E": [100.0, 97.0, 94.0],
+        },
+        interval="5min",
+    )
+    bull_intents = strategy.decide(bull)
+    assert _sides(bull_intents) == {"A": "buy"}
+    assert bull_intents[0]["notional"] == 4_000.0
+
+    bear = _context(
+        strategy,
+        {
+            symbol: [100.0, 95.0 - index, 90.0 - index]
+            for index, symbol in enumerate(symbols)
+        },
+        interval="5min",
+    )
+    assert strategy.decide(bear) == []
+
+
+def test_regime_rotation_relays_to_positive_defensive_asset() -> None:
+    strategy = RegimeRotationStrategy(
+        {
+            "symbols": ["A", "B", "C", "D", "PAXG"],
+            "risk_symbols": ["A", "B", "C", "D"],
+            "defensive_symbol": "PAXG",
+            "momentum_bars": 2,
+            "require_trend_alignment": False,
+            "minimum_breadth": 0.5,
+            "rebalance_bars": 1,
+            "stop_atr_period": 1,
+            "min_trade_notional": 0.0,
+        }
+    )
+    ctx = _context(
+        strategy,
+        {
+            "A": [100.0, 95.0, 90.0],
+            "B": [100.0, 96.0, 91.0],
+            "C": [100.0, 97.0, 92.0],
+            "D": [100.0, 98.0, 93.0],
+            "PAXG": [100.0, 103.0, 108.0],
+        },
+        interval="15min",
+    )
+
+    intents = strategy.decide(ctx)
+    assert _sides(intents) == {"PAXG": "buy"}
+    assert intents[0]["notional"] == 4_000.0
 
 
 def test_crypto_momentum_concentrates_in_risk_adjusted_extremes() -> None:
