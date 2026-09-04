@@ -270,6 +270,10 @@ def test_active_evolution_campaign_is_one_compact_progress_row(tmp_path) -> None
             "status": "active",
             "stage": "generate",
             "started_at": "2026-08-28T16:00:00+00:00",
+            "evaluation_plan": {
+                "mode": "protected_chronological_folds_v1",
+                "protected": True,
+            },
             "counts": {
                 "generated": 3,
                 "quick_evaluated": 2,
@@ -346,6 +350,10 @@ def test_active_evolution_campaign_is_one_compact_progress_row(tmp_path) -> None
         "actor": "harness",
         "metadata": {
             "campaign_id": "campaign-1",
+            "evaluation_plan": {
+                "mode": "protected_chronological_folds_v1",
+                "protected": True,
+            },
             "funnel": {
                 "generated": {
                     "total": 3,
@@ -413,6 +421,10 @@ def test_terminal_evolution_campaigns_show_outcomes_without_live_duplicate(
             "type": "evolution_campaign_completed",
             "campaign_id": "campaign-2",
             "paper_proposals": 1,
+            "evaluation_plan": {
+                "mode": "protected_chronological_folds_v1",
+                "protected": True,
+            },
             "funnel": {
                 "generated": {
                     "total": 12,
@@ -483,6 +495,9 @@ def test_terminal_evolution_campaigns_show_outcomes_without_live_duplicate(
         "deferred": 0,
         "running": 0,
     }
+    assert entries[0]["metadata"]["evaluation_plan"]["mode"] == (
+        "protected_chronological_folds_v1"
+    )
     assert entries[1]["title"] == "Evolution campaign stopped before completion"
     assert entries[1]["kind"] == "recovery"
     assert entries[1]["detail"].endswith("3 finalization attempt(s)")

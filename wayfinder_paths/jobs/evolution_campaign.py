@@ -19,12 +19,14 @@ import os
 import re
 import shutil
 import statistics
+import tempfile
 import uuid
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from time import perf_counter
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -53,8 +55,10 @@ from wayfinder_paths.jobs.compute_lock import (
 )
 from wayfinder_paths.jobs.constitution import load_constitution
 from wayfinder_paths.jobs.economics import (
+    _chain_fold_equity,
     block_bootstrap_lcb,
     daily_log_returns,
+    objective_vector,
     paired_daily_deltas,
 )
 from wayfinder_paths.jobs.evidence import verify_job_evidence_refs
@@ -122,6 +126,7 @@ from wayfinder_paths.jobs.gating import (
     compute_workspace_revision,
     evaluate_economic_gate,
 )
+from wayfinder_paths.jobs.governance import record_evidence_access
 from wayfinder_paths.jobs.improver.spec import ImproverSpec, revision_stamp
 from wayfinder_paths.jobs.indicators import REGIME_LABELS, wilder_rsi
 from wayfinder_paths.jobs.isolated_phase import run_isolated_phase
@@ -192,6 +197,7 @@ PARENT_BUNDLE_ROOT = "research/evolution/parents"
 RESEARCH_SEED_ROOT = "research/evolution/research_seeds"
 RESEARCH_SEED_STATE_PATH = "state/evolution_research_seeds.json"
 CAMPAIGN_DATA_ROOT = "dataset"
+PROTECTED_CAMPAIGN_ROOT = "evolution/campaigns"
 FORWARD_SNAPSHOT = "forward_experience.json"
 DIAGNOSTIC_PACK = "diagnostic_pack.json"
 CAMPAIGN_DESIGN = "campaign_design.json"
@@ -496,18 +502,41 @@ def _start_campaign(
         experience = build_forward_experience(store, job_id, now=current)
     if existing and existing.get("status") not in {"active", "finalizing"}:
         _sync_campaign_archive(store, job_id, existing)
+    campaign_policy = {
+        **spec.evolution,
+        "same_family_non_wins": spec.stuck_same_family_non_wins,
+    }
+    campaign_policy.setdefault("max_attempts_per_idea", 3)
+    campaign_policy.setdefault(
+        "max_quick_attempts",
+        int(campaign_policy["generated_programs"])
+        * int(campaign_policy["max_attempts_per_idea"]),
+    )
+    campaign_policy.setdefault("wildcard_slots", 2)
+    campaign_policy.setdefault("elite_min_validation_trades", 8)
+    campaign_policy.setdefault("elite_participation_target_trades", 12)
+    certification_policy = _protected_fold_policy(campaign_policy)
     # Two campaigns' worth: a weekly loop must still see the week before last.
     historical_lessons = evolution_lessons_block(store, job_id, limit=16)
     cases = select_starter_cases(_job_tags(store, job_id))
     relative_root = f"{CAMPAIGN_ROOT}/{campaign_id}"
     campaign_root = root / relative_root
+    protected_root = (
+        _protected_campaign_dataset_root(store, job_id, campaign_id)
+        if certification_policy["enabled"]
+        else None
+    )
     with experiment_compute_lock(store, job_id, label=f"evolution-snapshot:{job_id}"):
         snapshots = _snapshot_campaign_inputs(
             root,
             campaign_root,
             dataset_path=dataset_path,
             experience=experience,
-            development_fraction=1.0,
+            development_fraction=float(certification_policy["discovery_fraction"]),
+            protected_data_root=protected_root,
+            audit_days=int(
+                load_constitution(root).get("evaluation", {}).get("audit_days") or 7
+            ),
         )
     # Seed the frozen source's compute window BEFORE any candidate copies it:
     # candidates inherit the declaration without their bundle diverging from
@@ -528,19 +557,6 @@ def _start_campaign(
     )
     research_context = _freeze_research_context(store, job_id)
     research_ideation = _freeze_research_ideation(store, job_id)
-    campaign_policy = {
-        **spec.evolution,
-        "same_family_non_wins": spec.stuck_same_family_non_wins,
-    }
-    campaign_policy.setdefault("max_attempts_per_idea", 3)
-    campaign_policy.setdefault(
-        "max_quick_attempts",
-        int(campaign_policy["generated_programs"])
-        * int(campaign_policy["max_attempts_per_idea"]),
-    )
-    campaign_policy.setdefault("wildcard_slots", 2)
-    campaign_policy.setdefault("elite_min_validation_trades", 8)
-    campaign_policy.setdefault("elite_participation_target_trades", 12)
     regime_context = _campaign_regime_context(
         campaign_root / str(snapshots["dataset"]["path"]),
         campaign_root / "source",
@@ -572,6 +588,7 @@ def _start_campaign(
         "research_context": research_context,
         "research_ideation": research_ideation,
         "regime_context": regime_context,
+        "evaluation_plan": snapshots["evaluation_plan"],
         "policy": campaign_policy,
         **revision_stamp(root),
     }
@@ -646,6 +663,7 @@ def _start_campaign(
         "diagnostic_pack": manifest["diagnostic_pack"]["path"],
         "campaign_design": f"{relative_root}/{CAMPAIGN_DESIGN}",
         "forward_context_cutoff": manifest["forward_context_cutoff"],
+        "evaluation_plan": manifest["evaluation_plan"],
         "candidates": [],
         "counts": {
             "generated": 0,
@@ -668,6 +686,7 @@ def _start_campaign(
             "campaign_id": campaign_id,
             "stage": state["stage"],
             "diagnostic_pack": manifest["diagnostic_pack"],
+            "evaluation_plan": manifest["evaluation_plan"],
         },
     )
     return state
@@ -1017,12 +1036,7 @@ def _campaign_scan_frames(
         dataset_root=campaign_root / CAMPAIGN_DATA_ROOT,
         include_store_features=True,
     )
-    split = policy.get("split") or {}
-    train, _, _ = _split_dataset(
-        subject["dataset"],
-        train_end=float(split.get("train") or 0.8),
-        validation_end=1.0,
-    )
+    train = _discovery_dataset(subject["dataset"], policy)
     params, _, _ = _calibrated_params(store, job_id, subject)
     bar_seconds = bar_interval_seconds(
         subject["spec"].data_contract.get("bar_interval")
@@ -1828,12 +1842,7 @@ def _incumbent_neighborhood(
     campaign_id = str(state["campaign_id"])
     try:
         subject = _load_subject(store, job_id, candidate_root, campaign_id=campaign_id)
-        train_end, validation_end = _split_bounds(
-            store, job_id, campaign_id=campaign_id
-        )
-        train, _, _ = _split_dataset(
-            subject["dataset"], train_end=train_end, validation_end=validation_end
-        )
+        train = _discovery_dataset(subject["dataset"], policy)
         params, _, _ = _calibrated_params(store, job_id, subject)
         strategy = _load_strategy(subject["script"], dict(params))
         tunables = _numeric_tunables(getattr(strategy, "params", {}) or {}, params)
@@ -1961,12 +1970,7 @@ def _incumbent_failure_modes(
             campaign_root / "source",
             dataset_root=campaign_root / CAMPAIGN_DATA_ROOT,
         )
-        split = policy.get("split") or {}
-        train, _, _ = _split_dataset(
-            subject["dataset"],
-            train_end=float(split.get("train") or 0.8),
-            validation_end=1.0,
-        )
+        train = _discovery_dataset(subject["dataset"], policy)
         params, _, _ = _calibrated_params(store, job_id, subject)
         labels = classify_portfolio_regimes(
             train.bars.to_frame(),
@@ -4325,12 +4329,7 @@ def _evaluate_candidate(
     repair_gate = False
     try:
         subject = _load_subject(store, job_id, candidate_root, campaign_id=campaign_id)
-        train_end, validation_end = _split_bounds(
-            store, job_id, campaign_id=campaign_id
-        )
-        train, _, _ = _split_dataset(
-            subject["dataset"], train_end=train_end, validation_end=validation_end
-        )
+        train = _discovery_dataset(subject["dataset"], policy)
         # The candidate's recent window is the reference's: one slice set,
         # sized by policy, so paired deltas, trade counts and the macro label
         # describe the same bars.
@@ -4705,12 +4704,9 @@ def _candidate_reference_receipt(
     if compute_workspace_revision(reference) != expected_revision:
         raise ValueError("candidate reference bundle revision mismatch")
     subject = _load_subject(store, job_id, reference, campaign_id=campaign_id)
-    train_end, validation_end = _split_bounds(store, job_id, campaign_id=campaign_id)
-    train, _, _ = _split_dataset(
-        subject["dataset"], train_end=train_end, validation_end=validation_end
-    )
-    params, _, _ = _calibrated_params(store, job_id, subject)
     policy = _campaign_policy(store, job_id, campaign_id)
+    train = _discovery_dataset(subject["dataset"], policy)
+    params, _, _ = _calibrated_params(store, job_id, subject)
     slices = _policy_screen_slices(train, policy)
     _, quick = slices[0]
     result = simulate_execution(subject["script"], quick, subject["spec"], params)
@@ -5695,6 +5691,11 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
             "campaign_id": state["campaign_id"],
             "counts": state["counts"],
             "funnel": summarize_evolution_funnel(state),
+            **(
+                {"evaluation_plan": state["evaluation_plan"]}
+                if state.get("evaluation_plan") is not None
+                else {}
+            ),
             "probation_trials": sum(
                 candidate.get("status") == "probation"
                 for candidate in state.get("candidates") or []
@@ -6134,6 +6135,12 @@ def _economic_gate_child(
     candidate_root = resolve_candidate_bundle(
         store, job_id, candidate, campaign_id=campaign_id
     )
+    policy = _campaign_policy(store, job_id, campaign_id)
+    dataset_root = (
+        _verified_protected_dataset_root(store, job_id, campaign_id)
+        if _protected_fold_policy(policy)["enabled"]
+        else (store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id / CAMPAIGN_DATA_ROOT)
+    )
     with evolution_resource_phase(
         store,
         job_id,
@@ -6149,9 +6156,7 @@ def _economic_gate_child(
             probation=True,
             store=store,
             trials=_campaign_trials(store, job_id),
-            dataset_root=(
-                store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id / CAMPAIGN_DATA_ROOT
-            ),
+            dataset_root=dataset_root,
         )
 
 
@@ -7493,6 +7498,7 @@ def _archive_campaign_candidate(
             "latest_postmortem_path",
             "target_regimes",
             "full_dev_failure_codes",
+            "evaluation_plan",
             "gate",
             "risk_normalization",
         )
@@ -7572,10 +7578,19 @@ def _full_dev(
     )
     root = resolve_candidate_bundle(store, job_id, candidate, campaign_id=campaign_id)
     subject = _load_subject(store, job_id, root, campaign_id=campaign_id)
-    train_end, validation_end = _split_bounds(store, job_id, campaign_id=campaign_id)
-    train, validation, _ = _split_dataset(
-        subject["dataset"], train_end=train_end, validation_end=validation_end
-    )
+    policy = _campaign_policy(store, job_id, campaign_id)
+    certification_policy = _protected_fold_policy(policy)
+    if certification_policy["enabled"]:
+        train_end, validation_end = 1.0, 1.0
+        train = subject["dataset"]
+        validation = None
+    else:
+        train_end, validation_end = _split_bounds(
+            store, job_id, campaign_id=campaign_id
+        )
+        train, validation, _ = _split_dataset(
+            subject["dataset"], train_end=train_end, validation_end=validation_end
+        )
     params, stress_params, calibration = _calibrated_params(store, job_id, subject)
     _require_declared_window(subject, params)
     tuning: dict[str, Any] | None = None
@@ -7587,7 +7602,6 @@ def _full_dev(
             **params,
             **candidate_search,
         }
-        policy = _campaign_policy(store, job_id, campaign_id)
         search_bars = int(policy.get("inner_optuna_train_bars") or 0)
         search_timeout = float(policy.get("inner_optuna_timeout_seconds") or 0) or None
         grid, tuning = _run_evolution_optuna(
@@ -7656,6 +7670,26 @@ def _full_dev(
     compact_train = _compact_result(train_result, stats=train_stats)
     del train_result
     gc.collect()
+    if certification_policy["enabled"]:
+        return _protected_fold_full_dev(
+            store,
+            job_id,
+            candidate,
+            campaign_id=campaign_id,
+            root=root,
+            subject=subject,
+            params=params,
+            stress_params=stress_params,
+            calibration=calibration,
+            tuning=tuning,
+            revision=revision,
+            train_stats=train_stats,
+            compact_train=compact_train,
+            policy=policy,
+            certification_policy=certification_policy,
+            manifest=manifest,
+        )
+    assert validation is not None
     validation_result, validation_stats = _window_result(
         subject, train_end, validation_end, params
     )
@@ -7777,6 +7811,456 @@ def _full_dev(
             ),
         },
         "evidence": verdict["evidence"],
+    }
+
+
+def _protected_fold_full_dev(
+    store: JobStore,
+    job_id: str,
+    candidate: dict[str, Any],
+    *,
+    campaign_id: str,
+    root: Path,
+    subject: dict[str, Any],
+    params: dict[str, Any],
+    stress_params: dict[str, Any],
+    calibration: dict[str, Any],
+    tuning: dict[str, Any] | None,
+    revision: str,
+    train_stats: dict[str, Any],
+    compact_train: dict[str, Any],
+    policy: Mapping[str, Any],
+    certification_policy: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Certify locked candidate bytes on an agent-invisible chronological tail."""
+    protected_root = _verified_protected_dataset_root(
+        store, job_id, campaign_id, manifest=manifest
+    )
+    protected_subject = _load_subject(
+        store,
+        job_id,
+        root,
+        campaign_id=campaign_id,
+        dataset_root=protected_root,
+    )
+    dataset: PreparedExecutionDataset = protected_subject["dataset"]
+    timestamps = dataset.bars.timestamps
+    evaluation_plan = dict(manifest.get("evaluation_plan") or {})
+    fold_bounds, layout_error = _certification_fold_bounds(
+        timestamps,
+        evaluation_plan,
+        folds=int(certification_policy["folds"]),
+        minimum_bars=int(certification_policy["minimum_fold_bars"]),
+    )
+    if layout_error is not None:
+        return {
+            "status": "low_fidelity_rejected",
+            "full_dev_failure_codes": ["insufficient_certification_history"],
+            "revision": revision,
+            "params": params,
+            "tuning": tuning,
+            "execution_calibration": calibration,
+            "dev": {"train": compact_train},
+            "objective": _objective(train_stats, params),
+            "behavior": {},
+            "elite_eligible": False,
+            "elite_activity": {
+                "validation_trades": 0,
+                "minimum": int(policy.get("elite_min_validation_trades") or 8),
+                "target": int(policy.get("elite_participation_target_trades") or 12),
+            },
+            "evaluation_plan": {
+                **evaluation_plan,
+                "certification_policy": dict(certification_policy),
+            },
+            "evidence": layout_error,
+        }
+
+    warmup = _strategy_warmup_bars(subject["script"], params)
+    base_equity: list[dict[str, Any]] = []
+    stress_equity: list[dict[str, Any]] = []
+    base_trades: list[dict[str, Any]] = []
+    stress_trades: list[dict[str, Any]] = []
+    base_stats_rows: list[dict[str, Any]] = []
+    stress_stats_rows: list[dict[str, Any]] = []
+    fold_rows: list[dict[str, Any]] = []
+    all_valid = True
+    for fold, (start, end) in enumerate(fold_bounds):
+        base_result, base_stats, scoped_equity, scoped_trades = _indexed_window_result(
+            protected_subject, start=start, end=end, params=params, warmup=warmup
+        )
+        base_valid = bool(base_result.validation.get("execution_valid"))
+        base_compact = _compact_result(base_result, stats=base_stats)
+        base_stats_rows.append(base_stats)
+        base_equity.extend(_chain_fold_equity(base_equity, scoped_equity))
+        base_trades.extend(scoped_trades)
+        if stress_params == params:
+            stress_valid = base_valid
+            stress_stats = dict(base_stats)
+            stress_compact = {**base_compact, "reused_base_costs": True}
+            scoped_stress_equity = list(scoped_equity)
+            scoped_stress_trades = list(scoped_trades)
+        else:
+            stress_result, stress_stats, scoped_stress_equity, scoped_stress_trades = (
+                _indexed_window_result(
+                    protected_subject,
+                    start=start,
+                    end=end,
+                    params=stress_params,
+                    warmup=warmup,
+                )
+            )
+            stress_valid = bool(stress_result.validation.get("execution_valid"))
+            stress_compact = _compact_result(stress_result, stats=stress_stats)
+            del stress_result
+        stress_stats_rows.append(stress_stats)
+        stress_equity.extend(_chain_fold_equity(stress_equity, scoped_stress_equity))
+        stress_trades.extend(scoped_stress_trades)
+        del base_result
+        gc.collect()
+
+        base_return = _decision_return(base_stats)
+        stress_return = _decision_return(stress_stats)
+        all_valid = all_valid and base_valid and stress_valid
+        fold_rows.append(
+            {
+                "fold": fold,
+                "test": {
+                    "start": str(timestamps[start]),
+                    "end": str(timestamps[end - 1]),
+                    "bars": end - start,
+                    "warmup_bars": min(warmup, start),
+                },
+                "base": base_compact,
+                "stress": stress_compact,
+                "base_return": round(base_return, 8),
+                "stress_return": round(stress_return, 8),
+                "positive": base_return > 0.0 and stress_return > 0.0,
+            }
+        )
+
+    base_vector = objective_vector(base_equity, base_trades)
+    stress_vector = objective_vector(stress_equity, stress_trades)
+    base_regime = _pooled_regime_stats(base_stats_rows)
+    stress_regime = _pooled_regime_stats(stress_stats_rows)
+    pooled_base = _pooled_fold_stats(base_stats_rows, base_vector, base_regime)
+    pooled_stress = _pooled_fold_stats(stress_stats_rows, stress_vector, stress_regime)
+    validation_haircut = haircut(
+        [value for _, value in daily_log_returns(base_equity)],
+        _campaign_trials(store, job_id),
+    )
+    minimum_trades = int(policy.get("elite_min_validation_trades") or 8)
+    constitution = load_constitution(root)
+    regime_config = constitution.get("evaluation", {}).get("regime", {})
+    specialized = bool(base_regime.get("target_regimes"))
+    outside_budget = float(regime_config.get("max_out_of_regime_loss_pct") or 0.02)
+    outside_loss_ok = not specialized or (
+        float(base_regime.get("outside_loss_pct") or 0.0) <= outside_budget
+        and float(stress_regime.get("outside_loss_pct") or 0.0) <= outside_budget
+    )
+    verdict = _protected_fold_verdict(
+        fold_rows,
+        valid=all_valid,
+        validation_trades=sum(_decision_trade_count(row) for row in base_stats_rows),
+        minimum_validation_trades=minimum_trades,
+        pooled_return=_decision_return(pooled_base),
+        pooled_stress_return=_decision_return(pooled_stress),
+        train_return=_decision_return(train_stats),
+        specialized=specialized,
+        target_days=len(base_regime.get("target_daily") or []),
+        min_target_days=int(regime_config.get("min_target_days") or 10),
+        outside_loss_ok=outside_loss_ok,
+        base_vector=base_vector,
+        stress_vector=stress_vector,
+        hard_constraints=constitution.get("hard_constraints") or {},
+        required_positive_folds=int(certification_policy["required_positive_folds"]),
+        max_fold_loss_pct=float(certification_policy["max_fold_loss_pct"]),
+        audit_passed=bool(calibration["audit_passed"]),
+        haircut_cleared=validation_haircut.get("cleared"),
+    )
+    validation_trades = sum(_decision_trade_count(row) for row in base_stats_rows)
+    certificate_dataset = _slice(
+        dataset, timestamps, fold_bounds[0][0], fold_bounds[-1][1]
+    )
+    synthetic = SimpleNamespace(trades=base_trades, stats=pooled_base)
+    validation_block = {
+        "stats": pooled_base,
+        "validation": {"execution_valid": all_valid},
+        "profile": {"mode": "protected_chronological_folds_v1"},
+        "folds": fold_rows,
+        "haircut": validation_haircut,
+        "exits": receipt_exits({"trades": base_trades}),
+        "forensics": _validation_forensics(synthetic, certificate_dataset),
+    }
+    objective = {
+        key: round(float(base_vector[key]), 8)
+        for key in (
+            "net_log_growth",
+            "downside_deviation",
+            "tail_loss",
+            "max_drawdown_pct",
+        )
+    }
+    if specialized:
+        objective["out_of_regime_loss_pct"] = round(
+            float(base_regime.get("outside_loss_pct") or 0.0), 8
+        )
+    result_plan = {
+        **evaluation_plan,
+        "certification_policy": dict(certification_policy),
+        "locked_revision": revision,
+        "folds": [row["test"] for row in fold_rows],
+    }
+    return {
+        "status": verdict["status"],
+        "full_dev_failure_codes": verdict["failure_codes"],
+        "revision": revision,
+        "params": params,
+        "tuning": tuning,
+        "execution_calibration": calibration,
+        "dev": {
+            "train": compact_train,
+            "validation": validation_block,
+            "validation_stress": {
+                "stats": pooled_stress,
+                "validation": {"execution_valid": all_valid},
+                "profile": {"mode": "protected_chronological_folds_v1"},
+            },
+        },
+        "objective": objective,
+        "behavior": _behavior(
+            synthetic, certificate_dataset, protected_subject["spec"], stats=pooled_base
+        ),
+        "elite_eligible": bool(verdict["passed"]),
+        "elite_activity": {
+            "validation_trades": validation_trades,
+            "minimum": minimum_trades,
+            "target": int(policy.get("elite_participation_target_trades") or 12),
+        },
+        "evaluation_plan": result_plan,
+        "evidence": verdict["evidence"],
+    }
+
+
+def _indexed_window_result(
+    subject: Mapping[str, Any],
+    *,
+    start: int,
+    end: int,
+    params: dict[str, Any],
+    warmup: int,
+) -> tuple[Any, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    dataset: PreparedExecutionDataset = subject["dataset"]
+    timestamps = dataset.bars.timestamps
+    evaluation = _slice(dataset, timestamps, max(0, start - warmup), end)
+    result = simulate_execution(subject["script"], evaluation, subject["spec"], params)
+    boundary = timestamps[start]
+    stats = _test_window_stats(result, boundary, subject["spec"], params)
+    equity = [
+        row for row in result.equity_curve if pd.Timestamp(row["timestamp"]) >= boundary
+    ]
+    trades = [
+        row for row in result.trades if pd.Timestamp(row["timestamp"]) >= boundary
+    ]
+    return result, stats, equity, trades
+
+
+def _certification_fold_bounds(
+    timestamps: Sequence[pd.Timestamp],
+    evaluation_plan: Mapping[str, Any],
+    *,
+    folds: int,
+    minimum_bars: int,
+) -> tuple[list[tuple[int, int]], str | None]:
+    certification = evaluation_plan.get("certification") or {}
+    start_raw = certification.get("start")
+    audit_raw = (evaluation_plan.get("audit") or {}).get("start")
+    if not timestamps or not start_raw or not audit_raw:
+        return [], "protected certification boundaries are unavailable"
+    start_stamp = pd.Timestamp(start_raw)
+    audit_stamp = pd.Timestamp(audit_raw)
+    start = next(
+        (index for index, stamp in enumerate(timestamps) if stamp >= start_stamp),
+        len(timestamps),
+    )
+    end = next(
+        (index for index, stamp in enumerate(timestamps) if stamp >= audit_stamp),
+        len(timestamps),
+    )
+    available = end - start
+    if available < folds * minimum_bars:
+        return [], (
+            f"protected certification has {available} bars; needs at least "
+            f"{folds * minimum_bars} for {folds} folds"
+        )
+    bounds = [
+        (
+            start + available * index // folds,
+            start + available * (index + 1) // folds,
+        )
+        for index in range(folds)
+    ]
+    return bounds, None
+
+
+def _decision_return(stats: Mapping[str, Any]) -> float:
+    regime = stats.get("regime") or {}
+    return float(
+        (
+            regime.get("target_net_return")
+            if regime.get("target_regimes")
+            else stats.get("net_return")
+        )
+        or 0.0
+    )
+
+
+def _pooled_regime_stats(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    regimes = [row.get("regime") or {} for row in rows]
+    specialized = next((row for row in regimes if row.get("target_regimes")), None)
+    if specialized is None:
+        return {}
+    target_daily = [item for row in regimes for item in (row.get("target_daily") or [])]
+    outside_daily = [
+        item for row in regimes for item in (row.get("outside_daily") or [])
+    ]
+    target_growth = sum(float(value) for _, value in target_daily)
+    outside_growth = sum(float(value) for _, value in outside_daily)
+    return {
+        "target_regimes": list(specialized.get("target_regimes") or []),
+        "target_daily": target_daily,
+        "outside_daily": outside_daily,
+        "target_net_log_growth": target_growth,
+        "target_net_return": math.expm1(target_growth),
+        "outside_loss_pct": max(0.0, 1.0 - math.exp(outside_growth)),
+    }
+
+
+def _pooled_fold_stats(
+    rows: Sequence[Mapping[str, Any]],
+    vector: Mapping[str, Any],
+    regime: Mapping[str, Any],
+) -> dict[str, Any]:
+    trade_count = sum(_decision_trade_count(dict(row)) for row in rows)
+    weighted_duration = sum(
+        float(row.get("avg_trade_duration_s") or 0.0) * _decision_trade_count(dict(row))
+        for row in rows
+    )
+    return {
+        "net_return": math.expm1(float(vector["net_log_growth"])),
+        "trade_count": trade_count,
+        "max_drawdown_pct": -float(vector["max_drawdown_pct"]),
+        "total_fees": sum(float(row.get("total_fees") or 0.0) for row in rows),
+        "total_turnover_usd": sum(
+            float(row.get("total_turnover_usd") or 0.0) for row in rows
+        ),
+        "avg_trade_duration_s": (
+            weighted_duration / trade_count if trade_count else 0.0
+        ),
+        "regime": dict(regime),
+    }
+
+
+def _protected_fold_verdict(
+    folds: Sequence[Mapping[str, Any]],
+    *,
+    valid: bool,
+    validation_trades: int,
+    minimum_validation_trades: int,
+    pooled_return: float,
+    pooled_stress_return: float,
+    train_return: float,
+    specialized: bool,
+    target_days: int,
+    min_target_days: int,
+    outside_loss_ok: bool,
+    base_vector: Mapping[str, Any],
+    stress_vector: Mapping[str, Any],
+    hard_constraints: Mapping[str, Any],
+    required_positive_folds: int,
+    max_fold_loss_pct: float,
+    audit_passed: bool,
+    haircut_cleared: bool | None,
+) -> dict[str, Any]:
+    awaiting = specialized and valid and target_days < min_target_days
+    positive_folds = sum(bool(row.get("positive")) for row in folds)
+    overdrawn = [
+        int(row.get("fold") or 0)
+        for row in folds
+        if min(
+            float(row.get("base_return") or 0.0),
+            float(row.get("stress_return") or 0.0),
+        )
+        < -max_fold_loss_pct
+    ]
+    max_drawdown = max(
+        float(base_vector.get("max_drawdown_pct") or 0.0),
+        float(stress_vector.get("max_drawdown_pct") or 0.0),
+    )
+    max_tail = max(
+        float(base_vector.get("tail_loss") or 0.0),
+        float(stress_vector.get("tail_loss") or 0.0),
+    )
+    drawdown_ceiling = float(hard_constraints.get("max_drawdown_pct") or 0.25)
+    tail_ceiling = float(hard_constraints.get("max_tail_loss") or 0.15)
+    failure_codes: list[str] = []
+    if not valid:
+        failure_codes.append("invalid_execution")
+    if validation_trades < minimum_validation_trades:
+        failure_codes.append("activity_below_floor")
+    if positive_folds < required_positive_folds:
+        failure_codes.append("insufficient_positive_folds")
+    if overdrawn:
+        failure_codes.append("fold_loss_bound")
+    if pooled_return <= 0.0:
+        failure_codes.append(
+            "negative_in_target_regime" if specialized else "negative_after_costs"
+        )
+    if pooled_stress_return <= 0.0:
+        failure_codes.append("negative_under_stress")
+    if not outside_loss_ok:
+        failure_codes.append("out_of_regime_loss_budget")
+    if max_drawdown > drawdown_ceiling:
+        failure_codes.append("hard_drawdown_ceiling")
+    if max_tail > tail_ceiling:
+        failure_codes.append("hard_tail_loss_ceiling")
+    if not audit_passed:
+        failure_codes.append("execution_cost_audit")
+    if haircut_cleared is False:
+        failure_codes.append("validation_not_significant_after_trials")
+    if train_return > 0.0 and pooled_return < 0.0:
+        failure_codes.append("screen_inversion")
+    passed = not awaiting and not failure_codes
+    if passed:
+        return {
+            "status": "dev_frontier",
+            "passed": True,
+            "failure_codes": [],
+            "evidence": (
+                f"protected chronological certificate passed: {positive_folds}/"
+                f"{len(folds)} positive base-and-stress folds"
+            ),
+        }
+    if awaiting:
+        return {
+            "status": "awaiting_regime",
+            "passed": False,
+            "failure_codes": [],
+            "evidence": (
+                f"protected folds held {target_days} target-regime days, below "
+                f"{min_target_days}; not evidence against the idea"
+            ),
+        }
+    return {
+        "status": "low_fidelity_rejected",
+        "passed": False,
+        "failure_codes": list(dict.fromkeys(failure_codes)),
+        "evidence": (
+            f"protected chronological certificate failed: {positive_folds}/"
+            f"{len(folds)} positive folds"
+            + (f"; fold loss bound breached in {overdrawn}" if overdrawn else "")
+        ),
     }
 
 
@@ -9524,9 +10008,17 @@ def _install_starter_seed(
     ratio = _starter_bar_ratio(starter, candidate_root)
     params = _rescale_bar_params(dict(starter.get("params") or {}), ratio)
     params.update(_target_execution_params(candidate_root))
-    params["warmup_bars"] = max(1, round(int(starter["warmup_bars"]) * ratio))
-    params["lookback_bars"] = max(1, round(int(starter["lookback_bars"]) * ratio))
     params.pop("full_history", None)
+    # Scale the indicator parameters, then ask the resulting strategy for its
+    # real warmup. Scaling the old total also scales away fixed buffers (for
+    # example max(lookbacks) + 4), leaving a view permanently shorter than
+    # the strategy's own warmup guard after a timeframe adaptation.
+    strategy = _load_strategy(script, dict(params))
+    warmup = int(getattr(strategy, "warmup_bars", 0) or 0)
+    if warmup <= 0:
+        raise ValueError("adapted starter strategy declares no warmup_bars")
+    params["warmup_bars"] = warmup
+    params["lookback_bars"] = warmup + STARTER_LOOKBACK_MARGIN_BARS
     job_data["execution_params"] = params
     atomic_write_text(
         candidate_root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
@@ -9693,6 +10185,8 @@ def _snapshot_campaign_inputs(
     dataset_path: Path,
     experience: dict[str, Any],
     development_fraction: float,
+    protected_data_root: Path | None = None,
+    audit_days: int = 7,
 ) -> dict[str, Any]:
     """Freeze every input known when candidate generation begins."""
     campaign_root.mkdir(parents=True, exist_ok=False)
@@ -9706,6 +10200,14 @@ def _snapshot_campaign_inputs(
         bars_path,
         fraction=development_fraction,
     )
+    dataset_timestamps = list(dataset_window.pop("_timestamps", []))
+    protected_bars_path: Path | None = None
+    if protected_data_root is not None:
+        protected_data_root.mkdir(parents=True, exist_ok=False)
+        protected_bars_path = (
+            protected_data_root / "results" / "backtest" / "input_bars.json"
+        )
+        _atomic_copy(dataset_path, protected_bars_path)
 
     features: list[dict[str, Any]] = []
     job_data = _load_job_yaml(active_root)
@@ -9735,6 +10237,8 @@ def _snapshot_campaign_inputs(
             destination.parent.mkdir(parents=True, exist_ok=True)
             if not _write_timeseries_prefix(source, destination, cutoff=cutoff):
                 shutil.copy2(source, destination)
+            if protected_data_root is not None:
+                _atomic_copy(source, protected_data_root / relative)
             copied.add(source)
             features.append(
                 {
@@ -9752,6 +10256,8 @@ def _snapshot_campaign_inputs(
         destination.parent.mkdir(parents=True, exist_ok=True)
         if not _write_timeseries_prefix(store_source, destination, cutoff=cutoff):
             shutil.copy2(store_source, destination)
+        if protected_data_root is not None:
+            _atomic_copy(store_source, protected_data_root / DEFAULT_FEATURES_PATH)
         copied.add(store_source)
         features.append(
             {
@@ -9764,6 +10270,14 @@ def _snapshot_campaign_inputs(
 
     forward_path = campaign_root / FORWARD_SNAPSHOT
     atomic_write_json(forward_path, experience)
+    evaluation_plan = _snapshot_evaluation_plan(
+        dataset_timestamps,
+        development_fraction=development_fraction,
+        cutoff=cutoff,
+        audit_days=audit_days,
+        execution_spec=ExecutionSpec.from_dict(spec_data) if spec_data else None,
+        protected_data_root=protected_data_root,
+    )
     return {
         "dataset": {
             "path": f"{CAMPAIGN_DATA_ROOT}/results/backtest/input_bars.json",
@@ -9782,6 +10296,81 @@ def _snapshot_campaign_inputs(
             "path": "source",
             "revision": compute_workspace_revision(source_bundle),
         },
+        "evaluation_plan": evaluation_plan,
+    }
+
+
+def _atomic_copy(source: Path, destination: Path) -> None:
+    """Copy a potentially large frozen input without exposing a partial file."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(
+        dir=str(destination.parent), prefix=destination.name, suffix=".tmp"
+    )
+    try:
+        with source.open("rb") as source_handle, os.fdopen(fd, "wb") as target_handle:
+            shutil.copyfileobj(source_handle, target_handle)
+        os.replace(temporary, destination)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _snapshot_evaluation_plan(
+    timestamps: Sequence[pd.Timestamp],
+    *,
+    development_fraction: float,
+    cutoff: pd.Timestamp | None,
+    audit_days: int,
+    execution_spec: ExecutionSpec | None,
+    protected_data_root: Path | None,
+) -> dict[str, Any]:
+    if protected_data_root is None:
+        return {"mode": "single_validation_window_v1", "protected": False}
+    if not timestamps or cutoff is None or execution_spec is None:
+        raise ValueError("protected fold certification requires timestamped bars")
+    discovery_bars = sum(stamp <= cutoff for stamp in timestamps)
+    seconds = bar_interval_seconds(execution_spec.data_contract.get("bar_interval"))
+    if not seconds:
+        raise ValueError("protected fold certification requires a bar interval")
+    audit_bars = max(1, int(audit_days * 86_400 // int(seconds)))
+    audit_start = max(discovery_bars, len(timestamps) - audit_bars)
+    certification_bars = max(0, audit_start - discovery_bars)
+    return {
+        "mode": "protected_chronological_folds_v1",
+        "protected": True,
+        "discovery": {
+            "fraction": development_fraction,
+            "start": timestamps[0].isoformat(),
+            "end": cutoff.isoformat(),
+            "bars": discovery_bars,
+        },
+        "certification": {
+            "start": (
+                timestamps[discovery_bars].isoformat()
+                if discovery_bars < audit_start
+                else None
+            ),
+            "end": (
+                timestamps[audit_start - 1].isoformat()
+                if audit_start > discovery_bars
+                else None
+            ),
+            "bars": certification_bars,
+        },
+        "audit": {
+            "days": audit_days,
+            "start": timestamps[audit_start].isoformat(),
+            "end": timestamps[-1].isoformat(),
+            "bars": len(timestamps) - audit_start,
+        },
+        "protected_snapshot": _directory_fingerprint(protected_data_root),
     }
 
 
@@ -9817,6 +10406,10 @@ def _write_development_prefix(
         "days": round((cutoff - timestamps[0]).total_seconds() / 86_400.0, 4),
         "start": timestamps[0].isoformat(),
         "end": timestamps[-1].isoformat(),
+        # Internal handoff to the evaluation-plan builder. The caller removes
+        # it before the window is persisted in the manifest, avoiding a
+        # second parse of a potentially large canonical dataset.
+        "_timestamps": timestamps,
     }
     development = {
         **payload,
@@ -9925,6 +10518,90 @@ def _campaign_policy(store: JobStore, job_id: str, campaign_id: str) -> dict[str
     if not isinstance(policy, dict):
         raise ValueError(f"evolution campaign {campaign_id!r} has no policy")
     return policy
+
+
+def _protected_fold_policy(policy: Mapping[str, Any]) -> dict[str, Any]:
+    raw = policy.get("protected_fold_certification") or {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("protected_fold_certification must be a mapping")
+    enabled = bool(raw.get("enabled", False))
+    discovery_fraction = float(raw.get("discovery_fraction") or 0.60)
+    folds = int(raw.get("folds") or 4)
+    required = int(raw.get("required_positive_folds") or 3)
+    max_loss = float(raw.get("max_fold_loss_pct") or 0.05)
+    minimum_bars = int(raw.get("minimum_fold_bars") or 8)
+    if not 0.0 < discovery_fraction < 1.0:
+        raise ValueError("protected discovery_fraction must be between 0 and 1")
+    if folds < 2 or not 1 <= required <= folds:
+        raise ValueError("protected fold counts are inconsistent")
+    if max_loss <= 0.0 or minimum_bars < 2:
+        raise ValueError("protected fold loss and bar floors must be positive")
+    return {
+        "enabled": enabled,
+        # A disabled campaign snapshots every bar and follows the historical
+        # train/validation split.  The configured 60% becomes active only
+        # when the opt-in itself is active.
+        "discovery_fraction": discovery_fraction if enabled else 1.0,
+        "folds": folds,
+        "required_positive_folds": required,
+        "max_fold_loss_pct": max_loss,
+        "minimum_fold_bars": minimum_bars,
+    }
+
+
+def _discovery_dataset(
+    dataset: PreparedExecutionDataset, policy: Mapping[str, Any]
+) -> PreparedExecutionDataset:
+    """The model-visible snapshot is already the whole discovery region in
+    protected mode; legacy campaigns retain their inner train split."""
+    if _protected_fold_policy(policy)["enabled"]:
+        return dataset
+    split = policy.get("split") or {}
+    train, _, _ = _split_dataset(
+        dataset,
+        train_end=float(split.get("train") or 0.8),
+        validation_end=1.0,
+    )
+    return train
+
+
+def _protected_campaign_dataset_root(
+    store: JobStore, job_id: str, campaign_id: str
+) -> Path:
+    allowed = (store.repo_root / "audit" / job_id / PROTECTED_CAMPAIGN_ROOT).resolve()
+    resolved = (allowed / campaign_id / CAMPAIGN_DATA_ROOT).resolve()
+    if not resolved.is_relative_to(allowed) or resolved.parent.parent != allowed:
+        raise ValueError("protected campaign dataset escapes the audit plane")
+    return resolved
+
+
+def _verified_protected_dataset_root(
+    store: JobStore,
+    job_id: str,
+    campaign_id: str,
+    *,
+    manifest: Mapping[str, Any] | None = None,
+) -> Path:
+    resolved = _protected_campaign_dataset_root(store, job_id, campaign_id)
+    bars = resolved / "results" / "backtest" / "input_bars.json"
+    plan = dict(
+        (manifest or _campaign_manifest(store, job_id, campaign_id)).get(
+            "evaluation_plan"
+        )
+        or {}
+    )
+    expected = str((plan.get("protected_snapshot") or {}).get("sha256") or "")
+    if plan.get("mode") != "protected_chronological_folds_v1" or not expected:
+        raise ValueError("campaign has no protected certification snapshot")
+    if not bars.is_file() or _directory_fingerprint(resolved)["sha256"] != expected:
+        raise ValueError("protected certification snapshot revision mismatch")
+    record_evidence_access(
+        store.repo_root,
+        job_id,
+        "evolution_protected_certification",
+        {"campaign_id": campaign_id, "sha256": expected},
+    )
+    return resolved
 
 
 def _split_bounds(
@@ -10062,6 +10739,22 @@ def _file_hash(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _directory_fingerprint(root: Path) -> dict[str, Any]:
+    """Hash relative paths and bytes for the complete protected input tree."""
+    digest = hashlib.sha256()
+    files = [path for path in sorted(root.rglob("*")) if path.is_file()]
+    total_bytes = 0
+    for path in files:
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+                total_bytes += len(chunk)
+        digest.update(b"\0")
+    return {"sha256": digest.hexdigest(), "files": len(files), "bytes": total_bytes}
 
 
 def _parse(value: Any) -> datetime:

@@ -25,10 +25,12 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _archive_campaign_candidate,
     _attempt_cap,
     _candidate_handoff,
+    _certification_fold_bounds,
     _claim_full_dev,
     _commit_designed_attempt,
     _commit_full_dev,
     _complexity_budget,
+    _economic_gate_child,
     _failure_mode_summary,
     _focus_rank,
     _freeze_research_context,
@@ -43,6 +45,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _parent_source,
     _persist_executable_bundle,
     _plateau_select,
+    _protected_fold_verdict,
     _prune_risky_trials,
     _research_context_instruction,
     _risk_ceiling_scale,
@@ -56,6 +59,7 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _select_validated_rows,
     _slice_route,
     _starter_compatibility,
+    _verified_protected_dataset_root,
     _write_timeseries_prefix,
     campaign_due,
     campaign_prompt_block,
@@ -92,10 +96,12 @@ from wayfinder_paths.jobs.starter_casebook import (
 )
 from wayfinder_paths.jobs.starters import (
     STARTER_DEFINITIONS,
+    STARTER_LOOKBACK_MARGIN_BARS,
     starter_lookback_bars,
     starter_warmup_bars,
 )
 from wayfinder_paths.jobs.store import JobStore
+from wayfinder_paths.jobs.synthetic.strategies import CHURNER
 from wayfinder_paths.jobs.worker import (
     _queue_evolution_worker,
     nudge_evolution_session,
@@ -2595,6 +2601,280 @@ def test_jsonl_features_are_frozen_at_the_campaign_cutoff(tmp_path) -> None:
     )
     rows = [json.loads(line) for line in destination.read_text().splitlines()]
     assert [row["value"] for row in rows] == [0, 1]
+
+
+def _enable_protected_folds(store: JobStore, job_id: str, *, bars: int = 1_000) -> None:
+    root = store.job_dir(job_id)
+    (root / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": bars / 24}, "bars": _hourly_bars(bars)}),
+        encoding="utf-8",
+    )
+    improver_path = root / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"].update(
+        {
+            "incumbent_failure_modes": False,
+            "policy_scan_enabled": False,
+            "signal_first_seeding": False,
+            "protected_fold_certification": {
+                "enabled": True,
+                "discovery_fraction": 0.60,
+                "folds": 4,
+                "required_positive_folds": 3,
+                "max_fold_loss_pct": 0.05,
+                "minimum_fold_bars": 8,
+            },
+        }
+    )
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+
+
+def test_protected_fold_snapshot_hides_tail_and_aligns_json_and_jsonl(
+    tmp_path,
+) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id)
+    root = store.job_dir(job_id)
+    job = yaml.safe_load((root / "job.yaml").read_text(encoding="utf-8"))
+    job["execution_spec"]["data_contract"]["features"] = [
+        {"name": "workspace_signal", "path": "workspace/features.json"}
+    ]
+    (root / "job.yaml").write_text(
+        yaml.safe_dump(job, sort_keys=False), encoding="utf-8"
+    )
+    feature_rows = [
+        {
+            "timestamp": row["timestamp"],
+            "name": "workspace_signal",
+            "value": index,
+            "symbol": "IMX",
+        }
+        for index, row in enumerate(_hourly_bars(1_000))
+    ]
+    (root / "workspace/features.json").write_text(
+        json.dumps({"features": feature_rows}), encoding="utf-8"
+    )
+    (root / "state").mkdir(exist_ok=True)
+    (root / "state/features.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in feature_rows), encoding="utf-8"
+    )
+
+    state = start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    campaign_root = root / "research/evolution/campaigns" / state["campaign_id"]
+    visible = json.loads(
+        (campaign_root / manifest["dataset"]["path"]).read_text(encoding="utf-8")
+    )
+    visible_stamps = sorted({row["timestamp"] for row in visible["bars"]})
+    assert len(visible_stamps) == 600
+    plan = manifest["evaluation_plan"]
+    assert plan["mode"] == "protected_chronological_folds_v1"
+    assert plan["discovery"]["bars"] == 600
+    assert plan["certification"]["bars"] == 232
+    assert plan["audit"]["bars"] == 168
+    assert plan["discovery"]["end"] < plan["certification"]["start"]
+    assert plan["certification"]["end"] < plan["audit"]["start"]
+    # The readable manifest proves the snapshot exists without revealing the
+    # audit-plane location to the campaign worker.
+    serialized = json.dumps(manifest)
+    assert str(tmp_path / "audit") not in serialized
+
+    protected = (
+        tmp_path
+        / "audit"
+        / job_id
+        / "evolution/campaigns"
+        / state["campaign_id"]
+        / "dataset"
+    )
+    full = json.loads(
+        (protected / "results/backtest/input_bars.json").read_text(encoding="utf-8")
+    )
+    assert len({row["timestamp"] for row in full["bars"]}) == 1_000
+    visible_json = json.loads(
+        (campaign_root / "dataset/workspace/features.json").read_text(encoding="utf-8")
+    )
+    protected_json = json.loads(
+        (protected / "workspace/features.json").read_text(encoding="utf-8")
+    )
+    assert len(visible_json["features"]) == 600
+    assert len(protected_json["features"]) == 1_000
+    visible_jsonl = (
+        (campaign_root / "dataset/state/features.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    protected_jsonl = (
+        (protected / "state/features.jsonl").read_text(encoding="utf-8").splitlines()
+    )
+    assert len(visible_jsonl) == 600
+    assert len(protected_jsonl) == 1_000
+    assert plan["protected_snapshot"]["files"] == 3
+
+    timestamps = [
+        pd.Timestamp(row) for row in sorted({r["timestamp"] for r in full["bars"]})
+    ]
+    bounds, error = _certification_fold_bounds(
+        timestamps, plan, folds=4, minimum_bars=8
+    )
+    assert error is None
+    assert [end - start for start, end in bounds] == [58, 58, 58, 58]
+    assert all(
+        left[1] == right[0] for left, right in zip(bounds, bounds[1:], strict=False)
+    )
+    assert str(timestamps[bounds[-1][1]]) == str(pd.Timestamp(plan["audit"]["start"]))
+
+    protected_json["features"][0]["value"] = -1
+    (protected / "workspace/features.json").write_text(
+        json.dumps(protected_json), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="snapshot revision mismatch"):
+        _verified_protected_dataset_root(
+            store,
+            job_id,
+            str(state["campaign_id"]),
+            manifest=manifest,
+        )
+
+
+@pytest.mark.parametrize(
+    ("returns", "pooled", "stress", "valid", "expected"),
+    [
+        ((0.02, 0.01, 0.03, -0.04), 0.02, 0.01, True, None),
+        ((0.02, 0.01, -0.01, -0.04), 0.02, 0.01, True, "insufficient_positive_folds"),
+        ((0.02, 0.01, 0.03, -0.051), 0.02, 0.01, True, "fold_loss_bound"),
+        ((0.02, 0.01, 0.03, -0.04), -0.01, 0.01, True, "negative_after_costs"),
+        ((0.02, 0.01, 0.03, -0.04), 0.02, -0.01, True, "negative_under_stress"),
+        ((0.02, 0.01, 0.03, -0.04), 0.02, 0.01, False, "invalid_execution"),
+    ],
+)
+def test_protected_fold_verdict_contract(
+    returns: tuple[float, ...],
+    pooled: float,
+    stress: float,
+    valid: bool,
+    expected: str | None,
+) -> None:
+    folds = [
+        {
+            "fold": index,
+            "base_return": value,
+            "stress_return": value,
+            "positive": value > 0,
+        }
+        for index, value in enumerate(returns)
+    ]
+    verdict = _protected_fold_verdict(
+        folds,
+        valid=valid,
+        validation_trades=12,
+        minimum_validation_trades=8,
+        pooled_return=pooled,
+        pooled_stress_return=stress,
+        train_return=0.02,
+        specialized=False,
+        target_days=0,
+        min_target_days=10,
+        outside_loss_ok=True,
+        base_vector={"max_drawdown_pct": 0.04, "tail_loss": 0.01},
+        stress_vector={"max_drawdown_pct": 0.05, "tail_loss": 0.02},
+        hard_constraints={"max_drawdown_pct": 0.25, "max_tail_loss": 0.15},
+        required_positive_folds=3,
+        max_fold_loss_pct=0.05,
+        audit_passed=True,
+        haircut_cleared=True,
+    )
+    if expected is None:
+        assert verdict["status"] == "dev_frontier"
+    else:
+        assert expected in verdict["failure_codes"]
+
+
+def test_protected_fold_layout_rejects_insufficient_history() -> None:
+    timestamps = list(pd.date_range("2026-01-01", periods=40, freq="h", tz="UTC"))
+    bounds, error = _certification_fold_bounds(
+        timestamps,
+        {
+            "certification": {"start": str(timestamps[8])},
+            "audit": {"start": str(timestamps[32])},
+        },
+        folds=4,
+        minimum_bars=8,
+    )
+    assert bounds == []
+    assert error and "needs at least 32" in error
+
+
+def test_protected_fold_full_dev_runs_real_bars_and_persists_fold_metadata(
+    tmp_path,
+) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="hourly_round_trip",
+        summary="exercise the protected certificate",
+        now=started + timedelta(hours=1),
+    )
+    script = store.job_dir(job_id) / candidate["bundle"] / "workspace/src/strategy.py"
+    script.write_text(CHURNER, encoding="utf-8")
+
+    outcome = _isolated_full_dev(store, job_id, candidate, tune=False)
+
+    assert outcome["status"] in {"dev_frontier", "low_fidelity_rejected"}
+    plan = outcome["evaluation_plan"]
+    assert plan["mode"] == "protected_chronological_folds_v1"
+    assert plan["locked_revision"] == outcome["revision"]
+    assert len(plan["folds"]) == 4
+    assert len(outcome["dev"]["validation"]["folds"]) == 4
+    assert all(
+        row["test"]["end"] < state["evaluation_plan"]["audit"]["start"]
+        for row in outcome["dev"]["validation"]["folds"]
+    )
+    assert (tmp_path / "audit" / job_id / "evidence_access.jsonl").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_protected_campaign_routes_final_economic_gate_to_canonical_snapshot(
+    tmp_path, monkeypatch
+) -> None:
+    import wayfinder_paths.jobs.evolution_campaign as campaign_module
+
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    candidate = prepare_candidate(
+        store,
+        job_id,
+        family="gate_probe",
+        summary="prove the final gate sees protected bars",
+        now=started + timedelta(hours=1),
+    )
+    captured: dict[str, Any] = {}
+
+    def fake_gate(job: str, **kwargs: Any) -> dict[str, Any]:
+        captured.update({"job_id": job, **kwargs})
+        return {"economic": {"ready": False}}
+
+    monkeypatch.setattr(campaign_module, "evaluate_economic_gate", fake_gate)
+
+    _economic_gate_child(
+        store.repo_root,
+        job_id,
+        candidate,
+        str(state["campaign_id"]),
+    )
+
+    dataset_root = captured["dataset_root"]
+    assert dataset_root.is_relative_to(tmp_path / "audit" / job_id)
+    assert captured["probation"] is True
+    assert captured["trials"] == 1
+    assert (dataset_root / "results/backtest/input_bars.json").is_file()
 
 
 def test_next_action_isolates_one_candidate_per_stage_session(tmp_path) -> None:
@@ -6798,6 +7078,52 @@ def test_starter_bar_params_rescale_to_the_job_interval(tmp_path) -> None:
     ) / bar_interval_seconds("5m")
     assert _starter_bar_ratio({"timeframe": "5m"}, root) == 1.0
     assert _starter_bar_ratio({"timeframe": ""}, root) == 1.0
+
+
+def test_adapted_starter_recomputes_warmup_after_bar_rescale(tmp_path) -> None:
+    from wayfinder_paths.jobs.strategies.regime_rotation import build_strategy
+
+    store, job_id = _evaluatable_job(tmp_path)
+    root = store.job_dir(job_id)
+    symbols = ["BNB", "PAXG", "HYPE", "ZEC", "MORPHO"]
+    job_path = root / "job.yaml"
+    job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
+    job_data["execution_spec"]["data_contract"].update(
+        {"bar_interval": "15m", "symbols": symbols}
+    )
+    job_data["execution_params"]["symbols"] = symbols
+    job_path.write_text(yaml.safe_dump(job_data, sort_keys=False), encoding="utf-8")
+    improver_path = root / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"].update(
+        {
+            "incumbent_failure_modes": False,
+            "policy_scan_enabled": False,
+            "signal_first_seeding": False,
+        }
+    )
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    state = start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    starter = next(
+        row
+        for row in manifest["starter_seeds"]
+        if row["starter_id"] == "bullish-regime-rotation-5m"
+    )
+    candidate_root = root / "adapted-bull-starter"
+    seeded = _materialize_candidate_seed(
+        store,
+        job_id,
+        campaign_id=state["campaign_id"],
+        candidate_root=candidate_root,
+        plan={"source": "starter_seed", "parents": [], "starter": starter},
+    )
+    params = _read_bundle_params(store, job_id, "adapted-bull-starter")
+    actual = build_strategy(params).warmup_bars
+
+    assert params["slow_sma_bars"] == 480
+    assert seeded == params["warmup_bars"] == actual == 484
+    assert params["lookback_bars"] == actual + STARTER_LOOKBACK_MARGIN_BARS
 
 
 def _screened_campaign(tmp_path, *, checkpoint: bool = True):

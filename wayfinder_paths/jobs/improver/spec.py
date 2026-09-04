@@ -206,6 +206,18 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "finalist_risk_normalization": True,
         "finalist_risk_margin": 0.9,
         "split": {"train": 0.80, "validation": 0.20},
+        # Opt-in while the local recurrence bench establishes that the
+        # broader chronological certificate admits robust starters without
+        # weakening the final paired economic gate.  Legacy and already-open
+        # campaigns keep the single validation window above.
+        "protected_fold_certification": {
+            "enabled": False,
+            "discovery_fraction": 0.60,
+            "folds": 4,
+            "required_positive_folds": 3,
+            "max_fold_loss_pct": 0.05,
+            "minimum_fold_bars": 8,
+        },
         "parent_mix": {
             "incumbent": 0.30,
             "qd_elite": 0.30,
