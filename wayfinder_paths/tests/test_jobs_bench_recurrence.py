@@ -402,7 +402,11 @@ def test_recurrence_carries_open_probation_into_the_next_loop(
     assert replays == ["camp-0", "camp-1", "camp-2"]
     trial_id = loops[0]["probation"]["trial_id"]
     assert loops[0]["probation"]["status"] == "active"
-    assert loops[0]["apply"] == {"applied": False, "trials": []}
+    assert loops[0]["apply"] == {
+        "applied": False,
+        "retire_to_flat": False,
+        "trials": [],
+    }
     assert loops[0]["probation_carried"] == [trial_id]
     # Loop 1 deploys the still-flat incumbent, then applies the carried graduate.
     assert loops[1]["incumbent_revision"] == loops[0]["incumbent_revision"]
@@ -414,7 +418,11 @@ def test_recurrence_carries_open_probation_into_the_next_loop(
     assert loops[2]["incumbent_revision"] == graduate["candidate_revision"]
     assert loops[2]["incumbent_revision"] != loops[0]["incumbent_revision"]
     assert any(value != 0 for value in loops[2]["forward"]["paired_deltas"])
-    assert loops[2]["apply"] == {"applied": False, "trials": []}
+    assert loops[2]["apply"] == {
+        "applied": False,
+        "retire_to_flat": False,
+        "trials": [],
+    }
     assert row["lineage"]["depth"] == 1
     assert row["lineage"]["chain"][0]["applied"] is False
     assert row["lineage"]["chain"][1]["trial_ids"] == [trial_id]

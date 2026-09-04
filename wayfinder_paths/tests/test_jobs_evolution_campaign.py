@@ -580,6 +580,11 @@ def test_design_prompt_carries_cost_budget_from_baseline(tmp_path) -> None:
     pack = store.read_json(job_id, str(state["diagnostic_pack"]))
     assert pack["baseline"]["economics"]["fee_pct_of_capital"] == pytest.approx(0.1122)
     assert "/baseline/economics/fills_per_day" in prompt["valid_evidence_pointers"]
+    # Cash is the first bar the designer reads.
+    vs_cash = pack["baseline"]["vs_cash"]
+    assert vs_cash["beats_cash"] == (vs_cash["net_return"] > 0)
+    assert "/baseline/vs_cash/beats_cash" in prompt["valid_evidence_pointers"]
+    assert "cite /baseline/vs_cash" in prompt["next_action"]
 
 
 def test_screen_slices_are_disjoint_and_fall_back_when_short() -> None:
@@ -5192,3 +5197,41 @@ def test_validated_signal_selection_uses_power_q_and_non_inferiority() -> None:
         [],
         [],
     )
+
+
+def test_retire_to_flat_verdict_and_flat_bundle(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        flat_bundle,
+        retire_to_flat_verdict,
+    )
+    from wayfinder_paths.jobs.execution.validation import validate_execution_job
+
+    store, job_id = _evaluatable_job(tmp_path, source_params={"warmup_bars": 20})
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    pack_path = str(state["diagnostic_pack"])
+    pack = store.read_json(job_id, pack_path)
+    # No baseline backtest in this fixture: nothing to retire against.
+    assert retire_to_flat_verdict(store, job_id)["recommended"] is False
+    pack.setdefault("baseline", {})["vs_cash"] = {
+        "net_return": -0.44,
+        "window_days": 341.0,
+        "fee_pct_of_capital": 0.206,
+        "beats_cash": False,
+    }
+    store.write_json(job_id, pack_path, pack)
+    verdict = retire_to_flat_verdict(store, job_id)
+    assert verdict["recommended"] is True and "lost 44.0%" in verdict["reason"]
+    # A candidate still on probation blocks the retirement.
+    state = campaign_status(store, job_id)
+    state["candidates"].append({"candidate_id": "c-live", "status": "probation"})
+    blocked = retire_to_flat_verdict(store, job_id, state=state)
+    assert blocked["recommended"] is False and "in flight" in blocked["reason"]
+    pack["baseline"]["vs_cash"]["beats_cash"] = True
+    store.write_json(job_id, pack_path, pack)
+    assert "beats cash" in retire_to_flat_verdict(store, job_id)["reason"]
+
+    flat = flat_bundle(store, job_id, tmp_path / "flat")
+    report = validate_execution_job(job_id, candidate_dir=flat, store=store)
+    assert all(check["passed"] for check in report["checks"] if check.get("blocking"))
+    assert "return []" in (flat / "workspace" / "src" / "strategy.py").read_text()

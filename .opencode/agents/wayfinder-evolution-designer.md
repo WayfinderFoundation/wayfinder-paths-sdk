@@ -46,6 +46,10 @@ fold-stable, cost-net, family-corrected edges on this dataset), every grounded
 de_novo or research_context slot must cite one and build its entry on it; a
 design that cites none is rejected. Narratives about why a mechanism should
 earn are not evidence; the near misses are direction, not evidence.
+Cash is the first bar: `/baseline/vs_cash` says whether the incumbent beat
+doing nothing over its window; every slot must beat cash on its own validation
+window, and a campaign that finds nothing while the incumbent loses to cash
+retires it to cash.
 Costs come first: `/baseline/economics` states the round-trip cost, what the
 incumbent captures per trade and what it pays in fees; a slot whose trades
 cannot plausibly capture the hurdle multiple of that cost gross is rejected at

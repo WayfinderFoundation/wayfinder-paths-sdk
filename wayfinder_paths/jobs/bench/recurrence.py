@@ -67,7 +67,7 @@ from wayfinder_paths.jobs.benchmarks.agent_adapter import (
 )
 from wayfinder_paths.jobs.bundles import copy_job_bundle
 from wayfinder_paths.jobs.economics import block_bootstrap_lcb
-from wayfinder_paths.jobs.evolution_campaign import campaign_status
+from wayfinder_paths.jobs.evolution_campaign import campaign_status, flat_bundle
 from wayfinder_paths.jobs.execution.features import DEFAULT_FEATURES_PATH
 from wayfinder_paths.jobs.execution.op_process import terminate_campaign_ops
 from wayfinder_paths.jobs.forward import default_forward_summary
@@ -474,7 +474,11 @@ def run_recurrence_arm(
                 capital=environment_capital(manifest.get("execution_environment")),
             )
             applied_trials = _apply_graduates(store, job_id, loop=loop)
-            row["apply"] = {"applied": bool(applied_trials), "trials": applied_trials}
+            row["apply"] = {
+                "applied": bool(applied_trials),
+                "retire_to_flat": any(t.get("retire_to_flat") for t in applied_trials),
+                "trials": applied_trials,
+            }
             _write_forward_summary(store, job_id, deployed, cutoff=cutoff, end=end)
             row["probation_carried"] = _open_trial_ids(store, job_id)
             audit = audit_and_score(
@@ -784,6 +788,35 @@ def _apply_graduates(
                 "backup_dir": applied["backup_dir"],
             }
         )
+    if not applied_rows and not _open_trial_ids(store, job_id):
+        verdict = campaign_status(store, job_id).get("retire_to_flat") or {}
+        if verdict.get("recommended"):
+            # The declared owner rule for the bench: a campaign that found
+            # nothing while the incumbent lost to cash retires it to cash.
+            flat_dir = flat_bundle(
+                store,
+                job_id,
+                store.job_dir(job_id)
+                / "research"
+                / "evolution"
+                / "flat"
+                / f"loop{loop}",
+            )
+            applied = apply_candidate_bundle(
+                store, job_id, flat_dir, label=f"recur-loop{loop}-retire-to-flat"
+            )
+            applied_rows.append(
+                {
+                    "trial_id": None,
+                    "candidate_id": "flat",
+                    "candidate_revision": compute_workspace_revision(flat_dir),
+                    "family": "flat",
+                    "promoted_revision": applied["promoted_revision"],
+                    "backup_dir": applied["backup_dir"],
+                    "retire_to_flat": True,
+                    "reason": verdict.get("reason"),
+                }
+            )
     return applied_rows
 
 
@@ -1087,6 +1120,10 @@ def aggregate_recurrence(
         applies = sum(
             int((row.get("dynamics") or {}).get("applied") or 0) for row in arm_rows
         )
+        retire_to_flat_applies = sum(
+            int(bool((row.get("apply") or {}).get("retire_to_flat")))
+            for row in arm_rows
+        )
         if not totals:
             direction = "invalid_arm_runs"
         elif applies == 0:
@@ -1126,6 +1163,7 @@ def aggregate_recurrence(
             "lcb": lcb,
             "ucb": ucb,
             "applies": applies,
+            "retire_to_flat_applies": retire_to_flat_applies,
             "false_applies": sum(
                 int((row.get("dynamics") or {}).get("false_applies") or 0)
                 for row in arm_rows

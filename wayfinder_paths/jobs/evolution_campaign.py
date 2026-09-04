@@ -1526,6 +1526,19 @@ def _existing_baseline_receipt(
         receipt["round_trip_cost_bps"] = round(
             2.0 * (float(fee_bps) + float(slippage_bps)), 2
         )
+    if stats.get("net_return") is not None:
+        # Doing nothing is the bar the incumbent is measured against first:
+        # a book that loses to cash is retired, not repaired.
+        net_return = float(stats["net_return"])
+        receipt["vs_cash"] = {
+            "net_return": round(net_return, 6),
+            "buy_hold_return": stats.get("buy_hold_return"),
+            "fee_pct_of_capital": (receipt.get("economics") or {}).get(
+                "fee_pct_of_capital"
+            ),
+            "window_days": (receipt.get("window") or {}).get("days"),
+            "beats_cash": net_return > 0,
+        }
     return receipt
 
 
@@ -3569,6 +3582,82 @@ def _typed_search_dimensions(search_space: dict[str, Any]) -> list[str]:
     )
 
 
+FLAT_STRATEGY_SOURCE = (
+    '"""Cash: the book that trades nothing. Applied when a campaign found '
+    'nothing that beats it and the incumbent was losing to it."""\n\n\n'
+    "def decide(ctx):\n"
+    "    return []\n"
+)
+
+
+def retire_to_flat_verdict(
+    store: JobStore, job_id: str, *, state: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Whether the campaign's outcome is "retire the incumbent to cash": the
+    policy allows it, the incumbent lost to cash over the baseline window,
+    and nothing graduated or is still on probation to replace it."""
+    state = state or campaign_status(store, job_id)
+    campaign_id = str(state.get("campaign_id") or "")
+    policy = _campaign_policy(store, job_id, campaign_id) if campaign_id else {}
+    pack_ref = state.get("diagnostic_pack")
+    pack_path = (
+        str(pack_ref.get("path") or "")
+        if isinstance(pack_ref, Mapping)
+        else str(pack_ref or "")
+    )
+    pack = store.read_json(job_id, pack_path, default={}) if pack_path else {}
+    vs_cash = ((pack or {}).get("baseline") or {}).get("vs_cash") or {}
+    pending = [
+        str(candidate.get("candidate_id") or "")
+        for candidate in state.get("candidates") or []
+        if candidate.get("status") in {"probation", "proposed", "dev_frontier"}
+    ]
+    enabled = bool(policy.get("retire_to_flat_when_incumbent_negative", True))
+    losing = vs_cash.get("beats_cash") is False
+    recommended = enabled and losing and not pending
+    if not enabled:
+        reason = "policy disabled"
+    elif vs_cash.get("net_return") is None:
+        reason = "incumbent baseline unavailable"
+    elif not losing:
+        reason = "incumbent beats cash over the baseline window"
+    elif pending:
+        reason = f"{len(pending)} candidate(s) still in flight: {', '.join(pending)}"
+    else:
+        reason = (
+            f"incumbent lost {100 * abs(float(vs_cash['net_return'])):.1f}% over "
+            f"{float(vs_cash.get('window_days') or 0.0):.0f} days and nothing "
+            "graduated; cash beats it"
+        )
+    return {
+        "recommended": recommended,
+        "reason": reason,
+        "incumbent_net_return": vs_cash.get("net_return"),
+        "incumbent_fee_pct_of_capital": vs_cash.get("fee_pct_of_capital"),
+        "pending_candidates": pending,
+    }
+
+
+def flat_bundle(store: JobStore, job_id: str, destination: Path) -> Path:
+    """The job's own bundle with a strategy that never trades: the cash
+    position, applied through the ordinary bundle path so revision,
+    validation and the world's spec identity all hold."""
+    root = store.job_dir(job_id)
+    copy_job_bundle(root, destination)
+    job_data = _load_job_yaml(destination)
+    script = store.resolve_script_entrypoint(
+        job_id, job_data, candidate_dir=destination
+    )
+    if script is None:
+        raise FileNotFoundError("job has no script entrypoint to flatten")
+    script.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(script, FLAT_STRATEGY_SOURCE)
+    for stale in destination.glob("workspace/src/*.py"):
+        if stale != script:
+            stale.unlink()
+    return destination
+
+
 def finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
     """Resume bounded full-dev work without holding campaign state during sims."""
     # A dedicated ownership lock prevents two CLI/watchdog finalizers from
@@ -3779,7 +3868,19 @@ def _finalize_campaign(store: JobStore, job_id: str) -> dict[str, Any]:
         state["status"] = "complete"
         state["stage"] = "complete"
         state["completed_at"] = utc_now_iso()
+        state["retire_to_flat"] = retire_to_flat_verdict(store, job_id, state=state)
         _save_campaign(store, job_id, state)
+    if state["retire_to_flat"].get("recommended"):
+        # Production proposes; the bench applies (bench/recurrence.py). Either
+        # way the loop can now say "nothing beats cash, stop bleeding".
+        store.append_journal(
+            job_id,
+            {
+                "type": "retire_to_flat_recommended",
+                "campaign_id": state["campaign_id"],
+                **state["retire_to_flat"],
+            },
+        )
     store.append_journal(
         job_id,
         {
@@ -4422,6 +4523,30 @@ def campaign_prompt_block(
             )
             + ". "
         )
+        vs_cash = (diagnostic_pack.get("baseline") or {}).get("vs_cash") or {}
+        cash_instruction = (
+            (
+                f"The incumbent {'made' if vs_cash['beats_cash'] else 'lost'} "
+                f"{100 * abs(float(vs_cash['net_return'])):.1f}% over "
+                f"{float(vs_cash.get('window_days') or 0.0):.0f} days"
+                + (
+                    f" and paid {100 * float(vs_cash['fee_pct_of_capital']):.1f}% of "
+                    "capital in fees"
+                    if vs_cash.get("fee_pct_of_capital") is not None
+                    else ""
+                )
+                + (
+                    "; cash beat it, and a campaign that finds nothing better "
+                    "retires it to cash"
+                    if not vs_cash["beats_cash"]
+                    else ""
+                )
+                + ". Every slot must beat cash on its own validation window, not "
+                "only the incumbent; cite /baseline/vs_cash. "
+            )
+            if vs_cash.get("net_return") is not None
+            else ""
+        )
         cost_instruction = (
             "Cost budget: "
             + (
@@ -4596,7 +4721,7 @@ def campaign_prompt_block(
                 "cite existing JSON pointers from the diagnostic pack. Include "
                 "at least one starter_seed and one grounded de_novo slot. "
                 f"{research_instruction}{regime_instruction}{macro_instruction}"
-                f"{cost_instruction}{risk_instruction}{ideation_instruction}"
+                f"{cash_instruction}{cost_instruction}{risk_instruction}{ideation_instruction}"
                 f"{failure_instruction}{signal_instruction}"
                 "Use at most one incumbent slot and at "
                 "most two parameter slots. One wildcard must be de_novo. "
