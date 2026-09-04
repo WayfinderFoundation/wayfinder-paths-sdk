@@ -364,6 +364,14 @@ def test_investigative_campaign_requires_and_freezes_one_design_turn(tmp_path) -
     assert candidate["starter_seed_id"] == selected_starter
     assert candidate["evidence_refs"] == ["/baseline/reason"]
     assert candidate["reference_bundle"]
+    # A starter seed is screened against the incumbent, not against itself.
+    from wayfinder_paths.jobs.gating import compute_workspace_revision as _revision
+
+    root = store.job_dir(job_id)
+    incumbent = root / "research/evolution/campaigns" / state["campaign_id"] / "source"
+    assert _revision(root / candidate["reference_bundle"]) == _revision(incumbent)
+    assert candidate["reference_revision"] == _revision(incumbent)
+    assert candidate["reference_revision"] != candidate["seed_revision"]
 
 
 def _screen_outcome(
@@ -4984,5 +4992,60 @@ def test_escaping_feature_file_is_rejected_without_charge(tmp_path) -> None:
 
     assert result["status"] == "prepared"
     assert "escapes its root" in result["submission_rejection"]["error"]
+    assert result["submission_rejection"]["attempt_charged"] is False
+    assert int(result.get("attempt_count") or 0) == 0
+
+
+def test_screen_progress_follows_the_previously_worst_slice_lower_bound() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _stamp_screen_progress
+    from wayfinder_paths.jobs.evolution_diagnostics import attempt_made_progress
+
+    previous = {
+        "screen": {"slices": {"earlier": {"lcb": -0.10}, "recent": {"lcb": -0.07}}}
+    }
+    noise = {
+        "behavior_diff": {"material_change": True},
+        "progress_from_previous": {"net_return_delta": 0.002},
+        "screen": {"slices": {"earlier": {"lcb": -0.099}, "recent": {"lcb": -0.06}}},
+    }
+    _stamp_screen_progress(noise, previous)
+    assert noise["progress_from_previous"]["screen_lcb_slice"] == "earlier"
+    assert noise["progress_from_previous"]["screen_lcb_delta"] == pytest.approx(0.001)
+    assert (
+        attempt_made_progress(noise) is False
+    )  # a hairline net delta no longer counts
+
+    real = {
+        "behavior_diff": {"material_change": True},
+        "screen": {"slices": {"earlier": {"lcb": -0.05}, "recent": {"lcb": -0.08}}},
+    }
+    _stamp_screen_progress(real, previous)
+    assert real["progress_from_previous"]["screen_lcb_delta"] == pytest.approx(0.05)
+    assert attempt_made_progress(real) is True
+
+    unscreened = {"behavior_diff": {"material_change": True}}
+    _stamp_screen_progress(unscreened, {"screen": {}})
+    assert "progress_from_previous" not in unscreened
+
+
+def test_undeclared_feature_read_is_rejected_without_charge(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path, source_params={"warmup_bars": 20})
+    start_campaign(store, job_id, now=datetime(2026, 8, 25, 12, tzinfo=UTC))
+    candidate = _windowed_candidate(
+        store,
+        job_id,
+        summary="reads the regime without declaring it",
+        extra_source=(
+            "\n\ndef decide(ctx):\n"
+            "    if ctx.view.feature('macro_regime', default=0.0) == 1.0:\n"
+            "        return []\n"
+            "    return []\n"
+        ),
+    )
+
+    result = evaluate_candidate(store, job_id, candidate["candidate_id"])
+
+    assert result["status"] == "prepared"
+    assert "macro_regime" in result["submission_rejection"]["error"]
     assert result["submission_rejection"]["attempt_charged"] is False
     assert int(result.get("attempt_count") or 0) == 0

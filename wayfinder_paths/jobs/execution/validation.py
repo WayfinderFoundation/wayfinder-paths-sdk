@@ -1246,6 +1246,39 @@ _CLOCK_PERMITTED_TOKENS = ("warmup", "params", "lookback")
 _CLOCK_HIT_LIMIT = 4
 
 
+def _undeclared_feature_reads(text: str, spec: ExecutionSpec) -> list[str]:
+    """Feature names read through ``ctx.view.feature("name", ...)`` that the
+    spec does not declare. A malformed declaration list is the feature
+    contract check's finding, not this one's."""
+    try:
+        declared = {item.column_name for item in parse_feature_specs(spec)}
+    except ValueError:
+        return []
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    hits: set[str] = set()
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "feature"
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == "view"
+        ):
+            continue
+        name_node = node.args[0] if node.args else None
+        if name_node is None:
+            name_node = next(
+                (kw.value for kw in node.keywords if kw.arg == "name"), None
+            )
+        if isinstance(name_node, ast.Constant) and isinstance(name_node.value, str):
+            if name_node.value not in declared:
+                hits.add(name_node.value)
+    return sorted(hits)
+
+
 def _bounded_index_clock_hits(text: str) -> list[str]:
     """Source lines that persist `ctx.bar_index` or do elapsed-time arithmetic
     with it. Permitted: comparisons and arithmetic against constants or
@@ -1479,6 +1512,24 @@ def _script_static_checks(
                 "store ctx.timestamp."
             )
             if clock_hits
+            else None,
+        }
+    )
+    undeclared = _undeclared_feature_reads(text, spec)
+    checks.append(
+        {
+            "name": "undeclared_feature_read",
+            "passed": not undeclared,
+            "blocking": True,
+            "details": undeclared,
+            "hint": (
+                "decide() reads feature columns that "
+                "execution_spec.data_contract.features does not declare "
+                f"({', '.join(undeclared)}); declare each as "
+                '{"name": ..., "source": "file"} or stop reading it — the '
+                "driver merges declared columns only, so the read raises live."
+            )
+            if undeclared
             else None,
         }
     )

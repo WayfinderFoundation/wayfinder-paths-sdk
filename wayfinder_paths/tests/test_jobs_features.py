@@ -622,3 +622,29 @@ def test_validation_reports_an_escaping_feature_file_instead_of_raising(
     failed = [c for c in report["checks"] if c["name"] == "declared_features_valid"]
     assert failed and failed[0]["passed"] is False
     assert "escapes its root" in failed[0]["error"]
+
+
+def test_validation_flags_feature_reads_the_spec_does_not_declare(
+    tmp_path: Path,
+) -> None:
+    from wayfinder_paths.jobs.execution.validation import validate_execution_job
+
+    store, job, root = _feature_job(tmp_path)
+
+    def check(report: dict) -> dict:
+        return next(
+            c for c in report["checks"] if c["name"] == "undeclared_feature_read"
+        )
+
+    assert check(validate_execution_job(job.id, store=store))["passed"] is True
+    (root / "workspace" / "src" / "strategy.py").write_text(
+        "def decide(ctx):\n"
+        "    ctx.view.feature('sentiment')\n"
+        "    ctx.view.feature('leader_state', default=0.0)\n"
+        "    ctx.view.feature(name='macro_regime')\n"
+        "    return []\n",
+        encoding="utf-8",
+    )
+    flagged = check(validate_execution_job(job.id, store=store))
+    assert flagged["passed"] is False and flagged["blocking"] is True
+    assert flagged["details"] == ["leader_state", "macro_regime"]

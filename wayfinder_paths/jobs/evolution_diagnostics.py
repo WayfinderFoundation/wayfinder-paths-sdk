@@ -553,6 +553,12 @@ def preview_progress(
     )
 
 
+# The screen's lower bound (log growth over a 35-day slice) must rise by
+# this much before a repair counts as progress; below it the repair budget
+# was being spent on fill-count noise.
+SCREEN_PROGRESS_MIN_LCB_DELTA = 0.005
+
+
 def attempt_made_progress(postmortem: Mapping[str, Any]) -> bool:
     """Causal progress: the behavior changed and the outcome moved the right way.
 
@@ -571,6 +577,11 @@ def attempt_made_progress(postmortem: Mapping[str, Any]) -> bool:
     material = bool((postmortem.get("behavior_diff") or {}).get("material_change"))
     if not material:
         return False
+    if progress.get("screen_lcb_delta") is not None:
+        # Screened attempts are judged on the screen's own metric.
+        return (
+            _number(progress.get("screen_lcb_delta")) >= SCREEN_PROGRESS_MIN_LCB_DELTA
+        )
     if (
         _number(progress.get("net_return_delta")) > 1e-9
         or _number(progress.get("objective_delta")) > 1e-9

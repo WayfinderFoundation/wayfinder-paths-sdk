@@ -2110,8 +2110,21 @@ def _prepare_candidate(
     reference_relative = (
         f"{CAMPAIGN_ROOT}/{state['campaign_id']}/references/{candidate_id}"
     )
+    # A seed's screen reference is the incumbent, never the seed itself: a
+    # starter or research slot exists to ask whether an audited mechanism
+    # beats the book, and paired against itself an unchanged winner scores a
+    # zero delta on every day and can never pass.
+    reference_source = (
+        f"{CAMPAIGN_ROOT}/{state['campaign_id']}/source"
+        if source in {"starter_seed", "research_seed"}
+        else relative
+    )
     copy_job_bundle(
-        store.job_dir(job_id) / relative, store.job_dir(job_id) / reference_relative
+        store.job_dir(job_id) / reference_source,
+        store.job_dir(job_id) / reference_relative,
+    )
+    reference_revision = compute_workspace_revision(
+        store.job_dir(job_id) / reference_relative
     )
     candidate = {
         "candidate_id": candidate_id,
@@ -2133,6 +2146,7 @@ def _prepare_candidate(
         "warmup_bars": seeded_window,
         "seed_revision": seed_revision,
         "reference_bundle": reference_relative,
+        "reference_revision": reference_revision,
         "evidence_reset": source in {"starter_seed", "research_seed"},
         "design_slot_id": design_slot.get("slot_id"),
         "hypothesis_id": design_slot.get("hypothesis_id"),
@@ -2664,6 +2678,9 @@ def _evaluate_candidate(
                 / DEFAULT_FEATURES_PATH
             ),
         )
+        _stamp_screen_progress(
+            common["postmortem"], attempts[-1].get("postmortem") if attempts else None
+        )
     if search_space is None:
         common["tuning_skip_reason"] = "no_typed_search_space"
     if tuning_preview is not None:
@@ -2693,6 +2710,32 @@ def _evaluate_candidate(
         "status": "quick_complete",
         "evidence": "low-fidelity train screen passed",
     }
+
+
+def _stamp_screen_progress(
+    postmortem: dict[str, Any], previous_postmortem: Mapping[str, Any] | None
+) -> None:
+    """A repair earns more budget on the screen's own metric: the lower
+    bound of the slice that was worst last attempt must rise. Fill-count
+    differences and hairline net-return deltas are not progress."""
+    if not previous_postmortem:
+        return
+    previous = (previous_postmortem.get("screen") or {}).get("slices") or {}
+    current = (postmortem.get("screen") or {}).get("slices") or {}
+    scored = {
+        str(label): float(row["lcb"])
+        for label, row in previous.items()
+        if isinstance(row, Mapping) and row.get("lcb") is not None
+    }
+    if not scored:
+        return
+    label = min(scored, key=lambda item: scored[item])
+    latest = (current.get(label) or {}).get("lcb")
+    if latest is None:
+        return
+    progress = postmortem.setdefault("progress_from_previous", {})
+    progress["screen_lcb_slice"] = label
+    progress["screen_lcb_delta"] = round(float(latest) - scored[label], 6)
 
 
 def _apply_screen_verdict(
@@ -2754,7 +2797,12 @@ def _candidate_reference_receipt(
         f"{candidate['candidate_id']}.json"
     )
     cached = store.read_json(job_id, relative, default={}) or {}
-    if cached.get("revision") == candidate.get("seed_revision") and "slices" in cached:
+    # Records from before seeds were paired against the incumbent carry no
+    # reference_revision; their reference was the seed.
+    expected_revision = candidate.get("reference_revision") or candidate.get(
+        "seed_revision"
+    )
+    if cached.get("revision") == expected_revision and "slices" in cached:
         return cached
     root = store.job_dir(job_id).resolve()
     reference = (root / str(candidate["reference_bundle"])).resolve()
@@ -2765,7 +2813,7 @@ def _candidate_reference_receipt(
         or reference.name != candidate["candidate_id"]
     ):
         raise ValueError("candidate reference bundle escapes its campaign root")
-    if compute_workspace_revision(reference) != candidate.get("seed_revision"):
+    if compute_workspace_revision(reference) != expected_revision:
         raise ValueError("candidate reference bundle revision mismatch")
     subject = _load_subject(store, job_id, reference, campaign_id=campaign_id)
     train_end, validation_end = _split_bounds(store, job_id, campaign_id=campaign_id)
@@ -4656,14 +4704,18 @@ def _candidate_seed_instruction(
             f"The bundle contains audited starter `{candidate.get('starter_seed_id')}` "
             "as an adaptation seed. Its own warmup/lookback is already set, but "
             "its historical evidence was reset: adapt the tactic to this job's "
-            "target universe and make it re-earn every gate. "
+            "target universe and make it re-earn every gate. The screen pairs it "
+            "against the incumbent, not against the starter, so a seed that beats "
+            "the incumbent on both slices passes as submitted; do not change a "
+            "working mechanism just to differ from it. "
         )
     if source == "research_seed":
         return (
             f"The bundle contains sensor-authored research seed "
             f"`{candidate.get('research_seed_id')}`. Treat its hypothesis as a "
             "starting point only: its prior evidence was reset and it must re-earn "
-            "every campaign gate. Preserve the current job's operational contract."
+            "every campaign gate, paired against the incumbent on the screen. "
+            "Preserve the current job's operational contract."
         )
     if source == "research_context":
         return (
@@ -5906,7 +5958,12 @@ def _candidate_score(candidate: dict[str, Any]) -> float:
 # Validation checks that are authoring mistakes with a mechanical fix: the
 # submission is handed back uncharged with the check's hint.
 _CONTRACT_CHECKS = frozenset(
-    {"no_bounded_index_clock", "declared_features_valid", "feature_policy_replayable"}
+    {
+        "no_bounded_index_clock",
+        "declared_features_valid",
+        "feature_policy_replayable",
+        "undeclared_feature_read",
+    }
 )
 
 

@@ -298,6 +298,19 @@ def test_attempt_progress_requires_material_causal_change() -> None:
             "progress_from_previous": {"fills_per_day_delta": -20.0},
         }
     )
+    # Screened attempts are judged on the screen's lower bound alone.
+    assert not attempt_made_progress(
+        {
+            **base,
+            "progress_from_previous": {
+                "net_return_delta": 0.01,
+                "screen_lcb_delta": 0.001,
+            },
+        }
+    )
+    assert attempt_made_progress(
+        {**base, "progress_from_previous": {"screen_lcb_delta": 0.02}}
+    )
 
 
 def test_participation_adjustment_does_not_reward_sparse_non_trading() -> None:
