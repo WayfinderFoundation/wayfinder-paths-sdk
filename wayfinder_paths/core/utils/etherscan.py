@@ -5,7 +5,8 @@ from typing import Any
 
 import httpx
 
-from wayfinder_paths.core.config import get_etherscan_api_key
+from wayfinder_paths.core.clients.ContractClient import CONTRACT_CLIENT
+from wayfinder_paths.core.config import get_api_key, get_etherscan_api_key
 from wayfinder_paths.core.constants.chains import (
     CHAIN_EXPLORER_URLS,
     ETHERSCAN_V2_API_URL,
@@ -26,28 +27,39 @@ async def fetch_contract_abi(
     api_key: str | None = None,
     client: httpx.AsyncClient | None = None,
 ) -> list[dict[str, Any]]:
-    """Fetch verified contract ABI from Etherscan V2.
+    """Fetch a verified contract ABI.
 
-    Uses the unified endpoint (``api.etherscan.io/v2/api``) with a ``chainid`` query
-    parameter so the same key can fetch ABIs across supported Etherscan networks.
+    With a Wayfinder API key configured, the ABI comes from the Wayfinder API and
+    no explorer key is needed locally. Otherwise this queries Etherscan V2
+    directly (``api.etherscan.io/v2/api`` with a ``chainid`` parameter) using
+    ``api_key`` or the configured Etherscan key.
 
     Raises:
-        ValueError: When the API key is missing, the contract isn't verified, or the
+        ValueError: When no key is available, the contract isn't verified, or the
             ABI payload is invalid.
         httpx.HTTPError: On network/HTTP issues.
     """
+    address = str(contract_address).strip()
+    if api_key is None and get_api_key():
+        try:
+            return await CONTRACT_CLIENT.get_abi(int(chain_id), address)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                raise ValueError("Contract source code not verified") from exc
+            raise
+
     key = str(api_key or get_etherscan_api_key() or "").strip()
     if not key:
         raise ValueError(
-            "Etherscan API key required to fetch contract ABI. "
-            "Set system.etherscan_api_key in config.json or ETHERSCAN_API_KEY env var."
+            "API key required to fetch contract ABI. Configure a Wayfinder API key, "
+            "or set system.etherscan_api_key in config.json or ETHERSCAN_API_KEY env var."
         )
 
     params = {
         "chainid": str(int(chain_id)),
         "module": "contract",
         "action": "getabi",
-        "address": str(contract_address).strip(),
+        "address": address,
         "apikey": key,
     }
 

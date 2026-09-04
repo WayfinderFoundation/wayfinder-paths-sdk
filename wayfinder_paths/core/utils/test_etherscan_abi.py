@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -11,11 +11,47 @@ from wayfinder_paths.core.utils.etherscan import fetch_contract_abi
 
 @pytest.mark.asyncio
 async def test_fetch_contract_abi_requires_api_key():
-    with patch(
-        "wayfinder_paths.core.utils.etherscan.get_etherscan_api_key", return_value=None
+    with (
+        patch("wayfinder_paths.core.utils.etherscan.get_api_key", return_value=None),
+        patch(
+            "wayfinder_paths.core.utils.etherscan.get_etherscan_api_key",
+            return_value=None,
+        ),
     ):
-        with pytest.raises(ValueError, match="Etherscan API key required"):
+        with pytest.raises(ValueError, match="API key required"):
             await fetch_contract_abi(1, "0x" + "11" * 20)
+
+
+@pytest.mark.asyncio
+async def test_fetch_contract_abi_uses_wayfinder_api_when_key_configured():
+    want = [{"type": "function", "name": "balanceOf"}]
+    with (
+        patch("wayfinder_paths.core.utils.etherscan.get_api_key", return_value="wk_x"),
+        patch(
+            "wayfinder_paths.core.utils.etherscan.CONTRACT_CLIENT.get_abi",
+            new=AsyncMock(return_value=want),
+        ) as get_abi,
+    ):
+        out = await fetch_contract_abi(8453, " 0x" + "22" * 20 + " ")
+    assert out == want
+    get_abi.assert_awaited_once_with(8453, "0x" + "22" * 20)
+
+
+@pytest.mark.asyncio
+async def test_fetch_contract_abi_wayfinder_404_means_unverified():
+    request = httpx.Request("GET", "https://example.test/abi")
+    exc = httpx.HTTPStatusError(
+        "404", request=request, response=httpx.Response(404, request=request)
+    )
+    with (
+        patch("wayfinder_paths.core.utils.etherscan.get_api_key", return_value="wk_x"),
+        patch(
+            "wayfinder_paths.core.utils.etherscan.CONTRACT_CLIENT.get_abi",
+            new=AsyncMock(side_effect=exc),
+        ),
+    ):
+        with pytest.raises(ValueError, match="not verified"):
+            await fetch_contract_abi(1, "0x" + "22" * 20)
 
 
 @pytest.mark.asyncio
