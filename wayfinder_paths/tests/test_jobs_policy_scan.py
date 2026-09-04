@@ -22,7 +22,12 @@ def _panel_frames(
     seed: int = 0,
     drift: dict[str, float] | None = None,
     macro: bool = False,
+    listing: dict[str, int] | None = None,
+    report_seed: int | None = None,
 ) -> dict[str, pd.DataFrame]:
+    """``listing`` starts a symbol's history at a bar index (a late listing);
+    ``report_seed`` regenerates the last 30% of every series from another
+    seed so two panels share a rank window and differ in the report window."""
     rng = np.random.default_rng(seed)
     stamps = pd.date_range("2026-01-01", periods=n_bars, freq="15min", tz="UTC")
     frames: dict[str, pd.DataFrame] = {}
@@ -34,11 +39,18 @@ def _panel_frames(
         steps = rng.normal(mu, 0.004, size=n_bars)
         if symbol in {"AAA", "BBB"}:
             steps = steps + factor
+        if report_seed is not None:
+            split = int(n_bars * 0.7)
+            tail = np.random.default_rng(report_seed + hash(symbol) % 1000).normal(
+                mu, 0.004, size=n_bars - split
+            )
+            steps = np.concatenate([steps[:split], tail])
         close = 100.0 * np.exp(np.cumsum(steps))
         frame = pd.DataFrame({"timestamp": stamps, "close": close})
         if macro:
             frame["macro_regime"] = np.where(np.arange(n_bars) < n_bars // 2, -1.0, 1.0)
-        frames[symbol] = frame
+        start = (listing or {}).get(symbol, 0)
+        frames[symbol] = frame.iloc[start:].reset_index(drop=True)
     return frames
 
 
@@ -201,3 +213,85 @@ def test_relay_needs_a_defensive_symbol() -> None:
     relay = next(f for f in out["families"] if f["name"] == "risk_haven_relay")
     assert relay["skipped"] == "no defensive symbol in the panel"
     assert out["defensive_symbol"] is None
+
+
+def test_sleeve_pairing_sees_only_the_rank_window() -> None:
+    base = _panel_frames(n_bars=8_000, seed=11)
+    other = _panel_frames(n_bars=8_000, seed=11, report_seed=99)
+    panel_a = ps.build_panel(base, bar_seconds=BAR_SECONDS)
+    panel_b = ps.build_panel(other, bar_seconds=BAR_SECONDS)
+    rank = panel_a.close.index[: int(len(panel_a.close) * 0.7)]
+    assert panel_a.close.loc[rank].equals(panel_b.close.loc[rank])
+    assert not panel_a.close.equals(panel_b.close)
+    assert ps.panel_sleeves(panel_a, index=rank) == ps.panel_sleeves(
+        panel_b, index=rank
+    )
+
+
+def test_survivors_are_selected_on_the_rank_window_only() -> None:
+    drift = {"AAA": 0.0005, "BBB": -0.0005}
+    base = _panel_frames(n_bars=12_000, drift=drift, seed=3)
+    other = _panel_frames(n_bars=12_000, drift=drift, seed=3, report_seed=7)
+    first = ps.policy_scan(
+        base, bar_seconds=BAR_SECONDS, cost_bps_per_side=8.0, limit=12
+    )
+    second = ps.policy_scan(
+        other, bar_seconds=BAR_SECONDS, cost_bps_per_side=8.0, limit=12
+    )
+
+    def per_family(out):
+        rows: dict[str, list[dict]] = {}
+        for row in out["survivors"]:
+            rows.setdefault(row["family"], []).append(row)
+        return rows
+
+    first_rows, second_rows = per_family(first), per_family(second)
+    assert first_rows
+    # Different report windows, identical rank windows: within every family
+    # offered by both runs the same rows appear in the same order with the
+    # same rank numbers; only the report numbers (and, through the family's
+    # one look at the report window, which families are offered) may differ.
+    for family in set(first_rows) & set(second_rows):
+        assert [r["policy_id"] for r in first_rows[family]] == [
+            r["policy_id"] for r in second_rows[family]
+        ]
+        assert [r["rank"] for r in first_rows[family]] == [
+            r["rank"] for r in second_rows[family]
+        ]
+    assert any(
+        a["report"] != b["report"]
+        for family in set(first_rows) & set(second_rows)
+        for a, b in zip(first_rows[family], second_rows[family], strict=True)
+    )
+    for row in first["survivors"]:
+        assert row["rank"]["sharpe"] >= ps.SURVIVOR_MIN_SHARPE
+    assert "never used to choose" in first["method"]
+    assert all(
+        "report_return_top3_median" in f for f in first["families"] if "best" in f
+    )
+
+
+def test_late_listing_joins_the_panel_without_truncating_it() -> None:
+    frames = _panel_frames(
+        n_bars=8_000, drift={"AAA": 0.0005, "BBB": -0.0005}, listing={"EEE": 4_000}
+    )
+    panel = ps.build_panel(frames, bar_seconds=BAR_SECONDS)
+    assert len(panel.close) == 8_000
+    assert panel.starts["EEE"] == panel.close.index[4_000]
+    assert panel.starts["AAA"] == panel.close.index[0]
+    rank = ps._rank_weights(
+        panel,
+        {
+            "momentum_bars": 96,
+            "rank_legs": 2,
+            "weight_per_leg": 0.25,
+            "rebalance_bars": 1,
+        },
+    )
+    early = rank.iloc[2_000]
+    late = rank.iloc[6_000]
+    assert early["EEE"] == 0.0 and (early.abs() > 0).sum() == 4
+    assert (late.abs() > 0).sum() == 4
+    out = ps.policy_scan(frames, bar_seconds=BAR_SECONDS, cost_bps_per_side=8.0)
+    assert out["symbol_start"]["EEE"] > out["symbol_start"]["AAA"]
+    assert out["panel_start"] == panel.close.index[0].isoformat()

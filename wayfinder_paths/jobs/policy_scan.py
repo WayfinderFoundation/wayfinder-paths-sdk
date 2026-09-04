@@ -35,6 +35,7 @@ _MIN_SYMBOLS = 3
 _MIN_ROWS = 2_000
 FALSIFIED_REPORT_LOSS = 0.02
 SURVIVOR_MIN_SHARPE = 1.0
+VERDICT_ROWS = 3
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,9 @@ class Panel:
     bar_seconds: int
     macro: pd.Series | None
     defensive: str | None
+    # First bar with a close per symbol: a late listing joins the panel when
+    # its history begins instead of truncating everyone else's.
+    starts: Mapping[str, pd.Timestamp] | None = None
 
     @property
     def symbols(self) -> list[str]:
@@ -89,13 +93,14 @@ def _rotation_weights(panel: Panel, params: dict[str, Any]) -> pd.DataFrame:
     """``RegimeRotationStrategy.decide`` on the whole panel at once."""
     close = panel.close
     risk = list(params.get("risk_symbols") or panel.risk_symbols)
-    momentum = close.pct_change(int(params["momentum_bars"]))
+    momentum = close.pct_change(int(params["momentum_bars"]), fill_method=None)
     eligible = momentum[risk] > 0
     if bool(params["require_trend_alignment"]):
         fast = _sma(close[risk], int(params["fast_sma_bars"]))
         slow = _sma(close[risk], int(params["slow_sma_bars"]))
         eligible &= (fast > slow) & (close[risk] > slow)
-    breadth = eligible.sum(axis=1) / len(risk)
+    available = momentum[risk].notna().sum(axis=1).replace(0, np.nan)
+    breadth = (eligible.sum(axis=1) / available).fillna(0.0)
     on = breadth >= float(params["minimum_breadth"])
     score = momentum[risk].where(eligible)
     ranks = score.rank(axis=1, ascending=False, method="first")
@@ -119,21 +124,21 @@ def _rotation_weights(panel: Panel, params: dict[str, Any]) -> pd.DataFrame:
 def _rank_weights(panel: Panel, params: dict[str, Any]) -> pd.DataFrame:
     """``ranked_weights`` per bar: bottom ``legs`` short, top ``legs`` long."""
     close = panel.close
-    score = close.pct_change(int(params["momentum_bars"]))
+    score = close.pct_change(int(params["momentum_bars"]), fill_method=None)
     legs = int(params["rank_legs"])
     ranks = score.rank(axis=1, method="first")
-    n = len(panel.symbols)
-    longs = ranks > n - legs
+    available = score.notna().sum(axis=1)
+    longs = ranks.gt(available - legs, axis=0)
     shorts = ranks <= legs
     raw = longs.astype(float) - shorts.astype(float)
-    raw = raw.where(score.notna().all(axis=1), 0.0)
+    raw = raw.where(available >= 2 * legs, 0.0)
     return _hold(raw * float(params["weight_per_leg"]), int(params["rebalance_bars"]))
 
 
 def _sleeve_weights(panel: Panel, params: dict[str, Any]) -> pd.DataFrame:
     """``sleeve_weights`` per bar: the winner of each pair long, the loser short."""
     close = panel.close
-    score = close.pct_change(int(params["momentum_bars"]))
+    score = close.pct_change(int(params["momentum_bars"]), fill_method=None)
     weights = pd.DataFrame(0.0, index=close.index, columns=panel.symbols)
     per_leg = float(params["weight_per_leg"])
     for left, right in params["sleeves"]:
@@ -152,7 +157,9 @@ def _time_series_trend(panel: Panel, params: dict[str, Any]) -> pd.DataFrame:
     slow = close.ewm(span=int(params["slow_bars"]), adjust=False).mean()
     trend = (fast - slow) / slow
     raw = np.sign(trend).where(trend.abs() >= float(params["threshold"]), 0.0)
-    realized = close.pct_change().rolling(int(params["volatility_bars"])).std()
+    realized = (
+        close.pct_change(fill_method=None).rolling(int(params["volatility_bars"])).std()
+    )
     scaled = raw.div(realized.replace(0.0, np.nan)).replace([np.inf, -np.inf], np.nan)
     gross = scaled.abs().sum(axis=1).replace(0.0, np.nan)
     weights = scaled.div(gross, axis=0).fillna(0.0) * float(params["gross"])
@@ -187,8 +194,8 @@ def _donchian_breakout(panel: Panel, params: dict[str, Any]) -> pd.DataFrame:
 
 def _trend_pullback(panel: Panel, params: dict[str, Any]) -> pd.DataFrame:
     close = panel.close[panel.risk_symbols]
-    trend = close.pct_change(int(params["trend_bars"]))
-    pullback = close.pct_change(int(params["pullback_bars"]))
+    trend = close.pct_change(int(params["trend_bars"]), fill_method=None)
+    pullback = close.pct_change(int(params["pullback_bars"]), fill_method=None)
     long = (trend > float(params["trend_threshold"])) & (
         pullback < -float(params["pullback_threshold"])
     )
@@ -371,6 +378,7 @@ def _family_params(
     params: dict[str, Any],
     *,
     rank_positive: Sequence[str] = (),
+    sleeve_index: pd.Index | None = None,
 ) -> dict[str, Any]:
     """Fill the kernel-facing fields the grid does not carry. Empty when the
     configuration cannot be formed on this panel."""
@@ -396,15 +404,21 @@ def _family_params(
     elif family.name == "cross_sectional_rank":
         out["weight_per_leg"] = float(params["gross"]) / (2 * int(params["rank_legs"]))
     elif family.name == "sleeve_momentum":
-        out["sleeves"] = panel_sleeves(panel)
+        out["sleeves"] = panel_sleeves(panel, index=sleeve_index)
         out["weight_per_leg"] = float(params["gross"]) / (2 * len(out["sleeves"]))
     return out
 
 
-def panel_sleeves(panel: Panel) -> list[tuple[str, str]]:
-    """Disjoint pairs, most correlated first (bar returns on the whole panel):
-    a duel wants two legs that share a driver."""
-    returns = panel.close[panel.risk_symbols].pct_change()
+def panel_sleeves(
+    panel: Panel, *, index: pd.Index | None = None
+) -> list[tuple[str, str]]:
+    """Disjoint pairs, most correlated first: a duel wants two legs that share
+    a driver. Pairing is a selection, so it sees only the bars it is given
+    (the rank window); the report window never chooses the pairs."""
+    closes = panel.close[panel.risk_symbols]
+    if index is not None:
+        closes = closes.loc[index]
+    returns = closes.pct_change(fill_method=None)
     corr = returns.corr()
     remaining = set(panel.risk_symbols)
     pairs: list[tuple[str, str]] = []
@@ -456,7 +470,7 @@ def _metrics(net: pd.Series, weights: pd.DataFrame) -> dict[str, Any]:
 
 def _simulate(panel: Panel, weights: pd.DataFrame, cost: float) -> pd.Series:
     deployed = weights.shift(1).fillna(0.0)
-    asset_returns = panel.close.pct_change().fillna(0.0)
+    asset_returns = panel.close.pct_change(fill_method=None).fillna(0.0)
     turnover = deployed.diff().abs().sum(axis=1).fillna(0.0)
     return (deployed * asset_returns).sum(axis=1) - turnover * cost
 
@@ -486,7 +500,8 @@ def build_panel(
     bar_seconds: int,
     defensive_symbols: Sequence[str] = DEFAULT_DEFENSIVE_SYMBOLS,
 ) -> Panel:
-    """Wide close panel on the symbols' common history, with the store's
+    """Wide close panel on the union of the symbols' histories (a bar stays
+    once at least the minimum number of symbols trade), with the store's
     macro label when the frames carry it."""
     closes: dict[str, pd.Series] = {}
     macro: pd.Series | None = None
@@ -499,14 +514,22 @@ def build_panel(
         closes[str(symbol)] = pd.to_numeric(stamped["close"], errors="coerce")
         if macro is None and "macro_regime" in stamped.columns:
             macro = pd.to_numeric(stamped["macro_regime"], errors="coerce").dropna()
-    close = pd.DataFrame(closes).dropna()
+    close = pd.DataFrame(closes).sort_index()
     if close.shape[1] < _MIN_SYMBOLS:
         raise ValueError(f"policy scan needs at least {_MIN_SYMBOLS} symbols")
+    close = close[close.notna().sum(axis=1) >= _MIN_SYMBOLS]
     if len(close) < _MIN_ROWS:
         raise ValueError(f"policy scan needs at least {_MIN_ROWS} common bars")
     defensive = next((s for s in defensive_symbols if s in close.columns), None)
+    starts = {
+        str(symbol): close[symbol].first_valid_index() for symbol in close.columns
+    }
     return Panel(
-        close=close, bar_seconds=int(bar_seconds), macro=macro, defensive=defensive
+        close=close,
+        bar_seconds=int(bar_seconds),
+        macro=macro,
+        defensive=defensive,
+        starts=starts,
     )
 
 
@@ -535,12 +558,13 @@ def policy_scan(
     rank_closes = panel.close.loc[rank_index]
     # The stronger half of the panel over the rank window: the mechanical
     # stand-in for a hand-picked "bull basket", chosen before the report window.
-    rank_returns = {
-        symbol: float(rank_closes[symbol].iloc[-1]) / float(rank_closes[symbol].iloc[0])
-        for symbol in panel.risk_symbols
-    }
+    rank_returns: dict[str, float] = {}
+    for symbol in panel.risk_symbols:
+        series = rank_closes[symbol].dropna()
+        if len(series) >= 2 and float(series.iloc[0]) > 0:
+            rank_returns[symbol] = float(series.iloc[-1]) / float(series.iloc[0])
     rank_positive = sorted(
-        panel.risk_symbols,
+        rank_returns,
         key=lambda symbol: (rank_returns[symbol], symbol),
         reverse=True,
     )[: max(2, (len(panel.risk_symbols) + 1) // 2)]
@@ -557,7 +581,9 @@ def policy_scan(
         collected: list[dict[str, Any]] = []
         seen_params: set[str] = set()
         for raw in _configs(family, panel):
-            params = _family_params(family, panel, raw, rank_positive=rank_positive)
+            params = _family_params(
+                family, panel, raw, rank_positive=rank_positive, sleeve_index=rank_index
+            )
             if not params:
                 continue
             fingerprint = json.dumps(params, sort_keys=True, default=str)
@@ -656,25 +682,27 @@ def policy_scan(
             )
             continue
         best = collected[0]
-        # Consistency, not certification: positive and Sharpe-worthy on both
-        # windows. The trial haircuts ride along for the designer; full
-        # development applies its own over the campaign's attempts.
-        robust = [
-            r
-            for r in collected
-            if r["rank"]["sharpe"] >= SURVIVOR_MIN_SHARPE
-            and r["report"]["sharpe"] >= SURVIVOR_MIN_SHARPE
-            and r["report"]["return"] > 0
-        ]
-        if robust:
-            verdict = "survivor"
-        elif best["report"]["return"] <= -FALSIFIED_REPORT_LOSS:
-            # The family's best in-sample configuration lost more than the
+        # Selection sees the rank window only: rows are chosen by rank-window
+        # Sharpe and frozen; their report-window numbers are evaluated once
+        # and carried as evidence, never used to pick among configurations.
+        # The family verdict is the one look the scan takes at the report
+        # window: the rank-best row's out-of-sample return.
+        robust = [r for r in collected if r["rank"]["sharpe"] >= SURVIVOR_MIN_SHARPE]
+        # The look is the median report return of the top three rank rows: a
+        # steadier estimate than one row, still not a choice among them.
+        look = sorted(r["report"]["return"] for r in collected[:VERDICT_ROWS])
+        report_return = look[len(look) // 2]
+        if report_return <= -FALSIFIED_REPORT_LOSS:
+            # The family's best in-sample configurations lost more than the
             # screen's slice bound out of sample: dead on this panel.
             verdict = "falsified"
             falsified.append(family.name)
-        elif best["report"]["return"] <= 0:
+            robust = []
+        elif report_return <= 0:
             verdict = "not_replicated"
+            robust = []
+        elif robust:
+            verdict = "survivor"
         else:
             verdict = "weak"
         families_out.append(
@@ -685,6 +713,7 @@ def policy_scan(
                 "configs": len(collected),
                 "expected_max_t": family_expected[family.name],
                 "verdict": verdict,
+                "report_return_top3_median": round(report_return, 4),
                 "robust": len(robust),
                 # The best in-sample row, compact: enough to see why the
                 # family lived or died without the pack carrying its grid.
@@ -708,10 +737,7 @@ def policy_scan(
         )
         survivors.extend(robust)
     survivors.sort(
-        key=lambda r: (
-            min(r["rank"]["sharpe"], r["report"]["sharpe"]),
-            r["full"]["return"],
-        ),
+        key=lambda r: (r["rank"]["sharpe"], r["rank"]["return"]),
         reverse=True,
     )
     # Breadth over depth: the feed interleaves families (each family's best
@@ -731,12 +757,15 @@ def policy_scan(
     return {
         "available": True,
         "method": (
-            "vectorized policy sweep on the train panel's common history: "
-            "weights held between rebalance bars, applied one bar later, taker "
-            "round trip charged per unit of turnover; ranked on the first "
-            f"{int(rank_fraction * 100)}% of the panel, the rest reported; "
-            "survivor = daily Sharpe at or above 1 on both windows with a "
-            "positive report window; cleared_family and cleared_scan are the "
+            "vectorized policy sweep on the train panel (union of the symbols' "
+            "histories): weights held between rebalance bars, applied one bar "
+            "later, taker round trip charged per unit of turnover; configurations "
+            "and sleeve pairs are selected on the first "
+            f"{int(rank_fraction * 100)}% of the panel only (rank window) and "
+            "frozen; the rest (report window) is evaluated once per frozen row "
+            "and never used to choose among them; survivor = rank-window daily "
+            "Sharpe at or above 1 in a family whose rank-best row did not lose "
+            "on the report window; cleared_family and cleared_scan are the "
             "rank-window daily t-stat against the expected maximum of the "
             "family's grid and of every configuration tried"
         ),
@@ -745,6 +774,10 @@ def policy_scan(
         "defensive_symbol": panel.defensive,
         "panel_start": panel.close.index[0].isoformat(),
         "panel_end": panel.close.index[-1].isoformat(),
+        "symbol_start": {
+            symbol: (stamp.isoformat() if stamp is not None else None)
+            for symbol, stamp in (panel.starts or {}).items()
+        },
         "rank_window_end": rank_index[-1].isoformat() if len(rank_index) else None,
         "cost_bps_per_unit_turnover": round(float(cost_bps_per_side), 2),
         "configs": trials,
@@ -761,7 +794,8 @@ def policy_scan(
             "falsified": len(falsified),
         },
         "how_to_use": (
-            "A survivor is a screen, not evidence: cite its pointer and "
+            "A survivor is a screen, not evidence, and its report-window numbers "
+            "were not used to select it: cite its pointer and "
             "instantiate its kernel — workspace/src/strategy.py is one line, "
             "`from <recipe.module> import build_strategy`, and recipe.params go "
             "into execution_params beside the job's venue and cost params; no "
