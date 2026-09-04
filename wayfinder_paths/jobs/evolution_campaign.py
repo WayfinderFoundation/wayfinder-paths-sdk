@@ -4914,7 +4914,9 @@ def _redesign_due(state: Mapping[str, Any], policy: Mapping[str, Any]) -> bool:
         return False
     if state.get("stage") != "generate" or state.get("redesign") is not None:
         return False
-    if not _screen_before_repair(policy):
+    # Only a designed campaign has a design to extend; the legacy flow and
+    # the depth-first control arm keep their mechanical allocation.
+    if not state.get("design") or not _screen_before_repair(policy):
         return False
     candidates = list(state.get("candidates") or [])
     if len(candidates) < int(policy.get("generated_programs") or 0):
@@ -4923,6 +4925,9 @@ def _redesign_due(state: Mapping[str, Any], policy: Mapping[str, Any]) -> bool:
         item.get("status") in {"prepared", "quick_running", "quick_failed"}
         for item in candidates
     ):
+        return False
+    # Nothing open means nothing to abandon or keep: the campaign finalizes.
+    if not any(item.get("status") == "repair_pending" for item in candidates):
         return False
     counts = state.get("counts") or {}
     used = int(counts.get("quick_attempts") or 0)

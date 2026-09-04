@@ -421,6 +421,9 @@ def test_screen_then_focus_allocation_serves_ranked_candidates(tmp_path) -> None
             "screen_before_repair": True,
             "focus_candidates": 1,
             "focus_attempts_per_candidate": 3,
+            # The mechanical focus ranking under test is the path the
+            # redesign checkpoint replaces; keep the checkpoint off here.
+            "redesign_checkpoint": False,
         }
     )
     improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
