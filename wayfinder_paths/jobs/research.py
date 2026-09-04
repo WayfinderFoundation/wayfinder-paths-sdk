@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -894,9 +894,28 @@ def _fold_stability(
     return deltas, agreeing, True
 
 
+def _library_of(spec: SignalDef, extra_names: Collection[str]) -> str:
+    """Where a scanned def came from: the canonical library, the mechanical
+    population, or a workspace/proposal def."""
+    if spec.name not in extra_names:
+        return "canonical"
+    return "population" if spec.family == "population" else "workspace"
+
+
+def _resolve_signal_def(signal: str | SignalDef) -> SignalDef:
+    from wayfinder_paths.jobs.signal_library import signal_defs
+
+    if isinstance(signal, SignalDef):
+        return signal
+    spec = signal_defs().get(signal)
+    if spec is None:
+        raise ValueError(f"unknown library signal {signal!r}")
+    return spec
+
+
 def library_signal_on_bars(
     frame: pd.DataFrame,
-    signal: str,
+    signal: str | SignalDef,
     timeframe: str,
     *,
     bar_seconds: int,
@@ -909,11 +928,9 @@ def library_signal_on_bars(
     ``precompute()`` without re-implementing the resample or the trigger.
     """
     from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
-    from wayfinder_paths.jobs.signal_library import build_signal_frame, signal_defs
+    from wayfinder_paths.jobs.signal_library import build_signal_frame
 
-    spec = signal_defs().get(signal)
-    if spec is None:
-        raise ValueError(f"unknown library signal {signal!r}")
+    spec = _resolve_signal_def(signal)
     rule_seconds = bar_interval_seconds(timeframe)
     if not rule_seconds or rule_seconds < bar_seconds or rule_seconds % bar_seconds:
         raise ValueError(f"timeframe {timeframe!r} is not a multiple of the base bar")
@@ -925,12 +942,12 @@ def library_signal_on_bars(
     signals = build_signal_frame(
         bars, include_canonical=False, canonical_signals=(spec,)
     )
-    if signal not in signals.columns:
+    if spec.name not in signals.columns:
         return pd.Series(False, index=base.index, dtype=bool)
     higher = pd.DataFrame(
         {
             "timestamp": pd.to_datetime(bars["timestamp"], utc=True),
-            "value": signals[signal].astype(bool).to_numpy(),
+            "value": signals[spec.name].astype(bool).to_numpy(),
         }
     ).sort_values("timestamp")
     aligned = pd.merge_asof(
@@ -944,14 +961,13 @@ def library_signal_on_bars(
     return values
 
 
-def library_signal_warmup_bars(signal: str, timeframe: str, *, bar_seconds: int) -> int:
+def library_signal_warmup_bars(
+    signal: str | SignalDef, timeframe: str, *, bar_seconds: int
+) -> int:
     """Base bars a strategy must declare to compute the signal exactly."""
     from wayfinder_paths.jobs.execution.primitives import bar_interval_seconds
-    from wayfinder_paths.jobs.signal_library import signal_defs
 
-    spec = signal_defs().get(signal)
-    if spec is None:
-        raise ValueError(f"unknown library signal {signal!r}")
+    spec = _resolve_signal_def(signal)
     rule_seconds = bar_interval_seconds(timeframe) or bar_seconds
     ratio = max(1, int(rule_seconds // bar_seconds))
     return (int(spec.min_bars) + 2) * ratio
@@ -1068,7 +1084,7 @@ def scan_signals(
             {
                 "signal": spec.name,
                 "family": spec.family,
-                "library": ("workspace" if spec.name in extra_names else "canonical"),
+                "library": _library_of(spec, extra_names),
                 "timeframe": timeframe,
                 "horizon": horizon,
                 "regime": regime,
@@ -1247,9 +1263,7 @@ def scan_signals(
                 return {
                     "signal": spec.name,
                     "family": spec.family,
-                    "library": (
-                        "workspace" if spec.name in extra_names else "canonical"
-                    ),
+                    "library": _library_of(spec, extra_names),
                     "description": spec.description,
                     "timeframe": tf_name,
                     "horizon": h,

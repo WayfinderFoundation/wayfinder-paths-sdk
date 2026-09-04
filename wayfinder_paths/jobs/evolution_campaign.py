@@ -151,6 +151,7 @@ from wayfinder_paths.jobs.resource_envelope import (
     require_evolution_launch_headroom,
 )
 from wayfinder_paths.jobs.robustness import _strategy_warmup_bars
+from wayfinder_paths.jobs.signal_population import population_defs
 from wayfinder_paths.jobs.starter_casebook import select_starter_cases
 from wayfinder_paths.jobs.starters import (
     STARTER_DEFINITIONS,
@@ -917,7 +918,12 @@ SIGNAL_RECIPE_NOTES = (
     "'entry: passive' clause means the move is smaller than the taker round "
     "trip: enter with a post-only resting limit (limit_price at an ATR offset "
     'beyond the signal close, time_in_force="ALO", expires_after_bars=1) and '
-    "exit with a passive reduce-only take-profit, never at the close."
+    "exit with a passive reduce-only take-profit, never at the close. A "
+    "library: population entry is a composed def: its expression is DSL "
+    "source over f and wayfinder_paths.jobs.signal_library.SIGNAL_DSL; build "
+    "it in precompute() with compile_signal_expression (from "
+    "wayfinder_paths.jobs.signal_library) and pass the def object to "
+    "library_signal_on_bars."
 )
 
 
@@ -949,8 +955,14 @@ def _signal_recipe(
     """One compact line per entry; the shared rules are SIGNAL_RECIPE_NOTES
     on the block (the pack has a byte budget and ten entries of prose
     tipped it into its fail-closed shape)."""
+    signal = (
+        f"compile_signal_expression(name={row['signal']!r}, family='population', "
+        f"description='', min_bars={row.get('min_bars')}, expression=<expression>)"
+        if row.get("library") == "population"
+        else repr(row["signal"])
+    )
     text = (
-        f"library_signal_on_bars(frame, {row['signal']!r}, {row['timeframe']!r}, "
+        f"library_signal_on_bars(frame, {signal}, {row['timeframe']!r}, "
         f"bar_seconds={bar_seconds}); {row['direction']} on True; exit after "
         f"{row['horizon']} {row['timeframe']} bars; warmup_bars >= "
         f"{row['warmup_bars_required']}"
@@ -993,14 +1005,25 @@ def _validated_signals(
         return None
     try:
         frames = _campaign_scan_frames(store, job_id, campaign_root, policy=policy)
+        # The mechanical population (windows, thresholds, cross-family pairs)
+        # joins the same family as the library: the honest denominator.
+        population = (
+            population_defs(limit=int(policy.get("signal_population_limit") or 300))
+            if bool(policy.get("signal_population_search", True))
+            else ()
+        )
+        population_by_name = {spec.name: spec for spec in population}
         scan_kwargs = {
             **frames["scan_kwargs"],
             "condition_features": frames["condition_features"],
+            "extra_signals": population,
         }
         full_rows: list[dict[str, Any]] = []
         for symbol, rows in frames["train"].items():
             result = scan_signals(rows, **scan_kwargs)
             for row in result.get("_all_rows") or []:
+                if row["signal"] in population_by_name:
+                    row["library"] = "population"
                 full_rows.append({**row, "symbol": symbol})
         max_q = float(policy.get("signal_first_max_q") or 0.20)
         apply_bh_verdicts(full_rows, q_threshold=max_q, min_folds_agree=3)
@@ -1009,7 +1032,12 @@ def _validated_signals(
             table: dict[tuple[str, str, str, int], dict[str, Any]] = {}
             for symbol, rows in by_symbol.items():
                 result = scan_signals(
-                    rows, **{**frames["scan_kwargs"], "min_events": 10}
+                    rows,
+                    **{
+                        **frames["scan_kwargs"],
+                        "min_events": 10,
+                        "extra_signals": population,
+                    },
                 )
                 for row in result.get("_all_rows") or []:
                     key = (
@@ -1031,10 +1059,20 @@ def _validated_signals(
             taker_round_trip_bps=frames["taker_round_trip_bps"],
             maker_round_trip_bps=frames["maker_round_trip_bps"],
         )
+        funnel["population_tests"] = sum(
+            row.get("library") == "population" for row in full_rows
+        )
+        funnel["population_survivors"] = sum(
+            row.get("library") == "population" for row in [*selected, *replicated]
+        )
         bar_seconds = int(frames["bar_seconds"])
         for row in [*selected, *replicated]:
+            spec = population_by_name.get(str(row["signal"]))
+            if spec is not None:
+                row["expression"] = spec.expression
+                row["min_bars"] = spec.min_bars
             row["warmup_bars_required"] = library_signal_warmup_bars(
-                row["signal"], row["timeframe"], bar_seconds=bar_seconds
+                spec or row["signal"], row["timeframe"], bar_seconds=bar_seconds
             )
             row["how_to_use"] = _signal_recipe(
                 row, bar_seconds=bar_seconds, condition=frames["condition_features"]
@@ -5342,6 +5380,8 @@ _SIGNAL_REF_KEYS = (
     "maker_round_trip_bps",
     "edge_net_maker_bps",
     "execution_hint",
+    "expression",
+    "min_bars",
     "warmup_bars_required",
     "how_to_use",
 )

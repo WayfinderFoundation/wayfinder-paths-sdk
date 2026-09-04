@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -38,6 +39,9 @@ class SignalDef:
     description: str
     min_bars: int
     build: Callable[[pd.DataFrame], pd.Series]
+    # DSL source for defs that were composed rather than hand-written (the
+    # population search, designer proposals): what a worker pastes.
+    expression: str | None = None
 
 
 _atr = wilder_atr
@@ -76,42 +80,64 @@ def _bb_z(close: pd.Series, period: int = 20) -> pd.Series:
     return (close - mean) / std.replace(0.0, np.nan)
 
 
-def _wide_range(frame: pd.DataFrame, direction: int) -> pd.Series:
+def _wide_range(
+    frame: pd.DataFrame, direction: int, *, multiple: float = 2.0, period: int = 14
+) -> pd.Series:
     close = _close(frame)
     tr = (frame["high"].astype(float) - frame["low"].astype(float)).abs()
-    wide = tr > 2 * _atr(frame).shift(1)
+    wide = tr > multiple * _atr(frame, period).shift(1)
     if direction < 0:
         return wide & (close < frame["open"].astype(float))
     return wide & (close > frame["open"].astype(float))
 
 
-def _vol_surge(frame: pd.DataFrame, direction: int) -> pd.Series:
+def _vol_surge(
+    frame: pd.DataFrame, direction: int, *, multiple: float = 2.0, window: int = 20
+) -> pd.Series:
     close = _close(frame)
     volume = frame["volume"].astype(float)
-    surge = volume > 2 * volume.shift(1).rolling(20).mean()
+    surge = volume > multiple * volume.shift(1).rolling(window).mean()
     if direction < 0:
         return surge & (close < close.shift(1))
     return surge & (close > close.shift(1))
 
 
-def _compression_break(frame: pd.DataFrame, direction: int) -> pd.Series:
+def _compression_break(
+    frame: pd.DataFrame,
+    direction: int,
+    *,
+    period: int = 20,
+    lookback: int = 100,
+    quantile: float = 0.33,
+) -> pd.Series:
     close = _close(frame)
-    window_range = close.rolling(20).max() - close.rolling(20).min()
-    compressed = window_range.shift(1) < window_range.shift(1).rolling(100).quantile(
-        0.33
-    )
-    return compressed & _new_extreme(frame, 20, direction)
+    window_range = close.rolling(period).max() - close.rolling(period).min()
+    compressed = window_range.shift(1) < window_range.shift(1).rolling(
+        lookback
+    ).quantile(quantile)
+    return compressed & _new_extreme(frame, period, direction)
 
 
-def _extended(frame: pd.DataFrame, direction: int) -> pd.Series:
+def _extended(
+    frame: pd.DataFrame,
+    direction: int,
+    *,
+    short: int = 24,
+    long: int = 72,
+    extreme: int = 12,
+) -> pd.Series:
     """Deeply extended multi-day move making a fresh 12-bar extreme — the
     exhaustion event: scans often show it REVERSES rather than continues."""
     close = _close(frame)
     if direction < 0:
-        staircase = (close < close.shift(24)) & (close.shift(24) < close.shift(72))
+        staircase = (close < close.shift(short)) & (
+            close.shift(short) < close.shift(long)
+        )
     else:
-        staircase = (close > close.shift(24)) & (close.shift(24) > close.shift(72))
-    return staircase & _new_extreme(frame, 12, direction)
+        staircase = (close > close.shift(short)) & (
+            close.shift(short) > close.shift(long)
+        )
+    return staircase & _new_extreme(frame, extreme, direction)
 
 
 def _momentum(frame: pd.DataFrame, period: int, direction: int) -> pd.Series:
@@ -121,27 +147,31 @@ def _momentum(frame: pd.DataFrame, period: int, direction: int) -> pd.Series:
     return close > close.shift(period)
 
 
-def _spike_vs_sma(frame: pd.DataFrame, pct: float, direction: int) -> pd.Series:
+def _spike_vs_sma(
+    frame: pd.DataFrame, pct: float, direction: int, *, period: int = 20
+) -> pd.Series:
     close = _close(frame)
-    sma20 = close.rolling(20).mean()
+    sma = close.rolling(period).mean()
     if direction > 0:
-        return close > sma20 * (1 + pct)
-    return close < sma20 * (1 - pct)
+        return close > sma * (1 + pct)
+    return close < sma * (1 - pct)
 
 
-def _rsi_extreme(frame: pd.DataFrame, level: float, direction: int) -> pd.Series:
-    rsi = wilder_rsi(_close(frame))
+def _rsi_extreme(
+    frame: pd.DataFrame, level: float, direction: int, *, period: int = 14
+) -> pd.Series:
+    rsi = wilder_rsi(_close(frame), period)
     return rsi >= level if direction > 0 else rsi <= level
 
 
-def _bb_extreme(frame: pd.DataFrame, z: float) -> pd.Series:
-    zscore = _bb_z(_close(frame))
+def _bb_extreme(frame: pd.DataFrame, z: float, *, period: int = 20) -> pd.Series:
+    zscore = _bb_z(_close(frame), period)
     return zscore >= z if z > 0 else zscore <= z
 
 
-def _sma_cross(frame: pd.DataFrame, direction: int) -> pd.Series:
+def _sma_cross(frame: pd.DataFrame, direction: int, *, period: int = 20) -> pd.Series:
     close = _close(frame)
-    return _cross(close, close.rolling(20).mean(), direction)
+    return _cross(close, close.rolling(period).mean(), direction)
 
 
 def _ema_cross(
@@ -153,18 +183,27 @@ def _ema_cross(
     return _cross(fast_ema, slow_ema, direction)
 
 
-def _macd_cross(frame: pd.DataFrame, direction: int) -> pd.Series:
+def _macd_cross(
+    frame: pd.DataFrame,
+    direction: int,
+    *,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> pd.Series:
     close = _close(frame)
     macd = (
-        close.ewm(span=12, adjust=False).mean()
-        - close.ewm(span=26, adjust=False).mean()
+        close.ewm(span=fast, adjust=False).mean()
+        - close.ewm(span=slow, adjust=False).mean()
     )
-    signal = macd.ewm(span=9, adjust=False).mean()
-    return _cross(macd, signal, direction)
+    signal_line = macd.ewm(span=signal, adjust=False).mean()
+    return _cross(macd, signal_line, direction)
 
 
-def _rsi_cross(frame: pd.DataFrame, level: float, direction: int) -> pd.Series:
-    rsi = wilder_rsi(_close(frame))
+def _rsi_cross(
+    frame: pd.DataFrame, level: float, direction: int, *, period: int = 14
+) -> pd.Series:
+    rsi = wilder_rsi(_close(frame), period)
     if direction > 0:
         return (rsi > level) & (rsi.shift(1) <= level)
     return (rsi < level) & (rsi.shift(1) >= level)
@@ -196,11 +235,106 @@ def _weekend(frame: pd.DataFrame) -> pd.Series:
     return _et_stamps(frame).dt.dayofweek >= 5
 
 
-def _trend_gated_extreme(frame: pd.DataFrame, direction: int) -> pd.Series:
+def _trend_gated_extreme(
+    frame: pd.DataFrame,
+    direction: int,
+    *,
+    period: int = 5,
+    span: int = 50,
+    lag: int = 10,
+) -> pd.Series:
     close = _close(frame)
-    slope_dn = _ema_slope_dn(close)
+    slope_dn = _ema_slope_dn(close, span, lag)
     trend = slope_dn if direction < 0 else ~slope_dn
-    return trend & _new_extreme(frame, 5, direction)
+    return trend & _new_extreme(frame, period, direction)
+
+
+def _sma(close: pd.Series, period: int) -> pd.Series:
+    return close.rolling(period).mean()
+
+
+def _ema(close: pd.Series, span: int) -> pd.Series:
+    return close.ewm(span=span, adjust=False).mean()
+
+
+# Public names for the builders: the DSL a composed def (population search,
+# designer proposal) is written in, and what a worker imports to paste one.
+close = _close
+sma = _sma
+ema = _ema
+atr = _atr
+new_extreme = _new_extreme
+fresh = _fresh
+cross = _cross
+bb_z = _bb_z
+ema_slope_dn = _ema_slope_dn
+wide_range = _wide_range
+vol_surge = _vol_surge
+compression_break = _compression_break
+extended = _extended
+momentum = _momentum
+spike_vs_sma = _spike_vs_sma
+rsi_extreme = _rsi_extreme
+bb_extreme = _bb_extreme
+sma_cross = _sma_cross
+ema_cross = _ema_cross
+macd_cross = _macd_cross
+rsi_cross = _rsi_cross
+session_window = _session_window
+weekend = _weekend
+trend_gated_extreme = _trend_gated_extreme
+
+SIGNAL_DSL: dict[str, Any] = {
+    "pd": pd,
+    "np": np,
+    "close": close,
+    "sma": sma,
+    "ema": ema,
+    "atr": atr,
+    "wilder_rsi": wilder_rsi,
+    "new_extreme": new_extreme,
+    "fresh": fresh,
+    "cross": cross,
+    "bb_z": bb_z,
+    "ema_slope_dn": ema_slope_dn,
+    "wide_range": wide_range,
+    "vol_surge": vol_surge,
+    "compression_break": compression_break,
+    "extended": extended,
+    "momentum": momentum,
+    "spike_vs_sma": spike_vs_sma,
+    "rsi_extreme": rsi_extreme,
+    "bb_extreme": bb_extreme,
+    "sma_cross": sma_cross,
+    "ema_cross": ema_cross,
+    "macd_cross": macd_cross,
+    "rsi_cross": rsi_cross,
+    "session_window": session_window,
+    "weekend": weekend,
+    "trend_gated_extreme": trend_gated_extreme,
+}
+_DSL_BUILTINS = {"abs": abs, "min": min, "max": max, "round": round}
+
+
+def compile_signal_expression(
+    *,
+    name: str,
+    family: str,
+    description: str,
+    min_bars: int,
+    expression: str,
+) -> SignalDef:
+    """A SignalDef from DSL source: one Python expression over ``f`` (the bar
+    frame) and the SIGNAL_DSL names. Same trust boundary as an exec'd
+    ``workspace/src/signals.py``; the causality validator judges the result,
+    not this function."""
+    source = str(expression).strip()
+    if not source or "\n" in source:
+        raise ValueError(f"{name!r}: expression must be one non-empty line")
+    build = eval(  # noqa: S307 - DSL over a fixed namespace, validated after
+        f"lambda f: ({source})", {"__builtins__": _DSL_BUILTINS, **SIGNAL_DSL}
+    )
+    return SignalDef(name, family, description, int(min_bars), build, source)
 
 
 SIGNAL_LIBRARY: tuple[SignalDef, ...] = (
@@ -482,15 +616,19 @@ def build_signal_frame(
     canonical library so the scan sweeps both under one test family.
     `canonical_signals` selects required canonical controls when the complete
     library is disabled for a declared campaign."""
-    out = pd.DataFrame(index=frame.index)
     library = SIGNAL_LIBRARY if include_canonical else tuple(canonical_signals)
+    # One concat, not one insert per column: a population of a few hundred
+    # defs on a year of 5-minute bars fragments the frame otherwise.
+    columns: dict[str, pd.Series] = {}
     for spec in (*library, *extra_signals):
-        out[spec.name] = (
+        columns[spec.name] = (
             spec.build(frame).fillna(False).astype(bool)
             if len(frame) >= spec.min_bars
-            else False
+            else pd.Series(False, index=frame.index, dtype=bool)
         )
-    return out
+    if not columns:
+        return pd.DataFrame(index=frame.index)
+    return pd.DataFrame(columns, index=frame.index)
 
 
 def signal_defs() -> dict[str, SignalDef]:

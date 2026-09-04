@@ -5445,4 +5445,16 @@ def test_campaign_scan_frames_carry_store_columns_and_condition(tmp_path) -> Non
     assert block["condition_features"] == ["leader_state", "macro_regime"]
     assert block["maker_round_trip_bps"] == 3.0
     assert block["funnel"]["regime_tests"] > 0
+    assert block["funnel"]["population_tests"] > 0
     assert "replicated" in block
+    composed = [
+        row
+        for row in [*block["signals"], *block["replicated"]]
+        if row.get("library") == "population"
+    ]
+    for row in composed:
+        assert (
+            row["expression"]
+            and row["min_bars"]
+            and "compile_signal_expression" in (row["how_to_use"])
+        )
