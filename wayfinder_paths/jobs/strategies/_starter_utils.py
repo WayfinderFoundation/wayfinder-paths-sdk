@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
@@ -191,13 +192,31 @@ def stop_brackets(
 
 
 def ranked_weights(
-    scores: Mapping[str, float], *, weight_per_leg: float
+    scores: Mapping[str, float], *, weight_per_leg: float, legs: int | None = None
 ) -> dict[str, float]:
-    """Long the upper half and short the lower half, deterministically."""
+    """Long the leaders and short the laggards, deterministically.
+
+    ``legs=None`` preserves the original half-long/half-short behavior.  A
+    smaller explicit count leaves the middle ranks flat, which lets broader
+    universes express only their strongest cross-sectional signals.
+    """
     ranked = sorted(scores, key=lambda symbol: (scores[symbol], symbol))
-    midpoint = len(ranked) // 2
-    weights = dict.fromkeys(ranked[:midpoint], -weight_per_leg)
-    weights.update(dict.fromkeys(ranked[midpoint:], weight_per_leg))
+    if legs is None:
+        midpoint = len(ranked) // 2
+        weights = dict.fromkeys(ranked[:midpoint], -weight_per_leg)
+        weights.update(dict.fromkeys(ranked[midpoint:], weight_per_leg))
+        return weights
+    if isinstance(legs, bool):
+        raise ValueError("ranked leg count must be a whole number")
+    candidate = float(legs)
+    if not math.isfinite(candidate) or not candidate.is_integer():
+        raise ValueError("ranked leg count must be a whole number")
+    leg_count = int(candidate)
+    if leg_count <= 0 or leg_count * 2 > len(ranked):
+        raise ValueError("ranked leg count must cover at most half the universe")
+    weights = dict.fromkeys(ranked, 0.0)
+    weights.update(dict.fromkeys(ranked[:leg_count], -weight_per_leg))
+    weights.update(dict.fromkeys(ranked[-leg_count:], weight_per_leg))
     return weights
 
 
