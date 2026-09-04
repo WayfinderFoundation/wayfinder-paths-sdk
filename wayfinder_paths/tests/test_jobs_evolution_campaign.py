@@ -41,10 +41,12 @@ from wayfinder_paths.jobs.evolution_campaign import (
     _min_fills_per_day,
     _neighborhood_dimension,
     _numeric_tunables,
+    _objective,
     _parameter_tuning_preview,
     _parent_source,
     _persist_executable_bundle,
     _plateau_select,
+    _pooled_fold_stats,
     _protected_fold_verdict,
     _prune_risky_trials,
     _research_context_instruction,
@@ -2788,6 +2790,34 @@ def test_protected_fold_verdict_contract(
         assert verdict["status"] == "dev_frontier"
     else:
         assert expected in verdict["failure_codes"]
+
+
+def test_protected_full_dev_tail_is_not_cumulative_with_trade_count() -> None:
+    pooled = _pooled_fold_stats(
+        [
+            {
+                "trade_count": 100,
+                "worst_trade_pnl": -100.0,
+                "avg_trade_duration_s": 60.0,
+            },
+            {
+                "trade_count": 100,
+                "worst_trade_pnl": -80.0,
+                "avg_trade_duration_s": 120.0,
+            },
+        ],
+        {
+            "net_log_growth": 0.10,
+            "max_drawdown_pct": 0.05,
+        },
+        {},
+    )
+
+    objective = _objective(pooled, {"initial_capital": 10_000.0})
+
+    assert pooled["trade_count"] == 200
+    assert pooled["worst_trade_pnl"] == -100.0
+    assert objective["tail_loss"] == 0.01
 
 
 def test_protected_fold_layout_rejects_insufficient_history() -> None:

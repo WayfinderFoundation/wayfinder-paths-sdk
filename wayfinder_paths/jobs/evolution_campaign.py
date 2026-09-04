@@ -7940,12 +7940,23 @@ def _protected_fold_full_dev(
             }
         )
 
-    base_vector = objective_vector(base_equity, base_trades)
-    stress_vector = objective_vector(stress_equity, stress_trades)
+    base_economic_vector = objective_vector(base_equity, base_trades)
+    stress_economic_vector = objective_vector(stress_equity, stress_trades)
     base_regime = _pooled_regime_stats(base_stats_rows)
     stress_regime = _pooled_regime_stats(stress_stats_rows)
-    pooled_base = _pooled_fold_stats(base_stats_rows, base_vector, base_regime)
-    pooled_stress = _pooled_fold_stats(stress_stats_rows, stress_vector, stress_regime)
+    pooled_base = _pooled_fold_stats(base_stats_rows, base_economic_vector, base_regime)
+    pooled_stress = _pooled_fold_stats(
+        stress_stats_rows, stress_economic_vector, stress_regime
+    )
+    # Full development has always treated max_tail_loss as a per-trade
+    # containment check (worst realized trade / capital). Using the final
+    # economic gate's cumulative worst-decile loss here made the same ceiling
+    # grow with trade count and rejected active strategies before the
+    # finalist's existing risk-normalization pass could size them. Keep that
+    # aggregate metric at the paired gate; use the established full-dev risk
+    # vector at this earlier stage.
+    base_risk_vector = _objective(pooled_base, params)
+    stress_risk_vector = _objective(pooled_stress, stress_params)
     validation_haircut = haircut(
         [value for _, value in daily_log_returns(base_equity)],
         _campaign_trials(store, job_id),
@@ -7971,8 +7982,8 @@ def _protected_fold_full_dev(
         target_days=len(base_regime.get("target_daily") or []),
         min_target_days=int(regime_config.get("min_target_days") or 10),
         outside_loss_ok=outside_loss_ok,
-        base_vector=base_vector,
-        stress_vector=stress_vector,
+        base_vector=base_risk_vector,
+        stress_vector=stress_risk_vector,
         hard_constraints=constitution.get("hard_constraints") or {},
         required_positive_folds=int(certification_policy["required_positive_folds"]),
         max_fold_loss_pct=float(certification_policy["max_fold_loss_pct"]),
@@ -7993,19 +8004,6 @@ def _protected_fold_full_dev(
         "exits": receipt_exits({"trades": base_trades}),
         "forensics": _validation_forensics(synthetic, certificate_dataset),
     }
-    objective = {
-        key: round(float(base_vector[key]), 8)
-        for key in (
-            "net_log_growth",
-            "downside_deviation",
-            "tail_loss",
-            "max_drawdown_pct",
-        )
-    }
-    if specialized:
-        objective["out_of_regime_loss_pct"] = round(
-            float(base_regime.get("outside_loss_pct") or 0.0), 8
-        )
     result_plan = {
         **evaluation_plan,
         "certification_policy": dict(certification_policy),
@@ -8028,7 +8026,7 @@ def _protected_fold_full_dev(
                 "profile": {"mode": "protected_chronological_folds_v1"},
             },
         },
-        "objective": objective,
+        "objective": base_risk_vector,
         "behavior": _behavior(
             synthetic, certificate_dataset, protected_subject["spec"], stats=pooled_base
         ),
@@ -8157,6 +8155,10 @@ def _pooled_fold_stats(
         ),
         "avg_trade_duration_s": (
             weighted_duration / trade_count if trade_count else 0.0
+        ),
+        "worst_trade_pnl": min(
+            (float(row.get("worst_trade_pnl") or 0.0) for row in rows),
+            default=0.0,
         ),
         "regime": dict(regime),
     }
