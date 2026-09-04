@@ -24,6 +24,7 @@ BenchAction = Literal[
     "evolution_status",
     "evolution_design",
     "evolution_compose",
+    "evolution_redesign",
     "evolution_mechanism_grid",
     "evolution_prepare",
     "evolution_submit_seed",
@@ -42,6 +43,7 @@ _ALLOWED_ACTIONS = {
     "evolution_status",
     "evolution_design",
     "evolution_compose",
+    "evolution_redesign",
     "evolution_mechanism_grid",
     "evolution_prepare",
     "evolution_submit_seed",
@@ -56,6 +58,7 @@ async def core_jobs(
     job_id: str,
     campaign_design: dict[str, Any] | None = None,
     signal_proposals: list[dict[str, Any]] | None = None,
+    redesign: dict[str, Any] | None = None,
     signal_ref: str | None = None,
     side: Literal["long", "short"] | None = None,
     family: str | None = None,
@@ -92,7 +95,12 @@ async def core_jobs(
     effective_background = (
         False
         if action
-        in {"evolution_design", "evolution_compose", "evolution_mechanism_grid"}
+        in {
+            "evolution_design",
+            "evolution_compose",
+            "evolution_redesign",
+            "evolution_mechanism_grid",
+        }
         else background
     )
     result = await _production_core_jobs(
@@ -100,6 +108,7 @@ async def core_jobs(
         job_id=job_id,
         campaign_design=campaign_design,
         signal_proposals=signal_proposals,
+        redesign=redesign,
         signal_ref=signal_ref,
         side=side,
         family=family,

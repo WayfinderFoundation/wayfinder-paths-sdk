@@ -148,6 +148,11 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
         from wayfinder_paths.jobs.store import JobStore
 
         return submit_signal_proposals(JobStore(), kwargs.pop("job_id"), **kwargs)
+    if op == "evolution_redesign":
+        from wayfinder_paths.jobs.evolution_campaign import submit_campaign_redesign
+        from wayfinder_paths.jobs.store import JobStore
+
+        return submit_campaign_redesign(JobStore(), kwargs.pop("job_id"), **kwargs)
     if op == "evolution_mechanism_grid":
         from wayfinder_paths.jobs.evolution_campaign import mechanism_grid
         from wayfinder_paths.jobs.store import JobStore
@@ -277,6 +282,7 @@ _NUDGE_OPS = {
     "evolution_start",
     "evolution_design",
     "evolution_compose",
+    "evolution_redesign",
     "evolution_evaluate",
 }
 _EVOLUTION_ACTIVITY_OPS = _NUDGE_OPS | {"evolution_finalize"}

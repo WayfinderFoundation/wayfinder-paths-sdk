@@ -197,6 +197,7 @@ DIAGNOSTIC_PACK = "diagnostic_pack.json"
 CAMPAIGN_DESIGN = "campaign_design.json"
 SCHEMA_VERSION = "2.0"
 COMPOSE_STAGE = "compose"
+REDESIGN_STAGE = "redesign"
 MECHANISM_GRID_MAX = 6
 _DEFAULT_EXTRA_HORIZONS: dict[str, list[int]] = {"1h": [72, 168], "4h": [42, 84]}
 _CROSS_SECTION_SECONDS = 3600
@@ -3337,17 +3338,34 @@ def _research_parent_available(
 
 
 def _validate_campaign_design(
-    raw: dict[str, Any], *, manifest: dict[str, Any], diagnostic_pack: dict[str, Any]
+    raw: dict[str, Any],
+    *,
+    manifest: dict[str, Any],
+    diagnostic_pack: dict[str, Any],
+    extension: bool = False,
+    reserved_ids: Collection[str] = (),
 ) -> dict[str, Any]:
+    """The design's shape rules. ``extension`` validates the redesign
+    checkpoint's replacement slots: the same per-hypothesis, per-slot and
+    citation rules, no wildcards, and none of the whole-design allocation
+    rules (those were met by the accepted design)."""
     if not isinstance(raw, dict):
         raise ValueError("campaign_design must be an object")
     hypotheses = raw.get("hypotheses")
     slots = raw.get("slots")
-    if not isinstance(hypotheses, list) or not 3 <= len(hypotheses) <= 5:
-        raise ValueError("campaign design requires 3-5 grounded hypotheses")
-    expected_slots = int(manifest["policy"]["generated_programs"])
-    if not isinstance(slots, list) or len(slots) != expected_slots:
-        raise ValueError(f"campaign design requires exactly {expected_slots} slots")
+    if extension:
+        if not isinstance(hypotheses, list) or not 1 <= len(hypotheses) <= 3:
+            raise ValueError("a redesign carries 1-3 replacement hypotheses")
+        limit = int(manifest["policy"].get("redesign_slots") or 3)
+        if not isinstance(slots, list) or not 1 <= len(slots) <= limit:
+            raise ValueError(f"a redesign carries 1-{limit} replacement slots")
+    else:
+        if not isinstance(hypotheses, list) or not 3 <= len(hypotheses) <= 5:
+            raise ValueError("campaign design requires 3-5 grounded hypotheses")
+        expected_slots = int(manifest["policy"]["generated_programs"])
+        if not isinstance(slots, list) or len(slots) != expected_slots:
+            raise ValueError(f"campaign design requires exactly {expected_slots} slots")
+    reserved = {str(item) for item in reserved_ids}
     refuted_families = {
         str(item.get("family") or "").strip()
         for item in (
@@ -3458,7 +3476,7 @@ def _validate_campaign_design(
         if not isinstance(slot, dict):
             raise ValueError("every design slot must be an object")
         slot_id = str(slot.get("slot_id") or f"s{index:02d}").strip()
-        if slot_id in seen_slot_ids:
+        if slot_id in seen_slot_ids or slot_id in reserved:
             raise ValueError(f"duplicate design slot id: {slot_id}")
         seen_slot_ids.add(slot_id)
         wildcard_value = slot.get("wildcard")
@@ -3561,7 +3579,10 @@ def _validate_campaign_design(
             normalized_slot["research_seed_id"] = research_seed_id
         normalized_slots.append(normalized_slot)
     wildcard_count = sum(bool(slot["wildcard"]) for slot in normalized_slots)
-    if wildcard_count != int(manifest["policy"].get("wildcard_slots") or 0):
+    if extension:
+        if wildcard_count:
+            raise ValueError("a redesign cannot add wildcard slots")
+    elif wildcard_count != int(manifest["policy"].get("wildcard_slots") or 0):
         raise ValueError("campaign design has the wrong number of wildcard slots")
     grounded = [slot for slot in normalized_slots if not slot["wildcard"]]
     signal_block = diagnostic_pack.get("validated_signals") or {}
@@ -3610,34 +3631,38 @@ def _validate_campaign_design(
                     f"({names})"
                 )
     sources = {str(slot["parent_source"]) for slot in grounded}
-    if "starter_seed" not in sources:
-        raise ValueError("grounded design requires an explicit starter_seed slot")
-    if _research_parent_available(manifest, diagnostic_pack) and not sources & {
-        "research_seed",
-        "research_context",
-    }:
-        raise ValueError("grounded design requires an explicit research slot")
-    if "de_novo" not in sources:
-        raise ValueError("grounded design requires an explicit de_novo slot")
-    available_parents = (manifest.get("parent_pool") or {}).get("candidates") or []
-    exploration_parents = [
-        parent
-        for parent in available_parents
-        if str(parent.get("status") or "") != "incumbent"
-    ]
-    if exploration_parents and not sources & {"qd_elite", "crossover"}:
-        raise ValueError(
-            "grounded design requires a qd_elite or crossover slot when parents exist"
-        )
-    if sum(slot["parent_source"] == "incumbent" for slot in grounded) > 1:
-        raise ValueError("grounded design permits at most one incumbent slot")
-    if sum(slot["mutation_kind"] == "parameter" for slot in normalized_slots) > 2:
-        raise ValueError("campaign design permits at most two parameter slots")
-    if not any(
-        slot["wildcard"] and slot["parent_source"] == "de_novo"
-        for slot in normalized_slots
-    ):
-        raise ValueError("one wildcard slot must be de_novo")
+    if extension:
+        if sources & {"incumbent"}:
+            raise ValueError("a redesign cannot add an incumbent slot")
+    else:
+        if "starter_seed" not in sources:
+            raise ValueError("grounded design requires an explicit starter_seed slot")
+        if _research_parent_available(manifest, diagnostic_pack) and not sources & {
+            "research_seed",
+            "research_context",
+        }:
+            raise ValueError("grounded design requires an explicit research slot")
+        if "de_novo" not in sources:
+            raise ValueError("grounded design requires an explicit de_novo slot")
+        available_parents = (manifest.get("parent_pool") or {}).get("candidates") or []
+        exploration_parents = [
+            parent
+            for parent in available_parents
+            if str(parent.get("status") or "") != "incumbent"
+        ]
+        if exploration_parents and not sources & {"qd_elite", "crossover"}:
+            raise ValueError(
+                "grounded design requires a qd_elite or crossover slot when parents exist"
+            )
+        if sum(slot["parent_source"] == "incumbent" for slot in grounded) > 1:
+            raise ValueError("grounded design permits at most one incumbent slot")
+        if sum(slot["mutation_kind"] == "parameter" for slot in normalized_slots) > 2:
+            raise ValueError("campaign design permits at most two parameter slots")
+        if not any(
+            slot["wildcard"] and slot["parent_source"] == "de_novo"
+            for slot in normalized_slots
+        ):
+            raise ValueError("one wildcard slot must be de_novo")
     if specialist_design:
         represented = {
             regime
@@ -3797,7 +3822,7 @@ def _prepare_candidate(
         raise ValueError("evolution campaign generation deadline has elapsed")
     manifest = _campaign_manifest(store, job_id, str(state["campaign_id"]))
     policy = manifest["policy"]
-    limit = int(policy["generated_programs"])
+    limit = _program_budget(state, policy)
     slot = len(state["candidates"]) + 1
     if slot > limit:
         raise ValueError(f"campaign generated-program budget exhausted ({limit})")
@@ -4871,9 +4896,37 @@ def _screen_before_repair(policy: Mapping[str, Any]) -> bool:
     return bool(policy.get("screen_before_repair", True))
 
 
+def _program_budget(state: Mapping[str, Any], policy: Mapping[str, Any]) -> int:
+    """Initial slots plus the replacement slots a redesign added."""
+    extra = int((state.get("redesign") or {}).get("extra_slots") or 0)
+    return int(policy.get("generated_programs") or 0) + extra
+
+
 def _screen_complete(state: Mapping[str, Any], policy: Mapping[str, Any]) -> bool:
-    budget = int(policy.get("generated_programs") or 0)
-    return len(state.get("candidates") or []) >= budget
+    return len(state.get("candidates") or []) >= _program_budget(state, policy)
+
+
+def _redesign_due(state: Mapping[str, Any], policy: Mapping[str, Any]) -> bool:
+    """One bounded global learning turn: after every initial slot has had
+    its screen attempt and before the focus repairs, the designer reads the
+    whole table once."""
+    if not bool(policy.get("redesign_checkpoint", True)):
+        return False
+    if state.get("stage") != "generate" or state.get("redesign") is not None:
+        return False
+    if not _screen_before_repair(policy):
+        return False
+    candidates = list(state.get("candidates") or [])
+    if len(candidates) < int(policy.get("generated_programs") or 0):
+        return False
+    if any(
+        item.get("status") in {"prepared", "quick_running", "quick_failed"}
+        for item in candidates
+    ):
+        return False
+    counts = state.get("counts") or {}
+    used = int(counts.get("quick_attempts") or 0)
+    return used < int(policy.get("max_quick_attempts") or 0)
 
 
 def _attempt_cap(
@@ -4943,6 +4996,19 @@ def _focus_candidates(
         if item.get("status") in {"repair_pending", "quick_running"}
         and item.get("attempts")
     ]
+    redesign = state.get("redesign")
+    if isinstance(redesign, dict):
+        # The designer chose the focus set: the candidates it kept plus the
+        # replacements it added, each with the focus attempt cap.
+        kept = {str(item) for item in redesign.get("kept") or []}
+        initial = int(policy.get("generated_programs") or 0)
+        pool = [
+            item
+            for item in pool
+            if str(item.get("candidate_id")) in kept
+            or int(item.get("slot") or 0) > initial
+        ]
+        limit = max(1, len(pool))
     return sorted(pool, key=_focus_rank, reverse=True)[:limit]
 
 
@@ -6156,6 +6222,267 @@ def recover_lost_candidate_evaluations(
     return recovered
 
 
+def _screen_table(
+    state: Mapping[str, Any], policy: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """The compact per-candidate record the redesign turn reads: what each
+    slot was, what its screen said, and how fixable that failure is."""
+    rows: list[dict[str, Any]] = []
+    for candidate in state.get("candidates") or []:
+        attempts = list(candidate.get("attempts") or [])
+        latest = attempts[-1] if attempts else {}
+        postmortem = latest.get("postmortem") or {}
+        screen = postmortem.get("screen") or {}
+        slices = screen.get("slices") or {}
+        primary = str(postmortem.get("primary_failure") or "")
+        rows.append(
+            {
+                "candidate_id": candidate.get("candidate_id"),
+                "slot": candidate.get("slot"),
+                "family": candidate.get("family"),
+                "parent_source": candidate.get("parent_source"),
+                "starter_seed_id": candidate.get("starter_seed_id"),
+                "policy_ref": candidate.get("policy_ref"),
+                "status": candidate.get("status"),
+                "attempts": len(attempts),
+                "execution_valid": bool(latest.get("execution_valid")),
+                "primary_failure": primary or None,
+                "failure_codes": list(postmortem.get("failure_codes") or []),
+                "fixability": _FIXABILITY.get(primary, 0),
+                "screen": {
+                    "cost_coverage": screen.get("cost_coverage"),
+                    "total_trades": screen.get("total_trades"),
+                    "slices": {
+                        label: {
+                            "net_return": (report or {}).get("net_return"),
+                            "lcb": (report or {}).get("lcb"),
+                        }
+                        for label, report in slices.items()
+                        if isinstance(report, dict)
+                    },
+                },
+            }
+        )
+    return rows
+
+
+def _redesign_prompt_block(
+    store: JobStore, job_id: str, state: dict[str, Any], manifest: dict[str, Any]
+) -> dict[str, Any]:
+    """The checkpoint turn: the designer sees every screen and may abandon
+    falsified slots, keep fixable ones and add replacements, including kernel
+    slots for policy-scan survivors. The mechanical focus ranking could never
+    say "this family is dead, try a relay"."""
+    root = store.job_dir(job_id)
+    policy = manifest.get("policy") or {}
+    pack_path = (root / str(state["diagnostic_pack"])).resolve()
+    manifest_path = (root / str(state["manifest"])).resolve()
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]), default={}) or {}
+    table = _screen_table(state, policy)
+    open_ids = [
+        str(row["candidate_id"]) for row in table if row["status"] == "repair_pending"
+    ]
+    used_policies = {
+        str(candidate.get("policy_id") or "")
+        for candidate in state.get("candidates") or []
+    }
+    policy_refs = [
+        str(row.get("pointer"))
+        for row in (pack.get("policy_scan") or {}).get("survivors") or []
+        if row.get("pointer")
+        and (row.get("recipe") or {}).get("module")
+        and str(row.get("policy_id") or "") not in used_policies
+    ]
+    counts = state.get("counts") or {}
+    remaining = max(
+        0,
+        int(policy.get("max_quick_attempts") or 0)
+        - int(counts.get("quick_attempts") or 0),
+    )
+    max_new = int(policy.get("redesign_slots") or 3)
+    table_text = "; ".join(
+        f"{row['candidate_id']} ({row['family']}, {row['parent_source']}"
+        + (f" {row['starter_seed_id']}" if row.get("starter_seed_id") else "")
+        + (f" {row['policy_ref']}" if row.get("policy_ref") else "")
+        + f"): {row['status']}, {row['attempts']} attempt(s), "
+        + (
+            f"{row['primary_failure']} {row['failure_codes']}"
+            if row.get("primary_failure")
+            else "passed the screen"
+        )
+        + (
+            f", coverage {row['screen']['cost_coverage']}, "
+            f"{row['screen']['total_trades']} trades, slices "
+            + ", ".join(
+                f"{label} {float(item.get('net_return') or 0):+.1%}"
+                for label, item in row["screen"]["slices"].items()
+            )
+            if row["screen"].get("slices")
+            else ""
+        )
+        + f", fixability {row['fixability']}"
+        for row in table
+    )
+    next_action = (
+        "Redesign checkpoint: every initial slot has had its screen attempt. "
+        f"Read `{pack_path}` again if needed. The screens: {table_text}. "
+        f"Open (repairable) candidates: {open_ids}. Attempts remaining: {remaining}. "
+        "Decide once for the whole table: abandon the candidates whose family "
+        "the screen falsified (cost-negative gross, no trades, or a slice loss "
+        "the mechanism cannot fix), keep the ones a bounded repair can fix, "
+        f"and add up to {max_new} replacement slots for the material the "
+        "screens and the pack point at instead"
+        + (
+            f": policy-scan survivors not yet tried {policy_refs} (a policy_kernel "
+            "slot with policy_ref instantiates one with no new code)"
+            if policy_refs
+            else ""
+        )
+        + ". Replacement slots follow the design rules (hypothesis with "
+        "evidence_refs, slot with slot_id, wildcard=false, hypothesis_id, "
+        "parent_source, mutation_kind, family, summary; no wildcards, no "
+        "incumbent slot); each replacement costs one screen attempt from the "
+        "remaining budget. Kept candidates plus the replacements become the "
+        "focus set for the remaining repairs. Call wayfinder_core_jobs("
+        f'action="evolution_redesign", job_id="{job_id}", redesign={{"abandon": '
+        '[...], "keep": [...], "hypotheses": [...], "slots": [...]}) exactly once '
+        "(hypotheses and slots may be empty lists; keeping everything is a valid "
+        "decision), then end this stage."
+    )
+    return {
+        "job_id": job_id,
+        "campaign_id": state["campaign_id"],
+        "stage": state["stage"],
+        "session_stage": REDESIGN_STAGE,
+        "artifact_key": REDESIGN_STAGE,
+        "agent_name": "wayfinder-evolution-designer",
+        "deadline_at": state["deadline_at"],
+        "counts": state["counts"],
+        "diagnostic_pack": str(pack_path),
+        "manifest_path": str(manifest_path),
+        "valid_evidence_pointers": valid_evidence_pointers(pack),
+        "next_action": next_action,
+        "constraints": {
+            "redesign": {
+                "open": open_ids,
+                "attempts_remaining": remaining,
+                "max_new_slots": max_new,
+                "policy_refs": policy_refs,
+                "table": table,
+            }
+        },
+    }
+
+
+def submit_campaign_redesign(
+    store: JobStore, job_id: str, *, redesign: Mapping[str, Any] | None
+) -> dict[str, Any]:
+    """Apply the checkpoint decision: close abandoned candidates on their
+    best attempt, extend the accepted design with the replacement slots, and
+    record the focus set. One checkpoint per campaign."""
+    if not isinstance(redesign, Mapping):
+        raise ValueError("redesign must be an object")
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = _active_campaign(store, job_id)
+        if str(state.get("schema_version") or "") != SCHEMA_VERSION:
+            raise ValueError("legacy evolution campaigns have no redesign checkpoint")
+        campaign_id = str(state["campaign_id"])
+        manifest = _campaign_manifest(store, job_id, campaign_id)
+        policy = manifest["policy"]
+        if state.get("redesign") is not None:
+            raise ValueError("the redesign checkpoint was already used")
+        if not _redesign_due(state, policy):
+            raise ValueError(
+                "redesign is not due: it runs once, after every initial slot has "
+                "had its screen attempt and while attempts remain"
+            )
+        by_id = {
+            str(item.get("candidate_id")): item
+            for item in state.get("candidates") or []
+        }
+        abandon = [str(item) for item in redesign.get("abandon") or []]
+        keep = [str(item) for item in redesign.get("keep") or []]
+        unknown = [cid for cid in [*abandon, *keep] if cid not in by_id]
+        if unknown:
+            raise ValueError(f"redesign names unknown candidates: {unknown}")
+        both = sorted(set(abandon) & set(keep))
+        if both:
+            raise ValueError(f"redesign both abandons and keeps: {both}")
+        closed = [
+            cid
+            for cid in [*abandon, *keep]
+            if by_id[cid].get("status") != "repair_pending"
+        ]
+        if closed:
+            raise ValueError(
+                f"only open (repair_pending) candidates can be abandoned or kept: {closed}"
+            )
+        hypotheses = list(redesign.get("hypotheses") or [])
+        slots = list(redesign.get("slots") or [])
+        if bool(hypotheses) != bool(slots):
+            raise ValueError("replacement hypotheses and slots come together")
+        root = store.job_dir(job_id)
+        design_path = root / str(state["campaign_design"])
+        design = json.loads(design_path.read_text(encoding="utf-8"))
+        added: list[str] = []
+        if slots:
+            pack = (
+                store.read_json(job_id, str(state["diagnostic_pack"]), default={}) or {}
+            )
+            reserved = {
+                *(str(item.get("slot_id")) for item in design.get("slots") or []),
+                *(str(item.get("id")) for item in design.get("hypotheses") or []),
+            }
+            extension = _validate_campaign_design(
+                {"hypotheses": hypotheses, "slots": slots},
+                manifest=manifest,
+                diagnostic_pack=pack,
+                extension=True,
+                reserved_ids=reserved,
+            )
+            design["hypotheses"].extend(extension["hypotheses"])
+            design["slots"].extend(extension["slots"])
+            added = [str(item["slot_id"]) for item in extension["slots"]]
+            atomic_write_json(design_path, design)
+            state["design"] = {
+                **dict(state.get("design") or {}),
+                "sha256": _file_hash(design_path),
+                "hypotheses": len(design["hypotheses"]),
+                "slots": len(design["slots"]),
+            }
+        for cid in abandon:
+            candidate = by_id[cid]
+            _close_designed_candidate(store, job_id, state=state, candidate=candidate)
+            candidate["abandoned_at_redesign"] = True
+        state["redesign"] = {
+            "at": utc_now_iso(),
+            "abandoned": abandon,
+            "kept": keep,
+            "added_slots": added,
+            "extra_slots": len(added),
+        }
+        _stamp_focus(state, policy)
+        _save_campaign(store, job_id, state)
+    store.append_journal(
+        job_id,
+        {
+            "type": "evolution_campaign_redesigned",
+            "campaign_id": campaign_id,
+            "abandoned": len(abandon),
+            "kept": len(keep),
+            "added": len(added),
+        },
+    )
+    return {
+        "status": "accepted",
+        "campaign_id": campaign_id,
+        "abandoned": abandon,
+        "kept": keep,
+        "added_slots": added,
+        "focus": list((state.get("focus") or {}).get("candidate_ids") or []),
+    }
+
+
 def campaign_prompt_block(
     store: JobStore, job_id: str, *, now: datetime | None = None
 ) -> dict[str, Any] | None:
@@ -6593,10 +6920,12 @@ def campaign_prompt_block(
             "deadline_elapsed": current >= deadline,
         }
     policy = manifest.get("policy") or {}
-    budget = int(policy.get("generated_programs") or 0)
+    budget = _program_budget(state, policy)
     awaiting_evaluation = _awaiting_evaluation(state, policy)
     deadline_elapsed = current >= deadline
     draining = deadline - CAMPAIGN_DRAIN <= current < deadline
+    if not deadline_elapsed and not draining and _redesign_due(state, policy):
+        return _redesign_prompt_block(store, job_id, state, manifest)
     designed = str(state.get("schema_version") or "") == SCHEMA_VERSION
     design = (
         store.read_json(job_id, str(state.get("campaign_design") or ""), default={})

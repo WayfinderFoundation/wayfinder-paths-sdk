@@ -6795,3 +6795,165 @@ def test_starter_bar_params_rescale_to_the_job_interval(tmp_path) -> None:
     ) / bar_interval_seconds("5m")
     assert _starter_bar_ratio({"timeframe": "5m"}, root) == 1.0
     assert _starter_bar_ratio({"timeframe": ""}, root) == 1.0
+
+
+def _screened_campaign(tmp_path, *, checkpoint: bool = True):
+    from wayfinder_paths.jobs.evolution_campaign import _commit_designed_attempt
+
+    store, job_id = _investigative_job(tmp_path)
+    improver_path = store.job_dir(job_id) / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"].update(
+        {
+            "screen_before_repair": True,
+            "focus_candidates": 2,
+            "focus_attempts_per_candidate": 3,
+            "redesign_checkpoint": checkpoint,
+            "redesign_slots": 2,
+        }
+    )
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    submit_campaign_design(store, job_id, campaign_design=_campaign_design())
+
+    def commit(index: int, **kwargs: Any) -> dict[str, Any]:
+        state = campaign_status(store, job_id)
+        candidate = state["candidates"][index - 1]
+        root = store.job_dir(job_id) / candidate["bundle"]
+        _commit_designed_attempt(
+            store,
+            job_id,
+            state=state,
+            candidate=candidate,
+            outcome=_screen_outcome(root, **kwargs),
+        )
+        store.write_json(job_id, "state/evolution_campaign.json", state)
+        return candidate
+
+    for slot in range(1, 9):
+        prepare_candidate(store, job_id, now=started + timedelta(minutes=slot))
+        if slot == 3:
+            commit(
+                slot,
+                net=-0.5,
+                primary="cost_bleed",
+                codes=["negative_after_costs", "fees_erased_edge"],
+                economics={
+                    "candidate": {"fills_per_day": 59.0, "fee_pct_of_capital": 0.29},
+                    "incumbent": {"fills_per_day": 2.7},
+                },
+            )
+        else:
+            commit(slot, net=-0.01 * slot)
+    return store, job_id, started, commit
+
+
+def test_redesign_checkpoint_runs_once_after_the_screens(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _attempt_cap,
+        _focus_candidates,
+        _screen_table,
+        submit_campaign_redesign,
+    )
+
+    store, job_id, started, commit = _screened_campaign(tmp_path)
+    state = campaign_status(store, job_id)
+    ids = [item["candidate_id"] for item in state["candidates"]]
+    assert [item["status"] for item in state["candidates"]] == ["repair_pending"] * 8
+
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=20))
+    assert block and block["artifact_key"] == "redesign"
+    assert block["agent_name"] == "wayfinder-evolution-designer"
+    redesign = block["constraints"]["redesign"]
+    assert redesign["open"] == ids
+    assert redesign["attempts_remaining"] == 16 and redesign["max_new_slots"] == 2
+    table = _screen_table(state, {})
+    assert table[2]["primary_failure"] == "cost_bleed" and table[2]["fixability"] >= 2
+    assert "Redesign checkpoint" in block["next_action"]
+    assert 'action="evolution_redesign"' in block["next_action"]
+
+    with pytest.raises(ValueError, match="unknown candidates"):
+        submit_campaign_redesign(store, job_id, redesign={"abandon": ["nope"]})
+    with pytest.raises(ValueError, match="both abandons and keeps"):
+        submit_campaign_redesign(
+            store, job_id, redesign={"abandon": [ids[0]], "keep": [ids[0]]}
+        )
+    with pytest.raises(ValueError, match="come together"):
+        submit_campaign_redesign(
+            store, job_id, redesign={"hypotheses": [{"id": "hx"}], "slots": []}
+        )
+    replacement = {
+        "abandon": [ids[3], ids[5]],
+        "keep": [ids[2]],
+        "hypotheses": [
+            {
+                "id": "h_relay",
+                "family": "risk_haven_relay",
+                "causal_mechanism": "risk-on leader, else the defensive asset",
+                "falsifier": "loses on both screen slices",
+                "evidence_refs": ["/baseline/reason"],
+            }
+        ],
+        "slots": [
+            {
+                "slot_id": "r01",
+                "wildcard": False,
+                "hypothesis_id": "h_relay",
+                "parent_source": "de_novo",
+                "mutation_kind": "structural",
+                "family": "risk_haven_relay",
+                "summary": "replace the falsified breakout with a relay",
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="cannot add wildcard"):
+        bad = json.loads(json.dumps(replacement))
+        bad["slots"][0]["wildcard"] = True
+        bad["slots"][0]["hypothesis_id"] = None
+        submit_campaign_redesign(store, job_id, redesign=bad)
+    with pytest.raises(ValueError, match="duplicate design slot id"):
+        bad = json.loads(json.dumps(replacement))
+        bad["slots"][0]["slot_id"] = "s01"
+        submit_campaign_redesign(store, job_id, redesign=bad)
+    result = submit_campaign_redesign(store, job_id, redesign=replacement)
+    assert result["status"] == "accepted" and result["added_slots"] == ["r01"]
+
+    state = campaign_status(store, job_id)
+    assert state["redesign"]["abandoned"] == [ids[3], ids[5]]
+    assert (
+        state["redesign"]["kept"] == [ids[2]] and state["redesign"]["extra_slots"] == 1
+    )
+    by_id = {item["candidate_id"]: item for item in state["candidates"]}
+    assert by_id[ids[3]]["status"] == "low_fidelity_rejected"
+    assert by_id[ids[3]]["abandoned_at_redesign"] is True
+    assert by_id[ids[2]]["status"] == "repair_pending"
+    design = store.read_json(job_id, str(state["campaign_design"]))
+    assert len(design["slots"]) == 9 and design["slots"][-1]["slot_id"] == "r01"
+    assert len(design["hypotheses"]) == 4
+    assert state["design"]["slots"] == 9
+    with pytest.raises(ValueError, match="already used"):
+        submit_campaign_redesign(store, job_id, redesign={"keep": [ids[2]]})
+
+    # The replacement is screened next, as a fresh slot beyond the initial eight.
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=21))
+    assert block and block["artifact_key"] == "candidate-09-attempt-01"
+    prepared = prepare_candidate(store, job_id, now=started + timedelta(minutes=22))
+    assert prepared["slot"] == 9 and prepared["family"] == "risk_haven_relay"
+    commit(9, net=-0.02)
+    state = campaign_status(store, job_id)
+    policy = store.read_json(job_id, str(state["manifest"]))["policy"]
+    focus = [item["candidate_id"] for item in _focus_candidates(state, policy)]
+    assert set(focus) == {ids[2], prepared["candidate_id"]}
+    assert _attempt_cap(state, by_id[ids[2]], policy) == 3
+    assert _attempt_cap(state, state["candidates"][0], policy) == 1
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=23))
+    assert block and block["artifact_key"] != "redesign"
+    assert block["candidate_id"] in focus
+
+
+def test_redesign_checkpoint_can_be_disabled(tmp_path) -> None:
+    store, job_id, started, _ = _screened_campaign(tmp_path, checkpoint=False)
+    block = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=20))
+    assert block and block["artifact_key"] == "candidate-03-attempt-02"
+    assert block["focus"]["phase"] == "focus"

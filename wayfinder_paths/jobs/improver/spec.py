@@ -179,6 +179,8 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "signal_scan_min_events": 30,
         "policy_scan_enabled": True,
         "policy_scan_limit": 6,
+        "redesign_checkpoint": True,
+        "redesign_slots": 3,
         "wildcard_slots": 2,
         "elite_min_validation_trades": 8,
         "elite_participation_target_trades": 12,

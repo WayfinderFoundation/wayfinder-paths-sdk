@@ -1054,6 +1054,8 @@ def _validated_signal_usage(
         "policy_survivors": len(policy.get("survivors") or []),
         "policy_falsified": len(policy.get("falsified") or []),
         "policy_citing": policy_citing,
+        "redesign_abandoned": len((state.get("redesign") or {}).get("abandoned") or []),
+        "redesign_added": len((state.get("redesign") or {}).get("added_slots") or []),
         "composition_rounds": int(composition.get("rounds_used") or 0),
         "composition_proposals": sum(
             len(item.get("proposals") or []) for item in history

@@ -64,6 +64,17 @@ the same standing and its falsified families are dead on this panel. A
 `policy_kernel` slot with `policy_ref` set to a survivor's pointer instantiates
 that survivor's kernel with its scanned params as the candidate, with no new
 code; prefer it over asking a worker to reinvent a rotation or a sleeve book.
+
+After every initial slot has had its screen attempt you get one redesign
+turn (`wayfinder_core_jobs(action="evolution_redesign", job_id=...,
+redesign={"abandon": [...], "keep": [...], "hypotheses": [...], "slots":
+[...]})`): read the whole screen table once, abandon the candidates whose
+family the screen falsified (cost-negative gross, no trades, a slice loss the
+mechanism cannot fix), keep the ones a bounded repair can fix, and add up to
+the allowed number of replacement slots for what the screens and the pack
+point at instead — a policy-scan survivor not yet tried, a different family,
+a different basket. Kept candidates plus replacements become the focus set.
+Repairing a dead family is the one move this turn exists to stop.
 Cash is the first bar: `/baseline/vs_cash` says whether the incumbent beat
 doing nothing over its window; every slot must beat cash on its own validation
 window, and a campaign that finds nothing while the incumbent loses to cash

@@ -84,6 +84,7 @@ JobAction = Literal[
     "evolution_status",
     "evolution_design",
     "evolution_compose",
+    "evolution_redesign",
     "evolution_mechanism_grid",
     "evolution_prepare",
     "evolution_submit_seed",
@@ -366,6 +367,7 @@ async def core_jobs(
     hypothesis: str | None = None,
     campaign_design: dict[str, Any] | None = None,
     signal_proposals: list[dict[str, Any]] | None = None,
+    redesign: dict[str, Any] | None = None,
     signal_ref: str | None = None,
     side: Literal["long", "short"] | None = None,
     base_revision: str | None = None,
@@ -925,6 +927,17 @@ async def core_jobs(
         return await _run_job_op(
             "evolution_compose",
             {"job_id": job_id, "signal_proposals": list(signal_proposals)},
+        )
+
+    if action == "evolution_redesign":
+        if not job_id or redesign is None:
+            return err(
+                "invalid_request",
+                "evolution_redesign requires job_id and redesign (an object with "
+                "abandon, keep, hypotheses, slots)",
+            )
+        return await _run_job_op(
+            "evolution_redesign", {"job_id": job_id, "redesign": dict(redesign)}
         )
 
     if action == "evolution_mechanism_grid":

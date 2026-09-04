@@ -434,3 +434,36 @@ async def test_evolution_mechanism_grid_is_a_synchronous_control_op(
     missing = await core_jobs(action="evolution_mechanism_grid", job_id="majors-5m-lab")
     assert "requires job_id and signal_ref" in json.dumps(missing)
     assert "evolution_mechanism_grid" in _CONTROL_PLANE_OPS
+
+
+async def test_evolution_redesign_is_a_synchronous_control_op(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs.execution.op_process import _CONTROL_PLANE_OPS
+    from wayfinder_paths.jobs.execution.op_runner import _NUDGE_OPS
+
+    captured: dict = {}
+
+    async def fake_sync(op, kwargs):
+        captured.update({"op": op, "kwargs": kwargs})
+        return {"ok": True, "result": {"status": "accepted"}}
+
+    monkeypatch.setattr(jobs_module, "_run_job_op", fake_sync)
+    monkeypatch.setattr(jobs_module, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    decision = {"abandon": ["c04"], "keep": ["c02"], "hypotheses": [], "slots": []}
+
+    result = await core_jobs(
+        action="evolution_redesign", job_id="majors-5m-lab", redesign=decision
+    )
+
+    assert result["result"]["status"] == "accepted"
+    assert captured == {
+        "op": "evolution_redesign",
+        "kwargs": {"job_id": "majors-5m-lab", "redesign": decision},
+    }
+    missing = await core_jobs(action="evolution_redesign", job_id="majors-5m-lab")
+    assert "requires job_id and redesign" in json.dumps(missing)
+    assert (
+        "evolution_redesign" in _CONTROL_PLANE_OPS
+        and "evolution_redesign" in _NUDGE_OPS
+    )

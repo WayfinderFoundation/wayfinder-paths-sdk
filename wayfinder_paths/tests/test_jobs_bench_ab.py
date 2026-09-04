@@ -626,6 +626,8 @@ def test_validated_signal_usage_counts_hypotheses_that_cite_the_pack() -> None:
         "policy_survivors": 0,
         "policy_falsified": 0,
         "policy_citing": 0,
+        "redesign_abandoned": 0,
+        "redesign_added": 0,
         "composition_rounds": 0,
         "composition_proposals": 0,
         "composition_survivors": 0,
@@ -1148,6 +1150,7 @@ def test_bench_mcp_exposes_read_only_research_actions(
         "backtest_diagnose",
         "holdout_check",
         "evolution_compose",
+        "evolution_redesign",
         "evolution_mechanism_grid",
     } <= BENCH_ALLOWED_ACTIONS
     assert BENCH_ALLOWED_ACTIONS.isdisjoint(
@@ -2079,3 +2082,52 @@ def test_validated_signal_usage_counts_policy_scan_citations() -> None:
     assert usage["policy_falsified"] == 2
     assert usage["policy_citing"] == 1
     assert usage["hypotheses_citing"] == 0
+
+
+def test_redesign_stage_renders_as_a_designer_turn() -> None:
+    from wayfinder_paths.jobs.worker import build_evolution_stage_prompt
+
+    rendered = build_evolution_stage_prompt(
+        "bench-job",
+        {
+            "campaign_id": "c1",
+            "stage": "generate",
+            "session_stage": "redesign",
+            "artifact_key": "redesign",
+            "agent_name": "wayfinder-evolution-designer",
+            "deadline_at": "2099-01-01T00:00:00+00:00",
+            "counts": {},
+            "next_action": "decide the table",
+            "constraints": {"redesign": {"open": ["c01"]}},
+        },
+    )
+    assert rendered["artifact_key"] == "redesign"
+    assert rendered["agent_name"] == "wayfinder-evolution-designer"
+    assert rendered["work_order"]["lane"] == "evolution_redesign"
+    assert rendered["work_order"]["action"] == "submit_campaign_redesign"
+    assert "evolution_redesign once" in rendered["work_order"]["completion"]
+
+
+def test_bench_mirror_runs_redesign_inline(monkeypatch) -> None:
+    seen: dict = {}
+
+    async def fake_core_jobs(action: str, **kwargs: object) -> dict:
+        seen.update({"action": action, **kwargs})
+        return {"ok": True, "result": {"status": "accepted"}}
+
+    monkeypatch.setattr(
+        "wayfinder_paths.jobs.bench.mcp_server._production_core_jobs",
+        fake_core_jobs,
+    )
+    decision = {"abandon": ["c04"], "keep": ["c02"], "hypotheses": [], "slots": []}
+    asyncio.run(
+        bench_core_jobs(
+            "evolution_redesign",
+            job_id="bench-only",
+            redesign=decision,
+            background=True,
+        )
+    )
+    assert seen["action"] == "evolution_redesign"
+    assert seen["redesign"] == decision
+    assert seen["background"] is False
