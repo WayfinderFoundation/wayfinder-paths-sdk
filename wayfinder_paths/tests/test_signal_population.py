@@ -128,3 +128,59 @@ def test_population_joins_the_scan_family_and_finds_a_narrower_window() -> None:
     # One family: the population row pays the same multiple-testing bill.
     assert result["bh_family"]["size"] == len(result["_all_rows"])
     assert np.isfinite(rows["pop_new_low_3"]["q_value"])
+
+
+def test_signal_expressions_are_confined_to_the_dsl() -> None:
+    from wayfinder_paths.jobs.signal_library import validate_signal_expression
+
+    def rejected(expression: str, fragment: str) -> None:
+        with pytest.raises(ValueError, match=fragment):
+            compile_signal_expression(
+                name="ws_probe",
+                family="test",
+                description="",
+                min_bars=2,
+                expression=expression,
+            )
+
+    # No modules, no attribute traversal, no dunders, no imports, no
+    # callables that take code, no subscripts beyond a column of f.
+    rejected("pd.io.common.os.getcwd() == ''", "not allowed|unknown name 'pd'")
+    rejected("np.log(close(f)) > 0", "not allowed|unknown name 'np'")
+    rejected("pd", "unknown name 'pd'")
+    rejected("close(f).__class__", "attribute '__class__' is not allowed")
+    rejected("close(f).apply(print) > 0", "attribute 'apply' is not allowed")
+    rejected("__import__('os')", "unknown name '__import__'")
+    rejected("(lambda: 1)()", "Lambda is not allowed")
+    rejected("[x for x in close(f)]", "ListComp is not allowed")
+    rejected("close(f)[0] > 0", "subscripts are limited")
+    rejected("f.close > 0", "attribute 'close' is not allowed")
+    rejected("close(f) >", "does not parse")
+    rejected("rsi_extreme(f, **{'level': 30})", "keyword expansion")
+    rejected("close(f) > 1\nclose(f) > 2", "one non-empty line")
+    # The DSL itself is wide: helpers, arithmetic, store columns, methods.
+    accepted = [
+        "rsi_extreme(f, 25, -1) & (f['macro_regime'] == -1.0)",
+        "fresh(bb_extreme(f, -2.0)) | new_extreme(f, 8, -1).shift(1, fill_value=False)",
+        "close(f) < sma(close(f), 20) - 3 * atr(f, 14)",
+        "log(close(f) / close(f).shift(24)) < -0.05",
+        "where(sign(close(f).diff()) > 0, True, False) & weekend(f)",
+        "abs(close(f).pct_change()) > close(f).pct_change().rolling(20).std() * 2",
+        "session_window(f, 9 * 60 + 30, 10 * 60 + 30) & (f['volume'] > 0)",
+    ]
+    for expression in accepted:
+        validate_signal_expression(expression)
+        spec = compile_signal_expression(
+            name="ws_ok",
+            family="test",
+            description="",
+            min_bars=30,
+            expression=expression,
+        )
+        assert spec.expression == expression
+    probe = _bars(_wavy_closes(200))
+    probe["macro_regime"] = -1.0
+    column = compile_signal_expression(
+        name="ws_ok", family="test", description="", min_bars=30, expression=accepted[0]
+    ).build(probe)
+    assert column.dtype == bool and len(column) == len(probe)

@@ -1520,11 +1520,13 @@ def rank_ic(
         if h <= 0:
             continue
         ics: list[float] = []
-        # union of timestamps, evaluated cross-sectionally
+        # union of timestamps, evaluated cross-sectionally at horizon
+        # spacing: adjacent h-bar forward windows share h-1 bars, and a
+        # sqrt(n) t-stat over overlapping observations is inflated by about
+        # sqrt(h) — a null panel at h=168 read as edge in half the trials.
         index = sorted(set().union(*(set(f.index) for f in aligned.values())))
-        for i, ts in enumerate(index):
-            if i + h >= len(index):
-                break
+        for i in range(0, len(index) - h, h):
+            ts = index[i]
             fwd_ts = index[i + h]
             scores: list[float] = []
             fwd: list[float] = []

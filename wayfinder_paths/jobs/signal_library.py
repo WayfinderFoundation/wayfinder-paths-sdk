@@ -21,6 +21,7 @@ changes past values) is pinned by tests.
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -284,9 +285,22 @@ session_window = _session_window
 weekend = _weekend
 trend_gated_extreme = _trend_gated_extreme
 
+
+def _series_log(values: pd.Series) -> pd.Series:
+    return np.log(values.astype(float))
+
+
+def _series_sign(values: pd.Series) -> pd.Series:
+    return np.sign(values.astype(float))
+
+
+def _where(condition: pd.Series, when_true: Any, when_false: Any) -> pd.Series:
+    return pd.Series(np.where(condition, when_true, when_false), index=condition.index)
+
+
+# The DSL namespace: builders and a few math helpers, never a module. A
+# designer expression sees exactly these names and ``f``.
 SIGNAL_DSL: dict[str, Any] = {
-    "pd": pd,
-    "np": np,
     "close": close,
     "sma": sma,
     "ema": ema,
@@ -312,8 +326,144 @@ SIGNAL_DSL: dict[str, Any] = {
     "session_window": session_window,
     "weekend": weekend,
     "trend_gated_extreme": trend_gated_extreme,
+    "log": _series_log,
+    "sign": _series_sign,
+    "where": _where,
+    "abs": abs,
+    "min": min,
+    "max": max,
+    "round": round,
 }
-_DSL_BUILTINS = {"abs": abs, "min": min, "max": max, "round": round}
+_DSL_NAMES = frozenset(SIGNAL_DSL) | {"f"}
+# Series/rolling methods an expression may call; no dunders, no apply/map/
+# pipe (callables), no I/O, no module traversal.
+SIGNAL_SERIES_METHODS = frozenset(
+    {
+        "shift",
+        "rolling",
+        "ewm",
+        "expanding",
+        "mean",
+        "std",
+        "var",
+        "max",
+        "min",
+        "sum",
+        "median",
+        "quantile",
+        "abs",
+        "diff",
+        "pct_change",
+        "fillna",
+        "astype",
+        "cumsum",
+        "cummax",
+        "cummin",
+        "clip",
+        "rank",
+        "where",
+        "mask",
+        "isna",
+        "notna",
+        "between",
+        "gt",
+        "ge",
+        "lt",
+        "le",
+        "eq",
+        "ne",
+        "round",
+    }
+)
+_ALLOWED_NODES: tuple[type[ast.AST], ...] = (
+    ast.Expression,
+    ast.BinOp,
+    ast.UnaryOp,
+    ast.BoolOp,
+    ast.Compare,
+    ast.Call,
+    ast.Attribute,
+    ast.Name,
+    ast.Constant,
+    ast.Subscript,
+    ast.Tuple,
+    ast.List,
+    ast.keyword,
+    ast.Load,
+    ast.IfExp,
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.FloorDiv,
+    ast.Mod,
+    ast.Pow,
+    ast.BitAnd,
+    ast.BitOr,
+    ast.BitXor,
+    ast.Invert,
+    ast.Not,
+    ast.UAdd,
+    ast.USub,
+    ast.And,
+    ast.Or,
+    ast.Eq,
+    ast.NotEq,
+    ast.Lt,
+    ast.LtE,
+    ast.Gt,
+    ast.GtE,
+)
+
+
+def validate_signal_expression(expression: str) -> ast.Expression:
+    """Parse DSL source and refuse anything beyond arithmetic, comparisons,
+    boolean algebra, calls to the DSL names, the fixed Series method set and
+    ``f['<column>']``. Names outside the DSL, attributes outside the method
+    list (so no dunders and no module traversal), lambdas, comprehensions,
+    imports and subscripts on anything but ``f`` are rejected before
+    anything is evaluated. The designer's latitude is the DSL; the process
+    and the filesystem are not part of it."""
+    source = str(expression).strip()
+    if not source or "\n" in source:
+        raise ValueError("expression must be one non-empty line")
+    try:
+        tree = ast.parse(source, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"expression does not parse: {exc.msg}") from exc
+    for node in ast.walk(tree):
+        if not isinstance(node, _ALLOWED_NODES):
+            raise ValueError(
+                f"{type(node).__name__} is not allowed in a signal expression"
+            )
+        if isinstance(node, ast.Name) and node.id not in _DSL_NAMES:
+            raise ValueError(
+                f"unknown name {node.id!r}; an expression may use f and "
+                f"{', '.join(sorted(SIGNAL_DSL))}"
+            )
+        if isinstance(node, ast.Attribute) and (
+            node.attr.startswith("_") or node.attr not in SIGNAL_SERIES_METHODS
+        ):
+            raise ValueError(
+                f"attribute {node.attr!r} is not allowed; Series methods available: "
+                f"{', '.join(sorted(SIGNAL_SERIES_METHODS))}"
+            )
+        if isinstance(node, ast.Subscript) and not (
+            isinstance(node.value, ast.Name)
+            and node.value.id == "f"
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+        ):
+            raise ValueError("subscripts are limited to f['<column>']")
+        if isinstance(node, ast.Constant) and not isinstance(
+            node.value, (int, float, bool, str, type(None))
+        ):
+            raise ValueError(
+                "only number, string, boolean and None constants are allowed"
+            )
+        if isinstance(node, ast.keyword) and node.arg is None:
+            raise ValueError("** keyword expansion is not allowed")
+    return tree
 
 
 def compile_signal_expression(
@@ -325,14 +475,31 @@ def compile_signal_expression(
     expression: str,
 ) -> SignalDef:
     """A SignalDef from DSL source: one Python expression over ``f`` (the bar
-    frame) and the SIGNAL_DSL names. Same trust boundary as an exec'd
-    ``workspace/src/signals.py``; the causality validator judges the result,
-    not this function."""
+    frame) and the SIGNAL_DSL names, validated by ``validate_signal_expression``
+    before it is compiled. The causality validator judges the result."""
     source = str(expression).strip()
-    if not source or "\n" in source:
-        raise ValueError(f"{name!r}: expression must be one non-empty line")
-    build = eval(  # noqa: S307 - DSL over a fixed namespace, validated after
-        f"lambda f: ({source})", {"__builtins__": _DSL_BUILTINS, **SIGNAL_DSL}
+    try:
+        tree = validate_signal_expression(source)
+    except ValueError as exc:
+        raise ValueError(f"{name!r}: {exc}") from exc
+    lambda_tree = ast.Expression(
+        body=ast.Lambda(
+            args=ast.arguments(
+                posonlyargs=[],
+                args=[ast.arg(arg="f")],
+                vararg=None,
+                kwonlyargs=[],
+                kw_defaults=[],
+                kwarg=None,
+                defaults=[],
+            ),
+            body=tree.body,
+        )
+    )
+    ast.fix_missing_locations(lambda_tree)
+    build = eval(  # noqa: S307 - validated AST over a fixed namespace
+        compile(lambda_tree, f"<signal {name}>", "eval"),
+        {"__builtins__": {}, **SIGNAL_DSL},
     )
     return SignalDef(name, family, description, int(min_bars), build, source)
 

@@ -588,9 +588,21 @@ def _start_campaign(
     if failure_modes is not None:
         baseline["failure_modes"] = failure_modes
     baseline["complexity"] = _bundle_complexity(store, job_id, campaign_root / "source")
-    validated_signals = _validated_signals(
-        store, job_id, campaign_root, policy=campaign_policy
-    )
+    try:
+        with experiment_compute_lock(
+            store, job_id, label=f"evolution-signal-scan:{job_id}"
+        ):
+            validated_signals = _validated_signals(
+                store, job_id, campaign_root, policy=campaign_policy
+            )
+    except ComputeLockBusy as exc:
+        # Seeding never blocks a start; the designer reads why the feed is
+        # empty and the next campaign scans again.
+        validated_signals = (
+            {"available": False, "reason": f"compute budget busy: {exc}"}
+            if bool(campaign_policy.get("signal_first_seeding", False))
+            else None
+        )
     diagnostic_pack = build_diagnostic_pack(
         root,
         campaign_id=campaign_id,
@@ -933,20 +945,33 @@ def _cross_sectional_block(
                 }
             )
     horizons = [max(1, hours * 3600 // rule) for hours in _CROSS_SECTION_HORIZON_HOURS]
+    # Three rankings over two horizons is one family of six tests: the
+    # per-horizon |t| >= 2 bar becomes the Bonferroni bar for six.
+    tests = len(ranked) * len(horizons)
+    threshold = statistics.NormalDist().inv_cdf(1.0 - 0.025 / max(1, tests))
     columns_out: list[dict[str, Any]] = []
     for column, by_symbol in ranked.items():
         result = rank_ic(by_symbol, column, horizons=horizons)
+        rows = []
+        for row in result.get("horizons") or []:
+            edge = (
+                bool(row.get("edge"))
+                and abs(float(row.get("t_stat") or 0.0)) >= threshold
+            )
+            rows.append(
+                {
+                    **{
+                        key: row.get(key)
+                        for key in ("horizon", "n", "mean_ic", "t_stat")
+                    },
+                    "edge": edge,
+                }
+            )
         columns_out.append(
             {
                 "column": column,
-                "has_edge": bool(result.get("has_edge")),
-                "horizons": [
-                    {
-                        key: row.get(key)
-                        for key in ("horizon", "n", "mean_ic", "t_stat", "edge")
-                    }
-                    for row in result.get("horizons") or []
-                ],
+                "has_edge": any(row["edge"] for row in rows),
+                "horizons": rows,
             }
         )
     return {
@@ -955,6 +980,12 @@ def _cross_sectional_block(
         "symbols": sorted(panel),
         "leaders": leader_names,
         "horizons": horizons,
+        "multiple_testing": {
+            "tests": tests,
+            "t_threshold": round(threshold, 3),
+            "method": "bonferroni",
+            "observations": "horizon-spaced (non-overlapping forward windows)",
+        },
         "columns": columns_out,
     }
 
@@ -2155,7 +2186,11 @@ def _compose_prompt_block(
         "n), ema(series, n), atr(f, n), wilder_rsi(series, n), bb_z(series, n), "
         "cross(fast, slow, +1|-1), fresh(event)); combine with &, |, ~, "
         "comparisons, f[<column>] for a store column (e.g. f['macro_regime'] "
-        "== -1.0) and .shift(k, fill_value=False) for k >= 1. The expression "
+        "== -1.0) and .shift(k, fill_value=False) for k >= 1; nothing else "
+        "resolves (no other names, modules, attributes or imports; Series "
+        "methods are limited to shift, rolling, ewm, mean, std, max, min, "
+        "sum, quantile, abs, diff, pct_change, fillna, astype, clip, rank, "
+        "where and the comparisons). The expression "
         "must be boolean, row-aligned and causal (current and past rows only: "
         "no shift(-k), no centered windows, no full-frame statistics); a "
         "malformed or non-causal list is rejected with the problems quoted "
@@ -2170,7 +2205,9 @@ def _compose_prompt_block(
         )
         + f'Call wayfinder_core_jobs(action="evolution_compose", job_id="{job_id}", '
         "signal_proposals=[...]) exactly once with the list, or with an empty "
-        "list to end composition and move to design, then end this stage."
+        "list to end composition and move to design, then end this stage. A "
+        "status of busy means the machine's compute budget is spent: end the "
+        "turn and the next one repeats this round."
     )
     return {
         "job_id": job_id,
@@ -2401,7 +2438,8 @@ def _merge_compose_survivors(
     round_number: int,
 ) -> list[str]:
     """Survivors go to the front of their tier in the frozen pack (the byte
-    budget trims from the tail) and the manifest's pack hash is refreshed."""
+    budget trims from the tail), each with its own pointer, and the
+    manifest's pack hash is refreshed."""
     root = store.job_dir(job_id)
     pack_path = root / str(state["diagnostic_pack"])
     pack = store.read_json(job_id, str(state["diagnostic_pack"]), default={}) or {}
@@ -2409,14 +2447,19 @@ def _merge_compose_survivors(
         "validated_signals",
         {"available": True, "signals": [], "replicated": [], "near_misses": []},
     )
-    pointers: list[str] = []
-    for entry in reversed(list(survivors)):
+    by_tier: dict[str, list[dict[str, Any]]] = {"signals": [], "replicated": []}
+    for entry in survivors:
         entry["source"] = f"compose:round{round_number}"
-        tier_key = "signals" if entry.get("tier") == "validated" else "replicated"
-        rows = list(block.get(tier_key) or [])
-        rows.insert(0, entry)
-        block[tier_key] = rows
-        pointers.append(f"/validated_signals/{tier_key}/0")
+        by_tier["signals" if entry.get("tier") == "validated" else "replicated"].append(
+            entry
+        )
+    pointer_by_id: dict[int, str] = {}
+    for tier_key, rows in by_tier.items():
+        if not rows:
+            continue
+        block[tier_key] = [*rows, *list(block.get(tier_key) or [])]
+        for position, entry in enumerate(rows):
+            pointer_by_id[id(entry)] = f"/validated_signals/{tier_key}/{position}"
     composed = dict(block.get("composition") or {})
     block["composition"] = {
         "rounds": round_number,
@@ -2429,7 +2472,21 @@ def _merge_compose_survivors(
         "sha256": _file_hash(pack_path),
     }
     atomic_write_json(root / str(state["manifest"]), manifest)
-    return pointers
+    return [pointer_by_id[id(entry)] for entry in survivors]
+
+
+def _composition_claim(
+    state: Mapping[str, Any], manifest: Mapping[str, Any]
+) -> dict[str, Any]:
+    """What a composition round must find unchanged when it commits: the
+    campaign, its stage, the rounds used and the pack it will merge into."""
+    composition = state.get("composition") or {}
+    return {
+        "campaign_id": str(state.get("campaign_id") or ""),
+        "stage": str(state.get("stage") or ""),
+        "rounds_used": int(composition.get("rounds_used") or 0),
+        "pack_sha256": str((manifest.get("diagnostic_pack") or {}).get("sha256") or ""),
+    }
 
 
 def submit_signal_proposals(
@@ -2438,10 +2495,11 @@ def submit_signal_proposals(
     *,
     signal_proposals: Sequence[Any] | None,
 ) -> dict[str, Any]:
-    """One composition round: compile and validate the designer's proposals,
-    scan them in the library's family, report per proposal, merge survivors
-    into the pack. Problems are returned, not raised, and do not consume a
-    round; an empty list ends composition."""
+    """One composition round: claim under the state lock, compile and
+    validate, scan under the machine-wide compute lock, then commit only if
+    the campaign, its stage, its round count and its pack are unchanged.
+    Problems are returned, not raised, and do not consume a round; an empty
+    list ends composition; a busy compute budget returns ``busy``."""
     with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
         state = _active_campaign(store, job_id)
         if state.get("stage") != COMPOSE_STAGE:
@@ -2477,14 +2535,6 @@ def submit_signal_proposals(
             )
             return {"status": "ended", "round": round_number, "stage": "design"}
         defs, problems = _compile_signal_proposals(proposals)
-        campaign_root = store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id
-        frames = _campaign_scan_frames(store, job_id, campaign_root, policy=policy)
-        if not problems:
-            probe = next(iter(frames["train"].values()))
-            try:
-                validate_workspace_signals(defs, probe)
-            except ValueError as exc:
-                problems.append(str(exc))
         if problems:
             composition["problems"] = problems[:12]
             _save_campaign(store, job_id, state)
@@ -2494,7 +2544,48 @@ def submit_signal_proposals(
                 "problems": problems[:12],
                 "stage": COMPOSE_STAGE,
             }
-        scanned = _scan_signal_proposals(frames, defs, policy=policy)
+        claim = _composition_claim(state, manifest)
+    campaign_root = store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id
+    scanned: dict[str, Any] | None = None
+    try:
+        with experiment_compute_lock(
+            store, job_id, label=f"evolution-compose:{job_id}"
+        ):
+            frames = _campaign_scan_frames(store, job_id, campaign_root, policy=policy)
+            probe = next(iter(frames["train"].values()))
+            try:
+                validate_workspace_signals(defs, probe)
+            except ValueError as exc:
+                problems.append(str(exc))
+            if not problems:
+                scanned = _scan_signal_proposals(frames, defs, policy=policy)
+    except ComputeLockBusy as exc:
+        return {
+            "status": "busy",
+            "round": round_number,
+            "reason": str(exc),
+            "stage": COMPOSE_STAGE,
+        }
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = _active_campaign(store, job_id)
+        manifest = _campaign_manifest(store, job_id, campaign_id)
+        if _composition_claim(state, manifest) != claim:
+            return {
+                "status": "stale",
+                "round": round_number,
+                "reason": "campaign state changed during the scan; submit again",
+                "stage": str(state.get("stage") or ""),
+            }
+        composition = state["composition"]
+        if problems or scanned is None:
+            composition["problems"] = problems[:12]
+            _save_campaign(store, job_id, state)
+            return {
+                "status": "rejected",
+                "round": round_number,
+                "problems": problems[:12],
+                "stage": COMPOSE_STAGE,
+            }
         pointers = _merge_compose_survivors(
             store, job_id, state, manifest, scanned["survivors"], round_number
         )
@@ -2548,9 +2639,7 @@ def submit_signal_proposals(
                 "gross_edge_bps": entry["gross_edge_bps"],
                 "execution_hint": entry["execution_hint"],
             }
-            for entry, pointer in zip(
-                scanned["survivors"], reversed(pointers), strict=True
-            )
+            for entry, pointer in zip(scanned["survivors"], pointers, strict=True)
         ],
     }
 
@@ -2623,7 +2712,8 @@ def _mechanism_instruction(
         "time exits; ranked by min(train, validation) Sharpe; seconds; a screen, "
         "never evidence). Cite the chosen row /mechanism_grids/<k>/top/<j> in the "
         "slot's evidence_refs beside the signal; the worker implements exactly that "
-        f"row. {'Existing grids: ' + existing + '. ' if existing else ''}"
+        "row. A status of busy means the compute budget is spent: end the turn "
+        f"and call again next turn. {'Existing grids: ' + existing + '. ' if existing else ''}"
     )
 
 
@@ -2668,9 +2758,12 @@ def mechanism_grid(
     side: str | None = None,
 ) -> dict[str, Any]:
     """Sweep passive-entry mechanisms on one offered signal and persist the
-    ranked rows in the pack (finalist and alternatives on record). Runs in
-    the compose and design stages; a repeat call for the same signal and
-    side returns the stored grid."""
+    ranked rows in the pack (finalist and alternatives on record). Claims
+    the signal under the state lock, sweeps under the machine-wide compute
+    lock, and commits only if the pack still holds that signal at that
+    pointer. Runs in the compose and design stages; a repeat call for the
+    same signal and side returns the stored grid; a busy compute budget
+    returns ``busy``."""
     with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
         state = _active_campaign(store, job_id)
         if state.get("stage") not in {COMPOSE_STAGE, "design"}:
@@ -2678,8 +2771,6 @@ def mechanism_grid(
         campaign_id = str(state["campaign_id"])
         manifest = _campaign_manifest(store, job_id, campaign_id)
         policy = manifest.get("policy") or {}
-        root = store.job_dir(job_id)
-        pack_path = root / str(state["diagnostic_pack"])
         pack = store.read_json(job_id, str(state["diagnostic_pack"]), default={}) or {}
         grids = list(pack.get("mechanism_grids") or [])
         tier, index, entry = _resolve_signal_pointer(pack, signal_ref)
@@ -2692,6 +2783,7 @@ def mechanism_grid(
             ):
                 return {
                     **record,
+                    "status": "ok",
                     "pointer": f"/mechanism_grids/{position}",
                     "cached": True,
                 }
@@ -2699,51 +2791,67 @@ def mechanism_grid(
             raise ValueError(
                 f"at most {MECHANISM_GRID_MAX} mechanism grids per campaign"
             )
-        campaign_root = root / CAMPAIGN_ROOT / campaign_id
-        frames = _campaign_scan_frames(store, job_id, campaign_root, policy=policy)
-        symbol = str(entry["symbol"])
-        base = frames["train"].get(symbol)
-        if base is None:
-            raise ValueError(f"symbol {symbol!r} has no scan frame")
-        timeframe = str(entry["timeframe"])
-        bar_seconds = int(frames["bar_seconds"])
-        rule_seconds = int(bar_interval_seconds(timeframe) or bar_seconds)
-        bars = resample_ohlcv(base, rule_seconds, bar_seconds=bar_seconds)
-        spec = _signal_def_for_entry(entry)
-        column = build_signal_frame(bars, [spec], include_canonical=False)[spec.name]
-        source = entry.get("regime_source")
-        if source and str(source) in bars.columns:
-            label = str(entry.get("regime") or "").split("=", 1)[-1]
-            codes = frames["condition_features"].get(str(source)) or {}
-            code = next((c for c, name in codes.items() if name == label), None)
-            if code is not None:
-                column = column & (
-                    pd.to_numeric(bars[str(source)], errors="coerce") == code
-                )
-        costs = GridCosts(
-            maker_fee_bps=float(frames["maker_round_trip_bps"]) / 2.0,
-            taker_fee_bps=float(frames["scan_kwargs"]["fee_bps"]),
-            slippage_bps=float(frames["scan_kwargs"]["slippage_bps"]),
-        )
-        result = passive_entry_grid(
-            bars,
-            column,
-            side=chosen_side,
-            bar_seconds=rule_seconds,
-            costs=costs,
-            min_trades=int(policy.get("mechanism_grid_min_trades") or 30),
-            top=int(policy.get("mechanism_grid_top") or 10),
-        )
-        record = {
-            "signal_ref": pointer,
-            "symbol": symbol,
-            "signal": entry["signal"],
-            "timeframe": timeframe,
-            "regime": entry.get("regime"),
-            "library": entry.get("library"),
-            "created_at": utc_now_iso(),
-            **result,
-        }
+        identity = _signal_identity(entry)
+    campaign_root = store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id
+    try:
+        with experiment_compute_lock(
+            store, job_id, label=f"evolution-mechanism-grid:{job_id}"
+        ):
+            result = _sweep_signal_mechanism(
+                store,
+                job_id,
+                campaign_root,
+                entry,
+                side=chosen_side,
+                policy=policy,
+            )
+    except ComputeLockBusy as exc:
+        return {"status": "busy", "signal_ref": pointer, "reason": str(exc)}
+    record = {
+        "signal_ref": pointer,
+        "symbol": entry["symbol"],
+        "signal": entry["signal"],
+        "timeframe": entry["timeframe"],
+        "regime": entry.get("regime"),
+        "library": entry.get("library"),
+        "created_at": utc_now_iso(),
+        **result,
+    }
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = _active_campaign(store, job_id)
+        if str(state.get("campaign_id") or "") != campaign_id:
+            return {
+                "status": "stale",
+                "signal_ref": pointer,
+                "reason": "campaign changed",
+            }
+        manifest = _campaign_manifest(store, job_id, campaign_id)
+        root = store.job_dir(job_id)
+        pack_path = root / str(state["diagnostic_pack"])
+        pack = store.read_json(job_id, str(state["diagnostic_pack"]), default={}) or {}
+        try:
+            _, _, current = _resolve_signal_pointer(pack, pointer)
+        except ValueError:
+            current = {}
+        if _signal_identity(current) != identity:
+            return {
+                "status": "stale",
+                "signal_ref": pointer,
+                "reason": "the pack changed during the sweep; the pointer no longer "
+                "names that signal, submit again",
+            }
+        grids = list(pack.get("mechanism_grids") or [])
+        for position, existing in enumerate(grids):
+            if (
+                existing.get("signal_ref") == pointer
+                and existing.get("side") == chosen_side
+            ):
+                return {
+                    **existing,
+                    "status": "ok",
+                    "pointer": f"/mechanism_grids/{position}",
+                    "cached": True,
+                }
         grids.append(record)
         pack["mechanism_grids"] = grids
         pack = fit_diagnostic_pack(pack)
@@ -2765,7 +2873,70 @@ def mechanism_grid(
             "top_score": (result["top"][0]["score"] if result["top"] else None),
         },
     )
-    return {**record, "pointer": f"/mechanism_grids/{len(grids) - 1}", "cached": False}
+    return {
+        **record,
+        "status": "ok",
+        "pointer": f"/mechanism_grids/{len(grids) - 1}",
+        "cached": False,
+    }
+
+
+def _signal_identity(entry: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        entry.get("signal"),
+        entry.get("symbol"),
+        entry.get("timeframe"),
+        entry.get("horizon"),
+        entry.get("regime"),
+    )
+
+
+def _sweep_signal_mechanism(
+    store: JobStore,
+    job_id: str,
+    campaign_root: Path,
+    entry: Mapping[str, Any],
+    *,
+    side: str,
+    policy: Mapping[str, Any],
+) -> dict[str, Any]:
+    """The grid itself: the entry's symbol resampled to its timeframe, the
+    def rebuilt (library, population or proposal), the regime gate applied,
+    the job's costs."""
+    frames = _campaign_scan_frames(store, job_id, campaign_root, policy=policy)
+    symbol = str(entry["symbol"])
+    base = frames["train"].get(symbol)
+    if base is None:
+        raise ValueError(f"symbol {symbol!r} has no scan frame")
+    timeframe = str(entry["timeframe"])
+    bar_seconds = int(frames["bar_seconds"])
+    rule_seconds = int(bar_interval_seconds(timeframe) or bar_seconds)
+    bars = resample_ohlcv(base, rule_seconds, bar_seconds=bar_seconds)
+    spec = _signal_def_for_entry(entry)
+    column = build_signal_frame(bars, [spec], include_canonical=False)[spec.name]
+    source = entry.get("regime_source")
+    if source and str(source) in bars.columns:
+        label = str(entry.get("regime") or "").split("=", 1)[-1]
+        codes = frames["condition_features"].get(str(source)) or {}
+        code = next((c for c, name in codes.items() if name == label), None)
+        if code is not None:
+            column = column & (
+                pd.to_numeric(bars[str(source)], errors="coerce") == code
+            )
+    costs = GridCosts(
+        maker_fee_bps=float(frames["maker_round_trip_bps"]) / 2.0,
+        taker_fee_bps=float(frames["scan_kwargs"]["fee_bps"]),
+        slippage_bps=float(frames["scan_kwargs"]["slippage_bps"]),
+    )
+    return passive_entry_grid(
+        bars,
+        column,
+        side=side,
+        bar_seconds=rule_seconds,
+        costs=costs,
+        min_trades=int(policy.get("mechanism_grid_min_trades") or 30),
+        top=int(policy.get("mechanism_grid_top") or 10),
+    )
 
 
 def _cited_mechanisms(
@@ -3800,7 +3971,11 @@ def _evaluate_candidate(
         train, _, _ = _split_dataset(
             subject["dataset"], train_end=train_end, validation_end=validation_end
         )
-        quick = _tail(train, 10_000)
+        # The candidate's recent window is the reference's: one slice set,
+        # sized by policy, so paired deltas, trade counts and the macro label
+        # describe the same bars.
+        screen_slices = _policy_screen_slices(train, policy)
+        _, quick = screen_slices[0]
         params, _, calibration = _calibrated_params(store, job_id, subject)
         _require_declared_window(subject, params)
         probe = window_invariance_probe(
@@ -3913,7 +4088,6 @@ def _evaluate_candidate(
                 }
         result = simulate_execution(subject["script"], quick, subject["spec"], params)
         screen_results: dict[str, Any] = {"recent": result}
-        screen_slices = _policy_screen_slices(train, policy)
         screen_macros = {
             label: _slice_macro_regime(dataset) for label, dataset in screen_slices
         }

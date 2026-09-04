@@ -278,15 +278,24 @@ def receipt_economics(receipt: Mapping[str, Any]) -> dict[str, Any] | None:
         # Comparable to the round-trip cost in bps, which is charged once on
         # that same notional.
         notional = turnover / 2.0
-        gross = _number(stats.get("net_return")) * capital + fees
+        realized = _realized_cost(receipt.get("trades") or [], fees=fees)
+        # Gross adds back every realized cost the receipt can name: fees
+        # always, slippage when the fills carry it (it is embedded in fill
+        # prices, so net PnL is already after it).
+        added_back = fees + (realized["slippage_usd"] if realized is not None else 0.0)
+        gross = _number(stats.get("net_return")) * capital + added_back
         economics["gross_bps_per_trade"] = round(gross / notional * 1e4, 2)
+        economics["gross_basis"] = (
+            "fees_and_slippage_added_back"
+            if realized is not None
+            else "fees_added_back"
+        )
         nominal = _number(receipt.get("round_trip_cost_bps"))
         if nominal > 0:
             economics["round_trip_cost_bps"] = round(nominal, 2)
             economics["cost_coverage_nominal"] = round(
                 economics["gross_bps_per_trade"] / nominal, 4
             )
-        realized = _realized_cost(receipt.get("trades") or [], fees=fees)
         if realized is not None:
             economics["maker_fill_share"] = realized["maker_fill_share"]
             economics["realized_cost_bps_per_trade"] = round(
@@ -328,6 +337,7 @@ def _realized_cost(
     makers = sum(1 for row in costed if row.get("liquidity") == "maker")
     return {
         "cost_usd": fees + slippage,
+        "slippage_usd": slippage,
         "maker_fill_share": round(makers / len(costed), 4),
     }
 

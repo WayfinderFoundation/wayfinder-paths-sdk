@@ -793,6 +793,7 @@ def test_receipt_economics_reports_per_trade_cost_coverage() -> None:
         params={"fee_bps": 5.0, "slippage_bps": 3.5},
     )
     assert economics["cost_basis"] == "nominal"
+    assert economics["gross_basis"] == "fees_added_back"
     assert economics["cost_coverage_nominal"] == economics["cost_coverage"]
     assert "realized_cost_bps_per_trade" not in economics
     assert order["budget"]["cost_coverage"] == economics["cost_coverage"]
@@ -853,12 +854,16 @@ def test_receipt_economics_judges_coverage_on_realized_cost() -> None:
         },
     }
     economics = receipt_economics(receipt)
-    assert economics["gross_bps_per_trade"] == pytest.approx(31.1, abs=0.05)
+    # Gross adds back both realized costs (0.42 of fees and 0.28 of
+    # slippage) on 1,000 of notional: 33.9 bps, judged against the 7 bps
+    # actually paid.
+    assert economics["gross_bps_per_trade"] == pytest.approx(33.9, abs=0.05)
+    assert economics["gross_basis"] == "fees_and_slippage_added_back"
     assert economics["realized_cost_bps_per_trade"] == pytest.approx(7.0, abs=0.01)
     assert economics["maker_fill_share"] == 0.8
     assert economics["cost_basis"] == "realized"
-    assert economics["cost_coverage"] == pytest.approx(31.1 / 7.0, abs=0.01)
-    assert economics["cost_coverage_nominal"] == pytest.approx(31.1 / 24.0, abs=0.01)
+    assert economics["cost_coverage"] == pytest.approx(33.9 / 7.0, abs=0.01)
+    assert economics["cost_coverage_nominal"] == pytest.approx(33.9 / 24.0, abs=0.01)
 
     # A taker book whose move would clear the hurdle at maker cost is told
     # that the gap is execution, not signal.
@@ -881,7 +886,9 @@ def test_receipt_economics_judges_coverage_on_realized_cost() -> None:
     }
     taker_economics = receipt_economics(taker_receipt)
     assert taker_economics["realized_cost_bps_per_trade"] == pytest.approx(24.0)
-    assert taker_economics["cost_coverage"] == pytest.approx(0.5, abs=0.01)
+    # 0.1 net + 0.5 fees + 0.7 slippage on 500 of notional: 26 bps gross.
+    assert taker_economics["gross_bps_per_trade"] == pytest.approx(26.0, abs=0.05)
+    assert taker_economics["cost_coverage"] == pytest.approx(26.0 / 24.0, abs=0.01)
     order = build_repair_work_order(
         {
             "primary_failure": "cost_not_covered",
@@ -899,7 +906,7 @@ def test_receipt_economics_judges_coverage_on_realized_cost() -> None:
     assert order["budget"]["cost_basis"] == "realized"
     assert order["budget"]["realized_cost_bps_per_trade"] == pytest.approx(24.0)
     assert order["budget"]["maker_round_trip_bps"] == 3.0
-    assert "12.0 bps gross against 24.0 bps realized cost" in order["diagnosis"]
+    assert "26.0 bps gross against 24.0 bps realized cost" in order["diagnosis"]
     assert "The gap is execution, not signal" in order["diagnosis"]
 
 

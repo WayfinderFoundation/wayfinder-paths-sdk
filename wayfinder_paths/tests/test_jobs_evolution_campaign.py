@@ -5607,6 +5607,13 @@ def test_compose_stage_scans_proposals_and_feeds_the_design(tmp_path) -> None:
                 "min_bars": 5,
                 "expression": "new_extreme(f, 3, -1) & (f['macro_regime'] == -1.0)",
             },
+            {
+                "name": "ws_dip_3_twin",
+                "family": "breakout",
+                "description": "the same events again",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1) & (close(f) > 0)",
+            },
         ],
     )
     assert report["status"] == "scanned" and report["round"] == 1
@@ -5620,11 +5627,18 @@ def test_compose_stage_scans_proposals_and_feeds_the_design(tmp_path) -> None:
     survivor = next(row for row in report["survivors"] if row["name"] == "ws_dip_3")
     assert survivor["tier"] == "validated"
     assert survivor["pointer"].startswith("/validated_signals/signals/")
+    # Two survivors in one tier get their own pointers, each resolving to
+    # its own row.
+    twin = next(row for row in report["survivors"] if row["name"] == "ws_dip_3_twin")
+    assert twin["tier"] == "validated" and twin["pointer"] != survivor["pointer"]
     state = _active_campaign(store, job_id)
     assert state["composition"]["rounds_used"] == 1
     assert "ws_dip_3" in state["composition"]["history"][0]["survivors"]
     assert state["composition"]["history"][0]["family_size"] == report["family_size"]
     pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    for row in (survivor, twin):
+        index = int(row["pointer"].rsplit("/", 1)[-1])
+        assert pack["validated_signals"]["signals"][index]["signal"] == row["name"]
     first = pack["validated_signals"]["signals"][0]
     assert first["signal"] == "ws_dip_3" and first["source"] == "compose:round1"
     assert first["expression"] == "new_extreme(f, 3, -1)"
@@ -5637,7 +5651,7 @@ def test_compose_stage_scans_proposals_and_feeds_the_design(tmp_path) -> None:
     )
     prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=3))
     assert prompt["artifact_key"] == "compose-02"
-    assert "Round 1: 2 proposals scanned" in prompt["next_action"]
+    assert "Round 1: 3 proposals scanned" in prompt["next_action"]
     assert "ws_dip_3: validated" in prompt["next_action"]
     # An empty list ends composition; the design stage offers the survivor
     # and a citation resolves it with its source and expression.
@@ -5945,3 +5959,149 @@ def test_cross_sectional_block_ranks_a_persistent_momentum_panel() -> None:
     # A three-symbol panel cannot be ranked.
     small = {name: frames[name] for name in ("S0", "S1", "S2")}
     assert _cross_sectional_block(small, bar_seconds=3600)["available"] is False
+
+
+def test_compose_and_grid_yield_to_the_compute_budget_and_stale_state(
+    tmp_path, monkeypatch
+) -> None:
+    from contextlib import contextmanager
+
+    from wayfinder_paths.jobs import evolution_campaign as campaign_module
+    from wayfinder_paths.jobs.compute_lock import ComputeLockBusy
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        _save_campaign,
+        mechanism_grid,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _composable_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    proposal = {
+        "name": "ws_dip_3",
+        "family": "breakout",
+        "description": "close below the prior 3 closes",
+        "min_bars": 5,
+        "expression": "new_extreme(f, 3, -1)",
+    }
+    labels: list[str] = []
+
+    @contextmanager
+    def busy(store_, job_id_, *, label, **kwargs):
+        labels.append(label)
+        raise ComputeLockBusy("evolution routine compute duty exhausted")
+        yield
+
+    monkeypatch.setattr(campaign_module, "experiment_compute_lock", busy)
+    result = submit_signal_proposals(store, job_id, signal_proposals=[proposal])
+    assert result["status"] == "busy" and "duty exhausted" in result["reason"]
+    assert labels == [f"evolution-compose:{job_id}"]
+    state = _active_campaign(store, job_id)
+    assert state["stage"] == "compose" and state["composition"]["rounds_used"] == 0
+    # Malformed lists are still refused before any compute is claimed.
+    labels.clear()
+    bad = submit_signal_proposals(
+        store, job_id, signal_proposals=[{"name": "Bad-Name", "expression": "1"}]
+    )
+    assert bad["status"] == "rejected" and labels == []
+
+    @contextmanager
+    def pass_through(store_, job_id_, *, label, **kwargs):
+        labels.append(label)
+        yield {"used_seconds": 0.0}
+
+    monkeypatch.setattr(campaign_module, "experiment_compute_lock", pass_through)
+    scanned = submit_signal_proposals(store, job_id, signal_proposals=[proposal])
+    assert scanned["status"] == "scanned" and scanned["survivors"]
+    assert labels == [f"evolution-compose:{job_id}"]
+    pointer = scanned["survivors"][0]["pointer"]
+    # The grid runs under the same lock and yields the same way.
+    labels.clear()
+    monkeypatch.setattr(campaign_module, "experiment_compute_lock", busy)
+    grid = mechanism_grid(store, job_id, signal_ref=pointer, side="long")
+    assert grid["status"] == "busy" and labels == [f"evolution-mechanism-grid:{job_id}"]
+    assert "mechanism_grids" not in store.read_json(
+        job_id, str(state["diagnostic_pack"])
+    )
+    # A round whose scan outlived a state change is not committed.
+    monkeypatch.setattr(campaign_module, "experiment_compute_lock", pass_through)
+    original = campaign_module._scan_signal_proposals
+
+    def bump_then_scan(*args, **kwargs):
+        current = _active_campaign(store, job_id)
+        current["composition"]["rounds_used"] += 1
+        _save_campaign(store, job_id, current)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(campaign_module, "_scan_signal_proposals", bump_then_scan)
+    stale = submit_signal_proposals(
+        store, job_id, signal_proposals=[{**proposal, "name": "ws_dip_3_late"}]
+    )
+    assert stale["status"] == "stale"
+    state = _active_campaign(store, job_id)
+    assert not any(
+        "ws_dip_3_late" in (item.get("survivors") or [])
+        for item in state["composition"]["history"]
+    )
+
+
+def test_candidate_and_reference_screen_windows_match_on_a_slow_lane(tmp_path) -> None:
+    """The candidate's recent screen and the reference it is paired against
+    are the same policy-sized slice: on a 4-hour lane with 1,000 bars both
+    see the 210-bar (35-day) window, not a 10,000-bar tail for one and 210
+    bars for the other."""
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _candidate_reference_receipt,
+        _latest_attempt_receipt,
+        campaign_status,
+        evaluate_candidate,
+    )
+
+    store, job_id = _evaluatable_job(tmp_path)
+    root = store.job_dir(job_id)
+    job_yaml = yaml.safe_load((root / "job.yaml").read_text(encoding="utf-8"))
+    job_yaml["execution_spec"]["data_contract"]["bar_interval"] = "4h"
+    (root / "job.yaml").write_text(yaml.safe_dump(job_yaml), encoding="utf-8")
+    bars = []
+    for index in range(1_000):
+        price = 10.0 + 0.01 * (index % 13)
+        stamp = datetime(2026, 1, 1, tzinfo=UTC) + timedelta(hours=4 * index)
+        bars.append(
+            {
+                "timestamp": stamp.isoformat(),
+                "symbol": "IMX",
+                "open": price,
+                "high": price * 1.01,
+                "low": price * 0.99,
+                "close": price,
+                "volume": 100.0,
+            }
+        )
+    (root / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 167}, "bars": bars}), encoding="utf-8"
+    )
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    candidate = prepare_candidate(
+        store, job_id, family="flat", summary="window parity", now=started
+    )
+    bundle = root / candidate["bundle"]
+    script = bundle / "workspace/src/strategy.py"
+    script.write_text(script.read_text(encoding="utf-8") + "\n# window parity\n")
+    evaluate_candidate(store, job_id, candidate["candidate_id"])
+    state = campaign_status(store, job_id)
+    stored = next(
+        item
+        for item in state["candidates"]
+        if item["candidate_id"] == candidate["candidate_id"]
+    )
+    receipt = _latest_attempt_receipt(store, job_id, stored) or stored.get(
+        "attempt_receipt"
+    )
+    assert receipt is not None, stored
+    reference = _candidate_reference_receipt(
+        store, job_id, stored, campaign_id=str(state["campaign_id"])
+    )
+    assert receipt["window"]["bars"] == 210
+    assert reference["window"]["bars"] == 210

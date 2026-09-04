@@ -209,23 +209,25 @@ def _simulate_row(
         fills += 1
         fill = int(fill_bar[candidate])
         out = int(exit_bar[candidate])
-        # Mark to market: the fill bar carries the move from the entry to its
-        # close, each holding bar the close-to-close move, the exit bar the
-        # move from the prior close to the exit price, net of both fees.
-        price_path = np.concatenate(
-            (
-                [float(entry[candidate])],
-                market.close[fill:out],
-                [float(exit_price[candidate])],
-            )
+        # Mark to market as position value over the entry notional: a fixed
+        # quantity gains sign·(P − E)/E, so a short from 100 to 80 is +20%,
+        # not the compounded negation of the long's bar returns (+22%). The
+        # fill bar carries the move from the entry to its close, each holding
+        # bar the close-to-close move, the exit bar the move to the exit
+        # price; fees come off the equity at the fill and at the exit.
+        entry_price = float(entry[candidate])
+        exit_at = float(exit_price[candidate])
+        path = (
+            np.concatenate(([entry_price], market.close[fill:out], [exit_at]))
+            if out > fill
+            else np.array([entry_price, exit_at])
         )
-        if out == fill:
-            price_path = np.array(
-                [float(entry[candidate]), float(exit_price[candidate])]
-            )
-        bar_returns = sign * (price_path[1:] / price_path[:-1] - 1.0)
-        bar_returns[0] -= maker
-        bar_returns[-1] -= float(exit_fee[candidate])
+        value = 1.0 + sign * (path / entry_price - 1.0)
+        bar_returns = value[1:] / value[:-1] - 1.0
+        bar_returns[0] -= maker / value[0]
+        bar_returns[-1] -= (
+            float(exit_fee[candidate]) * exit_at / entry_price / value[-2]
+        )
         span = min(len(bar_returns), end - fill)
         returns[fill - start : fill - start + span] += bar_returns[:span]
         if net[candidate] > 0:

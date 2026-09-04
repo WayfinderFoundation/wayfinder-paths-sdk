@@ -260,3 +260,41 @@ def test_filters_drop_underpopulated_rows_and_the_split_is_reported() -> None:
         passive_entry_grid(frame, signal, bar_seconds=300, side="sideways")
     with pytest.raises(ValueError, match="not enough bars"):
         passive_entry_grid(frame.iloc[:20], signal.iloc[:20], bar_seconds=300)
+
+
+def test_short_returns_are_position_value_not_compounded_negations() -> None:
+    # Fill at 100 (offset 0), then closes 90 and 80, time exit at the open
+    # of the third bar (80): a short is +20% before fees, not +22.2%.
+    quiet = [(100.0, 100.5, 99.5, 100.0)] * 20
+    frame = _frame(
+        quiet
+        + [
+            (100.0, 100.5, 99.0, 100.0),
+            (100.0, 100.5, 89.0, 90.0),
+            (90.0, 90.5, 79.0, 80.0),
+            (80.0, 80.5, 79.5, 80.0),
+        ]
+        + [(80.0, 80.5, 79.5, 80.0)] * 6
+    )
+    signal = pd.Series([index == 19 for index in range(len(frame))])
+    row = grid_rows(
+        {
+            "entry_offset_atr": (0.0,),
+            "stop_atr": (100.0,),
+            "target_atr": (100.0,),
+            "hold_bars": (3,),
+            "entry_ttl_bars": (1,),
+        }
+    )[0]
+    costs = GridCosts(maker_fee_bps=0.0, taker_fee_bps=0.0, slippage_bps=0.0)
+    short_market = _Market(frame, signal, side="short", atr_period=14)
+    short_returns, _, fills, _ = _simulate_row(
+        short_market, row, costs, start=0, end=len(frame)
+    )
+    assert fills == 1
+    assert float((1.0 + short_returns).prod()) == pytest.approx(1.20, abs=1e-9)
+    long_market = _Market(frame, signal, side="long", atr_period=14)
+    long_returns, _, _, _ = _simulate_row(
+        long_market, row, costs, start=0, end=len(frame)
+    )
+    assert float((1.0 + long_returns).prod()) == pytest.approx(0.80, abs=1e-9)
