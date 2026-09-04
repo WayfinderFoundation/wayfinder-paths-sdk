@@ -283,7 +283,9 @@ def test_path_build_is_deterministic(tmp_path: Path):
     assert source_archive.exists()
 
 
-def test_path_publish_requires_owner_wallet_for_bonded(tmp_path: Path):
+def test_path_publish_allows_bonded_upgrade_without_owner_wallet(
+    tmp_path: Path, monkeypatch
+):
     path_dir = tmp_path / "skill-demo"
     init_path(
         path_dir=path_dir,
@@ -293,18 +295,33 @@ def test_path_publish_requires_owner_wallet_for_bonded(tmp_path: Path):
         with_skill=True,
     )
 
+    publish_calls: list[dict[str, object]] = []
+
+    def fake_publish(_self: PathsApiClient, **kwargs: object) -> dict[str, object]:
+        publish_calls.append(kwargs)
+        return {
+            "path": {"slug": "skill-demo"},
+            "version": {"version": "0.1.0"},
+        }
+
+    monkeypatch.setattr(PathsApiClient, "publish", fake_publish)
+
     result = CliRunner().invoke(
         path_cli,
         [
             "publish",
             "--path",
             str(path_dir),
+            "--api-url",
+            "https://paths.example",
             "--bonded",
         ],
     )
 
-    assert result.exit_code != 0
-    assert "--owner-wallet is required with --bonded" in result.output
+    assert result.exit_code == 0, result.output
+    assert len(publish_calls) == 1
+    assert publish_calls[0]["bonded"] is True
+    assert publish_calls[0]["owner_wallet"] is None
 
 
 def test_path_activate_copies_rendered_export_to_host_scope(tmp_path: Path):

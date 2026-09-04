@@ -1757,7 +1757,7 @@ def build_cmd(path_dir: str, out_path: str) -> None:
 @click.option(
     "--owner-wallet",
     default=None,
-    help="Owner wallet for bonded publish metadata and contract args.",
+    help="Owner wallet for an initial bonded publish; omit for bonded upgrades.",
 )
 @click.option(
     "--risk-tier",
@@ -1776,9 +1776,6 @@ def publish_cmd(
 ) -> None:
     path_dir = Path(path_dir)
     doctor_report, render_report = _prepare_path_for_build(path_dir)
-
-    if bonded and not owner_wallet:
-        raise click.ClickException("--owner-wallet is required with --bonded")
 
     try:
         built = PathBuilder.build(path_dir=path_dir, out_path=Path(out_path))
