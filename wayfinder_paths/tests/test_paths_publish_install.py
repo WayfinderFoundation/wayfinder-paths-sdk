@@ -13,7 +13,7 @@ import yaml
 from click.testing import CliRunner
 
 from wayfinder_paths.paths.builder import PathBuilder
-from wayfinder_paths.paths.cli import path_cli
+from wayfinder_paths.paths.cli import _apply_install_targets, path_cli
 from wayfinder_paths.paths.client import PathsApiClient
 from wayfinder_paths.paths.doctor import DoctorIssue, PathDoctorReport
 from wayfinder_paths.paths.scaffold import init_path
@@ -49,6 +49,42 @@ def test_path_exec_accepts_legacy_argument_separator(
 
     assert result.exit_code == 0, result.output
     assert calls[0][-1] == "--help"
+
+
+def test_install_targets_upgrade_known_broken_runtime_pin(tmp_path: Path) -> None:
+    source_dir = tmp_path / "export"
+    install_source = source_dir / "install" / ".opencode" / "skills" / "demo"
+    runtime_manifest = install_source / "runtime" / "manifest.json"
+    runtime_manifest.parent.mkdir(parents=True)
+    runtime_manifest.write_text(
+        json.dumps({"package": "wayfinder-paths", "version": "0.11.0"}),
+        encoding="utf-8",
+    )
+    (source_dir / "runtime").mkdir(exist_ok=True)
+    (source_dir / "runtime" / "export.json").write_text(
+        json.dumps(
+            {
+                "install_targets": [
+                    {
+                        "op": "copy_tree",
+                        "source": "install/.opencode/skills/demo",
+                        "destination": ".opencode/skills/demo",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    destination_root = tmp_path / "workspace"
+
+    _apply_install_targets(source_dir, destination_root)
+
+    installed_manifest = (
+        destination_root / ".opencode" / "skills" / "demo" / "runtime" / "manifest.json"
+    )
+    assert json.loads(installed_manifest.read_text(encoding="utf-8"))["version"] == (
+        "0.11.1"
+    )
 
 
 def test_path_publish_uploads_rendered_skill_exports_and_bond_metadata(

@@ -18,6 +18,7 @@ from wayfinder_paths.paths.manifest import (
     resolve_skill_runtime,
 )
 from wayfinder_paths.paths.path_safety import unsafe_bundle_path_reason
+from wayfinder_paths.paths.runtime_registry import LEGACY_RUNTIME_MINIMUMS
 
 
 class PathSkillRenderError(Exception):
@@ -890,7 +891,7 @@ def _render_bootstrap_script(runtime_manifest: dict[str, Any]) -> str:
             "SKILL_ROOT = Path(__file__).resolve().parents[1]",
             "RUNTIME_MANIFEST_PATH = SKILL_ROOT / 'runtime' / 'manifest.json'",
             "DEFAULT_RUNTIME_CONFIG_PATH = SKILL_ROOT / '.runtime' / 'config.json'",
-            "LEGACY_RUNTIME_MINIMUMS = {('wayfinder-paths', '0.11.0'): '0.11.1'}",
+            f"LEGACY_RUNTIME_MINIMUMS = {LEGACY_RUNTIME_MINIMUMS!r}",
             "",
             "",
             "def _load_manifest() -> dict[str, object]:",

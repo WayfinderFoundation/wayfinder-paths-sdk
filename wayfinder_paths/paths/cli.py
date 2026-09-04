@@ -40,6 +40,7 @@ from wayfinder_paths.paths.renderer import (
     PathSkillRenderReport,
     render_skill_exports,
 )
+from wayfinder_paths.paths.runtime_registry import compatible_runtime_version
 from wayfinder_paths.paths.scaffold import PathScaffoldError, init_path, slugify
 from wayfinder_paths.paths.shells_sync import (
     ShellsRuntimeReloadIntent,
@@ -829,6 +830,29 @@ def _copy_install_path(source: Path, destination: Path) -> None:
     shutil.copy2(source, destination)
 
 
+def _apply_runtime_compatibility_floor(install_path: Path) -> None:
+    runtime_manifest_path = install_path / "runtime" / "manifest.json"
+    if not runtime_manifest_path.is_file():
+        return
+    try:
+        manifest = json.loads(runtime_manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(manifest, dict):
+        return
+
+    package = str(manifest.get("package") or "wayfinder-paths")
+    version = str(manifest.get("version") or "")
+    compatible_version = compatible_runtime_version(package, version)
+    if compatible_version == version:
+        return
+    manifest["version"] = compatible_version
+    runtime_manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _is_opencode_tool_path(path: Path) -> bool:
     parts = path.parts
     return ".opencode" in parts and "tools" in parts and path.suffix in {".js", ".ts"}
@@ -891,6 +915,7 @@ def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str
             continue
         if op in {"copy_tree", "copy_file"}:
             _copy_install_path(src, dest)
+            _apply_runtime_compatibility_floor(dest)
             applied.append(str(dest))
             continue
         if op == "merge_markdown":
