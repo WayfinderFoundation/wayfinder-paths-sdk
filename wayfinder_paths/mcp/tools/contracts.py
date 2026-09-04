@@ -298,7 +298,9 @@ async def contracts_get(
     try:
         abi_list = await fetch_contract_abi(cid, addr)
     except Exception as exc:
-        return err("abi_not_found", f"ABI not found locally or from a verified source: {exc}")
+        return err(
+            "abi_not_found", f"ABI not found locally or from a verified source: {exc}"
+        )
 
     return ok(
         {
