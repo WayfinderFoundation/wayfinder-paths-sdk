@@ -54,6 +54,11 @@ Costs come first: `/baseline/economics` states the round-trip cost, what the
 incumbent captures per trade and what it pays in fees; a slot whose trades
 cannot plausibly capture the hurdle multiple of that cost gross is rejected at
 the screen before anything else, so size the expected move per trade against it.
+A signal whose move is real but smaller than the taker round trip is not dead:
+post-only resting entries at an offset (`limit_price`, `time_in_force="ALO"`,
+`expires_after_bars`) pay the maker round trip (`/baseline/maker_round_trip_bps`)
+and the offset is price improvement; state that execution in the mechanism when
+it is the slot's economics.
 If a hypothesis needs elapsed time (arm-then-confirm, cooldown, expiry), state
 it in bars of `ctx.bar_ordinal` or timestamps; a design that counts
 `ctx.bar_index` cannot execute, because that value is the bounded view length,

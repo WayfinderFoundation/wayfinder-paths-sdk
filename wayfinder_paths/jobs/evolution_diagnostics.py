@@ -59,6 +59,12 @@ REPAIR_REMEDIES: dict[str, dict[str, list[str]]] = {
     },
     "cost_not_covered": {
         "admissible": [
+            "convert the entry to a post-only resting limit at an ATR offset "
+            "beyond the signal close with a one-bar expiry (`limit_price`, "
+            '`time_in_force="ALO"`, `expires_after_bars=1`) and a passive '
+            "take-profit: the maker fee replaces the taker round trip and the "
+            "offset is price improvement; keep the fast signal, change the "
+            "execution (reference: jobs/strategies/hype_passive_rsi.py)",
             "lengthen the hold or raise the target so each trade captures at "
             "least the hurdle multiple of the round-trip cost gross",
             "trade the coarser timeframe the pack validated; fewer, larger moves",
@@ -228,6 +234,17 @@ def _result_window(result: Any) -> dict[str, Any]:
 # move per trade. Below it the mechanism is paying to trade.
 COST_HURDLE_MULTIPLE = 1.5
 
+# Hyperliquid base maker fee; an explicit params["maker_fee_bps"] wins. A
+# post-only book pays this per side and no slippage, which is the lever a
+# cost-bound repair reaches for when the move is real but small.
+DEFAULT_MAKER_FEE_BPS = 1.5
+
+
+def maker_round_trip_bps(params: Mapping[str, Any] | None) -> float:
+    explicit = (params or {}).get("maker_fee_bps")
+    fee = float(explicit) if explicit is not None else DEFAULT_MAKER_FEE_BPS
+    return round(2.0 * fee, 2)
+
 
 def receipt_economics(receipt: Mapping[str, Any]) -> dict[str, Any] | None:
     """Absolute, per-day trading economics of one receipt.
@@ -246,7 +263,7 @@ def receipt_economics(receipt: Mapping[str, Any]) -> dict[str, Any] | None:
     fees = _number(stats.get("total_fees"))
     fee_pct = fees / capital
     turnover = _number(stats.get("total_turnover_usd"))
-    economics = {
+    economics: dict[str, Any] = {
         "window_days": round(days, 3),
         "fills_per_day": round(fills / days, 4),
         "fee_pct_of_capital": round(fee_pct, 6),
@@ -260,15 +277,59 @@ def receipt_economics(receipt: Mapping[str, Any]) -> dict[str, Any] | None:
         # sides of a round trip, so the notional traded once is turnover / 2.
         # Comparable to the round-trip cost in bps, which is charged once on
         # that same notional.
+        notional = turnover / 2.0
         gross = _number(stats.get("net_return")) * capital + fees
-        economics["gross_bps_per_trade"] = round(gross / (turnover / 2.0) * 1e4, 2)
-        cost = _number(receipt.get("round_trip_cost_bps"))
-        if cost > 0:
-            economics["round_trip_cost_bps"] = round(cost, 2)
-            economics["cost_coverage"] = round(
-                economics["gross_bps_per_trade"] / cost, 4
+        economics["gross_bps_per_trade"] = round(gross / notional * 1e4, 2)
+        nominal = _number(receipt.get("round_trip_cost_bps"))
+        if nominal > 0:
+            economics["round_trip_cost_bps"] = round(nominal, 2)
+            economics["cost_coverage_nominal"] = round(
+                economics["gross_bps_per_trade"] / nominal, 4
             )
+        realized = _realized_cost(receipt.get("trades") or [], fees=fees)
+        if realized is not None:
+            economics["maker_fill_share"] = realized["maker_fill_share"]
+            economics["realized_cost_bps_per_trade"] = round(
+                realized["cost_usd"] / notional * 1e4, 2
+            )
+        # Coverage is judged on what the book actually paid when its fills say
+        # so (a post-only book pays the maker fee and no slippage; the HYPE
+        # maker starters pay ~4 bps against a 24 bps nominal taker round
+        # trip), and on the nominal round trip otherwise.
+        if realized is not None and economics["realized_cost_bps_per_trade"] > 0:
+            economics["cost_coverage"] = round(
+                economics["gross_bps_per_trade"]
+                / economics["realized_cost_bps_per_trade"],
+                4,
+            )
+            economics["cost_basis"] = "realized"
+        elif nominal > 0:
+            economics["cost_coverage"] = economics["cost_coverage_nominal"]
+            economics["cost_basis"] = "nominal"
     return economics
+
+
+def _realized_cost(
+    trades: Sequence[Mapping[str, Any]], *, fees: float
+) -> dict[str, float] | None:
+    """Fees plus the slippage each fill actually bore, from fills that carry
+    their liquidity flag; None when the receipt has no such fills."""
+    costed = [row for row in trades if row.get("liquidity") is not None]
+    if not costed:
+        return None
+    slippage = 0.0
+    for row in costed:
+        price = _number(row.get("reference_price")) or _number(row.get("avg_price"))
+        slippage += (
+            abs(_number(row.get("filled_size")) * price)
+            * _number(row.get("slippage_bps_applied"))
+            / 1e4
+        )
+    makers = sum(1 for row in costed if row.get("liquidity") == "maker")
+    return {
+        "cost_usd": fees + slippage,
+        "maker_fill_share": round(makers / len(costed), 4),
+    }
 
 
 def build_diagnostic_pack(
@@ -687,16 +748,31 @@ def build_repair_work_order(
             * (_number(params.get("fee_bps")) + _number(params.get("slippage_bps"))),
             2,
         )
+        budget["maker_round_trip_bps"] = maker_round_trip_bps(params)
     if candidate.get("cost_coverage") is not None:
         budget["gross_bps_per_trade"] = candidate.get("gross_bps_per_trade")
         budget["cost_coverage"] = candidate.get("cost_coverage")
         budget["cost_hurdle_multiple"] = float(
             policy.get("cost_hurdle_multiple") or COST_HURDLE_MULTIPLE
         )
+        for key in (
+            "cost_basis",
+            "realized_cost_bps_per_trade",
+            "cost_coverage_nominal",
+            "maker_fill_share",
+        ):
+            if candidate.get(key) is not None:
+                budget[key] = candidate[key]
     return {
         "primary_failure": primary,
         "failure_codes": list(postmortem.get("failure_codes") or [])[:6],
-        "diagnosis": _diagnosis(postmortem, candidate, comparator, comparator_label),
+        "diagnosis": _diagnosis(
+            postmortem,
+            candidate,
+            comparator,
+            comparator_label,
+            maker_round_trip=budget.get("maker_round_trip_bps"),
+        ),
         "admissible_repairs": admissible,
         "forbidden": list(remedy["forbidden"]),
         "budget": budget,
@@ -708,6 +784,7 @@ def _diagnosis(
     candidate: Mapping[str, Any],
     comparator: Mapping[str, Any],
     comparator_label: str,
+    maker_round_trip: float | None = None,
 ) -> str:
     primary = str(postmortem.get("primary_failure") or "")
     context = postmortem.get("repair_context") or {}
@@ -830,10 +907,24 @@ def _diagnosis(
             ((postmortem.get("screen") or {}).get("cost_hurdle"))
             or COST_HURDLE_MULTIPLE
         )
+        basis = str(candidate.get("cost_basis") or "nominal")
+        paid = (
+            _number(candidate.get("realized_cost_bps_per_trade"))
+            if basis == "realized"
+            else _number(candidate.get("round_trip_cost_bps"))
+        )
         fees += (
             f"; each trade captured {_number(candidate.get('gross_bps_per_trade')):+.1f} "
-            f"bps gross against a {_number(candidate.get('round_trip_cost_bps')):.0f} "
-            f"bps round trip (coverage {_number(candidate.get('cost_coverage')):.2f}x, "
+            f"bps gross against {paid:.1f} bps {basis} cost"
+        )
+        if basis == "realized":
+            fees += (
+                f" ({_number(candidate.get('round_trip_cost_bps')):.0f} bps nominal "
+                "taker round trip, maker share of fills "
+                f"{100 * _number(candidate.get('maker_fill_share')):.0f}%)"
+            )
+        fees += (
+            f" (coverage {_number(candidate.get('cost_coverage')):.2f}x, "
             f"hurdle {hurdle:.1f}x)"
         )
     exposure = f"exposure {_number(candidate.get('exposure_pct')):.2f}"
@@ -866,7 +957,39 @@ def _diagnosis(
         )
     if primary == "out_of_regime_loss_budget":
         return f"{facts} Losses outside the declared regimes exceeded the budget."
+    if primary == "cost_not_covered":
+        return f"{facts} {_cost_lever(candidate, screen, maker_round_trip)}"
     return facts
+
+
+def _cost_lever(
+    candidate: Mapping[str, Any],
+    screen: Mapping[str, Any],
+    maker_round_trip: float | None,
+) -> str:
+    """Which lever the cost gap points at: execution when the same trades
+    would clear the hurdle against the maker round trip, the move otherwise.
+    The HYPE maker starters came from exactly this diagnosis: a real 10-minute
+    edge too small for taker fills, monetized by resting bids at an offset."""
+    gross = _number(candidate.get("gross_bps_per_trade"))
+    hurdle = _number(screen.get("cost_hurdle") or COST_HURDLE_MULTIPLE)
+    mostly_maker = _number(candidate.get("maker_fill_share")) >= 0.5
+    if (
+        maker_round_trip is not None
+        and not mostly_maker
+        and gross >= hurdle * maker_round_trip
+    ):
+        return (
+            "The gap is execution, not signal: the same trades clear the hurdle "
+            f"against a ~{maker_round_trip:.0f} bps maker round trip, so a "
+            "post-only resting entry at an offset (price improvement) with a "
+            "passive take-profit is the repair; keep the signal."
+        )
+    return (
+        "No execution style covers a move this small: the gross capture per "
+        "trade must grow (longer hold, larger target, or the coarser "
+        "timeframe) before the cost arithmetic can pass."
+    )
 
 
 def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
@@ -902,6 +1025,13 @@ def compact_postmortem(postmortem: Mapping[str, Any]) -> dict[str, Any]:
                     "fee_pct_of_capital_30d",
                     "turnover_multiple",
                     "exposure_pct",
+                    "gross_bps_per_trade",
+                    "round_trip_cost_bps",
+                    "realized_cost_bps_per_trade",
+                    "maker_fill_share",
+                    "cost_coverage",
+                    "cost_coverage_nominal",
+                    "cost_basis",
                 )
             }
             for side in ("candidate", "incumbent", "reference")
@@ -1135,6 +1265,13 @@ def _trade_view(row: Mapping[str, Any]) -> dict[str, Any]:
         "reduce_only": bool(row.get("reduce_only")),
         "action": raw.get("intent_action") or metadata.get("action"),
     }
+    # Fill-level cost provenance: realized cost is what each fill actually
+    # paid, which a post-only book makes far smaller than the nominal round
+    # trip.
+    if raw.get("liquidity") is not None:
+        view["liquidity"] = str(raw["liquidity"])
+        view["slippage_bps_applied"] = _number(raw.get("slippage_bps_applied"))
+        view["reference_price"] = raw.get("reference_price")
     if view["reduce_only"]:
         view["exit_reason"] = fill_exit_reason(metadata, action=view["action"])
     elif metadata.get("entry_reason"):
@@ -1328,6 +1465,7 @@ def _fit_pack(pack: dict[str, Any]) -> dict[str, Any]:
                 "window",
                 "economics",
                 "round_trip_cost_bps",
+                "maker_round_trip_bps",
                 "failure_modes",
                 "complexity",
             )

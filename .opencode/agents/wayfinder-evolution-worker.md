@@ -83,6 +83,14 @@ For each candidate:
   cost gross (the work order states both in bps); `gross_bps_per_trade` is
   the number a repair has to move. A book that pays to trade is rejected
   before its slices are read.
+- Passive execution is a lever, not a detail: an intent with `limit_price`,
+  `time_in_force="ALO"` and `expires_after_bars=N` rests a post-only order
+  that fills only when a later bar trades through the price (one bar of life
+  at N=1), pays the maker fee and no slippage, and a reduce-only ALO
+  take-profit exits the same way; a stop keeps same-bar precedence over a
+  passive target. A fast signal whose move is real but smaller than the taker
+  round trip is monetized this way (reference:
+  `jobs/strategies/hype_passive_rsi.py`), not by taking the close.
 - Put `metadata={"exit_reason": ...}` on every reduce-only intent (close,
   take-profit, stop) so the postmortem's exit summary can name why the book
   exits; the engine labels only its own bracket stops.

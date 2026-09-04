@@ -62,6 +62,7 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
     build_repair_work_order,
     compact_postmortem,
     leader_attribution_sentence,
+    maker_round_trip_bps,
     preview_progress,
     receipt_economics,
     receipt_exits,
@@ -1526,6 +1527,9 @@ def _existing_baseline_receipt(
         receipt["round_trip_cost_bps"] = round(
             2.0 * (float(fee_bps) + float(slippage_bps)), 2
         )
+    receipt["maker_round_trip_bps"] = maker_round_trip_bps(
+        {**result_params, **(params or {})}
+    )
     if stats.get("net_return") is not None:
         # Doing nothing is the bar the incumbent is measured against first:
         # a book that loses to cash is retired, not repaired.
@@ -2750,6 +2754,7 @@ def _evaluate_candidate(
             behavior=common["behavior"],
         )
         receipt["round_trip_cost_bps"] = _round_trip_cost_bps(params)
+        receipt["maker_round_trip_bps"] = maker_round_trip_bps(params)
         reference = _candidate_reference_receipt(
             store,
             job_id,
@@ -2902,6 +2907,7 @@ def _apply_screen_verdict(
         ),
         cost_coverage=candidate_economics.get("cost_coverage"),
         cost_hurdle=float(policy.get("cost_hurdle_multiple") or COST_HURDLE_MULTIPLE),
+        cost_basis=candidate_economics.get("cost_basis"),
     )
     postmortem["screen"] = {
         "confidence": confidence,
@@ -2963,6 +2969,7 @@ def _candidate_reference_receipt(
         behavior=_behavior(result, quick, subject["spec"]),
     )
     receipt["round_trip_cost_bps"] = _round_trip_cost_bps(params)
+    receipt["maker_round_trip_bps"] = maker_round_trip_bps(params)
     receipt["slices"] = {
         "recent": {"daily_returns": daily_log_returns(result.equity_curve)}
     }
@@ -3318,6 +3325,8 @@ def _cost_budget(
     round_trip = baseline.get("round_trip_cost_bps")
     if round_trip is not None:
         budget["round_trip_cost_bps"] = round_trip
+    if baseline.get("maker_round_trip_bps") is not None:
+        budget["maker_round_trip_bps"] = baseline["maker_round_trip_bps"]
     # The ceiling is cost arithmetic, not the incumbent's habit: fills per day
     # such that fees plus slippage stay under the 30-day cost budget at the
     # incumbent's notional per fill. Falls back to the cadence multiple when
@@ -4553,7 +4562,15 @@ def campaign_prompt_block(
                 f"at ~{cost_budget['round_trip_cost_bps']:.0f} bps round trip a "
                 f"trade must capture at least {cost_budget['cost_hurdle_multiple']:.1f}x "
                 f"that gross ({cost_budget['cost_hurdle_multiple'] * cost_budget['round_trip_cost_bps']:.0f} bps) "
-                "or the screen rejects it before anything else; "
+                "or the screen rejects it before anything else"
+                + (
+                    f" (a post-only resting entry pays the ~{cost_budget['maker_round_trip_bps']:.0f} bps "
+                    "maker round trip instead and its offset is price improvement: "
+                    "the lever for a fast signal whose move is real but small)"
+                    if cost_budget.get("maker_round_trip_bps") is not None
+                    else ""
+                )
+                + "; "
                 if cost_budget.get("round_trip_cost_bps") is not None
                 else ""
             )
@@ -4995,11 +5012,23 @@ def _repair_work_order_sentence(order: Mapping[str, Any]) -> str:
     if budget.get("max_fills_per_day") is not None:
         text += f". Budget: at most {float(budget['max_fills_per_day']):.1f} fills/day"
     if budget.get("cost_coverage") is not None:
+        basis = str(budget.get("cost_basis") or "nominal")
+        paid = (
+            float(budget.get("realized_cost_bps_per_trade") or 0.0)
+            if basis == "realized"
+            else float(budget.get("round_trip_cost_bps") or 0.0)
+        )
         text += (
             f"; each trade captured {float(budget.get('gross_bps_per_trade') or 0.0):+.1f} "
-            f"bps gross vs {float(budget.get('round_trip_cost_bps') or 0.0):.0f} bps "
-            f"round trip (coverage {float(budget['cost_coverage']):.2f}x, hurdle "
-            f"{float(budget.get('cost_hurdle_multiple') or 0.0):.1f}x)"
+            f"bps gross vs {paid:.1f} bps {basis} cost (coverage "
+            f"{float(budget['cost_coverage']):.2f}x, hurdle "
+            f"{float(budget.get('cost_hurdle_multiple') or 0.0):.1f}x"
+            + (
+                f"; maker round trip ~{float(budget['maker_round_trip_bps']):.0f} bps"
+                if budget.get("maker_round_trip_bps") is not None
+                else ""
+            )
+            + ")"
         )
     return text + ". "
 
@@ -6188,6 +6217,7 @@ def _screen_verdict(
     max_slice_loss: float = SCREEN_SLICE_MAX_LOSS,
     cost_coverage: float | None = None,
     cost_hurdle: float = COST_HURDLE_MULTIPLE,
+    cost_basis: str | None = None,
 ) -> dict[str, Any]:
     """The all-weather bar. The book as a whole must be positive and
     significant against the reference (pooled paired deltas, or every slice
@@ -6228,6 +6258,7 @@ def _screen_verdict(
         "pooled_lcb": pooled_lcb,
         "cost_coverage": cost_coverage,
         "cost_hurdle": cost_hurdle,
+        "cost_basis": cost_basis,
         "total_trades": total_trades,
         "max_slice_loss": max_slice_loss,
         "overdrawn": overdrawn,

@@ -209,6 +209,7 @@ def test_cost_bleed_is_primary_when_fees_dominate_a_loss() -> None:
         "incumbent_fills_per_day": 2.7,
         "max_fills_per_day": 8.1,
         "round_trip_cost_bps": 16.0,
+        "maker_round_trip_bps": 3.0,
     }
     assert any("minimum hold" in item for item in order["admissible_repairs"])
     assert order["forbidden"]
@@ -791,7 +792,112 @@ def test_receipt_economics_reports_per_trade_cost_coverage() -> None:
         {},
         params={"fee_bps": 5.0, "slippage_bps": 3.5},
     )
+    assert economics["cost_basis"] == "nominal"
+    assert economics["cost_coverage_nominal"] == economics["cost_coverage"]
+    assert "realized_cost_bps_per_trade" not in economics
     assert order["budget"]["cost_coverage"] == economics["cost_coverage"]
     assert order["budget"]["cost_hurdle_multiple"] == 1.5
-    assert "captured -11.5 bps gross against a 17 bps round trip" in order["diagnosis"]
+    assert order["budget"]["maker_round_trip_bps"] == 3.0
+    assert (
+        "captured -11.5 bps gross against 17.0 bps nominal cost" in order["diagnosis"]
+    )
+    # A negative gross move has no execution fix; the move itself must grow.
+    assert "No execution style covers" in order["diagnosis"]
     assert any("hurdle multiple" in item for item in order["admissible_repairs"])
+    assert 'time_in_force="ALO"' in order["admissible_repairs"][0]
+
+
+def _costed_fill(
+    size: float, price: float, *, liquidity: str, fee_bps: float, slip_bps: float
+) -> dict[str, object]:
+    notional = size * price
+    return {
+        "filled_size": size,
+        "avg_price": price,
+        "reference_price": price,
+        "fee": notional * fee_bps / 1e4,
+        "liquidity": liquidity,
+        "slippage_bps_applied": slip_bps,
+        "reduce_only": False,
+        "realized_pnl_delta": 0.0,
+    }
+
+
+def test_receipt_economics_judges_coverage_on_realized_cost() -> None:
+    from wayfinder_paths.jobs.evolution_diagnostics import (
+        build_repair_work_order,
+        receipt_economics,
+    )
+
+    # A post-only book: eight maker fills (entries and passive targets) and two
+    # taker exits. Nominal taker round trip 24 bps; what it actually paid is
+    # 0.42 of fees plus 0.28 of slippage on 1,000 of notional traded once.
+    trades = [
+        _costed_fill(2.0, 100.0, liquidity="maker", fee_bps=1.5, slip_bps=0.0)
+        for _ in range(8)
+    ] + [
+        _costed_fill(2.0, 100.0, liquidity="taker", fee_bps=4.5, slip_bps=7.0)
+        for _ in range(2)
+    ]
+    receipt = {
+        "window": {"days": 68.0, "starting_equity": 100.0},
+        "round_trip_cost_bps": 24.0,
+        "trades": trades,
+        "stats": {
+            "trade_count": 10,
+            "total_fees": 0.42,
+            "net_return": 0.0269,
+            "total_turnover_usd": 2000.0,
+            "exposure_pct": 0.2,
+            "avg_trade_duration_s": 1200.0,
+        },
+    }
+    economics = receipt_economics(receipt)
+    assert economics["gross_bps_per_trade"] == pytest.approx(31.1, abs=0.05)
+    assert economics["realized_cost_bps_per_trade"] == pytest.approx(7.0, abs=0.01)
+    assert economics["maker_fill_share"] == 0.8
+    assert economics["cost_basis"] == "realized"
+    assert economics["cost_coverage"] == pytest.approx(31.1 / 7.0, abs=0.01)
+    assert economics["cost_coverage_nominal"] == pytest.approx(31.1 / 24.0, abs=0.01)
+
+    # A taker book whose move would clear the hurdle at maker cost is told
+    # that the gap is execution, not signal.
+    taker = [
+        _costed_fill(5.0, 100.0, liquidity="taker", fee_bps=5.0, slip_bps=7.0)
+        for _ in range(2)
+    ]
+    taker_receipt = {
+        "window": {"days": 68.0, "starting_equity": 100.0},
+        "round_trip_cost_bps": 24.0,
+        "trades": taker,
+        "stats": {
+            "trade_count": 2,
+            "total_fees": 0.5,
+            "net_return": 0.001,
+            "total_turnover_usd": 1000.0,
+            "exposure_pct": 0.1,
+            "avg_trade_duration_s": 600.0,
+        },
+    }
+    taker_economics = receipt_economics(taker_receipt)
+    assert taker_economics["realized_cost_bps_per_trade"] == pytest.approx(24.0)
+    assert taker_economics["cost_coverage"] == pytest.approx(0.5, abs=0.01)
+    order = build_repair_work_order(
+        {
+            "primary_failure": "cost_not_covered",
+            "failure_codes": ["cost_not_covered"],
+            "economics": {
+                "candidate": taker_economics,
+                "incumbent": None,
+                "reference": None,
+            },
+            "screen": {"cost_hurdle": 1.5},
+        },
+        {},
+        params={"fee_bps": 5.0, "slippage_bps": 7.0},
+    )
+    assert order["budget"]["cost_basis"] == "realized"
+    assert order["budget"]["realized_cost_bps_per_trade"] == pytest.approx(24.0)
+    assert order["budget"]["maker_round_trip_bps"] == 3.0
+    assert "12.0 bps gross against 24.0 bps realized cost" in order["diagnosis"]
+    assert "The gap is execution, not signal" in order["diagnosis"]

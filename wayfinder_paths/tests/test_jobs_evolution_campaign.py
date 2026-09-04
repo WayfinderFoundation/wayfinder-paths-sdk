@@ -5096,6 +5096,17 @@ def test_screen_rejects_a_book_that_does_not_cover_its_costs() -> None:
     verdict = _screen_verdict(both, min_trades=12, pooled_lcb=0.003, cost_coverage=0.8)
     assert verdict["passed"] is False and verdict["code"] == "cost_not_covered"
     assert verdict["cost_coverage"] == 0.8 and verdict["cost_hurdle"] == 1.5
+    assert verdict["cost_basis"] is None
+    assert (
+        _screen_verdict(
+            both,
+            min_trades=12,
+            pooled_lcb=0.003,
+            cost_coverage=0.8,
+            cost_basis="realized",
+        )["cost_basis"]
+        == "realized"
+    )
     assert (
         _screen_verdict(both, min_trades=12, pooled_lcb=0.003, cost_coverage=2.0)[
             "passed"
@@ -5235,3 +5246,18 @@ def test_retire_to_flat_verdict_and_flat_bundle(tmp_path) -> None:
     report = validate_execution_job(job_id, candidate_dir=flat, store=store)
     assert all(check["passed"] for check in report["checks"] if check.get("blocking"))
     assert "return []" in (flat / "workspace" / "src" / "strategy.py").read_text()
+
+
+def test_cost_budget_carries_the_maker_round_trip() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _cost_budget
+
+    budget = _cost_budget(
+        {
+            "economics": {"fills_per_day": 2.0},
+            "round_trip_cost_bps": 24.0,
+            "maker_round_trip_bps": 3.0,
+        },
+        {},
+    )
+    assert budget["round_trip_cost_bps"] == 24.0
+    assert budget["maker_round_trip_bps"] == 3.0
