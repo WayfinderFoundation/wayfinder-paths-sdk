@@ -170,6 +170,7 @@ from wayfinder_paths.jobs.signal_population import population_defs
 from wayfinder_paths.jobs.starter_casebook import select_starter_cases
 from wayfinder_paths.jobs.starters import (
     STARTER_DEFINITIONS,
+    STARTER_LOOKBACK_MARGIN_BARS,
     StarterDefinition,
     starter_lookback_bars,
     starter_warmup_bars,
@@ -3428,7 +3429,13 @@ def _validate_campaign_design(
         "starter_seed",
         "research_seed",
         "research_context",
+        "policy_kernel",
     }
+    available_policy_refs = [
+        str(row.get("pointer") or "")
+        for row in (diagnostic_pack.get("policy_scan") or {}).get("survivors") or []
+        if (row.get("recipe") or {}).get("module")
+    ]
     starters_by_id = {
         str(item.get("starter_id") or ""): item
         for item in manifest.get("starter_seeds") or []
@@ -3496,6 +3503,19 @@ def _validate_campaign_design(
                     f"slot {slot_id} names unavailable research_seed_id "
                     f"{research_seed_id!r}"
                 )
+        policy_ref = str(slot.get("policy_ref") or "").strip()
+        policy_survivor: dict[str, Any] | None = None
+        if policy_ref or source == "policy_kernel":
+            if source != "policy_kernel":
+                raise ValueError(
+                    f"slot {slot_id} policy_ref requires parent_source policy_kernel"
+                )
+            policy_survivor = _policy_survivor_from_pack(diagnostic_pack, policy_ref)
+            if policy_survivor is None:
+                raise ValueError(
+                    f"slot {slot_id} policy_ref must name a policy-scan survivor "
+                    f"with a kernel recipe; available: {available_policy_refs}"
+                )
         mutation = str(slot.get("mutation_kind") or "structural").strip()
         if mutation not in {"structural", "parameter"}:
             raise ValueError(
@@ -3514,6 +3534,9 @@ def _validate_campaign_design(
             "family": family[:120],
             "summary": summary[:240],
         }
+        if policy_survivor is not None:
+            normalized_slot["policy_ref"] = policy_ref
+            normalized_slot["policy_id"] = str(policy_survivor.get("policy_id") or "")
         raw_regimes = slot.get("target_regimes")
         if specialist_design:
             if (
@@ -3880,6 +3903,9 @@ def _prepare_candidate(
         requested_research_seed_id=(
             str(design_slot.get("research_seed_id") or "") or None
         ),
+        requested_policy=_policy_survivor(
+            store, job_id, manifest, str(design_slot.get("policy_ref") or "")
+        ),
         slot=slot,
         candidates=state["candidates"],
     )
@@ -3945,6 +3971,8 @@ def _prepare_candidate(
         "parent_candidate_ids": parents,
         "starter_seed_id": (parent_plan.get("starter") or {}).get("starter_id"),
         "research_seed_id": (parent_plan.get("research_seed") or {}).get("seed_id"),
+        "policy_ref": (parent_plan.get("policy") or {}).get("pointer"),
+        "policy_id": (parent_plan.get("policy") or {}).get("policy_id"),
         "secondary_parent_bundle": (parent_plan.get("secondary") or {}).get("bundle"),
         "mutation_kind": chosen_mutation,
         "neighborhood": neighborhood,
@@ -3954,7 +3982,7 @@ def _prepare_candidate(
         "seed_revision": seed_revision,
         "reference_bundle": reference_relative,
         "reference_revision": reference_revision,
-        "evidence_reset": source in {"starter_seed", "research_seed"},
+        "evidence_reset": source in {"starter_seed", "research_seed", "policy_kernel"},
         "design_slot_id": design_slot.get("slot_id"),
         "hypothesis_id": design_slot.get("hypothesis_id"),
         "wildcard": bool(design_slot.get("wildcard")),
@@ -6202,6 +6230,11 @@ def campaign_prompt_block(
             for item in manifest.get("research_seeds") or []
             if item.get("seed_id")
         ]
+        policy_refs = [
+            str(row.get("pointer"))
+            for row in (diagnostic_pack.get("policy_scan") or {}).get("survivors") or []
+            if row.get("pointer") and (row.get("recipe") or {}).get("module")
+        ]
         cost_budget = _cost_budget(
             diagnostic_pack.get("baseline") or {}, policy, manifest.get("dataset")
         )
@@ -6505,15 +6538,22 @@ def campaign_prompt_block(
                 "parent_source, mutation_kind, family, summary"
                 f"{', target_regimes' if specialist_design else ''}. parent_source "
                 "must be exactly one of incumbent, qd_elite, crossover, de_novo, "
-                "starter_seed, research_seed, research_context; it is an enum, "
-                "so do not append a starter id or other qualifier. mutation_kind "
-                "must be exactly structural or parameter. For a starter_seed "
-                "slot, set "
-                "optional starter_seed_id to one of "
+                "starter_seed, research_seed, research_context, policy_kernel; it "
+                "is an enum, so do not append a starter id or other qualifier. "
+                "mutation_kind must be exactly structural or parameter. For a "
+                "starter_seed slot, set optional starter_seed_id to one of "
                 f"{starter_ids}; this structured id, not summary prose, selects "
                 "the executable seed. For a research_seed slot, set optional "
                 f"research_seed_id to one of {research_seed_ids}. "
-                "If a hypothesis uses an exact family listed under "
+                + (
+                    "For a policy_kernel slot, set policy_ref to one of "
+                    f"{policy_refs}: the survivor's kernel is instantiated with its "
+                    "recipe params as the candidate (no new code), and the worker "
+                    "runs it; use it for the portfolio policies the scan found. "
+                    if policy_refs
+                    else ""
+                )
+                + "If a hypothesis uses an exact family listed under "
                 "research_context.refuted_families, it must also include "
                 "addresses_refutation and new_evidence_refs (a non-empty "
                 "subset of evidence_refs). "
@@ -6901,6 +6941,15 @@ def _candidate_seed_instruction(
     store: JobStore, job_id: str, campaign_id: str, candidate: dict[str, Any]
 ) -> str:
     source = str(candidate.get("parent_source") or "")
+    if source == "policy_kernel":
+        return (
+            f"The bundle instantiates policy-scan survivor `{candidate.get('policy_ref')}` "
+            f"(policy_id {candidate.get('policy_id')}): workspace/src/strategy.py "
+            "re-exports the kernel and execution_params carry the scanned recipe, "
+            "warmup and lookback. It is a screen, not evidence: run it as is first "
+            "and let the screen judge it; change a parameter only when the "
+            "hypothesis names why, and do not add code the recipe does not need. "
+        )
     if source == "starter_seed":
         return (
             f"The bundle contains audited starter `{candidate.get('starter_seed_id')}` "
@@ -8870,6 +8919,7 @@ def _select_parent_plan(
     requested_source: str,
     requested_starter_id: str | None = None,
     requested_research_seed_id: str | None = None,
+    requested_policy: Mapping[str, Any] | None = None,
     slot: int,
     candidates: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -8879,6 +8929,14 @@ def _select_parent_plan(
     are never incumbent copies carrying a misleading lineage label.
     """
     pool = (manifest.get("parent_pool") or {}).get("candidates") or []
+    if requested_source == "policy_kernel":
+        if requested_policy:
+            return {
+                "source": "policy_kernel",
+                "parents": [],
+                "policy": dict(requested_policy),
+            }
+        return {"source": "de_novo", "parents": [], "fallback_from": "policy_kernel"}
     if requested_source == "research_seed":
         used = {
             str(item.get("research_seed_id") or "")
@@ -9057,6 +9115,14 @@ def _materialize_candidate_seed(
             candidate_root=candidate_root,
             starter=starter,
         )
+    elif source == "policy_kernel":
+        _copy_clean_scaffold(store, job_id, frozen_source, candidate_root)
+        _install_policy_kernel(
+            store,
+            job_id,
+            candidate_root=candidate_root,
+            policy=dict(plan.get("policy") or {}),
+        )
     else:
         _copy_clean_scaffold(store, job_id, frozen_source, candidate_root)
     return _seed_bundle_window(store, job_id, candidate_root)
@@ -9117,11 +9183,107 @@ def _install_starter_seed(
     if script is None:
         raise ValueError("starter seed candidate has no execution entrypoint")
     atomic_write_text(script, source.read_text(encoding="utf-8"))
-    params = dict(starter.get("params") or {})
+    # A starter's bar-denominated lookbacks are calibrated for its own
+    # timeframe; on a job with a different bar interval they are rescaled so a
+    # 3-day momentum stays three days (the 5m rotation ran with 9-day windows
+    # on 15m bars and never traded enough to clear cost).
+    ratio = _starter_bar_ratio(starter, candidate_root)
+    params = _rescale_bar_params(dict(starter.get("params") or {}), ratio)
     params.update(_target_execution_params(candidate_root))
-    params["warmup_bars"] = int(starter["warmup_bars"])
-    params["lookback_bars"] = int(starter["lookback_bars"])
+    params["warmup_bars"] = max(1, round(int(starter["warmup_bars"]) * ratio))
+    params["lookback_bars"] = max(1, round(int(starter["lookback_bars"]) * ratio))
     params.pop("full_history", None)
+    job_data["execution_params"] = params
+    atomic_write_text(
+        candidate_root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)
+    )
+
+
+def _starter_bar_ratio(starter: Mapping[str, Any], candidate_root: Path) -> float:
+    """Starter bars per job bar: 1.0 on the starter's own interval."""
+    starter_seconds = int(
+        bar_interval_seconds(str(starter.get("timeframe") or "")) or 0
+    )
+    job_data = _load_job_yaml(candidate_root)
+    spec_data, _ = resolve_execution_spec(candidate_root, job_data)
+    job_interval = str(
+        ((spec_data or {}).get("data_contract") or {}).get("bar_interval") or ""
+    )
+    job_seconds = int(bar_interval_seconds(job_interval) or 0)
+    if starter_seconds <= 0 or job_seconds <= 0:
+        return 1.0
+    return starter_seconds / job_seconds
+
+
+def _rescale_bar_params(params: dict[str, Any], ratio: float) -> dict[str, Any]:
+    if ratio == 1.0:
+        return params
+    scaled = dict(params)
+    for key, value in params.items():
+        if isinstance(value, bool) or not isinstance(value, int):
+            continue
+        if key.endswith(("_bars", "_period")) or key == "rebalance_offset":
+            scaled[key] = max(1, round(value * ratio)) if value > 0 else value
+    return scaled
+
+
+def _policy_survivor_from_pack(
+    pack: Mapping[str, Any], ref: str
+) -> dict[str, Any] | None:
+    """The policy-scan survivor a pointer names, when it carries a kernel."""
+    match = re.match(r"^/policy_scan/survivors/(\d+)$", str(ref or ""))
+    if not match:
+        return None
+    survivors = list((pack.get("policy_scan") or {}).get("survivors") or [])
+    index = int(match.group(1))
+    if index >= len(survivors):
+        return None
+    row = survivors[index]
+    if not isinstance(row, dict) or not (row.get("recipe") or {}).get("module"):
+        return None
+    return dict(row)
+
+
+def _policy_survivor(
+    store: JobStore, job_id: str, manifest: Mapping[str, Any], ref: str
+) -> dict[str, Any] | None:
+    if not ref:
+        return None
+    pack_path = str((manifest.get("diagnostic_pack") or {}).get("path") or "")
+    pack = store.read_json(job_id, pack_path, default={}) if pack_path else {}
+    return _policy_survivor_from_pack(pack or {}, ref)
+
+
+def _install_policy_kernel(
+    store: JobStore,
+    job_id: str,
+    *,
+    candidate_root: Path,
+    policy: Mapping[str, Any],
+) -> None:
+    """A policy-scan survivor as a running bundle: the kernel re-exported in
+    one line and its recipe params beside the job's own execution params;
+    warmup and lookback come from the instantiated strategy."""
+    recipe = dict(policy.get("recipe") or {})
+    module = str(recipe.get("module") or "")
+    if not module.startswith("wayfinder_paths.jobs.strategies."):
+        raise ValueError("policy kernel recipe must name a jobs strategy module")
+    job_data = _load_job_yaml(candidate_root)
+    script = store.resolve_script_entrypoint(
+        job_id, job_data, candidate_dir=candidate_root
+    )
+    if script is None:
+        raise ValueError("policy kernel candidate has no execution entrypoint")
+    script.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(script, f"from {module} import build_strategy\n")
+    params = dict(recipe.get("params") or {})
+    params.update(_target_execution_params(candidate_root))
+    strategy = importlib.import_module(module).build_strategy(dict(params))
+    warmup = int(getattr(strategy, "warmup_bars", 0) or 0)
+    if warmup <= 0:
+        raise ValueError("policy kernel strategy declares no warmup_bars")
+    params["warmup_bars"] = warmup
+    params["lookback_bars"] = warmup + STARTER_LOOKBACK_MARGIN_BARS
     job_data["execution_params"] = params
     atomic_write_text(
         candidate_root / "job.yaml", yaml.safe_dump(job_data, sort_keys=False)

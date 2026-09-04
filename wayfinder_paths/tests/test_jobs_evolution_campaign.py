@@ -78,7 +78,10 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
 )
 from wayfinder_paths.jobs.execution.op_process import op_runner_command
 from wayfinder_paths.jobs.execution.op_runner import _nudge_evolution
-from wayfinder_paths.jobs.execution.primitives import DEFAULT_WARMUP_BARS
+from wayfinder_paths.jobs.execution.primitives import (
+    DEFAULT_WARMUP_BARS,
+    bar_interval_seconds,
+)
 from wayfinder_paths.jobs.failures import TransientInfrastructureError
 from wayfinder_paths.jobs.gating import compute_workspace_revision
 from wayfinder_paths.jobs.models import WayfinderJob
@@ -6605,3 +6608,190 @@ def test_policy_scan_survivors_feed_the_design_and_count_as_evidence(tmp_path) -
         submit_campaign_design(store, job_id, campaign_design=design)
     except ValueError as exc:
         assert "must build on" not in str(exc)
+
+
+def _policy_survivor_row(symbols: list[str]) -> dict[str, Any]:
+    return {
+        "pointer": "/policy_scan/survivors/0",
+        "policy_id": "feedfacefeed",
+        "family": "cross_sectional_rank",
+        "kernel": "wayfinder_paths.jobs.strategies.mixed_momentum_rank",
+        "rank": {"return": 0.2, "sharpe": 2.5},
+        "report": {"return": 0.1, "sharpe": 2.0},
+        "full": {"return": 0.3, "sharpe": 2.2, "max_drawdown": -0.1, "rebalances": 40},
+        "by_regime": {},
+        "recipe": {
+            "module": "wayfinder_paths.jobs.strategies.mixed_momentum_rank",
+            "build": "build_strategy",
+            "params": {
+                "symbols": list(symbols),
+                "momentum_bars": 4,
+                "rank_legs": 1,
+                "weight_per_leg": 0.5,
+                "rebalance_bars": 2,
+                "rebalance_offset": 0,
+            },
+        },
+    }
+
+
+def test_policy_kernel_slot_materializes_the_survivor_without_new_code(
+    tmp_path,
+) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _materialize_candidate_seed,
+        _policy_survivor_from_pack,
+        _select_parent_plan,
+    )
+
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    job_path = store.job_dir(job_id) / "job.yaml"
+    job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
+    job_data["execution_params"] = {
+        "symbols": ["BTC", "ETH"],
+        "fee_bps": 4.5,
+        "slippage_bps": 3.5,
+    }
+    job_path.write_text(yaml.safe_dump(job_data, sort_keys=False), encoding="utf-8")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    survivor = _policy_survivor_row(["BTC", "ETH"])
+    pack = {"policy_scan": {"available": True, "survivors": [survivor]}}
+    assert _policy_survivor_from_pack(pack, "/policy_scan/survivors/0") == survivor
+    assert _policy_survivor_from_pack(pack, "/policy_scan/survivors/1") is None
+    assert _policy_survivor_from_pack(pack, "/validated_signals/signals/0") is None
+    assert _policy_survivor_from_pack({}, "/policy_scan/survivors/0") is None
+
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    plan = _select_parent_plan(
+        manifest,
+        requested_source="policy_kernel",
+        requested_policy=survivor,
+        slot=3,
+        candidates=[],
+    )
+    assert (
+        plan["source"] == "policy_kernel"
+        and plan["policy"]["policy_id"] == "feedfacefeed"
+    )
+    fallback = _select_parent_plan(
+        manifest, requested_source="policy_kernel", slot=3, candidates=[]
+    )
+    assert (
+        fallback["source"] == "de_novo" and fallback["fallback_from"] == "policy_kernel"
+    )
+
+    bundle = tmp_path / "policy-bundle"
+    _materialize_candidate_seed(
+        store,
+        job_id,
+        campaign_id=state["campaign_id"],
+        candidate_root=bundle,
+        plan=plan,
+    )
+    script = (bundle / "workspace" / "src" / "strategy.py").read_text(encoding="utf-8")
+    assert (
+        script
+        == "from wayfinder_paths.jobs.strategies.mixed_momentum_rank import build_strategy\n"
+    )
+    params = yaml.safe_load((bundle / "job.yaml").read_text(encoding="utf-8"))[
+        "execution_params"
+    ]
+    assert params["momentum_bars"] == 4 and params["rank_legs"] == 1
+    assert params["symbols"] == ["BTC", "ETH"] and params["fee_bps"] == 4.5
+    assert params["warmup_bars"] > 0
+    assert params["lookback_bars"] == params["warmup_bars"] + 20
+    with pytest.raises(ValueError, match="jobs strategy module"):
+        _materialize_candidate_seed(
+            store,
+            job_id,
+            campaign_id=state["campaign_id"],
+            candidate_root=tmp_path / "bad-bundle",
+            plan={
+                "source": "policy_kernel",
+                "policy": {"recipe": {"module": "os.path"}},
+            },
+        )
+
+
+def test_design_policy_kernel_slot_needs_a_real_survivor(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    pack_path = str(state["diagnostic_pack"])
+    pack = store.read_json(job_id, pack_path)
+    pack["policy_scan"] = {
+        "available": True,
+        "configs": 10,
+        "families": [],
+        "falsified": [],
+        "survivors": [_policy_survivor_row(["IMX"])],
+    }
+    store.write_json(job_id, pack_path, pack)
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert (
+        prompt
+        and "policy_kernel slot, set policy_ref to one of ['/policy_scan/survivors/0']"
+        in prompt["next_action"]
+    )
+
+    design = _campaign_design()
+    design["slots"][2]["parent_source"] = "policy_kernel"
+    design["slots"][2]["policy_ref"] = "/policy_scan/survivors/7"
+    with pytest.raises(ValueError, match="policy_ref must name a policy-scan survivor"):
+        submit_campaign_design(store, job_id, campaign_design=design)
+    design["slots"][2]["policy_ref"] = "/policy_scan/survivors/0"
+    design["slots"][1]["policy_ref"] = "/policy_scan/survivors/0"
+    with pytest.raises(
+        ValueError, match="policy_ref requires parent_source policy_kernel"
+    ):
+        submit_campaign_design(store, job_id, campaign_design=design)
+    del design["slots"][1]["policy_ref"]
+    for hypothesis in design["hypotheses"]:
+        hypothesis["evidence_refs"] = ["/policy_scan/survivors/0"]
+    try:
+        submit_campaign_design(store, job_id, campaign_design=design)
+    except ValueError as exc:
+        assert "policy_ref" not in str(exc) and "must build on" not in str(exc)
+
+
+def test_starter_bar_params_rescale_to_the_job_interval(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _rescale_bar_params,
+        _starter_bar_ratio,
+    )
+
+    params = {
+        "momentum_bars": 288,
+        "rebalance_bars": 192,
+        "rebalance_offset": 48,
+        "stop_atr_period": 96,
+        "stop_cooldown_seconds": 0,
+        "weight_per_leg": 0.125,
+        "require_trend_alignment": True,
+        "top_n": 1,
+    }
+    scaled = _rescale_bar_params(params, 3.0)
+    assert scaled["momentum_bars"] == 864 and scaled["rebalance_bars"] == 576
+    assert scaled["rebalance_offset"] == 144 and scaled["stop_atr_period"] == 288
+    assert scaled["stop_cooldown_seconds"] == 0 and scaled["weight_per_leg"] == 0.125
+    assert scaled["require_trend_alignment"] is True and scaled["top_n"] == 1
+    assert _rescale_bar_params(params, 1.0) == params
+    assert _rescale_bar_params({"momentum_bars": 7}, 1 / 3)["momentum_bars"] == 2
+
+    store, job_id = _job(tmp_path, "majors-5m-lab")
+    root = store.job_dir(job_id)
+    job_path = root / "job.yaml"
+    job_data = yaml.safe_load(job_path.read_text(encoding="utf-8"))
+    # Without a declared bar interval nothing is rescaled.
+    assert _starter_bar_ratio({"timeframe": "15m"}, root) == 1.0
+    job_data["execution_spec"] = {
+        **dict(job_data.get("execution_spec") or {}),
+        "data_contract": {"bar_interval": "5m", "symbols": ["BTC", "ETH"]},
+    }
+    job_path.write_text(yaml.safe_dump(job_data, sort_keys=False), encoding="utf-8")
+    assert _starter_bar_ratio({"timeframe": "15m"}, root) == bar_interval_seconds(
+        "15m"
+    ) / bar_interval_seconds("5m")
+    assert _starter_bar_ratio({"timeframe": "5m"}, root) == 1.0
+    assert _starter_bar_ratio({"timeframe": ""}, root) == 1.0

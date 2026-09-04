@@ -57,6 +57,13 @@ fold-stable, cost-net, family-corrected edges on this dataset), every grounded
 de_novo or research_context slot must cite one and build its entry on it; a
 design that cites none is rejected. Narratives about why a mechanism should
 earn are not evidence; the near misses are direction, not evidence.
+When the pack carries a policy scan (`/policy_scan`: rotation, defensive
+relay, cross-sectional rank and sleeve policies swept on the whole panel,
+ranked on one window and reported on another), its survivors are evidence of
+the same standing and its falsified families are dead on this panel. A
+`policy_kernel` slot with `policy_ref` set to a survivor's pointer instantiates
+that survivor's kernel with its scanned params as the candidate, with no new
+code; prefer it over asking a worker to reinvent a rotation or a sleeve book.
 Cash is the first bar: `/baseline/vs_cash` says whether the incumbent beat
 doing nothing over its window; every slot must beat cash on its own validation
 window, and a campaign that finds nothing while the incumbent loses to cash
