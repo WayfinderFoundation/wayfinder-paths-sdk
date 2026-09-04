@@ -23,6 +23,7 @@ BenchAction = Literal[
     "holdout_check",
     "evolution_status",
     "evolution_design",
+    "evolution_compose",
     "evolution_prepare",
     "evolution_submit_seed",
     "evolution_evaluate",
@@ -39,6 +40,7 @@ _ALLOWED_ACTIONS = {
     "holdout_check",
     "evolution_status",
     "evolution_design",
+    "evolution_compose",
     "evolution_prepare",
     "evolution_submit_seed",
     "evolution_evaluate",
@@ -51,6 +53,7 @@ async def core_jobs(
     *,
     job_id: str,
     campaign_design: dict[str, Any] | None = None,
+    signal_proposals: list[dict[str, Any]] | None = None,
     family: str | None = None,
     summary: str | None = None,
     mutation_kind: Literal["structural", "parameter"] | None = None,
@@ -82,11 +85,14 @@ async def core_jobs(
     # Design validation is lightweight. Keep it inline so a malformed design
     # returns its exact validator error to the same model turn instead of
     # depending on a future scheduler wake to discover a detached failure.
-    effective_background = False if action == "evolution_design" else background
+    effective_background = (
+        False if action in {"evolution_design", "evolution_compose"} else background
+    )
     result = await _production_core_jobs(
         action,
         job_id=job_id,
         campaign_design=campaign_design,
+        signal_proposals=signal_proposals,
         family=family,
         summary=summary,
         mutation_kind=mutation_kind,

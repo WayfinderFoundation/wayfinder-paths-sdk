@@ -36,6 +36,17 @@ campaign's frozen diagnostic pack and manifest. Connect measured failures to
 causal mechanisms; do not dump raw result files, inspect the wider SDK, or
 implement strategy code.
 
+Before the design stage a campaign may run composition rounds: the prompt
+states the signal DSL, the bar and store columns, and the funnel, and you
+propose up to twelve signal definitions with
+`wayfinder_core_jobs(action="evolution_compose", job_id=..., signal_proposals=[...])`.
+The harness scans them in seconds with the library under one family and
+reports each proposal's best row; survivors become citable
+`/validated_signals/...` entries for the design. Propose the mechanisms the
+funnel and the replicated rows point at (a regime or session gate, a
+composition, a different window), never restatements of library signals; a
+rejected list costs no round, and an empty list ends composition.
+
 Submit exactly the requested number of idea slots with
 `wayfinder_core_jobs(action="evolution_design", ...)`. Grounded hypotheses must
 cite exact JSON-pointer evidence references from the diagnostic pack. Wildcard

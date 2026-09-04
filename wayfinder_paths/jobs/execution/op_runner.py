@@ -143,6 +143,11 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
         from wayfinder_paths.jobs.store import JobStore
 
         return submit_campaign_design(JobStore(), kwargs.pop("job_id"), **kwargs)
+    if op == "evolution_compose":
+        from wayfinder_paths.jobs.evolution_campaign import submit_signal_proposals
+        from wayfinder_paths.jobs.store import JobStore
+
+        return submit_signal_proposals(JobStore(), kwargs.pop("job_id"), **kwargs)
     if op == "evolution_submit_seed":
         from pathlib import Path
 
@@ -263,7 +268,12 @@ def _lower_priority() -> None:
         pass
 
 
-_NUDGE_OPS = {"evolution_start", "evolution_design", "evolution_evaluate"}
+_NUDGE_OPS = {
+    "evolution_start",
+    "evolution_design",
+    "evolution_compose",
+    "evolution_evaluate",
+}
 _EVOLUTION_ACTIVITY_OPS = _NUDGE_OPS | {"evolution_finalize"}
 
 

@@ -2361,6 +2361,8 @@ def build_evolution_stage_prompt(
     lane = (
         "evolution_design"
         if session_stage == "design"
+        else "evolution_compose"
+        if session_stage == "compose"
         else "evolution_finalize"
         if session_stage == "finalize"
         else "evolution_repair"
@@ -2370,6 +2372,8 @@ def build_evolution_stage_prompt(
     action = (
         "submit_campaign_design"
         if session_stage == "design"
+        else "submit_signal_proposals"
+        if session_stage == "compose"
         else "launch_finalize"
         if session_stage == "finalize"
         else "repair_and_launch_evaluation"
@@ -2387,6 +2391,9 @@ def build_evolution_stage_prompt(
         objective=(
             "Design and submit the campaign's bounded hypothesis/slot allocation."
             if session_stage == "design"
+            else "Propose signal definitions for the harness to scan; survivors "
+            "become citable evidence for the design stage."
+            if session_stage == "compose"
             else "Launch deterministic campaign finalization and end the stage."
             if session_stage == "finalize"
             else "Change the assigned candidate mechanism and launch exactly one detached evaluation."
@@ -2402,6 +2409,9 @@ def build_evolution_stage_prompt(
         completion=(
             "Call evolution_design once and end."
             if session_stage == "design"
+            else "Call evolution_compose once (a list, or an empty list to end "
+            "composition) and end."
+            if session_stage == "compose"
             else "Call evolution_finalize with background=true and end."
             if session_stage == "finalize"
             else "Call evolution_evaluate with background=true and end without waiting."

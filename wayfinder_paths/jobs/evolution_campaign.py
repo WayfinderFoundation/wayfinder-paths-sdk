@@ -61,6 +61,7 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
     build_postmortem,
     build_repair_work_order,
     compact_postmortem,
+    fit_diagnostic_pack,
     leader_attribution_sentence,
     maker_round_trip_bps,
     preview_progress,
@@ -151,6 +152,11 @@ from wayfinder_paths.jobs.resource_envelope import (
     require_evolution_launch_headroom,
 )
 from wayfinder_paths.jobs.robustness import _strategy_warmup_bars
+from wayfinder_paths.jobs.signal_library import (
+    SIGNAL_DSL,
+    compile_signal_expression,
+    signal_defs,
+)
 from wayfinder_paths.jobs.signal_population import population_defs
 from wayfinder_paths.jobs.starter_casebook import select_starter_cases
 from wayfinder_paths.jobs.starters import (
@@ -164,6 +170,10 @@ from wayfinder_paths.jobs.trade_forensics import (
     aggregate_trade_forensics,
     forensics_for_closed_trades,
 )
+from wayfinder_paths.jobs.workspace_signals import (
+    WORKSPACE_SIGNAL_CAP,
+    validate_workspace_signals,
+)
 from wayfinder_paths.runner.monitor_state import atomic_write_json, atomic_write_text
 
 CAMPAIGN_STATE_PATH = "state/evolution_campaign.json"
@@ -176,6 +186,9 @@ FORWARD_SNAPSHOT = "forward_experience.json"
 DIAGNOSTIC_PACK = "diagnostic_pack.json"
 CAMPAIGN_DESIGN = "campaign_design.json"
 SCHEMA_VERSION = "2.0"
+COMPOSE_STAGE = "compose"
+_PROPOSAL_NAME_RE = re.compile(r"^[a-z0-9_]{1,48}$")
+_COMPOSE_DSL_NAMES = tuple(name for name in SIGNAL_DSL if name not in {"pd", "np"})
 # Failure codes that are evidence against a hypothesis family.  Infrastructure
 # errors, activity floors, and windows without the declared regime are not.
 _REFUTING_FAILURE_CODES = frozenset(
@@ -587,7 +600,8 @@ def _start_campaign(
         "schema_version": campaign_schema,
         "campaign_id": campaign_id,
         "status": "active",
-        "stage": "design" if campaign_schema == SCHEMA_VERSION else "generate",
+        "stage": _initial_stage(campaign_schema, campaign_policy, validated_signals),
+        "composition": _composition_state(campaign_policy),
         "started_at": current.isoformat(),
         "deadline_at": deadline.isoformat(),
         "manifest": f"{relative_root}/manifest.json",
@@ -956,9 +970,10 @@ def _signal_recipe(
     on the block (the pack has a byte budget and ten entries of prose
     tipped it into its fail-closed shape)."""
     signal = (
-        f"compile_signal_expression(name={row['signal']!r}, family='population', "
-        f"description='', min_bars={row.get('min_bars')}, expression=<expression>)"
-        if row.get("library") == "population"
+        f"compile_signal_expression(name={row['signal']!r}, "
+        f"family={str(row.get('family') or 'workspace')!r}, description='', "
+        f"min_bars={row.get('min_bars')}, expression=<expression>)"
+        if row.get("library") in {"population", "workspace"}
         else repr(row["signal"])
     )
     text = (
@@ -1062,6 +1077,7 @@ def _validated_signals(
         funnel["population_tests"] = sum(
             row.get("library") == "population" for row in full_rows
         )
+        breakdown = _signal_breakdown([*selected, *replicated])
         funnel["population_survivors"] = sum(
             row.get("library") == "population" for row in [*selected, *replicated]
         )
@@ -1098,6 +1114,8 @@ def _validated_signals(
         ),
         "timeframes": frames["timeframes"],
         "condition_features": sorted(frames["condition_features"]),
+        "feature_columns": list(frames["feature_columns"]),
+        "breakdown": breakdown,
         "tests": len(full_rows),
         # The haircut the designer should see: this many tests would clear a
         # 5% bar by luck alone, which is why q gates the validated tier.
@@ -1864,6 +1882,539 @@ def prepare_candidate(
             mutation_kind=mutation_kind,
             now=now,
         )
+
+
+def _initial_stage(
+    schema: str, policy: Mapping[str, Any], validated_signals: Mapping[str, Any] | None
+) -> str:
+    """Compose before design when the scan is available and rounds are
+    budgeted; the legacy schema goes straight to generation."""
+    if schema != SCHEMA_VERSION:
+        return "generate"
+    rounds = int(policy.get("signal_composition_rounds", 2) or 0)
+    if (
+        rounds > 0
+        and isinstance(validated_signals, Mapping)
+        and validated_signals.get("available")
+    ):
+        return COMPOSE_STAGE
+    return "design"
+
+
+def _composition_state(policy: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "rounds_max": int(policy.get("signal_composition_rounds", 2) or 0),
+        "rounds_used": 0,
+        "history": [],
+        "problems": None,
+    }
+
+
+def _signal_breakdown(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Where the survivors are: counts by family and timeframe, and by regime
+    cell. The compose prompt reads this instead of the whole row list."""
+    family_timeframe: dict[str, int] = {}
+    regime: dict[str, int] = {}
+    for row in rows:
+        key = f"{row.get('family')}@{row.get('timeframe')}"
+        family_timeframe[key] = family_timeframe.get(key, 0) + 1
+        cell = str(row.get("regime") or "base")
+        regime[cell] = regime.get(cell, 0) + 1
+    return {
+        "family_timeframe": dict(
+            sorted(family_timeframe.items(), key=lambda item: -item[1])[:16]
+        ),
+        "regime": dict(sorted(regime.items(), key=lambda item: -item[1])),
+    }
+
+
+def _compose_prompt_block(
+    store: JobStore, job_id: str, state: dict[str, Any], manifest: dict[str, Any]
+) -> dict[str, Any]:
+    """The composition turn: the designer proposes signal definitions in the
+    DSL, the harness scans them under one family and reports; survivors
+    become citable. AlphaAgent's hypothesis-to-factor loop on our scanner."""
+    root = store.job_dir(job_id)
+    pack_path = (root / str(state["diagnostic_pack"])).resolve()
+    manifest_path = (root / str(state["manifest"])).resolve()
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]), default={}) or {}
+    validated = pack.get("validated_signals") or {}
+    composition = state.get("composition") or {}
+    rounds_used = int(composition.get("rounds_used") or 0)
+    rounds_max = int(composition.get("rounds_max") or 0)
+    history = list(composition.get("history") or [])
+    last = history[-1] if history else None
+    problems = list(composition.get("problems") or [])
+    funnel = validated.get("funnel") or {}
+    breakdown = validated.get("breakdown") or {}
+    columns = ["open", "high", "low", "close", "volume"] + [
+        str(name) for name in validated.get("feature_columns") or []
+    ]
+    funnel_text = (
+        f"Funnel so far: {funnel.get('tests')} tests, {funnel.get('validated') or 0} "
+        f"validated, {funnel.get('replicated') or 0} replicated "
+        f"({funnel.get('passive_only') or 0} passive-only, "
+        f"{funnel.get('mechanism_required') or 0} needing a mechanism), "
+        f"{funnel.get('regime_survivors') or 0} regime-conditioned and "
+        f"{funnel.get('population_survivors') or 0} population survivors; by "
+        f"family@timeframe {breakdown.get('family_timeframe')}; by regime "
+        f"{breakdown.get('regime')}. "
+        if funnel
+        else ""
+    )
+    last_text = (
+        f"Round {last.get('round')}: {len(last.get('proposals') or [])} proposals "
+        f"scanned in a family of {last.get('family_size')}, "
+        f"{len(last.get('survivors') or [])} survived ("
+        + "; ".join(
+            f"{item.get('name')}: {item.get('tier')}"
+            + (
+                f" best t {float(item['best'].get('t_stat') or 0):+.1f} q "
+                f"{float(item['best'].get('q_value') or 0):.2f} n "
+                f"{item['best'].get('events')} gross "
+                f"{float(item['best'].get('gross_edge_bps') or 0):+.1f} bps "
+                f"{item['best'].get('execution_hint')}"
+                + (
+                    f" in {item['best']['regime']}"
+                    if item["best"].get("regime")
+                    else ""
+                )
+                if item.get("best")
+                else " (no measurable row)"
+            )
+            for item in (last.get("proposals") or [])[:12]
+        )
+        + "). "
+        if last and not last.get("ended")
+        else ""
+    )
+    problems_text = (
+        "The previous submission was rejected and the round was not consumed; "
+        "fix these: " + "; ".join(problems) + ". "
+        if problems
+        else ""
+    )
+    next_action = (
+        f"Composition round {rounds_used + 1} of {rounds_max}. Read `{pack_path}` "
+        "(validated_signals: the funnel, the validated and replicated tiers with "
+        "their cost decomposition, the near misses) and propose up to "
+        f"{WORKSPACE_SIGNAL_CAP} new signal definitions. The harness scans them "
+        "with the library under one Benjamini-Hochberg family across "
+        f"{validated.get('timeframes')} and every horizon in seconds and reports "
+        "each proposal's best row (t, q, events, gross move vs the taker and "
+        "maker round trips, by regime); survivors join the pack as citable "
+        'signals for the design stage. A proposal is {"name": <matches '
+        '^[a-z0-9_]{1,48}$, not a library name, no pop_ prefix>, "family": '
+        '<str>, "description": <str>, "min_bars": <int warmup>, '
+        '"expression": <one Python expression over f>} where f is the '
+        f"resampled bar frame with columns {', '.join(columns)} and the helpers "
+        f"{', '.join(_COMPOSE_DSL_NAMES)} (signatures: new_extreme(f, period, "
+        "+1|-1), momentum(f, period, +1|-1), rsi_extreme(f, level, +1|-1, "
+        "period=14), rsi_cross(f, level, +1|-1, period=14), bb_extreme(f, z, "
+        "period=20), spike_vs_sma(f, pct, +1|-1, period=20), wide_range(f, "
+        "+1|-1, multiple=2.0, period=14), vol_surge(f, +1|-1, multiple=2.0, "
+        "window=20), ema_cross(f, +1|-1, fast=9, slow=50), sma_cross(f, +1|-1, "
+        "period=20), macd_cross(f, +1|-1, fast=12, slow=26, signal=9), "
+        "extended(f, +1|-1, short=24, long=72, extreme=12), compression_break(f, "
+        "+1|-1, period=20, lookback=100), trend_gated_extreme(f, +1|-1, "
+        "period=5, span=50, lag=10), session_window(f, start_minute, "
+        "end_minute) in New York wall-clock, weekend(f); close(f), sma(series, "
+        "n), ema(series, n), atr(f, n), wilder_rsi(series, n), bb_z(series, n), "
+        "cross(fast, slow, +1|-1), fresh(event)); combine with &, |, ~, "
+        "comparisons, f[<column>] for a store column (e.g. f['macro_regime'] "
+        "== -1.0) and .shift(k, fill_value=False) for k >= 1. The expression "
+        "must be boolean, row-aligned and causal (current and past rows only: "
+        "no shift(-k), no centered windows, no full-frame statistics); a "
+        "malformed or non-causal list is rejected with the problems quoted "
+        "back and the round is not consumed. Every proposal widens the family, "
+        "so propose the mechanisms the funnel points at (a regime or session "
+        "gate, a composition, a different window), not variants of one idea. "
+        f"{funnel_text}{last_text}{problems_text}"
+        f'Call wayfinder_core_jobs(action="evolution_compose", job_id="{job_id}", '
+        "signal_proposals=[...]) exactly once with the list, or with an empty "
+        "list to end composition and move to design, then end this stage."
+    )
+    return {
+        "job_id": job_id,
+        "campaign_id": state["campaign_id"],
+        "stage": COMPOSE_STAGE,
+        "session_stage": COMPOSE_STAGE,
+        "artifact_key": f"compose-{rounds_used + 1:02d}",
+        "agent_name": "wayfinder-evolution-designer",
+        "deadline_at": state["deadline_at"],
+        "counts": state["counts"],
+        "diagnostic_pack": str(pack_path),
+        "manifest_path": str(manifest_path),
+        "next_action": next_action,
+        "constraints": {
+            "composition": {
+                "round": rounds_used + 1,
+                "rounds_max": rounds_max,
+                "cap": WORKSPACE_SIGNAL_CAP,
+                "columns": columns,
+                "timeframes": validated.get("timeframes"),
+            },
+            "validated_signals": [
+                f"{row['symbol']}:{row['signal']}:{row['timeframe']}:{row['horizon']}"
+                for row in validated.get("signals") or []
+            ],
+            "replicated_signals": [
+                f"{row['symbol']}:{row['signal']}:{row['timeframe']}:{row['horizon']}"
+                for row in validated.get("replicated") or []
+            ],
+        },
+        "valid_evidence_pointers": valid_evidence_pointers(pack),
+        "deadline_elapsed": False,
+    }
+
+
+def _compile_signal_proposals(
+    proposals: Sequence[Any],
+) -> tuple[list[Any], list[str]]:
+    """Proposals to defs, collecting every problem instead of stopping at the
+    first: the designer fixes the whole list in one turn."""
+    problems: list[str] = []
+    defs: list[Any] = []
+    if len(proposals) > WORKSPACE_SIGNAL_CAP:
+        problems.append(
+            f"{len(proposals)} proposals exceed the cap of {WORKSPACE_SIGNAL_CAP}"
+        )
+        return defs, problems
+    canonical = set(signal_defs())
+    seen: set[str] = set()
+    for index, raw in enumerate(proposals):
+        label = f"proposal {index}"
+        if not isinstance(raw, Mapping):
+            problems.append(f"{label}: must be an object")
+            continue
+        name = str(raw.get("name") or "").strip()
+        label = f"{name!r}" if name else label
+        if not _PROPOSAL_NAME_RE.match(name):
+            problems.append(f"{label}: name must match {_PROPOSAL_NAME_RE.pattern}")
+            continue
+        if name in canonical or name.startswith("pop_"):
+            problems.append(f"{label}: collides with a library or population name")
+            continue
+        if name in seen:
+            problems.append(f"{label}: duplicate name")
+            continue
+        seen.add(name)
+        expression = str(raw.get("expression") or "").strip()
+        if not expression:
+            problems.append(f"{label}: expression is required")
+            continue
+        try:
+            min_bars = int(raw.get("min_bars") or 0)
+        except (TypeError, ValueError):
+            problems.append(f"{label}: min_bars must be an integer")
+            continue
+        if not 1 <= min_bars <= 5_000:
+            problems.append(f"{label}: min_bars must be between 1 and 5000")
+            continue
+        try:
+            defs.append(
+                compile_signal_expression(
+                    name=name,
+                    family=str(raw.get("family") or "workspace").strip()[:40],
+                    description=str(raw.get("description") or "").strip()[:160],
+                    min_bars=min_bars,
+                    expression=expression,
+                )
+            )
+        except (SyntaxError, ValueError, NameError, TypeError) as exc:
+            problems.append(f"{label}: expression does not compile ({exc})")
+    return defs, problems
+
+
+def _scan_signal_proposals(
+    frames: Mapping[str, Any], defs: Sequence[Any], *, policy: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Scan the proposals beside the library (one family, conditioned on the
+    store's labels) and report each proposal's best row and tier."""
+    by_name = {spec.name: spec for spec in defs}
+    scan_kwargs = {
+        **frames["scan_kwargs"],
+        "condition_features": frames["condition_features"],
+        "extra_signals": tuple(defs),
+    }
+    full_rows: list[dict[str, Any]] = []
+    for symbol, rows in frames["train"].items():
+        result = scan_signals(rows, **scan_kwargs)
+        for row in result.get("_all_rows") or []:
+            full_rows.append({**row, "symbol": symbol})
+    max_q = float(policy.get("signal_first_max_q") or 0.20)
+    apply_bh_verdicts(full_rows, q_threshold=max_q, min_folds_agree=3)
+    per_slice: dict[str, dict[tuple[str, str, str, int], dict[str, Any]]] = {}
+    for label, by_symbol in frames["slices"].items():
+        table: dict[tuple[str, str, str, int], dict[str, Any]] = {}
+        for symbol, rows in by_symbol.items():
+            result = scan_signals(
+                rows,
+                **{
+                    **frames["scan_kwargs"],
+                    "min_events": 10,
+                    "extra_signals": tuple(defs),
+                },
+            )
+            for row in result.get("_all_rows") or []:
+                table[
+                    (
+                        symbol,
+                        str(row["signal"]),
+                        str(row["timeframe"]),
+                        int(row["horizon"]),
+                    )
+                ] = row
+        per_slice[label] = table
+    selected, replicated, near, _ = _select_validated_rows(
+        full_rows,
+        per_slice,
+        days=frames["train_days"],
+        min_events=int(policy.get("signal_first_min_events") or 40),
+        max_q=max_q,
+        slice_min_t=float(policy.get("signal_first_slice_min_t") or 1.0),
+        min_t_net=float(policy.get("signal_first_min_t_net") or 2.0),
+        taker_round_trip_bps=frames["taker_round_trip_bps"],
+        maker_round_trip_bps=frames["maker_round_trip_bps"],
+    )
+    bar_seconds = int(frames["bar_seconds"])
+    survivors: list[dict[str, Any]] = []
+    tiers: dict[str, str] = {}
+    for tier, rows in (
+        ("validated", selected),
+        ("replicated", replicated),
+        ("near", near),
+    ):
+        for entry in rows:
+            name = str(entry["signal"])
+            if name not in by_name:
+                continue
+            tiers.setdefault(name, tier)
+            if tier == "near":
+                continue
+            spec = by_name[name]
+            entry["library"] = "workspace"
+            entry["expression"] = spec.expression
+            entry["min_bars"] = spec.min_bars
+            entry["warmup_bars_required"] = library_signal_warmup_bars(
+                spec, entry["timeframe"], bar_seconds=bar_seconds
+            )
+            entry["how_to_use"] = _signal_recipe(
+                entry, bar_seconds=bar_seconds, condition=frames["condition_features"]
+            )
+            survivors.append(entry)
+    taker = float(frames["taker_round_trip_bps"])
+    maker = float(frames["maker_round_trip_bps"])
+    report: list[dict[str, Any]] = []
+    for spec in defs:
+        rows = [row for row in full_rows if row["signal"] == spec.name]
+        best = max(
+            rows,
+            key=lambda row: abs(float(row.get("t_stat_vs_drift") or 0.0)),
+            default=None,
+        )
+        best_view = None
+        if best is not None:
+            row_taker = float(best.get("round_trip_cost_bps") or taker)
+            gross = float(best.get("edge_net_bps") or 0.0) + row_taker
+            best_view = {
+                "symbol": best["symbol"],
+                "timeframe": best["timeframe"],
+                "horizon": best["horizon"],
+                "direction": best.get("direction"),
+                "regime": best.get("regime"),
+                "t_stat": round(float(best.get("t_stat_vs_drift") or 0.0), 3),
+                "q_value": best.get("q_value"),
+                "events": best.get("n"),
+                "fold_stable": bool(best.get("fold_stable")),
+                "gross_edge_bps": round(gross, 2),
+                "execution_hint": (
+                    "taker_ok"
+                    if gross > row_taker
+                    else "passive_only"
+                    if gross > maker
+                    else "mechanism_required"
+                ),
+            }
+        report.append(
+            {
+                "name": spec.name,
+                "tests": len(rows),
+                "tier": tiers.get(
+                    spec.name, "unmeasured" if not rows else "not_replicated"
+                ),
+                "best": best_view,
+            }
+        )
+    return {
+        "proposals": report,
+        "survivors": survivors,
+        "family_size": len(full_rows),
+        "max_q": max_q,
+    }
+
+
+def _merge_compose_survivors(
+    store: JobStore,
+    job_id: str,
+    state: Mapping[str, Any],
+    manifest: dict[str, Any],
+    survivors: Sequence[dict[str, Any]],
+    round_number: int,
+) -> list[str]:
+    """Survivors go to the front of their tier in the frozen pack (the byte
+    budget trims from the tail) and the manifest's pack hash is refreshed."""
+    root = store.job_dir(job_id)
+    pack_path = root / str(state["diagnostic_pack"])
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]), default={}) or {}
+    block = pack.setdefault(
+        "validated_signals",
+        {"available": True, "signals": [], "replicated": [], "near_misses": []},
+    )
+    pointers: list[str] = []
+    for entry in reversed(list(survivors)):
+        entry["source"] = f"compose:round{round_number}"
+        tier_key = "signals" if entry.get("tier") == "validated" else "replicated"
+        rows = list(block.get(tier_key) or [])
+        rows.insert(0, entry)
+        block[tier_key] = rows
+        pointers.append(f"/validated_signals/{tier_key}/0")
+    composed = dict(block.get("composition") or {})
+    block["composition"] = {
+        "rounds": round_number,
+        "survivors": int(composed.get("survivors") or 0) + len(survivors),
+    }
+    pack = fit_diagnostic_pack(pack)
+    atomic_write_json(pack_path, pack)
+    manifest["diagnostic_pack"] = {
+        **dict(manifest.get("diagnostic_pack") or {}),
+        "sha256": _file_hash(pack_path),
+    }
+    atomic_write_json(root / str(state["manifest"]), manifest)
+    return pointers
+
+
+def submit_signal_proposals(
+    store: JobStore,
+    job_id: str,
+    *,
+    signal_proposals: Sequence[Any] | None,
+) -> dict[str, Any]:
+    """One composition round: compile and validate the designer's proposals,
+    scan them in the library's family, report per proposal, merge survivors
+    into the pack. Problems are returned, not raised, and do not consume a
+    round; an empty list ends composition."""
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = _active_campaign(store, job_id)
+        if state.get("stage") != COMPOSE_STAGE:
+            raise ValueError("evolution campaign is not in the compose stage")
+        campaign_id = str(state["campaign_id"])
+        manifest = _campaign_manifest(store, job_id, campaign_id)
+        policy = manifest.get("policy") or {}
+        composition = state.setdefault("composition", _composition_state(policy))
+        round_number = int(composition.get("rounds_used") or 0) + 1
+        proposals = list(signal_proposals or [])
+        if not proposals:
+            composition["history"] = [
+                *list(composition.get("history") or []),
+                {
+                    "round": round_number,
+                    "ended": True,
+                    "proposals": [],
+                    "survivors": [],
+                },
+            ]
+            composition["problems"] = None
+            state["stage"] = "design"
+            _save_campaign(store, job_id, state)
+            store.append_journal(
+                job_id,
+                {
+                    "type": "evolution_campaign_composed",
+                    "campaign_id": campaign_id,
+                    "round": round_number,
+                    "ended": True,
+                    "stage": "design",
+                },
+            )
+            return {"status": "ended", "round": round_number, "stage": "design"}
+        defs, problems = _compile_signal_proposals(proposals)
+        campaign_root = store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id
+        frames = _campaign_scan_frames(store, job_id, campaign_root, policy=policy)
+        if not problems:
+            probe = next(iter(frames["train"].values()))
+            try:
+                validate_workspace_signals(defs, probe)
+            except ValueError as exc:
+                problems.append(str(exc))
+        if problems:
+            composition["problems"] = problems[:12]
+            _save_campaign(store, job_id, state)
+            return {
+                "status": "rejected",
+                "round": round_number,
+                "problems": problems[:12],
+                "stage": COMPOSE_STAGE,
+            }
+        scanned = _scan_signal_proposals(frames, defs, policy=policy)
+        pointers = _merge_compose_survivors(
+            store, job_id, state, manifest, scanned["survivors"], round_number
+        )
+        composition["rounds_used"] = round_number
+        composition["problems"] = None
+        composition["history"] = [
+            *list(composition.get("history") or []),
+            {
+                "round": round_number,
+                "proposals": scanned["proposals"],
+                "survivors": [entry["signal"] for entry in scanned["survivors"]],
+                "family_size": scanned["family_size"],
+            },
+        ]
+        if round_number >= int(composition.get("rounds_max") or 0):
+            state["stage"] = "design"
+        _save_campaign(store, job_id, state)
+    store.append_journal(
+        job_id,
+        {
+            "type": "evolution_campaign_composed",
+            "campaign_id": campaign_id,
+            "round": round_number,
+            "proposals": len(proposals),
+            "survivors": len(scanned["survivors"]),
+            "family_size": scanned["family_size"],
+            "stage": state["stage"],
+        },
+    )
+    return {
+        "status": "scanned",
+        "round": round_number,
+        "rounds_max": int(composition.get("rounds_max") or 0),
+        "stage": state["stage"],
+        "family_size": scanned["family_size"],
+        "q_threshold": scanned["max_q"],
+        "proposals": scanned["proposals"],
+        "survivors": [
+            {
+                "name": entry["signal"],
+                "tier": entry["tier"],
+                "pointer": pointer,
+                "symbol": entry["symbol"],
+                "timeframe": entry["timeframe"],
+                "horizon": entry["horizon"],
+                "direction": entry["direction"],
+                "regime": entry.get("regime"),
+                "t_stat": entry["t_stat"],
+                "q_value": entry["q_value"],
+                "events": entry["events"],
+                "gross_edge_bps": entry["gross_edge_bps"],
+                "execution_hint": entry["execution_hint"],
+            }
+            for entry, pointer in zip(
+                scanned["survivors"], reversed(pointers), strict=True
+            )
+        ],
+    }
 
 
 def submit_campaign_design(
@@ -4733,12 +5284,14 @@ def campaign_prompt_block(
                 f"candidate {running[0].get('candidate_id')} evaluation is running"
             ),
         }
-    if state.get("stage") == "design":
+    if state.get("stage") == COMPOSE_STAGE and current < deadline:
+        return _compose_prompt_block(store, job_id, state, manifest)
+    if state.get("stage") in {"design", COMPOSE_STAGE}:
         if current >= deadline:
             return {
                 "job_id": job_id,
                 "campaign_id": state["campaign_id"],
-                "stage": "design",
+                "stage": str(state.get("stage")),
                 "session_stage": "finalize",
                 "artifact_key": "finalize",
                 "agent_name": "wayfinder-evolution-worker",
@@ -5382,6 +5935,7 @@ _SIGNAL_REF_KEYS = (
     "execution_hint",
     "expression",
     "min_bars",
+    "source",
     "warmup_bars_required",
     "how_to_use",
 )

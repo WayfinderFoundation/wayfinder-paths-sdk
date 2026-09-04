@@ -1031,6 +1031,8 @@ def _validated_signal_usage(
         store.read_json(job_id, str(state.get("campaign_design") or ""), default={})
         or {}
     )
+    composition = state.get("composition") or {}
+    history = list(composition.get("history") or [])
     citing = 0
     for hypothesis in design.get("hypotheses") or []:
         if any(
@@ -1044,6 +1046,13 @@ def _validated_signal_usage(
         "offered": len(validated.get("signals") or []),
         "replicated": len(validated.get("replicated") or []),
         "hypotheses_citing": citing,
+        "composition_rounds": int(composition.get("rounds_used") or 0),
+        "composition_proposals": sum(
+            len(item.get("proposals") or []) for item in history
+        ),
+        "composition_survivors": sum(
+            len(item.get("survivors") or []) for item in history
+        ),
     }
 
 

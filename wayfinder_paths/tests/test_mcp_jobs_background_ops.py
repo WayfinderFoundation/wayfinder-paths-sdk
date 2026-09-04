@@ -358,3 +358,45 @@ async def test_evolution_designer_can_launch_then_end_before_stage_nudge(
         "op": "evolution_design",
         "kwargs": {"job_id": "majors-5m-lab", "campaign_design": design},
     }
+
+
+@pytest.mark.asyncio
+async def test_evolution_compose_is_a_synchronous_control_op(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs.execution.op_process import _CONTROL_PLANE_OPS
+    from wayfinder_paths.jobs.execution.op_runner import _NUDGE_OPS
+
+    captured: dict = {}
+
+    async def fake_sync(op, kwargs):
+        captured.update({"op": op, "kwargs": kwargs})
+        return {"ok": True, "result": {"status": "scanned"}}
+
+    monkeypatch.setattr(jobs_module, "_run_job_op", fake_sync)
+    monkeypatch.setattr(jobs_module, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    proposals = [{"name": "ws_x", "expression": "close(f) > 0", "min_bars": 2}]
+
+    result = await core_jobs(
+        action="evolution_compose",
+        job_id="majors-5m-lab",
+        signal_proposals=proposals,
+    )
+
+    assert result["result"]["status"] == "scanned"
+    assert captured == {
+        "op": "evolution_compose",
+        "kwargs": {"job_id": "majors-5m-lab", "signal_proposals": proposals},
+    }
+    # An empty list is a valid submission (it ends composition); a missing
+    # list is not.
+    captured.clear()
+    await core_jobs(
+        action="evolution_compose", job_id="majors-5m-lab", signal_proposals=[]
+    )
+    assert captured["kwargs"] == {"job_id": "majors-5m-lab", "signal_proposals": []}
+    missing = await core_jobs(action="evolution_compose", job_id="majors-5m-lab")
+    assert "requires job_id and signal_proposals" in json.dumps(missing)
+    assert (
+        "evolution_compose" in _CONTROL_PLANE_OPS and "evolution_compose" in _NUDGE_OPS
+    )

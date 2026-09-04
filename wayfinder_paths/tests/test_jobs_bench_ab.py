@@ -621,6 +621,9 @@ def test_validated_signal_usage_counts_hypotheses_that_cite_the_pack() -> None:
         "offered": 3,
         "replicated": 0,
         "hypotheses_citing": 1,
+        "composition_rounds": 0,
+        "composition_proposals": 0,
+        "composition_survivors": 0,
     }
     assert _validated_signal_usage(Store({}), "demo", {})["enabled"] is False
 
@@ -1139,6 +1142,7 @@ def test_bench_mcp_exposes_read_only_research_actions(
         "signal_scan",
         "backtest_diagnose",
         "holdout_check",
+        "evolution_compose",
     } <= BENCH_ALLOWED_ACTIONS
     assert BENCH_ALLOWED_ACTIONS.isdisjoint(
         {"propose", "fetch_dataset", "chart", "analogs", "evolution_start"}
@@ -1162,6 +1166,20 @@ def test_bench_mcp_exposes_read_only_research_actions(
     assert seen["action"] == "signal_scan"
     assert seen["timeframes"] == ["1h"]
     assert seen["window_days"] == 30
+    # Composition runs inline like design: the validator's problems must
+    # reach the same model turn.
+    proposals = [{"name": "ws_x", "expression": "close(f) > 0", "min_bars": 2}]
+    asyncio.run(
+        bench_core_jobs(
+            "evolution_compose",
+            job_id="bench-only",
+            signal_proposals=proposals,
+            background=True,
+        )
+    )
+    assert seen["action"] == "evolution_compose"
+    assert seen["signal_proposals"] == proposals
+    assert seen["background"] is False
 
 
 def test_bench_sandbox_restricts_job_worker_bash_and_task(tmp_path: Path) -> None:
@@ -1943,3 +1961,27 @@ def test_race_replay_honors_a_custom_feature_path_and_column_from_the_bundle(
     )
     assert verdict["window_invariance"]["status"] == "passed"
     assert verdict["validation"]["execution_valid"] is True
+
+
+def test_compose_stage_renders_as_a_designer_turn() -> None:
+    from wayfinder_paths.jobs.worker import build_evolution_stage_prompt
+
+    rendered = build_evolution_stage_prompt(
+        "bench-job",
+        {
+            "campaign_id": "c1",
+            "stage": "compose",
+            "session_stage": "compose",
+            "artifact_key": "compose-01",
+            "agent_name": "wayfinder-evolution-designer",
+            "deadline_at": "2099-01-01T00:00:00+00:00",
+            "counts": {},
+            "next_action": "propose signals",
+            "constraints": {"composition": {"round": 1}},
+        },
+    )
+    assert rendered["artifact_key"] == "compose-01"
+    assert rendered["agent_name"] == "wayfinder-evolution-designer"
+    assert rendered["work_order"]["lane"] == "evolution_compose"
+    assert rendered["work_order"]["action"] == "submit_signal_proposals"
+    assert "evolution_compose once" in rendered["work_order"]["completion"]

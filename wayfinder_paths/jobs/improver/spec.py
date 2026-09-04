@@ -173,6 +173,7 @@ DEFAULT_IMPROVER: dict[str, Any] = {
         "signal_first_condition_features": ["macro_regime", "leader_state"],
         "signal_population_search": True,
         "signal_population_limit": 300,
+        "signal_composition_rounds": 2,
         "signal_scan_min_events": 30,
         "wildcard_slots": 2,
         "elite_min_validation_trades": 8,

@@ -24,6 +24,7 @@ _CONTROL_PLANE_OPS = frozenset(
     {
         "evolution_start",
         "evolution_design",
+        "evolution_compose",
         "evolution_prepare",
         "evolution_submit_seed",
     }
@@ -31,6 +32,7 @@ _CONTROL_PLANE_OPS = frozenset(
 _CAMPAIGN_OWNED_OPS = frozenset(
     {
         "evolution_design",
+        "evolution_compose",
         "evolution_prepare",
         "evolution_evaluate",
         "evolution_finalize",

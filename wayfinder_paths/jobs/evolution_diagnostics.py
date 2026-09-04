@@ -1401,6 +1401,12 @@ _LESSON_BULK_KEYS = frozenset({"postmortem", "validation_forensics"})
 _LESSON_PACK_OUTCOMES = 12
 
 
+def fit_diagnostic_pack(pack: dict[str, Any]) -> dict[str, Any]:
+    """The pack's byte budget, applied again after a composition round
+    merges survivors into it."""
+    return _fit_pack(pack)
+
+
 def _fit_pack(pack: dict[str, Any]) -> dict[str, Any]:
     def size() -> int:
         return len(json.dumps(pack, default=str).encode())

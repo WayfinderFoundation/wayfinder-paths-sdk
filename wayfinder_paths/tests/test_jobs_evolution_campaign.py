@@ -5458,3 +5458,204 @@ def test_campaign_scan_frames_carry_store_columns_and_condition(tmp_path) -> Non
             and row["min_bars"]
             and "compile_signal_expression" in (row["how_to_use"])
         )
+
+
+def _composable_job(tmp_path) -> tuple[JobStore, str]:
+    """An evaluatable job whose bars carry a planted 3-bar-low bounce (the
+    population test's cycle), store labels, and composition rounds."""
+    store, job_id = _evaluatable_job(tmp_path)
+    root = store.job_dir(job_id)
+    cycle = [
+        100.0,
+        102.0,
+        104.0,
+        103.0,
+        101.5,
+        104.0,
+        104.0,
+        104.0,
+        104.0,
+        104.0,
+        99.0,
+        99.0,
+    ]
+    bars = _hourly_bars(600)
+    for index, row in enumerate(bars):
+        close = cycle[index % 12]
+        row.update(open=close, high=close * 1.01, low=close * 0.99, close=close)
+    (root / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 25}, "bars": bars}), encoding="utf-8"
+    )
+    stamps = [row["timestamp"] for row in bars]
+    half = stamps[len(stamps) // 2]
+    rows = [
+        {
+            "timestamp": stamp,
+            "name": "macro_regime",
+            "value": -1.0 if stamp < half else 1.0,
+        }
+        for stamp in stamps[::24]
+    ]
+    rows.append({"timestamp": stamps[0], "name": "leader_state", "value": 0.0})
+    (root / "state").mkdir(exist_ok=True)
+    (root / "state/features.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
+    improver_path = root / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"].update(
+        {
+            "signal_first_seeding": True,
+            "investigation_design_enabled": True,
+            "signal_composition_rounds": 2,
+        }
+    )
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    return store, job_id
+
+
+def test_compose_stage_scans_proposals_and_feeds_the_design(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        _cited_signals,
+        _file_hash,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _composable_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    assert state["stage"] == "compose"
+    assert state["composition"] == {
+        "rounds_max": 2,
+        "rounds_used": 0,
+        "history": [],
+        "problems": None,
+    }
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt and prompt["session_stage"] == "compose"
+    assert prompt["artifact_key"] == "compose-01"
+    assert prompt["agent_name"] == "wayfinder-evolution-designer"
+    assert "evolution_compose" in prompt["next_action"]
+    assert (
+        "macro_regime" in prompt["next_action"]
+        and "rsi_extreme" in prompt["next_action"]
+    )
+    assert "Funnel so far" in prompt["next_action"]
+    assert prompt["constraints"]["composition"]["round"] == 1
+    assert prompt["constraints"]["composition"]["cap"] == 12
+    # No candidate before the design stage.
+    with pytest.raises(ValueError):
+        prepare_candidate(store, job_id, family="f", summary="s", now=started)
+    # A non-causal proposal is rejected with the problem quoted back; the
+    # round is not consumed.
+    rejected = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_peek",
+                "family": "test",
+                "description": "peeks at the next bar",
+                "min_bars": 3,
+                "expression": "close(f) > close(f).shift(-1)",
+            }
+        ],
+    )
+    assert rejected["status"] == "rejected" and rejected["round"] == 1
+    assert any("non-causal" in problem for problem in rejected["problems"])
+    state = _active_campaign(store, job_id)
+    assert state["stage"] == "compose" and state["composition"]["rounds_used"] == 0
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=2))
+    assert "the round was not consumed" in prompt["next_action"]
+    assert "ws_peek" in prompt["next_action"]
+    bad = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {"name": "new_low_5", "expression": "close(f) > 0", "min_bars": 2},
+            {"name": "Bad-Name", "expression": "close(f) > 0", "min_bars": 2},
+            {"name": "ws_broken", "expression": "close(f) >", "min_bars": 2},
+        ],
+    )
+    assert bad["status"] == "rejected" and len(bad["problems"]) == 3
+    # Real proposals: the planted 3-bar-low bounce survives as validated.
+    report = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_dip_3",
+                "family": "breakout",
+                "description": "close below the prior 3 closes",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1)",
+            },
+            {
+                "name": "ws_dip_3_bear",
+                "family": "breakout",
+                "description": "the same dip while the macro label is bear",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1) & (f['macro_regime'] == -1.0)",
+            },
+        ],
+    )
+    assert report["status"] == "scanned" and report["round"] == 1
+    assert report["stage"] == "compose" and report["rounds_max"] == 2
+    by_name = {row["name"]: row for row in report["proposals"]}
+    assert by_name["ws_dip_3"]["tier"] == "validated"
+    assert by_name["ws_dip_3"]["best"]["t_stat"] > 5
+    assert by_name["ws_dip_3"]["best"]["gross_edge_bps"] > 100
+    assert by_name["ws_dip_3"]["best"]["execution_hint"] == "taker_ok"
+    assert by_name["ws_dip_3_bear"]["tests"] > 0
+    survivor = next(row for row in report["survivors"] if row["name"] == "ws_dip_3")
+    assert survivor["tier"] == "validated"
+    assert survivor["pointer"].startswith("/validated_signals/signals/")
+    state = _active_campaign(store, job_id)
+    assert state["composition"]["rounds_used"] == 1
+    assert "ws_dip_3" in state["composition"]["history"][0]["survivors"]
+    assert state["composition"]["history"][0]["family_size"] == report["family_size"]
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    first = pack["validated_signals"]["signals"][0]
+    assert first["signal"] == "ws_dip_3" and first["source"] == "compose:round1"
+    assert first["expression"] == "new_extreme(f, 3, -1)"
+    assert first["library"] == "workspace" and first["min_bars"] == 5
+    assert "compile_signal_expression" in first["how_to_use"]
+    assert pack["validated_signals"]["composition"]["survivors"] >= 1
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    assert manifest["diagnostic_pack"]["sha256"] == _file_hash(
+        store.job_dir(job_id) / str(state["diagnostic_pack"])
+    )
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=3))
+    assert prompt["artifact_key"] == "compose-02"
+    assert "Round 1: 2 proposals scanned" in prompt["next_action"]
+    assert "ws_dip_3: validated" in prompt["next_action"]
+    # An empty list ends composition; the design stage offers the survivor
+    # and a citation resolves it with its source and expression.
+    ended = submit_signal_proposals(store, job_id, signal_proposals=[])
+    assert ended == {"status": "ended", "round": 2, "stage": "design"}
+    with pytest.raises(ValueError, match="not in the compose stage"):
+        submit_signal_proposals(store, job_id, signal_proposals=[])
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=4))
+    assert prompt["session_stage"] == "design"
+    assert "ws_dip_3 long IMX" in prompt["next_action"]
+    cited = _cited_signals(store, job_id, manifest, ["/validated_signals/signals/0"])
+    assert cited[0]["signal"] == "ws_dip_3" and cited[0]["source"] == "compose:round1"
+    assert cited[0]["expression"] == "new_extreme(f, 3, -1)"
+
+
+def test_compose_stage_is_skipped_without_a_scan_and_finalizes_past_deadline(
+    tmp_path,
+) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    # The fixture freezes no bars: nothing to compose on, straight to design.
+    assert state["stage"] == "design"
+    assert state["composition"]["rounds_max"] == 2
+
+    store2, job2 = _composable_job(tmp_path / "second")
+    state = start_campaign(store2, job2, now=started)
+    assert state["stage"] == "compose"
+    late = campaign_prompt_block(store2, job2, now=started + timedelta(days=30))
+    assert late and late["session_stage"] == "finalize" and late["stage"] == "compose"
