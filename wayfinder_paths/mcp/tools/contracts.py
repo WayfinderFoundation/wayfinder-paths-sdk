@@ -247,8 +247,9 @@ async def contracts_get(
     Resolution order:
       1. Local artifact store (contracts deployed via `contracts_deploy`) — returns full
          deployment metadata + ABI.
-      2. Etherscan V2 fetch — returns ABI only. If `resolve_proxy` is true and the address
-         is a proxy (EIP-1967 / ZeppelinOS / EIP-897), fetches the implementation's ABI.
+      2. Verified-source lookup — returns ABI only; the contract must be source-verified on
+         its chain's explorer. If `resolve_proxy` is true and the address is a proxy
+         (EIP-1967 / ZeppelinOS / EIP-897), fetches the implementation's ABI.
     """
     store = ContractArtifactStore.default()
     cid = int(chain_id)
@@ -297,7 +298,7 @@ async def contracts_get(
     try:
         abi_list = await fetch_contract_abi(cid, addr)
     except Exception as exc:
-        return err("abi_not_found", f"ABI not found locally or on Etherscan: {exc}")
+        return err("abi_not_found", f"ABI not found locally or from a verified source: {exc}")
 
     return ok(
         {
