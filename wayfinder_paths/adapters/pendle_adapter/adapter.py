@@ -558,6 +558,8 @@ class PendleAdapter(BaseAdapter):
         timestamp_start: str | None = None,
         timestamp_end: str | None = None,
         fields: str | None = None,
+        include_apy_breakdown: bool | None = None,
+        include_fee_breakdown: bool | None = None,
     ) -> dict[str, Any]:
         params: dict[str, Any] = {
             "time_frame": time_frame,
@@ -567,9 +569,13 @@ class PendleAdapter(BaseAdapter):
             params["timestamp_start"] = timestamp_start
         if timestamp_end:
             params["timestamp_end"] = timestamp_end
+        if include_apy_breakdown is not None:
+            params["includeApyBreakdown"] = self._bool_q(include_apy_breakdown)
+        if include_fee_breakdown is not None:
+            params["includeFeeBreakdown"] = self._bool_q(include_fee_breakdown)
 
         data = await self._get(
-            f"/v2/{int(chain_id)}/markets/{market_address}/historical-data",
+            f"/v3/{int(chain_id)}/markets/{market_address}/historical-data",
             params=params,
         )
         return data if isinstance(data, dict) else {"data": data}
