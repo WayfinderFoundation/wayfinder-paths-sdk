@@ -6105,3 +6105,66 @@ def test_candidate_and_reference_screen_windows_match_on_a_slow_lane(tmp_path) -
     )
     assert receipt["window"]["bars"] == 210
     assert reference["window"]["bars"] == 210
+
+
+def test_compose_merge_keeps_the_pack_inside_its_budget(tmp_path) -> None:
+    """Sixty validated survivors in one round (loop 0, 2026-09-04) must not
+    push the pack into its fail-closed shape: the strongest row per signal
+    and timeframe is merged up to the limit, the tier is capped, and the
+    rest are reported as not merged with no pointer."""
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        _merge_compose_survivors,
+    )
+    from wayfinder_paths.jobs.evolution_diagnostics import DIAGNOSTIC_PACK_MAX_BYTES
+
+    store, job_id = _composable_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    before = store.read_json(job_id, str(state["diagnostic_pack"]))
+    assert "pack_truncated" not in before
+    survivors = []
+    for index in range(60):
+        survivors.append(
+            {
+                "symbol": "IMX",
+                "signal": f"ws_{index % 15}",
+                "timeframe": "3600s" if index % 2 else "4h",
+                "horizon": 1 + index % 5,
+                "direction": "long",
+                "tier": "validated",
+                "t_stat": 3.0 + index / 100.0,
+                "t_net": 2.5,
+                "q_value": 0.01,
+                "events": 80,
+                "gross_edge_bps": 40.0,
+                "execution_hint": "taker_ok",
+                "library": "workspace",
+                "expression": "new_extreme(f, 3, -1)",
+                "min_bars": 5,
+                "how_to_use": "x" * 200,
+                "t_stat_by_slice": {"recent": 1.0, "earlier": 1.2},
+            }
+        )
+    pointers = _merge_compose_survivors(
+        store, job_id, state, manifest, survivors, 1, limit=10
+    )
+    merged = [pointer for pointer in pointers if pointer is not None]
+    assert len(merged) == 10 and len(merged) == len(set(merged))
+    assert pointers.count(None) == 50
+    after = store.read_json(job_id, str(state["diagnostic_pack"]))
+    assert "pack_truncated" not in after
+    assert len(json.dumps(after).encode()) <= DIAGNOSTIC_PACK_MAX_BYTES
+    block = after["validated_signals"]
+    assert len(block["signals"]) <= 20
+    # One row per (symbol, signal, timeframe): the strongest by |t|.
+    keys = [(row["signal"], row["timeframe"]) for row in block["signals"][:10]]
+    assert len(keys) == len(set(keys))
+    assert block["signals"][0]["t_stat"] >= block["signals"][1]["t_stat"]
+    assert block["composition"] == {
+        "rounds": 1,
+        "survivors": 10,
+        "scanned_survivors": 60,
+    }
+    assert _active_campaign(store, job_id)["stage"] == "compose"

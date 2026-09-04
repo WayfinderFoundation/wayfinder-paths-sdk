@@ -941,5 +941,21 @@ def test_fit_pack_trims_signal_tiers_before_the_fail_closed_shape() -> None:
     block = fitted["validated_signals"]
     assert block["available"] is True
     assert len(block["replicated"]) <= 6 and len(block["near_misses"]) <= 3
+    # A validated tier bloated by composition rounds is capped the same way
+    # (loop 0 of 2026-09-04 lost the whole pack to 56 merged survivors).
+    bloated = {
+        **pack,
+        "validated_signals": {
+            "available": True,
+            "signals": [dict(entry) for _ in range(60)],
+            "replicated": [dict(entry) for _ in range(30)],
+            "near_misses": [],
+        },
+    }
+    refit = _fit_pack(bloated)
+    assert "pack_truncated" not in refit
+    assert len(refit["validated_signals"]["signals"]) <= 10
+    assert refit["validated_signals"]["trimmed"]["signals_cap"] <= 10
+    assert len(json.dumps(refit).encode()) <= DIAGNOSTIC_PACK_MAX_BYTES
     assert block["trimmed"]["reason"] == "diagnostic_pack_byte_budget"
     assert len(json.dumps(fitted).encode()) <= DIAGNOSTIC_PACK_MAX_BYTES

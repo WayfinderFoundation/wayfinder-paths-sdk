@@ -2436,10 +2436,16 @@ def _merge_compose_survivors(
     manifest: dict[str, Any],
     survivors: Sequence[dict[str, Any]],
     round_number: int,
-) -> list[str]:
-    """Survivors go to the front of their tier in the frozen pack (the byte
-    budget trims from the tail), each with its own pointer, and the
-    manifest's pack hash is refreshed."""
+    *,
+    limit: int = 10,
+) -> list[str | None]:
+    """Merge a round's survivors into the frozen pack: the strongest row per
+    (symbol, signal, timeframe) up to ``limit`` per tier goes to the front of
+    its tier, each tier is capped at twice the limit from the tail, and the
+    pack is refitted to its byte budget. Returns one pointer per survivor
+    (None for a row that was not merged). A refit that would still fall to
+    the fail-closed shape leaves the pack untouched: losing the whole feed
+    to a byte budget is worse than merging nothing (loop 0, 2026-09-04)."""
     root = store.job_dir(job_id)
     pack_path = root / str(state["diagnostic_pack"])
     pack = store.read_json(job_id, str(state["diagnostic_pack"]), default={}) or {}
@@ -2457,22 +2463,36 @@ def _merge_compose_survivors(
     for tier_key, rows in by_tier.items():
         if not rows:
             continue
-        block[tier_key] = [*rows, *list(block.get(tier_key) or [])]
-        for position, entry in enumerate(rows):
+        ordered = sorted(
+            rows,
+            key=lambda item: -abs(float(item.get("t_stat") or 0.0)),
+        )
+        kept = _diverse_signal_rows(ordered, max(1, int(limit)))
+        block[tier_key] = [*kept, *list(block.get(tier_key) or [])][
+            : 2 * max(1, int(limit))
+        ]
+        for position, entry in enumerate(kept):
             pointer_by_id[id(entry)] = f"/validated_signals/{tier_key}/{position}"
     composed = dict(block.get("composition") or {})
     block["composition"] = {
         "rounds": round_number,
-        "survivors": int(composed.get("survivors") or 0) + len(survivors),
+        "survivors": int(composed.get("survivors") or 0) + len(pointer_by_id),
+        "scanned_survivors": int(composed.get("scanned_survivors") or 0)
+        + len(survivors),
     }
-    pack = fit_diagnostic_pack(pack)
-    atomic_write_json(pack_path, pack)
+    fitted = fit_diagnostic_pack(json.loads(json.dumps(pack, default=str)))
+    if fitted.get("pack_truncated"):
+        raise ValueError(
+            "merging the round's survivors would push the diagnostic pack past "
+            "its byte budget even after trimming; nothing was merged"
+        )
+    atomic_write_json(pack_path, fitted)
     manifest["diagnostic_pack"] = {
         **dict(manifest.get("diagnostic_pack") or {}),
         "sha256": _file_hash(pack_path),
     }
     atomic_write_json(root / str(state["manifest"]), manifest)
-    return [pointer_by_id[id(entry)] for entry in survivors]
+    return [pointer_by_id.get(id(entry)) for entry in survivors]
 
 
 def _composition_claim(
@@ -2586,9 +2606,19 @@ def submit_signal_proposals(
                 "problems": problems[:12],
                 "stage": COMPOSE_STAGE,
             }
-        pointers = _merge_compose_survivors(
-            store, job_id, state, manifest, scanned["survivors"], round_number
-        )
+        try:
+            pointers = _merge_compose_survivors(
+                store,
+                job_id,
+                state,
+                manifest,
+                scanned["survivors"],
+                round_number,
+                limit=int(policy.get("signal_first_limit") or 10),
+            )
+        except ValueError as exc:
+            pointers = [None] * len(scanned["survivors"])
+            composition["problems"] = [str(exc)]
         composition["rounds_used"] = round_number
         composition["problems"] = None
         composition["history"] = [
@@ -2597,6 +2627,7 @@ def submit_signal_proposals(
                 "round": round_number,
                 "proposals": scanned["proposals"],
                 "survivors": [entry["signal"] for entry in scanned["survivors"]],
+                "merged": sum(pointer is not None for pointer in pointers),
                 "family_size": scanned["family_size"],
             },
         ]
@@ -2611,6 +2642,7 @@ def submit_signal_proposals(
             "round": round_number,
             "proposals": len(proposals),
             "survivors": len(scanned["survivors"]),
+            "merged": sum(pointer is not None for pointer in pointers),
             "family_size": scanned["family_size"],
             "stage": state["stage"],
         },
@@ -2623,11 +2655,13 @@ def submit_signal_proposals(
         "family_size": scanned["family_size"],
         "q_threshold": scanned["max_q"],
         "proposals": scanned["proposals"],
+        "merged": sum(pointer is not None for pointer in pointers),
         "survivors": [
             {
                 "name": entry["signal"],
                 "tier": entry["tier"],
                 "pointer": pointer,
+                "merged": pointer is not None,
                 "symbol": entry["symbol"],
                 "timeframe": entry["timeframe"],
                 "horizon": entry["horizon"],

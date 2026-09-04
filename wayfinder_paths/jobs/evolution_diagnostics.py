@@ -1479,13 +1479,24 @@ def _fit_pack(pack: dict[str, Any]) -> dict[str, Any]:
         # The tiers are what the designer must build on; shrink them in
         # order (near misses first, then the replicated tail) rather than
         # lose the block to the fail-closed shape below.
-        for replicated_cap, near_cap in ((6, 3), (6, 0), (4, 0), (2, 0)):
+        # The validated tier is capped too: composition rounds prepend
+        # survivors to it, and a run whose tiers were never trimmed lost the
+        # whole pack to the fail-closed shape (2026-09-04, loop 0).
+        for signals_cap, replicated_cap, near_cap in (
+            (10, 6, 3),
+            (8, 6, 0),
+            (6, 4, 0),
+            (4, 2, 0),
+            (2, 1, 0),
+        ):
+            signals["signals"] = list(signals.get("signals") or [])[:signals_cap]
             signals["replicated"] = list(signals.get("replicated") or [])[
                 :replicated_cap
             ]
             signals["near_misses"] = list(signals.get("near_misses") or [])[:near_cap]
             signals["trimmed"] = {
                 "reason": "diagnostic_pack_byte_budget",
+                "signals_cap": signals_cap,
                 "replicated_cap": replicated_cap,
                 "near_misses_cap": near_cap,
             }
