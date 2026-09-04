@@ -790,79 +790,227 @@ def _signal_timeframes(bar_seconds: int) -> list[str]:
     return out
 
 
-def _validated_signals(
-    store: JobStore, job_id: str, campaign_root: Path, *, policy: Mapping[str, Any]
-) -> dict[str, Any] | None:
-    """Library signals with fold-stable, cost-net, family-corrected edge on
-    this dataset, selected by statistical power rather than cadence.
+_CONDITION_LABELS: dict[str, dict[float, str]] = {
+    MACRO_FEATURE_NAME: {code: label for label, code in MACRO_CODES.items()},
+    LEADER_FEATURE_NAME: {code: label for label, code in LEADER_CODES.items()},
+}
+_SCAN_BAR_COLUMNS = ["timestamp", "symbol", "open", "high", "low", "close", "volume"]
+_NEAR_MISS_KEYS = (
+    "symbol",
+    "signal",
+    "timeframe",
+    "horizon",
+    "direction",
+    "scope",
+    "regime",
+    "t_stat",
+    "t_net",
+    "q_value",
+    "gross_edge_bps",
+    "execution_hint",
+    "events",
+    "t_stat_by_slice",
+    "shortfall",
+)
 
-    Discipline, in order: the scan's own on the FULL train split (events
-    decimated to horizon spacing, |t|>=2 against drift, sign agreement in 3
-    of 4 chronological folds, edge positive net of the round trip); the
-    Benjamini-Hochberg q over the whole family at or under the threshold (the
-    trial-count haircut at signal level); at least the minimum event count;
-    then non-inferiority on both disjoint screen slices. The designer must
-    build grounded de-novo slots on what survives.
-    """
-    if not bool(policy.get("signal_first_seeding", False)):
-        return None
-    try:
-        subject = _load_subject(
-            store,
-            job_id,
-            campaign_root / "source",
-            dataset_root=campaign_root / CAMPAIGN_DATA_ROOT,
-        )
-        split = policy.get("split") or {}
-        train, _, _ = _split_dataset(
-            subject["dataset"],
-            train_end=float(split.get("train") or 0.8),
-            validation_end=1.0,
-        )
-        params, _, _ = _calibrated_params(store, job_id, subject)
-        bar_seconds = bar_interval_seconds(
-            subject["spec"].data_contract.get("bar_interval")
-        )
-        if not bar_seconds:
-            raise ValueError("execution spec requires a positive bar_interval")
-        bar_seconds = int(bar_seconds)
-        timeframes = _signal_timeframes(bar_seconds)
-        slices = _screen_slices(train, slices=int(policy.get("screen_slices") or 2))
-        universe = regime_universe(params, subject["dataset"].bars.symbols)
-        # resample_ohlcv labels the coarser bars by symbol, so keep the column.
-        columns = ["timestamp", "symbol", "open", "high", "low", "close", "volume"]
-        scan_kwargs: dict[str, Any] = {
+
+def _condition_features(
+    policy: Mapping[str, Any], columns: Sequence[str]
+) -> dict[str, dict[float, str]]:
+    """The store columns the scan conditions on: policy names with a known
+    code map that are present on the frame."""
+    wanted = policy.get("signal_first_condition_features")
+    names = (
+        [str(name) for name in wanted]
+        if isinstance(wanted, (list, tuple))
+        else list(_CONDITION_LABELS)
+    )
+    return {
+        name: _CONDITION_LABELS[name]
+        for name in names
+        if name in _CONDITION_LABELS and name in columns
+    }
+
+
+def _campaign_scan_frames(
+    store: JobStore, job_id: str, campaign_root: Path, *, policy: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Per-symbol bar frames for the campaign's signal scans: the full train
+    split and each screen slice, OHLCV plus every store column (macro and
+    leader labels, funding when present) so scans can condition on them and
+    proposals can read them, beside the scan's cost and floor settings."""
+    subject = _load_subject(
+        store,
+        job_id,
+        campaign_root / "source",
+        dataset_root=campaign_root / CAMPAIGN_DATA_ROOT,
+        include_store_features=True,
+    )
+    split = policy.get("split") or {}
+    train, _, _ = _split_dataset(
+        subject["dataset"],
+        train_end=float(split.get("train") or 0.8),
+        validation_end=1.0,
+    )
+    params, _, _ = _calibrated_params(store, job_id, subject)
+    bar_seconds = bar_interval_seconds(
+        subject["spec"].data_contract.get("bar_interval")
+    )
+    if not bar_seconds:
+        raise ValueError("execution spec requires a positive bar_interval")
+    bar_seconds = int(bar_seconds)
+    universe = regime_universe(params, subject["dataset"].bars.symbols)
+    train_frame = train.bars.to_frame()
+    # resample_ohlcv labels the coarser bars by symbol, so keep the column;
+    # store columns ride along with last-value aggregation.
+    extras = [c for c in train_frame.columns if c not in _SCAN_BAR_COLUMNS]
+    columns = [*_SCAN_BAR_COLUMNS, *extras]
+
+    def per_symbol(frame: pd.DataFrame) -> dict[str, pd.DataFrame]:
+        out: dict[str, pd.DataFrame] = {}
+        for symbol in universe:
+            rows = frame[frame["symbol"] == symbol][columns].reset_index(drop=True)
+            if len(rows) >= 200:
+                out[symbol] = rows
+        return out
+
+    stamps = train.bars.timestamps
+    train_days = max((stamps[-1] - stamps[0]).total_seconds() / 86_400.0, 1e-9)
+    slices = _screen_slices(train, slices=int(policy.get("screen_slices") or 2))
+    fee_bps = float(params.get("fee_bps") or 5.0)
+    slippage_bps = float(params.get("slippage_bps") or 3.5)
+    timeframes = _signal_timeframes(bar_seconds)
+    return {
+        "symbols": list(universe),
+        "train": per_symbol(train_frame),
+        "slices": {
+            label: per_symbol(dataset.bars.to_frame()) for label, dataset in slices
+        },
+        "train_days": train_days,
+        "bar_seconds": bar_seconds,
+        "timeframes": timeframes,
+        "feature_columns": extras,
+        "condition_features": _condition_features(policy, extras),
+        "taker_round_trip_bps": round(2.0 * (fee_bps + slippage_bps), 2),
+        "maker_round_trip_bps": maker_round_trip_bps(params),
+        "scan_kwargs": {
             "bar_seconds": bar_seconds,
             "timeframes": timeframes,
             "holdout_fraction": 0.0,
             "min_events": int(policy.get("signal_scan_min_events") or 30),
-            "fee_bps": float(params.get("fee_bps") or 5.0),
-            "slippage_bps": float(params.get("slippage_bps") or 3.5),
+            "fee_bps": fee_bps,
+            "slippage_bps": slippage_bps,
+        },
+    }
+
+
+SIGNAL_RECIPE_NOTES = (
+    "Per entry, how_to_use is the one-call precompute "
+    "(library_signal_on_bars on the entry's timeframe), the side, the "
+    "fixed-horizon exit and the warmup to declare. Always inside the risk "
+    "envelope: one position per symbol, a stop via add_stop_atr or an "
+    "explicit invalidation level, size so a 3x typical adverse move costs "
+    "< 5% of equity (the gate sizes to the ceiling; needing < 0.5x is a weak "
+    "design). A 'gate:' clause means the signal fires only while "
+    "ctx.view.feature(<name>, default=0.0) equals that code; declare "
+    '{"name": <name>} under execution_spec.data_contract.features. An '
+    "'entry: passive' clause means the move is smaller than the taker round "
+    "trip: enter with a post-only resting limit (limit_price at an ATR offset "
+    'beyond the signal close, time_in_force="ALO", expires_after_bars=1) and '
+    "exit with a passive reduce-only take-profit, never at the close."
+)
+
+
+def _diverse_signal_rows(
+    rows: Sequence[dict[str, Any]], limit: int
+) -> list[dict[str, Any]]:
+    """The strongest row per (symbol, signal, timeframe): on the bench's year
+    the top ten replicated rows were four horizon and regime variants of one
+    HYPE signal, and the designer should see ten signals, not one."""
+    seen: set[tuple[str, str, str]] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        key = (str(row["symbol"]), str(row["signal"]), str(row["timeframe"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _signal_recipe(
+    row: Mapping[str, Any],
+    *,
+    bar_seconds: int,
+    condition: Mapping[str, Mapping[float, str]],
+) -> str:
+    """One compact line per entry; the shared rules are SIGNAL_RECIPE_NOTES
+    on the block (the pack has a byte budget and ten entries of prose
+    tipped it into its fail-closed shape)."""
+    text = (
+        f"library_signal_on_bars(frame, {row['signal']!r}, {row['timeframe']!r}, "
+        f"bar_seconds={bar_seconds}); {row['direction']} on True; exit after "
+        f"{row['horizon']} {row['timeframe']} bars; warmup_bars >= "
+        f"{row['warmup_bars_required']}"
+    )
+    source = row.get("regime_source")
+    if source:
+        label = str(row.get("regime") or "").split("=", 1)[-1]
+        code = next(
+            (
+                code
+                for code, name in (condition.get(str(source)) or {}).items()
+                if name == label
+            ),
+            None,
+        )
+        gate = f"== {code:.1f}" if code is not None else f"is {label!r}"
+        text += f"; gate: {source} {gate} ({label})"
+    if row.get("execution_hint") in {"passive_only", "mechanism_required"}:
+        text += "; entry: passive (resting limit at an offset, passive take-profit)"
+    return text
+
+
+def _validated_signals(
+    store: JobStore, job_id: str, campaign_root: Path, *, policy: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Library signals with replicated edge on this dataset, in two tiers.
+
+    The scan runs on the FULL train split (events decimated to horizon
+    spacing, |t|>=2 against drift, sign agreement in 3 of 4 chronological
+    folds), unconditionally and conditioned on the store's macro and leader
+    labels. ``signals`` (validated) also clear the Benjamini-Hochberg q over
+    the whole family, the t_net floor and a positive edge net of the taker
+    round trip; ``replicated`` rows are fed with their cost decomposition
+    because existence and monetization are different questions: the HYPE
+    maker starters came from a 4 bps ten-minute move a taker book could not
+    carry. Both tiers need the minimum event count and non-inferiority on
+    the screen slices (base rows; a conditioned row gates itself).
+    """
+    if not bool(policy.get("signal_first_seeding", False)):
+        return None
+    try:
+        frames = _campaign_scan_frames(store, job_id, campaign_root, policy=policy)
+        scan_kwargs = {
+            **frames["scan_kwargs"],
+            "condition_features": frames["condition_features"],
         }
-        train_frame = train.bars.to_frame()
-        stamps = train.bars.timestamps
-        train_days = max((stamps[-1] - stamps[0]).total_seconds() / 86_400.0, 1e-9)
         full_rows: list[dict[str, Any]] = []
-        for symbol in universe:
-            rows = train_frame[train_frame["symbol"] == symbol][columns].reset_index(
-                drop=True
-            )
-            if len(rows) < 200:
-                continue
+        for symbol, rows in frames["train"].items():
             result = scan_signals(rows, **scan_kwargs)
             for row in result.get("_all_rows") or []:
                 full_rows.append({**row, "symbol": symbol})
         max_q = float(policy.get("signal_first_max_q") or 0.20)
         apply_bh_verdicts(full_rows, q_threshold=max_q, min_folds_agree=3)
         per_slice: dict[str, dict[tuple[str, str, str, int], dict[str, Any]]] = {}
-        for label, dataset in slices:
-            frame = dataset.bars.to_frame()
+        for label, by_symbol in frames["slices"].items():
             table: dict[tuple[str, str, str, int], dict[str, Any]] = {}
-            for symbol in universe:
-                rows = frame[frame["symbol"] == symbol][columns].reset_index(drop=True)
-                if len(rows) < 200:
-                    continue
-                result = scan_signals(rows, **{**scan_kwargs, "min_events": 10})
+            for symbol, rows in by_symbol.items():
+                result = scan_signals(
+                    rows, **{**frames["scan_kwargs"], "min_events": 10}
+                )
                 for row in result.get("_all_rows") or []:
                     key = (
                         symbol,
@@ -872,31 +1020,29 @@ def _validated_signals(
                     )
                     table[key] = row
             per_slice[label] = table
-        selected, near, funnel = _select_validated_rows(
+        selected, replicated, near, funnel = _select_validated_rows(
             full_rows,
             per_slice,
-            days=train_days,
+            days=frames["train_days"],
             min_events=int(policy.get("signal_first_min_events") or 40),
             max_q=max_q,
             slice_min_t=float(policy.get("signal_first_slice_min_t") or 1.0),
             min_t_net=float(policy.get("signal_first_min_t_net") or 2.0),
+            taker_round_trip_bps=frames["taker_round_trip_bps"],
+            maker_round_trip_bps=frames["maker_round_trip_bps"],
         )
-        for row in [*selected, *near]:
+        bar_seconds = int(frames["bar_seconds"])
+        for row in [*selected, *replicated]:
             row["warmup_bars_required"] = library_signal_warmup_bars(
                 row["signal"], row["timeframe"], bar_seconds=bar_seconds
             )
-            row["how_to_use"] = (
-                "in precompute(): from wayfinder_paths.jobs.research import "
-                "library_signal_on_bars; column = library_signal_on_bars(frame, "
-                f"{row['signal']!r}, {row['timeframe']!r}, bar_seconds={bar_seconds}); "
-                f"enter {row['direction']} on True, exit after "
-                f"{row['horizon']} {row['timeframe']} bars; declare warmup_bars >= "
-                f"{row['warmup_bars_required']}; inside the risk envelope: one "
-                "position per symbol, a stop via add_stop_atr or an explicit "
-                "invalidation level, size so a 3x typical adverse move costs < 5% "
-                "of equity (the gate sizes to the ceiling; needing < 0.5x is a "
-                "weak design)"
+            row["how_to_use"] = _signal_recipe(
+                row, bar_seconds=bar_seconds, condition=frames["condition_features"]
             )
+        # Near misses are direction, not evidence: the compact view only.
+        near = [
+            {key: row[key] for key in _NEAR_MISS_KEYS if key in row} for row in near
+        ]
     except Exception as exc:  # noqa: BLE001 - seeding never blocks a start
         return {"available": False, "reason": str(exc)[:240]}
     limit = int(policy.get("signal_first_limit") or 10)
@@ -904,22 +1050,30 @@ def _validated_signals(
         "available": True,
         "method": (
             "library event study on the full train split (decimated events, "
-            "|t|>=2 vs drift, 3/4 fold sign agreement, positive edge net of the "
-            "round trip with t_net>=floor, Benjamini-Hochberg q over the whole "
-            "family at or under the threshold, at least the minimum event "
-            "count), then non-inferiority on both screen slices"
+            "|t|>=2 vs drift, 3/4 fold sign agreement), unconditionally and "
+            "conditioned on the store's macro and leader labels; validated = "
+            "Benjamini-Hochberg q over the whole family at or under the "
+            "threshold, t_net at the floor and positive edge net of the taker "
+            "round trip; replicated = the same replication with the cost "
+            "decomposition (gross move vs taker and maker round trips) instead "
+            "of a cost gate; both powered and non-inferior on the screen slices"
         ),
-        "timeframes": timeframes,
+        "timeframes": frames["timeframes"],
+        "condition_features": sorted(frames["condition_features"]),
         "tests": len(full_rows),
         # The haircut the designer should see: this many tests would clear a
-        # 5% bar by luck alone, which is why q gates and t alone does not.
+        # 5% bar by luck alone, which is why q gates the validated tier.
         "expected_lucky_passes": round(0.05 * len(full_rows), 1),
         "q_threshold": max_q,
+        "taker_round_trip_bps": frames["taker_round_trip_bps"],
+        "maker_round_trip_bps": frames["maker_round_trip_bps"],
         "funnel": funnel,
-        "train_days": round(train_days, 2),
+        "train_days": round(frames["train_days"], 2),
+        "how_to_use_notes": SIGNAL_RECIPE_NOTES,
         "signals": selected[:limit],
-        # Passed the scan's own bar but not q, event count or slice
-        # non-inferiority: direction for the designer, not evidence.
+        "replicated": _diverse_signal_rows(replicated, limit),
+        # Under power or against a slice: direction for the designer, not
+        # evidence.
         "near_misses": near[:10],
     }
 
@@ -933,17 +1087,25 @@ def _select_validated_rows(
     max_q: float,
     slice_min_t: float,
     min_t_net: float,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, int]]:
-    """Replicated, cost-surviving, dense signals from a full-train scan.
-
-    Direction and strength come from the scan's gross t-stat (its
-    ``direction`` field; ``t_net`` is the directional cost-adjusted t and its
-    sign is NOT the trade side).  Benjamini-Hochberg q-values ride along as
-    evidence but do not gate: a family of ~2,000 tests on 80 days of bars
-    never promotes at q<=0.10, and the screen, full-dev and holdout gate the
-    strategy built on the signal anyway.  What replicates is what seeds.
-    """
-    selected: list[dict[str, Any]] = []
+    taker_round_trip_bps: float,
+    maker_round_trip_bps: float,
+) -> tuple[
+    list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, int]
+]:
+    """Two tiers from a full-train scan, both powered and non-inferior on the
+    screen slices. ``validated`` clears the family-corrected q, the t_net
+    floor and a positive edge net of the taker round trip. ``replicated`` is
+    every directional, fold-stable row regardless of cost, carrying the cost
+    decomposition (gross move, edge net of the taker and of the maker round
+    trip, an execution hint). The scan answers existence; monetization is the
+    mechanism's job, and a cost filter here hid the very rows a passive
+    design needs (2026-09-04 replay: 66 of 74 strong rows, the HYPE 5m seed
+    among them). Direction and strength come from the gross t-stat
+    (``t_net``'s sign is not the side); q is reported and tiers, it does not
+    empty the list — the full-dev haircut corrects for trials at strategy
+    level."""
+    validated: list[dict[str, Any]] = []
+    replicated: list[dict[str, Any]] = []
     near: list[dict[str, Any]] = []
     # Stage counts so the designer reads why nothing survived, not silence.
     funnel = {
@@ -954,18 +1116,66 @@ def _select_validated_rows(
         "q_at_threshold": 0,
         "powered": 0,
         "non_inferior": 0,
+        "validated": 0,
+        "replicated": 0,
+        "passive_only": 0,
+        "mechanism_required": 0,
+        "regime_tests": 0,
+        "regime_survivors": 0,
+    }
+    # A conditioned row whose cell holds every event of its base row carries
+    # no information about the condition (a label constant over the sample).
+    base_events: dict[tuple[str, str, str, int], int] = {
+        (
+            str(r["symbol"]),
+            str(r["signal"]),
+            str(r["timeframe"]),
+            int(r["horizon"]),
+        ): int(r.get("n") or 0)
+        for r in full_rows
+        if not r.get("regime")
     }
     for row in full_rows:
+        conditioned = bool(row.get("regime"))
+        funnel["regime_tests"] += int(conditioned)
         direction = row.get("direction")
         t_gross = float(row.get("t_stat_vs_drift") or 0.0)
         t_net = float(row.get("t_net") or 0.0)
         if direction not in ("long", "short") or not bool(row.get("fold_stable")):
             continue
-        funnel["directional_fold_stable"] += 1
-        if float(row.get("edge_net_bps") or 0.0) <= 0:
+        if conditioned and int(row.get("n") or 0) == base_events.get(
+            (
+                str(row["symbol"]),
+                str(row["signal"]),
+                str(row["timeframe"]),
+                int(row["horizon"]),
+            )
+        ):
             continue
-        funnel["cost_positive"] += 1
-        t_ok = t_net >= min_t_net
+        funnel["directional_fold_stable"] += 1
+        taker = float(row.get("round_trip_cost_bps") or taker_round_trip_bps)
+        maker = float(maker_round_trip_bps)
+        edge_net_taker = float(row.get("edge_net_bps") or 0.0)
+        gross_edge = edge_net_taker + taker
+        edge_net_maker = gross_edge - maker
+        # The standard error in bps falls out of the two t's: |t| = excess /
+        # sem and t_net = (excess - taker) / sem, so the maker-cost t is the
+        # taker one plus the cost difference in sem units.
+        spread = abs(t_gross) - t_net
+        t_net_maker = (
+            round(t_net + (taker - maker) * spread / taker, 3)
+            if taker > 0 and spread > 0
+            else None
+        )
+        hint = (
+            "taker_ok"
+            if edge_net_taker > 0
+            else "passive_only"
+            if edge_net_maker > 0
+            else "mechanism_required"
+        )
+        funnel["cost_positive"] += int(edge_net_taker > 0)
+        t_ok = t_net >= min_t_net and edge_net_taker > 0
         funnel["t_net_at_floor"] += int(t_ok)
         key = (
             str(row["symbol"]),
@@ -975,33 +1185,50 @@ def _select_validated_rows(
         )
         events = int(row.get("n") or 0)
         density = events / days
-        slice_t = {
-            label: float((table.get(key) or {}).get("t_stat_vs_drift") or 0.0)
-            for label, table in per_slice.items()
-        }
-        # Non-inferiority, not confirmation: a 35-day slice may be flat for
-        # the signal, it may not be significantly against its side.
         side = 1.0 if t_gross > 0 else -1.0
-        non_inferior = all(value * side > -slice_min_t for value in slice_t.values())
+        if conditioned:
+            # A conditioned signal gates itself; the base slices do not judge
+            # it.
+            slice_t: dict[str, float] = {}
+            non_inferior = True
+        else:
+            slice_t = {
+                label: float((table.get(key) or {}).get("t_stat_vs_drift") or 0.0)
+                for label, table in per_slice.items()
+            }
+            # Non-inferiority, not confirmation: a 35-day slice may be flat
+            # for the signal, it may not be significantly against its side.
+            non_inferior = all(
+                value * side > -slice_min_t for value in slice_t.values()
+            )
         q_value = row.get("q_value")
         q_ok = q_value is not None and float(q_value) <= max_q
         powered = events >= min_events
         funnel["q_at_threshold"] += int(t_ok and q_ok)
         funnel["powered"] += int(t_ok and q_ok and powered)
         funnel["non_inferior"] += int(t_ok and q_ok and powered and non_inferior)
-        entry = {
+        entry: dict[str, Any] = {
             "symbol": key[0],
             "signal": key[1],
             "family": row.get("family"),
-            "description": str(row.get("description") or "")[:160],
+            "library": row.get("library"),
             "timeframe": key[2],
             "horizon": key[3],
             "direction": str(direction),
+            "scope": "regime" if conditioned else "base",
+            "regime": row.get("regime"),
+            "regime_source": row.get("regime_source"),
             "t_stat": round(t_gross, 3),
             "t_net": round(t_net, 3),
+            "t_net_maker": t_net_maker,
             "q_value": row.get("q_value"),
             "bh_verdict": row.get("verdict"),
-            "edge_net_bps": round(float(row.get("edge_net_bps") or 0.0), 2),
+            "gross_edge_bps": round(gross_edge, 2),
+            "edge_net_bps": round(edge_net_taker, 2),
+            "edge_net_maker_bps": round(edge_net_maker, 2),
+            "taker_round_trip_bps": round(taker, 2),
+            "maker_round_trip_bps": round(maker, 2),
+            "execution_hint": hint,
             "events": events,
             "events_per_day": round(density, 3),
             "folds_agreeing": row.get("folds_agreeing"),
@@ -1010,22 +1237,28 @@ def _select_validated_rows(
             },
             "score": round(t_net, 3),
         }
-        if t_ok and powered and q_ok and non_inferior:
-            selected.append(entry)
-        else:
-            entry["shortfall"] = (
-                "t_net_below_floor"
-                if not t_ok
-                else (
-                    "underpowered"
-                    if not powered
-                    else ("q_above_threshold" if not q_ok else "slice_against")
-                )
-            )
+        if not (powered and non_inferior):
+            entry["shortfall"] = "underpowered" if not powered else "slice_against"
             near.append(entry)
-    selected.sort(key=lambda item: (-item["score"], item["symbol"], item["signal"]))
-    near.sort(key=lambda item: (-item["score"], item["symbol"], item["signal"]))
-    return selected, near, funnel
+            continue
+        if t_ok and q_ok:
+            entry["tier"] = "validated"
+            validated.append(entry)
+        else:
+            entry["tier"] = "replicated"
+            entry["shortfall"] = (
+                "t_net_below_floor" if not t_ok else "q_above_threshold"
+            )
+            replicated.append(entry)
+        if hint != "taker_ok":
+            funnel[hint] += 1
+        funnel["regime_survivors"] += int(conditioned)
+    funnel["validated"] = len(validated)
+    funnel["replicated"] = len(replicated)
+    validated.sort(key=lambda item: -float(item["score"]))
+    replicated.sort(key=lambda item: -abs(float(item["t_stat"])))
+    near.sort(key=lambda item: -abs(float(item["t_stat"])))
+    return validated, replicated, near, funnel
 
 
 def _numeric_tunables(
@@ -1864,12 +2097,19 @@ def _validate_campaign_design(
     if wildcard_count != int(manifest["policy"].get("wildcard_slots") or 0):
         raise ValueError("campaign design has the wrong number of wildcard slots")
     grounded = [slot for slot in normalized_slots if not slot["wildcard"]]
-    offered = list(
-        ((diagnostic_pack.get("validated_signals") or {}).get("signals")) or []
+    signal_block = diagnostic_pack.get("validated_signals") or {}
+    offered = list(signal_block.get("signals") or [])
+    # Signals that survived the family-corrected scan are the evidence a
+    # grounded free-form slot must build on; with none, the replicated tier
+    # (real, fold-stable, not cost-gated) is what it must build on instead.
+    # Narratives are not evidence either way.
+    tier, prefix = (
+        ("validated", "/validated_signals/signals/")
+        if offered
+        else ("replicated", "/validated_signals/replicated/")
     )
-    if offered:
-        # Signals that survived the family-corrected scan are the evidence a
-        # grounded free-form slot must build on; narratives are not.
+    pool = offered or list(signal_block.get("replicated") or [])
+    if pool:
         for slot in grounded:
             if slot["parent_source"] not in {"de_novo", "research_context"}:
                 continue
@@ -1879,17 +2119,15 @@ def _validate_campaign_design(
                 )
                 or []
             )
-            if not any(
-                str(ref).startswith("/validated_signals/signals/") for ref in refs
-            ):
+            if not any(str(ref).startswith(prefix) for ref in refs):
                 names = ", ".join(
                     f"{row.get('signal')} {row.get('symbol')} {row.get('timeframe')}"
-                    for row in offered[:6]
+                    for row in pool[:6]
                 )
                 raise ValueError(
-                    f"slot {slot['slot_id']} must build on a validated signal: its "
-                    "hypothesis cites none of /validated_signals/signals/<i> while "
-                    f"the pack offers {len(offered)} ({names})"
+                    f"slot {slot['slot_id']} must build on a {tier} signal: its "
+                    f"hypothesis cites none of {prefix}<i> while the pack offers "
+                    f"{len(pool)} ({names})"
                 )
     sources = {str(slot["parent_source"]) for slot in grounded}
     if "starter_seed" not in sources:
@@ -4662,8 +4900,53 @@ def campaign_prompt_block(
             f"the round trip, {funnel.get('t_net_at_floor')} at the t_net floor, "
             f"{funnel.get('q_at_threshold')} at q <= {float(validated.get('q_threshold') or 0.2):.2f}, "
             f"{funnel.get('powered')} with enough events, {funnel.get('non_inferior')} "
-            "non-inferior on both slices)"
+            "non-inferior on both slices"
+            + (
+                f"; {funnel.get('replicated') or 0} replicated regardless of cost, "
+                f"{funnel.get('passive_only') or 0} of them passive-only and "
+                f"{funnel.get('mechanism_required') or 0} needing a mechanism; "
+                f"{funnel.get('regime_tests') or 0} regime-conditioned tests"
+                if funnel.get("replicated") is not None
+                else ""
+            )
+            + ")"
             if funnel.get("tests")
+            else ""
+        )
+        replicated_rows = (
+            list(validated.get("replicated") or [])
+            if validated.get("available")
+            else []
+        )
+        replicated_instruction = (
+            "Replicated signals (directional, 3/4 fold-stable, powered and "
+            "non-inferior on both slices, NOT family-corrected: q is reported and "
+            f"~{float(validated.get('expected_lucky_passes') or 0):.0f} of "
+            f"{int(validated.get('tests') or 0)} tests would pass |t|>=2 by luck; "
+            "cite /validated_signals/replicated/<i>): "
+            + "; ".join(
+                f"[{index}] {row['signal']} {row['direction']} {row['symbol']} "
+                f"{row['timeframe']} x{row['horizon']}"
+                + (f" in {row['regime']}" if row.get("regime") else "")
+                + f" (t {float(row.get('t_stat') or 0):+.1f}, q "
+                f"{float(row.get('q_value') or 0):.2f}, {row.get('events', 0)} events, "
+                f"gross {float(row.get('gross_edge_bps') or 0):+.1f} bps vs taker "
+                f"{float(row.get('taker_round_trip_bps') or 0):.0f} / maker "
+                f"{float(row.get('maker_round_trip_bps') or 0):.0f} bps: "
+                f"{row.get('execution_hint')})"
+                for index, row in enumerate(replicated_rows[:10])
+            )
+            + ". A passive_only or mechanism_required entry is monetized by its "
+            "execution (a post-only resting entry at an offset and a passive "
+            "take-profit; its how_to_use says so), never by taking the close"
+            + (
+                "; with no validated signal offered, every grounded de_novo or "
+                "research_context slot must cite one of these"
+                if not validated_rows
+                else ""
+            )
+            + ". "
+            if replicated_rows
             else ""
         )
         signal_instruction = (
@@ -4682,7 +4965,8 @@ def campaign_prompt_block(
             + ". Every grounded de_novo or research_context slot must cite one "
             "of these; a design that does not is rejected. Each entry's "
             "how_to_use gives the one-call precompute (library_signal_on_bars), "
-            "the fixed-horizon exit, and the warmup to declare. "
+            "the fixed-horizon exit, and the warmup to declare; "
+            "/validated_signals/how_to_use_notes carries the shared rules. "
             if validated_rows
             else (
                 "No library signal cleared the family-corrected edge test on this "
@@ -4704,7 +4988,7 @@ def campaign_prompt_block(
                 if validated.get("available")
                 else ""
             )
-        )
+        ) + replicated_instruction
         regime_context = manifest.get("regime_context") or {}
         specialist_design = bool(
             policy.get("regime_specialist_enabled") and regime_context.get("available")
@@ -4785,6 +5069,12 @@ def campaign_prompt_block(
                 "validated_signals": [
                     f"{row['symbol']}:{row['signal']}:{row['timeframe']}:{row['horizon']}"
                     for row in validated_rows
+                ]
+                if validated.get("available")
+                else None,
+                "replicated_signals": [
+                    f"{row['symbol']}:{row['signal']}:{row['timeframe']}:{row['horizon']}"
+                    for row in replicated_rows
                 ]
                 if validated.get("available")
                 else None,
@@ -5039,9 +5329,19 @@ _SIGNAL_REF_KEYS = (
     "timeframe",
     "horizon",
     "direction",
+    "scope",
+    "regime",
+    "regime_source",
+    "library",
+    "t_stat",
     "t_net",
     "q_value",
     "events",
+    "gross_edge_bps",
+    "taker_round_trip_bps",
+    "maker_round_trip_bps",
+    "edge_net_maker_bps",
+    "execution_hint",
     "warmup_bars_required",
     "how_to_use",
 )
@@ -5052,22 +5352,28 @@ def _cited_signals(
 ) -> list[dict[str, Any]]:
     """The validated-signal entries a hypothesis cites, resolved from the
     frozen pack so the worker's candidate.json carries the recipe."""
-    indices: list[int] = []
+    indices: list[tuple[str, int]] = []
     for ref in refs:
-        match = re.match(r"^/validated_signals/signals/(\d+)(?:/|$)", str(ref))
-        if match and int(match.group(1)) not in indices:
-            indices.append(int(match.group(1)))
+        match = re.match(
+            r"^/validated_signals/(signals|replicated)/(\d+)(?:/|$)", str(ref)
+        )
+        if match and (match.group(1), int(match.group(2))) not in indices:
+            indices.append((match.group(1), int(match.group(2))))
     if not indices:
         return []
     pack_path = str((manifest.get("diagnostic_pack") or {}).get("path") or "")
     pack = store.read_json(job_id, pack_path, default={}) if pack_path else {}
-    rows = list(((pack or {}).get("validated_signals") or {}).get("signals") or [])
+    block = (pack or {}).get("validated_signals") or {}
     cited = []
-    for index in indices:
+    for tier, index in indices:
+        rows = list(block.get(tier) or [])
         if 0 <= index < len(rows):
             row = rows[index]
             cited.append(
-                {"pointer": f"/validated_signals/signals/{index}"}
+                {
+                    "pointer": f"/validated_signals/{tier}/{index}",
+                    "tier": "validated" if tier == "signals" else "replicated",
+                }
                 | {key: row.get(key) for key in _SIGNAL_REF_KEYS if key in row}
             )
     return cited
@@ -5759,6 +6065,7 @@ def _load_subject(
     *,
     campaign_id: str | None = None,
     dataset_root: Path | None = None,
+    include_store_features: bool = False,
 ) -> dict[str, Any]:
     job_data = _load_job_yaml(root)
     spec_data, _ = resolve_execution_spec(root, job_data)
@@ -5785,6 +6092,7 @@ def _load_subject(
         spec,
         job_data,
         feature_roots=(root, resolved_dataset_root),
+        include_store_features=include_store_features,
     )
     return {
         "root": root,

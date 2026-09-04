@@ -1042,6 +1042,7 @@ def _validated_signal_usage(
         "enabled": bool(validated),
         "available": bool(validated.get("available")),
         "offered": len(validated.get("signals") or []),
+        "replicated": len(validated.get("replicated") or []),
         "hypotheses_citing": citing,
     }
 

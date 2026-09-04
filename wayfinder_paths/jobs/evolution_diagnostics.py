@@ -1450,6 +1450,23 @@ def _fit_pack(pack: dict[str, Any]) -> dict[str, Any]:
                 json.dumps(value, default=str, sort_keys=True).encode()
             ).hexdigest(),
         }
+    signals = pack.get("validated_signals")
+    if isinstance(signals, dict) and size() > DIAGNOSTIC_PACK_MAX_BYTES:
+        # The tiers are what the designer must build on; shrink them in
+        # order (near misses first, then the replicated tail) rather than
+        # lose the block to the fail-closed shape below.
+        for replicated_cap, near_cap in ((6, 3), (6, 0), (4, 0), (2, 0)):
+            signals["replicated"] = list(signals.get("replicated") or [])[
+                :replicated_cap
+            ]
+            signals["near_misses"] = list(signals.get("near_misses") or [])[:near_cap]
+            signals["trimmed"] = {
+                "reason": "diagnostic_pack_byte_budget",
+                "replicated_cap": replicated_cap,
+                "near_misses_cap": near_cap,
+            }
+            if size() <= DIAGNOSTIC_PACK_MAX_BYTES:
+                break
     if size() > DIAGNOSTIC_PACK_MAX_BYTES:
         baseline = pack.get("baseline") or {}
         pack["baseline"] = {

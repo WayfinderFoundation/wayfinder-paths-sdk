@@ -901,3 +901,38 @@ def test_receipt_economics_judges_coverage_on_realized_cost() -> None:
     assert order["budget"]["maker_round_trip_bps"] == 3.0
     assert "12.0 bps gross against 24.0 bps realized cost" in order["diagnosis"]
     assert "The gap is execution, not signal" in order["diagnosis"]
+
+
+def test_fit_pack_trims_signal_tiers_before_the_fail_closed_shape() -> None:
+    from wayfinder_paths.jobs.evolution_diagnostics import (
+        DIAGNOSTIC_PACK_MAX_BYTES,
+        _fit_pack,
+    )
+
+    entry = {
+        "symbol": "HYPE",
+        "signal": "rsi14_le_30",
+        "timeframe": "300s",
+        "horizon": 2,
+        "how_to_use": "x" * 1_500,
+    }
+    pack = {
+        "schema_version": "2.0",
+        "campaign_id": "c",
+        "created_at": "t",
+        "citation_contract": {},
+        "baseline": {"plane": "historical", "available": True},
+        "validated_signals": {
+            "available": True,
+            "signals": [],
+            "replicated": [dict(entry) for _ in range(10)],
+            "near_misses": [dict(entry) for _ in range(10)],
+        },
+    }
+    fitted = _fit_pack(pack)
+    assert "pack_truncated" not in fitted
+    block = fitted["validated_signals"]
+    assert block["available"] is True
+    assert len(block["replicated"]) <= 6 and len(block["near_misses"]) <= 3
+    assert block["trimmed"]["reason"] == "diagnostic_pack_byte_budget"
+    assert len(json.dumps(fitted).encode()) <= DIAGNOSTIC_PACK_MAX_BYTES

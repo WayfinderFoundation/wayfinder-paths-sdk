@@ -976,6 +976,7 @@ def scan_signals(
     canonical_signals: Sequence[SignalDef] = (),
     required_horizons: Mapping[str, Sequence[int]] | None = None,
     condition_regime: bool = False,
+    condition_features: Mapping[str, Mapping[float, str]] | None = None,
     min_family_size: int = MIN_BH_FAMILY_SIZE,
 ) -> dict[str, Any]:
     """Event-study EVERY canonical library trigger against one symbol's bars
@@ -1041,6 +1042,18 @@ def scan_signals(
         from wayfinder_paths.jobs.indicators import REGIME_LABELS
 
         regime_labels = tuple(REGIME_LABELS)
+    # Store-feature conditioning (macro_regime, leader_state, ...): each named
+    # column present on the frame labels its bars by the code map and adds one
+    # masked row per label to the same family as the base row. An edge that
+    # exists only in bear or only during a broad selloff is invisible
+    # unconditionally and is exactly what a gated book can use.
+    feature_conditions: dict[str, dict[float, str]] = {
+        str(column): {float(code): str(label) for code, label in mapping.items()}
+        for column, mapping in (condition_features or {}).items()
+        if column in frame.columns
+    }
+    feature_arrays: dict[str, dict[str, Any]] = {}
+    feature_now: dict[str, str] = {}
 
     def _record_unmeasured(
         spec: SignalDef,
@@ -1085,6 +1098,20 @@ def scan_signals(
             tail = labels.dropna()
             if regime_now is None and len(tail):
                 regime_now = str(tail.iloc[-1])
+        if feature_conditions:
+            per_column: dict[str, Any] = {}
+            for column, mapping in feature_conditions.items():
+                codes = pd.to_numeric(bars[column], errors="coerce")
+                labelled = codes.map(
+                    lambda value, table=mapping: (
+                        table.get(float(value)) if pd.notna(value) else None
+                    )
+                )
+                per_column[column] = labelled.to_numpy(dtype=object)
+                known = labelled.dropna()
+                if column not in feature_now and len(known):
+                    feature_now[column] = str(known.iloc[-1])
+            feature_arrays[tf_name] = per_column
         close = bars["close"].astype(float).to_numpy()
         n = len(close)
         signals = build_signal_frame(
@@ -1300,6 +1327,40 @@ def scan_signals(
                             continue
                         tests_run += 1
                         rows.append(r_row)
+                for column, mapping in feature_conditions.items():
+                    labels_arr = feature_arrays.get(tf_name, {}).get(column)
+                    if labels_arr is None:
+                        continue
+                    for label in mapping.values():
+                        cell = f"{column}={label}"
+                        mask = labels_arr[: n - h] == label
+                        f_events = _decimate_events(sig[: n - h] & mask, h)
+                        f_row = _stats_row(
+                            f_events,
+                            spec,
+                            cell_min_events=max(15, min_events // 2),
+                            extra={
+                                "regime": cell,
+                                "regime_source": column,
+                                "in_current_regime": feature_now.get(column) == label,
+                            },
+                        )
+                        if f_row is None:
+                            _record_unmeasured(
+                                spec,
+                                timeframe=tf_name,
+                                horizon=h,
+                                status="underpowered",
+                                reason=(
+                                    "zero_variance_returns"
+                                    if int(f_events.sum()) >= max(15, min_events // 2)
+                                    else "insufficient_events"
+                                ),
+                                regime=cell,
+                            )
+                            continue
+                        tests_run += 1
+                        rows.append(f_row)
     apply_bh_verdicts(
         rows,
         q_threshold=q_threshold,
@@ -1343,6 +1404,7 @@ def scan_signals(
         "tests_run": tests_run,
         "tests_skipped_insufficient_data": tests_skipped,
         "current_regime": regime_now,
+        "condition_features": sorted(feature_conditions),
         "expected_lucky_passes": expected_lucky,
         "bh_family": {
             "size": len(rows),

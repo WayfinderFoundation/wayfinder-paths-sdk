@@ -1025,6 +1025,7 @@ def test_design_prompt_offers_validated_signals_when_seeding_is_on(tmp_path) -> 
     ) == [
         {
             "pointer": "/validated_signals/signals/0",
+            "tier": "validated",
             "symbol": "HYPE",
             "signal": "new_low_5",
             "timeframe": "1h",
@@ -1034,6 +1035,63 @@ def test_design_prompt_offers_validated_signals_when_seeding_is_on(tmp_path) -> 
         }
     ]
     assert _cited_signals(store, job_id, manifest, ["/baseline/reason"]) == []
+
+    # With nothing validated, the replicated tier feeds the designer with the
+    # cost decomposition, and a grounded slot must build on one of its rows.
+    pack["validated_signals"] = {
+        "available": True,
+        "tests": 2687,
+        "expected_lucky_passes": 134.4,
+        "signals": [],
+        "replicated": [
+            {
+                "symbol": "HYPE",
+                "signal": "rsi14_le_30",
+                "timeframe": "300s",
+                "horizon": 2,
+                "direction": "long",
+                "t_stat": 3.28,
+                "q_value": 0.685,
+                "events": 1811,
+                "gross_edge_bps": 4.4,
+                "taker_round_trip_bps": 24.0,
+                "maker_round_trip_bps": 3.0,
+                "execution_hint": "passive_only",
+                "how_to_use": "post-only resting limit",
+            }
+        ],
+        "near_misses": [],
+        "funnel": {
+            "tests": 2687,
+            "directional_fold_stable": 74,
+            "cost_positive": 8,
+            "t_net_at_floor": 0,
+            "q_at_threshold": 0,
+            "powered": 0,
+            "non_inferior": 0,
+            "replicated": 1,
+            "passive_only": 1,
+            "mechanism_required": 0,
+            "regime_tests": 0,
+        },
+    }
+    store.write_json(job_id, pack_path, pack)
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=3))
+    assert prompt and prompt["constraints"]["validated_signals"] == []
+    assert prompt["constraints"]["replicated_signals"] == ["HYPE:rsi14_le_30:300s:2"]
+    assert "Replicated signals" in prompt["next_action"]
+    assert (
+        "gross +4.4 bps vs taker 24 / maker 3 bps: passive_only"
+        in (prompt["next_action"])
+    )
+    assert "1 replicated regardless of cost" in prompt["next_action"]
+    assert "must cite one of these" in prompt["next_action"]
+    with pytest.raises(ValueError, match="must build on a replicated signal"):
+        submit_campaign_design(store, job_id, campaign_design=_campaign_design())
+    cited = _cited_signals(store, job_id, manifest, ["/validated_signals/replicated/0"])
+    assert cited[0]["pointer"] == "/validated_signals/replicated/0"
+    assert cited[0]["tier"] == "replicated"
+    assert cited[0]["execution_hint"] == "passive_only"
 
 
 def test_regime_design_requires_counter_cell_and_stamps_candidate(tmp_path) -> None:
@@ -5143,7 +5201,7 @@ def test_cost_budget_ceiling_follows_the_cost_budget_not_the_incumbent() -> None
     assert fallback["max_fills_per_day"] == pytest.approx(7.8)
 
 
-def test_validated_signal_selection_uses_power_q_and_non_inferiority() -> None:
+def test_validated_signal_selection_tiers_and_decomposes_cost() -> None:
     def row(**overrides):
         base = {
             "symbol": "HYPE",
@@ -5156,6 +5214,7 @@ def test_validated_signal_selection_uses_power_q_and_non_inferiority() -> None:
             "t_stat_vs_drift": 2.6,
             "t_net": 2.2,
             "edge_net_bps": 18.0,
+            "round_trip_cost_bps": 24.0,
             "fold_stable": True,
             "folds_agreeing": 3,
             "n": 52,
@@ -5176,38 +5235,100 @@ def test_validated_signal_selection_uses_power_q_and_non_inferiority() -> None:
         "max_q": 0.20,
         "slice_min_t": 1.0,
         "min_t_net": 2.0,
+        "taker_round_trip_bps": 24.0,
+        "maker_round_trip_bps": 3.0,
     }
-    selected, near, funnel = _select_validated_rows([row()], slices, **kwargs)
-    assert len(selected) == 1 and not near
-    assert funnel == {
-        "tests": 1,
-        "directional_fold_stable": 1,
-        "cost_positive": 1,
-        "t_net_at_floor": 1,
-        "q_at_threshold": 1,
-        "powered": 1,
-        "non_inferior": 1,
-    }
-    assert selected[0]["events"] == 52 and selected[0]["q_value"] == 0.12
+    validated, replicated, near, funnel = _select_validated_rows(
+        [row()], slices, **kwargs
+    )
+    assert len(validated) == 1 and not replicated and not near
+    entry = validated[0]
+    assert entry["tier"] == "validated" and entry["execution_hint"] == "taker_ok"
+    assert entry["scope"] == "base" and entry["events"] == 52
+    assert entry["gross_edge_bps"] == 42.0 and entry["edge_net_maker_bps"] == 39.0
+    assert funnel["validated"] == 1 and funnel["replicated"] == 0
+    assert funnel["non_inferior"] == 1 and funnel["regime_tests"] == 0
     # The old per-day density floor would have called 52 events over 292
     # days sparse; the power floor does not.
-    assert selected[0]["events_per_day"] < 0.3
-    _, near, _ = _select_validated_rows([row(n=25)], slices, **kwargs)
+    assert entry["events_per_day"] < 0.3
+    # Under power or against a slice is a near miss, never silence.
+    _, _, near, _ = _select_validated_rows([row(n=25)], slices, **kwargs)
     assert near[0]["shortfall"] == "underpowered"
-    _, near, _ = _select_validated_rows([row(q_value=0.35)], slices, **kwargs)
-    assert near[0]["shortfall"] == "q_above_threshold"
     against = {**slices, "recent": {key: {"t_stat_vs_drift": -1.4}}}
-    _, near, _ = _select_validated_rows([row()], against, **kwargs)
+    _, _, near, _ = _select_validated_rows([row()], against, **kwargs)
     assert near[0]["shortfall"] == "slice_against"
-    # Under the t_net floor is direction for the designer, not silence.
-    selected, near, funnel = _select_validated_rows([row(t_net=1.5)], slices, **kwargs)
-    assert selected == [] and near[0]["shortfall"] == "t_net_below_floor"
-    assert funnel["cost_positive"] == 1 and funnel["t_net_at_floor"] == 0
-    # A losing-after-cost row never appears, even as a near miss.
-    assert _select_validated_rows([row(edge_net_bps=-2.0)], slices, **kwargs)[:2] == (
-        [],
-        [],
+    # q and the t_net floor tier the row; they do not hide it.
+    _, replicated, near, _ = _select_validated_rows(
+        [row(q_value=0.35)], slices, **kwargs
     )
+    assert not near and replicated[0]["tier"] == "replicated"
+    assert replicated[0]["shortfall"] == "q_above_threshold"
+    _, replicated, _, funnel = _select_validated_rows(
+        [row(t_net=1.5)], slices, **kwargs
+    )
+    assert replicated[0]["shortfall"] == "t_net_below_floor"
+    assert funnel["cost_positive"] == 1 and funnel["t_net_at_floor"] == 0
+    # The HYPE 5m seed row as the 2026-09-04 replay measured it: a real
+    # 4.4 bps ten-minute move that no taker book carries, fed with the cost
+    # decomposition instead of dropped.
+    hype = row(
+        symbol="HYPE",
+        signal="rsi14_le_30",
+        timeframe="300s",
+        horizon=2,
+        t_stat_vs_drift=3.28,
+        t_net=-15.10,
+        edge_net_bps=-19.6,
+        n=1811,
+        q_value=0.685,
+        folds_agreeing=4,
+        verdict=None,
+    )
+    hype_key = ("HYPE", "rsi14_le_30", "300s", 2)
+    hype_slices = {
+        "recent": {hype_key: {"t_stat_vs_drift": 0.9}},
+        "earlier": {hype_key: {"t_stat_vs_drift": 1.6}},
+    }
+    _, replicated, near, funnel = _select_validated_rows([hype], hype_slices, **kwargs)
+    assert not near and len(replicated) == 1
+    entry = replicated[0]
+    assert entry["execution_hint"] == "passive_only"
+    assert entry["gross_edge_bps"] == pytest.approx(4.4)
+    assert entry["edge_net_maker_bps"] == pytest.approx(1.4)
+    assert entry["t_net_maker"] == pytest.approx(0.98, abs=0.02)
+    assert funnel["passive_only"] == 1 and funnel["cost_positive"] == 0
+    # A regime-conditioned row gates itself: no slice check, scope recorded.
+    bear = row(regime="macro_regime=bear", regime_source="macro_regime")
+    validated, _, _, funnel = _select_validated_rows(
+        [bear], {"recent": {}, "earlier": {}}, **kwargs
+    )
+    assert validated[0]["scope"] == "regime" and validated[0]["t_stat_by_slice"] == {}
+    assert funnel["regime_tests"] == 1 and funnel["regime_survivors"] == 1
+    # A cell holding every event of its base row says nothing about the
+    # condition: skipped, not offered twice.
+    validated, replicated, _, funnel = _select_validated_rows(
+        [row(), bear], slices, **kwargs
+    )
+    assert len(validated) == 1 and validated[0]["scope"] == "base" and not replicated
+    assert funnel["regime_tests"] == 1 and funnel["regime_survivors"] == 0
+    # The offered list is one row per (symbol, signal, timeframe), strongest
+    # first; the funnel still counts every variant.
+    from wayfinder_paths.jobs.evolution_campaign import _diverse_signal_rows
+
+    variants = [
+        row(horizon=2, t_stat_vs_drift=3.1, q_value=0.9),
+        row(horizon=3, t_stat_vs_drift=3.4, q_value=0.9),
+        row(
+            horizon=3,
+            t_stat_vs_drift=2.9,
+            q_value=0.9,
+            regime="macro_regime=chop",
+            n=30,
+        ),
+    ]
+    _, replicated, _, funnel = _select_validated_rows(variants, slices, **kwargs)
+    assert funnel["replicated"] == 2 and [r["horizon"] for r in replicated] == [3, 2]
+    assert [r["horizon"] for r in _diverse_signal_rows(replicated, 10)] == [3]
 
 
 def test_retire_to_flat_verdict_and_flat_bundle(tmp_path) -> None:
@@ -5261,3 +5382,67 @@ def test_cost_budget_carries_the_maker_round_trip() -> None:
     )
     assert budget["round_trip_cost_bps"] == 24.0
     assert budget["maker_round_trip_bps"] == 3.0
+
+
+def test_campaign_scan_frames_carry_store_columns_and_condition(tmp_path) -> None:
+    import numpy as np
+
+    from wayfinder_paths.jobs.evolution_campaign import _campaign_scan_frames
+
+    store, job_id = _evaluatable_job(tmp_path)
+    root = store.job_dir(job_id)
+    bars = _hourly_bars(600)
+    for index, row in enumerate(bars):
+        close = (
+            10.0 + 0.8 * float(np.sin(index / 7.0)) + 0.3 * float(np.sin(index / 23.0))
+        )
+        row.update(open=close, high=close * 1.01, low=close * 0.99, close=close)
+    (root / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 25}, "bars": bars}), encoding="utf-8"
+    )
+    stamps = [row["timestamp"] for row in bars]
+    half = stamps[len(stamps) // 2]
+    rows = [
+        {
+            "timestamp": stamp,
+            "name": "macro_regime",
+            "value": -1.0 if stamp < half else 1.0,
+        }
+        for stamp in stamps[::24]
+    ]
+    rows.append({"timestamp": stamps[0], "name": "leader_state", "value": 0.0})
+    (root / "state").mkdir(exist_ok=True)
+    (root / "state/features.jsonl").write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+    )
+    improver_path = root / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"]["signal_first_seeding"] = True
+    improver["evolution"]["investigation_design_enabled"] = True
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    state = start_campaign(store, job_id, now=datetime(2099, 8, 25, 12, tzinfo=UTC))
+    campaign_root = (root / str(state["manifest"])).parent
+    frames = _campaign_scan_frames(store, job_id, campaign_root, policy={})
+    assert set(frames["train"]) == {"IMX"}
+    assert {"macro_regime", "leader_state"} <= set(frames["feature_columns"])
+    assert set(frames["condition_features"]) == {"macro_regime", "leader_state"}
+    assert frames["condition_features"]["macro_regime"] == {
+        1.0: "bull",
+        0.0: "chop",
+        -1.0: "bear",
+    }
+    imx = frames["train"]["IMX"]
+    assert {"macro_regime", "leader_state"} <= set(imx.columns)
+    assert sorted(imx["macro_regime"].dropna().unique()) == [-1.0, 1.0]
+    assert frames["timeframes"] == ["3600s", "4h"]
+    assert frames["maker_round_trip_bps"] == 3.0
+    assert "recent" in frames["slices"] and set(frames["slices"]["recent"]) == {"IMX"}
+    # The start-time scan ran on the same frames, conditioned on both store
+    # labels, and recorded the cost decomposition inputs beside the tiers.
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    block = pack["validated_signals"]
+    assert block["available"] is True, block
+    assert block["condition_features"] == ["leader_state", "macro_regime"]
+    assert block["maker_round_trip_bps"] == 3.0
+    assert block["funnel"]["regime_tests"] > 0
+    assert "replicated" in block

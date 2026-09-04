@@ -619,6 +619,7 @@ def test_validated_signal_usage_counts_hypotheses_that_cite_the_pack() -> None:
         "enabled": True,
         "available": True,
         "offered": 3,
+        "replicated": 0,
         "hypotheses_citing": 1,
     }
     assert _validated_signal_usage(Store({}), "demo", {})["enabled"] is False

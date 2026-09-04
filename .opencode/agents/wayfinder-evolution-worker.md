@@ -76,9 +76,13 @@ For each candidate:
   machine never fires). Stamp `ctx.bar_ordinal` and measure with
   `ctx.bars_since(stamp)`; gate cadence with `ctx.every_n_bars(n)`.
 - If `candidate.json` carries `signal_refs`, the entry trigger is that
-  validated signal via `library_signal_on_bars` on its timeframe (the
-  `how_to_use` recipe); declare `warmup_bars >= warmup_bars_required`. Exits,
-  stops and sizing are yours; the trigger is not.
+  validated or replicated signal via `library_signal_on_bars` on its
+  timeframe (the `how_to_use` recipe); declare `warmup_bars >=
+  warmup_bars_required`. A `scope: regime` ref fires only inside its labelled
+  regime (the recipe names the feature and code to declare and gate on); a
+  `passive_only` or `mechanism_required` ref enters with a post-only resting
+  limit per its recipe, never at the close. Exits, stops and sizing are
+  yours; the trigger is not.
 - Every trade must capture at least the hurdle multiple of the round-trip
   cost gross (the work order states both in bps); `gross_bps_per_trade` is
   the number a repair has to move. A book that pays to trade is rejected

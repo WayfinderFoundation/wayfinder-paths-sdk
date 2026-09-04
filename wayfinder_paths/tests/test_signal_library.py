@@ -491,3 +491,50 @@ class TestStrategyCatalog:
     def test_helper_modules_excluded(self):
         names = {entry["name"] for entry in library_catalog()}
         assert not {"indicators", "models", "portfolio"} & names
+
+
+def test_scan_signals_conditions_on_store_feature_labels() -> None:
+    from wayfinder_paths.jobs.signal_library import SignalDef
+
+    # A cadence trigger whose bounce is real only in the bear half of the
+    # sample: the unconditional row sees half its events with edge, the
+    # macro_regime=bear row sees all of them, the bull row none.
+    n = 600
+    closes = _wavy_closes(n)
+    for index in range(n - 1):
+        if index % 12 == 0 and index < n // 2:
+            closes[index + 1] = closes[index] * 1.03
+    bars = _bars(closes)
+    bars["macro_regime"] = [-1.0] * (n // 2) + [1.0] * (n - n // 2)
+    cadence = SignalDef(
+        "every_12",
+        "test",
+        "fires every twelfth bar",
+        1,
+        lambda f: pd.Series(np.arange(len(f)) % 12 == 0, index=f.index),
+    )
+    result = scan_signals(
+        bars,
+        [1],
+        bar_seconds=3600,
+        timeframes=["1h"],
+        holdout_fraction=0.0,
+        min_events=10,
+        extra_signals=[cadence],
+        include_canonical=False,
+        condition_features={"macro_regime": {1.0: "bull", 0.0: "chop", -1.0: "bear"}},
+    )
+    assert result["condition_features"] == ["macro_regime"]
+    rows = {(row["signal"], row.get("regime")): row for row in result["_all_rows"]}
+    base = rows[("every_12", None)]
+    bear = rows[("every_12", "macro_regime=bear")]
+    bull = rows[("every_12", "macro_regime=bull")]
+    assert bear["regime_source"] == "macro_regime"
+    assert bear["t_stat_vs_drift"] > base["t_stat_vs_drift"] > 0
+    assert abs(bull["t_stat_vs_drift"]) < 2
+    assert bear["in_current_regime"] is False and bull["in_current_regime"] is True
+    # The chop label has no bars: recorded as unmeasured, not invented.
+    assert ("every_12", "macro_regime=chop") not in rows
+    assert any(
+        row["regime"] == "macro_regime=chop" for row in result["_unmeasured_rows"]
+    )
