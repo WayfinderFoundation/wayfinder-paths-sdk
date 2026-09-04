@@ -47,7 +47,12 @@ _TYPED_CB = AsyncMock(return_value="0x" + "00" * 65)
 
 @pytest.mark.asyncio
 async def test_polymarket_get_state_uses_adapter_full_state():
-    full_state = AsyncMock(return_value=(True, {"protocol": "polymarket_read"}))
+    state = {
+        "protocol": "polymarket_read",
+        "pnl": {"totalRealizedPnl": 2.5, "totalUnrealizedPnl": 1.0},
+        "recentTrades": [{"id": "trade-1"}],
+    }
+    full_state = AsyncMock(return_value=(True, state))
     with (
         patch(_FIND_WALLET, AsyncMock(return_value=_WALLET)),
         patch(_GET_SIGN_CB, AsyncMock(return_value=(_SIGN_CB, _ADDR))),
@@ -59,14 +64,20 @@ async def test_polymarket_get_state_uses_adapter_full_state():
             new=full_state,
         ),
     ):
-        out = await polymarket_get_state(wallet_label="main")
+        out = await polymarket_get_state(
+            wallet_label="main", include_orders=False, include_trades=True
+        )
         assert out["ok"] is True
         assert out["result"]["ok"] is True
         assert out["result"]["state"]["protocol"] == "polymarket_read"
+        assert out["result"]["state"]["pnl"]["totalRealizedPnl"] == 2.5
+        assert out["result"]["state"]["recentTrades"] == [{"id": "trade-1"}]
         assert out["result"]["account"] == derive_legacy_deposit_wallet(_ADDR)
         assert full_state.await_args.kwargs["account"] == derive_legacy_deposit_wallet(
             _ADDR
         )
+        assert full_state.await_args.kwargs["include_orders"] is False
+        assert full_state.await_args.kwargs["include_trades"] is True
 
 
 @pytest.mark.asyncio

@@ -21,6 +21,7 @@ def test_build_mcp_registers_tools() -> None:
         "hyperliquid_get_candles",
         "hyperliquid_get_funding_history",
         "hyperliquid_get_state",
+        "hyperliquid_get_trade_results",
         "polymarket_read",
         "contracts_call",
         "sports_snapshot",
