@@ -2799,11 +2799,13 @@ def test_protected_full_dev_tail_is_not_cumulative_with_trade_count() -> None:
                 "trade_count": 100,
                 "worst_trade_pnl": -100.0,
                 "avg_trade_duration_s": 60.0,
+                "avg_drawdown": -0.01,
             },
             {
                 "trade_count": 100,
                 "worst_trade_pnl": -80.0,
                 "avg_trade_duration_s": 120.0,
+                "avg_drawdown": -0.03,
             },
         ],
         {
@@ -2818,6 +2820,7 @@ def test_protected_full_dev_tail_is_not_cumulative_with_trade_count() -> None:
     assert pooled["trade_count"] == 200
     assert pooled["worst_trade_pnl"] == -100.0
     assert objective["tail_loss"] == 0.01
+    assert objective["downside_deviation"] == 0.02
 
 
 def test_protected_fold_layout_rejects_insufficient_history() -> None:

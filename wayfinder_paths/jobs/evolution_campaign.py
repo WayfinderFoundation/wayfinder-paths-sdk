@@ -8156,6 +8156,11 @@ def _pooled_fold_stats(
         "avg_trade_duration_s": (
             weighted_duration / trade_count if trade_count else 0.0
         ),
+        "avg_drawdown": (
+            sum(float(row.get("avg_drawdown") or 0.0) for row in rows) / len(rows)
+            if rows
+            else 0.0
+        ),
         "worst_trade_pnl": min(
             (float(row.get("worst_trade_pnl") or 0.0) for row in rows),
             default=0.0,
