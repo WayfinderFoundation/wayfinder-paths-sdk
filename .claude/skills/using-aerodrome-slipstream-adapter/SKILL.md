@@ -15,6 +15,10 @@ Use this skill when you are:
 - Staking LP NFT positions into gauges and claiming position rewards
 - Managing veAERO locks, votes, and reward-claim flows that also apply to Slipstream gauges
 
+Use the classic Aerodrome skill instead when the pool is a stable/volatile V2
+pool, the position is an ERC20 LP balance, or the workflow is classic LP
+add/remove/stake without a tick range or NFPM token id.
+
 ## How to use
 
 - [rules/high-value-reads.md](rules/high-value-reads.md) - Deployment-aware market discovery, pool analytics, position reads, and shared veAERO reads
