@@ -32,6 +32,7 @@ from wayfinder_paths.jobs.execution.simulator import (
     simulate_execution,
 )
 from wayfinder_paths.jobs.execution.walk_forward import _slice
+from wayfinder_paths.jobs.multiple_testing import t_statistic
 from wayfinder_paths.jobs.regime import (
     PORTFOLIO_REGIME_CLASSIFIER,
     REGIME_FEATURE_WARMUP_BARS,
@@ -467,6 +468,7 @@ def paired_fold_evaluation(
             "confidence": float(evaluation["confidence"]),
             "paired_days": len(deltas),
             "p_value": growth_p_value,
+            "t_stat": t_statistic(deltas),
         },
         "audit_slice": {
             "start": str(timestamps[dev_total]),
@@ -546,9 +548,14 @@ def evaluate_economic_readiness(
     constitution: Mapping[str, Any],
     *,
     probation: bool = False,
+    haircut: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Map paired evidence to ready/reasons under the constitution. Pure
-    policy — no simulation — so enforcement stays trivially testable."""
+    policy — no simulation — so enforcement stays trivially testable.
+
+    ``haircut`` is the paired delta's t-statistic against the expected
+    maximum of the campaign's trials; it blocks only outside probation,
+    where the forward test is the certificate."""
     promotion = constitution["promotion"]
     hard = constitution["hard_constraints"]
     reasons: list[str] = []
@@ -581,6 +588,12 @@ def evaluate_economic_readiness(
             f"OOS whole-strategy trade count "
             f"{candidate.get('trade_count') or 0} below minimum "
             f"{promotion['min_oos_trades']}"
+        )
+    if not probation and haircut and haircut.get("cleared") is False:
+        reasons.append(
+            f"paired t {float(haircut.get('t_stat') or 0.0):.2f} below the "
+            f"{haircut.get('trials')}-trial expected maximum "
+            f"{float(haircut.get('expected_max_t') or 0.0):.2f}"
         )
     if specialized:
         regime_config = constitution["evaluation"].get("regime") or {}

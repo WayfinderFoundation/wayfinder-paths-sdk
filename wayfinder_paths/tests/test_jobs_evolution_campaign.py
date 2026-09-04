@@ -289,6 +289,7 @@ def test_rollout_is_gated_and_campaign_context_is_bounded(tmp_path) -> None:
         "finalist_requires_24h_operational_burn_in": True,
         "starter_seed_evidence_resets": True,
         "refuted_family_matching": "exact_free_form_family_v1",
+        "trials_so_far": 0,
     }
     assert len(load_starter_casebook()) > len(block["cases"])
 
@@ -644,10 +645,13 @@ def test_screen_verdict_names_regime_dependence_and_noise_fit() -> None:
     aside = {**both, "earlier": {"net_return": 0.0, "trade_count": 0, "lcb": None}}
     assert _screen_verdict(aside, min_trades=12, pooled_lcb=0.003)["passed"] is True
 
+    # Significance is recorded, not required: the screen filters and full
+    # development certifies against the campaign's trial count.
     noisy = {**both, "recent": {"net_return": 0.03, "trade_count": 30, "lcb": -0.002}}
-    assert (
-        _screen_verdict(noisy, min_trades=12)["code"] == "screen_edge_not_significant"
-    )
+    verdict = _screen_verdict(noisy, min_trades=12)
+    assert verdict["passed"] is True and verdict["code"] is None
+    assert verdict["edge_significant"] is False
+    assert _screen_verdict(both, min_trades=12)["edge_significant"] is True
 
     # The activity floor applies to the book across the slices, not per slice.
     sparse = {
@@ -731,9 +735,9 @@ def test_screen_report_splits_the_reference_losing_days() -> None:
     # Repairing the losing days at the cost of the winning days is not a repair.
     hurt = {**report, "lcb": -0.01, "failure_mode": {**mode, "winning_delta": -0.02}}
     assert _slice_route(hurt) is None
-    assert _screen_verdict({"recent": hurt}, min_trades=12)["code"] == (
-        "screen_edge_not_significant"
-    )
+    # Significance is recorded, not required at the screen.
+    hurt_verdict = _screen_verdict({"recent": hurt}, min_trades=12)
+    assert hurt_verdict["code"] is None and hurt_verdict["edge_significant"] is False
 
 
 def test_failure_mode_summary_names_worst_days_and_regime() -> None:

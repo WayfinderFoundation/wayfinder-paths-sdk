@@ -118,6 +118,7 @@ from wayfinder_paths.jobs.improver.spec import ImproverSpec, revision_stamp
 from wayfinder_paths.jobs.indicators import REGIME_LABELS
 from wayfinder_paths.jobs.isolated_phase import run_isolated_phase
 from wayfinder_paths.jobs.models import utc_now_iso
+from wayfinder_paths.jobs.multiple_testing import haircut
 from wayfinder_paths.jobs.regime import (
     LEADER_CODES,
     LEADER_FEATURE_NAME,
@@ -2787,10 +2788,11 @@ def _apply_screen_verdict(
     leader_days: Mapping[str, int] | None = None,
 ) -> None:
     """Overlay the multi-slice, significance-aware screen on the postmortem."""
+    step = policy.get("screen_confidence_step")
     confidence = _screen_confidence(
         attempt_index,
         base=float(policy.get("screen_confidence_base") or 0.70),
-        step=float(policy.get("screen_confidence_step") or 0.10),
+        step=0.0 if step is None else float(step),
     )
     reference_slices = reference.get("slices") or {}
     reports = {
@@ -4141,6 +4143,13 @@ def _isolated_economic_gate(
     )
 
 
+def _campaign_trials(store: JobStore, job_id: str) -> int:
+    """Quick attempts spent so far in the active campaign — the searches that
+    produced whatever is being certified."""
+    state = store.read_json(job_id, CAMPAIGN_STATE_PATH, default={}) or {}
+    return max(1, int((state.get("counts") or {}).get("quick_attempts") or 0))
+
+
 def _economic_gate_child(
     repo_root: Path,
     job_id: str,
@@ -4165,6 +4174,7 @@ def _economic_gate_child(
             ),
             probation=True,
             store=store,
+            trials=_campaign_trials(store, job_id),
             dataset_root=(
                 store.job_dir(job_id) / CAMPAIGN_ROOT / campaign_id / CAMPAIGN_DATA_ROOT
             ),
@@ -4728,6 +4738,11 @@ def campaign_prompt_block(
             "finalist_requires_24h_operational_burn_in": True,
             "starter_seed_evidence_resets": True,
             "refuted_family_matching": "exact_free_form_family_v1",
+            # The searches spent so far: full development certifies the
+            # validation window against their expected maximum t.
+            "trials_so_far": int(
+                (state.get("counts") or {}).get("quick_attempts") or 0
+            ),
         },
         "deadline_elapsed": deadline_elapsed,
     }
@@ -5215,6 +5230,14 @@ def _full_dev(
     compact_validation["forensics"] = _validation_forensics(
         validation_result, validation
     )
+    # The validation window is judged against what this campaign's search
+    # would have produced from noise: its daily log returns must clear the
+    # expected maximum t of the quick attempts spent so far.
+    validation_haircut = haircut(
+        [value for _, value in daily_log_returns(validation_result.equity_curve)],
+        _campaign_trials(store, job_id),
+    )
+    compact_validation["haircut"] = validation_haircut
     del validation_result
     gc.collect()
     stress_result, stress_stats = _window_result(
@@ -5276,6 +5299,13 @@ def _full_dev(
         target_days=len(validation_regime.get("target_daily") or []),
         min_target_days=int(regime_config.get("min_target_days") or 10),
         audit_passed=bool(calibration["audit_passed"]),
+        haircut_cleared=validation_haircut.get("cleared"),
+        haircut_text=(
+            f"t {validation_haircut['t_stat']} vs {validation_haircut['expected_max_t']} "
+            f"expected from {validation_haircut['trials']} trials"
+            if validation_haircut.get("t_stat") is not None
+            else None
+        ),
     )
     passed = bool(verdict["passed"])
     return {
@@ -5382,6 +5412,8 @@ def _full_dev_verdict(
     target_days: int,
     min_target_days: int,
     audit_passed: bool,
+    haircut_cleared: bool | None = None,
+    haircut_text: str | None = None,
 ) -> dict[str, Any]:
     """Status, evidence, and failure codes for one full-development result.
 
@@ -5397,6 +5429,7 @@ def _full_dev_verdict(
         and stress_return > 0.0
         and outside_loss_ok
         and audit_passed
+        and haircut_cleared is not False
     )
     failure_codes: list[str] = []
     if not passed and not awaiting:
@@ -5406,13 +5439,17 @@ def _full_dev_verdict(
             failure_codes.append(
                 "negative_in_target_regime" if specialized else "negative_after_costs"
             )
+        if haircut_cleared is False:
+            failure_codes.append("validation_not_significant_after_trials")
         if train_return > 0.0 and validation_return < 0.0:
             failure_codes.append("screen_inversion")
         if not outside_loss_ok:
             failure_codes.append("out_of_regime_loss_budget")
     if passed:
         status = "dev_frontier"
-        evidence = "positive independent validation with sufficient activity"
+        evidence = "positive independent validation with sufficient activity" + (
+            f"; cleared the trial haircut ({haircut_text})" if haircut_text else ""
+        )
     elif awaiting:
         status = "awaiting_regime"
         evidence = (
@@ -5424,7 +5461,12 @@ def _full_dev_verdict(
         evidence = (
             "failed independent validation: activity below elite floor"
             if validation_trades < minimum_validation_trades
-            else "failed independent validation"
+            else (
+                f"failed independent validation: not significant after the "
+                f"campaign's trials ({haircut_text})"
+                if haircut_cleared is False and validation_return > 0.0
+                else "failed independent validation"
+            )
         )
     return {
         "status": status,
@@ -5927,11 +5969,14 @@ def _screen_verdict(
         code = "cost_not_covered"
     elif overdrawn:
         code = "screen_slice_loss_bound"
-    elif combined > 0 and not significant:
-        code = "screen_edge_not_significant"
+    # Significance is recorded, not required: 35-day slices cannot certify a
+    # realistic edge (a lower bound above zero needs an annualized Sharpe
+    # near 1.7 at 70%), so the screen filters and full development certifies
+    # on the whole validation window against the campaign's trial count.
     return {
-        "passed": combined > 0 and significant and code is None,
+        "passed": combined > 0 and code is None,
         "code": code,
+        "edge_significant": significant,
         "combined_net_return": round(combined, 6),
         "pooled_lcb": pooled_lcb,
         "cost_coverage": cost_coverage,

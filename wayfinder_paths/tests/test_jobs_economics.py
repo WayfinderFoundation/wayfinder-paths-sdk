@@ -502,3 +502,39 @@ def test_chained_fold_equity_removes_restart_artifacts() -> None:
     assert chained["net_log_growth"] == pytest.approx(2 * math.log(1.2))
     assert pool[-1]["equity"] == pytest.approx(14_400.0)
     assert _chain_fold_equity([], fold_a) == fold_a
+
+
+def test_readiness_applies_the_trial_haircut_outside_probation() -> None:
+    from wayfinder_paths.jobs.gating import _gate_haircut
+
+    constitution = json.loads(json.dumps(DEFAULT_CONSTITUTION))
+    below = {"trials": 21, "t_stat": 1.1, "expected_max_t": 1.9, "cleared": False}
+    result = evaluate_economic_readiness(_ok_report(), constitution, haircut=below)
+    assert (
+        result["ready"] is False and "21-trial expected maximum" in result["reasons"][0]
+    )
+    # Probation is the forward certificate: the haircut is recorded, not binding.
+    assert (
+        evaluate_economic_readiness(
+            _ok_report(), constitution, probation=True, haircut=below
+        )["ready"]
+        is True
+    )
+    unknown = {"trials": 21, "t_stat": None, "expected_max_t": 1.9, "cleared": None}
+    assert (
+        evaluate_economic_readiness(_ok_report(), constitution, haircut=unknown)[
+            "ready"
+        ]
+        is True
+    )
+    assert _gate_haircut({"status": "ok"}, None) is None
+    cleared = _gate_haircut(
+        {"status": "ok", "paired_incumbent_delta": {"t_stat": 2.5}}, 21
+    )
+    assert cleared["cleared"] is True and cleared["trials"] == 21
+    assert (
+        _gate_haircut({"status": "ok", "paired_incumbent_delta": {"t_stat": 1.0}}, 21)[
+            "cleared"
+        ]
+        is False
+    )

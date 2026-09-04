@@ -511,3 +511,38 @@ def test_leader_feature_columns_are_causal_and_coded() -> None:
     onto = leader_feature_columns(leaders, index=panel_index)["leader_state"]
     assert onto.loc[panel_index[12 * 24 * 20 + 5]] == LEADER_CODES["rally"]
     assert pd.isna(onto.loc[panel_index[12 * 24 * 3]])
+
+
+def test_full_dev_verdict_applies_the_trial_haircut() -> None:
+    from wayfinder_paths.jobs.evolution_campaign import _full_dev_verdict
+
+    base = {
+        "specialized": False,
+        "valid": True,
+        "validation_trades": 20,
+        "minimum_validation_trades": 8,
+        "train_return": 0.05,
+        "validation_return": 0.03,
+        "stress_return": 0.02,
+        "outside_loss_ok": True,
+        "target_days": 0,
+        "min_target_days": 10,
+        "audit_passed": True,
+    }
+    assert _full_dev_verdict(**base)["passed"] is True
+    failed = _full_dev_verdict(
+        **base,
+        haircut_cleared=False,
+        haircut_text="t 1.1 vs 1.9 expected from 21 trials",
+    )
+    assert failed["passed"] is False
+    assert "validation_not_significant_after_trials" in failed["failure_codes"]
+    assert "21 trials" in failed["evidence"]
+    cleared = _full_dev_verdict(
+        **base, haircut_cleared=True, haircut_text="t 2.5 vs 1.9"
+    )
+    assert (
+        cleared["passed"] is True and "cleared the trial haircut" in cleared["evidence"]
+    )
+    # Too short a window to say anything does not block.
+    assert _full_dev_verdict(**base, haircut_cleared=None)["passed"] is True
