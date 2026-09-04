@@ -622,6 +622,10 @@ def test_validated_signal_usage_counts_hypotheses_that_cite_the_pack() -> None:
         "offered": 3,
         "replicated": 0,
         "hypotheses_citing": 1,
+        "policy_configs": 0,
+        "policy_survivors": 0,
+        "policy_falsified": 0,
+        "policy_citing": 0,
         "composition_rounds": 0,
         "composition_proposals": 0,
         "composition_survivors": 0,
@@ -2034,3 +2038,44 @@ def test_prepare_sandbox_refuses_unset_env_placeholders(
     monkeypatch.setenv("BENCH_PREFLIGHT_KEY", "k")
     monkeypatch.setenv("BENCH_PREFLIGHT_TOKEN", "t")
     _require_config_env(config_path)
+
+
+def test_validated_signal_usage_counts_policy_scan_citations() -> None:
+    from wayfinder_paths.jobs.bench.runner import _validated_signal_usage
+
+    class Store:
+        def __init__(self, docs):
+            self.docs = docs
+
+        def read_json(self, job_id, relative, default=None):
+            return self.docs.get(relative, default)
+
+    store = Store(
+        {
+            "pack.json": {
+                "validated_signals": {"available": True, "signals": []},
+                "policy_scan": {
+                    "available": True,
+                    "configs": 1797,
+                    "survivors": [{"pointer": "/policy_scan/survivors/0"}],
+                    "falsified": ["donchian_breakout", "time_series_trend"],
+                },
+            },
+            "design.json": {
+                "hypotheses": [
+                    {"evidence_refs": ["/policy_scan/survivors/0"]},
+                    {"evidence_refs": ["/baseline/reason"]},
+                ]
+            },
+        }
+    )
+    usage = _validated_signal_usage(
+        store,
+        "demo",
+        {"diagnostic_pack": "pack.json", "campaign_design": "design.json"},
+    )
+    assert usage["policy_configs"] == 1797
+    assert usage["policy_survivors"] == 1
+    assert usage["policy_falsified"] == 2
+    assert usage["policy_citing"] == 1
+    assert usage["hypotheses_citing"] == 0

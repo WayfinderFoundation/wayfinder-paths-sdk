@@ -968,3 +968,48 @@ def test_fit_pack_trims_signal_tiers_before_the_fail_closed_shape() -> None:
     assert pack_bytes(fitted) == len(
         (json.dumps(fitted, indent=2, sort_keys=True) + "\n").encode()
     )
+
+
+def test_fit_pack_trims_the_policy_scan_before_dropping_it() -> None:
+    from wayfinder_paths.jobs.evolution_diagnostics import (
+        DIAGNOSTIC_PACK_MAX_BYTES,
+        _fit_pack,
+    )
+
+    def survivor(size: int) -> dict:
+        return {
+            "pointer": "/policy_scan/survivors/0",
+            "family": "cross_sectional_rank",
+            "recipe": {"params": {"note": "x" * size}},
+        }
+
+    def block(row_size: int) -> dict:
+        return {
+            "available": True,
+            "configs": 1797,
+            "families": [
+                {"name": f"f{i}", "verdict": "survivor", "best": {"blob": "y" * 2_000}}
+                for i in range(7)
+            ],
+            "survivors": [survivor(row_size) for _ in range(6)],
+        }
+
+    base = {
+        "schema_version": "2.0",
+        "campaign_id": "c",
+        "created_at": "t",
+        "citation_contract": {},
+        "baseline": {"plane": "historical", "available": True},
+        "prior_campaign_lessons": {"outcomes": [{"note": "z" * 4_000}]},
+    }
+    fitted = _fit_pack({**base, "policy_scan": block(9_500)})
+    assert "pack_truncated" not in fitted
+    scan = fitted["policy_scan"]
+    assert all("best" not in family for family in scan["families"])
+    assert len(scan["survivors"]) == 3 and scan["survivors_truncated"] == 3
+    # The block goes whole only after the research blocks, and says so.
+    huge = _fit_pack({**base, "policy_scan": block(30_000)})
+    assert "policy_scan" not in huge
+    assert huge["policy_scan_truncated"]["survivors"] == 6
+    assert "pack_truncated" not in huge
+    assert len(json.dumps(huge)) <= DIAGNOSTIC_PACK_MAX_BYTES

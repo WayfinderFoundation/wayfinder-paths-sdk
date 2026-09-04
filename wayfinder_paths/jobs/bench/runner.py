@@ -1035,19 +1035,25 @@ def _validated_signal_usage(
     )
     composition = state.get("composition") or {}
     history = list(composition.get("history") or [])
+    policy = pack.get("policy_scan") or {}
     citing = 0
+    policy_citing = 0
     for hypothesis in design.get("hypotheses") or []:
-        if any(
-            str(ref).startswith("/validated_signals/")
-            for ref in hypothesis.get("evidence_refs") or []
-        ):
+        refs = [str(ref) for ref in hypothesis.get("evidence_refs") or []]
+        if any(ref.startswith("/validated_signals/") for ref in refs):
             citing += 1
+        if any(ref.startswith("/policy_scan/") for ref in refs):
+            policy_citing += 1
     return {
         "enabled": bool(validated),
         "available": bool(validated.get("available")),
         "offered": len(validated.get("signals") or []),
         "replicated": len(validated.get("replicated") or []),
         "hypotheses_citing": citing,
+        "policy_configs": int(policy.get("configs") or 0),
+        "policy_survivors": len(policy.get("survivors") or []),
+        "policy_falsified": len(policy.get("falsified") or []),
+        "policy_citing": policy_citing,
         "composition_rounds": int(composition.get("rounds_used") or 0),
         "composition_proposals": sum(
             len(item.get("proposals") or []) for item in history

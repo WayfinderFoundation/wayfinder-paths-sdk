@@ -6518,3 +6518,90 @@ def test_cited_mechanisms_export_the_signal_where_it_sits_now(tmp_path) -> None:
     assert source[0]["signal_id"] == a["signal_id"]
     wrong = _cited_signals(store, job_id, manifest, [a["pointer"]])
     assert wrong[0]["signal"] == "ws_spring_twin"
+
+
+def test_policy_scan_survivors_feed_the_design_and_count_as_evidence(tmp_path) -> None:
+    store, job_id = _investigative_job(tmp_path)
+    improver_path = store.job_dir(job_id) / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"]["signal_first_seeding"] = True
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    pack_path = str(state["diagnostic_pack"])
+    pack = store.read_json(job_id, pack_path)
+    # No frozen bars: the scan reports why it is unavailable and the prompt
+    # stays silent about policies.
+    assert pack["policy_scan"]["available"] is False
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert prompt and "Policy scan (" not in prompt["next_action"]
+
+    pack["validated_signals"] = {
+        "available": True,
+        "signals": [
+            {
+                "symbol": "HYPE",
+                "signal": "new_low_5",
+                "timeframe": "1h",
+                "horizon": 4,
+                "direction": "long",
+                "events_per_day": 0.8,
+                "how_to_use": "in precompute(): library_signal_on_bars(...)",
+            }
+        ],
+        "near_misses": [],
+    }
+    pack["policy_scan"] = {
+        "available": True,
+        "configs": 1797,
+        "symbols": ["AAA", "BBB", "CCC", "PAXG"],
+        "families": [
+            {"name": "cross_sectional_rank", "verdict": "survivor"},
+            {"name": "donchian_breakout", "verdict": "falsified"},
+        ],
+        "falsified": ["donchian_breakout"],
+        "survivors": [
+            {
+                "pointer": "/policy_scan/survivors/0",
+                "policy_id": "abc123abc123",
+                "family": "cross_sectional_rank",
+                "kernel": "wayfinder_paths.jobs.strategies.mixed_momentum_rank",
+                "rank": {"return": 0.29, "sharpe": 2.9},
+                "report": {"return": 0.17, "sharpe": 3.9},
+                "full": {
+                    "return": 0.5,
+                    "sharpe": 3.1,
+                    "max_drawdown": -0.1,
+                    "rebalances": 378,
+                },
+                "by_regime": {"bear": 0.32, "chop": 0.21},
+                "recipe": {
+                    "module": "wayfinder_paths.jobs.strategies.mixed_momentum_rank",
+                    "build": "build_strategy",
+                    "params": {"momentum_bars": 1920, "rank_legs": 1},
+                },
+            }
+        ],
+    }
+    store.write_json(job_id, pack_path, pack)
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=2))
+    assert prompt
+    text = prompt["next_action"]
+    assert "Policy scan (1797 portfolio configurations" in text
+    assert "cross_sectional_rank via mixed_momentum_rank" in text
+    assert "cite /policy_scan/survivors/0" in text
+    assert "bear +32.0%" in text
+    assert "Falsified on this panel" in text and "donchian_breakout" in text
+    # A grounded slot citing only the baseline is rejected, and the message
+    # names both kinds of evidence the pack offers.
+    with pytest.raises(
+        ValueError, match="must build on a validated signal or a policy-scan survivor"
+    ):
+        submit_campaign_design(store, job_id, campaign_design=_campaign_design())
+    design = _campaign_design()
+    for hypothesis in design["hypotheses"]:
+        hypothesis["evidence_refs"] = ["/policy_scan/survivors/0"]
+    try:
+        submit_campaign_design(store, job_id, campaign_design=design)
+    except ValueError as exc:
+        assert "must build on" not in str(exc)

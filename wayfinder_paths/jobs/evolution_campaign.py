@@ -127,6 +127,7 @@ from wayfinder_paths.jobs.indicators import REGIME_LABELS, wilder_rsi
 from wayfinder_paths.jobs.isolated_phase import run_isolated_phase
 from wayfinder_paths.jobs.models import utc_now_iso
 from wayfinder_paths.jobs.multiple_testing import haircut
+from wayfinder_paths.jobs.policy_scan import policy_scan
 from wayfinder_paths.jobs.regime import (
     LEADER_CODES,
     LEADER_FEATURE_NAME,
@@ -595,12 +596,21 @@ def _start_campaign(
             validated_signals = _validated_signals(
                 store, job_id, campaign_root, policy=campaign_policy
             )
+            policy_scan_block = _policy_scan_block(
+                store, job_id, campaign_root, policy=campaign_policy
+            )
     except ComputeLockBusy as exc:
         # Seeding never blocks a start; the designer reads why the feed is
         # empty and the next campaign scans again.
+        busy = {"available": False, "reason": f"compute budget busy: {exc}"}
         validated_signals = (
-            {"available": False, "reason": f"compute budget busy: {exc}"}
+            dict(busy)
             if bool(campaign_policy.get("signal_first_seeding", False))
+            else None
+        )
+        policy_scan_block = (
+            dict(busy)
+            if bool(campaign_policy.get("policy_scan_enabled", True))
             else None
         )
     diagnostic_pack = build_diagnostic_pack(
@@ -613,6 +623,7 @@ def _start_campaign(
         regime_context=regime_context,
         research_ideation=research_ideation,
         validated_signals=validated_signals,
+        policy_scan=policy_scan_block,
     )
     diagnostic_path = campaign_root / DIAGNOSTIC_PACK
     atomic_write_json(diagnostic_path, diagnostic_pack)
@@ -1231,6 +1242,75 @@ def _signal_recipe(
         text += f"; gate: {source} {gate} ({label})"
     if row.get("execution_hint") in {"passive_only", "mechanism_required"}:
         text += "; entry: passive (resting limit at an offset, passive take-profit)"
+    return text
+
+
+def _policy_scan_block(
+    store: JobStore, job_id: str, campaign_root: Path, *, policy: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Portfolio policies swept on the train panel: the material a rotation,
+    sleeve, rank or relay slot builds on, beside the families this panel
+    falsified. Survivors carry the kernel and params that instantiate them."""
+    if not bool(policy.get("policy_scan_enabled", True)):
+        return None
+    try:
+        frames = _campaign_scan_frames(store, job_id, campaign_root, policy=policy)
+        block = policy_scan(
+            frames["train"],
+            bar_seconds=int(frames["bar_seconds"]),
+            cost_bps_per_side=float(frames["taker_round_trip_bps"]) / 2.0,
+            limit=int(policy.get("policy_scan_limit") or 6),
+        )
+    except Exception as exc:  # noqa: BLE001 - a side panel never blocks a start
+        return {"available": False, "reason": str(exc)[:240]}
+    block["source"] = "train split of the campaign dataset, common history"
+    return block
+
+
+def _policy_scan_instruction(block: Mapping[str, Any]) -> str:
+    if not block or not block.get("available"):
+        return ""
+    survivors = list(block.get("survivors") or [])
+    falsified = list(block.get("falsified") or [])
+    text = (
+        f"Policy scan ({int(block.get('configs') or 0)} portfolio configurations "
+        f"across {len(block.get('families') or [])} families on "
+        f"{', '.join(block.get('symbols') or [])}, taker cost charged, ranked on "
+        "the first part of the train panel and reported on the rest): "
+    )
+    if survivors:
+        text += (
+            "survivors "
+            + "; ".join(
+                f"[{index}] {row['family']} via "
+                f"{str(row.get('kernel') or 'no kernel').rsplit('.', 1)[-1]} "
+                f"(rank Sharpe {float(row['rank']['sharpe']):+.1f}, report Sharpe "
+                f"{float(row['report']['sharpe']):+.1f} / "
+                f"{float(row['report']['return']):+.1%}, "
+                f"{int(row['full']['rebalances'])} rebalances"
+                + (
+                    "; "
+                    + ", ".join(f"{k} {v:+.1%}" for k, v in row["by_regime"].items())
+                    if row.get("by_regime")
+                    else ""
+                )
+                + f"; cite /policy_scan/survivors/{index})"
+                for index, row in enumerate(survivors)
+            )
+            + ". A survivor with a kernel is instantiated by re-exporting the "
+            "kernel with its recipe params (/policy_scan/survivors/<i>/recipe; no "
+            "new code) and counts as the evidence a grounded de_novo slot must "
+            "cite. "
+        )
+    else:
+        text += "no configuration was consistent on both windows. "
+    if falsified:
+        text += (
+            "Falsified on this panel (the family's best in-sample row lost more "
+            "than the slice bound out of sample): "
+            + ", ".join(falsified)
+            + " — do not spend attempts there. "
+        )
     return text
 
 
@@ -3473,7 +3553,13 @@ def _validate_campaign_design(
         else ("replicated", "/validated_signals/replicated/")
     )
     pool = offered or list(signal_block.get("replicated") or [])
-    if pool:
+    # A policy-scan survivor is evidence of the same standing: a portfolio
+    # policy consistent on both scan windows, instantiable from a kernel.
+    policy_pool = list(
+        (diagnostic_pack.get("policy_scan") or {}).get("survivors") or []
+    )
+    accepted_prefixes = (prefix, *(("/policy_scan/survivors/",) if policy_pool else ()))
+    if pool or policy_pool:
         for slot in grounded:
             if slot["parent_source"] not in {"de_novo", "research_context"}:
                 continue
@@ -3483,15 +3569,22 @@ def _validate_campaign_design(
                 )
                 or []
             )
-            if not any(str(ref).startswith(prefix) for ref in refs):
+            if not any(
+                str(ref).startswith(accepted)
+                for ref in refs
+                for accepted in accepted_prefixes
+            ):
                 names = ", ".join(
                     f"{row.get('signal')} {row.get('symbol')} {row.get('timeframe')}"
                     for row in pool[:6]
                 )
                 raise ValueError(
-                    f"slot {slot['slot_id']} must build on a {tier} signal: its "
-                    f"hypothesis cites none of {prefix}<i> while the pack offers "
-                    f"{len(pool)} ({names})"
+                    f"slot {slot['slot_id']} must build on a {tier} signal"
+                    + (" or a policy-scan survivor" if policy_pool else "")
+                    + ": its hypothesis cites none of "
+                    + ", ".join(f"{accepted}<i>" for accepted in accepted_prefixes)
+                    + f" while the pack offers {len(pool) + len(policy_pool)} "
+                    f"({names})"
                 )
     sources = {str(slot["parent_source"]) for slot in grounded}
     if "starter_seed" not in sources:
@@ -6365,6 +6458,7 @@ def campaign_prompt_block(
                 job_id, diagnostic_pack, [*validated_rows, *replicated_rows]
             )
             + _cross_sectional_instruction(validated.get("cross_sectional") or {})
+            + _policy_scan_instruction(diagnostic_pack.get("policy_scan") or {})
         )
         regime_context = manifest.get("regime_context") or {}
         specialist_design = bool(

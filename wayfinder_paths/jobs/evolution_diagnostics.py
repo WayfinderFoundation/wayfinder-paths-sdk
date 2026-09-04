@@ -371,6 +371,7 @@ def build_diagnostic_pack(
     regime_context: Mapping[str, Any] | None = None,
     validated_signals: Mapping[str, Any] | None = None,
     research_ideation: Mapping[str, Any] | None = None,
+    policy_scan: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Freeze compact existing diagnostics with explicit plane/provenance."""
     artifacts: dict[str, Any] = {}
@@ -456,6 +457,7 @@ def build_diagnostic_pack(
             else {}
         ),
         **({"validated_signals": dict(validated_signals)} if validated_signals else {}),
+        **({"policy_scan": dict(policy_scan)} if policy_scan else {}),
         **({"research_ideation": dict(research_ideation)} if research_ideation else {}),
     }
     return _fit_pack(pack)
@@ -1429,6 +1431,34 @@ _LESSON_BULK_KEYS = frozenset({"postmortem", "validation_forensics"})
 _LESSON_PACK_OUTCOMES = 12
 
 
+def _trim_policy_scan(
+    pack: dict[str, Any], size: Callable[[], int], *, deep: bool = False
+) -> None:
+    """Survivors are the feed; the family table is context. Drop the family
+    bests first, then cap survivors to three; the block goes whole only in
+    the deep pass, with a marker that keeps the cut visible."""
+    block = pack.get("policy_scan")
+    if not isinstance(block, dict) or size() <= DIAGNOSTIC_PACK_MAX_BYTES:
+        return
+    for family in block.get("families") or []:
+        if isinstance(family, dict):
+            family.pop("best", None)
+    if size() <= DIAGNOSTIC_PACK_MAX_BYTES:
+        return
+    survivors = list(block.get("survivors") or [])
+    total = len(survivors) + int(block.get("survivors_truncated") or 0)
+    if len(survivors) > 3:
+        block["survivors"] = survivors[:3]
+        block["survivors_truncated"] = total - 3
+    if not deep or size() <= DIAGNOSTIC_PACK_MAX_BYTES:
+        return
+    pack.pop("policy_scan")
+    pack["policy_scan_truncated"] = {
+        "reason": "diagnostic_pack_byte_budget",
+        "survivors": total,
+    }
+
+
 def _trim_mechanism_grids(pack: dict[str, Any], size: Callable[[], int]) -> None:
     grids = pack.get("mechanism_grids")
     if not isinstance(grids, list) or size() <= DIAGNOSTIC_PACK_MAX_BYTES:
@@ -1517,6 +1547,7 @@ def _fit_pack(pack: dict[str, Any]) -> dict[str, Any]:
     # keeps its lessons and research context beside the feed.
     _trim_signal_tiers(pack, size, ((10, 8, 3), (8, 6, 0), (6, 4, 0)))
     _trim_mechanism_grids(pack, size)
+    _trim_policy_scan(pack, size)
     for key in ("attribution", "prior_campaign_lessons", "research_context"):
         if size() <= DIAGNOSTIC_PACK_MAX_BYTES:
             break
@@ -1529,6 +1560,7 @@ def _fit_pack(pack: dict[str, Any]) -> dict[str, Any]:
         }
     _trim_mechanism_grids(pack, size)
     _trim_signal_tiers(pack, size, ((4, 2, 0), (2, 1, 0)))
+    _trim_policy_scan(pack, size, deep=True)
     if size() > DIAGNOSTIC_PACK_MAX_BYTES:
         baseline = pack.get("baseline") or {}
         pack["baseline"] = {
