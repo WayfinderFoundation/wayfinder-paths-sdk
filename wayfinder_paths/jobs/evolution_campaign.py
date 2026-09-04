@@ -1126,7 +1126,15 @@ def _signal_row_key(row: Mapping[str, Any]) -> str:
     """The stable identity of an offered row: what it measures, where."""
     return "|".join(
         str(row.get(key) if row.get(key) is not None else "")
-        for key in ("signal", "symbol", "timeframe", "horizon", "regime")
+        for key in (
+            "signal",
+            "symbol",
+            "timeframe",
+            "horizon",
+            "regime",
+            "direction",
+            "expression",
+        )
     )
 
 
@@ -2127,6 +2135,9 @@ def _composition_state(policy: Mapping[str, Any]) -> dict[str, Any]:
         "rounds_used": 0,
         "history": [],
         "problems": None,
+        # name -> expression: a proposal name means one definition for the
+        # whole campaign, so a citation never changes meaning under it.
+        "names": {},
     }
 
 
@@ -2534,6 +2545,14 @@ def _merge_compose_survivors(
         ]
         block[tier_key] = [*kept, *existing][: 2 * max(1, int(limit))]
     composed = dict(block.get("composition") or {})
+    # The metadata is in the pack BEFORE the fit, at its largest possible
+    # values, so the size the fitter enforces is the size that is written.
+    block["composition"] = {
+        "rounds": round_number,
+        "survivors": int(composed.get("survivors") or 0) + len(kept_ids),
+        "scanned_survivors": int(composed.get("scanned_survivors") or 0)
+        + len(survivors),
+    }
     fitted = fit_diagnostic_pack(json.loads(json.dumps(pack, default=str)))
     if fitted.get("pack_truncated"):
         raise ValueError(
@@ -2562,11 +2581,10 @@ def _merge_compose_survivors(
             assigned.add(signal_id)
         pointers.append(pointer)
     merged = sum(pointer is not None for pointer in pointers)
+    # Never larger than the placeholder the fitter measured.
     fitted_block["composition"] = {
-        "rounds": round_number,
+        **dict(fitted_block.get("composition") or {}),
         "survivors": int(composed.get("survivors") or 0) + merged,
-        "scanned_survivors": int(composed.get("scanned_survivors") or 0)
-        + len(survivors),
     }
     atomic_write_json(pack_path, fitted)
     manifest["diagnostic_pack"] = {
@@ -2637,6 +2655,15 @@ def submit_signal_proposals(
             )
             return {"status": "ended", "round": round_number, "stage": "design"}
         defs, problems = _compile_signal_proposals(proposals)
+        registry = dict(composition.get("names") or {})
+        for spec in defs:
+            previous = registry.get(spec.name)
+            if previous is not None and previous != spec.expression:
+                problems.append(
+                    f"{spec.name!r} was proposed in an earlier round with a different "
+                    "expression; names are immutable within a campaign, choose a new "
+                    "name"
+                )
         if problems:
             composition["problems"] = problems[:12]
             _save_campaign(store, job_id, state)
@@ -2713,6 +2740,10 @@ def submit_signal_proposals(
             }
         composition["rounds_used"] = round_number
         composition["problems"] = None
+        composition["names"] = {
+            **dict(composition.get("names") or {}),
+            **{spec.name: str(spec.expression or "") for spec in defs},
+        }
         composition["history"] = [
             *list(composition.get("history") or []),
             {
@@ -2903,13 +2934,17 @@ def mechanism_grid(
         tier, index, entry = _resolve_signal_pointer(pack, signal_ref)
         pointer = f"/validated_signals/{tier}/{index}"
         chosen_side = str(side or entry.get("direction") or "long")
+        wanted_id = str(entry.get("signal_id") or _signal_id(entry))
+        # Cached by what the signal IS, not where it sits: a later round
+        # prepends rows and moves every positional pointer.
         for position, record in enumerate(grids):
             if (
-                record.get("signal_ref") == pointer
+                record.get("signal_id") == wanted_id
                 and record.get("side") == chosen_side
             ):
                 return {
                     **record,
+                    "signal_ref": pointer,
                     "status": "ok",
                     "pointer": f"/mechanism_grids/{position}",
                     "cached": True,
@@ -2971,11 +3006,12 @@ def mechanism_grid(
         grids = list(pack.get("mechanism_grids") or [])
         for position, existing in enumerate(grids):
             if (
-                existing.get("signal_ref") == pointer
+                existing.get("signal_id") == wanted_id
                 and existing.get("side") == chosen_side
             ):
                 return {
                     **existing,
+                    "signal_ref": pointer,
                     "status": "ok",
                     "pointer": f"/mechanism_grids/{position}",
                     "cached": True,

@@ -5540,6 +5540,7 @@ def test_compose_stage_scans_proposals_and_feeds_the_design(tmp_path) -> None:
         "rounds_used": 0,
         "history": [],
         "problems": None,
+        "names": {},
     }
     prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
     assert prompt and prompt["session_stage"] == "compose"
@@ -6316,3 +6317,129 @@ def test_signal_ids_survive_a_second_round_and_guard_the_grid(
         store, job_id, signal_ref=f"/validated_signals/{tier}/{moved}"
     )
     assert record["status"] == "ok" and record["signal_id"] == dip["signal_id"]
+
+
+def test_grid_cache_keys_on_signal_identity_across_a_prepending_round(
+    tmp_path, monkeypatch
+) -> None:
+    """A grid computed for signal A before round two must not be handed to
+    signal B, which round two prepends into A's old position."""
+    from wayfinder_paths.jobs import evolution_campaign as campaign_module
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        mechanism_grid,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _composable_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    first = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_dip_3",
+                "family": "breakout",
+                "description": "3-bar low",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1)",
+            }
+        ],
+    )
+    a = next(row for row in first["survivors"] if row["merged"])
+    assert a["pointer"].endswith("/0")
+    grid_a = mechanism_grid(store, job_id, signal_ref=a["pointer"], side="long")
+    assert grid_a["status"] == "ok" and grid_a["cached"] is False
+    assert grid_a["signal_id"] == a["signal_id"]
+    second = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_dip_3_twin",
+                "family": "breakout",
+                "description": "the same events",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1) & (close(f) > 0)",
+            }
+        ],
+    )
+    b = next(row for row in second["survivors"] if row["merged"])
+    assert b["pointer"] == a["pointer"]  # B now sits where A sat
+    assert b["signal_id"] != a["signal_id"]
+    sweeps: list[str] = []
+    original = campaign_module._sweep_signal_mechanism
+
+    def counting_sweep(store_, job_id_, campaign_root, entry, **kwargs):
+        sweeps.append(str(entry["signal"]))
+        return original(store_, job_id_, campaign_root, entry, **kwargs)
+
+    monkeypatch.setattr(campaign_module, "_sweep_signal_mechanism", counting_sweep)
+    grid_b = mechanism_grid(store, job_id, signal_ref=b["pointer"], side="long")
+    assert grid_b["cached"] is False and grid_b["signal_id"] == b["signal_id"]
+    assert grid_b["signal"] == "ws_dip_3_twin" and sweeps == ["ws_dip_3_twin"]
+    assert grid_b["pointer"] == "/mechanism_grids/1"
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    tier = a["pointer"].split("/")[2]
+    moved = next(
+        index
+        for index, row in enumerate(pack["validated_signals"][tier])
+        if row["signal_id"] == a["signal_id"]
+    )
+    again = mechanism_grid(
+        store, job_id, signal_ref=f"/validated_signals/{tier}/{moved}", side="long"
+    )
+    assert again["cached"] is True and again["pointer"] == "/mechanism_grids/0"
+    assert again["signal_ref"] == f"/validated_signals/{tier}/{moved}"
+    assert sweeps == ["ws_dip_3_twin"]
+    assert len(pack["mechanism_grids"]) == 2
+    assert _active_campaign(store, job_id)["stage"] == "design"
+
+
+def test_proposal_names_are_immutable_within_a_campaign(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        _signal_id,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _composable_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    start_campaign(store, job_id, now=started)
+    proposal = {
+        "name": "ws_dip_3",
+        "family": "breakout",
+        "description": "3-bar low",
+        "min_bars": 5,
+        "expression": "new_extreme(f, 3, -1)",
+    }
+    first = submit_signal_proposals(store, job_id, signal_proposals=[proposal])
+    assert first["status"] == "scanned"
+    state = _active_campaign(store, job_id)
+    assert state["composition"]["names"] == {"ws_dip_3": "new_extreme(f, 3, -1)"}
+    altered = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[{**proposal, "expression": "new_extreme(f, 5, -1)"}],
+    )
+    assert altered["status"] == "rejected"
+    assert "immutable" in altered["problems"][0]
+    assert _active_campaign(store, job_id)["composition"]["rounds_used"] == 1
+    # The same name with the same definition is the same row, and the
+    # identity hash separates a changed definition or side regardless.
+    same = submit_signal_proposals(store, job_id, signal_proposals=[proposal])
+    assert same["status"] == "scanned"
+    row = {
+        "signal": "x",
+        "symbol": "IMX",
+        "timeframe": "1h",
+        "horizon": 1,
+        "regime": None,
+    }
+    assert _signal_id({**row, "direction": "long"}) != _signal_id(
+        {**row, "direction": "short"}
+    )
+    assert _signal_id({**row, "expression": "a"}) != _signal_id(
+        {**row, "expression": "b"}
+    )
