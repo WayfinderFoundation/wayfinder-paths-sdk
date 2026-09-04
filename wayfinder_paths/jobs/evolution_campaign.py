@@ -1088,6 +1088,43 @@ SIGNAL_RECIPE_NOTES = (
 )
 
 
+# What the pack carries per offered signal: the citation, the statistics the
+# designer reads, the cost decomposition and the recipe. Per-slice t's,
+# fold counts, density and ranking scores stay in the campaign's memory, not
+# in the pack (each pack entry is read by a model turn and costs budget).
+_PACK_SIGNAL_KEYS = (
+    "symbol",
+    "signal",
+    "family",
+    "library",
+    "timeframe",
+    "horizon",
+    "direction",
+    "scope",
+    "regime",
+    "regime_source",
+    "tier",
+    "shortfall",
+    "t_stat",
+    "t_net",
+    "t_net_maker",
+    "q_value",
+    "gross_edge_bps",
+    "edge_net_maker_bps",
+    "execution_hint",
+    "events",
+    "expression",
+    "min_bars",
+    "source",
+    "warmup_bars_required",
+    "how_to_use",
+)
+
+
+def _pack_signal_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    return {key: entry[key] for key in _PACK_SIGNAL_KEYS if key in entry}
+
+
 def _diverse_signal_rows(
     rows: Sequence[dict[str, Any]], limit: int
 ) -> list[dict[str, Any]]:
@@ -1292,8 +1329,10 @@ def _validated_signals(
         "funnel": funnel,
         "train_days": round(frames["train_days"], 2),
         "how_to_use_notes": SIGNAL_RECIPE_NOTES,
-        "signals": selected[:limit],
-        "replicated": _diverse_signal_rows(replicated, limit),
+        "signals": [_pack_signal_entry(row) for row in selected[:limit]],
+        "replicated": [
+            _pack_signal_entry(row) for row in _diverse_signal_rows(replicated, limit)
+        ],
         # Under power or against a slice: direction for the designer, not
         # evidence.
         "near_misses": near[:10],
@@ -2377,7 +2416,7 @@ def _scan_signal_proposals(
             entry["how_to_use"] = _signal_recipe(
                 entry, bar_seconds=bar_seconds, condition=frames["condition_features"]
             )
-            survivors.append(entry)
+            survivors.append(_pack_signal_entry(entry))
     taker = float(frames["taker_round_trip_bps"])
     maker = float(frames["maker_round_trip_bps"])
     report: list[dict[str, Any]] = []
@@ -6564,11 +6603,16 @@ def _cited_signals(
     pack_path = str((manifest.get("diagnostic_pack") or {}).get("path") or "")
     pack = store.read_json(job_id, pack_path, default={}) if pack_path else {}
     block = (pack or {}).get("validated_signals") or {}
+    shared = {
+        key: block[key]
+        for key in ("taker_round_trip_bps", "maker_round_trip_bps")
+        if block.get(key) is not None
+    }
     cited = []
     for tier, index in indices:
         rows = list(block.get(tier) or [])
         if 0 <= index < len(rows):
-            row = rows[index]
+            row = {**shared, **rows[index]}
             cited.append(
                 {
                     "pointer": f"/validated_signals/{tier}/{index}",

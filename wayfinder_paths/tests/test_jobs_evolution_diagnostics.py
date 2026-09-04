@@ -435,7 +435,7 @@ def test_pack_budget_trims_lessons_before_dropping_them() -> None:
     pack = {
         "schema_version": "1.0",
         "baseline": {"stats": {"net_return": 0.0}},
-        "validated_signals": {"blob": "s" * 9_000},
+        "validated_signals": {"blob": "s" * 25_000},
         "research_ideation": {"blob": "i" * 4_500},
         "research_context": {"refuted_families": [{"family": "f"}]},
         "prior_campaign_lessons": {"outcomes": outcomes, "_basis": "prior outcomes"},
@@ -932,15 +932,15 @@ def test_fit_pack_trims_signal_tiers_before_the_fail_closed_shape() -> None:
         "validated_signals": {
             "available": True,
             "signals": [],
-            "replicated": [dict(entry) for _ in range(10)],
-            "near_misses": [dict(entry) for _ in range(10)],
+            "replicated": [dict(entry) for _ in range(40)],
+            "near_misses": [dict(entry) for _ in range(40)],
         },
     }
     fitted = _fit_pack(pack)
     assert "pack_truncated" not in fitted
     block = fitted["validated_signals"]
     assert block["available"] is True
-    assert len(block["replicated"]) <= 6 and len(block["near_misses"]) <= 3
+    assert len(block["replicated"]) <= 8 and len(block["near_misses"]) <= 3
     # A validated tier bloated by composition rounds is capped the same way
     # (loop 0 of 2026-09-04 lost the whole pack to 56 merged survivors).
     bloated = {

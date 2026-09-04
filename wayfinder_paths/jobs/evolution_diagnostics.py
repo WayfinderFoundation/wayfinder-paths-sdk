@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -25,7 +25,13 @@ from wayfinder_paths.jobs.trade_forensics import (
 if TYPE_CHECKING:
     from wayfinder_paths.jobs.execution.simulator import ExecutionBacktestResult
 
-DIAGNOSTIC_PACK_MAX_BYTES = 24_000
+# The pack is read by the designer with a file tool, never inlined into the
+# prompt; the budget guards a single model turn and the opencode heap. 24 KB
+# predated the signal feed: with two offered tiers, the population, the
+# regime rows and composition survivors a full pack wants ~30 KB, and at
+# 24 KB the ladder was dropping lessons and attribution and cutting the
+# tiers to a handful of rows (2026-09-04 replay).
+DIAGNOSTIC_PACK_MAX_BYTES = 40_000
 RESULT_STAT_KEYS = (
     "net_return",
     "trade_count",
@@ -1411,6 +1417,44 @@ _LESSON_BULK_KEYS = frozenset({"postmortem", "validation_forensics"})
 _LESSON_PACK_OUTCOMES = 12
 
 
+def _trim_mechanism_grids(pack: dict[str, Any], size: Callable[[], int]) -> None:
+    grids = pack.get("mechanism_grids")
+    if not isinstance(grids, list) or size() <= DIAGNOSTIC_PACK_MAX_BYTES:
+        return
+    # Four alternatives per grid are enough provenance; the finalist is row 0
+    # either way.
+    for record in grids:
+        if isinstance(record, dict):
+            record["top"] = list(record.get("top") or [])[:4]
+            record["trimmed"] = True
+
+
+def _trim_signal_tiers(
+    pack: dict[str, Any],
+    size: Callable[[], int],
+    caps: Sequence[tuple[int, int, int]],
+) -> None:
+    """Shrink the offered tiers in order (near misses first, then the
+    replicated tail, then the validated tail) while the pack is over budget.
+    Composition rounds prepend survivors, and an untrimmed validated tier
+    once lost the whole pack to the fail-closed shape (2026-09-04)."""
+    signals = pack.get("validated_signals")
+    if not isinstance(signals, dict) or size() <= DIAGNOSTIC_PACK_MAX_BYTES:
+        return
+    for signals_cap, replicated_cap, near_cap in caps:
+        signals["signals"] = list(signals.get("signals") or [])[:signals_cap]
+        signals["replicated"] = list(signals.get("replicated") or [])[:replicated_cap]
+        signals["near_misses"] = list(signals.get("near_misses") or [])[:near_cap]
+        signals["trimmed"] = {
+            "reason": "diagnostic_pack_byte_budget",
+            "signals_cap": signals_cap,
+            "replicated_cap": replicated_cap,
+            "near_misses_cap": near_cap,
+        }
+        if size() <= DIAGNOSTIC_PACK_MAX_BYTES:
+            return
+
+
 def fit_diagnostic_pack(pack: dict[str, Any]) -> dict[str, Any]:
     """The pack's byte budget, applied again after a composition round
     merges survivors into it."""
@@ -1456,6 +1500,11 @@ def _fit_pack(pack: dict[str, Any]) -> dict[str, Any]:
             }
             for outcome in list(lessons.get("outcomes") or [])[:_LESSON_PACK_OUTCOMES]
         ]
+    # The signal tiers are the bulk now; trim them to their offered size and
+    # the grids to their finalists BEFORE the research blocks go, so a design
+    # keeps its lessons and research context beside the feed.
+    _trim_signal_tiers(pack, size, ((10, 8, 3), (8, 6, 0), (6, 4, 0)))
+    _trim_mechanism_grids(pack, size)
     for key in ("attribution", "prior_campaign_lessons", "research_context"):
         if size() <= DIAGNOSTIC_PACK_MAX_BYTES:
             break
@@ -1466,42 +1515,8 @@ def _fit_pack(pack: dict[str, Any]) -> dict[str, Any]:
                 json.dumps(value, default=str, sort_keys=True).encode()
             ).hexdigest(),
         }
-    grids = pack.get("mechanism_grids")
-    if isinstance(grids, list) and size() > DIAGNOSTIC_PACK_MAX_BYTES:
-        # Four alternatives per grid are enough provenance; the finalist is
-        # row 0 either way.
-        for record in grids:
-            if isinstance(record, dict):
-                record["top"] = list(record.get("top") or [])[:4]
-                record["trimmed"] = True
-    signals = pack.get("validated_signals")
-    if isinstance(signals, dict) and size() > DIAGNOSTIC_PACK_MAX_BYTES:
-        # The tiers are what the designer must build on; shrink them in
-        # order (near misses first, then the replicated tail) rather than
-        # lose the block to the fail-closed shape below.
-        # The validated tier is capped too: composition rounds prepend
-        # survivors to it, and a run whose tiers were never trimmed lost the
-        # whole pack to the fail-closed shape (2026-09-04, loop 0).
-        for signals_cap, replicated_cap, near_cap in (
-            (10, 6, 3),
-            (8, 6, 0),
-            (6, 4, 0),
-            (4, 2, 0),
-            (2, 1, 0),
-        ):
-            signals["signals"] = list(signals.get("signals") or [])[:signals_cap]
-            signals["replicated"] = list(signals.get("replicated") or [])[
-                :replicated_cap
-            ]
-            signals["near_misses"] = list(signals.get("near_misses") or [])[:near_cap]
-            signals["trimmed"] = {
-                "reason": "diagnostic_pack_byte_budget",
-                "signals_cap": signals_cap,
-                "replicated_cap": replicated_cap,
-                "near_misses_cap": near_cap,
-            }
-            if size() <= DIAGNOSTIC_PACK_MAX_BYTES:
-                break
+    _trim_mechanism_grids(pack, size)
+    _trim_signal_tiers(pack, size, ((4, 2, 0), (2, 1, 0)))
     if size() > DIAGNOSTIC_PACK_MAX_BYTES:
         baseline = pack.get("baseline") or {}
         pack["baseline"] = {
