@@ -1212,6 +1212,7 @@ def _activate_export(
         )
         dest = destination_root_path / skill_name
         _copy_export_tree(source_dir, dest)
+        _apply_runtime_compatibility_floor(dest)
         applied = [str(dest)]
         mode = "copy"
     root = _activation_root_from_result(mode=mode, dest=dest)
