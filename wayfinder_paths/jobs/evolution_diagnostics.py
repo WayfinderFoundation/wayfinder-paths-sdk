@@ -1456,6 +1456,14 @@ def _fit_pack(pack: dict[str, Any]) -> dict[str, Any]:
                 json.dumps(value, default=str, sort_keys=True).encode()
             ).hexdigest(),
         }
+    grids = pack.get("mechanism_grids")
+    if isinstance(grids, list) and size() > DIAGNOSTIC_PACK_MAX_BYTES:
+        # Four alternatives per grid are enough provenance; the finalist is
+        # row 0 either way.
+        for record in grids:
+            if isinstance(record, dict):
+                record["top"] = list(record.get("top") or [])[:4]
+                record["trimmed"] = True
     signals = pack.get("validated_signals")
     if isinstance(signals, dict) and size() > DIAGNOSTIC_PACK_MAX_BYTES:
         # The tiers are what the designer must build on; shrink them in

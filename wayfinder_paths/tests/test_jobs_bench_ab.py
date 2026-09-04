@@ -1143,6 +1143,7 @@ def test_bench_mcp_exposes_read_only_research_actions(
         "backtest_diagnose",
         "holdout_check",
         "evolution_compose",
+        "evolution_mechanism_grid",
     } <= BENCH_ALLOWED_ACTIONS
     assert BENCH_ALLOWED_ACTIONS.isdisjoint(
         {"propose", "fetch_dataset", "chart", "analogs", "evolution_start"}
@@ -1180,6 +1181,18 @@ def test_bench_mcp_exposes_read_only_research_actions(
     assert seen["action"] == "evolution_compose"
     assert seen["signal_proposals"] == proposals
     assert seen["background"] is False
+    asyncio.run(
+        bench_core_jobs(
+            "evolution_mechanism_grid",
+            job_id="bench-only",
+            signal_ref="/validated_signals/replicated/0",
+            side="long",
+            background=True,
+        )
+    )
+    assert seen["action"] == "evolution_mechanism_grid"
+    assert seen["signal_ref"] == "/validated_signals/replicated/0"
+    assert seen["side"] == "long" and seen["background"] is False
 
 
 def test_bench_sandbox_restricts_job_worker_bash_and_task(tmp_path: Path) -> None:

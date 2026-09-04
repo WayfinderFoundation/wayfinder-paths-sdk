@@ -5659,3 +5659,189 @@ def test_compose_stage_is_skipped_without_a_scan_and_finalizes_past_deadline(
     assert state["stage"] == "compose"
     late = campaign_prompt_block(store2, job2, now=started + timedelta(days=30))
     assert late and late["session_stage"] == "finalize" and late["stage"] == "compose"
+
+
+_MECHANISM_BLOCK = [
+    (100.0, 100.5, 99.5, 100.0),
+    (100.0, 100.5, 99.5, 100.0),
+    (100.0, 100.5, 99.5, 100.0),
+    (100.0, 100.5, 99.5, 100.0),
+    (100.0, 100.5, 99.5, 100.0),
+    (99.6, 99.7, 98.4, 98.8),
+    (98.7, 98.9, 96.0, 97.4),
+    (97.6, 100.0, 97.5, 99.8),
+    (99.9, 101.6, 99.8, 101.2),
+    (101.0, 101.2, 100.2, 100.4),
+    (100.3, 100.6, 99.8, 100.4),
+    (100.0, 100.5, 99.5, 100.2),
+]
+
+
+def _mechanism_job(tmp_path) -> tuple[JobStore, str]:
+    """Bars with a dip-and-rebound after a run of five flat closes: a resting
+    bid below the close fills on the dip and a passive target fills on the
+    rebound (the shape the HYPE maker starter was found in)."""
+    store, job_id = _evaluatable_job(tmp_path)
+    root = store.job_dir(job_id)
+    bars = _hourly_bars(1200)
+    for index, row in enumerate(bars):
+        open_, high, low, close = _MECHANISM_BLOCK[index % 12]
+        row.update(open=open_, high=high, low=low, close=close)
+    (root / "results/backtest/input_bars.json").write_text(
+        json.dumps({"metadata": {"days": 50}, "bars": bars}), encoding="utf-8"
+    )
+    improver_path = root / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"].update(
+        {
+            "signal_first_seeding": True,
+            "investigation_design_enabled": True,
+            "signal_composition_rounds": 1,
+            "generated_programs": 4,
+            "wildcard_slots": 1,
+        }
+    )
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    return store, job_id
+
+
+def test_mechanism_grid_sweeps_a_signal_and_the_chosen_row_reaches_the_candidate(
+    tmp_path,
+) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        _cited_mechanisms,
+        _file_hash,
+        mechanism_grid,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _mechanism_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    assert state["stage"] == "compose"
+    # The signal: the fifth flat close after a non-flat one (the block's
+    # signal bar). It replicates on some horizon and enters the pack.
+    report = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_spring",
+                "family": "mean_reversion",
+                "description": "five flat closes",
+                "min_bars": 8,
+                "expression": (
+                    "(close(f) == 100.0) & (close(f).shift(1) == 100.0) & "
+                    "(close(f).shift(2) == 100.0) & (close(f).shift(3) == 100.0) & "
+                    "(close(f).shift(4) == 100.0) & (close(f).shift(5) != 100.0)"
+                ),
+            }
+        ],
+    )
+    assert report["status"] == "scanned" and report["survivors"]
+    pointer = report["survivors"][0]["pointer"]
+    assert state["composition"]["rounds_max"] == 1
+    state = _active_campaign(store, job_id)
+    assert state["stage"] == "design"
+    with pytest.raises(ValueError, match="does not resolve"):
+        mechanism_grid(store, job_id, signal_ref="/validated_signals/signals/99")
+    with pytest.raises(ValueError, match="signal_ref must point"):
+        mechanism_grid(store, job_id, signal_ref="/baseline/reason")
+    record = mechanism_grid(store, job_id, signal_ref=pointer, side="long")
+    assert record["pointer"] == "/mechanism_grids/0" and record["cached"] is False
+    assert record["evaluated"] == 1875 and record["viable"] > 0
+    assert record["side"] == "long" and record["signal"] == "ws_spring"
+    assert record["costs"]["maker_fee_bps"] == 1.5
+    best = record["top"][0]
+    assert best["score"] > 0 and best["train"]["win_rate"] == 1.0
+    assert (best["entry_offset_atr"], best["stop_atr"]) != (0.5, 2.0)
+    assert not any(
+        (row["entry_offset_atr"], row["stop_atr"]) == (0.5, 2.0)
+        for row in record["top"]
+    )
+    # Persisted with its provenance; the manifest hash follows the pack.
+    state = _active_campaign(store, job_id)
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    assert pack["mechanism_grids"][0]["signal_ref"] == pointer
+    assert pack["mechanism_grids"][0]["top"][0] == best
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    assert manifest["diagnostic_pack"]["sha256"] == _file_hash(
+        store.job_dir(job_id) / str(state["diagnostic_pack"])
+    )
+    again = mechanism_grid(store, job_id, signal_ref=pointer, side="long")
+    assert again["cached"] is True and again["pointer"] == "/mechanism_grids/0"
+    assert (
+        len(store.read_json(job_id, str(state["diagnostic_pack"]))["mechanism_grids"])
+        == 1
+    )
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=5))
+    assert prompt["session_stage"] == "design"
+    assert (
+        "Existing grids: /mechanism_grids/0 ws_spring long IMX" in prompt["next_action"]
+    )
+    assert "/mechanism_grids/0/top/0" in prompt["next_action"]
+    # A design citing the row hands the exact mechanism to the worker.
+    hypotheses = [
+        {
+            "id": f"h{index}",
+            "family": f"spring-{index}",
+            "causal_mechanism": "rest a bid below the run of flat closes",
+            "falsifier": "the dip does not fill or the rebound does not reach",
+            "evidence_refs": [pointer, "/mechanism_grids/0/top/0"],
+        }
+        for index in range(1, 4)
+    ]
+    slots = [
+        {
+            "slot_id": "s01",
+            "wildcard": False,
+            "hypothesis_id": "h1",
+            "parent_source": "de_novo",
+            "mutation_kind": "structural",
+            "family": "spring-1",
+            "summary": "resting bid, passive target",
+        },
+        {
+            "slot_id": "s02",
+            "wildcard": False,
+            "hypothesis_id": "h2",
+            "parent_source": "starter_seed",
+            "mutation_kind": "structural",
+            "family": "spring-2",
+            "summary": "starter variant",
+        },
+        {
+            "slot_id": "s03",
+            "wildcard": False,
+            "hypothesis_id": "h3",
+            "parent_source": "de_novo",
+            "mutation_kind": "structural",
+            "family": "spring-3",
+            "summary": "wider stop",
+        },
+        {
+            "slot_id": "s04",
+            "wildcard": True,
+            "hypothesis_id": None,
+            "parent_source": "de_novo",
+            "mutation_kind": "structural",
+            "family": "wild",
+            "summary": "free",
+        },
+    ]
+    submit_campaign_design(
+        store, job_id, campaign_design={"hypotheses": hypotheses, "slots": slots}
+    )
+    cited = _cited_mechanisms(store, job_id, manifest, ["/mechanism_grids/0/top/0"])
+    assert cited[0]["pointer"] == "/mechanism_grids/0/top/0"
+    assert cited[0]["signal_ref"] == pointer and cited[0]["side"] == "long"
+    assert cited[0]["hold_bars"] == best["hold_bars"]
+    candidate = prepare_candidate(
+        store, job_id, family="spring-1", summary="resting bid", now=started
+    )
+    assert (
+        candidate["mechanism_refs"][0]["entry_offset_atr"] == best["entry_offset_atr"]
+    )
+    assert candidate["mechanism_refs"][0]["stop_atr"] == best["stop_atr"]
+    assert candidate["signal_refs"][0]["signal"] == "ws_spring"

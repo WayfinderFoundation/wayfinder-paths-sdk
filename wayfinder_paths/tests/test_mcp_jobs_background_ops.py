@@ -400,3 +400,37 @@ async def test_evolution_compose_is_a_synchronous_control_op(
     assert (
         "evolution_compose" in _CONTROL_PLANE_OPS and "evolution_compose" in _NUDGE_OPS
     )
+
+
+@pytest.mark.asyncio
+async def test_evolution_mechanism_grid_is_a_synchronous_control_op(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs.execution.op_process import _CONTROL_PLANE_OPS
+
+    captured: dict = {}
+
+    async def fake_sync(op, kwargs):
+        captured.update({"op": op, "kwargs": kwargs})
+        return {"ok": True, "result": {"pointer": "/mechanism_grids/0"}}
+
+    monkeypatch.setattr(jobs_module, "_run_job_op", fake_sync)
+    monkeypatch.setattr(jobs_module, "JobStore", lambda: JobStore(repo_root=tmp_path))
+    result = await core_jobs(
+        action="evolution_mechanism_grid",
+        job_id="majors-5m-lab",
+        signal_ref="/validated_signals/replicated/0",
+        side="short",
+    )
+    assert result["result"]["pointer"] == "/mechanism_grids/0"
+    assert captured == {
+        "op": "evolution_mechanism_grid",
+        "kwargs": {
+            "job_id": "majors-5m-lab",
+            "signal_ref": "/validated_signals/replicated/0",
+            "side": "short",
+        },
+    }
+    missing = await core_jobs(action="evolution_mechanism_grid", job_id="majors-5m-lab")
+    assert "requires job_id and signal_ref" in json.dumps(missing)
+    assert "evolution_mechanism_grid" in _CONTROL_PLANE_OPS

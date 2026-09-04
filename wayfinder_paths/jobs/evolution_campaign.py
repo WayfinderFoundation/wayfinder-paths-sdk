@@ -106,6 +106,7 @@ from wayfinder_paths.jobs.execution.validation import (
     window_invariance_probe,
 )
 from wayfinder_paths.jobs.execution.walk_forward import _slice, _test_window_stats
+from wayfinder_paths.jobs.execution_grid import GridCosts, passive_entry_grid
 from wayfinder_paths.jobs.failures import TransientInfrastructureError, classify_failure
 from wayfinder_paths.jobs.forward_experience import (
     CALIBRATION_PATH,
@@ -144,6 +145,7 @@ from wayfinder_paths.jobs.regime import (
 from wayfinder_paths.jobs.research import (
     apply_bh_verdicts,
     library_signal_warmup_bars,
+    resample_ohlcv,
     scan_signals,
 )
 from wayfinder_paths.jobs.resource_envelope import (
@@ -154,6 +156,7 @@ from wayfinder_paths.jobs.resource_envelope import (
 from wayfinder_paths.jobs.robustness import _strategy_warmup_bars
 from wayfinder_paths.jobs.signal_library import (
     SIGNAL_DSL,
+    build_signal_frame,
     compile_signal_expression,
     signal_defs,
 )
@@ -187,6 +190,8 @@ DIAGNOSTIC_PACK = "diagnostic_pack.json"
 CAMPAIGN_DESIGN = "campaign_design.json"
 SCHEMA_VERSION = "2.0"
 COMPOSE_STAGE = "compose"
+MECHANISM_GRID_MAX = 6
+_MECHANISM_REF_RE = re.compile(r"^/mechanism_grids/(\d+)/top/(\d+)(?:/|$)")
 _PROPOSAL_NAME_RE = re.compile(r"^[a-z0-9_]{1,48}$")
 _COMPOSE_DSL_NAMES = tuple(name for name in SIGNAL_DSL if name not in {"pd", "np"})
 # Failure codes that are evidence against a hypothesis family.  Infrastructure
@@ -2030,7 +2035,12 @@ def _compose_prompt_block(
         "so propose the mechanisms the funnel points at (a regime or session "
         "gate, a composition, a different window), not variants of one idea. "
         f"{funnel_text}{last_text}{problems_text}"
-        f'Call wayfinder_core_jobs(action="evolution_compose", job_id="{job_id}", '
+        + _mechanism_instruction(
+            job_id,
+            pack,
+            [*(validated.get("signals") or []), *(validated.get("replicated") or [])],
+        )
+        + f'Call wayfinder_core_jobs(action="evolution_compose", job_id="{job_id}", '
         "signal_proposals=[...]) exactly once with the list, or with an empty "
         "list to end composition and move to design, then end this stage."
     )
@@ -2415,6 +2425,225 @@ def submit_signal_proposals(
             )
         ],
     }
+
+
+def _mechanism_instruction(
+    job_id: str, pack: Mapping[str, Any], offered: Sequence[Mapping[str, Any]]
+) -> str:
+    """How to monetize a signal whose move is real but small: sweep resting
+    entries with the grid and cite the chosen row."""
+    grids = [g for g in (pack.get("mechanism_grids") or []) if isinstance(g, Mapping)]
+    passive = [
+        row
+        for row in offered
+        if row.get("execution_hint") in {"passive_only", "mechanism_required"}
+    ]
+    if not passive and not grids:
+        return ""
+    existing = "; ".join(
+        f"/mechanism_grids/{index} {g.get('signal')} {g.get('side')} "
+        f"{g.get('symbol')} {g.get('timeframe')}: "
+        + (
+            f"best offset {top[0]['entry_offset_atr']} ATR, ttl {top[0]['entry_ttl_bars']}, "
+            f"target {top[0]['target_atr']} ATR, hold {top[0]['hold_bars']}, stop "
+            f"{top[0]['stop_atr']} ATR, score {top[0]['score']:+.2f} "
+            f"({top[0]['train']['trades']} train trades) at /mechanism_grids/{index}/top/0"
+            if (top := list(g.get("top") or []))
+            else f"no viable row of {g.get('evaluated')}"
+        )
+        for index, g in enumerate(grids)
+    )
+    return (
+        "Mechanism grids: for a passive_only or mechanism_required signal, call "
+        f'wayfinder_core_jobs(action="evolution_mechanism_grid", job_id="{job_id}", '
+        'signal_ref="/validated_signals/<tier>/<i>", side="long"|"short") to sweep '
+        "resting-entry mechanisms on it (entry offset in ATR, order life in bars, "
+        "passive target, hold, stop; maker fee on passive legs, taker on stop and "
+        "time exits; ranked by min(train, validation) Sharpe; seconds; a screen, "
+        "never evidence). Cite the chosen row /mechanism_grids/<k>/top/<j> in the "
+        "slot's evidence_refs beside the signal; the worker implements exactly that "
+        f"row. {'Existing grids: ' + existing + '. ' if existing else ''}"
+    )
+
+
+def _resolve_signal_pointer(
+    pack: Mapping[str, Any], signal_ref: str
+) -> tuple[str, int, dict[str, Any]]:
+    match = re.match(
+        r"^/validated_signals/(signals|replicated)/(\d+)(?:/|$)", str(signal_ref)
+    )
+    if not match:
+        raise ValueError(
+            "signal_ref must point at /validated_signals/signals/<i> or "
+            "/validated_signals/replicated/<i>"
+        )
+    rows = list((pack.get("validated_signals") or {}).get(match.group(1)) or [])
+    index = int(match.group(2))
+    if not 0 <= index < len(rows):
+        raise ValueError(f"signal_ref {signal_ref!r} does not resolve in the pack")
+    return match.group(1), index, dict(rows[index])
+
+
+def _signal_def_for_entry(entry: Mapping[str, Any]) -> Any:
+    if entry.get("library") in {"population", "workspace"} and entry.get("expression"):
+        return compile_signal_expression(
+            name=str(entry["signal"]),
+            family=str(entry.get("family") or "workspace"),
+            description="",
+            min_bars=int(entry.get("min_bars") or 1),
+            expression=str(entry["expression"]),
+        )
+    spec = signal_defs().get(str(entry["signal"]))
+    if spec is None:
+        raise ValueError(f"unknown library signal {entry['signal']!r}")
+    return spec
+
+
+def mechanism_grid(
+    store: JobStore,
+    job_id: str,
+    *,
+    signal_ref: str,
+    side: str | None = None,
+) -> dict[str, Any]:
+    """Sweep passive-entry mechanisms on one offered signal and persist the
+    ranked rows in the pack (finalist and alternatives on record). Runs in
+    the compose and design stages; a repeat call for the same signal and
+    side returns the stored grid."""
+    with job_state_lock(store.repo_root, job_id, name="evolution_campaign"):
+        state = _active_campaign(store, job_id)
+        if state.get("stage") not in {COMPOSE_STAGE, "design"}:
+            raise ValueError("mechanism grids run in the compose or design stage")
+        campaign_id = str(state["campaign_id"])
+        manifest = _campaign_manifest(store, job_id, campaign_id)
+        policy = manifest.get("policy") or {}
+        root = store.job_dir(job_id)
+        pack_path = root / str(state["diagnostic_pack"])
+        pack = store.read_json(job_id, str(state["diagnostic_pack"]), default={}) or {}
+        grids = list(pack.get("mechanism_grids") or [])
+        tier, index, entry = _resolve_signal_pointer(pack, signal_ref)
+        pointer = f"/validated_signals/{tier}/{index}"
+        chosen_side = str(side or entry.get("direction") or "long")
+        for position, record in enumerate(grids):
+            if (
+                record.get("signal_ref") == pointer
+                and record.get("side") == chosen_side
+            ):
+                return {
+                    **record,
+                    "pointer": f"/mechanism_grids/{position}",
+                    "cached": True,
+                }
+        if len(grids) >= MECHANISM_GRID_MAX:
+            raise ValueError(
+                f"at most {MECHANISM_GRID_MAX} mechanism grids per campaign"
+            )
+        campaign_root = root / CAMPAIGN_ROOT / campaign_id
+        frames = _campaign_scan_frames(store, job_id, campaign_root, policy=policy)
+        symbol = str(entry["symbol"])
+        base = frames["train"].get(symbol)
+        if base is None:
+            raise ValueError(f"symbol {symbol!r} has no scan frame")
+        timeframe = str(entry["timeframe"])
+        bar_seconds = int(frames["bar_seconds"])
+        rule_seconds = int(bar_interval_seconds(timeframe) or bar_seconds)
+        bars = resample_ohlcv(base, rule_seconds, bar_seconds=bar_seconds)
+        spec = _signal_def_for_entry(entry)
+        column = build_signal_frame(bars, [spec], include_canonical=False)[spec.name]
+        source = entry.get("regime_source")
+        if source and str(source) in bars.columns:
+            label = str(entry.get("regime") or "").split("=", 1)[-1]
+            codes = frames["condition_features"].get(str(source)) or {}
+            code = next((c for c, name in codes.items() if name == label), None)
+            if code is not None:
+                column = column & (
+                    pd.to_numeric(bars[str(source)], errors="coerce") == code
+                )
+        costs = GridCosts(
+            maker_fee_bps=float(frames["maker_round_trip_bps"]) / 2.0,
+            taker_fee_bps=float(frames["scan_kwargs"]["fee_bps"]),
+            slippage_bps=float(frames["scan_kwargs"]["slippage_bps"]),
+        )
+        result = passive_entry_grid(
+            bars,
+            column,
+            side=chosen_side,
+            bar_seconds=rule_seconds,
+            costs=costs,
+            min_trades=int(policy.get("mechanism_grid_min_trades") or 30),
+            top=int(policy.get("mechanism_grid_top") or 10),
+        )
+        record = {
+            "signal_ref": pointer,
+            "symbol": symbol,
+            "signal": entry["signal"],
+            "timeframe": timeframe,
+            "regime": entry.get("regime"),
+            "library": entry.get("library"),
+            "created_at": utc_now_iso(),
+            **result,
+        }
+        grids.append(record)
+        pack["mechanism_grids"] = grids
+        pack = fit_diagnostic_pack(pack)
+        atomic_write_json(pack_path, pack)
+        manifest["diagnostic_pack"] = {
+            **dict(manifest.get("diagnostic_pack") or {}),
+            "sha256": _file_hash(pack_path),
+        }
+        atomic_write_json(root / str(state["manifest"]), manifest)
+    store.append_journal(
+        job_id,
+        {
+            "type": "evolution_campaign_mechanism_grid",
+            "campaign_id": campaign_id,
+            "signal_ref": pointer,
+            "side": chosen_side,
+            "evaluated": result["evaluated"],
+            "viable": result["viable"],
+            "top_score": (result["top"][0]["score"] if result["top"] else None),
+        },
+    )
+    return {**record, "pointer": f"/mechanism_grids/{len(grids) - 1}", "cached": False}
+
+
+def _cited_mechanisms(
+    store: JobStore, job_id: str, manifest: Mapping[str, Any], refs: Sequence[str]
+) -> list[dict[str, Any]]:
+    """The grid rows a hypothesis cites, resolved from the frozen pack so the
+    worker's candidate.json carries the exact mechanism to implement."""
+    wanted: list[tuple[int, int]] = []
+    for ref in refs:
+        match = _MECHANISM_REF_RE.match(str(ref))
+        if match and (int(match.group(1)), int(match.group(2))) not in wanted:
+            wanted.append((int(match.group(1)), int(match.group(2))))
+    if not wanted:
+        return []
+    pack_path = str((manifest.get("diagnostic_pack") or {}).get("path") or "")
+    pack = store.read_json(job_id, pack_path, default={}) if pack_path else {}
+    grids = list((pack or {}).get("mechanism_grids") or [])
+    cited: list[dict[str, Any]] = []
+    for grid_index, row_index in wanted:
+        if not 0 <= grid_index < len(grids):
+            continue
+        record = grids[grid_index]
+        rows = list(record.get("top") or [])
+        if not 0 <= row_index < len(rows):
+            continue
+        cited.append(
+            {
+                "pointer": f"/mechanism_grids/{grid_index}/top/{row_index}",
+                "signal_ref": record.get("signal_ref"),
+                "symbol": record.get("symbol"),
+                "signal": record.get("signal"),
+                "timeframe": record.get("timeframe"),
+                "side": record.get("side"),
+                "regime": record.get("regime"),
+                "costs": record.get("costs"),
+                **dict(rows[row_index]),
+            }
+        )
+    return cited
 
 
 def submit_campaign_design(
@@ -3093,6 +3322,9 @@ def _prepare_candidate(
         "target_regimes": target_regimes,
         "evidence_refs": list(hypothesis.get("evidence_refs") or []),
         "signal_refs": _cited_signals(
+            store, job_id, manifest, list(hypothesis.get("evidence_refs") or [])
+        ),
+        "mechanism_refs": _cited_mechanisms(
             store, job_id, manifest, list(hypothesis.get("evidence_refs") or [])
         ),
         "causal_mechanism": hypothesis.get("causal_mechanism"),
@@ -5541,45 +5773,51 @@ def campaign_prompt_block(
             else ""
         )
         signal_instruction = (
-            "Validated signals (fold-stable, cost-net edge on the full train "
-            "split, Benjamini-Hochberg q at or under "
-            f"{float(validated.get('q_threshold') or 0.2):.2f} across "
-            f"{int(validated.get('tests') or 0)} tests, non-inferior on both "
-            "screen slices; cite /validated_signals/signals/<i>): "
-            + "; ".join(
-                f"{row['signal']} {row['direction']} {row['symbol']} "
-                f"{row['timeframe']} x{row['horizon']} "
-                f"(t_net {row.get('t_net', 0):+.1f}, q {row.get('q_value') or 0:.2f}, "
-                f"{row.get('events', 0)} events)"
-                for row in validated_rows[:10]
-            )
-            + ". Every grounded de_novo or research_context slot must cite one "
-            "of these; a design that does not is rejected. Each entry's "
-            "how_to_use gives the one-call precompute (library_signal_on_bars), "
-            "the fixed-horizon exit, and the warmup to declare; "
-            "/validated_signals/how_to_use_notes carries the shared rules. "
-            if validated_rows
-            else (
-                "No library signal cleared the family-corrected edge test on this "
-                "dataset"
-                + funnel_text
-                + "; de_novo slots must state why their mechanism should earn here"
-                + (
-                    " (nearest misses, not evidence: "
-                    + "; ".join(
-                        f"{row['signal']} {row['direction']} {row['symbol']} "
-                        f"{row['timeframe']} x{row['horizon']} [{row.get('shortfall')}]"
-                        for row in (validated.get("near_misses") or [])[:3]
+            (
+                "Validated signals (fold-stable, cost-net edge on the full train "
+                "split, Benjamini-Hochberg q at or under "
+                f"{float(validated.get('q_threshold') or 0.2):.2f} across "
+                f"{int(validated.get('tests') or 0)} tests, non-inferior on both "
+                "screen slices; cite /validated_signals/signals/<i>): "
+                + "; ".join(
+                    f"{row['signal']} {row['direction']} {row['symbol']} "
+                    f"{row['timeframe']} x{row['horizon']} "
+                    f"(t_net {row.get('t_net', 0):+.1f}, q {row.get('q_value') or 0:.2f}, "
+                    f"{row.get('events', 0)} events)"
+                    for row in validated_rows[:10]
+                )
+                + ". Every grounded de_novo or research_context slot must cite one "
+                "of these; a design that does not is rejected. Each entry's "
+                "how_to_use gives the one-call precompute (library_signal_on_bars), "
+                "the fixed-horizon exit, and the warmup to declare; "
+                "/validated_signals/how_to_use_notes carries the shared rules. "
+                if validated_rows
+                else (
+                    "No library signal cleared the family-corrected edge test on this "
+                    "dataset"
+                    + funnel_text
+                    + "; de_novo slots must state why their mechanism should earn here"
+                    + (
+                        " (nearest misses, not evidence: "
+                        + "; ".join(
+                            f"{row['signal']} {row['direction']} {row['symbol']} "
+                            f"{row['timeframe']} x{row['horizon']} [{row.get('shortfall')}]"
+                            for row in (validated.get("near_misses") or [])[:3]
+                        )
+                        + ")"
+                        if validated.get("near_misses")
+                        else ""
                     )
-                    + ")"
-                    if validated.get("near_misses")
+                    + ". "
+                    if validated.get("available")
                     else ""
                 )
-                + ". "
-                if validated.get("available")
-                else ""
             )
-        ) + replicated_instruction
+            + replicated_instruction
+            + _mechanism_instruction(
+                job_id, diagnostic_pack, [*validated_rows, *replicated_rows]
+            )
+        )
         regime_context = manifest.get("regime_context") or {}
         specialist_design = bool(
             policy.get("regime_specialist_enabled") and regime_context.get("available")

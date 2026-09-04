@@ -86,6 +86,13 @@ For each candidate:
   `wayfinder_paths.jobs.signal_library` and pass the def object to
   `library_signal_on_bars`. Exits, stops and sizing are yours; the trigger
   is not.
+- If `candidate.json` carries `mechanism_refs`, implement exactly that grid
+  row: a post-only resting entry at `entry_offset_atr` ATR beyond the signal
+  close with `expires_after_bars = entry_ttl_bars`, a passive reduce-only
+  take-profit at `target_atr` ATR from the fill, a fill-relative stop at
+  `stop_atr` ATR, and a market exit after `hold_bars` bars (reference:
+  `jobs/strategies/hype_passive_rsi.py`). The grid is a screen; the screen,
+  full development and holdout certify the row in the real engine.
 - Every trade must capture at least the hurdle multiple of the round-trip
   cost gross (the work order states both in bps); `gross_bps_per_trade` is
   the number a repair has to move. A book that pays to trade is rejected

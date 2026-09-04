@@ -148,6 +148,11 @@ def _run_op(op: str, kwargs: dict[str, Any]) -> Any:
         from wayfinder_paths.jobs.store import JobStore
 
         return submit_signal_proposals(JobStore(), kwargs.pop("job_id"), **kwargs)
+    if op == "evolution_mechanism_grid":
+        from wayfinder_paths.jobs.evolution_campaign import mechanism_grid
+        from wayfinder_paths.jobs.store import JobStore
+
+        return mechanism_grid(JobStore(), kwargs.pop("job_id"), **kwargs)
     if op == "evolution_submit_seed":
         from pathlib import Path
 
