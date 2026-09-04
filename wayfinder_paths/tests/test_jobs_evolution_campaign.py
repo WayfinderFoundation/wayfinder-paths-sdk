@@ -2625,7 +2625,12 @@ def _enable_protected_folds(store: JobStore, job_id: str, *, bars: int = 1_000) 
                 "required_positive_folds": 3,
                 "max_fold_loss_pct": 0.05,
                 "minimum_fold_bars": 8,
+                # The fixtures are weeks of hourly bars: keep the day floors
+                # below them so protected mode stays on.
+                "min_discovery_days": 1,
+                "min_certification_days": 1,
             },
+            "screen_slice_days": 3,
         }
     )
     improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
@@ -7455,3 +7460,163 @@ def test_policy_kernel_candidates_pair_against_the_incumbent() -> None:
     assert {"starter_seed", "research_seed", "policy_kernel"} <= set(
         _INCUMBENT_REFERENCE_SOURCES
     )
+
+
+def test_protected_mode_scopes_research_tools_to_the_discovery_snapshot(
+    tmp_path,
+) -> None:
+    from wayfinder_paths.jobs.execution.job import _load_dataset
+    from wayfinder_paths.jobs.research import campaign_dataset_root
+
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id)
+    root = store.job_dir(job_id)
+    assert campaign_dataset_root(store, job_id) == root
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    snapshot = campaign_dataset_root(store, job_id)
+    assert snapshot != root
+    assert (
+        snapshot
+        == root / "research/evolution/campaigns" / state["campaign_id"] / "dataset"
+    )
+    job_data = yaml.safe_load((root / "job.yaml").read_text(encoding="utf-8"))
+    import pandas as pd
+
+    from wayfinder_paths.jobs.execution.primitives import ExecutionSpec
+    from wayfinder_paths.jobs.execution.validation import resolve_execution_spec
+
+    spec_data, _ = resolve_execution_spec(root, job_data)
+    spec = ExecutionSpec.from_dict(spec_data)
+    visible = _load_dataset(snapshot, spec, job_data, include_store_features=True)
+    canonical = _load_dataset(root, spec, job_data, include_store_features=True)
+    discovery_end = pd.Timestamp(state["evaluation_plan"]["discovery"]["end"])
+    assert max(visible.bars.timestamps) <= discovery_end
+    assert max(canonical.bars.timestamps) > discovery_end
+
+
+def test_certification_trials_count_looks_at_the_protected_tail(tmp_path) -> None:
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _campaign_trials,
+        _certification_trials,
+    )
+
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id)
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    state["counts"]["quick_attempts"] = 24
+    state["counts"]["full_dev"] = 1
+    store.write_json(job_id, "state/evolution_campaign.json", state)
+    assert _campaign_trials(store, job_id) == 24
+    assert _certification_trials(store, job_id) == 2
+
+
+def test_protected_fold_verdict_treats_the_neutral_band_as_neither() -> None:
+    def verdict(returns, *, neutral_folds):
+        folds = [
+            {
+                "fold": index,
+                "base_return": value,
+                "stress_return": value,
+                "positive": value > 0.01,
+            }
+            for index, value in enumerate(returns)
+        ]
+        return _protected_fold_verdict(
+            folds,
+            valid=True,
+            validation_trades=12,
+            minimum_validation_trades=8,
+            pooled_return=0.05,
+            pooled_stress_return=0.05,
+            train_return=0.02,
+            specialized=False,
+            target_days=0,
+            min_target_days=10,
+            outside_loss_ok=True,
+            base_vector={"max_drawdown_pct": 0.04, "tail_loss": 0.01},
+            stress_vector={"max_drawdown_pct": 0.05, "tail_loss": 0.02},
+            hard_constraints={"max_drawdown_pct": 0.25, "max_tail_loss": 0.15},
+            required_positive_folds=3,
+            max_fold_loss_pct=0.05,
+            audit_passed=True,
+            haircut_cleared=True,
+            neutral_folds=neutral_folds,
+            stress_reused=True,
+        )
+
+    # The relay's shape: two positive folds, one at -0.3%, one at -6%.
+    lost = verdict((0.033, 0.086, -0.003, -0.061), neutral_folds=1)
+    assert "fold_loss_bound" in lost["failure_codes"]
+    assert "insufficient_positive_folds" not in lost["failure_codes"]
+    # Two positive folds and two neutral ones pass the positive-fold rule.
+    flat = verdict((0.033, 0.086, -0.003, 0.004), neutral_folds=2)
+    assert flat["status"] == "dev_frontier"
+    assert "stress leg equals base" in flat["evidence"]
+    assert "fold loss bound 5%" in flat["evidence"]
+    # Without the band the same shape fails the positive-fold rule.
+    strict = verdict((0.033, 0.086, -0.003, 0.004), neutral_folds=0)
+    assert "insufficient_positive_folds" in strict["failure_codes"]
+
+
+def test_short_history_falls_back_to_the_single_window(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id)
+    improver_path = store.job_dir(job_id) / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    # 1,000 hourly bars are 41 days: below the production floors.
+    improver["evolution"]["protected_fold_certification"].update(
+        {"min_discovery_days": 90, "min_certification_days": 84}
+    )
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    plan = state["evaluation_plan"]
+    assert plan["mode"] == "single_validation_window_v1" and plan["protected"] is False
+    assert plan["short_history"]["fallback"] == "single_validation_window_v1"
+    assert any("discovery would be" in r for r in plan["short_history"]["reasons"])
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    certification = manifest["policy"]["protected_fold_certification"]
+    assert certification["enabled"] is False and certification["short_history"]
+    # The visible snapshot is the whole dataset and no protected plane exists.
+    assert not (tmp_path / "audit" / job_id / "evolution").exists()
+    from wayfinder_paths.jobs.research import campaign_dataset_root
+
+    assert campaign_dataset_root(store, job_id) == store.job_dir(job_id)
+
+
+def test_insufficient_history_refuses_to_start(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id, bars=120)
+    improver_path = store.job_dir(job_id) / "improver.yaml"
+    improver = yaml.safe_load(improver_path.read_text(encoding="utf-8"))
+    improver["evolution"]["screen_slice_days"] = 35
+    improver_path.write_text(yaml.safe_dump(improver), encoding="utf-8")
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    with pytest.raises(ValueError, match="insufficient history"):
+        start_campaign(store, job_id, now=started)
+    journal = (store.job_dir(job_id) / "journal.jsonl").read_text(encoding="utf-8")
+    assert "evolution_campaign_refused" in journal
+    assert "insufficient_history" in journal
+
+
+def test_protected_pack_is_clipped_to_discovery(tmp_path) -> None:
+    store, job_id = _evaluatable_job(tmp_path)
+    _enable_protected_folds(store, job_id)
+    root = store.job_dir(job_id)
+    (root / "results/forward").mkdir(parents=True, exist_ok=True)
+    (root / "results/forward/summary.json").write_text(
+        json.dumps({"plane": "forward", "net_pnl": 12.5, "days": 40}), encoding="utf-8"
+    )
+    started = datetime(2026, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    plan = state["evaluation_plan"]
+    assert "forward_summary" not in pack
+    assert "forward_summary" in pack["artifacts_withheld"]["withheld"]
+    baseline = pack["baseline"]
+    assert baseline["available"] is True
+    assert baseline["window"]["source"] == "discovery_window"
+    assert baseline["window"]["bars"] == plan["discovery"]["bars"]
+    assert baseline["source"]["path"] == "discovery snapshot simulation"

@@ -372,9 +372,38 @@ def build_diagnostic_pack(
     validated_signals: Mapping[str, Any] | None = None,
     research_ideation: Mapping[str, Any] | None = None,
     policy_scan: Mapping[str, Any] | None = None,
+    withhold_artifacts: bool = False,
 ) -> dict[str, Any]:
-    """Freeze compact existing diagnostics with explicit plane/provenance."""
+    """Freeze compact existing diagnostics with explicit plane/provenance.
+
+    ``withhold_artifacts`` keeps the job's whole-window artifacts (forward,
+    regime, forensics, attribution) out of the pack: in protected
+    certification mode they describe the tail the designer must not see."""
     artifacts: dict[str, Any] = {}
+    if withhold_artifacts:
+        artifacts["artifacts_withheld"] = {
+            "reason": "protected certification: whole-window artifacts describe the "
+            "certification tail",
+            "withheld": [
+                "attribution",
+                "trade_forensics",
+                "regime_health",
+                "counterfactual",
+                "forward_summary",
+            ],
+        }
+        return _assemble_pack(
+            campaign_id=campaign_id,
+            created_at=created_at,
+            baseline=baseline,
+            artifacts=artifacts,
+            historical_lessons=historical_lessons,
+            research_context=research_context,
+            regime_context=regime_context,
+            validated_signals=validated_signals,
+            research_ideation=research_ideation,
+            policy_scan=policy_scan,
+        )
     attribution = _read_json(root / "results/research/attribution.json")
     if attribution:
         deltas = [
@@ -432,6 +461,33 @@ def build_diagnostic_pack(
             "report": _compact_forward_summary(forward_summary),
             "source": _provenance(root, "results/forward/summary.json"),
         }
+    return _assemble_pack(
+        campaign_id=campaign_id,
+        created_at=created_at,
+        baseline=baseline,
+        artifacts=artifacts,
+        historical_lessons=historical_lessons,
+        research_context=research_context,
+        regime_context=regime_context,
+        validated_signals=validated_signals,
+        research_ideation=research_ideation,
+        policy_scan=policy_scan,
+    )
+
+
+def _assemble_pack(
+    *,
+    campaign_id: str,
+    created_at: str,
+    baseline: Mapping[str, Any],
+    artifacts: Mapping[str, Any],
+    historical_lessons: Mapping[str, Any],
+    research_context: Mapping[str, Any],
+    regime_context: Mapping[str, Any] | None,
+    validated_signals: Mapping[str, Any] | None,
+    research_ideation: Mapping[str, Any] | None,
+    policy_scan: Mapping[str, Any] | None,
+) -> dict[str, Any]:
     pack = {
         "schema_version": "1.0",
         "campaign_id": campaign_id,

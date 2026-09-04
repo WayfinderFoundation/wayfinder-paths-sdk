@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Collection, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -1947,6 +1948,29 @@ def pair_check_job(
     return report
 
 
+def campaign_dataset_root(store: Any, job_id: str) -> Path:
+    """Where a research tool reads bars from. While an evolution campaign
+    certifies on a protected chronological tail, every model-facing tool
+    reads the campaign's discovery snapshot (the same job layout, cut at the
+    discovery cutoff) instead of the job's canonical dataset, so the tail the
+    certificate depends on stays unseen. Read through the store to keep this
+    module free of the campaign module's imports."""
+    root = Path(store.job_dir(job_id))
+    state = store.read_json(job_id, "state/evolution_campaign.json", default={}) or {}
+    plan = state.get("evaluation_plan") or {}
+    if state.get("status") in {"active", "finalizing"} and plan.get("protected"):
+        campaign_id = str(state.get("campaign_id") or "")
+        snapshot = (
+            root / "research" / "evolution" / "campaigns" / campaign_id / "dataset"
+        )
+        if (
+            campaign_id
+            and (snapshot / "results" / "backtest" / "input_bars.json").is_file()
+        ):
+            return snapshot
+    return root
+
+
 def signal_check_job(
     job_id: str,
     *,
@@ -1978,7 +2002,12 @@ def signal_check_job(
     params = dict(job_data.get("execution_params") or {})
     script = store.resolve_script_entrypoint(job_id, job_data)
     strategy = _load_strategy(script, params)
-    dataset = _load_dataset(root, spec, job_data, include_store_features=True)
+    dataset = _load_dataset(
+        campaign_dataset_root(store, job_id),
+        spec,
+        job_data,
+        include_store_features=True,
+    )
     view = apply_precompute(strategy, dataset.bars)
     frame = view.to_frame()
     results: dict[str, Any] = {}
@@ -2237,7 +2266,12 @@ def signal_scan_job(
     bar_seconds = bar_interval_seconds(spec.data_contract.get("bar_interval")) or 3600
     fee_bps = float(params.get("fee_bps") or 5.0)
     slippage_bps = float(params.get("slippage_bps") or 3.5)
-    dataset = _load_dataset(root, spec, job_data, include_store_features=True)
+    dataset = _load_dataset(
+        campaign_dataset_root(store, job_id),
+        spec,
+        job_data,
+        include_store_features=True,
+    )
     frame = dataset.bars.to_frame()
     available = sorted(frame["symbol"].astype(str).unique())
     requested_targets = [str(s) for s in symbols] if symbols else available
@@ -2666,7 +2700,12 @@ def holdout_check_job(
     tf_seconds = bar_interval_seconds(tf_name)
     if not tf_seconds:
         raise ValueError(f"unparseable timeframe {tf_name!r}")
-    dataset = _load_dataset(root, spec, job_data, include_store_features=True)
+    dataset = _load_dataset(
+        campaign_dataset_root(store, job_id),
+        spec,
+        job_data,
+        include_store_features=True,
+    )
     frame = dataset.bars.to_frame()
     available = sorted(frame["symbol"].astype(str).unique())
     targets = [str(s) for s in symbols] if symbols else available
@@ -2804,7 +2843,12 @@ def rank_check_job(
     params = dict(job_data.get("execution_params") or {})
     script = store.resolve_script_entrypoint(job_id, job_data)
     strategy = _load_strategy(script, params)
-    dataset = _load_dataset(root, spec, job_data, include_store_features=True)
+    dataset = _load_dataset(
+        campaign_dataset_root(store, job_id),
+        spec,
+        job_data,
+        include_store_features=True,
+    )
     view = apply_precompute(strategy, dataset.bars)
     frame = view.to_frame()
     symbols = sorted(frame["symbol"].astype(str).unique())

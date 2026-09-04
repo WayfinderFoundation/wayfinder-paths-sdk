@@ -217,6 +217,13 @@ DEFAULT_IMPROVER: dict[str, Any] = {
             "required_positive_folds": 3,
             "max_fold_loss_pct": 0.05,
             "minimum_fold_bars": 8,
+            # A fold inside this band counts neither for nor against the
+            # positive-fold requirement; the loss bound still applies.
+            "fold_neutral_band_pct": 0.01,
+            # Below these the campaign records short_history and certifies
+            # on the legacy single window instead of four folds of noise.
+            "min_discovery_days": 90,
+            "min_certification_days": 84,
         },
         "parent_mix": {
             "incumbent": 0.30,
