@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import runpy
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 from zipfile import ZipFile
 
 import pytest
@@ -470,6 +473,82 @@ def test_rendered_portable_export_runs_without_original_path_tree(tmp_path: Path
 
     assert result.returncode == 0, result.stderr
     assert "TODO: implement path script logic" in result.stdout
+
+
+def test_rendered_export_reuses_newer_compatible_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    path_dir = tmp_path / "compatible-runtime"
+    init_path(
+        path_dir=path_dir,
+        slug="compatible-runtime",
+        primary_kind="monitor",
+        with_applet=False,
+    )
+    manifest_path = path_dir / "wfpath.yaml"
+    manifest = PathManifest.load(manifest_path)
+    assert manifest.skill is not None
+    assert manifest.skill.runtime is not None
+    installed_version = manifest.skill.runtime.version
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            f'    version: "{installed_version}"',
+            '    version: "0.11.0"',
+        ),
+        encoding="utf-8",
+    )
+
+    report = render_skill_exports(path_dir=path_dir)
+    bootstrap_path = (
+        report.exports["portable"].export_dir / "scripts" / "wf_bootstrap.py"
+    )
+    namespace = runpy.run_path(str(bootstrap_path), run_name="runtime_compat_test")
+    is_compatible = cast(
+        Callable[[str, str], bool], namespace["_runtime_version_is_compatible"]
+    )
+    package_spec = cast(
+        Callable[[dict[str, object]], str], namespace["_runtime_package_spec"]
+    )
+    run = cast(Callable[[str | None, list[str]], int], namespace["run"])
+
+    assert is_compatible("0.11.0", "0.11.0") is True
+    assert is_compatible("0.11.2", "0.11.0") is True
+    assert is_compatible("0.11.0", "0.11.1") is False
+    assert is_compatible("0.12.0", "0.11.0") is False
+    assert package_spec({"package": "wayfinder-paths", "version": "0.11.0"}) == (
+        "wayfinder-paths~=0.11.1"
+    )
+    assert package_spec({"package": "wayfinder-paths", "version": "0.11.2"}) == (
+        "wayfinder-paths~=0.11.2"
+    )
+
+    commands: list[list[str]] = []
+
+    def capture_call(command: list[str], _env: dict[str, str]) -> int:
+        commands.append(command)
+        return 0
+
+    runtime_globals = run.__globals__
+    importlib_metadata = runtime_globals["importlib_metadata"]
+    monkeypatch.setattr(importlib_metadata, "version", lambda _package: "0.11.1")
+    monkeypatch.setitem(runtime_globals, "_call_cli", capture_call)
+    monkeypatch.setenv("WAYFINDER_API_KEY", "test-api-key")
+
+    assert run(None, []) == 0
+    assert commands == [
+        [
+            sys.executable,
+            "-m",
+            "wayfinder_paths.mcp.cli",
+            "path",
+            "exec",
+            "--path-dir",
+            str(report.exports["portable"].export_dir / "path"),
+            "--component",
+            "main",
+            "--",
+        ]
+    ]
 
 
 def test_build_ignores_dot_build_artifacts(tmp_path: Path):
