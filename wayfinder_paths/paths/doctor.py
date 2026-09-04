@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 from dataclasses import dataclass
@@ -8,12 +9,17 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
 
 from wayfinder_paths.paths.manifest import (
     PathManifest,
     PathManifestError,
     PathSkillConfig,
     resolve_skill_runtime,
+)
+from wayfinder_paths.paths.path_safety import (
+    APPROVED_RUNTIME_PACKAGE,
+    resolve_contained_path,
 )
 from wayfinder_paths.paths.pipeline import (
     PipelineGraphError,
@@ -120,6 +126,7 @@ def _validate_components(
     *,
     path_dir: Path,
     manifest: PathManifest,
+    errors: list[DoctorIssue],
     warnings: list[DoctorIssue],
 ) -> None:
     components = manifest.raw.get("components")
@@ -144,14 +151,34 @@ def _validate_components(
         path_raw = str(item.get("path") or "").strip()
         if not path_raw:
             continue
-        target = path_dir / path_raw
-        if not target.exists():
+        try:
+            target = resolve_contained_path(path_dir, path_raw, label="Component path")
+        except ValueError as exc:
             _record_issue(
-                warnings,
-                level="warning",
+                errors,
+                level="error",
+                message=str(exc),
+                path=path_dir / "wfpath.yaml",
+            )
+            continue
+        if not target.is_file():
+            _record_issue(
+                errors,
+                level="error",
                 message=f"Component file not found: {path_raw}",
                 path=target,
             )
+            continue
+        if target.suffix == ".py":
+            try:
+                ast.parse(target.read_text(encoding="utf-8"), filename=str(target))
+            except (OSError, SyntaxError) as exc:
+                _record_issue(
+                    errors,
+                    level="error",
+                    message=f"Component Python syntax is invalid: {exc}",
+                    path=target,
+                )
 
 
 def _validate_skill(
@@ -432,6 +459,27 @@ def _validate_runtime_skill_contract(
         return
 
     runtime = resolve_skill_runtime(manifest)
+    if runtime.package != APPROVED_RUNTIME_PACKAGE:
+        _record_issue(
+            errors,
+            level="error",
+            message=(
+                "Unsupported skill runtime package: "
+                f"{runtime.package}. Expected {APPROVED_RUNTIME_PACKAGE}"
+            ),
+            path=path_dir / "wfpath.yaml",
+        )
+
+    try:
+        SpecifierSet(runtime.python)
+    except InvalidSpecifier:
+        _record_issue(
+            errors,
+            level="error",
+            message=f"Invalid skill runtime Python requirement: {runtime.python}",
+            path=path_dir / "wfpath.yaml",
+        )
+
     if runtime.mode != "thin":
         _record_issue(
             errors,
@@ -1144,7 +1192,10 @@ def run_doctor(
         if not installed_host_mode:
             ctx = _path_context(manifest)
             _validate_components(
-                path_dir=path_dir, manifest=manifest, warnings=warnings
+                path_dir=path_dir,
+                manifest=manifest,
+                errors=errors,
+                warnings=warnings,
             )
 
             readme_path = path_dir / "README.md"

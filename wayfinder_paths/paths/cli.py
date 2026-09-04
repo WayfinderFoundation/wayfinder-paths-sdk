@@ -29,6 +29,7 @@ from wayfinder_paths.paths.manifest import (
     PathSkillDependencyConfig,
     resolve_skill_dependencies,
 )
+from wayfinder_paths.paths.path_safety import resolve_contained_path
 from wayfinder_paths.paths.preview import (
     PathPreviewError,
     inspect_preview_path,
@@ -487,8 +488,13 @@ def _run_path_component(
         manifest,
         component_id=component_id,
     )
-    target = (path_dir / component_path).resolve()
-    if not target.exists():
+    try:
+        target = resolve_contained_path(
+            path_dir, component_path, label="Component path"
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not target.is_file():
         raise click.ClickException(
             f"Component path not found for '{resolved_component_id}': {target}"
         )
@@ -851,8 +857,19 @@ def _apply_install_targets(source_dir: Path, destination_root: Path) -> list[str
         if not isinstance(target, dict):
             continue
         op = str(target.get("op") or "").strip()
-        src = source_dir / str(target.get("source") or "").strip()
-        dest = destination_root / str(target.get("destination") or "").strip()
+        try:
+            src = resolve_contained_path(
+                source_dir,
+                str(target.get("source") or ""),
+                label="Install source",
+            )
+            dest = resolve_contained_path(
+                destination_root,
+                str(target.get("destination") or ""),
+                label="Install destination",
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
         if _should_merge_json_install_target(op=op, src=src, dest=dest):
             if _is_opencode_config_path(dest):
                 _merge_opencode_config_patch(dest, src)
@@ -886,8 +903,19 @@ def _remove_install_targets(source_dir: Path, destination_root: Path) -> list[st
         if not isinstance(target, dict):
             continue
         op = str(target.get("op") or "").strip()
-        src = source_dir / str(target.get("source") or "").strip()
-        dest = destination_root / str(target.get("destination") or "").strip()
+        try:
+            src = resolve_contained_path(
+                source_dir,
+                str(target.get("source") or ""),
+                label="Install source",
+            )
+            dest = resolve_contained_path(
+                destination_root,
+                str(target.get("destination") or ""),
+                label="Install destination",
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
         if _should_merge_json_install_target(op=op, src=src, dest=dest):
             removed_json = (
                 _remove_opencode_config_patch(dest, src)
@@ -1459,8 +1487,24 @@ def version_cmd() -> None:
     default=None,
     help="Component id (defaults to the runtime/default component).",
 )
+@click.option("--args-json", default=None, hidden=True)
 @click.argument("args", nargs=-1, type=click.UNPROCESSED)
-def exec_cmd(path_dir: str, component: str | None, args: tuple[str, ...]) -> None:
+def exec_cmd(
+    path_dir: str,
+    component: str | None,
+    args_json: str | None,
+    args: tuple[str, ...],
+) -> None:
+    if args_json is not None:
+        try:
+            decoded_args = json.loads(args_json)
+        except json.JSONDecodeError as exc:
+            raise click.ClickException("Invalid component arguments") from exc
+        if not isinstance(decoded_args, list) or not all(
+            isinstance(arg, str) for arg in decoded_args
+        ):
+            raise click.ClickException("Component arguments must be a JSON string list")
+        args = tuple(decoded_args)
     rc = _run_path_component(
         path_dir=Path(path_dir).expanduser().resolve(),
         component_id=component,

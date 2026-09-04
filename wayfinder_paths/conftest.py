@@ -26,6 +26,13 @@ def published_installed_runtime(monkeypatch) -> None:
             versions=frozenset({version}),
         ),
     )
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.runtime_registry.published_package",
+        lambda package: PublishedPackage(
+            latest=version,
+            versions=frozenset({version}),
+        ),
+    )
 
 
 def pytest_configure(config):

@@ -15,6 +15,10 @@ Use this skill when you need to inspect, install, or operate the `{{slug}}` path
 3. Run the requested execution path with `python scripts/wf_run.py -- --help` or the task-specific arguments you need.
 4. Summarize what changed and any next actions.
 
+## Runtime state
+- Store durable files under `wayfinder_paths.mcp.state.runs.runs_root()`.
+- Do not keep durable state in `/tmp` or beside files under `path/`; hosts may replace those locations during upgrades.
+
 ## If you need to publish this path
 1. Confirm the path includes a browser applet, or explicitly ask the owner before publishing without one.
 2. Run `wayfinder path fmt --path .` and `wayfinder path doctor --path .`.

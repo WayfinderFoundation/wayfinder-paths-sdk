@@ -54,3 +54,12 @@ def installed_package_version(package: str) -> str | None:
 
 def installed_runtime_package_version(package: str = "wayfinder-paths") -> str:
     return installed_package_version(package) or "0.0.0"
+
+
+def scaffold_runtime_package_version(package: str = "wayfinder-paths") -> str:
+    """Prefer the checkout version only when users can install it from PyPI."""
+    installed = installed_runtime_package_version(package)
+    published = published_package(package)
+    if published is not None and installed not in published.versions:
+        return published.latest
+    return installed

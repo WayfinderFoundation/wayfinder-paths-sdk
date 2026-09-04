@@ -12,7 +12,7 @@ from zipfile import ZipFile
 import pytest
 import yaml
 
-from wayfinder_paths.paths.builder import PathBuilder
+from wayfinder_paths.paths.builder import PathBuilder, PathBuildError
 from wayfinder_paths.paths.doctor import run_doctor
 from wayfinder_paths.paths.evaluator import run_path_eval
 from wayfinder_paths.paths.hooks import install_path_hooks
@@ -61,10 +61,41 @@ def test_path_init_creates_expected_files(tmp_path: Path):
     assert manifest.skill.runtime.component == "main"
 
 
-def test_path_init_pins_the_installed_runtime(tmp_path: Path, monkeypatch) -> None:
+def test_path_init_pins_the_installed_runtime_when_published(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setattr(
-        "wayfinder_paths.paths.scaffold.installed_runtime_package_version",
-        lambda: "0.11.1",
+        "wayfinder_paths.paths.runtime_registry.installed_runtime_package_version",
+        lambda _package="wayfinder-paths": "0.11.1",
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.runtime_registry.published_package",
+        lambda _package: PublishedPackage(
+            latest="0.11.1", versions=frozenset({"0.11.1"})
+        ),
+    )
+    path_dir = tmp_path / "published-runtime"
+
+    init_path(path_dir=path_dir, slug="published-runtime", with_applet=False)
+
+    manifest = PathManifest.load(path_dir / "wfpath.yaml")
+    assert manifest.skill is not None
+    assert manifest.skill.runtime is not None
+    assert manifest.skill.runtime.version == "0.11.1"
+
+
+def test_path_init_falls_back_to_latest_published_runtime(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.runtime_registry.installed_runtime_package_version",
+        lambda _package="wayfinder-paths": "0.11.2",
+    )
+    monkeypatch.setattr(
+        "wayfinder_paths.paths.runtime_registry.published_package",
+        lambda _package: PublishedPackage(
+            latest="0.11.1", versions=frozenset({"0.11.0", "0.11.1"})
+        ),
     )
     path_dir = tmp_path / "published-runtime"
 
@@ -188,7 +219,7 @@ def test_path_doctor_ok_on_pipeline_path(tmp_path: Path):
 
 def test_path_doctor_rejects_unpublished_runtime(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
-        "wayfinder_paths.paths.scaffold.installed_runtime_package_version",
+        "wayfinder_paths.paths.scaffold.scaffold_runtime_package_version",
         lambda: "0.11.0",
     )
     monkeypatch.setattr(
@@ -217,7 +248,7 @@ def test_versionless_historical_runtime_keeps_installed_sdk(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(
-        "wayfinder_paths.paths.scaffold.installed_runtime_package_version",
+        "wayfinder_paths.paths.scaffold.scaffold_runtime_package_version",
         lambda: "0.11.0",
     )
     monkeypatch.setattr(
@@ -372,6 +403,61 @@ def test_path_doctor_rejects_embedded_skill_runtime_mode(tmp_path: Path):
     assert any(
         "Only skill.runtime.mode=thin is supported" in issue.message
         for issue in report.errors
+    )
+
+
+@pytest.mark.parametrize("component_path", ["../outside.py", "/tmp/outside.py"])
+def test_path_doctor_rejects_component_paths_outside_bundle(
+    tmp_path: Path, component_path: str
+) -> None:
+    path_dir = tmp_path / "unsafe-component"
+    init_path(path_dir=path_dir, slug="unsafe-component", with_applet=False)
+    manifest_path = path_dir / "wfpath.yaml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            '    path: "scripts/main.py"', f'    path: "{component_path}"'
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_doctor(path_dir=path_dir)
+
+    assert report.ok is False
+    assert any("Component path" in issue.message for issue in report.errors)
+
+
+def test_path_doctor_rejects_missing_and_invalid_python_components(
+    tmp_path: Path,
+) -> None:
+    path_dir = tmp_path / "invalid-component"
+    init_path(path_dir=path_dir, slug="invalid-component", with_applet=False)
+    component_path = path_dir / "scripts" / "main.py"
+    component_path.write_text("def broken(:\n", encoding="utf-8")
+
+    invalid_report = run_doctor(path_dir=path_dir)
+    component_path.unlink()
+    missing_report = run_doctor(path_dir=path_dir)
+
+    assert any("syntax is invalid" in issue.message for issue in invalid_report.errors)
+    assert any("not found" in issue.message for issue in missing_report.errors)
+
+
+def test_path_doctor_rejects_unapproved_runtime_package(tmp_path: Path) -> None:
+    path_dir = tmp_path / "custom-runtime"
+    init_path(path_dir=path_dir, slug="custom-runtime", with_applet=False)
+    manifest_path = path_dir / "wfpath.yaml"
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8").replace(
+            '    package: "wayfinder-paths"', '    package: "untrusted-runtime"'
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_doctor(path_dir=path_dir)
+
+    assert report.ok is False
+    assert any(
+        "Unsupported skill runtime package" in issue.message for issue in report.errors
     )
 
 
@@ -546,9 +632,64 @@ def test_rendered_export_reuses_newer_compatible_runtime(
             str(report.exports["portable"].export_dir / "path"),
             "--component",
             "main",
-            "--",
         ]
     ]
+
+    commands.clear()
+    assert run(None, ["--", "--help"]) == 0
+    assert commands[0][-2:] == ["--args-json", '["--help"]']
+
+
+def test_rendered_export_preserves_component_flags(tmp_path: Path) -> None:
+    path_dir = tmp_path / "component-args"
+    init_path(path_dir=path_dir, slug="component-args", with_applet=False)
+    (path_dir / "scripts" / "main.py").write_text(
+        "import json\nimport sys\nprint(json.dumps(sys.argv[1:]))\n",
+        encoding="utf-8",
+    )
+    report = render_skill_exports(path_dir=path_dir, hosts=["portable"])
+    bootstrap_path = (
+        report.exports["portable"].export_dir / "scripts" / "wf_bootstrap.py"
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(bootstrap_path), "--", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == '["--help"]'
+
+
+def test_rendered_export_namespaces_runtime_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path_dir = tmp_path / "stateful-runtime"
+    init_path(path_dir=path_dir, slug="stateful-runtime", with_applet=False)
+    report = render_skill_exports(path_dir=path_dir, hosts=["portable"])
+    export_dir = report.exports["portable"].export_dir
+    namespace = runpy.run_path(
+        str(export_dir / "scripts" / "wf_bootstrap.py"),
+        run_name="runtime_state_test",
+    )
+    runtime_env = cast(
+        Callable[[dict[str, object]], dict[str, str]], namespace["_runtime_env"]
+    )
+    base_runs = tmp_path / "persistent-runs"
+    monkeypatch.setenv("WAYFINDER_RUNS_DIR", str(base_runs))
+
+    env = runtime_env({"slug": "stateful-runtime"})
+    local_runs = export_dir / "path" / ".wayfinder_runs"
+
+    assert env["WAYFINDER_RUNS_DIR"] == str(base_runs / "paths" / "stateful-runtime")
+    assert local_runs.is_symlink()
+    assert local_runs.resolve() == base_runs / "paths" / "stateful-runtime"
+    assert (
+        runtime_env({"slug": "stateful-runtime"})["WAYFINDER_RUNS_DIR"]
+        == env["WAYFINDER_RUNS_DIR"]
+    )
 
 
 def test_build_ignores_dot_build_artifacts(tmp_path: Path):
@@ -568,6 +709,34 @@ def test_build_ignores_dot_build_artifacts(tmp_path: Path):
     with ZipFile(built.bundle_path, "r") as zf:
         names = zf.namelist()
     assert not any(name.startswith(".build/") for name in names)
+
+
+@pytest.mark.parametrize("filename", [".env", "wallet.pem", "credentials.json"])
+def test_build_rejects_secret_like_files(tmp_path: Path, filename: str) -> None:
+    path_dir = tmp_path / "secret-path"
+    init_path(path_dir=path_dir, slug="secret-path", with_applet=False)
+    (path_dir / filename).write_text("secret", encoding="utf-8")
+
+    with pytest.raises(PathBuildError, match="Secret-like"):
+        PathBuilder.build(path_dir=path_dir, out_path=tmp_path / "bundle.zip")
+
+
+def test_build_rejects_symlinks_and_output_self_inclusion(tmp_path: Path) -> None:
+    path_dir = tmp_path / "unsafe-bundle"
+    init_path(path_dir=path_dir, slug="unsafe-bundle", with_applet=False)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+    link = path_dir / "outside-link"
+    link.symlink_to(outside)
+
+    with pytest.raises(PathBuildError, match="Symlinks"):
+        PathBuilder.build(path_dir=path_dir, out_path=tmp_path / "bundle.zip")
+
+    link.unlink()
+    out_path = path_dir / "bundle.zip"
+    out_path.write_bytes(b"old archive")
+    with pytest.raises(PathBuildError, match="include itself"):
+        PathBuilder.build(path_dir=path_dir, out_path=out_path)
 
 
 def test_install_path_hooks_is_idempotent(tmp_path: Path):

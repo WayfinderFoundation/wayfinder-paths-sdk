@@ -16,7 +16,7 @@ from wayfinder_paths.paths.pipeline import (
     default_pipeline_graph,
     get_pipeline_archetype,
 )
-from wayfinder_paths.paths.runtime_registry import installed_runtime_package_version
+from wayfinder_paths.paths.runtime_registry import scaffold_runtime_package_version
 
 
 class PathScaffoldError(Exception):
@@ -128,7 +128,7 @@ def _build_wfpath_yaml(
         lines.append("  runtime:")
         lines.append("    mode: thin")
         lines.append('    package: "wayfinder-paths"')
-        lines.append(f'    version: "{installed_runtime_package_version()}"')
+        lines.append(f'    version: "{scaffold_runtime_package_version()}"')
         lines.append('    python: ">=3.12,<3.13"')
         lines.append('    component: "main"')
         lines.append("    bootstrap: uv")
