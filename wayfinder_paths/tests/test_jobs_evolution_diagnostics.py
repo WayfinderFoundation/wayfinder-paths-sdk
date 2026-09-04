@@ -11,6 +11,7 @@ from wayfinder_paths.jobs.evolution_diagnostics import (
     build_postmortem,
     build_repair_work_order,
     compact_postmortem,
+    pack_bytes,
     participation_adjusted_score,
     receipt_economics,
     resolve_json_pointer,
@@ -435,7 +436,7 @@ def test_pack_budget_trims_lessons_before_dropping_them() -> None:
     pack = {
         "schema_version": "1.0",
         "baseline": {"stats": {"net_return": 0.0}},
-        "validated_signals": {"blob": "s" * 25_000},
+        "validated_signals": {"blob": "s" * 45_000},
         "research_ideation": {"blob": "i" * 4_500},
         "research_context": {"refuted_families": [{"family": "f"}]},
         "prior_campaign_lessons": {"outcomes": outcomes, "_basis": "prior outcomes"},
@@ -443,7 +444,11 @@ def test_pack_budget_trims_lessons_before_dropping_them() -> None:
 
     fitted = _fit_pack(pack)
 
-    assert len(json.dumps(fitted).encode()) <= DIAGNOSTIC_PACK_MAX_BYTES
+    # The budget is on the persisted form: what atomic_write_json writes.
+    assert pack_bytes(fitted) <= DIAGNOSTIC_PACK_MAX_BYTES
+    assert pack_bytes(fitted) == len(
+        (json.dumps(fitted, indent=2, sort_keys=True) + "\n").encode()
+    )
     kept = fitted["prior_campaign_lessons"]["outcomes"]
     assert len(kept) == 12
     assert kept[0]["validation_exits"] == {"closes": 8, "stop_share": 0.25}
@@ -956,6 +961,10 @@ def test_fit_pack_trims_signal_tiers_before_the_fail_closed_shape() -> None:
     assert "pack_truncated" not in refit
     assert len(refit["validated_signals"]["signals"]) <= 10
     assert refit["validated_signals"]["trimmed"]["signals_cap"] <= 10
-    assert len(json.dumps(refit).encode()) <= DIAGNOSTIC_PACK_MAX_BYTES
+    assert pack_bytes(refit) <= DIAGNOSTIC_PACK_MAX_BYTES
     assert block["trimmed"]["reason"] == "diagnostic_pack_byte_budget"
-    assert len(json.dumps(fitted).encode()) <= DIAGNOSTIC_PACK_MAX_BYTES
+    # The budget is on the persisted form: what atomic_write_json writes.
+    assert pack_bytes(fitted) <= DIAGNOSTIC_PACK_MAX_BYTES
+    assert pack_bytes(fitted) == len(
+        (json.dumps(fitted, indent=2, sort_keys=True) + "\n").encode()
+    )

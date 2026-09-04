@@ -31,7 +31,19 @@ if TYPE_CHECKING:
 # regime rows and composition survivors a full pack wants ~30 KB, and at
 # 24 KB the ladder was dropping lessons and attribution and cutting the
 # tiers to a handful of rows (2026-09-04 replay).
-DIAGNOSTIC_PACK_MAX_BYTES = 40_000
+# The budget is on the persisted form (indented, sorted keys, trailing
+# newline: exactly what atomic_write_json writes), which runs ~30% larger
+# than compact JSON. 56 KB persisted is ~40 KB compact.
+DIAGNOSTIC_PACK_MAX_BYTES = 56_000
+
+
+def pack_bytes(pack: Mapping[str, Any]) -> int:
+    """Size of the pack exactly as atomic_write_json persists it."""
+    return len(
+        (json.dumps(pack, indent=2, sort_keys=True, default=str) + "\n").encode()
+    )
+
+
 RESULT_STAT_KEYS = (
     "net_return",
     "trade_count",
@@ -1463,7 +1475,7 @@ def fit_diagnostic_pack(pack: dict[str, Any]) -> dict[str, Any]:
 
 def _fit_pack(pack: dict[str, Any]) -> dict[str, Any]:
     def size() -> int:
-        return len(json.dumps(pack, default=str).encode())
+        return pack_bytes(pack)
 
     if size() <= DIAGNOSTIC_PACK_MAX_BYTES:
         return pack

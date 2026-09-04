@@ -6108,15 +6108,21 @@ def test_candidate_and_reference_screen_windows_match_on_a_slow_lane(tmp_path) -
 
 
 def test_compose_merge_keeps_the_pack_inside_its_budget(tmp_path) -> None:
-    """Sixty validated survivors in one round (loop 0, 2026-09-04) must not
-    push the pack into its fail-closed shape: the strongest row per signal
-    and timeframe is merged up to the limit, the tier is capped, and the
-    rest are reported as not merged with no pointer."""
+    """Sixty survivors across both tiers with fat recipes (loop 0,
+    2026-09-04) must not push the pack into its fail-closed shape: the
+    strongest row per signal and timeframe is merged up to the limit, the
+    fitter trims what the budget cannot hold, and every pointer the round
+    reports resolves to that survivor in the persisted pack while the rest
+    are reported as not merged."""
     from wayfinder_paths.jobs.evolution_campaign import (
         _active_campaign,
+        _cited_signals,
         _merge_compose_survivors,
     )
-    from wayfinder_paths.jobs.evolution_diagnostics import DIAGNOSTIC_PACK_MAX_BYTES
+    from wayfinder_paths.jobs.evolution_diagnostics import (
+        DIAGNOSTIC_PACK_MAX_BYTES,
+        pack_bytes,
+    )
 
     store, job_id = _composable_job(tmp_path)
     started = datetime(2099, 8, 25, 12, tzinfo=UTC)
@@ -6129,11 +6135,11 @@ def test_compose_merge_keeps_the_pack_inside_its_budget(tmp_path) -> None:
         survivors.append(
             {
                 "symbol": "IMX",
-                "signal": f"ws_{index % 15}",
+                "signal": f"ws_{index % 30}",
                 "timeframe": "3600s" if index % 2 else "4h",
                 "horizon": 1 + index % 5,
                 "direction": "long",
-                "tier": "validated",
+                "tier": "validated" if index % 3 else "replicated",
                 "t_stat": 3.0 + index / 100.0,
                 "t_net": 2.5,
                 "q_value": 0.01,
@@ -6143,28 +6149,170 @@ def test_compose_merge_keeps_the_pack_inside_its_budget(tmp_path) -> None:
                 "library": "workspace",
                 "expression": "new_extreme(f, 3, -1)",
                 "min_bars": 5,
-                "how_to_use": "x" * 200,
-                "t_stat_by_slice": {"recent": 1.0, "earlier": 1.2},
+                "how_to_use": "x" * 1_500,
             }
         )
     pointers = _merge_compose_survivors(
         store, job_id, state, manifest, survivors, 1, limit=10
     )
     merged = [pointer for pointer in pointers if pointer is not None]
-    assert len(merged) == 10 and len(merged) == len(set(merged))
-    assert pointers.count(None) == 50
+    assert 0 < len(merged) < 20 and len(merged) == len(set(merged))
     after = store.read_json(job_id, str(state["diagnostic_pack"]))
     assert "pack_truncated" not in after
-    assert len(json.dumps(after).encode()) <= DIAGNOSTIC_PACK_MAX_BYTES
+    # The budget is on the file as written, not on compact JSON.
+    pack_path = store.job_dir(job_id) / str(state["diagnostic_pack"])
+    assert pack_path.stat().st_size <= DIAGNOSTIC_PACK_MAX_BYTES
+    assert pack_bytes(after) == pack_path.stat().st_size
     block = after["validated_signals"]
-    assert len(block["signals"]) <= 20
-    # One row per (symbol, signal, timeframe): the strongest by |t|.
-    keys = [(row["signal"], row["timeframe"]) for row in block["signals"][:10]]
-    assert len(keys) == len(set(keys))
-    assert block["signals"][0]["t_stat"] >= block["signals"][1]["t_stat"]
+    assert block["trimmed"]["reason"] == "diagnostic_pack_byte_budget"
+    # Every reported pointer resolves to that survivor; every survivor the
+    # budget trimmed is reported as not merged, never pointed at.
+    for survivor, pointer in zip(survivors, pointers, strict=True):
+        if pointer is None:
+            continue
+        tier, index = pointer.rsplit("/", 2)[-2:]
+        row = block[tier][int(index)]
+        assert row["signal"] == survivor["signal"]
+        assert row["signal_id"] == survivor["signal_id"]
+        assert row["horizon"] == survivor["horizon"]
     assert block["composition"] == {
         "rounds": 1,
-        "survivors": 10,
+        "survivors": len(merged),
         "scanned_survivors": 60,
     }
+    cited = _cited_signals(store, job_id, manifest, [merged[0]])
+    tier, index = merged[0].rsplit("/", 2)[-2:]
+    assert cited[0]["signal_id"] == block[tier][int(index)]["signal_id"]
+    assert cited[0]["taker_round_trip_bps"] == block["taker_round_trip_bps"]
     assert _active_campaign(store, job_id)["stage"] == "compose"
+
+
+def test_compose_merge_failure_is_a_rejection_that_keeps_the_round(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs import evolution_campaign as campaign_module
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _composable_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    before = store.read_json(job_id, str(state["diagnostic_pack"]))
+    monkeypatch.setattr(
+        campaign_module,
+        "fit_diagnostic_pack",
+        lambda pack: {**pack, "pack_truncated": True},
+    )
+    result = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_dip_3",
+                "family": "breakout",
+                "description": "3-bar low",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1)",
+            }
+        ],
+    )
+    assert result["status"] == "rejected"
+    assert "past its byte budget" in result["problems"][0]
+    assert result["proposals"] and result["stage"] == "compose"
+    state = _active_campaign(store, job_id)
+    assert state["stage"] == "compose"
+    assert state["composition"]["rounds_used"] == 0
+    assert state["composition"]["history"] == []
+    assert "past its byte budget" in state["composition"]["problems"][0]
+    assert store.read_json(job_id, str(state["diagnostic_pack"])) == before
+    prompt = campaign_prompt_block(store, job_id, now=started + timedelta(minutes=1))
+    assert "the round was not consumed" in prompt["next_action"]
+
+
+def test_signal_ids_survive_a_second_round_and_guard_the_grid(
+    tmp_path, monkeypatch
+) -> None:
+    from wayfinder_paths.jobs import evolution_campaign as campaign_module
+    from wayfinder_paths.jobs.evolution_campaign import (
+        _active_campaign,
+        _cited_signals,
+        mechanism_grid,
+        submit_signal_proposals,
+    )
+
+    store, job_id = _composable_job(tmp_path)
+    started = datetime(2099, 8, 25, 12, tzinfo=UTC)
+    state = start_campaign(store, job_id, now=started)
+    manifest = store.read_json(job_id, str(state["manifest"]))
+    first = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_dip_3",
+                "family": "breakout",
+                "description": "3-bar low",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1)",
+            }
+        ],
+    )
+    dip = next(row for row in first["survivors"] if row["merged"])
+    assert dip["pointer"].endswith("/0") and dip["signal_id"]
+    second = submit_signal_proposals(
+        store,
+        job_id,
+        signal_proposals=[
+            {
+                "name": "ws_dip_3_twin",
+                "family": "breakout",
+                "description": "the same events",
+                "min_bars": 5,
+                "expression": "new_extreme(f, 3, -1) & (close(f) > 0)",
+            }
+        ],
+    )
+    twin = next(row for row in second["survivors"] if row["merged"])
+    # The second round prepends: the first survivor's positional pointer
+    # moved, its id did not, and a citation by the new position carries it.
+    assert twin["pointer"] == dip["pointer"]
+    pack = store.read_json(job_id, str(state["diagnostic_pack"]))
+    tier = dip["pointer"].split("/")[2]
+    moved = next(
+        index
+        for index, row in enumerate(pack["validated_signals"][tier])
+        if row["signal_id"] == dip["signal_id"]
+    )
+    assert moved > 0
+    cited = _cited_signals(
+        store, job_id, manifest, [f"/validated_signals/{tier}/{moved}"]
+    )
+    assert (
+        cited[0]["signal"] == "ws_dip_3" and cited[0]["signal_id"] == dip["signal_id"]
+    )
+    assert _active_campaign(store, job_id)["stage"] == "design"
+
+    # A grid whose fit would drop the row it cites is not persisted.
+    def dropping_fit(pack):
+        pack = dict(pack)
+        block = dict(pack["validated_signals"])
+        block[tier] = []
+        pack["validated_signals"] = block
+        return pack
+
+    monkeypatch.setattr(campaign_module, "fit_diagnostic_pack", dropping_fit)
+    refused = mechanism_grid(
+        store, job_id, signal_ref=f"/validated_signals/{tier}/{moved}"
+    )
+    assert refused["status"] == "rejected"
+    assert "drop the signal it cites" in refused["reason"]
+    assert "mechanism_grids" not in store.read_json(
+        job_id, str(state["diagnostic_pack"])
+    )
+    monkeypatch.setattr(campaign_module, "fit_diagnostic_pack", lambda pack: pack)
+    record = mechanism_grid(
+        store, job_id, signal_ref=f"/validated_signals/{tier}/{moved}"
+    )
+    assert record["status"] == "ok" and record["signal_id"] == dip["signal_id"]

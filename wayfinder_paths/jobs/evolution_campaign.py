@@ -1093,6 +1093,7 @@ SIGNAL_RECIPE_NOTES = (
 # fold counts, density and ranking scores stay in the campaign's memory, not
 # in the pack (each pack entry is read by a model turn and costs budget).
 _PACK_SIGNAL_KEYS = (
+    "signal_id",
     "symbol",
     "signal",
     "family",
@@ -1121,8 +1122,24 @@ _PACK_SIGNAL_KEYS = (
 )
 
 
+def _signal_row_key(row: Mapping[str, Any]) -> str:
+    """The stable identity of an offered row: what it measures, where."""
+    return "|".join(
+        str(row.get(key) if row.get(key) is not None else "")
+        for key in ("signal", "symbol", "timeframe", "horizon", "regime")
+    )
+
+
+def _signal_id(row: Mapping[str, Any]) -> str:
+    return hashlib.sha1(_signal_row_key(row).encode()).hexdigest()[:12]
+
+
 def _pack_signal_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: entry[key] for key in _PACK_SIGNAL_KEYS if key in entry}
+    out = {key: entry[key] for key in _PACK_SIGNAL_KEYS if key in entry}
+    # Positional pointers move when a later round prepends rows; the id does
+    # not, and every citation and grid carries it.
+    out["signal_id"] = str(entry.get("signal_id") or _signal_id(entry))
+    return out
 
 
 def _diverse_signal_rows(
@@ -2236,6 +2253,9 @@ def _compose_prompt_block(
         "back and the round is not consumed. Every proposal widens the family, "
         "so propose the mechanisms the funnel points at (a regime or session "
         "gate, a composition, a different window), not variants of one idea. "
+        "A round's report names each survivor's pointer at that moment; a "
+        "later round prepends rows, so cite from the pack you read at design "
+        "time (every entry carries a stable signal_id). "
         f"{funnel_text}{last_text}{problems_text}"
         + _mechanism_instruction(
             job_id,
@@ -2481,10 +2501,11 @@ def _merge_compose_survivors(
     """Merge a round's survivors into the frozen pack: the strongest row per
     (symbol, signal, timeframe) up to ``limit`` per tier goes to the front of
     its tier, each tier is capped at twice the limit from the tail, and the
-    pack is refitted to its byte budget. Returns one pointer per survivor
-    (None for a row that was not merged). A refit that would still fall to
-    the fail-closed shape leaves the pack untouched: losing the whole feed
-    to a byte budget is worse than merging nothing (loop 0, 2026-09-04)."""
+    pack is refitted to its byte budget. Pointers and the merged count come
+    from the FITTED pack, located by signal id, so a row the budget trimmed
+    is reported as not merged rather than pointed at. A refit that would
+    still fall to the fail-closed shape leaves the pack untouched (losing the
+    whole feed to a byte budget is worse than merging nothing)."""
     root = store.job_dir(job_id)
     pack_path = root / str(state["diagnostic_pack"])
     pack = store.read_json(job_id, str(state["diagnostic_pack"]), default={}) or {}
@@ -2495,43 +2516,65 @@ def _merge_compose_survivors(
     by_tier: dict[str, list[dict[str, Any]]] = {"signals": [], "replicated": []}
     for entry in survivors:
         entry["source"] = f"compose:round{round_number}"
+        entry["signal_id"] = str(entry.get("signal_id") or _signal_id(entry))
         by_tier["signals" if entry.get("tier") == "validated" else "replicated"].append(
             entry
         )
-    pointer_by_id: dict[int, str] = {}
+    kept_ids: set[str] = set()
     for tier_key, rows in by_tier.items():
         if not rows:
             continue
-        ordered = sorted(
-            rows,
-            key=lambda item: -abs(float(item.get("t_stat") or 0.0)),
-        )
+        ordered = sorted(rows, key=lambda item: -abs(float(item.get("t_stat") or 0.0)))
         kept = _diverse_signal_rows(ordered, max(1, int(limit)))
-        block[tier_key] = [*kept, *list(block.get(tier_key) or [])][
-            : 2 * max(1, int(limit))
+        kept_ids.update(str(entry["signal_id"]) for entry in kept)
+        existing = [
+            row
+            for row in list(block.get(tier_key) or [])
+            if str(row.get("signal_id") or _signal_id(row)) not in kept_ids
         ]
-        for position, entry in enumerate(kept):
-            pointer_by_id[id(entry)] = f"/validated_signals/{tier_key}/{position}"
+        block[tier_key] = [*kept, *existing][: 2 * max(1, int(limit))]
     composed = dict(block.get("composition") or {})
-    block["composition"] = {
-        "rounds": round_number,
-        "survivors": int(composed.get("survivors") or 0) + len(pointer_by_id),
-        "scanned_survivors": int(composed.get("scanned_survivors") or 0)
-        + len(survivors),
-    }
     fitted = fit_diagnostic_pack(json.loads(json.dumps(pack, default=str)))
     if fitted.get("pack_truncated"):
         raise ValueError(
             "merging the round's survivors would push the diagnostic pack past "
             "its byte budget even after trimming; nothing was merged"
         )
+    fitted_block = fitted.get("validated_signals") or {}
+    located: dict[str, str] = {}
+    for tier_key in ("signals", "replicated"):
+        for position, row in enumerate(fitted_block.get(tier_key) or []):
+            located.setdefault(
+                str(row.get("signal_id") or _signal_id(row)),
+                f"/validated_signals/{tier_key}/{position}",
+            )
+    # One pointer per persisted row: a second survivor with the same
+    # identity (same signal, symbol, timeframe, horizon and regime) is the
+    # same row and is not counted twice.
+    pointers: list[str | None] = []
+    assigned: set[str] = set()
+    for entry in survivors:
+        signal_id = str(entry["signal_id"])
+        pointer = located.get(signal_id) if signal_id in kept_ids else None
+        if pointer is not None and signal_id in assigned:
+            pointer = None
+        if pointer is not None:
+            assigned.add(signal_id)
+        pointers.append(pointer)
+    merged = sum(pointer is not None for pointer in pointers)
+    fitted_block["composition"] = {
+        "rounds": round_number,
+        "survivors": int(composed.get("survivors") or 0) + merged,
+        "scanned_survivors": int(composed.get("scanned_survivors") or 0)
+        + len(survivors),
+    }
     atomic_write_json(pack_path, fitted)
     manifest["diagnostic_pack"] = {
         **dict(manifest.get("diagnostic_pack") or {}),
         "sha256": _file_hash(pack_path),
     }
     atomic_write_json(root / str(state["manifest"]), manifest)
-    return [pointer_by_id.get(id(entry)) for entry in survivors]
+    return pointers
 
 
 def _composition_claim(
@@ -2656,8 +2699,18 @@ def submit_signal_proposals(
                 limit=int(policy.get("signal_first_limit") or 10),
             )
         except ValueError as exc:
-            pointers = [None] * len(scanned["survivors"])
+            # The scan was fine; the pack could not take the survivors. The
+            # round is not consumed and the next prompt quotes why.
             composition["problems"] = [str(exc)]
+            _save_campaign(store, job_id, state)
+            return {
+                "status": "rejected",
+                "round": round_number,
+                "problems": [str(exc)],
+                "stage": COMPOSE_STAGE,
+                "family_size": scanned["family_size"],
+                "proposals": scanned["proposals"],
+            }
         composition["rounds_used"] = round_number
         composition["problems"] = None
         composition["history"] = [
@@ -2698,6 +2751,7 @@ def submit_signal_proposals(
         "survivors": [
             {
                 "name": entry["signal"],
+                "signal_id": entry.get("signal_id"),
                 "tier": entry["tier"],
                 "pointer": pointer,
                 "merged": pointer is not None,
@@ -2882,6 +2936,7 @@ def mechanism_grid(
         return {"status": "busy", "signal_ref": pointer, "reason": str(exc)}
     record = {
         "signal_ref": pointer,
+        "signal_id": str(entry.get("signal_id") or _signal_id(entry)),
         "symbol": entry["symbol"],
         "signal": entry["signal"],
         "timeframe": entry["timeframe"],
@@ -2928,6 +2983,17 @@ def mechanism_grid(
         grids.append(record)
         pack["mechanism_grids"] = grids
         pack = fit_diagnostic_pack(pack)
+        try:
+            _, _, after_fit = _resolve_signal_pointer(pack, pointer)
+        except ValueError:
+            after_fit = {}
+        if _signal_identity(after_fit) != identity:
+            return {
+                "status": "rejected",
+                "signal_ref": pointer,
+                "reason": "persisting the grid would push the pack past its budget "
+                "and drop the signal it cites; nothing was persisted",
+            }
         atomic_write_json(pack_path, pack)
         manifest["diagnostic_pack"] = {
             **dict(manifest.get("diagnostic_pack") or {}),
@@ -3039,6 +3105,7 @@ def _cited_mechanisms(
             {
                 "pointer": f"/mechanism_grids/{grid_index}/top/{row_index}",
                 "signal_ref": record.get("signal_ref"),
+                "signal_id": record.get("signal_id"),
                 "symbol": record.get("symbol"),
                 "signal": record.get("signal"),
                 "timeframe": record.get("timeframe"),
@@ -6560,6 +6627,7 @@ def _repair_work_order_sentence(order: Mapping[str, Any]) -> str:
 
 
 _SIGNAL_REF_KEYS = (
+    "signal_id",
     "symbol",
     "signal",
     "timeframe",
