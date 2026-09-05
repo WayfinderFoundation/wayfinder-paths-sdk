@@ -144,12 +144,12 @@ STARTER_LEVERAGE_RESULTS: dict[str, tuple[dict[str, Any], ...]] = {
         _result(4, 1.3958, 1.2622, -0.3883, 191, 234.93, OTHER_STARTER_HALT),
         _result(5, 1.8399, 1.2679, -0.4697, 193, 307.15, OTHER_STARTER_HALT),
     ),
-    "diversified-funding-oi-divergence-maker-15m": (
-        _result(1, 0.0467, 0.7049, -0.0577, 686, 105.39, OTHER_STARTER_HALT),
-        _result(2, 0.0913, 0.7080, -0.1125, 686, 214.41, OTHER_STARTER_HALT),
-        _result(3, 0.1336, 0.7110, -0.1645, 686, 326.57, OTHER_STARTER_HALT),
-        _result(4, 0.1730, 0.7141, -0.2137, 686, 441.30, OTHER_STARTER_HALT),
-        _result(5, 0.2092, 0.7171, -0.2605, 686, 558.03, OTHER_STARTER_HALT),
+    "diversified-liquidation-flush-maker-15m": (
+        _result(1, 0.1534, 1.9476, -0.0432, 602, 96.92, OTHER_STARTER_HALT),
+        _result(2, 0.3260, 1.9578, -0.0853, 602, 207.93, OTHER_STARTER_HALT),
+        _result(3, 0.5196, 1.9678, -0.1265, 602, 334.82, OTHER_STARTER_HALT),
+        _result(4, 0.7359, 1.9776, -0.1667, 602, 479.56, OTHER_STARTER_HALT),
+        _result(5, 0.9768, 1.9872, -0.2059, 602, 644.26, OTHER_STARTER_HALT),
     ),
     "diversified-funding-oi-divergence-taker-15m": (
         _result(1, 0.0632, 0.8755, -0.0475, 792, 184.94, OTHER_STARTER_HALT),
